@@ -52,21 +52,44 @@ server = Server("audit-db")
 
 # Global connection pool — lazily initialized on first tool call
 _pool: Optional[ConnectionPool] = None
+_pool_error: Optional[str] = None  # Stores connection error message if pool init fails
 _schema_initialized = False
 
 
-def _get_pool() -> ConnectionPool:
-    """Get or create the global connection pool."""
-    global _pool
-    if _pool is None:
+def _get_pool() -> Optional[ConnectionPool]:
+    """Get or create the global connection pool.
+
+    Returns None if database connection is not configured.
+    The first connection error is cached to avoid repeated failures.
+    """
+    global _pool, _pool_error
+    if _pool is not None:
+        return _pool
+    if _pool_error is not None:
+        return None
+    try:
         _pool = ConnectionPool(minconn=1, maxconn=5)
-    return _pool
+        return _pool
+    except Exception as e:
+        _pool_error = str(e)
+        logger.warning(f"Could not initialize connection pool: {e}")
+        logger.warning("Database tools will be unavailable until PG connection is configured.")
+        return None
 
 
 def _get_connection():
-    """Get a connection from the pool, initializing schema if needed."""
+    """Get a connection from the pool, initializing schema if needed.
+
+    Raises ValueError if the database connection is not configured.
+    """
     global _schema_initialized
     pool = _get_pool()
+    if pool is None:
+        raise ValueError(
+            "Database connection not configured. "
+            "Set PGHOST, PGDATABASE, PGUSER, PGPASSWORD environment variables, "
+            "or use the --connection flag."
+        )
     conn = pool.getconn()
     if not _schema_initialized:
         _schema_initialized = schema_exists(conn)
@@ -245,27 +268,39 @@ async def _handle_import(args: dict) -> list[TextContent]:
     if not os.path.isdir(project_root):
         return [TextContent(type="text", text=f"Error: not a directory: {project_root}")]
 
-    # Ensure schema exists before importing
-    conn = _get_connection()
+    conn = None
     try:
+        conn = _get_connection()
         result = import_project(
             project_path=project_root,
             project_name=args.get("project_name"),
             language=args.get("language", "auto"),
-            connection_string=None,  # Uses env vars / pool
+            connection_string=None,
         )
         return [TextContent(type="text", text=str(result))]
+    except ValueError as e:
+        return [TextContent(type="text", text=f"Error: {e}\n\nSet PostgreSQL env vars (PGHOST, PGDATABASE, PGUSER, PGPASSWORD) and restart the server.")]
+    except Exception as e:
+        logger.error(f"Import error: {e}", exc_info=True)
+        return [TextContent(type="text", text=f"Error: {e}")]
     finally:
-        _release_connection(conn)
+        if conn:
+            _release_connection(conn)
 
 
 async def _handle_brief(args: dict) -> list[TextContent]:
     """Handle the audit_brief tool."""
-    briefing = assemble_briefing(
-        project_name=args.get("project_name"),
-        connection_str=None,
-        max_ghost_lines=args.get("max_ghost_lines", 500),
-    )
+    try:
+        briefing = assemble_briefing(
+            project_name=args.get("project_name"),
+            connection_str=None,
+            max_ghost_lines=args.get("max_ghost_lines", 500),
+        )
+    except ValueError as e:
+        return [TextContent(type="text", text=f"Error: {e}\n\nSet PostgreSQL env vars (PGHOST, PGDATABASE, PGUSER, PGPASSWORD) and restart the server.")]
+    except Exception as e:
+        logger.error(f"Brief error: {e}", exc_info=True)
+        return [TextContent(type="text", text=f"Error: {e}")]
 
     if not briefing:
         return [TextContent(type="text", text="Error: could not generate briefing. Is the project imported?")]
@@ -275,8 +310,9 @@ async def _handle_brief(args: dict) -> list[TextContent]:
 
 async def _handle_status(args: dict) -> list[TextContent]:
     """Handle the audit_status tool."""
-    conn = _get_connection()
+    conn = None
     try:
+        conn = _get_connection()
         cur = conn.cursor()
 
         project_name = args.get("project_name")
@@ -348,14 +384,21 @@ async def _handle_status(args: dict) -> list[TextContent]:
                 result += f"\n    ... and {len(changed) - 10} more"
 
         return [TextContent(type="text", text=result)]
+    except ValueError as e:
+        return [TextContent(type="text", text=f"Error: {e}\n\nSet PostgreSQL env vars (PGHOST, PGDATABASE, PGUSER, PGPASSWORD) and restart the server.")]
+    except Exception as e:
+        logger.error(f"Status error: {e}", exc_info=True)
+        return [TextContent(type="text", text=f"Error: {e}")]
     finally:
-        _release_connection(conn)
+        if conn:
+            _release_connection(conn)
 
 
 async def _handle_changed(args: dict) -> list[TextContent]:
     """Handle the audit_changed tool."""
-    conn = _get_connection()
+    conn = None
     try:
+        conn = _get_connection()
         cur = conn.cursor()
 
         project_name = args.get("project_name")
@@ -379,14 +422,21 @@ async def _handle_changed(args: dict) -> list[TextContent]:
             result += f"  {fpath}\n"
 
         return [TextContent(type="text", text=result)]
+    except ValueError as e:
+        return [TextContent(type="text", text=f"Error: {e}\n\nSet PostgreSQL env vars (PGHOST, PGDATABASE, PGUSER, PGPASSWORD) and restart the server.")]
+    except Exception as e:
+        logger.error(f"Changed error: {e}", exc_info=True)
+        return [TextContent(type="text", text=f"Error: {e}")]
     finally:
-        _release_connection(conn)
+        if conn:
+            _release_connection(conn)
 
 
 async def _handle_list(args: dict) -> list[TextContent]:
     """Handle the audit_list tool."""
-    conn = _get_connection()
+    conn = None
     try:
+        conn = _get_connection()
         names = get_project_names(conn)
 
         if not names:
@@ -397,21 +447,34 @@ async def _handle_list(args: dict) -> list[TextContent]:
             result += f"  - {name}\n"
 
         return [TextContent(type="text", text=result)]
+    except ValueError as e:
+        return [TextContent(type="text", text=f"Error: {e}\n\nSet PostgreSQL env vars (PGHOST, PGDATABASE, PGUSER, PGPASSWORD) and restart the server.")]
+    except Exception as e:
+        logger.error(f"List error: {e}", exc_info=True)
+        return [TextContent(type="text", text=f"Error: {e}")]
     finally:
-        _release_connection(conn)
+        if conn:
+            _release_connection(conn)
 
 
 async def _handle_init_db(args: dict) -> list[TextContent]:
     """Handle the audit_init_db tool."""
-    conn = _get_connection()
+    conn = None
     try:
+        conn = _get_connection()
         if schema_exists(conn):
             return [TextContent(type="text", text="Schema already exists. No action needed.")]
 
         _init_schema(conn)
         return [TextContent(type="text", text="Database schema initialized successfully.")]
+    except ValueError as e:
+        return [TextContent(type="text", text=f"Error: {e}\n\nSet PostgreSQL env vars (PGHOST, PGDATABASE, PGUSER, PGPASSWORD) and restart the server.")]
+    except Exception as e:
+        logger.error(f"Init DB error: {e}", exc_info=True)
+        return [TextContent(type="text", text=f"Error: {e}")]
     finally:
-        _release_connection(conn)
+        if conn:
+            _release_connection(conn)
 
 
 async def main():

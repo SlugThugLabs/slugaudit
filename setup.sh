@@ -30,13 +30,14 @@ check_env() {
 
     if [ ${#missing[@]} -gt 0 ]; then
         echo_warn "Missing environment variables: ${missing[*]}"
-        echo_warn "Set them before running this script:"
+        echo_warn "The MCP server will start, but database tools won't work until these are set."
+        echo_warn "Set them before running the server:"
         echo_warn "  export PGHOST=your_db_host"
         echo_warn "  export PGDATABASE=your_db_name"
         echo_warn "  export PGUSER=your_db_user"
         echo_warn "  export PGPASSWORD=your_db_password"
         echo ""
-        return 1
+        # Don't fail — server can start without DB
     fi
     return 0
 }
