@@ -1,0 +1,31 @@
+[project]
+name = "audit-db-mcp"
+version = "0.1.0"
+description = "PostgreSQL-backed code audit intelligence for AI assistants"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "psycopg2-binary>=2.9",
+    "mcp>=1.0.0",
+    "tree-sitter>=0.23",
+    "tree-sitter-rust",
+    "tree-sitter-python",
+    "tree-sitter-typescript",
+    "tree-sitter-go",
+    "tree-sitter-java",
+    "tree-sitter-c",
+    "tree-sitter-cpp",
+    "tree-sitter-ruby",
+]
+
+[project.scripts]
+audit-db-mcp = "mcp_server:main"
+audit_db = "audit_db:main"
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["*.py", "languages*", "schema.sql"]
