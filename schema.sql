@@ -85,7 +85,8 @@ CREATE TABLE IF NOT EXISTS dependency_edges (
     source_file_id  UUID NOT NULL,
     target_file_id  UUID NOT NULL,
     import_id       UUID,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uniq_dependency_edge UNIQUE (source_file_id, target_file_id, import_id)
 );
 
 CREATE TABLE IF NOT EXISTS file_staleness (

@@ -1,5 +1,5 @@
 [project]
-name = "audit-db-mcp"
+name = "slugaudit-mcp"
 version = "0.1.0"
 description = "PostgreSQL-backed code audit intelligence for AI assistants"
 readme = "README.md"
@@ -19,8 +19,7 @@ dependencies = [
 ]
 
 [project.scripts]
-audit-db-mcp = "mcp_server:main"
-audit_db = "audit_db:main"
+slugaudit-mcp = "slugaudit_mcp:main"
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
@@ -29,3 +28,11 @@ build-backend = "setuptools.backends._legacy:_Backend"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["*.py", "languages*", "schema.sql"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "W", "F", "UP", "S", "B", "C4"]
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true

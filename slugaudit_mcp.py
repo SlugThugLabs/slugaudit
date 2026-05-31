@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-audit_db Audit Database CLI
+slugaudit-mcp Audit Database CLI
 
 Populate and query the audit database for any project.
 
 Usage:
-    audit_db init-db [--connection CONN]
-    audit_db import /path/to/project [options]
-    audit_db status [options]
-    audit_db changed [options]
-    audit_db briefing [options]
-    audit_db list
+    slugaudit-mcp init-db [--connection CONN]
+    slugaudit-mcp import /path/to/project [options]
+    slugaudit-mcp status [options]
+    slugaudit-mcp changed [options]
+    slugaudit-mcp briefing [options]
+    slugaudit-mcp list
 """
 
 import argparse
@@ -26,21 +26,19 @@ except ImportError:
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from db import (
+from infrastructure import (
     get_connection,
-    get_or_create_project,
-    upsert_file,
-    delete_removed_files,
-    insert_imports,
-    build_dependency_edges,
-    get_changed_files,
-    get_project_names,
-    schema_exists,
-    update_audit_timestamps,
+    validate_project_name,
+    validate_project_path,
 )
-from core import get_extractor, import_project
-from languages import detect_language, list_languages
-from brief import assemble_briefing
+from services import SchemaService, ImportService
+from services.import_service import import_project
+from briefing import assemble_briefing
+from repositories import ProjectRepository, FileRepository
+from languages import get_extractor, detect_language, list_languages
+
+
+_schema_service = SchemaService()
 
 
 def cmd_init_db(args):
@@ -48,28 +46,8 @@ def cmd_init_db(args):
     conn = None
     try:
         conn = get_connection(args.connection)
-        schema_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.sql")
-        if not os.path.exists(schema_path):
-            print(f"Error: schema.sql not found at {schema_path}")
-            sys.exit(1)
-
-        with open(schema_path, "r") as f:
-            schema_sql = f.read()
-
-        statements = [s.strip() for s in schema_sql.split(";") if s.strip()]
-        cur = conn.cursor()
-        for stmt in statements:
-            try:
-                cur.execute(stmt)
-            except Exception as e:
-                err_str = str(e).lower()
-                if "already exists" not in err_str and "duplicate" not in err_str:
-                    print(f"  Warning: {e}")
-        conn.commit()
-        cur.close()
-
+        _schema_service.initialize(conn)
         print("Database schema initialized successfully.")
-        print(f"  Applied schema from: {schema_path}")
     finally:
         if conn:
             conn.close()
@@ -77,7 +55,11 @@ def cmd_init_db(args):
 
 def cmd_import(args):
     """Import a project into the audit database."""
-    project_root = os.path.abspath(args.path)
+    project_root = validate_project_path(args.path)
+
+    # Validate project name if provided
+    if args.project_name:
+        validate_project_name(args.project_name)
 
     if not os.path.isdir(project_root):
         print(f"Error: not a directory: {project_root}")
@@ -85,7 +67,8 @@ def cmd_import(args):
 
     # Auto-initialize schema if missing — zero-config first use
     conn = get_connection(args.connection)
-    if not schema_exists(conn):
+    repo = ProjectRepository(conn)
+    if not repo.schema_exists():
         print("Database schema not found. Initializing automatically...")
         cmd_init_db(args)
     conn.close()
@@ -124,56 +107,38 @@ def cmd_status(args):
     conn = None
     try:
         conn = get_connection(args.connection)
-        cur = conn.cursor()
-        if args.project:
-            cur.execute(
-                "SELECT id, name, primary_language, repo_path, created_at "
-                "FROM projects WHERE name = %s",
-                (args.project,),
-            )
-        else:
-            cur.execute(
-                "SELECT id, name, primary_language, repo_path, created_at "
-                "FROM projects ORDER BY created_at DESC"
-            )
+        project_repo = ProjectRepository(conn)
+        file_repo = FileRepository(conn)
 
-        rows = cur.fetchall()
-        if not rows:
+        if args.project:
+            row = project_repo.get_by_name(args.project)
+        else:
+            row = project_repo.get_latest()
+
+        if not row:
             print("No projects found.")
             return
 
+        # Could be multiple if no project specified
+        rows = [row] if args.project else project_repo.get_all()
+
         for row in rows:
-            pid, name, lang, repo_path, created = row
+            pid, name, lang, repo_path, *rest = row
+            created = rest[0] if rest else None
             print(f"\n=== {name} ===")
             print(f"  ID: {pid}")
             print(f"  Language: {lang}")
             print(f"  Path: {repo_path}")
-            print(f"  Created: {created}")
+            if created:
+                print(f"  Created: {created}")
 
-            cur.execute(
-                "SELECT COUNT(*), COALESCE(SUM(size), 0), "
-                "COUNT(*) FILTER (WHERE signature_cache IS NOT NULL "
-                "AND jsonb_array_length(signature_cache) > 0) "
-                "FROM files WHERE project_id = %s",
-                (pid,),
-            )
-            fc, total_size, with_sigs = cur.fetchone()
-            total_sigs = 0
-            if with_sigs:
-                cur.execute(
-                    "SELECT SUM(jsonb_array_length(signature_cache)) "
-                    "FROM files WHERE project_id = %s "
-                    "AND signature_cache IS NOT NULL",
-                    (pid,),
-                )
-                total_sigs = cur.fetchone()[0] or 0
+            stats = project_repo.get_status(pid)
+            print(f"  Files: {stats['file_count']}")
+            print(f"  Total size: {stats['total_size']/1024:.0f}KB")
+            print(f"  With signatures: {stats['files_with_sigs']}")
+            print(f"  Total signatures: {stats['signatures_count']}")
 
-            print(f"  Files: {fc}")
-            print(f"  Total size: {total_size/1024:.0f}KB")
-            print(f"  With signatures: {with_sigs}")
-            print(f"  Total signatures: {total_sigs}")
-
-            changed = get_changed_files(conn, pid)
+            changed = file_repo.get_changed(pid)
             if changed:
                 print(f"  Changed since last audit: {len(changed)}")
                 for fid, fpath in changed[:10]:
@@ -181,30 +146,14 @@ def cmd_status(args):
                 if len(changed) > 10:
                     print(f"    ... and {len(changed)-10} more")
 
-            cur.execute(
-                "SELECT COUNT(*), status FROM findings "
-                "WHERE project_id = %s GROUP BY status",
-                (pid,),
-            )
-            findings = cur.fetchall()
+            findings = project_repo.get_findings_summary(pid)
             if findings:
                 print("  Findings:")
                 for cnt, status in findings:
                     print(f"    {status}: {cnt}")
 
-            cur.execute(
-                "SELECT COUNT(*) FROM file_imports WHERE project_id = %s",
-                (pid,),
-            )
-            imp_count = cur.fetchone()[0]
-            print(f"  Imports tracked: {imp_count}")
-
-            cur.execute(
-                "SELECT COUNT(*) FROM dependency_edges WHERE project_id = %s",
-                (pid,),
-            )
-            edge_count = cur.fetchone()[0]
-            print(f"  Dependency edges: {edge_count}")
+            print(f"  Imports tracked: {stats['imports_count']}")
+            print(f"  Dependency edges: {stats['edge_count']}")
 
     finally:
         if conn:
@@ -226,24 +175,24 @@ def cmd_changed(args):
     conn = None
     try:
         conn = get_connection(args.connection)
-        cur = conn.cursor()
+        project_repo = ProjectRepository(conn)
+        file_repo = FileRepository(conn)
+
         if args.project:
-            cur.execute("SELECT id FROM projects WHERE name = %s", (args.project,))
-            row = cur.fetchone()
+            row = project_repo.get_by_name(args.project)
             if not row:
                 print(f"Project not found: {args.project}")
                 return
             project_id = row[0]
         else:
-            cur.execute("SELECT id, name FROM projects ORDER BY created_at DESC LIMIT 1")
-            row = cur.fetchone()
+            row = project_repo.get_latest()
             if not row:
                 print("No projects found.")
                 return
-            project_id, name = row
+            project_id, name = row[0], row[1]
             print(f"Project: {name}")
 
-        changed = get_changed_files(conn, project_id)
+        changed = file_repo.get_changed(project_id)
         if changed:
             print(f"\n{len(changed)} changed file(s):")
             for fid, fpath in changed:
@@ -261,7 +210,8 @@ def cmd_list(args):
     conn = None
     try:
         conn = get_connection(args.connection)
-        names = get_project_names(conn)
+        project_repo = ProjectRepository(conn)
+        names = project_repo.get_names()
         if names:
             print("Projects in audit database:")
             for n in names:
@@ -273,18 +223,37 @@ def cmd_list(args):
             conn.close()
 
 
+# Add schema_exists helper to ProjectRepository for backward compat
+def _repo_schema_exists(self):
+    """Check if the schema has been initialized."""
+    cur = self._cursor()
+    try:
+        cur.execute(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+            "WHERE table_name = 'projects')"
+        )
+        result = cur.fetchone()[0]
+        cur.close()
+        return result
+    except Exception:
+        cur.close()
+        return False
+
+ProjectRepository.schema_exists = _repo_schema_exists
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Audit Database - populate and query for any project",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  audit_db init-db
-  audit_db import . --project-name "My Project"
-  audit_db import /path/to/project --language rust
-  audit_db status --project SLUG-ID
-  audit_db changed --project SLUG-ID
-  audit_db list
+  slugaudit-mcp init-db
+  slugaudit-mcp import . --project-name "My Project"
+  slugaudit-mcp import /path/to/project --language rust
+  slugaudit-mcp status --project SLUG-ID
+  slugaudit-mcp changed --project SLUG-ID
+  slugaudit-mcp list
         """,
     )
     parser.add_argument(
@@ -309,7 +278,7 @@ Examples:
     )
     import_parser.add_argument(
         "--language", "-l",
-        choices=["auto", "rust", "python", "typescript"],
+        choices=["auto", "rust", "python", "typescript", "go", "java", "c", "cpp", "ruby"],
         default="auto",
         help="Language (default: auto-detect)",
     )

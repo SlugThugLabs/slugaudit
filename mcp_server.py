@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-audit-db MCP Server
+slugaudit-mcp MCP Server
 
 Provides code audit intelligence tools via the Model Context Protocol.
 Import projects, generate briefings, and query audit state — all through
@@ -14,8 +14,8 @@ Usage:
     python3 mcp_server.py
 
     # Or via npx/uvx if installed as a package:
-    npx -y audit-db-mcp
-    uvx audit-db-mcp
+    npx -y slugaudit-mcp
+    uvx slugaudit-mcp
 
 Configuration:
     Set these environment variables, or pass a connection string on first use:
@@ -27,33 +27,43 @@ Configuration:
 
 import os
 import sys
+import asyncio
 import logging
+import threading
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from db import get_connection, ConnectionPool, schema_exists, get_project_names, get_changed_files
-from core import import_project
-from brief import assemble_briefing
+from infrastructure import (
+    get_connection,
+    ConnectionPool,
+    validate_project_path,
+)
+from services import SchemaService, ImportService
+from services.import_service import import_project
+from briefing import assemble_briefing
+from repositories import ProjectRepository
 
 try:
     from mcp.server import Server
     from mcp.server.stdio import stdio_server
     from mcp.types import Tool, TextContent
 except ImportError:
-    print("Error: mcp is required. Install with: pip install mcp")
-    print("  Or install everything: pip install -r requirements.txt")
+    print("Error: mcp is required. Install with: pip install -r requirements.txt")
     sys.exit(1)
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("audit-db-mcp")
+logger = logging.getLogger("slugaudit-mcp")
 
-server = Server("audit-db")
+server = Server("slugaudit-mcp")
 
 # Global connection pool — lazily initialized on first tool call
 _pool: Optional[ConnectionPool] = None
 _pool_error: Optional[str] = None  # Stores connection error message if pool init fails
 _schema_initialized = False
+_pool_lock = threading.Lock()  # Protects _pool, _pool_error, and _schema_initialized
+
+_schema_service = SchemaService()
 
 
 def _get_pool() -> Optional[ConnectionPool]:
@@ -61,26 +71,49 @@ def _get_pool() -> Optional[ConnectionPool]:
 
     Returns None if database connection is not configured.
     The first connection error is cached to avoid repeated failures.
+    Thread-safe via _pool_lock.
     """
     global _pool, _pool_error
-    if _pool is not None:
-        return _pool
-    if _pool_error is not None:
-        return None
+    with _pool_lock:
+        if _pool is not None:
+            return _pool
+        if _pool_error is not None:
+            return None
+        try:
+            _pool = ConnectionPool(minconn=1, maxconn=5)
+            return _pool
+        except Exception as e:
+            # Security: don't log full exception which may contain credentials
+            _pool_error = "Could not initialize connection pool (check PG connection settings)"
+            logger.warning("Could not initialize connection pool")
+            logger.warning("Database tools will be unavailable until PG connection is configured.")
+            return None
+
+
+def _check_connection_health(conn) -> bool:
+    """Check if a database connection is still alive and usable.
+
+    Returns True if the connection is healthy, False if it is closed or broken.
+    """
     try:
-        _pool = ConnectionPool(minconn=1, maxconn=5)
-        return _pool
-    except Exception as e:
-        _pool_error = str(e)
-        logger.warning(f"Could not initialize connection pool: {e}")
-        logger.warning("Database tools will be unavailable until PG connection is configured.")
-        return None
+        # psycopg2 connections have a closed property: 0=open, 1=closed, 2="bad"
+        if getattr(conn, "closed", True):
+            return False
+        # Attempt a lightweight ping by executing a simple query
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+        cur.close()
+        return True
+    except Exception:
+        return False
 
 
-def _get_connection():
+async def _get_connection():
     """Get a connection from the pool, initializing schema if needed.
 
     Raises ValueError if the database connection is not configured.
+    Runs synchronous DB operations in a thread to avoid blocking the event loop.
     """
     global _schema_initialized
     pool = _get_pool()
@@ -90,43 +123,59 @@ def _get_connection():
             "Set PGHOST, PGDATABASE, PGUSER, PGPASSWORD environment variables, "
             "or use the --connection flag."
         )
-    conn = pool.getconn()
-    if not _schema_initialized:
-        _schema_initialized = schema_exists(conn)
-    if not _schema_initialized:
-        logger.info("Schema not found — initializing automatically")
-        _init_schema(conn)
-        _schema_initialized = True
+
+    # Run getconn in a thread since it's synchronous
+    conn = await asyncio.to_thread(pool.getconn)
+
+    # Check connection health — if broken, discard and raise
+    if not await asyncio.to_thread(_check_connection_health, conn):
+        try:
+            await asyncio.to_thread(conn.close)
+        except Exception:
+            pass
+        # Try to get another connection from the pool
+        try:
+            conn = await asyncio.to_thread(pool.getconn)
+        except Exception:
+            pass
+        if not await asyncio.to_thread(_check_connection_health, conn):
+            raise RuntimeError("Could not obtain a healthy database connection")
+
+    # Check and initialize schema if needed (threaded)
+    with _pool_lock:
+        if not _schema_initialized:
+            exists = await asyncio.to_thread(
+                ProjectRepository.schema_exists,
+                ProjectRepository(conn),
+            )
+            if not exists:
+                logger.info("Schema not found — initializing automatically")
+                await asyncio.to_thread(_schema_service.initialize, conn, logger)
+            _schema_initialized = True
+
     return conn
 
 
-def _release_connection(conn):
-    """Return a connection to the pool."""
+async def _release_connection(conn):
+    """Return a connection to the pool.
+
+    Checks connection health first — broken connections are closed and
+    discarded rather than returned to the pool. Runs in a thread to avoid
+    blocking the event loop.
+    """
     pool = _get_pool()
-    pool.putconn(conn)
+    if pool is None:
+        return
 
-
-def _init_schema(conn):
-    """Initialize the database schema (idempotent)."""
-    schema_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.sql")
-    if not os.path.exists(schema_path):
-        raise FileNotFoundError(f"schema.sql not found at {schema_path}")
-
-    with open(schema_path, "r") as f:
-        schema_sql = f.read()
-
-    statements = [s.strip() for s in schema_sql.split(";") if s.strip()]
-    cur = conn.cursor()
-    for stmt in statements:
+    # Only return healthy connections to the pool
+    if await asyncio.to_thread(_check_connection_health, conn):
+        await asyncio.to_thread(pool.putconn, conn)
+    else:
+        logger.warning("Discarding unhealthy connection from pool")
         try:
-            cur.execute(stmt)
-        except Exception as e:
-            err_str = str(e).lower()
-            if "already exists" not in err_str and "duplicate" not in err_str:
-                logger.warning(f"Schema init warning: {e}")
-    conn.commit()
-    cur.close()
-    logger.info("Database schema initialized successfully")
+            await asyncio.to_thread(conn.close)
+        except Exception:
+            pass
 
 
 @server.list_tools()
@@ -152,7 +201,10 @@ async def list_tools() -> list[Tool]:
                     },
                     "language": {
                         "type": "string",
-                        "enum": ["auto", "rust", "python", "typescript"],
+                        "enum": [
+                            "auto", "rust", "python", "typescript",
+                            "go", "java", "c", "cpp", "ruby",
+                        ],
                         "default": "auto",
                         "description": "Programming language (default: auto-detect)",
                     },
@@ -258,20 +310,27 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     except Exception as e:
         logger.error(f"Tool error ({name}): {e}", exc_info=True)
-        return [TextContent(type="text", text=f"Error: {e}")]
+        # Security: return generic error message to client
+        return [TextContent(type="text", text="An internal error occurred")]
 
 
 async def _handle_import(args: dict) -> list[TextContent]:
     """Handle the audit_import tool."""
-    project_root = os.path.abspath(args["project_path"])
+    # Security: validate project path
+    try:
+        project_root = validate_project_path(args["project_path"])
+    except ValueError as e:
+        return [TextContent(type="text", text=f"Error: {e}")]
 
     if not os.path.isdir(project_root):
         return [TextContent(type="text", text=f"Error: not a directory: {project_root}")]
 
     conn = None
     try:
-        conn = _get_connection()
-        result = import_project(
+        conn = await _get_connection()
+        # Run the synchronous import_project in a thread
+        result = await asyncio.to_thread(
+            import_project,
             project_path=project_root,
             project_name=args.get("project_name"),
             language=args.get("language", "auto"),
@@ -282,16 +341,18 @@ async def _handle_import(args: dict) -> list[TextContent]:
         return [TextContent(type="text", text=f"Error: {e}\n\nSet PostgreSQL env vars (PGHOST, PGDATABASE, PGUSER, PGPASSWORD) and restart the server.")]
     except Exception as e:
         logger.error(f"Import error: {e}", exc_info=True)
-        return [TextContent(type="text", text=f"Error: {e}")]
+        return [TextContent(type="text", text="An internal error occurred during import")]
     finally:
         if conn:
-            _release_connection(conn)
+            await _release_connection(conn)
 
 
 async def _handle_brief(args: dict) -> list[TextContent]:
     """Handle the audit_brief tool."""
     try:
-        briefing = assemble_briefing(
+        # Run the synchronous assemble_briefing in a thread
+        briefing = await asyncio.to_thread(
+            assemble_briefing,
             project_name=args.get("project_name"),
             connection_str=None,
             max_ghost_lines=args.get("max_ghost_lines", 500),
@@ -300,7 +361,7 @@ async def _handle_brief(args: dict) -> list[TextContent]:
         return [TextContent(type="text", text=f"Error: {e}\n\nSet PostgreSQL env vars (PGHOST, PGDATABASE, PGUSER, PGPASSWORD) and restart the server.")]
     except Exception as e:
         logger.error(f"Brief error: {e}", exc_info=True)
-        return [TextContent(type="text", text=f"Error: {e}")]
+        return [TextContent(type="text", text="An internal error occurred during briefing generation")]
 
     if not briefing:
         return [TextContent(type="text", text="Error: could not generate briefing. Is the project imported?")]
@@ -311,68 +372,38 @@ async def _handle_brief(args: dict) -> list[TextContent]:
 async def _handle_status(args: dict) -> list[TextContent]:
     """Handle the audit_status tool."""
     conn = None
+    cur = None
     try:
-        conn = _get_connection()
-        cur = conn.cursor()
+        conn = await _get_connection()
+        project_repo = ProjectRepository(conn)
 
         project_name = args.get("project_name")
         if project_name:
-            cur.execute(
-                "SELECT id, name, primary_language, repo_path FROM projects WHERE name = %s",
-                (project_name,),
-            )
+            row = project_repo.get_by_name(project_name)
         else:
-            cur.execute(
-                "SELECT id, name, primary_language, repo_path FROM projects ORDER BY created_at DESC LIMIT 1"
-            )
+            row = project_repo.get_latest()
 
-        row = cur.fetchone()
         if not row:
             return [TextContent(type="text", text="No projects found.")]
 
         project_id, name, language, repo_path = row
 
-        cur.execute(
-            "SELECT COUNT(*), COALESCE(SUM(size), 0), "
-            "COUNT(*) FILTER (WHERE signature_cache IS NOT NULL AND jsonb_array_length(signature_cache) > 0) "
-            "FROM files WHERE project_id = %s",
-            (project_id,),
-        )
-        file_count, total_size, with_sigs = cur.fetchone()
-
-        total_sigs = 0
-        if with_sigs:
-            cur.execute(
-                "SELECT SUM(jsonb_array_length(signature_cache)) "
-                "FROM files WHERE project_id = %s AND signature_cache IS NOT NULL",
-                (project_id,),
-            )
-            total_sigs = cur.fetchone()[0] or 0
-
-        changed = get_changed_files(conn, project_id)
-
-        cur.execute(
-            "SELECT COUNT(*) FROM file_imports WHERE project_id = %s",
-            (project_id,),
-        )
-        import_count = cur.fetchone()[0]
-
-        cur.execute(
-            "SELECT COUNT(*) FROM dependency_edges WHERE project_id = %s",
-            (project_id,),
-        )
-        edge_count = cur.fetchone()[0]
+        stats = project_repo.get_status(project_id)
+        # Use FileRepository for changed files
+        from repositories import FileRepository
+        file_repo = FileRepository(conn)
+        changed = await asyncio.to_thread(file_repo.get_changed, project_id)
 
         result = (
             f"Project: {name}\n"
             f"  ID: {project_id}\n"
             f"  Language: {language}\n"
             f"  Path: {repo_path}\n"
-            f"  Files: {file_count}\n"
-            f"  Total size: {total_size / 1024:.0f} KB\n"
-            f"  Signatures: {total_sigs}\n"
-            f"  Imports tracked: {import_count}\n"
-            f"  Dependency edges: {edge_count}\n"
+            f"  Files: {stats['file_count']}\n"
+            f"  Total size: {stats['total_size'] / 1024:.0f} KB\n"
+            f"  Signatures: {stats['signatures_count']}\n"
+            f"  Imports tracked: {stats['imports_count']}\n"
+            f"  Dependency edges: {stats['edge_count']}\n"
             f"  Changed files: {len(changed)}"
         )
 
@@ -388,31 +419,32 @@ async def _handle_status(args: dict) -> list[TextContent]:
         return [TextContent(type="text", text=f"Error: {e}\n\nSet PostgreSQL env vars (PGHOST, PGDATABASE, PGUSER, PGPASSWORD) and restart the server.")]
     except Exception as e:
         logger.error(f"Status error: {e}", exc_info=True)
-        return [TextContent(type="text", text=f"Error: {e}")]
+        return [TextContent(type="text", text="An internal error occurred")]
     finally:
         if conn:
-            _release_connection(conn)
+            await _release_connection(conn)
 
 
 async def _handle_changed(args: dict) -> list[TextContent]:
     """Handle the audit_changed tool."""
     conn = None
     try:
-        conn = _get_connection()
-        cur = conn.cursor()
+        conn = await _get_connection()
+        project_repo = ProjectRepository(conn)
+        from repositories import FileRepository
+        file_repo = FileRepository(conn)
 
         project_name = args.get("project_name")
         if project_name:
-            cur.execute("SELECT id FROM projects WHERE name = %s", (project_name,))
+            row = project_repo.get_by_name(project_name)
         else:
-            cur.execute("SELECT id FROM projects ORDER BY created_at DESC LIMIT 1")
+            row = project_repo.get_latest()
 
-        row = cur.fetchone()
         if not row:
             return [TextContent(type="text", text="No projects found.")]
 
         project_id = row[0]
-        changed = get_changed_files(conn, project_id)
+        changed = await asyncio.to_thread(file_repo.get_changed, project_id)
 
         if not changed:
             return [TextContent(type="text", text="No files changed since last audit.")]
@@ -426,18 +458,19 @@ async def _handle_changed(args: dict) -> list[TextContent]:
         return [TextContent(type="text", text=f"Error: {e}\n\nSet PostgreSQL env vars (PGHOST, PGDATABASE, PGUSER, PGPASSWORD) and restart the server.")]
     except Exception as e:
         logger.error(f"Changed error: {e}", exc_info=True)
-        return [TextContent(type="text", text=f"Error: {e}")]
+        return [TextContent(type="text", text="An internal error occurred")]
     finally:
         if conn:
-            _release_connection(conn)
+            await _release_connection(conn)
 
 
 async def _handle_list(args: dict) -> list[TextContent]:
     """Handle the audit_list tool."""
     conn = None
     try:
-        conn = _get_connection()
-        names = get_project_names(conn)
+        conn = await _get_connection()
+        project_repo = ProjectRepository(conn)
+        names = project_repo.get_names()
 
         if not names:
             return [TextContent(type="text", text="No projects found.")]
@@ -451,30 +484,32 @@ async def _handle_list(args: dict) -> list[TextContent]:
         return [TextContent(type="text", text=f"Error: {e}\n\nSet PostgreSQL env vars (PGHOST, PGDATABASE, PGUSER, PGPASSWORD) and restart the server.")]
     except Exception as e:
         logger.error(f"List error: {e}", exc_info=True)
-        return [TextContent(type="text", text=f"Error: {e}")]
+        return [TextContent(type="text", text="An internal error occurred")]
     finally:
         if conn:
-            _release_connection(conn)
+            await _release_connection(conn)
 
 
 async def _handle_init_db(args: dict) -> list[TextContent]:
     """Handle the audit_init_db tool."""
     conn = None
     try:
-        conn = _get_connection()
-        if schema_exists(conn):
+        conn = await _get_connection()
+        project_repo = ProjectRepository(conn)
+        exists = project_repo.schema_exists()
+        if exists:
             return [TextContent(type="text", text="Schema already exists. No action needed.")]
 
-        _init_schema(conn)
+        await asyncio.to_thread(_schema_service.initialize, conn, logger)
         return [TextContent(type="text", text="Database schema initialized successfully.")]
     except ValueError as e:
         return [TextContent(type="text", text=f"Error: {e}\n\nSet PostgreSQL env vars (PGHOST, PGDATABASE, PGUSER, PGPASSWORD) and restart the server.")]
     except Exception as e:
         logger.error(f"Init DB error: {e}", exc_info=True)
-        return [TextContent(type="text", text=f"Error: {e}")]
+        return [TextContent(type="text", text="An internal error occurred")]
     finally:
         if conn:
-            _release_connection(conn)
+            await _release_connection(conn)
 
 
 async def main():

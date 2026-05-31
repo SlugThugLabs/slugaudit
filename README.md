@@ -1,16 +1,14 @@
-# Audit Database (audit-db)
+# slugaudit-mcp
 
-A tool that builds and queries a **PostgreSQL audit database** for any Rust, Python, TypeScript, Go, Java, C, C++, or Ruby codebase. It extracts signatures and imports from source files, builds a dependency graph, tracks changed files, and assembles structured briefings for AI-assisted code audits.
+A PostgreSQL-backed code audit system for AI-assisted code reviews. Extracts code signatures and import dependencies from source files using tree-sitter, builds a dependency graph, tracks changes between imports, and generates structured briefings for AI auditors.
 
-Available as both a **CLI tool** and an **MCP server** for seamless AI integration.
+Available as both a **CLI tool** (`slugaudit-mcp`) and an **MCP server** (`slugaudit-mcp`).
 
 ## Quick Start
 
-### CLI Mode
-
 ```bash
-# 1. Install dependencies
-pip install psycopg2-binary tree-sitter tree-sitter-rust tree-sitter-python tree-sitter-typescript
+# 1. Install dependencies (system packages, Python deps, tree-sitter parsers)
+bash setup.sh
 
 # 2. Set up PostgreSQL connection
 export PGHOST=localhost
@@ -20,40 +18,36 @@ export PGUSER=my_user
 export PGPASSWORD=my_password
 
 # 3. Import a project (schema auto-creates on first use!)
-audit_db import /path/to/your/project --project-name "My Project"
+slugaudit-mcp import /path/to/your/project --project-name "My Project"
 
 # 4. Check project status
-audit_db status --project "My Project"
+slugaudit-mcp status --project "My Project"
 
 # 5. Generate an AI audit briefing
-audit_db briefing --project "My Project" --output briefing.md
+slugaudit-mcp briefing --project "My Project" --output briefing.md
 ```
 
 ### MCP Server Mode (Recommended for AI Assistants)
 
 ```bash
-# Install and run the MCP server
-pip install mcp
+# Run the MCP server
 python3 mcp_server.py
-
-# Or via package manager (after publishing):
-# npx -y audit-db-mcp
-# uvx audit-db-mcp
 ```
 
-Then in your AI client (Claude Desktop, VS Code, Cursor, etc.), configure the MCP server:
+Then in your AI client (Claude Desktop, VS Code, Cursor, Codebuff, etc.), configure the MCP server:
 
 ```json
 {
   "mcpServers": {
-    "audit-db": {
+    "slugaudit-mcp": {
       "command": "python3",
-      "args": ["/path/to/audit-db/mcp_server.py"],
+      "args": ["/path/to/slugaudit-mcp/mcp_server.py"],
       "env": {
         "PGHOST": "localhost",
-        "PGDATABASE": "audit_db",
-        "PGUSER": "audit_user",
-        "PGPASSWORD": "your_password"
+        "PGPORT": "5432",
+        "PGDATABASE": "my_audit_db",
+        "PGUSER": "my_user",
+        "PGPASSWORD": "my_password"
       }
     }
   }
@@ -68,295 +62,161 @@ Once configured, the AI can use these tools directly:
 - `audit_list` — List all projects
 - `audit_init_db` — Manually initialize schema (usually auto-done)
 
-## Zero-Config Setup
+## Architecture
 
-**No manual `init-db` needed!** The schema is automatically created on first import. Just set your PostgreSQL connection (env vars or `--connection`) and start importing.
+The system follows a layered architecture with clear separation of concerns:
 
-> If you prefer explicit setup, `audit_db init-db` is idempotent and safe to re-run.
+```
+[CLI / MCP] → [Services] → [Repositories] → [Infrastructure]
+                ↓
+        [Languages] → [Source Files]
+```
+
+| Package | Role |
+|---------|------|
+| `infrastructure/` | Connection management, input validation, file I/O abstraction |
+| `domain/` | Entity models: `Project`, `File`, `Signature`, `ImportRecord`, `DependencyEdge` |
+| `repositories/` | Data access: `ProjectRepository`, `FileRepository`, `ImportRepository`, `FindingRepository`, `ArchitectureRepository` |
+| `services/` | Application services: `SchemaService`, `ImportService`, `BriefingService` |
+| `briefing/` | Briefing assembly: data providers + Markdown formatters |
+| `languages/` | 8 language extractors with shared `BaseExtractor` |
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `init-db` | Initialize the database schema (idempotent) |
+| `import` | Scan a project, extract signatures/imports, build dependency graph |
+| `status` | Show project overview (files, signatures, imports, edges, changes) |
+| `changed` | List files changed since last import |
+| `briefing` | Generate structured Markdown briefing for AI audit |
+| `list` | List all projects in the database |
+
+## Supported Languages
+
+| Language | Detection | Key Features |
+|----------|-----------|--------------|
+| **Rust** | `Cargo.toml`, `.rs` | `use`, `pub`, `struct`, `fn`, `impl`, `trait`, `enum` |
+| **Python** | `pyproject.toml`, `.py` | `import`, `from X import Y`, class/fn signatures |
+| **TypeScript** | `package.json`, `.ts` | `import`, `export`, interfaces, types, functions |
+| **Go** | `go.mod`, `.go` | Functions, methods, structs, interfaces, imports |
+| **Java** | `pom.xml`, `.java` | Classes, interfaces, enums, records, methods |
+| **C** | `.c`, `.h` | Functions, structs, unions, enums, `#include` |
+| **C++** | `.cpp`, `.hpp` | Functions, classes, templates, namespaces |
+| **Ruby** | `Gemfile`, `.rb` | Methods, classes, modules, `require` |
+
+## Key Concepts
+
+- **Signature cache**: Public API surface of each file stored as JSONB. Lets the AI understand a file's interface without reading its full source.
+- **Dependency edges**: File-to-file dependencies resolved from import statements. Enables blast radius computation.
+- **Change detection**: SHA-256 hash compared against `last_audited_hash`. Only changed files become audit targets.
+- **Blast radius**: Files that depend on changed files, computed from dependency edges.
+- **Ghost context**: Signatures of unchanged files provided for AI reference — reduces token usage by avoiding full source reads.
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Required | Default |
+|----------|----------|---------|
+| `PGHOST` | Yes | — |
+| `PGPORT` | No | 5432 |
+| `PGDATABASE` | Yes | — |
+| `PGUSER` | Yes | — |
+| `PGPASSWORD` | Yes | — |
+| `PGSSLMODE` | No | — |
+
+### Connection String
+
+Override env vars with `--connection`:
+
+```bash
+slugaudit-mcp import . --connection "postgresql://user:pass@host:5432/dbname?sslmode=require"
+```
+
+## Database Schema
+
+All projects share one database. Each project's data is isolated via `project_id` foreign keys with `ON DELETE CASCADE`:
+
+| Table | Purpose |
+|-------|---------|
+| `projects` | One row per project — the root entity |
+| `files` | File metadata, hashes, signature cache (JSONB) |
+| `file_imports` | Import statements extracted from files |
+| `dependency_edges` | Resolved file-to-file dependency graph |
+| `findings` | Audit findings with severity, category, location |
+| `architecture_state` | Architecture summaries and layer maps (reserved) |
+| `audit_configs` | Audit configuration per project (reserved) |
+| `audit_runs` | Individual audit execution tracking (reserved) |
+| `file_staleness` | Files that may be stale due to changes (reserved) |
+| `static_tool_results` | Raw output from static analysis tools (reserved) |
+| `ingestor_rejections` | Failed ingestion attempts (reserved) |
+
+## Workflow
+
+### First-time audit
+
+```bash
+# 1. Import the baseline
+slugaudit-mcp import /path/to/project --project-name "My Project"
+
+# 2. Make edits to the codebase...
+
+# 3. Re-import to sync
+slugaudit-mcp import /path/to/project
+
+# 4. Generate briefing for changed files
+slugaudit-mcp briefing --project "My Project" --output briefing.md
+
+# 5. Feed briefing.md to an AI for audit
+```
+
+### Continuous audit with MCP
+
+1. Call `audit_import` to scan the project
+2. Call `audit_status` to verify the import
+3. After code changes, call `audit_import` again to sync
+4. Call `audit_brief` to get the generated briefing
+5. The AI returns findings directly in conversation
+
+## Adding a New Language
+
+1. Create `languages/yourlang.py` extending `BaseExtractor`
+2. Implement: `name()`, `source_extensions()`, `find_source_files()`, `extract_signatures()`, `extract_imports()`, `resolve_import()`, `hash_file()`
+3. Register in `LANG_MAP` in `languages/__init__.py`
+4. Install tree-sitter grammar: `pip install tree-sitter-yourlang`
+
+## Testing
+
+110 tests using `unittest` with mocking — no database required:
+
+```bash
+python3 -m pytest tests/ -v       # preferred
+python3 -m unittest tests          # alternative
+```
+
+## Code Quality
+
+```bash
+# Linting
+ruff check .
+
+# Type checking
+mypy .
+
+# Pre-commit hooks
+pre-commit install
+pre-commit run --all-files
+```
+
+Configured tools: **ruff** (E/W/F/UP/S/B/C4 rules, line-length=100), **mypy** (strict mode), **pre-commit** (trailing-whitespace, end-of-file-fixer, check-yaml, ruff, mypy).
 
 ## Requirements
 
 - **Python 3.10+**
 - **PostgreSQL 15+** (uses UUID, JSONB, `gen_random_uuid()`)
-- **Tree-sitter parsers** for each language you want to scan:
-  - `tree-sitter-rust` for Rust
-  - `tree-sitter-python` for Python
-  - `tree-sitter-typescript` for TypeScript
+- **tree-sitter** parsers for each supported language
 
-## Installation
+## License
 
-```bash
-# Clone or copy the audit-db directory
-git clone <url> ~/audit-db  # or copy it manually
-
-# Install Python dependencies
-pip install -r ~/audit-db/requirements.txt
-
-# Optional: symlink for easy access
-ln -s ~/audit-db/audit_db.py /usr/local/bin/audit_db
-chmod +x /usr/local/bin/audit_db
-```
-
-## Database Setup
-
-You need a PostgreSQL database. Create one:
-
-```bash
-createdb my_audit_db
-```
-
-**That's it!** The schema is auto-created on first import. If you want to pre-create it manually:
-
-```bash
-# Set env vars first, then:
-audit_db init-db
-
-# Or with a connection string:
-audit_db init-db --connection "postgresql://user:pass@host:5432/dbname"
-```
-
-## Configuration
-
-Connection can be configured in two ways:
-
-### 1. Environment Variables (recommended)
-
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `PGHOST` | Database server hostname | **Yes** |
-| `PGPORT` | Database server port | No (default: 5432) |
-| `PGDATABASE` | Database name | **Yes** |
-| `PGUSER` | Database username | **Yes** |
-| `PGPASSWORD` | Database password | **Yes** |
-
-```bash
-export PGHOST=localhost
-export PGPORT=5432
-export PGDATABASE=audit_db
-export PGUSER=audit_user
-export PGPASSWORD=your_secure_password
-```
-
-### 2. Connection String (`--connection` / `-c`)
-
-Pass this to any command. Overrides env vars:
-
-```bash
-audit_db import . --connection "postgresql://user:pass@host:5432/dbname"
-```
-
-## Commands
-
-### `init-db`
-
-Initialize the database schema. Creates all tables, indexes, and foreign keys.
-
-```bash
-audit_db init-db
-```
-
-### `import`
-
-Scan a project directory and store signatures, imports, and dependency edges.
-
-```bash
-# Auto-detect language
-audit_db import /path/to/project --project-name "My App"
-
-# Specify language explicitly
-audit_db import /path/to/project --language rust
-
-# Use current directory
-audit_db import . --project-name "$(basename $PWD)"
-```
-
-**Note:** The database schema is auto-created on first import — no `init-db` needed.
-
-**What it does:**
-1. Scans for source files (excludes `.`, `target`, `node_modules`, `__pycache__`, etc.)
-2. Extracts public API signatures from each file using tree-sitter
-3. Extracts import statements
-4. Stores hashes for change detection
-5. Builds dependency edges between files
-6. Marks removed files
-
-### `status`
-
-Show an overview of a project in the database.
-
-```bash
-# Show latest project
-audit_db status
-
-# Show specific project
-audit_db status --project "My Project"
-```
-
-Displays:
-- File count and total size
-- Signatures extracted
-- Imports tracked
-- Dependency edges
-- Changed files since last audit
-- Open findings
-
-### `changed`
-
-List files whose hash has changed since the last import.
-
-```bash
-audit_db changed --project "My Project"
-```
-
-### `briefing`
-
-Generate a structured Markdown briefing for AI-assisted code audit. This is the main output of the tool — it packages everything an AI needs to audit the codebase.
-
-```bash
-# Print to stdout
-audit_db briefing --project "My Project"
-
-# Write to file
-audit_db briefing --project "My Project" --output briefing.md
-
-# Limit ghost context
-audit_db briefing --project "My Project" --max-ghost-lines 200
-```
-
-**The briefing includes:**
-- **Project overview** — file count, signatures, imports, dependency edges
-- **Architecture** — from the `architecture_state` table
-- **Ghost context** — signatures of *unchanged* files (so the AI doesn't need to read them)
-- **Target files** — full source of changed files + blast radius dependents
-- **Historical findings** — previous open findings from the DB
-- **Output contract** — JSON schema for the AI's response
-
-### `list`
-
-List all projects in the database.
-
-```bash
-audit_db list
-```
-
-## Output Contract
-
-The `briefing` command includes a structured output contract for the AI to return findings in this JSON format:
-
-```json
-{
-  "findings": [
-    {
-      "file": "path/to/file.rs",
-      "line_start": 42,
-      "line_end": 55,
-      "severity": "high",
-      "category": "correctness",
-      "title": "Short descriptive title",
-      "description": "Full explanation of the issue..."
-    }
-  ]
-}
-```
-
-## Supported Languages
-
-| Language | Detection | Notes |
-|----------|-----------|-------|
-| **Rust** | `Cargo.toml`, `rust-toolchain.toml`, `.rs` files | Full support: `use`, `pub`, `struct`, `fn`, `impl`, `trait`, `enum` |
-| **Python** | `pyproject.toml`, `setup.py`, `requirements.txt`, `.py` files | `import X`, `from X import Y`, class/fn signatures |
-| **TypeScript** | `package.json`, `tsconfig.json`, `.ts`, `.tsx`, `.js` files | `import`, `export`, interfaces, types, functions |
-| **Go** | `go.mod`, `go.sum`, `.go` files | Functions, methods, structs, interfaces, `import` specs |
-| **Java** | `pom.xml`, `build.gradle`, `.java` files | Classes, interfaces, enums, records, methods, constructors |
-| **C** | `.c`, `.h` files | Functions, structs, unions, enums, typedefs, `#include` |
-| **C++** | `.cpp`, `.hpp`, `.cc`, `.cxx`, `.hxx`, `.hh`, `.ixx`, `.tpp` files | Functions, classes, structs, templates, namespaces, `#include` |
-| **Ruby** | `Gemfile`, `Rakefile`, `.rb` files | Methods, classes, modules, `require`, `include`, `extend` |
-
-Language is auto-detected. Override with `--language`.
-
-## How It Works
-
-The data flows through three stages:
-
-```
-[Source Files] 
-     ↓ tree-sitter parsing
-[Extractors] —→ signatures + imports
-     ↓
-[PostgreSQL DB] —→ dependency edges, change tracking
-     ↓
-[Briefing Assembler] —→ structured Markdown for AI audit
-```
-
-### Key Concepts
-
-- **Signature cache**: Public API surface of each file (pub functions, structs, traits, exports). Stored as JSONB in `files.signature_cache`.
-- **Dependency edges**: Which files depend on which, resolved from import statements to actual file paths. Stored in `dependency_edges`.
-- **Change detection**: File hash is compared with `last_audited_hash`. Changed files become audit targets.
-- **Blast radius**: Files that depend on changed files (computed from dependency edges).
-- **Ghost context**: Signatures of unchanged files, provided for AI reference without reading the full source.
-
-## Architecture
-
-The database schema has 11 tables:
-
-| Table | Purpose |
-|-------|---------|
-| `projects` | Top-level project metadata |
-| `audit_configs` | Audit configuration per project |
-| `audit_runs` | Individual audit execution tracking |
-| `files` | File metadata, hashes, signature cache |
-| `file_imports` | Import statements extracted from files |
-| `dependency_edges` | Resolved file-to-file dependency graph |
-| `file_staleness` | Files that may be stale due to changes |
-| `findings` | Audit findings with severity, category, location |
-| `architecture_state` | Architecture summaries and layer maps |
-| `static_tool_results` | Raw output from static analysis tools |
-| `ingestor_rejections` | Failed ingestion attempts |
-
-## Adding a New Language
-
-1. Create `languages/yourlang.py` extending `base.py`
-2. Implement: `name()`, `source_extensions()`, `find_source_files()`, `extract_signatures()`, `extract_imports()`, `resolve_import()`, `hash_file()`
-3. Add to `LANG_MAP` in `audit_db.py`
-4. Install the tree-sitter grammar: `pip install tree-sitter-yourlang`
-
-## Workflow
-
-### First-time audit
-```bash
-# 1. Init DB
-audit_db init-db
-
-# 2. Import the baseline
-audit_db import /path/to/project --project-name "My Project"
-
-# 3. Make edits to the codebase...
-
-# 4. Re-import to sync
-audit_db import /path/to/project
-
-# 5. Generate briefing for changed files
-audit_db briefing --project "My Project" --output briefing.md
-
-# 6. Feed briefing.md to an AI for audit
-```
-
-### Continuous audit
-```bash
-# Pre-commit hook: check what's changed
-if audit_db changed --project "My Project" | grep -q "changed file"; then
-    echo "Files have changed since last audit"
-    audit_db briefing --project "My Project" --output briefing.md
-fi
-
-# Re-sync after each commit
-audit_db import /path/to/project
-```
-
-## Tips
-
-- The first import is always a **full** baseline. Subsequent imports only update changed files.
-- `briefing --max-ghost-lines 500` controls how many ghost context lines to include. Lower = shorter briefings.
-- Use `--connection` to switch between databases (e.g., local dev vs shared audit server).
-- The schema is idempotent — `init-db` is safe to re-run.
+MIT

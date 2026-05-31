@@ -21,7 +21,7 @@ from db import get_connection, get_changed_files
 
 
 def fmt_sig(sig: dict) -> str:
-    """Format a single signature entry into a compact line."""
+    """Format a single signatures entry into a compact line."""
     vis = sig.get("visibility", "")
     vis_str = f"{vis} " if vis else ""
     name = sig.get("name", "")
@@ -58,7 +58,7 @@ def assemble_briefing(
         row = cur.fetchone()
         if not row:
             print("No project found.")
-            return
+            return None
 
         project_id, name, language, repo_path = row
 
@@ -263,18 +263,36 @@ def assemble_briefing(
                 lines.append(f"- `{fp}` (BLAST RADIUS)")
             lines.append(f"")
 
+        # File size limit: 1 MB
+        MAX_FILE_SIZE = 1 * 1024 * 1024  # 1 MB
+
+        # Canonicalize repo_path once for path traversal checks
+        canonical_repo = os.path.realpath(repo_path)
+
         # Full source code of target files
         for fp in target_paths:
             abs_path = os.path.join(repo_path, fp)
+            # Path traversal protection: canonicalize and verify within repo
+            canonical_abs = os.path.realpath(abs_path)
+            if not os.path.commonpath([canonical_abs, canonical_repo]) == canonical_repo:
+                lines.append(f"### {fp}")
+                lines.append(f"*Skipped: path traversal detected*")
+                lines.append(f"")
+                continue
             lines.append(f"### {fp}")
             label = "CHANGED" if fp in changed_paths else "BLAST RADIUS"
             lines.append(f"*Status: {label}*")
             lines.append(f"")
             lines.append(f"```{language}")
             try:
-                with open(abs_path, 'r') as f:
-                    code = f.read()
-                lines.append(code.rstrip())
+                # Check file size before reading
+                file_size = os.path.getsize(abs_path)
+                if file_size > MAX_FILE_SIZE:
+                    lines.append(f"// File skipped: size {file_size} bytes exceeds {MAX_FILE_SIZE} byte limit")
+                else:
+                    with open(abs_path, 'r') as f:
+                        code = f.read()
+                    lines.append(code.rstrip())
             except Exception as e:
                 lines.append(f"// Error reading file: {e}")
             lines.append(f"```")

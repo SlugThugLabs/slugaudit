@@ -1,5 +1,5 @@
 #!/bin/bash
-# setup.sh — One-command setup for audit-db MCP server
+# setup.sh — One-command setup for slugaudit-mcp MCP server
 #
 # Usage:
 #   curl -sSL https://raw.githubusercontent.com/SlugThugEnterprises/slugaudit-mcp/main/setup.sh | bash
@@ -94,7 +94,7 @@ verify_install() {
 # Show usage
 usage() {
     cat << EOF
-audit-db MCP Server Setup Script
+slugaudit-mcp MCP Server Setup Script
 
 Usage: $0 [OPTIONS]
 
@@ -150,7 +150,7 @@ main() {
         esac
     done
 
-    echo_info "audit-db MCP Server Setup"
+    echo_info "slugaudit-mcp MCP Server Setup"
     echo_info "========================="
     echo ""
 
