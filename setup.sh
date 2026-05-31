@@ -64,7 +64,18 @@ install_python_deps() {
         python3 -m venv .venv
         source .venv/bin/activate
     fi
-    pip3 install --break-system-packages psycopg2-binary mcp tree-sitter tree-sitter-rust tree-sitter-python tree-sitter-typescript
+    pip3 install --break-system-packages \
+        psycopg2-binary \
+        mcp \
+        tree-sitter \
+        tree-sitter-rust \
+        tree-sitter-python \
+        tree-sitter-typescript \
+        tree-sitter-go \
+        tree-sitter-java \
+        tree-sitter-c \
+        tree-sitter-cpp \
+        tree-sitter-ruby
 }
 
 # Verify installation
