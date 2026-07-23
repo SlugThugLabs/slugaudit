@@ -1,222 +1,106 @@
-# slugaudit-mcp
+# SlugAudit MCP
 
-A PostgreSQL-backed code audit system for AI-assisted code reviews. Extracts code signatures and import dependencies from source files using tree-sitter, builds a dependency graph, tracks changes between imports, and generates structured briefings for AI auditors.
+SlugAudit is a PostgreSQL-backed evidence index built for AI code auditors. It
+uses Tree-sitter to pre-parse supported source files and lets an AI search,
+retrieve, and connect evidence without repeatedly opening hundreds of flat
+files. SlugAudit does not decide whether code is correct; the AI still performs
+the audit judgment.
 
-Available as both a **CLI tool** (`slugaudit-mcp`) and an **MCP server** (`slugaudit-mcp`).
+## Project contract
 
-## Quick Start
+A project is enabled by the presence of `.planning/slugaudit/`. An integrating
+client may expose the only project-level human command:
 
-```bash
-# 1. Install dependencies (system packages, Python deps, tree-sitter parsers)
-bash setup.sh
-
-# 2. Set up PostgreSQL connection
-export PGHOST=localhost
-export PGPORT=5432
-export PGDATABASE=my_audit_db
-export PGUSER=my_user
-export PGPASSWORD=my_password
-
-# 3. Import a project (schema auto-creates on first use!)
-slugaudit-mcp import /path/to/your/project --project-name "My Project"
-
-# 4. Check project status
-slugaudit-mcp status --project "My Project"
-
-# 5. Generate an AI audit briefing
-slugaudit-mcp briefing --project "My Project" --output briefing.md
+```text
+/slugaudit on
+/slugaudit off
 ```
 
-### MCP Server Mode (Recommended for AI Assistants)
+`on` creates the directory. `off` purges that project's database evidence and
+then removes the directory. The reusable adapter functions are
+`app.activation.enable_project` and `app.activation.disable_project`.
+
+There are no human commands for importing, syncing, rebuilding, parsing,
+changed files, or database maintenance. Before every AI tool query SlugAudit:
+
+1. Discovers and hashes the complete supported, non-ignored source set.
+2. Proves the local manifest and published database revision agree.
+3. Parses and imports added files.
+4. Replaces every derived fact for modified files.
+5. Purges deleted files and obsolete derived evidence.
+6. Rebuilds dependency edges and publishes one atomic current revision.
+7. Answers only from that verified revision.
+
+Any discovery, parsing, database, or state failure fails the query. There is no
+stale fallback.
+
+## MCP tools
+
+| Tool | AI use |
+|---|---|
+| `audit_overview` | Project statistics, languages, and compact tree |
+| `audit_search` | Case-insensitive literal or constrained regex search |
+| `audit_read_file` | Retrieve indexed source by project-relative path |
+| `audit_dependents` | Trace incoming blast radius or outgoing dependencies |
+| `audit_file_tree` | Browse the complete indexed source tree |
+| `audit_brief` | Compact project-wide risk leads and open findings |
+| `audit_finding` | Persist an AI-reviewed conclusion against current evidence |
+| `audit_raw_sql` | Constrained, project-scoped, database-enforced read-only query |
+
+Every successful response includes `slugaudit_meta` with the contract version,
+schema version, project ID, revision ID, manifest hash, sync timestamp, and
+`freshness: verified`. Automated risk patterns are leads, not findings or
+scores.
+
+## Installation and configuration
+
+SlugAudit requires Python 3.11+ and PostgreSQL 15+.
 
 ```bash
-# Run the MCP server
-python3 mcp_server.py
+./setup.sh
+cp config.toml.example config.toml
+.venv/bin/slugaudit-mcp
 ```
 
-Then in your AI client (Claude Desktop, VS Code, Cursor, Codebuff, etc.), configure the MCP server:
+Database settings can come from `config.toml`, a file selected by
+`SLUGAUDIT_CONFIG`, or standard `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, and
+`PGPASSWORD` environment variables. Environment values take precedence.
+
+Example stdio MCP registration:
 
 ```json
 {
-  "mcpServers": {
-    "slugaudit-mcp": {
-      "command": "python3",
-      "args": ["/path/to/slugaudit-mcp/mcp_server.py"],
-      "env": {
-        "PGHOST": "localhost",
-        "PGPORT": "5432",
-        "PGDATABASE": "my_audit_db",
-        "PGUSER": "my_user",
-        "PGPASSWORD": "my_password"
-      }
-    }
+  "slugaudit": {
+    "type": "stdio",
+    "command": "slugaudit-mcp"
   }
 }
 ```
 
-Once configured, the AI can use these tools directly:
-- `audit_import` — Import a codebase
-- `audit_brief` — Generate an audit briefing
-- `audit_status` — Show project status
-- `audit_changed` — List changed files
-- `audit_list` — List all projects
-- `audit_init_db` — Manually initialize schema (usually auto-done)
+`claude-code-install.sh` and `grok-install.sh` register that same standalone
+stdio MCP executable for their respective clients. They do not fork the index,
+schema, or synchronization behavior.
 
-## Architecture
+The MCP process must start in the project working directory, or beneath a
+parent containing `.planning/slugaudit/`. The schema is migrated automatically
+when the server first connects.
 
-The system follows a layered architecture with clear separation of concerns:
+## Source coverage
 
-```
-[CLI / MCP] → [Services] → [Repositories] → [Infrastructure]
-                ↓
-        [Languages] → [Source Files]
-```
+Rust, Python, TypeScript/JavaScript, Go, Java, C, C++, and Ruby are indexed
+together in polyglot repositories. Git projects use tracked plus untracked,
+non-ignored files; non-Git projects use deterministic discovery. Generated,
+vendor, dependency, hidden-state, binary, and unsupported files are excluded.
 
-| Package | Role |
-|---------|------|
-| `infrastructure/` | Connection management, input validation, file I/O abstraction |
-| `domain/` | Entity models: `Project`, `File`, `Signature`, `ImportRecord`, `DependencyEdge` |
-| `repositories/` | Data access: `ProjectRepository`, `FileRepository`, `ImportRepository`, `FindingRepository`, `ArchitectureRepository` |
-| `services/` | Application services: `SchemaService`, `ImportService`, `BriefingService` |
-| `briefing/` | Briefing assembly: data providers + Markdown formatters |
-| `languages/` | 8 language extractors with shared `BaseExtractor` |
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `init-db` | Initialize the database schema (idempotent) |
-| `import` | Scan a project, extract signatures/imports, build dependency graph |
-| `status` | Show project overview (files, signatures, imports, edges, changes) |
-| `changed` | List files changed since last import |
-| `briefing` | Generate structured Markdown briefing for AI audit |
-| `list` | List all projects in the database |
-
-## Supported Languages
-
-| Language | Detection | Key Features |
-|----------|-----------|--------------|
-| **Rust** | `Cargo.toml`, `.rs` | `use`, `pub`, `struct`, `fn`, `impl`, `trait`, `enum` |
-| **Python** | `pyproject.toml`, `.py` | `import`, `from X import Y`, class/fn signatures |
-| **TypeScript** | `package.json`, `.ts` | `import`, `export`, interfaces, types, functions |
-| **Go** | `go.mod`, `.go` | Functions, methods, structs, interfaces, imports |
-| **Java** | `pom.xml`, `.java` | Classes, interfaces, enums, records, methods |
-| **C** | `.c`, `.h` | Functions, structs, unions, enums, `#include` |
-| **C++** | `.cpp`, `.hpp` | Functions, classes, templates, namespaces |
-| **Ruby** | `Gemfile`, `.rb` | Methods, classes, modules, `require` |
-
-## Key Concepts
-
-- **Signature cache**: Public API surface of each file stored as JSONB. Lets the AI understand a file's interface without reading its full source.
-- **Dependency edges**: File-to-file dependencies resolved from import statements. Enables blast radius computation.
-- **Change detection**: SHA-256 hash compared against `last_audited_hash`. Only changed files become audit targets.
-- **Blast radius**: Files that depend on changed files, computed from dependency edges.
-- **Ghost context**: Signatures of unchanged files provided for AI reference — reduces token usage by avoiding full source reads.
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Required | Default |
-|----------|----------|---------|
-| `PGHOST` | Yes | — |
-| `PGPORT` | No | 5432 |
-| `PGDATABASE` | Yes | — |
-| `PGUSER` | Yes | — |
-| `PGPASSWORD` | Yes | — |
-| `PGSSLMODE` | No | — |
-
-### Connection String
-
-Override env vars with `--connection`:
+## Development gates
 
 ```bash
-slugaudit-mcp import . --connection "postgresql://user:pass@host:5432/dbname?sslmode=require"
+python3 -m pytest -q
+mypy --strict app languages repositories services domain infrastructure briefing mcp_server.py
+ruff check app languages repositories services domain infrastructure briefing mcp_server.py
+python3 -m build
 ```
 
-## Database Schema
-
-All projects share one database. Each project's data is isolated via `project_id` foreign keys with `ON DELETE CASCADE`:
-
-| Table | Purpose |
-|-------|---------|
-| `projects` | One row per project — the root entity |
-| `files` | File metadata, hashes, signature cache (JSONB) |
-| `file_imports` | Import statements extracted from files |
-| `dependency_edges` | Resolved file-to-file dependency graph |
-| `findings` | Audit findings with severity, category, location |
-| `architecture_state` | Architecture summaries and layer maps (reserved) |
-| `audit_configs` | Audit configuration per project (reserved) |
-| `audit_runs` | Individual audit execution tracking (reserved) |
-| `file_staleness` | Files that may be stale due to changes (reserved) |
-| `static_tool_results` | Raw output from static analysis tools (reserved) |
-| `ingestor_rejections` | Failed ingestion attempts (reserved) |
-
-## Workflow
-
-### First-time audit
-
-```bash
-# 1. Import the baseline
-slugaudit-mcp import /path/to/project --project-name "My Project"
-
-# 2. Make edits to the codebase...
-
-# 3. Re-import to sync
-slugaudit-mcp import /path/to/project
-
-# 4. Generate briefing for changed files
-slugaudit-mcp briefing --project "My Project" --output briefing.md
-
-# 5. Feed briefing.md to an AI for audit
-```
-
-### Continuous audit with MCP
-
-1. Call `audit_import` to scan the project
-2. Call `audit_status` to verify the import
-3. After code changes, call `audit_import` again to sync
-4. Call `audit_brief` to get the generated briefing
-5. The AI returns findings directly in conversation
-
-## Adding a New Language
-
-1. Create `languages/yourlang.py` extending `BaseExtractor`
-2. Implement: `name()`, `source_extensions()`, `find_source_files()`, `extract_signatures()`, `extract_imports()`, `resolve_import()`, `hash_file()`
-3. Register in `LANG_MAP` in `languages/__init__.py`
-4. Install tree-sitter grammar: `pip install tree-sitter-yourlang`
-
-## Testing
-
-110 tests using `unittest` with mocking — no database required:
-
-```bash
-python3 -m pytest tests/ -v       # preferred
-python3 -m unittest tests          # alternative
-```
-
-## Code Quality
-
-```bash
-# Linting
-ruff check .
-
-# Type checking
-mypy .
-
-# Pre-commit hooks
-pre-commit install
-pre-commit run --all-files
-```
-
-Configured tools: **ruff** (E/W/F/UP/S/B/C4 rules, line-length=100), **mypy** (strict mode), **pre-commit** (trailing-whitespace, end-of-file-fixer, check-yaml, ruff, mypy).
-
-## Requirements
-
-- **Python 3.10+**
-- **PostgreSQL 15+** (uses UUID, JSONB, `gen_random_uuid()`)
-- **tree-sitter** parsers for each supported language
-
-## License
-
-MIT
+The standalone stdio MCP is the canonical engine. Native clients such as
+ClauRust should act as adapters for working-directory and `/slugaudit on|off`
+UX rather than maintaining a second schema or indexing implementation.

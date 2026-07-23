@@ -1,7 +1,6 @@
 """Language registry and auto-detection."""
 
 import os
-from typing import Optional
 
 from .base import BaseExtractor
 from .rust import RustExtractor
@@ -15,7 +14,19 @@ from .ruby import RubyExtractor
 
 
 # Language name → Extractor class mapping
-LANG_MAP = {
+ExtractorType = (
+    type[RustExtractor]
+    | type[PythonExtractor]
+    | type[TypeScriptExtractor]
+    | type[GoExtractor]
+    | type[JavaExtractor]
+    | type[CExtractor]
+    | type[CppExtractor]
+    | type[RubyExtractor]
+)
+
+
+LANG_MAP: dict[str, ExtractorType] = {
     "rust": RustExtractor,
     "python": PythonExtractor,
     "typescript": TypeScriptExtractor,
@@ -27,7 +38,53 @@ LANG_MAP = {
 }
 
 
-def get_extractor(project_root: str, language: Optional[str]):
+_EXTENSION_LANGUAGE = {
+    ".rs": "rust",
+    ".py": "python",
+    ".pyi": "python",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".js": "typescript",
+    ".jsx": "typescript",
+    ".mjs": "typescript",
+    ".cjs": "typescript",
+    ".go": "go",
+    ".java": "java",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".hpp": "cpp",
+    ".cc": "cpp",
+    ".cxx": "cpp",
+    ".hh": "cpp",
+    ".hxx": "cpp",
+    ".ixx": "cpp",
+    ".tpp": "cpp",
+    ".rb": "ruby",
+    ".rake": "ruby",
+    ".gemspec": "ruby",
+}
+
+
+def language_for_path(path: str) -> str | None:
+    """Return the supported language for a source path."""
+    return _EXTENSION_LANGUAGE.get(os.path.splitext(path)[1].lower())
+
+
+def supported_extensions() -> frozenset[str]:
+    """Return every source extension handled by the parser registry."""
+    return frozenset(_EXTENSION_LANGUAGE)
+
+
+def get_extractor_for_path(project_root: str, path: str) -> BaseExtractor:
+    """Construct the language extractor appropriate for one source path."""
+    language = language_for_path(path)
+    if language is None:
+        raise ValueError(f"Unsupported source file: {path}")
+    return LANG_MAP[language](project_root)
+
+
+def get_extractor(project_root: str, language: str | None) -> BaseExtractor:
     """Resolve the extractor class for the given language and project root.
 
     Args:
@@ -48,9 +105,9 @@ def get_extractor(project_root: str, language: Optional[str]):
             )
         return cls(project_root)
 
-    cls = detect_language(project_root)
-    if cls:
-        return cls(project_root)
+    detected = detect_language(project_root)
+    if detected:
+        return detected(project_root)
 
     raise ValueError(
         "Could not detect language. Specify with language parameter: "
@@ -58,7 +115,7 @@ def get_extractor(project_root: str, language: Optional[str]):
     )
 
 
-def detect_language(project_root: str) -> Optional[type[BaseExtractor]]:
+def detect_language(project_root: str) -> type[BaseExtractor] | None:
     """Auto-detect the programming language for a project.
 
     Checks for project files in order of specificity.
@@ -89,9 +146,14 @@ def detect_language(project_root: str) -> Optional[type[BaseExtractor]]:
             return extractor_cls
 
     # Fallback: check file extensions in the project
-    ext_counts = {}
-    for dirpath, dirnames, filenames in os.walk(project_root):
-        dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "target" and d != "node_modules"]
+    ext_counts: dict[str, int] = {}
+    for _dirpath, dirnames, filenames in os.walk(project_root):
+        dirnames[:] = [
+            directory
+            for directory in dirnames
+            if not directory.startswith(".")
+            and directory not in {"target", "node_modules"}
+        ]
         for f in filenames:
             _, ext = os.path.splitext(f)
             ext_counts[ext] = ext_counts.get(ext, 0) + 1
@@ -133,6 +195,9 @@ __all__ = [
     "list_languages",
     "get_extractor",
     "LANG_MAP",
+    "get_extractor_for_path",
+    "language_for_path",
+    "supported_extensions",
     "RustExtractor",
     "PythonExtractor",
     "TypeScriptExtractor",
@@ -142,3 +207,5 @@ __all__ = [
     "CppExtractor",
     "RubyExtractor",
 ]
+
+# ── Re-exports for backward compatibility (used by tests) ──

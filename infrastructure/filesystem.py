@@ -6,7 +6,6 @@ security checks for path traversal and file size limits.
 
 import os
 from abc import ABC, abstractmethod
-from typing import Optional
 
 from .validators import validate_path_within
 
@@ -137,7 +136,7 @@ class LocalFileSystem(IFileSystem):
                 f"File size {file_size} bytes exceeds limit of {max_size} bytes"
             )
 
-        with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
+        with open(abs_path, encoding='utf-8', errors='replace') as f:
             return f.read()
 
     def read_file_bytes(self, path: str) -> bytes:
@@ -164,7 +163,7 @@ class LocalFileSystem(IFileSystem):
 
 
 # Default global instance
-_default_fs: Optional[IFileSystem] = None
+_default_fs: IFileSystem | None = None
 
 
 def get_file_system() -> IFileSystem:

@@ -1,6 +1,7 @@
 """Architecture repository — architecture state queries."""
 
-from typing import Optional, Tuple
+
+from typing import Any
 
 from .base import BaseRepository
 
@@ -8,7 +9,7 @@ from .base import BaseRepository
 class ArchitectureRepository(BaseRepository):
     """Repository for architecture state data access."""
 
-    def get_latest(self, project_id: str) -> Optional[Tuple[str, Optional[str]]]:
+    def get_latest(self, project_id: str) -> tuple[str, str | None] | None:
         """Get the latest architecture state for a project.
 
         Args:
@@ -17,13 +18,13 @@ class ArchitectureRepository(BaseRepository):
         Returns:
             Tuple of (summary, layer_map) or None.
         """
-        cur = self._cursor()
+        cur: Any = self._cursor()
         cur.execute(
             "SELECT summary, layer_map FROM architecture_state "
             "WHERE project_id = %s ORDER BY created_at DESC LIMIT 1",
             (project_id,),
         )
-        row = cur.fetchone()
+        row: tuple[str, str | None] | None = cur.fetchone()
         cur.close()
         return row
 

@@ -1,30 +1,28 @@
 """Briefing assembler — coordinates providers and formatters."""
 
 import os
-from typing import Optional
+from typing import Any
 
 from infrastructure import get_connection, get_file_system, IFileSystem
 from repositories import ProjectRepository
 
 # Backward-compat: expose get_changed_files for test patching
-from db import get_changed_files
+# get_changed_files available via repositories.FileRepository
 
 from .providers import (
     OverviewProvider,
     ArchitectureProvider,
     ChangedFilesProvider,
-    GhostContextProvider,
-    TargetFileProvider,
     FindingsProvider,
+    RiskPatternsProvider,
 )
 from .formatter import (
     format_header,
     format_overview,
     format_architecture,
-    format_ghost_context,
     format_target_files,
     format_findings,
-    format_output_contract,
+    format_risk_patterns,
 )
 
 
@@ -33,28 +31,31 @@ class BriefingAssembler:
 
     def __init__(
         self,
-        project_name: Optional[str] = None,
-        output_path: Optional[str] = None,
-        connection_str: Optional[str] = None,
+        project_name: str | None = None,
+        output_path: str | None = None,
+        connection_str: str | None = None,
         max_ghost_lines: int = 500,
-        file_system: Optional[IFileSystem] = None,
+        file_system: IFileSystem | None = None,
+        connection: Any = None,
     ):
         """Create a briefing assembler.
 
         Args:
             project_name: Project name (default: latest).
             output_path: Path to write output (default: return string).
-            connection_str: PostgreSQL connection string.
+            connection_str: PostgreSQL connection string (used if connection not provided).
             max_ghost_lines: Maximum ghost context lines.
             file_system: File system abstraction.
+            connection: Optional existing DB connection (overrides connection_str).
         """
         self.project_name = project_name
         self.output_path = output_path
         self.connection_str = connection_str
         self.max_ghost_lines = max_ghost_lines
         self.file_system = file_system or get_file_system()
+        self.connection = connection
 
-    def assemble(self) -> Optional[str]:
+    def assemble(self) -> str | None:
         """Assemble the briefing and optionally write to file.
 
         Returns:
@@ -62,7 +63,7 @@ class BriefingAssembler:
         """
         conn = None
         try:
-            conn = get_connection(self.connection_str)
+            conn = self.connection or get_connection(self.connection_str)
             project_repo = ProjectRepository(conn)
 
             # --- Get project ---
@@ -85,9 +86,8 @@ class BriefingAssembler:
             overview = OverviewProvider(conn, project_id)
             arch = ArchitectureProvider(conn, project_id)
             changed = ChangedFilesProvider(conn, project_id)
-            ghost = GhostContextProvider(conn, project_id, self.max_ghost_lines)
-            targets = TargetFileProvider(conn, project_id, repo_path, self.file_system)
             findings_prov = FindingsProvider(conn, project_id)
+            risk_prov = RiskPatternsProvider(conn, project_id)
 
             # --- Gather data ---
             stats = overview.get_stats()
@@ -96,27 +96,23 @@ class BriefingAssembler:
             blast_radius = changed.get_blast_radius(changed_paths)
             target_paths = sorted(set(changed_paths) | blast_radius)
 
-            unchanged_with_sigs = ghost.get_unchanged_with_sigs(
-                target_paths if target_paths else None
-            )
             findings_list = findings_prov.get_open_findings()
+            file_patterns = risk_prov.get_file_patterns()
+            risk_summary = risk_prov.get_summary()
 
             # --- Format sections ---
-            lines = []
+            lines: list[Any] = []
             lines.extend(format_header(name, changed_paths, language))
             lines.extend(format_overview(
                 language, stats, len(changed_paths), len(blast_radius), len(findings_list)
             ))
             lines.extend(format_architecture(architecture_text, language))
-            lines.extend(format_ghost_context(
-                unchanged_with_sigs, stats["total_sigs"], self.max_ghost_lines
-            ))
+            lines.extend(format_risk_patterns(file_patterns, risk_summary))
             lines.extend(format_target_files(
                 changed_paths, blast_radius, target_paths,
                 repo_path, language, self.file_system,
             ))
             lines.extend(format_findings(findings_list))
-            lines.extend(format_output_contract())
 
             briefing = "\n".join(lines)
 
@@ -127,31 +123,37 @@ class BriefingAssembler:
                 print(f"Briefing written to {self.output_path}")
                 print(f"  {stats['total_files']} files, {stats['total_sigs']} signatures, "
                       f"{len(target_paths)} targets")
-                print(f"  Ghost context: {len(unchanged_with_sigs)} files")
                 print(f"  Briefing size: {len(briefing)} chars / ~{len(briefing.split())} words")
 
             return briefing
 
         finally:
-            if conn:
+            if conn is not None and conn is not self.connection:
                 conn.close()
 
 
 def assemble_briefing(
-    project_name: Optional[str] = None,
-    output_path: Optional[str] = None,
-    connection_str: Optional[str] = None,
+    project_name: str | None = None,
+    output_path: str | None = None,
+    connection_str: str | None = None,
     max_ghost_lines: int = 500,
-) -> Optional[str]:
+    connection: object | None = None,
+) -> str | None:
     """Assemble the audit briefing from the database.
 
-    This is the standalone function entry point for backward compatibility.
+    Args:
+        project_name: Project name (default: latest).
+        output_path: Path to write output (default: return string).
+        connection_str: PostgreSQL connection string (fallback).
+        max_ghost_lines: Maximum ghost context lines.
+        connection: Optional existing DB connection (overrides connection_str).
     """
     assembler = BriefingAssembler(
         project_name=project_name,
         output_path=output_path,
         connection_str=connection_str,
         max_ghost_lines=max_ghost_lines,
+        connection=connection,
     )
     return assembler.assemble()
 

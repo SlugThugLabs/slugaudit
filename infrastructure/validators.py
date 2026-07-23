@@ -5,8 +5,6 @@ directory traversal, system directory access, and other injection attacks.
 """
 
 import os
-from pathlib import Path
-from typing import Optional
 
 
 # System directories that should never be imported as projects

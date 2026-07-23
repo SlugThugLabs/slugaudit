@@ -1,7 +1,6 @@
 """Briefing formatters — Markdown generation for each section."""
 
-from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import Any
 
 from infrastructure import (
     IFileSystem,
@@ -11,7 +10,7 @@ from infrastructure import (
 )
 
 
-def fmt_sig(sig: dict) -> str:
+def fmt_sig(sig: dict[str, Any]) -> str:
     """Format a single signature entry into a compact line."""
     vis = sig.get("visibility", "")
     vis_str = f"{vis} " if vis else ""
@@ -22,110 +21,62 @@ def fmt_sig(sig: dict) -> str:
     return f"- {vis_str}{sig.get('type', '?')} {name}"
 
 
-def format_header(name: str, changed_paths: list, language: str) -> List[str]:
-    """Format the briefing header section."""
-    lines = []
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    scope = "full" if not changed_paths else "incremental"
-    lines.append(f"# Audit Briefing — {name} (Phase 1, {scope.capitalize()})")
-    lines.append("")
-    lines.append(f"Generated: {timestamp}")
-    lines.append(f"Project: {name} ({language})")
-    lines.append("")
-    return lines
+def format_header(name: str, changed_paths: list[str], language: str) -> list[str]:
+    """Format the briefing header — dense, no fluff."""
+    return [
+        f"# SIGNALS — {name} ({language})",
+        "",
+    ]
 
 
 def format_overview(
     language: str,
-    stats: dict,
+    stats: dict[str, Any],
     changed_count: int,
     blast_radius_count: int,
     findings_count: int,
-) -> List[str]:
-    """Format the project overview section."""
-    lines = []
-    lines.append("## Project Overview")
+) -> list[str]:
+    """Format the project stats as a single dense line."""
+    lines: list[Any] = []
+    lines.append("## STATS")
     lines.append("")
-    lines.append("| Metric | Value |")
-    lines.append("|--------|-------|")
-    lines.append(f"| Language | {language} |")
-    lines.append(f"| Total files | {stats['total_files']} |")
-    lines.append(f"| Total size | {stats['total_bytes']/1024:.0f} KB |")
-    lines.append(f"| Files with signatures | {stats['files_with_sigs']} |")
-    lines.append(f"| Total signatures | {stats['total_sigs']} |")
-    lines.append(f"| Imports tracked | {stats['imports_count']} |")
-    lines.append(f"| Dependency edges | {stats['edge_count']} |")
-    lines.append(f"| Changed files | {changed_count} |")
-    lines.append(f"| Blast radius files | {blast_radius_count} |")
-    lines.append(f"| Open findings | {findings_count} |")
+    lines.append(
+        f"files={stats['total_files']}  "
+        f"sigs={stats['total_sigs']}  "
+        f"imports={stats['imports_count']}  "
+        f"edges={stats['edge_count']}  "
+        f"bytes={stats['total_bytes']}  "
+        f"changed={changed_count}  "
+        f"blast_radius={blast_radius_count}  "
+        f"findings={findings_count}"
+    )
     lines.append("")
     return lines
 
 
-def format_architecture(architecture_text: str, language: str) -> List[str]:
+def format_architecture(architecture_text: str, language: str) -> list[str]:
     """Format the architecture section."""
-    lines = []
+    lines: list[Any] = []
     lines.append("## Architecture")
     lines.append("")
     if architecture_text:
         lines.append(architecture_text)
     else:
-        lines.append(f"Hexagonal Architecture (Ports and Adapters). {language} project.")
-    lines.append("")
-    return lines
-
-
-def format_ghost_context(
-    unchanged_with_sigs: List[Tuple[str, list]],
-    total_sigs: int,
-    max_ghost_lines: int,
-) -> List[str]:
-    """Format the ghost context section."""
-    lines = []
-    lines.append(
-        f"## GHOST CONTEXT — Unchanged Files "
-        f"({len(unchanged_with_sigs)} files, {total_sigs} signatures)"
-    )
-    lines.append("")
-    lines.append(
-        "The following files are unchanged. Their public API signatures are provided "
-        "for reference. **Do NOT read these files** — use the signatures below."
-    )
-    lines.append("")
-
-    ghost_line_count = 0
-    file_index = 0
-    for fpath, sig_cache in unchanged_with_sigs:
-        if ghost_line_count >= max_ghost_lines:
-            remaining = len(unchanged_with_sigs) - file_index
-            lines.append("")
-            lines.append(f"*[... {remaining} more files omitted for brevity ...]*")
-            break
-        file_index += 1
-        crate = fpath.split("/")[0] if "/" in fpath else "root"
-        lines.append("")
-        lines.append(f"### {fpath}")
-        for sig in sig_cache:
-            s = fmt_sig(sig)
-            lines.append(f"{s}")
-            ghost_line_count += 1
-            if ghost_line_count >= max_ghost_lines:
-                break
-
+        lines.append("No architecture summary has been recorded.")
     lines.append("")
     return lines
 
 
 def format_target_files(
-    changed_paths: List[str],
-    blast_radius_paths: set,
-    target_paths: List[str],
+    changed_paths: list[str],
+    blast_radius_paths: set[str],
+    target_paths: list[str],
     repo_path: str,
     language: str,
-    file_system: Optional[IFileSystem] = None,
-) -> List[str]:
+    file_system: IFileSystem | None = None,
+) -> list[str]:
     """Format the target files section with full source code."""
-    lines = []
+    lines: list[Any] = []
     lines.append("## TARGET FILES — Audit These")
     lines.append("")
     lines.append(f"{len(target_paths)} file(s) to audit:")
@@ -142,9 +93,6 @@ def format_target_files(
         for fp in sorted(blast_radius_paths):
             lines.append(f"- `{fp}` (BLAST RADIUS)")
         lines.append("")
-
-    # Canonicalize repo_path once for path traversal checks
-    canonical_repo = repo_path  # Already validated by caller
 
     # Full source code of target files
     fs = file_system or get_file_system()
@@ -170,21 +118,21 @@ def format_target_files(
             lines.append(f"*Skipped: {e}*")
         except Exception as e:
             lines.append(f"// Error reading file: {e}")
-        lines.append(f"```")
+        lines.append("```")
         lines.append("")
 
     return lines
 
 
 def format_findings(
-    findings_list: List[Tuple[str, Optional[int], Optional[int], str, str, str]]
-) -> List[str]:
+    findings_list: list[tuple[str, int | None, int | None, str, str, str]]
+) -> list[str]:
     """Format the historical findings section."""
-    lines = []
+    lines: list[Any] = []
     lines.append("## Historical Findings")
     lines.append("")
     if findings_list:
-        for fpath, ls, le, sev, cat, msg in findings_list:
+        for fpath, ls, le, sev, _cat, msg in findings_list:
             short_title = msg[:100] if msg else "No message"
             if len(msg) > 100:
                 short_title += "..."
@@ -198,28 +146,33 @@ def format_findings(
     return lines
 
 
-def format_output_contract() -> List[str]:
-    """Format the output contract section."""
-    lines = []
-    lines.append("## Output Contract")
+def format_risk_patterns(
+    file_patterns: list[tuple[str, list[tuple[str, int]]]],
+    summary: dict[str, int],
+) -> list[str]:
+    """Format the risk patterns section as dense structured data.
+
+    Output is optimized for LLM consumption — no prose, just signals.
+    """
+    lines: list[Any] = []
+
+    if not file_patterns:
+        return lines
+
+    lines.append("## RISK_PATTERNS")
     lines.append("")
-    lines.append("Return findings in this exact JSON format:")
-    lines.append("")
-    lines.append("```json")
-    lines.append("{")
-    lines.append('  "findings": [')
-    lines.append("    {")
-    lines.append('      "file": "path/to/file.rs",')
-    lines.append('      "line_start": 42,')
-    lines.append('      "line_end": 55,')
-    lines.append('      "severity": "high",')
-    lines.append('      "category": "correctness",')
-    lines.append('      "title": "Short descriptive title",')
-    lines.append('      "description": "Full explanation of the issue..."')
-    lines.append("    }")
-    lines.append("  ]")
-    lines.append("}")
-    lines.append("```")
+
+    # Summary line: total counts per pattern type
+    if summary:
+        summary_parts = "  ".join(f"{k}={v}" for k, v in summary.items())
+        lines.append(f"<summary>{summary_parts}</summary>")
+        lines.append("")
+
+    # Per-file patterns, sorted by risk (highest first)
+    for fpath, patterns in file_patterns:
+        pattern_str = " ".join(f"{name}={count}" for name, count in patterns)
+        lines.append(f"  {fpath}: {pattern_str}")
+
     lines.append("")
     return lines
 
@@ -229,8 +182,6 @@ __all__ = [
     "format_header",
     "format_overview",
     "format_architecture",
-    "format_ghost_context",
     "format_target_files",
     "format_findings",
-    "format_output_contract",
 ]

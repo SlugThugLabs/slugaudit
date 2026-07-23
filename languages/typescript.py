@@ -1,7 +1,8 @@
 """Tree-sitter TypeScript/JavaScript extractor."""
 
 import os
-from typing import Optional
+import re
+from typing import Any
 
 from tree_sitter import Language, Parser
 import tree_sitter_typescript as tstypescript
@@ -20,6 +21,7 @@ class TypeScriptExtractor(BaseExtractor):
     TYPE_ALIAS = "type_alias_declaration"
     ENUM = "enum_declaration"
     VARIABLE = "variable_declaration"
+    LEXICAL_DECL = "lexical_declaration"
     ARROW = "arrow_function"
     EXPORT = "export_statement"
     IMPORT = "import_statement"
@@ -30,11 +32,11 @@ class TypeScriptExtractor(BaseExtractor):
         return "typescript"
 
     @classmethod
-    def source_extensions(cls) -> set:
+    def source_extensions(cls) -> set[str]:
         return {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 
     @property
-    def parser(self):
+    def parser(self) -> Any:
         if self._parser is None:
             # Use TypeScript grammar (also handles TSX)
             ts_lang = Language(tstypescript.language_typescript())
@@ -42,18 +44,18 @@ class TypeScriptExtractor(BaseExtractor):
             self._parser = p
         return self._parser
 
-    def extract_signatures(self, file_path: str, source_bytes: bytes) -> list[dict]:
+    def extract_signatures(self, file_path: str, source_bytes: bytes) -> list[dict[str, Any]]:
         parser = self.get_parser()
         tree = parser.parse(source_bytes)
         root = tree.root_node
         source_lines = source_bytes.decode("utf-8", errors="replace").splitlines(keepends=True)
 
-        signatures = []
+        signatures: list[dict[str, Any]] = []
         cursor = root.walk()
         self._walk_tree(cursor, source_bytes, source_lines, signatures, file_path)
         return signatures
 
-    def _walk_tree(self, cursor, source_bytes, source_lines, signatures, file_path):
+    def _walk_tree(self, cursor: Any, source_bytes: bytes, source_lines: list[str], signatures: list[Any], file_path: str) -> None:
         node = cursor.node
         node_type = node.type
 
@@ -76,7 +78,7 @@ class TypeScriptExtractor(BaseExtractor):
                     self._walk_tree(cursor, source_bytes, source_lines, signatures, file_path)
                 cursor.goto_parent()
 
-    def _extract_declaration(self, node, source_bytes, source_lines, signatures, exported: bool):
+    def _extract_declaration(self, node: Any, source_bytes: bytes, source_lines: list[str], signatures: list[Any], exported: bool) -> None:
         """Extract a signature from a declaration node, if applicable."""
         node_type = node.type
 
@@ -94,13 +96,16 @@ class TypeScriptExtractor(BaseExtractor):
             sig = self._extract_enum(node, source_bytes, source_lines, exported)
         elif node_type == self.VARIABLE:
             sig = self._extract_variable(node, source_bytes, source_lines, exported)
+        elif node_type == self.LEXICAL_DECL:
+            # let/const declarations — extract from the inner variable_declarator
+            sig = self._extract_variable(node, source_bytes, source_lines, exported)
         else:
             sig = None
 
         if sig:
             signatures.append(sig)
 
-    def _get_name(self, node, source_bytes) -> str:
+    def _get_name(self, node: Any, source_bytes: bytes) -> str:
         for child in node.named_children:
             if child.type == "identifier":
                 return self.collect_node_text(child, source_bytes).strip()
@@ -110,11 +115,11 @@ class TypeScriptExtractor(BaseExtractor):
                 return self.collect_node_text(child, source_bytes).strip()
         return "unnamed"
 
-    def _collect_jsdoc(self, node, source_bytes, source_lines) -> str:
+    def _collect_jsdoc(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> str:
         """Collect JSDoc comment above a node."""
         if node.start_point[0] == 0:
             return ""
-        docs = []
+        docs: list[Any] = []
         line_idx = node.start_point[0] - 1
         while line_idx >= 0:
             line = source_lines[line_idx].strip()
@@ -127,13 +132,12 @@ class TypeScriptExtractor(BaseExtractor):
                 break
         return " ".join(docs)
 
-    def _extract_fn(self, node, source_bytes, source_lines, exported: bool) -> Optional[dict]:
+    def _extract_fn(self, node: Any, source_bytes: bytes, source_lines: list[str], exported: bool) -> dict[str, Any] | None:
         try:
             name = self._get_name(node, source_bytes)
             sig_text = self.collect_node_text(node, source_bytes)
 
             is_async = any(child.type == "async" for child in node.children)
-            is_generator = node.type == self.GENERATOR_FN
 
             # Truncate body
             brace_idx = sig_text.find("{")
@@ -158,7 +162,7 @@ class TypeScriptExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_class(self, node, source_bytes, source_lines, exported: bool) -> Optional[dict]:
+    def _extract_class(self, node: Any, source_bytes: bytes, source_lines: list[str], exported: bool) -> dict[str, Any] | None:
         try:
             name = self._get_name(node, source_bytes)
             sig_text = self.collect_node_text(node, source_bytes)
@@ -184,7 +188,7 @@ class TypeScriptExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_interface(self, node, source_bytes, source_lines, exported: bool) -> Optional[dict]:
+    def _extract_interface(self, node: Any, source_bytes: bytes, source_lines: list[str], exported: bool) -> dict[str, Any] | None:
         try:
             name = self._get_name(node, source_bytes)
             sig_text = self.collect_node_text(node, source_bytes)
@@ -216,7 +220,7 @@ class TypeScriptExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_type_alias(self, node, source_bytes, source_lines, exported: bool) -> Optional[dict]:
+    def _extract_type_alias(self, node: Any, source_bytes: bytes, source_lines: list[str], exported: bool) -> dict[str, Any] | None:
         try:
             name = self._get_name(node, source_bytes)
             sig_text = self.collect_node_text(node, source_bytes)
@@ -238,7 +242,7 @@ class TypeScriptExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_enum(self, node, source_bytes, source_lines, exported: bool) -> Optional[dict]:
+    def _extract_enum(self, node: Any, source_bytes: bytes, source_lines: list[str], exported: bool) -> dict[str, Any] | None:
         try:
             name = self._get_name(node, source_bytes)
             sig_text = self.collect_node_text(node, source_bytes)
@@ -263,7 +267,7 @@ class TypeScriptExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_variable(self, node, source_bytes, source_lines, exported: bool) -> Optional[dict]:
+    def _extract_variable(self, node: Any, source_bytes: bytes, source_lines: list[str], exported: bool) -> dict[str, Any] | None:
         try:
             # const x = ...; or let x = ...;
             declarators = []
@@ -315,18 +319,8 @@ class TypeScriptExtractor(BaseExtractor):
 
     # ── Import extraction ──────────────────────────────────────────────────
 
-    def extract_imports(self, file_path: str, source_bytes: bytes) -> list[dict]:
-        parser = self.get_parser()
-        tree = parser.parse(source_bytes)
-        root = tree.root_node
-
-        imports = []
-        cursor = root.walk()
-        self._walk_imports(cursor, source_bytes, imports, file_path)
-
-        return imports
-
-    def _walk_imports(self, cursor, source_bytes, imports, file_path):
+    def _handle_import_node(self, cursor: Any, source_bytes: bytes, imports: list[Any], file_path: str) -> None:
+        """Handle a single node during import extraction."""
         node = cursor.node
 
         if node.type == self.IMPORT:
@@ -338,12 +332,6 @@ class TypeScriptExtractor(BaseExtractor):
                 "line_start": node.start_point[0] + 1,
                 "line_end": node.end_point[0] + 1,
             })
-
-        if cursor.goto_first_child():
-            self._walk_imports(cursor, source_bytes, imports, file_path)
-            while cursor.goto_next_sibling():
-                self._walk_imports(cursor, source_bytes, imports, file_path)
-            cursor.goto_parent()
 
     def _classify_import(self, imp_text: str) -> str:
         """Classify a TS/JS import as internal or external."""
@@ -371,7 +359,7 @@ class TypeScriptExtractor(BaseExtractor):
 
     # ── Import resolution ──────────────────────────────────────────────────
 
-    def resolve_import(self, import_text: str, source_file: str, path_to_id: dict) -> Optional[str]:
+    def resolve_import(self, import_text: str, source_file: str, path_to_id: dict[str, Any]) -> str | None:
         """Resolve a TypeScript import to a file path.
 
         import { x } from './foo'  →  ./foo.ts, ./foo.tsx, ./foo/index.ts
@@ -393,7 +381,7 @@ class TypeScriptExtractor(BaseExtractor):
 
         return self._try_ts_paths(base)
 
-    def _try_ts_paths(self, base_path: str) -> Optional[str]:
+    def _try_ts_paths(self, base_path: str) -> str | None:
         """Try common TypeScript file path conventions."""
         candidates = [
             base_path + ".ts",
@@ -410,6 +398,34 @@ class TypeScriptExtractor(BaseExtractor):
             if os.path.exists(abspath) and os.path.isfile(abspath):
                 return candidate
         return None
+
+    # ── Risk pattern extraction ──────────────────────────────────────────
+
+    def extract_risk_patterns(self, file_path: str, source_bytes: bytes) -> list[dict[str, Any]]:
+        """Extract risky TS/JS patterns: eval, Function constructor, any type, ts-ignore."""
+        text = source_bytes.decode("utf-8", errors="replace")
+
+        # Filter out comment-only lines (but keep lines with code + trailing comments)
+        lines = text.split("\n")
+        code_lines = [line for line in lines if not line.strip().startswith("//")]
+        code_text = "\n".join(code_lines)
+
+        counts: dict[str, int] = {}
+        patterns = [
+            (r'\beval\s*\(', 'eval'),
+            (r'\bnew\s+Function\s*\(', 'function_constructor'),
+            (r':\s*any\b', 'any_type'),
+            (r'//\s*@ts-ignore', 'ts_ignore'),
+            (r'//\s*@ts-nocheck', 'ts_nocheck'),
+            (r'\.then\s*\([^)]*\)(?!\s*\.catch)', 'unhandled_promise'),
+        ]
+
+        for pattern, name in patterns:
+            matches = re.findall(pattern, code_text)
+            if matches:
+                counts[name] = len(matches)
+
+        return [{"pattern_type": k, "count": v} for k, v in counts.items() if v > 0]
 
 
 __all__ = ["TypeScriptExtractor"]

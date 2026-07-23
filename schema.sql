@@ -5,6 +5,12 @@
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version         INT PRIMARY KEY,
+    description     TEXT NOT NULL,
+    applied_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ============================================================================
 -- Core Entities
 -- ============================================================================
@@ -18,6 +24,27 @@ CREATE TABLE IF NOT EXISTS projects (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ
 );
+
+-- A revision is visible to readers only after its status becomes ready and
+-- projects.current_revision_id points at it in the same transaction.
+CREATE TABLE IF NOT EXISTS project_revisions (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id      UUID NOT NULL,
+    manifest_hash   TEXT NOT NULL,
+    file_count      INT NOT NULL DEFAULT 0,
+    signature_count INT NOT NULL DEFAULT 0,
+    parser_version  TEXT,
+    status          TEXT NOT NULL DEFAULT 'building'
+                    CHECK (status IN ('building', 'ready', 'failed')),
+    error_message   TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    published_at    TIMESTAMPTZ
+);
+
+ALTER TABLE project_revisions
+    ADD COLUMN IF NOT EXISTS signature_count INT NOT NULL DEFAULT 0;
+
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS current_revision_id UUID;
 
 CREATE TABLE IF NOT EXISTS audit_configs (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -53,6 +80,7 @@ CREATE TABLE IF NOT EXISTS files (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id        UUID NOT NULL,
     path              TEXT NOT NULL,
+    content           TEXT,
     hash              TEXT,
     size              BIGINT,
     last_audited_at   TIMESTAMPTZ,
@@ -62,6 +90,9 @@ CREATE TABLE IF NOT EXISTS files (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ
 );
+
+-- Upgrade databases created before file content was stored for AI queries.
+ALTER TABLE files ADD COLUMN IF NOT EXISTS content TEXT;
 
 CREATE TABLE IF NOT EXISTS file_imports (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -160,11 +191,33 @@ CREATE TABLE IF NOT EXISTS ingestor_rejections (
 );
 
 -- ============================================================================
+-- Risk Pattern Detection (per-file counts of risky constructs)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS risk_patterns (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id      UUID NOT NULL,
+    file_id         UUID NOT NULL,
+    pattern_type    TEXT NOT NULL,
+    count           INT NOT NULL DEFAULT 1,
+    line_start      INT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uniq_risk_pattern UNIQUE (file_id, pattern_type, line_start)
+);
+
+-- ============================================================================
 -- Foreign Keys (deferred to avoid circular dependency issues)
 -- ============================================================================
 
 ALTER TABLE projects ADD CONSTRAINT fk_projects_config
     FOREIGN KEY (config_id) REFERENCES audit_configs(id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE project_revisions ADD CONSTRAINT fk_project_revisions_project
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE;
+ALTER TABLE projects ADD CONSTRAINT fk_projects_current_revision
+    FOREIGN KEY (current_revision_id) REFERENCES project_revisions(id)
+    ON DELETE SET NULL
+    DEFERRABLE INITIALLY DEFERRED;
 
 ALTER TABLE audit_configs ADD CONSTRAINT fk_audit_configs_project
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE;
@@ -224,12 +277,23 @@ ALTER TABLE static_tool_results ADD CONSTRAINT fk_static_results_run
 ALTER TABLE ingestor_rejections ADD CONSTRAINT fk_ingestor_rejections_run
     FOREIGN KEY (run_id) REFERENCES audit_runs(id) ON DELETE CASCADE;
 
+ALTER TABLE risk_patterns ADD CONSTRAINT fk_risk_patterns_project
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE;
+ALTER TABLE risk_patterns ADD CONSTRAINT fk_risk_patterns_file
+    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE;
+
 -- ============================================================================
 -- Indexes
 -- ============================================================================
 
 CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name);
 CREATE INDEX IF NOT EXISTS idx_projects_repo_path ON projects(repo_path);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_projects_repo_path ON projects(repo_path);
+
+CREATE INDEX IF NOT EXISTS idx_project_revisions_project
+    ON project_revisions(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_project_revisions_manifest
+    ON project_revisions(project_id, manifest_hash);
 
 CREATE INDEX IF NOT EXISTS idx_audit_configs_project ON audit_configs(project_id);
 
@@ -237,6 +301,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_runs_project ON audit_runs(project_id);
 CREATE INDEX IF NOT EXISTS idx_audit_runs_status ON audit_runs(status);
 
 CREATE INDEX IF NOT EXISTS idx_files_project_path ON files(project_id, path);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_files_project_path ON files(project_id, path);
 CREATE INDEX IF NOT EXISTS idx_files_hash ON files(project_id, hash);
 CREATE INDEX IF NOT EXISTS idx_files_last_audited ON files(project_id, last_audited_hash);
 
@@ -248,6 +313,19 @@ CREATE INDEX IF NOT EXISTS idx_file_imports_resolved ON file_imports(project_id,
 CREATE INDEX IF NOT EXISTS idx_dep_edges_source ON dependency_edges(source_file_id);
 CREATE INDEX IF NOT EXISTS idx_dep_edges_target ON dependency_edges(target_file_id);
 CREATE INDEX IF NOT EXISTS idx_dep_edges_project ON dependency_edges(project_id);
+
+-- Legacy databases could have this table without its inline uniqueness
+-- constraint. Remove duplicate facts before installing the conflict target
+-- used by atomic dependency rebuilds.
+DELETE FROM dependency_edges duplicate
+USING dependency_edges keeper
+WHERE duplicate.id > keeper.id
+  AND duplicate.source_file_id = keeper.source_file_id
+  AND duplicate.target_file_id = keeper.target_file_id
+  AND duplicate.import_id IS NOT DISTINCT FROM keeper.import_id;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_dependency_edge
+    ON dependency_edges(source_file_id, target_file_id, import_id);
 
 CREATE INDEX IF NOT EXISTS idx_file_staleness_file ON file_staleness(file_id);
 CREATE INDEX IF NOT EXISTS idx_file_staleness_run ON file_staleness(run_id);
@@ -263,3 +341,11 @@ CREATE INDEX IF NOT EXISTS idx_static_results_file ON static_tool_results(file_i
 CREATE INDEX IF NOT EXISTS idx_static_results_run ON static_tool_results(run_id);
 
 CREATE INDEX IF NOT EXISTS idx_ingestor_rejections_run ON ingestor_rejections(run_id);
+
+CREATE INDEX IF NOT EXISTS idx_risk_patterns_file ON risk_patterns(file_id);
+CREATE INDEX IF NOT EXISTS idx_risk_patterns_project ON risk_patterns(project_id);
+CREATE INDEX IF NOT EXISTS idx_risk_patterns_type ON risk_patterns(pattern_type);
+
+INSERT INTO schema_migrations (version, description)
+VALUES (4, 'atomic revisions and conflict-safe dependency reconciliation')
+ON CONFLICT (version) DO NOTHING;

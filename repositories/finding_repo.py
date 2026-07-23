@@ -1,6 +1,7 @@
 """Finding repository — findings CRUD and queries."""
 
-from typing import List, Optional, Tuple
+
+from typing import Any
 
 from .base import BaseRepository
 
@@ -10,7 +11,7 @@ class FindingRepository(BaseRepository):
 
     def get_open_findings(
         self, project_id: str, limit: int = 50
-    ) -> List[Tuple[str, Optional[int], Optional[int], str, str, str]]:
+    ) -> list[tuple[str, int | None, int | None, str, str, str]]:
         """Get open findings for a project.
 
         Args:
@@ -20,7 +21,7 @@ class FindingRepository(BaseRepository):
         Returns:
             List of (path, line_start, line_end, severity, category, message) tuples.
         """
-        cur = self._cursor()
+        cur: Any = self._cursor()
         cur.execute(
             """
             SELECT f.path, fi.line_start, fi.line_end, fi.severity,
@@ -33,11 +34,11 @@ class FindingRepository(BaseRepository):
             """,
             (project_id, limit),
         )
-        rows = cur.fetchall()
+        rows: list[tuple[str, int | None, int | None, str, str, str]] = cur.fetchall()
         cur.close()
         return rows
 
-    def get_summary(self, project_id: str) -> List[Tuple[int, str]]:
+    def get_summary(self, project_id: str) -> list[tuple[int, str]]:
         """Get findings grouped by status.
 
         Args:
@@ -46,13 +47,13 @@ class FindingRepository(BaseRepository):
         Returns:
             List of (count, status) tuples.
         """
-        cur = self._cursor()
+        cur: Any = self._cursor()
         cur.execute(
             "SELECT COUNT(*), status FROM findings "
             "WHERE project_id = %s GROUP BY status",
             (project_id,),
         )
-        rows = cur.fetchall()
+        rows: list[tuple[int, str]] = cur.fetchall()
         cur.close()
         return rows
 
@@ -64,11 +65,11 @@ class FindingRepository(BaseRepository):
         severity: str,
         category: str,
         message: str,
-        line_start: Optional[int] = None,
-        line_end: Optional[int] = None,
-        blast_radius: Optional[int] = None,
-        proximity: Optional[int] = None,
-        risk_score: Optional[float] = None,
+        line_start: int | None = None,
+        line_end: int | None = None,
+        blast_radius: int | None = None,
+        proximity: int | None = None,
+        risk_score: float | None = None,
         status: str = "open",
     ) -> str:
         """Insert a finding.
@@ -90,7 +91,7 @@ class FindingRepository(BaseRepository):
         Returns:
             Finding UUID.
         """
-        cur = self._cursor()
+        cur: Any = self._cursor()
         cur.execute(
             """INSERT INTO findings
                (project_id, file_id, identity_hash, severity, category, message,
@@ -112,10 +113,73 @@ class FindingRepository(BaseRepository):
                 status,
             ),
         )
-        fid = cur.fetchone()[0]
-        self.conn.commit()
+        fid: str = cur.fetchone()[0]
+        self._commit()
         cur.close()
         return fid
+
+    def record(
+        self,
+        *,
+        project_id: str,
+        file_id: str,
+        identity_hash: str,
+        severity: str,
+        category: str,
+        message: str,
+        line_start: int | None = None,
+        line_end: int | None = None,
+    ) -> tuple[str, bool]:
+        """Create or refresh one AI finding identity for current evidence."""
+        cur: Any = self._cursor()
+        cur.execute(
+            "SELECT id FROM findings "
+            "WHERE project_id = %s AND identity_hash = %s "
+            "ORDER BY created_at LIMIT 1",
+            (project_id, identity_hash),
+        )
+        row = cur.fetchone()
+        if row is not None:
+            finding_id = row[0]
+            cur.execute(
+                """UPDATE findings SET file_id = %s, severity = %s,
+                          category = %s, message = %s, line_start = %s,
+                          line_end = %s, status = 'open', updated_at = NOW()
+                   WHERE id = %s""",
+                (
+                    file_id,
+                    severity,
+                    category,
+                    message,
+                    line_start,
+                    line_end,
+                    finding_id,
+                ),
+            )
+            created = False
+        else:
+            cur.execute(
+                """INSERT INTO findings
+                   (project_id, file_id, identity_hash, severity, category,
+                    message, line_start, line_end, status, triage_source)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'open', 'ai')
+                   RETURNING id""",
+                (
+                    project_id,
+                    file_id,
+                    identity_hash,
+                    severity,
+                    category,
+                    message,
+                    line_start,
+                    line_end,
+                ),
+            )
+            finding_id = cur.fetchone()[0]
+            created = True
+        self._commit()
+        cur.close()
+        return finding_id, created
 
 
 __all__ = ["FindingRepository"]

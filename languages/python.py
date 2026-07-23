@@ -1,7 +1,8 @@
 """Tree-sitter Python extractor — extracts signatures and imports from .py files."""
 
 import os
-from typing import Optional
+import re
+from typing import Any
 
 from tree_sitter import Language, Parser
 import tree_sitter_python as tspython
@@ -25,65 +26,47 @@ class PythonExtractor(BaseExtractor):
         return "python"
 
     @classmethod
-    def source_extensions(cls) -> set:
+    def source_extensions(cls) -> set[str]:
         return {".py"}
 
     @property
-    def parser(self):
+    def parser(self) -> Any:
         if self._parser is None:
             py_lang = Language(tspython.language())
             p = Parser(py_lang)
             self._parser = p
         return self._parser
 
-    def extract_signatures(self, file_path: str, source_bytes: bytes) -> list[dict]:
-        parser = self.get_parser()
-        tree = parser.parse(source_bytes)
-        root = tree.root_node
-        source_lines = source_bytes.decode("utf-8", errors="replace").splitlines(keepends=True)
-
-        signatures = []
-        cursor = root.walk()
-        self._walk_tree(cursor, source_bytes, source_lines, signatures, file_path)
-        return signatures
-
-    def _walk_tree(self, cursor, source_bytes, source_lines, signatures, file_path):
+    def _handle_signature_node(self, cursor: Any, source_bytes: bytes, source_lines: list[str], signatures: list[Any], file_path: str) -> None:
+        """Handle a single node during signature extraction."""
         node = cursor.node
         node_type = node.type
 
         if node_type == self.FN_DEF or node_type == self.DECORATED:
-            # Handle decorated functions (the actual fn def is inside)
             if node_type == self.DECORATED:
                 for child in node.named_children:
                     if child.type == self.FN_DEF:
-                        sig = self._extract_fn(child, source_bytes, source_lines)
+                        sig = self._safe_extract(self._extract_fn, child, source_bytes, source_lines)
                         if sig:
                             signatures.append(sig)
                         break
             else:
-                sig = self._extract_fn(node, source_bytes, source_lines)
+                sig = self._safe_extract(self._extract_fn, node, source_bytes, source_lines)
                 if sig:
                     signatures.append(sig)
 
         elif node_type == self.CLASS_DEF:
-            sig = self._extract_class(node, source_bytes, source_lines)
+            sig = self._safe_extract(self._extract_class, node, source_bytes, source_lines)
             if sig:
                 signatures.append(sig)
 
-        # Recurse into children
-        if cursor.goto_first_child():
-            self._walk_tree(cursor, source_bytes, source_lines, signatures, file_path)
-            while cursor.goto_next_sibling():
-                self._walk_tree(cursor, source_bytes, source_lines, signatures, file_path)
-            cursor.goto_parent()
-
-    def _get_name(self, node, source_bytes) -> str:
+    def _get_name(self, node: Any, source_bytes: bytes) -> str:
         for child in node.named_children:
             if child.type == "identifier":
                 return self.collect_node_text(child, source_bytes).strip()
         return "unnamed"
 
-    def _collect_docstring(self, node, source_bytes, source_lines) -> str:
+    def _collect_docstring(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> str:
         """Extract docstring from the first statement in a body."""
         body = None
         for child in node.named_children:
@@ -98,7 +81,7 @@ class PythonExtractor(BaseExtractor):
                     return self.collect_node_text(expr, source_bytes)[:200]
         return ""
 
-    def _extract_fn(self, node, source_bytes, source_lines) -> Optional[dict]:
+    def _extract_fn(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
         try:
             name = self._get_name(node, source_bytes)
             sig_text = self.collect_node_text(node, source_bytes)
@@ -129,7 +112,7 @@ class PythonExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_class(self, node, source_bytes, source_lines) -> Optional[dict]:
+    def _extract_class(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
         try:
             name = self._get_name(node, source_bytes)
             sig_text = self.collect_node_text(node, source_bytes)
@@ -141,7 +124,7 @@ class PythonExtractor(BaseExtractor):
                 sig_text = sig_text[:colon_idx + 1].strip()
 
             # Get bases
-            bases = []
+            bases: list[Any] = []
             for child in node.named_children:
                 if child.type == "argument_list":
                     for arg in child.named_children:
@@ -164,21 +147,11 @@ class PythonExtractor(BaseExtractor):
 
     # ── Import extraction ──────────────────────────────────────────────────
 
-    def extract_imports(self, file_path: str, source_bytes: bytes) -> list[dict]:
-        parser = self.get_parser()
-        tree = parser.parse(source_bytes)
-        root = tree.root_node
-
-        imports = []
-        cursor = root.walk()
-        self._walk_imports(cursor, source_bytes, imports, file_path)
-
-        return imports
-
-    def _walk_imports(self, cursor, source_bytes, imports, file_path):
+    def _handle_import_node(self, cursor: Any, source_bytes: bytes, imports: list[Any], file_path: str) -> None:
+        """Handle a single node during import extraction."""
         node = cursor.node
 
-        if node.type == self.IMPORT:
+        if node.type in (self.IMPORT, self.IMPORT_FROM):
             imp_text = self.collect_node_text(node, source_bytes).strip()
             imp_type = self._classify_import(imp_text)
             imports.append({
@@ -187,22 +160,6 @@ class PythonExtractor(BaseExtractor):
                 "line_start": node.start_point[0] + 1,
                 "line_end": node.end_point[0] + 1,
             })
-
-        elif node.type == self.IMPORT_FROM:
-            imp_text = self.collect_node_text(node, source_bytes).strip()
-            imp_type = self._classify_import(imp_text)
-            imports.append({
-                "import_text": imp_text,
-                "import_type": imp_type,
-                "line_start": node.start_point[0] + 1,
-                "line_end": node.end_point[0] + 1,
-            })
-
-        if cursor.goto_first_child():
-            self._walk_imports(cursor, source_bytes, imports, file_path)
-            while cursor.goto_next_sibling():
-                self._walk_imports(cursor, source_bytes, imports, file_path)
-            cursor.goto_parent()
 
     def _classify_import(self, imp_text: str) -> str:
         """Classify a Python import as internal or external."""
@@ -228,7 +185,7 @@ class PythonExtractor(BaseExtractor):
 
     # ── Import resolution ──────────────────────────────────────────────────
 
-    def resolve_import(self, import_text: str, source_file: str, path_to_id: dict) -> Optional[str]:
+    def resolve_import(self, import_text: str, source_file: str, path_to_id: dict[str, Any]) -> str | None:
         """Resolve a Python import to a file path.
 
         Handles:
@@ -290,7 +247,7 @@ class PythonExtractor(BaseExtractor):
 
         return None
 
-    def _try_py_paths(self, base_path: str) -> Optional[str]:
+    def _try_py_paths(self, base_path: str) -> str | None:
         """Try common Python file path conventions."""
         candidates = [
             base_path + ".py",
@@ -301,6 +258,33 @@ class PythonExtractor(BaseExtractor):
             if os.path.exists(abspath) and os.path.isfile(abspath):
                 return candidate
         return None
+
+    # ── Risk pattern extraction ──────────────────────────────────────────
+
+    def extract_risk_patterns(self, file_path: str, source_bytes: bytes) -> list[dict[str, Any]]:
+        """Extract risky Python patterns: eval, exec, os.system, shell=True, bare except."""
+        text = source_bytes.decode("utf-8", errors="replace")
+
+        # Filter out comment-only lines
+        lines = text.split("\n")
+        code_lines = [line for line in lines if not line.strip().startswith("#")]
+        code_text = "\n".join(code_lines)
+
+        counts: dict[str, int] = {}
+        patterns = [
+            (r'\beval\s*\(', 'eval'),
+            (r'\bexec\s*\(', 'exec'),
+            (r'\bos\.system\s*\(', 'os_system'),
+            (r'\bsubprocess\.[a-z_]+\s*\([^)]*shell\s*=\s*True', 'subprocess_shell_true'),
+            (r'^\s*except\s*:', 'bare_except'),
+        ]
+
+        for pattern, name in patterns:
+            matches = re.findall(pattern, code_text, re.MULTILINE)
+            if matches:
+                counts[name] = len(matches)
+
+        return [{"pattern_type": k, "count": v} for k, v in counts.items() if v > 0]
 
 
 __all__ = ["PythonExtractor"]

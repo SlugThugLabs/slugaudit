@@ -1,7 +1,7 @@
 """Domain entities — Project, File, Signature."""
 
-from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any
+from dataclasses import dataclass
 from datetime import datetime
 
 
@@ -12,9 +12,9 @@ class Project:
     name: str
     primary_language: str
     repo_path: str
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    config_id: Optional[str] = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    config_id: str | None = None
 
 
 @dataclass
@@ -25,12 +25,12 @@ class File:
     path: str
     hash: str
     size: int
-    last_modified_at: Optional[str] = None
-    last_audited_at: Optional[datetime] = None
-    last_audited_hash: Optional[str] = None
-    signature_cache: Optional[list] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    last_modified_at: str | None = None
+    last_audited_at: datetime | None = None
+    last_audited_hash: str | None = None
+    signature_cache: list[Any] | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 @dataclass
@@ -41,13 +41,13 @@ class Signature:
     signature: str
     visibility: str = ""
     doc_comment: str = ""
-    line_start: Optional[int] = None
-    line_end: Optional[int] = None
+    line_start: int | None = None
+    line_end: int | None = None
     is_async: bool = False
     is_unsafe: bool = False
-    generic_params: Optional[str] = None
+    generic_params: str | None = None
 
-    def to_cache_dict(self) -> dict:
+    def to_cache_dict(self) -> dict[str, Any]:
         """Convert to JSON-cacheable dict format."""
         entry = {
             "type": self.sig_type,

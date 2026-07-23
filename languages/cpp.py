@@ -1,12 +1,13 @@
 """Tree-sitter C++ extractor — extracts signatures and imports from .cpp, .hpp, .cc, .cxx files."""
 
 import os
-from typing import Optional
+import re
 
 from tree_sitter import Language, Parser
 import tree_sitter_cpp as tscpp
 
 from .base import BaseExtractor
+from typing import Any
 
 
 class CppExtractor(BaseExtractor):
@@ -29,70 +30,53 @@ class CppExtractor(BaseExtractor):
         return "cpp"
 
     @classmethod
-    def source_extensions(cls) -> set:
+    def source_extensions(cls) -> set[str]:
         return {".cpp", ".hpp", ".cc", ".cxx", ".hxx", ".hh", ".ixx", ".tpp"}
 
     @property
-    def parser(self):
+    def parser(self) -> Any:
         if self._parser is None:
             cpp_lang = Language(tscpp.language())
             p = Parser(cpp_lang)
             self._parser = p
         return self._parser
 
-    def extract_signatures(self, file_path: str, source_bytes: bytes) -> list[dict]:
-        parser = self.get_parser()
-        tree = parser.parse(source_bytes)
-        root = tree.root_node
-        source_lines = source_bytes.decode("utf-8", errors="replace").splitlines(keepends=True)
-
-        signatures = []
-        cursor = root.walk()
-        self._walk_tree(cursor, source_bytes, source_lines, signatures)
-        return signatures
-
-    def _walk_tree(self, cursor, source_bytes, source_lines, signatures):
+    def _handle_signature_node(self, cursor: Any, source_bytes: bytes, source_lines: list[str], signatures: list[Any], file_path: str) -> None:
+        """Handle a single node during signature extraction."""
         node = cursor.node
         node_type = node.type
 
         if node_type == self.FN_DEF:
-            sig = self._extract_fn(node, source_bytes, source_lines)
+            sig = self._safe_extract(self._extract_fn, node, source_bytes, source_lines)
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.TYPE_DEF:
-            sig = self._extract_typedef(node, source_bytes, source_lines)
+            sig = self._safe_extract(self._extract_typedef, node, source_bytes, source_lines)
             if sig:
                 signatures.append(sig)
 
         elif node_type in (self.CLASS_SPEC, self.STRUCT_SPEC, self.UNION_SPEC, self.ENUM_SPEC):
-            sig = self._extract_top_type(node, source_bytes, source_lines)
+            sig = self._safe_extract(self._extract_top_type, node, source_bytes, source_lines)
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.DECLARATION:
-            sig = self._extract_type(node, source_bytes, source_lines)
+            sig = self._safe_extract(self._extract_type, node, source_bytes, source_lines)
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.TEMPLATE_DECL:
-            sig = self._extract_template(node, source_bytes, source_lines)
+            sig = self._safe_extract(self._extract_template, node, source_bytes, source_lines)
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.NAMESPACE_DEF:
-            sig = self._extract_namespace(node, source_bytes, source_lines)
+            sig = self._safe_extract(self._extract_namespace, node, source_bytes, source_lines)
             if sig:
                 signatures.append(sig)
 
-        # Recurse into children
-        if cursor.goto_first_child():
-            self._walk_tree(cursor, source_bytes, source_lines, signatures)
-            while cursor.goto_next_sibling():
-                self._walk_tree(cursor, source_bytes, source_lines, signatures)
-            cursor.goto_parent()
-
-    def _get_declarator_name(self, node, source_bytes) -> str:
+    def _get_declarator_name(self, node: Any, source_bytes: bytes) -> str:
         for child in node.named_children:
             if child.type == "identifier":
                 return self.collect_node_text(child, source_bytes).strip()
@@ -111,7 +95,7 @@ class CppExtractor(BaseExtractor):
                 return self._get_declarator_name(child, source_bytes)
         return "unnamed"
 
-    def _get_fn_name(self, node, source_bytes) -> str:
+    def _get_fn_name(self, node: Any, source_bytes: bytes) -> str:
         for child in node.named_children:
             if child.type == "function_declarator":
                 return self._get_declarator_name(child, source_bytes)
@@ -121,7 +105,7 @@ class CppExtractor(BaseExtractor):
                         return self.collect_node_text(c, source_bytes).strip()
         return "unnamed"
 
-    def _extract_fn(self, node, source_bytes, source_lines) -> Optional[dict]:
+    def _extract_fn(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
         try:
             name = self._get_fn_name(node, source_bytes)
             sig_text = self.collect_node_text(node, source_bytes)
@@ -155,7 +139,7 @@ class CppExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_type(self, node, source_bytes, source_lines) -> Optional[dict]:
+    def _extract_type(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
         try:
             for child in node.named_children:
                 child_type = child.type
@@ -204,7 +188,7 @@ class CppExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_top_type(self, node, source_bytes, source_lines) -> Optional[dict]:
+    def _extract_top_type(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
         """Extract a class/struct/union/enum at the top level."""
         try:
             kind_map = {
@@ -212,7 +196,7 @@ class CppExtractor(BaseExtractor):
                 self.UNION_SPEC: "union", self.ENUM_SPEC: "enum"
             }
             kind = kind_map.get(node.type, "type")
-            
+
             name = "unnamed"
             for c in node.named_children:
                 if c.type == "identifier":
@@ -223,12 +207,12 @@ class CppExtractor(BaseExtractor):
                     break
             if name == "unnamed":
                 return None
-            
+
             sig_text = self.collect_node_text(node, source_bytes)
             brace_idx = sig_text.find("{")
             if brace_idx >= 0:
                 sig_text = sig_text[:brace_idx].strip() + " { ... }"
-            
+
             return {
                 "type": kind,
                 "name": name,
@@ -244,7 +228,7 @@ class CppExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_typedef(self, node, source_bytes, source_lines) -> Optional[dict]:
+    def _extract_typedef(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
         try:
             sig_text = self.collect_node_text(node, source_bytes)
             name = "unnamed"
@@ -274,7 +258,7 @@ class CppExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_template(self, node, source_bytes, source_lines) -> Optional[dict]:
+    def _extract_template(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
         try:
             # Extract the declaration inside the template
             for child in node.named_children:
@@ -308,7 +292,7 @@ class CppExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_namespace(self, node, source_bytes, source_lines) -> Optional[dict]:
+    def _extract_namespace(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
         try:
             name = "unnamed"
             for child in node.named_children:
@@ -341,18 +325,8 @@ class CppExtractor(BaseExtractor):
 
     # ── Import extraction ──────────────────────────────────────────────────
 
-    def extract_imports(self, file_path: str, source_bytes: bytes) -> list[dict]:
-        parser = self.get_parser()
-        tree = parser.parse(source_bytes)
-        root = tree.root_node
-
-        imports = []
-        cursor = root.walk()
-        self._walk_imports(cursor, source_bytes, imports)
-
-        return imports
-
-    def _walk_imports(self, cursor, source_bytes, imports):
+    def _handle_import_node(self, cursor: Any, source_bytes: bytes, imports: list[Any], file_path: str) -> None:
+        """Handle a single node during import extraction."""
         node = cursor.node
 
         if node.type == self.PREPROC_INCLUDE:
@@ -365,12 +339,6 @@ class CppExtractor(BaseExtractor):
                 "line_end": node.end_point[0] + 1,
             })
 
-        if cursor.goto_first_child():
-            self._walk_imports(cursor, source_bytes, imports)
-            while cursor.goto_next_sibling():
-                self._walk_imports(cursor, source_bytes, imports)
-            cursor.goto_parent()
-
     def _classify_include(self, inc_text: str) -> str:
         if '"' in inc_text:
             return "internal"
@@ -378,7 +346,7 @@ class CppExtractor(BaseExtractor):
 
     # ── Import resolution ──────────────────────────────────────────────────
 
-    def resolve_import(self, import_text: str, source_file: str, path_to_id: dict) -> Optional[str]:
+    def resolve_import(self, import_text: str, source_file: str, path_to_id: dict[str, Any]) -> str | None:
         """Resolve a C++ include to a file path."""
         if '"' not in import_text:
             return None
@@ -410,6 +378,37 @@ class CppExtractor(BaseExtractor):
                 return candidate
 
         return None
+
+    # ── Risk pattern extraction ──────────────────────────────────────────
+
+    def extract_risk_patterns(self, file_path: str, source_bytes: bytes) -> list[dict[str, Any]]:
+        """Extract risky C++ patterns: gets, strcpy, system, raw new/delete."""
+        text = source_bytes.decode("utf-8", errors="replace")
+
+        # Filter out comment lines
+        lines = text.split("\n")
+        code_lines = [line for line in lines if not line.strip().startswith("//")
+                      and not line.strip().startswith("/*") and not line.strip().startswith("*")]
+        code_text = "\n".join(code_lines)
+
+        counts: dict[str, int] = {}
+        patterns = [
+            (r'\bgets\s*\(', 'gets'),
+            (r'\bstrcpy\s*\(', 'strcpy'),
+            (r'\bstrcat\s*\(', 'strcat'),
+            (r'\bsprintf\s*\(', 'sprintf'),
+            (r'\bsystem\s*\(', 'system'),
+            (r'\bnew\s+', 'raw_new'),
+            (r'\bdelete\s+', 'raw_delete'),
+            (r'\breinterpret_cast\s*<', 'reinterpret_cast'),
+        ]
+
+        for pattern, name in patterns:
+            matches = re.findall(pattern, code_text)
+            if matches:
+                counts[name] = len(matches)
+
+        return [{"pattern_type": k, "count": v} for k, v in counts.items() if v > 0]
 
 
 __all__ = ["CppExtractor"]

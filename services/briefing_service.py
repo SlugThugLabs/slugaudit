@@ -1,15 +1,15 @@
 """Briefing service — orchestrates briefing assembly."""
 
-from typing import Optional
+
+from typing import Any
 
 from briefing import BriefingAssembler
-from infrastructure import get_file_system
 
 
 class BriefingService:
     """Service for generating audit briefings."""
 
-    def __init__(self, file_system=None):
+    def __init__(self, file_system: Any = None) -> None:
         """Create a briefing service.
 
         Args:
@@ -19,11 +19,11 @@ class BriefingService:
 
     def generate(
         self,
-        project_name: Optional[str] = None,
-        output_path: Optional[str] = None,
-        connection_str: Optional[str] = None,
+        project_name: str | None = None,
+        output_path: str | None = None,
+        connection_str: str | None = None,
         max_ghost_lines: int = 500,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Generate an audit briefing.
 
         Args:

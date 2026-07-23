@@ -1,0 +1,15 @@
+# slugaudit-mcp configuration
+#
+# Copy this file to config.toml and fill in your database credentials.
+# Environment variables (PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD)
+# take priority over this file.
+#
+#   cp config.toml.example config.toml
+
+[database]
+# PostgreSQL connection for the audit database
+host = "localhost"
+port = 5432
+database = "slug_audit"
+user = "slug_audit"
+password = "change_me"

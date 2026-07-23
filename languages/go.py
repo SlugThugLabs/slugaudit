@@ -1,12 +1,13 @@
 """Tree-sitter Go extractor — extracts signatures and imports from .go files."""
 
 import os
-from typing import Optional
+import re
 
 from tree_sitter import Language, Parser
 import tree_sitter_go as tsgo
 
 from .base import BaseExtractor
+from typing import Any
 
 
 class GoExtractor(BaseExtractor):
@@ -27,57 +28,40 @@ class GoExtractor(BaseExtractor):
         return "go"
 
     @classmethod
-    def source_extensions(cls) -> set:
+    def source_extensions(cls) -> set[str]:
         return {".go"}
 
     @property
-    def parser(self):
+    def parser(self) -> Any:
         if self._parser is None:
             go_lang = Language(tsgo.language())
             p = Parser(go_lang)
             self._parser = p
         return self._parser
 
-    def extract_signatures(self, file_path: str, source_bytes: bytes) -> list[dict]:
-        parser = self.get_parser()
-        tree = parser.parse(source_bytes)
-        root = tree.root_node
-        source_lines = source_bytes.decode("utf-8", errors="replace").splitlines(keepends=True)
-
-        signatures = []
-        cursor = root.walk()
-        self._walk_tree(cursor, source_bytes, source_lines, signatures)
-        return signatures
-
-    def _walk_tree(self, cursor, source_bytes, source_lines, signatures):
+    def _handle_signature_node(self, cursor: Any, source_bytes: bytes, source_lines: list[str], signatures: list[Any], file_path: str) -> None:
+        """Handle a single node during signature extraction."""
         node = cursor.node
         node_type = node.type
 
         if node_type == self.FN_DECL:
-            sig = self._extract_fn(node, source_bytes, source_lines, "function")
+            sig = self._safe_extract(self._extract_fn, node, source_bytes, source_lines, "function")
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.METHOD_DECL:
-            sig = self._extract_fn(node, source_bytes, source_lines, "method")
+            sig = self._safe_extract(self._extract_fn, node, source_bytes, source_lines, "method")
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.TYPE_DECL:
             for child in node.named_children:
                 if child.type == self.TYPE_SPEC:
-                    sig = self._extract_type_spec(child, source_bytes, source_lines)
+                    sig = self._safe_extract(self._extract_type_spec, child, source_bytes, source_lines)
                     if sig:
                         signatures.append(sig)
 
-        # Recurse into children
-        if cursor.goto_first_child():
-            self._walk_tree(cursor, source_bytes, source_lines, signatures)
-            while cursor.goto_next_sibling():
-                self._walk_tree(cursor, source_bytes, source_lines, signatures)
-            cursor.goto_parent()
-
-    def _get_name(self, node, source_bytes) -> str:
+    def _get_name(self, node: Any, source_bytes: bytes) -> str:
         for child in node.named_children:
             if child.type == "identifier":
                 return self.collect_node_text(child, source_bytes).strip()
@@ -91,7 +75,7 @@ class GoExtractor(BaseExtractor):
         """In Go, exported names start with a capital letter."""
         return bool(name) and name[0].isupper()
 
-    def _extract_fn(self, node, source_bytes, source_lines, kind: str) -> Optional[dict]:
+    def _extract_fn(self, node: Any, source_bytes: bytes, source_lines: list[str], kind: str) -> dict[str, Any] | None:
         try:
             name = self._get_name(node, source_bytes)
             sig_text = self.collect_node_text(node, source_bytes)
@@ -121,7 +105,7 @@ class GoExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_type_spec(self, node, source_bytes, source_lines) -> Optional[dict]:
+    def _extract_type_spec(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
         try:
             name = self._get_name(node, source_bytes)
             sig_text = self.collect_node_text(node, source_bytes)
@@ -165,18 +149,8 @@ class GoExtractor(BaseExtractor):
 
     # ── Import extraction ──────────────────────────────────────────────────
 
-    def extract_imports(self, file_path: str, source_bytes: bytes) -> list[dict]:
-        parser = self.get_parser()
-        tree = parser.parse(source_bytes)
-        root = tree.root_node
-
-        imports = []
-        cursor = root.walk()
-        self._walk_imports(cursor, source_bytes, imports)
-
-        return imports
-
-    def _walk_imports(self, cursor, source_bytes, imports):
+    def _handle_import_node(self, cursor: Any, source_bytes: bytes, imports: list[Any], file_path: str) -> None:
+        """Handle a single node during import extraction."""
         node = cursor.node
 
         if node.type == self.IMPORT_SPEC:
@@ -188,17 +162,11 @@ class GoExtractor(BaseExtractor):
                 "line_end": node.end_point[0] + 1,
             })
 
-        if cursor.goto_first_child():
-            self._walk_imports(cursor, source_bytes, imports)
-            while cursor.goto_next_sibling():
-                self._walk_imports(cursor, source_bytes, imports)
-            cursor.goto_parent()
-
     # ── Import resolution ──────────────────────────────────────────────────
 
-    def resolve_import(self, import_text: str, source_file: str, path_to_id: dict) -> Optional[str]:
+    def resolve_import(self, import_text: str, source_file: str, path_to_id: dict[str, Any]) -> str | None:
         """Resolve a Go import to a local file path.
-        
+
         Go imports use full module paths, so only relative imports (which Go
         doesn't really have in the same way) would resolve. We check for
         same-package imports by looking for files in the same directory.
@@ -230,6 +198,32 @@ class GoExtractor(BaseExtractor):
             return candidate
 
         return None
+
+    # ── Risk pattern extraction ──────────────────────────────────────────
+
+    def extract_risk_patterns(self, file_path: str, source_bytes: bytes) -> list[dict[str, Any]]:
+        """Extract risky Go patterns: ignored errors, panic, unsafe.Pointer."""
+        text = source_bytes.decode("utf-8", errors="replace")
+
+        # Filter out comment lines
+        lines = text.split("\n")
+        code_lines = [line for line in lines if not line.strip().startswith("//")]
+        code_text = "\n".join(code_lines)
+
+        counts: dict[str, int] = {}
+        patterns = [
+            (r'_,\s*(?:err|error)\s*[:=]', 'ignored_errors'),
+            (r'\bpanic\s*\(', 'panic'),
+            (r'\bunsafe\.Pointer\s*\(', 'unsafe_pointer'),
+            (r'\bgo\s+func\s*\(', 'anonymous_goroutine'),
+        ]
+
+        for pattern, name in patterns:
+            matches = re.findall(pattern, code_text)
+            if matches:
+                counts[name] = len(matches)
+
+        return [{"pattern_type": k, "count": v} for k, v in counts.items() if v > 0]
 
 
 __all__ = ["GoExtractor"]

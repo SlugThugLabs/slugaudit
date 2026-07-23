@@ -1,7 +1,7 @@
 """Tree-sitter Java extractor — extracts signatures and imports from .java files."""
 
 import os
-from typing import Optional
+from typing import Any
 
 from tree_sitter import Language, Parser
 import tree_sitter_java as tsjava
@@ -28,85 +28,68 @@ class JavaExtractor(BaseExtractor):
         return "java"
 
     @classmethod
-    def source_extensions(cls) -> set:
+    def source_extensions(cls) -> set[str]:
         return {".java"}
 
     @property
-    def parser(self):
+    def parser(self) -> Any:
         if self._parser is None:
             java_lang = Language(tsjava.language())
             p = Parser(java_lang)
             self._parser = p
         return self._parser
 
-    def extract_signatures(self, file_path: str, source_bytes: bytes) -> list[dict]:
-        parser = self.get_parser()
-        tree = parser.parse(source_bytes)
-        root = tree.root_node
-        source_lines = source_bytes.decode("utf-8", errors="replace").splitlines(keepends=True)
-
-        signatures = []
-        cursor = root.walk()
-        self._walk_tree(cursor, source_bytes, source_lines, signatures)
-        return signatures
-
-    def _walk_tree(self, cursor, source_bytes, source_lines, signatures):
+    def _handle_signature_node(self, cursor: Any, source_bytes: bytes, source_lines: list[str], signatures: list[Any], file_path: str) -> None:
+        """Handle a single node during signature extraction."""
         node = cursor.node
         node_type = node.type
 
         if node_type == self.CLASS_DECL:
-            sig = self._extract_type(node, source_bytes, source_lines, "class")
+            sig = self._safe_extract(self._extract_type, node, source_bytes, source_lines, "class")
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.INTERFACE_DECL:
-            sig = self._extract_type(node, source_bytes, source_lines, "interface")
+            sig = self._safe_extract(self._extract_type, node, source_bytes, source_lines, "interface")
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.ENUM_DECL:
-            sig = self._extract_type(node, source_bytes, source_lines, "enum")
+            sig = self._safe_extract(self._extract_type, node, source_bytes, source_lines, "enum")
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.RECORD_DECL:
-            sig = self._extract_type(node, source_bytes, source_lines, "record")
+            sig = self._safe_extract(self._extract_type, node, source_bytes, source_lines, "record")
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.METHOD_DECL:
-            sig = self._extract_method(node, source_bytes, source_lines)
+            sig = self._safe_extract(self._extract_method, node, source_bytes, source_lines)
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.CONSTRUCTOR_DECL:
-            sig = self._extract_method(node, source_bytes, source_lines)
+            sig = self._safe_extract(self._extract_method, node, source_bytes, source_lines)
             if sig:
                 signatures.append(sig)
 
-        # Recurse into children
-        if cursor.goto_first_child():
-            self._walk_tree(cursor, source_bytes, source_lines, signatures)
-            while cursor.goto_next_sibling():
-                self._walk_tree(cursor, source_bytes, source_lines, signatures)
-            cursor.goto_parent()
-
-    def _get_modifiers(self, node, source_bytes) -> str:
+    def _get_modifiers(self, node: Any, source_bytes: bytes) -> str:
         """Extract visibility/access modifiers from a definition node."""
-        mods = []
+        mods: list[Any] = []
         for child in node.named_children:
             if child.type == self.MODIFIERS:
                 for mod in child.named_children:
                     mods.append(self.collect_node_text(mod, source_bytes).strip())
         return " ".join(mods)
 
-    def _get_name(self, node, source_bytes) -> str:
+    def _get_name(self, node: Any, source_bytes: bytes) -> str:
         for child in node.named_children:
             if child.type == "identifier":
                 return self.collect_node_text(child, source_bytes).strip()
         return "unnamed"
 
-    def _extract_method(self, node, source_bytes, source_lines) -> Optional[dict]:
+    def _extract_method(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
         try:
             name = self._get_name(node, source_bytes)
             visibility = self._get_modifiers(node, source_bytes)
@@ -135,7 +118,7 @@ class JavaExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_type(self, node, source_bytes, source_lines, kind: str) -> Optional[dict]:
+    def _extract_type(self, node: Any, source_bytes: bytes, source_lines: list[str], kind: str) -> dict[str, Any] | None:
         try:
             name = self._get_name(node, source_bytes)
             visibility = self._get_modifiers(node, source_bytes)
@@ -165,18 +148,8 @@ class JavaExtractor(BaseExtractor):
 
     # ── Import extraction ──────────────────────────────────────────────────
 
-    def extract_imports(self, file_path: str, source_bytes: bytes) -> list[dict]:
-        parser = self.get_parser()
-        tree = parser.parse(source_bytes)
-        root = tree.root_node
-
-        imports = []
-        cursor = root.walk()
-        self._walk_imports(cursor, source_bytes, imports)
-
-        return imports
-
-    def _walk_imports(self, cursor, source_bytes, imports):
+    def _handle_import_node(self, cursor: Any, source_bytes: bytes, imports: list[Any], file_path: str) -> None:
+        """Handle a single node during import extraction."""
         node = cursor.node
 
         if node.type == self.IMPORT_DECL:
@@ -188,12 +161,6 @@ class JavaExtractor(BaseExtractor):
                 "line_start": node.start_point[0] + 1,
                 "line_end": node.end_point[0] + 1,
             })
-
-        if cursor.goto_first_child():
-            self._walk_imports(cursor, source_bytes, imports)
-            while cursor.goto_next_sibling():
-                self._walk_imports(cursor, source_bytes, imports)
-            cursor.goto_parent()
 
     def _classify_import(self, imp_text: str) -> str:
         """Classify a Java import as internal or external."""
@@ -216,9 +183,9 @@ class JavaExtractor(BaseExtractor):
 
     # ── Import resolution ──────────────────────────────────────────────────
 
-    def resolve_import(self, import_text: str, source_file: str, path_to_id: dict) -> Optional[str]:
+    def resolve_import(self, import_text: str, source_file: str, path_to_id: dict[str, Any]) -> str | None:
         """Resolve a Java import to a file path.
-        
+
         import com.example.project.util.StringUtils
           → com/example/project/util/StringUtils.java
         """
@@ -247,6 +214,34 @@ class JavaExtractor(BaseExtractor):
             return mvn_path
 
         return None
+
+    # ── Risk pattern extraction ──────────────────────────────────────────
+
+    def extract_risk_patterns(self, file_path: str, source_bytes: bytes) -> list[dict[str, Any]]:
+        """Extract risky Java patterns: eval, exec, raw SQL, empty catch."""
+        import re
+        text = source_bytes.decode("utf-8", errors="replace")
+
+        # Filter out comment lines
+        lines = text.split("\n")
+        code_lines = [line for line in lines if not line.strip().startswith("//")]
+        code_text = "\n".join(code_lines)
+
+        counts: dict[str, int] = {}
+        patterns = [
+            (r'\.exec\s*\(', 'runtime_exec'),
+            (r'new\s+ProcessBuilder\s*\(', 'process_builder'),
+            (r'\beval\s*\(', 'eval'),
+            (r'createStatement\s*\(', 'raw_sql'),
+            (r'catch\s*\([^)]*\)\s*\{\s*\}', 'empty_catch'),
+        ]
+
+        for pattern, name in patterns:
+            matches = re.findall(pattern, code_text)
+            if matches:
+                counts[name] = len(matches)
+
+        return [{"pattern_type": k, "count": v} for k, v in counts.items() if v > 0]
 
 
 __all__ = ["JavaExtractor"]

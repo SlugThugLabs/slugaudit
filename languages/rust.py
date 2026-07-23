@@ -1,12 +1,12 @@
 """Tree-sitter Rust extractor — extracts signatures and imports from .rs files."""
 
 import os
-from typing import Optional
 
 from tree_sitter import Language, Parser
 import tree_sitter_rust as tsrust
 
 from .base import BaseExtractor
+from typing import Any
 
 
 class RustExtractor(BaseExtractor):
@@ -34,88 +34,68 @@ class RustExtractor(BaseExtractor):
         return "rust"
 
     @classmethod
-    def source_extensions(cls) -> set:
+    def source_extensions(cls) -> set[str]:
         return {".rs"}
 
     @property
-    def parser(self):
+    def parser(self) -> Any:
         if self._parser is None:
             rust_lang = Language(tsrust.language())
             p = Parser(rust_lang)
             self._parser = p
         return self._parser
 
-    def extract_signatures(self, file_path: str, source_bytes: bytes) -> list[dict]:
-        parser = self.get_parser()
-        tree = parser.parse(source_bytes)
-        root = tree.root_node
-        source_lines = source_bytes.decode("utf-8", errors="replace").splitlines(keepends=True)
-
-        signatures = []
-        cursor = root.walk()
-
-        self._walk_tree(cursor, source_bytes, source_lines, signatures, file_path)
-
-        return signatures
-
-    def _walk_tree(self, cursor, source_bytes, source_lines, signatures, file_path):
-        """Recursively walk tree-sitter tree and extract signatures."""
+    def _handle_signature_node(self, cursor: Any, source_bytes: bytes, source_lines: list[str], signatures: list[Any], file_path: str) -> None:
+        """Handle a single node during signature extraction."""
         node = cursor.node
         node_type = node.type
 
         if node_type == self.FN_ITEM:
-            sig = self._extract_fn(node, source_bytes, source_lines, file_path)
+            sig = self._safe_extract(self._extract_fn, node, source_bytes, source_lines, file_path)
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.STRUCT:
-            sig = self._extract_struct_enum(node, source_bytes, source_lines, "struct")
+            sig = self._safe_extract(self._extract_struct_enum, node, source_bytes, source_lines, "struct")
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.ENUM:
-            sig = self._extract_struct_enum(node, source_bytes, source_lines, "enum")
+            sig = self._safe_extract(self._extract_struct_enum, node, source_bytes, source_lines, "enum")
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.TRAIT:
-            sig = self._extract_trait(node, source_bytes, source_lines)
+            sig = self._safe_extract(self._extract_trait, node, source_bytes, source_lines)
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.IMPL:
-            sig = self._extract_impl(node, source_bytes, source_lines)
+            sig = self._safe_extract(self._extract_impl, node, source_bytes, source_lines)
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.TYPE_ALIAS:
-            sig = self._extract_type_alias(node, source_bytes, source_lines)
+            sig = self._safe_extract(self._extract_type_alias, node, source_bytes, source_lines)
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.CONST:
-            sig = self._extract_const(node, source_bytes, source_lines, "const")
+            sig = self._safe_extract(self._extract_const, node, source_bytes, source_lines, "const")
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.STATIC:
-            sig = self._extract_const(node, source_bytes, source_lines, "static")
+            sig = self._safe_extract(self._extract_const, node, source_bytes, source_lines, "static")
             if sig:
                 signatures.append(sig)
 
         elif node_type == self.MACRO:
-            sig = self._extract_macro(node, source_bytes, source_lines)
+            sig = self._safe_extract(self._extract_macro, node, source_bytes, source_lines)
             if sig:
                 signatures.append(sig)
 
-        # Recurse into children
-        if cursor.goto_first_child():
-            self._walk_tree(cursor, source_bytes, source_lines, signatures, file_path)
-            while cursor.goto_next_sibling():
-                self._walk_tree(cursor, source_bytes, source_lines, signatures, file_path)
-            cursor.goto_parent()
-
-    def _get_visibility(self, node, source_bytes) -> str:
+    def _get_visibility(self, node: Any, source_bytes: bytes) -> str:
         """Extract pub/pub(crate) from a definition node."""
         for child in node.children:
             if child.type == self.VISIBILITY:
@@ -126,21 +106,21 @@ class RustExtractor(BaseExtractor):
                 return self.collect_node_text(child, source_bytes).strip()
         return ""
 
-    def _get_name(self, node, source_bytes) -> str:
+    def _get_name(self, node: Any, source_bytes: bytes) -> str:
         """Extract the name identifier from a definition node."""
         for child in node.named_children:
             if child.type == "identifier" or child.type == "type_identifier":
                 return self.collect_node_text(child, source_bytes).strip()
         return "unnamed"
 
-    def _get_generic_params(self, node, source_bytes) -> str:
+    def _get_generic_params(self, node: Any, source_bytes: bytes) -> str:
         """Extract generic parameters like <T: Display> from a node."""
         for child in node.children:
             if child.type == "generic_parameters":
                 return self.collect_node_text(child, source_bytes).strip()
         return ""
 
-    def _extract_fn(self, node, source_bytes, source_lines, file_path) -> Optional[dict]:
+    def _extract_fn(self, node: Any, source_bytes: bytes, source_lines: list[str], file_path: str) -> dict[str, Any] | None:
         try:
             name = self._get_name(node, source_bytes)
             visibility = self._get_visibility(node, source_bytes)
@@ -181,7 +161,7 @@ class RustExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_struct_enum(self, node, source_bytes, source_lines, kind: str) -> Optional[dict]:
+    def _extract_struct_enum(self, node: Any, source_bytes: bytes, source_lines: list[str], kind: str) -> dict[str, Any] | None:
         try:
             name = self._get_name(node, source_bytes)
             visibility = self._get_visibility(node, source_bytes)
@@ -215,7 +195,7 @@ class RustExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_trait(self, node, source_bytes, source_lines) -> Optional[dict]:
+    def _extract_trait(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
         try:
             name = self._get_name(node, source_bytes)
             visibility = self._get_visibility(node, source_bytes)
@@ -243,7 +223,7 @@ class RustExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_impl(self, node, source_bytes, source_lines) -> Optional[dict]:
+    def _extract_impl(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
         try:
             sig_text = self.collect_node_text(node, source_bytes)
             brace_idx = sig_text.find("{")
@@ -275,7 +255,7 @@ class RustExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_type_alias(self, node, source_bytes, source_lines) -> Optional[dict]:
+    def _extract_type_alias(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
         try:
             name = self._get_name(node, source_bytes)
             visibility = self._get_visibility(node, source_bytes)
@@ -298,7 +278,7 @@ class RustExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_const(self, node, source_bytes, source_lines, kind: str) -> Optional[dict]:
+    def _extract_const(self, node: Any, source_bytes: bytes, source_lines: list[str], kind: str) -> dict[str, Any] | None:
         try:
             name = self._get_name(node, source_bytes)
             visibility = self._get_visibility(node, source_bytes)
@@ -321,7 +301,7 @@ class RustExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_macro(self, node, source_bytes, source_lines) -> Optional[dict]:
+    def _extract_macro(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
         try:
             name = ""
             for child in node.named_children:
@@ -348,20 +328,55 @@ class RustExtractor(BaseExtractor):
         except Exception:
             return None
 
-    # ── Import extraction ──────────────────────────────────────────────────
+    # ── Risk pattern extraction ──────────────────────────────────────────
 
-    def extract_imports(self, file_path: str, source_bytes: bytes) -> list[dict]:
+    def extract_risk_patterns(self, file_path: str, source_bytes: bytes) -> list[dict[str, Any]]:
+        """Extract risky Rust patterns: unwrap, expect, unsafe blocks, panic, as casts."""
         parser = self.get_parser()
         tree = parser.parse(source_bytes)
-        root = tree.root_node
 
-        imports = []
-        cursor = root.walk()
-        self._walk_imports(cursor, source_bytes, imports)
+        counts: dict[str, int] = {}
+        self._walk_risk(tree.root_node, source_bytes, counts)
 
-        return imports
+        return [{"pattern_type": k, "count": v} for k, v in counts.items() if v > 0]
 
-    def _walk_imports(self, cursor, source_bytes, imports):
+    def _walk_risk(self, node: Any, source_bytes: bytes, counts: dict[str, int]) -> None:
+        t = node.type
+
+        if t == "unsafe_block":
+            counts["unsafe_blocks"] = counts.get("unsafe_blocks", 0) + 1
+
+        elif t == "as_expression":
+            counts["as_casts"] = counts.get("as_casts", 0) + 1
+
+        elif t == "macro_invocation":
+            text = self.collect_node_text(node, source_bytes)
+            if text.startswith("panic!"):
+                counts["panic"] = counts.get("panic", 0) + 1
+            elif text.startswith("unreachable!"):
+                counts["unreachable"] = counts.get("unreachable", 0) + 1
+
+        elif t == "call_expression":
+            method = self._get_call_method_name(node, source_bytes)
+            if method in ("unwrap", "expect"):
+                counts[method] = counts.get(method, 0) + 1
+
+        for child in node.children:
+            self._walk_risk(child, source_bytes, counts)
+
+    def _get_call_method_name(self, node: Any, source_bytes: bytes) -> str | None:
+        """Get the method name if this call_expression is a method call."""
+        for child in node.children:
+            if child.type == "field_expression":
+                for grandchild in child.named_children:
+                    if grandchild.type == "field_identifier":
+                        return self.collect_node_text(grandchild, source_bytes)
+        return None
+
+    # ── Import extraction ──────────────────────────────────────────────────
+
+    def _handle_import_node(self, cursor: Any, source_bytes: bytes, imports: list[Any], file_path: str) -> None:
+        """Handle a single node during import extraction."""
         node = cursor.node
 
         if node.type == self.USE_DECL:
@@ -385,17 +400,18 @@ class RustExtractor(BaseExtractor):
                     "line_end": node.end_point[0] + 1,
                 })
 
-        if cursor.goto_first_child():
-            self._walk_imports(cursor, source_bytes, imports)
-            while cursor.goto_next_sibling():
-                self._walk_imports(cursor, source_bytes, imports)
-            cursor.goto_parent()
-
     def _classify_import(self, imp_text: str) -> str:
         """Classify an import as internal or external."""
+        # Strip 'use ' prefix and trailing ';' for prefix matching
+        imp = imp_text
+        if imp.startswith("use "):
+            imp = imp[4:]
+        if imp.endswith(";"):
+            imp = imp[:-1]
+
         # External crates start with the crate name directly (not crate::, super::, self::)
         internal_prefixes = ("crate::", "super::", "self::")
-        if any(imp_text.startswith(p) for p in internal_prefixes):
+        if any(imp.startswith(p) for p in internal_prefixes):
             return "internal"
 
         # Known external crates (Rust standard library)
@@ -403,17 +419,16 @@ class RustExtractor(BaseExtractor):
             "std::", "core::", "alloc::", "proc_macro::",
             "test::", "bench::", "compiler_builtins::",
         )
-        if any(imp_text.startswith(p) for p in external_prefixes):
+        if any(imp.startswith(p) for p in external_prefixes):
             return "external"
 
         # If it starts with a path pattern that looks like a workspace crate
-        # (contains ::), it might be internal
-        # Otherwise it could be a workspace crate reference or external
-        return "external"
+        # (contains ::), treat as internal for dependency resolution
+        return "internal"
 
     # ── Import resolution ──────────────────────────────────────────────────
 
-    def resolve_import(self, import_text: str, source_file: str, path_to_id: dict) -> Optional[str]:
+    def resolve_import(self, import_text: str, source_file: str, path_to_id: dict[str, Any]) -> str | None:
         """Resolve a Rust use statement to a file path.
 
         Handles:
@@ -473,13 +488,13 @@ class RustExtractor(BaseExtractor):
         # Don't resolve these for now
         return None
 
-    def _resolve_mod_in_same_dir(self, mod_name: str, source_file: str) -> Optional[str]:
+    def _resolve_mod_in_same_dir(self, mod_name: str, source_file: str) -> str | None:
         """Resolve a module name in the same directory as source_file."""
         src_dir = os.path.dirname(source_file)
         candidate = os.path.join(src_dir, mod_name)
         return self._try_file_paths(candidate)
 
-    def _path_segments_to_file(self, segments: list[str], source_file: str) -> Optional[str]:
+    def _path_segments_to_file(self, segments: list[str], source_file: str) -> str | None:
         """Convert path segments (e.g. ['entities', 'card']) to a file path."""
         # Remove last segment if it refers to a specific item (not a module)
         # Rust convention: use crate::entities::card → src/entities/card.rs
@@ -488,7 +503,7 @@ class RustExtractor(BaseExtractor):
             return self._try_file_paths(candidate)
         return None
 
-    def _try_file_paths(self, base_path: str) -> Optional[str]:
+    def _try_file_paths(self, base_path: str) -> str | None:
         """Try common Rust file path conventions."""
         candidates = [
             base_path + ".rs",

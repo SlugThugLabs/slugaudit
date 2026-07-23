@@ -51,6 +51,13 @@ htmlcov/
 # Pre-commit
 .pre-commit-cache/
 
+# Configuration (contains credentials)
+config.toml
+
+# Local activation and client state
+.planning/slugaudit/
+.antigravitycli/
+
 # OS
 .DS_Store
 Thumbs.db

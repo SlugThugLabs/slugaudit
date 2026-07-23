@@ -1,7 +1,7 @@
 """Domain entities — Import records and dependency edges."""
 
+from typing import Any
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
@@ -9,12 +9,12 @@ class ImportRecord:
     """An import/use/include statement in a source file."""
     import_text: str
     import_type: str  # "internal" or "external"
-    line_start: Optional[int] = None
-    line_end: Optional[int] = None
-    resolved_path: Optional[str] = None
+    line_start: int | None = None
+    line_end: int | None = None
+    resolved_path: str | None = None
 
     @classmethod
-    def from_dict(cls, d: dict) -> "ImportRecord":
+    def from_dict(cls, d: dict[str, Any]) -> "ImportRecord":
         return cls(
             import_text=d["import_text"],
             import_type=d.get("import_type", "internal"),
@@ -30,7 +30,7 @@ class DependencyEdge:
     project_id: str
     source_file_id: str
     target_file_id: str
-    import_id: Optional[int] = None
+    import_id: int | None = None
 
 
 __all__ = ["ImportRecord", "DependencyEdge"]

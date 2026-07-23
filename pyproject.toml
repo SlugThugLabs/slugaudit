@@ -3,10 +3,11 @@ name = "slugaudit-mcp"
 version = "0.1.0"
 description = "PostgreSQL-backed code audit intelligence for AI assistants"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "psycopg2-binary>=2.9",
     "mcp>=1.0.0",
+    "regex>=2024.0",
     "tree-sitter>=0.23",
     "tree-sitter-rust",
     "tree-sitter-python",
@@ -19,19 +20,39 @@ dependencies = [
 ]
 
 [project.scripts]
-slugaudit-mcp = "slugaudit_mcp:main"
+slugaudit-mcp = "mcp_server:main"
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["*.py", "languages*", "schema.sql"]
+include = [
+    "app*",
+    "briefing*",
+    "domain*",
+    "infrastructure*",
+    "languages*",
+    "repositories*",
+    "services*",
+]
+
+[tool.setuptools]
+py-modules = ["mcp_server"]
+
+[tool.setuptools.data-files]
+"share/slugaudit-mcp" = ["schema.sql", "instructions.md", "config.toml.example"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
 select = ["E", "W", "F", "UP", "S", "B", "C4"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S108"]
 
 [tool.mypy]
 strict = true
