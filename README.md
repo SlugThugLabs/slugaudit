@@ -75,8 +75,37 @@ stale fallback.
 
 Every successful response includes `slugaudit_meta` with the contract version,
 schema version, project ID, revision ID, manifest hash, sync timestamp, and
-`freshness: verified`. Automated risk patterns are leads, not findings or
-scores.
+`freshness: verified`. Automated risk patterns (below) are leads, not findings
+or scores — the AI still has to review and decide, then persist a real
+conclusion with `audit_finding` if one holds up.
+
+## Language support — what actually works, honestly
+
+Eight languages, each via its own Tree-sitter grammar (`languages/<name>.py`).
+Every one of them extracts **signatures** (functions, classes, and similar
+top-level constructs) and **imports** (raw import statements plus best-effort
+resolution to a dependency graph edge between files), and every one has a
+handful of **risk patterns** (regex-based leads like `eval`, `unwrap`,
+`unsafe.Pointer` — see each extractor's `extract_risk_patterns` for the exact
+list; these are leads, never findings).
+
+| Language | Signature extraction | Import resolution | Known limitations |
+|---|---|---|---|
+| Rust | fn, struct, enum, trait, impl, type alias, const/static, macro | Cross-crate via a discovered workspace `crate_map`, `crate::`/`super::`/`self::` paths, re-export chasing (depth-capped) | Most rigorously built of the 8; no known gaps |
+| Python | Functions (incl. decorated, async), classes | Relative (`from . import x`) and absolute (`from pkg.mod import x`) imports, resolved against real files on disk | None currently known — see `tests/test_import_resolution.py` for exact coverage |
+| TypeScript / JS | Functions, classes, interfaces, enums, type aliases, `const`/`let`-bound functions (including async arrows) | Relative imports (`./foo`, `../bar`) | `tsconfig.json` path-alias imports (`@app/utils`) are **not** resolved and are classified external, same as a real npm package |
+| Go | Functions, methods, structs, interfaces | Same-module imports via `go.mod`'s declared module path; resolves to a representative file in the target package directory | Struct/type signature text omits the leading `type` keyword (cosmetic — name/kind/resolution are unaffected). No `go.mod` means nothing resolves as internal at all (there's no reliable way to tell a same-module import from a third-party one without it) |
+| Java | Classes, methods (incl. generics, annotations) | Package-path-to-file resolution against project root, `src/`, and `src/main/java/`; known JDK prefixes short-circuit to external without a filesystem check | None currently known |
+| C | Functions | `#include "local.h"` (quoted) resolves against source-relative, project-root, and common include dirs; `#include <system.h>` (angle-bracket) always stays external, by C's own syntax | `#define` macros are **not** extracted as signatures at all |
+| C++ | Classes (incl. templates), functions | Same quote/angle-bracket handling as C | Same macro gap as C. Templates are captured as plain classes/functions — no separate generic-parameter extraction |
+| Ruby | Methods, singleton methods, classes, modules | `require_relative` (relative), plain `require` (project root / `lib/` / `app/`), `load`/`autoload` (same lookup as `require`) | `include`/`extend`/`prepend` reference an already-loaded constant, not a file — never resolve, which is correct, not a gap |
+
+None of the "known limitations" above produce *wrong* data — they're
+documented gaps in coverage (something real isn't captured), not
+correctness bugs (something is captured but wrong). If you find one that
+behaves incorrectly rather than incompletely, that's a bug — the resolution
+test suite (`tests/test_import_resolution.py`, `tests/test_circular_imports.py`,
+`tests/test_extractors.py`) is where a regression test for it belongs.
 
 ## Host-adapter protocol and the `_project_root` override
 
@@ -130,11 +159,10 @@ call needs one:
    configuration — this is what a fresh clone gets with zero setup.
 
 The two backends are not identical: the SQLite one is scoped to the 7 tables
-and 6 tools the current design actually uses (see CLAUDE.md), and
-`audit_raw_sql` specifically requires PostgreSQL — reimplementing its
-constrained-SQL grammar for a second dialect isn't worth it for what's meant
-to be a zero-infrastructure fallback. Every other tool behaves identically
-either way.
+and 7 tools (everything except `audit_raw_sql`) the current design actually
+uses — see `repositories/sqlite/`'s module docstring for the deliberate
+maintenance-burden tradeoff behind that choice. Every other tool behaves
+identically either way.
 
 **Switching from SQLite to PostgreSQL later is automatic.** The moment a
 project that's been running on SQLite gets a working PostgreSQL
@@ -144,27 +172,48 @@ re-derived from source on every sync anyway), then renames the old file to
 `audit.db.migrated` rather than deleting it. Nothing needs to be triggered
 manually.
 
-### PostgreSQL setup (optional — for a shared, multi-machine index)
+## Installation
 
-SlugAudit requires **Python 3.11+**, and runs on **Linux or macOS only** —
+SlugAudit requires **Python 3.11+** and runs on **Linux or macOS only** —
 cross-process synchronization uses POSIX `fcntl` file locks, which do not
 exist on Windows. `mcp_server.py` checks this at startup and fails with a
-clear message rather than a raw `ImportError`. PostgreSQL itself needs
-**15+** only if you choose to configure it.
+clear message rather than a raw `ImportError`.
 
 ```bash
 ./setup.sh
 ```
 
-`config.toml` holds a database password in plain text. The server refuses to
-load it if it is readable by anyone other than its owner — keep it at
-`chmod 600`:
+This creates a `.venv` and installs SlugAudit into it — `pyproject.toml` is
+the single source of truth for dependencies (there is no separate
+`requirements.txt` to keep in sync; a stale duplicate of the dependency list
+is exactly how this project once shipped an outdated, CVE-affected `mcp` SDK
+version in two different places at once). Nothing beyond this step is
+required — see "Backends" above for the zero-config default.
+
+Two optional convenience scripts register the installed server with a
+specific AI client:
+
+```bash
+./claude-code-install.sh   # registers with Claude Code
+./grok-install.sh          # registers with Grok (--scope user|project)
+```
+
+Both detect whether `config.toml` exists and register accordingly — with it,
+PostgreSQL; without it, the zero-config SQLite default. Neither requires
+`config.toml` to exist.
+
+### PostgreSQL setup (optional — for a shared, multi-machine index)
+
+PostgreSQL 15+ only if you choose to configure it:
 
 ```bash
 cp config.toml.example config.toml
 chmod 600 config.toml
 $EDITOR config.toml
 ```
+
+`config.toml` holds a database password in plain text. The server refuses to
+load it if it is readable by anyone other than its owner.
 
 ## Verification
 
@@ -175,12 +224,18 @@ ruff check app languages repositories services domain infrastructure mcp_server.
 git diff --check
 ```
 
+A `.pre-commit-config.yaml` runs the same `ruff`/`mypy` checks (plus generic
+hygiene: trailing whitespace, merge-conflict markers, large files) on staged
+changes if you have [pre-commit](https://pre-commit.com) installed
+(`pre-commit install` once per checkout).
+
 `pytest -q` covers both backends. SQLite needs no gating — it's a Python
 stdlib module, so `tests/test_sqlite_backend.py`, `tests/test_sqlite_end_to_end.py`,
-and `tests/test_sqlite_migration.py` all run real (non-mocked) database
-behavior on every normal test run. PostgreSQL is the one backend that needs
-a real network server, so everything else stays mocked, and
-`tests/test_integration_db.py` additionally exercises the real schema
+`tests/test_sqlite_migration.py`, `tests/test_import_resolution.py`, and
+`tests/test_circular_imports.py` all run real (non-mocked) database and
+Tree-sitter behavior on every normal test run. PostgreSQL is the one backend
+that needs a real network server, so everything touching it stays mocked
+except `tests/test_integration_db.py`, which exercises the real schema
 migration, advisory lock, connection pool, and a repository round trip
 against a live PostgreSQL database. It is skipped by default and only runs
 when `SLUGAUDIT_RUN_DB_TESTS=1` is set:

@@ -21,5 +21,8 @@ else
 fi
 
 echo "Installed SlugAudit MCP: ${VENV_DIR}/bin/slugaudit-mcp"
-echo "Configure PostgreSQL with config.toml or PG* environment variables."
-echo "Then register that executable as a stdio MCP server in any AI client."
+echo "Register that executable as a stdio MCP server in any AI client — nothing"
+echo "else is required. With no PGHOST/config.toml, each project gets its own"
+echo "zero-config SQLite index automatically. Configure PostgreSQL (config.toml"
+echo "or PG* environment variables) only if you want one shared index served"
+echo "across multiple developers or machines."

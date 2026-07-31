@@ -284,13 +284,25 @@ class TestPythonExtractor(unittest.TestCase):
         self.assertEqual(len(imps), 1)
         self.assertIn("OrderedDict", imps[0]["import_text"])
 
-    def test_extracts_decorated_fn(self) -> None:
+    def test_extracts_decorated_fn_exactly_once(self) -> None:
+        # Regression test: decorated_definition used to have a special case
+        # that extracted its wrapped function_definition child directly,
+        # *and* the walker extracted that same child again naturally,
+        # recording every decorated function twice. Fixed by removing the
+        # special case entirely — the walker's plain FN_DEF dispatch was
+        # always sufficient (this is exactly how decorated classes already
+        # worked, since CLASS_DEF was never special-cased).
         source = b"@decorator\ndef wrapped():\n    pass\n"
         sigs = self.ext.extract_signatures("/tmp/test.py", source)
-        # Decorated functions are extracted once from the decorated_definition
-        # and once from recursion into children (known dedup gap)
         names = [s["name"] for s in sigs]
-        self.assertIn("wrapped", names)
+        self.assertEqual(names.count("wrapped"), 1)
+
+    def test_extracts_multiply_decorated_async_fn_exactly_once(self) -> None:
+        source = b"@staticmethod\n@cache\nasync def fetch(x):\n    pass\n"
+        sigs = self.ext.extract_signatures("/tmp/test.py", source)
+        names = [s["name"] for s in sigs]
+        self.assertEqual(names.count("fetch"), 1)
+        self.assertTrue(sigs[0]["is_async"])
 
 
 class TestTypeScriptExtractor(unittest.TestCase):
@@ -360,6 +372,25 @@ class TestTypeScriptExtractor(unittest.TestCase):
         self.assertEqual(len(sigs), 1)
         self.assertEqual(sigs[0]["type"], "variable")
         self.assertEqual(sigs[0]["name"], "MAX_SIZE")
+
+    def test_const_bound_async_arrow_function_is_extracted_as_a_function(self) -> None:
+        # Regression test: `const f = async (x) => ...` used to be flattened
+        # to a generic "variable" signature with no is_async/param info at
+        # all — a real gap given this is the dominant function style in a
+        # lot of modern JS/TS over `function` declarations.
+        source = b"const fetchData = async (url) => {\n  return await fetch(url);\n};\n"
+        sigs = self.ext.extract_signatures("/tmp/test.ts", source)
+        self.assertEqual(len(sigs), 1)
+        self.assertEqual(sigs[0]["type"], "fn")
+        self.assertEqual(sigs[0]["name"], "fetchData")
+        self.assertTrue(sigs[0]["is_async"])
+
+    def test_const_bound_concise_arrow_function_is_extracted_as_a_function(self) -> None:
+        source = b"const add = (a, b) => a + b;\n"
+        sigs = self.ext.extract_signatures("/tmp/test.ts", source)
+        self.assertEqual(len(sigs), 1)
+        self.assertEqual(sigs[0]["type"], "fn")
+        self.assertFalse(sigs[0]["is_async"])
 
     def test_deeply_nested_source_does_not_raise_recursion_error(self) -> None:
         # TypeScriptExtractor has its own _walk_tree override (export handling
@@ -572,15 +603,25 @@ class TestRubyExtractor(unittest.TestCase):
         self.assertEqual(sigs[0]["type"], "method")
         self.assertEqual(sigs[0]["name"], "hello")
 
-    def test_extracts_class(self) -> None:
+    def test_extracts_class_exactly_once(self) -> None:
+        # Regression test: tree-sitter-ruby gives the class_definition node
+        # and its own literal "class" keyword token the same .type string
+        # ("class") — one named, one anonymous. Walking node.children
+        # (rather than named_children) used to dispatch on both, recording
+        # a bogus second "unnamed" class signature for the keyword token.
         source = b"class MyClass\n  def initialize\n  end\nend\n"
         sigs = self.ext.extract_signatures("/tmp/test.rb", source)
-        self.assertTrue(any(s["type"] == "class" and s["name"] == "MyClass" for s in sigs))
+        class_sigs = [s for s in sigs if s["type"] == "class"]
+        self.assertEqual(len(class_sigs), 1)
+        self.assertEqual(class_sigs[0]["name"], "MyClass")
 
-    def test_extracts_module(self) -> None:
+    def test_extracts_module_exactly_once(self) -> None:
+        # Same bug, same fix, for "module" (see test_extracts_class_exactly_once).
         source = b"module Utilities\n  def helper\n  end\nend\n"
         sigs = self.ext.extract_signatures("/tmp/test.rb", source)
-        self.assertTrue(any(s["type"] == "module" and s["name"] == "Utilities" for s in sigs))
+        module_sigs = [s for s in sigs if s["type"] == "module"]
+        self.assertEqual(len(module_sigs), 1)
+        self.assertEqual(module_sigs[0]["name"], "Utilities")
 
     def test_extracts_singleton_method(self) -> None:
         source = b"def self.factory_method\n  new\nend\n"

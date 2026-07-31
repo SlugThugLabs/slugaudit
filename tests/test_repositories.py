@@ -166,3 +166,91 @@ def test_project_status_total_size_is_a_real_int_not_decimal() -> None:
     assert status["total_size"] == 2048
     assert type(status["total_size"]) is int
     json.dumps(status)  # must not raise
+
+
+# The five tests below cover methods that were, until now, only ever called
+# from production code (app/sync.py, app/activation.py, services/
+# import_service.py, app/handlers.py) and never exercised by a single test —
+# not mocked-and-verified, not real-DB-tested, nothing. This is exactly the
+# kind of gap that let the audit_brief Decimal bug ship undetected.
+
+
+def test_get_by_path_finds_project_used_by_the_freshness_gate() -> None:
+    conn, cursor = _connection()
+    cursor.fetchone.return_value = ("project-1", "demo", "python", "/repo")
+
+    row = ProjectRepository(conn).get_by_path("/repo")
+
+    assert row == ("project-1", "demo", "python", "/repo")
+    cursor.execute.assert_called_once_with(
+        "SELECT id, name, primary_language, repo_path "
+        "FROM projects WHERE repo_path = %s",
+        ("/repo",),
+    )
+
+
+def test_get_by_path_returns_none_for_an_unknown_project() -> None:
+    conn, cursor = _connection()
+    cursor.fetchone.return_value = None
+
+    assert ProjectRepository(conn).get_by_path("/nowhere") is None
+
+
+def test_purge_by_path_deletes_the_project_it_finds() -> None:
+    conn, cursor = _connection()
+    cursor.fetchone.side_effect = [("project-1",), ("project-1",)]
+
+    deleted = ProjectRepository(conn).purge_by_path("/repo")
+
+    assert deleted is True
+    statements = [call.args[0] for call in cursor.execute.call_args_list]
+    assert any("DELETE FROM projects WHERE id = %s" in s for s in statements)
+
+
+def test_purge_by_path_is_a_noop_for_an_unknown_project() -> None:
+    conn, cursor = _connection()
+    cursor.fetchone.return_value = None
+
+    assert ProjectRepository(conn).purge_by_path("/nowhere") is False
+    # Never even looks for evidence to delete if the project doesn't exist.
+    delete_calls = [
+        call for call in cursor.execute.call_args_list if "DELETE" in call.args[0]
+    ]
+    assert delete_calls == []
+
+
+def test_purge_obsolete_findings_scopes_to_project_and_file() -> None:
+    conn, cursor = _connection()
+    cursor.rowcount = 3
+
+    deleted = FileRepository(conn).purge_obsolete_findings("project-1", "file-1")
+
+    assert deleted == 3
+    cursor.execute.assert_called_once_with(
+        "DELETE FROM findings WHERE project_id = %s AND file_id = %s",
+        ("project-1", "file-1"),
+    )
+    conn.commit.assert_called_once_with()
+
+
+def test_update_audit_timestamps_syncs_hash_for_the_whole_project() -> None:
+    conn, cursor = _connection()
+
+    FileRepository(conn).update_audit_timestamps("project-1")
+
+    cursor.execute.assert_called_once_with(
+        "UPDATE files SET last_audited_hash = hash WHERE project_id = %s",
+        ("project-1",),
+    )
+    conn.commit.assert_called_once_with()
+
+
+def test_get_all_paths_ordered_returns_sorted_paths_only() -> None:
+    conn, cursor = _connection()
+    cursor.fetchall.return_value = [("b.py",), ("a.py",)]
+
+    paths = FileRepository(conn).get_all_paths_ordered("project-1")
+
+    assert paths == ["b.py", "a.py"]  # trusts the DB's ORDER BY, doesn't re-sort
+    query = cursor.execute.call_args.args[0]
+    assert "ORDER BY path" in query

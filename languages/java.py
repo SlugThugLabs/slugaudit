@@ -154,7 +154,7 @@ class JavaExtractor(BaseExtractor):
 
         if node.type == self.IMPORT_DECL:
             imp_text = self.collect_node_text(node, source_bytes).strip()
-            imp_type = self._classify_import(imp_text)
+            imp_type = self._classify_import(imp_text, file_path)
             imports.append({
                 "import_text": imp_text,
                 "import_type": imp_type,
@@ -162,13 +162,20 @@ class JavaExtractor(BaseExtractor):
                 "line_end": node.end_point[0] + 1,
             })
 
-    def _classify_import(self, imp_text: str) -> str:
-        """Classify a Java import as internal or external."""
+    def _classify_import(self, imp_text: str, file_path: str) -> str:
+        """Classify a Java import as internal or external.
+
+        A package-path prefix alone can't distinguish a local class from a
+        third-party one — only a known JDK prefix can be trusted as external
+        without checking anything. For everything else, actually look for
+        the file resolve_import would produce rather than defaulting to
+        external for "the wide Java ecosystem" regardless of whether the
+        class is actually part of this project.
+        """
         imp = imp_text.replace("import ", "").replace(";", "").strip()
         if imp.startswith("static "):
             imp = imp[7:].strip()
 
-        # Java standard library packages
         std_pkgs = (
             "java.", "javax.", "javafx.", "com.sun.",
             "org.w3c.", "org.xml.", "org.ietf.jgss",
@@ -177,8 +184,8 @@ class JavaExtractor(BaseExtractor):
         if any(imp.startswith(p) for p in std_pkgs):
             return "external"
 
-        # If it contains the project name or matches local paths, it's internal
-        # Default to external for wide Java ecosystem
+        if self.resolve_import(imp_text, file_path, {}) is not None:
+            return "internal"
         return "external"
 
     # ── Import resolution ──────────────────────────────────────────────────

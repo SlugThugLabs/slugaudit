@@ -75,12 +75,15 @@ class TypeScriptExtractor(BaseExtractor):
                     self._extract_declaration(
                         child, source_bytes, source_lines, signatures, exported=True
                     )
-                    stack.extend(reversed(child.children))
+                    # Named children only — see BaseExtractor._walk_tree for
+                    # why an anonymous keyword/punctuation token must never
+                    # be a dispatch target.
+                    stack.extend(reversed(child.named_children))
             else:
                 self._extract_declaration(
                     node, source_bytes, source_lines, signatures, exported=False
                 )
-                stack.extend(reversed(node.children))
+                stack.extend(reversed(node.named_children))
 
     def _extract_declaration(self, node: Any, source_bytes: bytes, source_lines: list[str], signatures: list[Any], exported: bool) -> None:
         """Extract a signature from a declaration node, if applicable."""
@@ -284,10 +287,12 @@ class TypeScriptExtractor(BaseExtractor):
 
             decl = declarators[0]
             name_node = None
+            value_node = None
             for child in decl.named_children:
-                if child.type == "identifier":
+                if child.type == "identifier" and name_node is None:
                     name_node = child
-                    break
+                elif child.type in ("arrow_function", "function_expression"):
+                    value_node = child
 
             if not name_node:
                 return None
@@ -302,9 +307,34 @@ class TypeScriptExtractor(BaseExtractor):
                 elif child.type == "var":
                     kind = "var"
 
-            sig_text = f"{kind} {name}"
             doc = self._collect_jsdoc(node, source_bytes, source_lines)
             visibility = "export" if exported else ""
+
+            if value_node is not None:
+                # Bound to a function value (`const f = async (x) => ...` or
+                # `const f = function(x) {...}`) — record it as a function
+                # like any other declaration, not a generic "variable" with
+                # no params/async info. Very common in modern JS/TS, where
+                # this is often the majority style over `function` statements.
+                is_async = any(child.type == "async" for child in value_node.children)
+                sig_text = f"{kind} {name} = " + self.collect_node_text(value_node, source_bytes)
+                brace_idx = sig_text.find("{")
+                if brace_idx >= 0:
+                    sig_text = sig_text[:brace_idx].strip() + " { ... }"
+                return {
+                    "type": "fn",
+                    "name": name,
+                    "signature": sig_text[:500],
+                    "visibility": visibility,
+                    "doc_comment": doc,
+                    "line_start": node.start_point[0] + 1,
+                    "line_end": node.end_point[0] + 1,
+                    "is_async": is_async,
+                    "is_unsafe": False,
+                    "generic_params": "",
+                }
+
+            sig_text = f"{kind} {name}"
 
             return {
                 "type": "variable",

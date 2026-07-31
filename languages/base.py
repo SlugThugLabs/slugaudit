@@ -122,13 +122,21 @@ class BaseExtractor(ABC):
     def _walk_tree(self, cursor: Any, source_bytes: bytes, source_lines: list[str], signatures: list[Any], file_path: str) -> None:
         """Iteratively walk the tree-sitter tree (pre-order) and extract signatures.
 
-        Calls `_handle_signature_node()` for each node, in the same node-then
-        -children-left-to-right order the previous recursive walk produced.
-        Subclasses override `_handle_signature_node()` for language-specific
-        dispatch. Iterative (explicit stack) rather than recursive so a
-        pathologically deep parse tree (generated code, deeply nested
-        expressions) cannot exhaust Python's call stack and abort an entire
-        sync batch with a RecursionError.
+        Calls `_handle_signature_node()` for each *named* node, in the same
+        node-then-children-left-to-right order the previous recursive walk
+        produced. Named children only, not `node.children` — some grammars
+        (confirmed for Ruby: the `class`/`module` definition node and their
+        own literal `class`/`module` keyword token share the same `.type`
+        string, one named and one not) would otherwise dispatch twice on
+        what's semantically one construct, recording a bogus second
+        "unnamed" signature for the anonymous keyword token. Anonymous nodes
+        are literal syntax (keywords, punctuation), never a construct this
+        method should be extracting a signature from. Subclasses override
+        `_handle_signature_node()` for language-specific dispatch. Iterative
+        (explicit stack) rather than recursive so a pathologically deep
+        parse tree (generated code, deeply nested expressions) cannot
+        exhaust Python's call stack and abort an entire sync batch with a
+        RecursionError.
         """
         stack = [cursor.node]
         while stack:
@@ -136,7 +144,7 @@ class BaseExtractor(ABC):
             self._handle_signature_node(
                 _NodeCursor(node), source_bytes, source_lines, signatures, file_path
             )
-            stack.extend(reversed(node.children))
+            stack.extend(reversed(node.named_children))
 
     def _handle_signature_node(self, cursor: Any, source_bytes: bytes, source_lines: list[str], signatures: list[Any], file_path: str) -> None:
         """Handle a single node during signature extraction.
@@ -149,13 +157,14 @@ class BaseExtractor(ABC):
     def _walk_imports(self, cursor: Any, source_bytes: bytes, imports: list[Any], file_path: str) -> None:
         """Iteratively walk the tree-sitter tree (pre-order) and extract imports.
 
-        Same iterative-stack rationale as `_walk_tree`; see its docstring.
+        Named children only; same iterative-stack and named-vs-anonymous
+        rationale as `_walk_tree` — see its docstring.
         """
         stack = [cursor.node]
         while stack:
             node = stack.pop()
             self._handle_import_node(_NodeCursor(node), source_bytes, imports, file_path)
-            stack.extend(reversed(node.children))
+            stack.extend(reversed(node.named_children))
 
     def _handle_import_node(self, cursor: Any, source_bytes: bytes, imports: list[Any], file_path: str) -> None:
         """Handle a single node during import extraction.

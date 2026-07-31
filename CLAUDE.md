@@ -50,13 +50,58 @@ tool's actual reason to exist — reconsider it rather than adding it.
   PostgreSQL mandatory again without a very good reason — the zero-setup
   path is a deliberate distribution/adoption decision, not a stopgap.
 - The SQLite backend is deliberately not full parity with PostgreSQL: it's
-  scoped to the 7 tables and 6 tools (everything except `audit_raw_sql`)
+  scoped to the 7 tables and 7 tools (everything except `audit_raw_sql`)
   that the current design actually uses. Do not "complete" it into a second
   full-parity backend without discussing the maintenance-burden tradeoff
   first — see `repositories/sqlite/`'s module docstring.
 
+## Language extractor lessons (from real bugs, not theory)
+
+Three bug classes were found and fixed across the 8 extractors in one pass;
+all three are easy to reintroduce by accident when adding or touching a
+language, so they're recorded here rather than only in commit history:
+
+- **Tree walkers must iterate `node.named_children`, never `node.children`.**
+  Some grammars give a definition node and its own literal keyword token the
+  *same* `.type` string — confirmed for tree-sitter-ruby, where the `class`/
+  `module` definition node and the bare `class`/`module` keyword token
+  inside it are both typed `"class"`/`"module"`, one named, one anonymous.
+  Walking `node.children` dispatches on both, recording a bogus second
+  "unnamed" signature for the keyword token. Anonymous nodes are literal
+  syntax (keywords, punctuation) and must never be a dispatch target.
+- **`_classify_import` must attempt real resolution, never guess "internal
+  vs external" from a naming heuristic alone.** Python, Go, Java, and Ruby
+  all shipped this exact bug simultaneously: classification defaulted to
+  "external" for anything that didn't match a narrow syntactic pattern
+  (a dot-prefix, a known JDK package prefix, a specific method name), which
+  silently misclassified real local imports as external — meaning
+  `resolve_import`'s otherwise-correct logic never even ran, since
+  `build_dependency_edges` only resolves imports already tagged
+  `"internal"`. The fix pattern: classify by calling `resolve_import` (or an
+  equivalent local-module-map check, like Rust's `crate_map`) and trust
+  whatever it returns, so classification and resolution can never disagree
+  by construction. Go additionally needed `go.mod`'s declared module path to
+  have any basis at all for "is this the same module" — there is no
+  syntactic signal for that the way Python/JS relative imports or C/C++
+  quoted includes provide.
+- **A `decorated_definition`-style wrapper node must never be reached into
+  and extracted from directly if the walker will also visit the wrapped
+  node naturally.** Python's decorated-function handling did both — manually
+  extracting the wrapped `function_definition` from within the
+  `decorated_definition` branch, then the walker visited that same child
+  again as an ordinary named child — recording every decorated function
+  twice. Decorated classes never had this bug because `class_definition`
+  was only ever handled by the plain dispatch branch.
+
+`tests/test_import_resolution.py` and `tests/test_circular_imports.py` are
+the regression suites for these; `tests/test_extractors.py` has the specific
+duplicate-extraction regressions inline on the tests they broke.
+
 ## Architecture
 
+- `domain/`: plain data classes shared across layers (`Project`, `File`,
+  `Signature`, `ImportRecord`, `DependencyEdge`, `ImportResult`) — no
+  behavior, no persistence, no backend awareness
 - `app/manifest.py`: deterministic polyglot discovery and disk hashing
 - `app/state.py`: versioned local manifest and atomic state replacement
 - `app/sync.py`: mandatory pre-query freshness gate, cross-process lock, and

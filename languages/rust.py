@@ -356,11 +356,13 @@ class RustExtractor(BaseExtractor):
         return [{"pattern_type": k, "count": v} for k, v in counts.items() if v > 0]
 
     def _walk_risk(self, node: Any, source_bytes: bytes, counts: dict[str, int]) -> None:
-        """Iteratively visit every node (order doesn't matter for counting).
+        """Iteratively visit every named node (order doesn't matter for counting).
 
         Explicit stack rather than recursion — see BaseExtractor._walk_tree
         for why: a pathologically deep expression tree must not raise
-        RecursionError mid-sync.
+        RecursionError mid-sync. Named children only, matching the same
+        walker's anonymous-token rationale, even though none of the four
+        matched types here are known to collide with a keyword token today.
         """
         stack: list[Any] = [node]
         while stack:
@@ -385,7 +387,7 @@ class RustExtractor(BaseExtractor):
                 if method in ("unwrap", "expect"):
                     counts[method] = counts.get(method, 0) + 1
 
-            stack.extend(current.children)
+            stack.extend(current.named_children)
 
     def _get_call_method_name(self, node: Any, source_bytes: bytes) -> str | None:
         """Get the method name if this call_expression is a method call."""

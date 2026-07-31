@@ -175,7 +175,7 @@ class RubyExtractor(BaseExtractor):
             method_name = self._get_call_method_name(node, source_bytes)
             if method_name in ("require", "require_relative", "load", "autoload",
                                 "include", "extend", "prepend"):
-                imp_type = "internal" if method_name == "require_relative" else "external"
+                imp_type = self._classify_import(imp_text, file_path)
                 imports.append({
                     "import_text": imp_text,
                     "import_type": imp_type,
@@ -189,6 +189,22 @@ class RubyExtractor(BaseExtractor):
             if child.type == "identifier":
                 return self.collect_node_text(child, source_bytes).strip()
         return None
+
+    def _classify_import(self, imp_text: str, file_path: str) -> str:
+        """Classify a Ruby require/include-family call as internal or external.
+
+        `require_relative` is unambiguous by syntax. Plain `require` (and
+        `load`/`autoload`, which also take a string path) can name either a
+        local project file (resolved via project root, lib/, or app/) or an
+        installed gem — resolve_import already implements exactly that
+        lookup, so use it instead of assuming every non-require_relative
+        call is a gem. `include`/`extend`/`prepend` take a bareword
+        constant, not a string, so resolve_import's regex finds no quoted
+        argument for them and correctly returns None (external).
+        """
+        if self.resolve_import(imp_text, file_path, {}) is not None:
+            return "internal"
+        return "external"
 
     # ── Import resolution ──────────────────────────────────────────────────
 

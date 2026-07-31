@@ -23,6 +23,13 @@ class GoExtractor(BaseExtractor):
     IMPORT_SPEC = "import_spec"
     COMMENT = "comment"
 
+    def __init__(self, project_root: str) -> None:
+        super().__init__(project_root)
+        # Declared module path from go.mod, cached per sync like Rust's
+        # crate_map — an import is internal iff it's rooted at this path.
+        self._module_path: str | None = None
+        self._module_path_loaded = False
+
     @classmethod
     def name(cls) -> str:
         return "go"
@@ -155,49 +162,94 @@ class GoExtractor(BaseExtractor):
 
         if node.type == self.IMPORT_SPEC:
             imp_text = self.collect_node_text(node, source_bytes).strip()
+            imp_type = self._classify_import(imp_text, file_path)
             imports.append({
                 "import_text": imp_text,
-                "import_type": "external",  # Go imports are external by default
+                "import_type": imp_type,
                 "line_start": node.start_point[0] + 1,
                 "line_end": node.end_point[0] + 1,
             })
 
+    def _classify_import(self, imp_text: str, file_path: str) -> str:
+        """Classify a Go import as internal or external.
+
+        Go has no relative-import syntax to lean on the way Python/JS do —
+        every import is a full module path, so "is this internal" can only
+        be answered by checking whether it's rooted at *this project's own*
+        module path (declared in go.mod). Without a go.mod, there's no
+        reliable way to tell a same-module import from a third-party one, so
+        everything stays external rather than guessing.
+        """
+        if self.resolve_import(imp_text, file_path, {}) is not None:
+            return "internal"
+        return "external"
+
+    # ── Module path (go.mod) ────────────────────────────────────────────────
+
+    @property
+    def module_path(self) -> str | None:
+        """This project's own module path, e.g. "github.com/user/project"."""
+        if not self._module_path_loaded:
+            self._module_path = self._read_go_mod_module_path()
+            self._module_path_loaded = True
+        return self._module_path
+
+    def _read_go_mod_module_path(self) -> str | None:
+        go_mod = os.path.join(self.project_root, "go.mod")
+        if not os.path.isfile(go_mod):
+            return None
+        try:
+            with open(go_mod, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    stripped = line.strip()
+                    if stripped.startswith("module "):
+                        return stripped[len("module "):].strip()
+        except OSError:
+            return None
+        return None
+
     # ── Import resolution ──────────────────────────────────────────────────
 
     def resolve_import(self, import_text: str, source_file: str, path_to_id: dict[str, Any]) -> str | None:
-        """Resolve a Go import to a local file path.
+        """Resolve a Go import to a representative file in its package.
 
-        Go imports use full module paths, so only relative imports (which Go
-        doesn't really have in the same way) would resolve. We check for
-        same-package imports by looking for files in the same directory.
+        Go packages are directories, not single files — unlike every other
+        language here, there's no one file "being" the imported package. To
+        fit the one-edge-per-import model the rest of the system uses, this
+        resolves to one deterministically chosen (alphabetically first) .go
+        file in the target package directory, which is enough to make the
+        dependency edge exist and point at the right directory; it is not
+        claiming that specific file is uniquely significant.
         """
-        # Go doesn't have relative imports in the traditional sense.
-        # Internal packages within the same module are referenced by full path.
-        # We can check if the import path matches a local directory.
+        module = self.module_path
+        if not module:
+            return None
+
         imp = import_text.strip().strip('"')
+        if imp == module:
+            rel_dir = ""
+        elif imp.startswith(module + "/"):
+            rel_dir = imp[len(module) + 1:]
+        else:
+            return None  # third-party or standard library import
 
-        # Skip standard library imports (no domain/org prefix)
-        if "." not in imp and "/" not in imp:
+        candidate_dir = os.path.join(self.project_root, rel_dir) if rel_dir else self.project_root
+        if not os.path.isdir(candidate_dir):
             return None
 
-        # Extract the last segment as a potential package path
-        # e.g., github.com/user/project/pkg/subpkg → pkg/subpkg
-        parts = imp.split("/")
-        # Look for the module root in the project by checking if any path segment
-        # matches a directory name from the project root
-        mod_path = "/".join(parts[3:]) if len(parts) > 3 else "/".join(parts[1:])
-
-        if not mod_path:
+        try:
+            go_files = sorted(
+                entry
+                for entry in os.listdir(candidate_dir)
+                if entry.endswith(".go")
+                and os.path.isfile(os.path.join(candidate_dir, entry))
+            )
+        except OSError:
+            return None
+        if not go_files:
             return None
 
-        candidate = mod_path
-        # Check if this path exists directly
-        abspath = os.path.join(self.project_root, candidate)
-        if os.path.isdir(abspath):
-            # Return the directory itself as the target for this package
-            return candidate
-
-        return None
+        return os.path.join(rel_dir, go_files[0]) if rel_dir else go_files[0]
 
     # ── Risk pattern extraction ──────────────────────────────────────────
 

@@ -195,6 +195,29 @@ class TestSqliteRepositoryRoundTrip(unittest.TestCase):
         )
         self.assertEqual(risk_repo.get_pattern_summary(project_id), {"eval": 2})
 
+        # These four were, until this pass, exercised by nothing at all on
+        # either backend — see tests/test_repositories.py for the same gap
+        # on the PostgreSQL side.
+        self.assertEqual(
+            project_repo.get_by_path("/tmp/demo"), (project_id, "demo", "python", "/tmp/demo")
+        )
+        self.assertIsNone(project_repo.get_by_path("/nowhere"))
+
+        self.assertEqual(file_repo.get_all_paths_ordered(project_id), ["a.py"])
+
+        file_repo.update_audit_timestamps(project_id)
+        cur = self.conn.execute(
+            "SELECT hash, last_audited_hash FROM files WHERE id = ?", (file_id,)
+        )
+        row = cur.fetchone()
+        self.assertEqual(row[0], row[1])
+
+        deleted = file_repo.purge_obsolete_findings(project_id, file_id)
+        self.assertEqual(deleted, 0)  # no findings recorded yet, but must not error
+
+        self.assertTrue(project_repo.purge_project(project_id))
+        self.assertIsNone(project_repo.get_by_path("/tmp/demo"))
+
     def test_dependency_edges_resolve_incoming_and_outgoing(self) -> None:
         project_repo = make_project_repository(self.conn, auto_commit=False)
         file_repo = make_file_repository(self.conn, auto_commit=False)
@@ -258,6 +281,18 @@ class TestSqliteRepositoryRoundTrip(unittest.TestCase):
         findings = finding_repo.get_open_findings(project_id)
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0][5], "v2")  # message was updated, not duplicated
+
+    def test_purge_by_path_used_by_slugaudit_off(self) -> None:
+        project_repo = make_project_repository(self.conn, auto_commit=False)
+        with repository_transaction(self.conn):
+            project_repo.get_or_create(
+                name="demo", language="python", repo_path="/tmp/demo4"
+            )
+
+        self.assertTrue(project_repo.purge_by_path("/tmp/demo4"))
+        self.assertIsNone(project_repo.get_by_path("/tmp/demo4"))
+        # Calling it again (e.g. a retried /slugaudit off) is a clean no-op.
+        self.assertFalse(project_repo.purge_by_path("/tmp/demo4"))
 
 
 if __name__ == "__main__":

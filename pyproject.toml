@@ -1,7 +1,7 @@
 [project]
 name = "slugaudit-mcp"
 version = "0.1.0"
-description = "PostgreSQL-backed code audit intelligence for AI assistants"
+description = "Zero-config code audit intelligence for AI assistants (SQLite by default, optional shared PostgreSQL)"
 readme = "README.md"
 license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE"]

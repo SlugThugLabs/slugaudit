@@ -15,7 +15,6 @@ class PythonExtractor(BaseExtractor):
 
     FN_DEF = "function_definition"
     CLASS_DEF = "class_definition"
-    DECORATED = "decorated_definition"
     IMPORT = "import_statement"
     IMPORT_FROM = "import_from_statement"
     ASSIGNMENT = "assignment"
@@ -38,22 +37,24 @@ class PythonExtractor(BaseExtractor):
         return self._parser
 
     def _handle_signature_node(self, cursor: Any, source_bytes: bytes, source_lines: list[str], signatures: list[Any], file_path: str) -> None:
-        """Handle a single node during signature extraction."""
+        """Handle a single node during signature extraction.
+
+        `decorated_definition` itself needs no special case: the walker
+        already visits its wrapped function_definition/class_definition as
+        an ordinary named child, which is exactly the plain dispatch below.
+        A `decorated_definition` branch that reached in and extracted that
+        child *again* used to double-count every decorated function (the
+        same wrapped node got extracted once here and once more when the
+        walker reached it naturally) — decorated classes never had this bug
+        because CLASS_DEF was only ever handled by the plain branch.
+        """
         node = cursor.node
         node_type = node.type
 
-        if node_type == self.FN_DEF or node_type == self.DECORATED:
-            if node_type == self.DECORATED:
-                for child in node.named_children:
-                    if child.type == self.FN_DEF:
-                        sig = self._safe_extract(self._extract_fn, child, source_bytes, source_lines)
-                        if sig:
-                            signatures.append(sig)
-                        break
-            else:
-                sig = self._safe_extract(self._extract_fn, node, source_bytes, source_lines)
-                if sig:
-                    signatures.append(sig)
+        if node_type == self.FN_DEF:
+            sig = self._safe_extract(self._extract_fn, node, source_bytes, source_lines)
+            if sig:
+                signatures.append(sig)
 
         elif node_type == self.CLASS_DEF:
             sig = self._safe_extract(self._extract_class, node, source_bytes, source_lines)
@@ -153,7 +154,7 @@ class PythonExtractor(BaseExtractor):
 
         if node.type in (self.IMPORT, self.IMPORT_FROM):
             imp_text = self.collect_node_text(node, source_bytes).strip()
-            imp_type = self._classify_import(imp_text)
+            imp_type = self._classify_import(imp_text, file_path)
             imports.append({
                 "import_text": imp_text,
                 "import_type": imp_type,
@@ -161,27 +162,41 @@ class PythonExtractor(BaseExtractor):
                 "line_end": node.end_point[0] + 1,
             })
 
-    def _classify_import(self, imp_text: str) -> str:
-        """Classify a Python import as internal or external."""
-        # Extract the module name
-        if imp_text.startswith("from "):
-            # from foo.bar import baz → module = foo.bar
-            parts = imp_text[5:].split(" import ", 1)
-            module = parts[0] if parts else ""
-        elif imp_text.startswith("import "):
-            # import foo.bar
-            module = imp_text[7:].split(" as ")[0].strip()
-            # Handle import foo, bar
-            module = module.split(",")[0].strip()
-        else:
+    def _classify_import(self, imp_text: str, file_path: str) -> str:
+        """Classify a Python import as internal or external.
+
+        Relative imports (`from . import x`) are unambiguously internal by
+        syntax. Everything else genuinely can't be classified from syntax
+        alone — `from foo import bar` is indistinguishable from a top-level
+        local module `foo.py` or the third-party package `foo` without
+        knowing what's actually in the project. Attempt the same resolution
+        resolve_import would do and classify by whether it actually finds a
+        local file, mirroring how RustExtractor's crate_map-based
+        classification stays consistent with its own resolution by
+        construction rather than guessing separately.
+        """
+        module = self._extract_module_part(imp_text)
+        if module is None:
             return "external"
 
-        # Relative imports are always internal
         if module.startswith("."):
             return "internal"
 
-        # Known stdlib modules
+        if self.resolve_import(imp_text, file_path, {}) is not None:
+            return "internal"
         return "external"
+
+    def _extract_module_part(self, imp_text: str) -> str | None:
+        """Pull the dotted module path out of an import statement's text."""
+        if imp_text.startswith("from "):
+            rest = imp_text[5:]
+            if " import " not in rest:
+                return None
+            return rest.split(" import ", 1)[0].strip()
+        if imp_text.startswith("import "):
+            module = imp_text[7:].split(" as ")[0].strip()
+            return module.split(",")[0].strip()
+        return None
 
     # ── Import resolution ──────────────────────────────────────────────────
 
@@ -194,21 +209,10 @@ class PythonExtractor(BaseExtractor):
             from . import foo        → same dir's __init__.py
             from .bar import baz     → ./bar.py or ./bar/__init__.py
         """
-        imp = import_text
         src_dir = os.path.dirname(source_file)
 
-        # Parse the import
-        if imp.startswith("from "):
-            rest = imp[5:]
-            if " import " in rest:
-                module_part, _ = rest.split(" import ", 1)
-            else:
-                return None
-        elif imp.startswith("import "):
-            module_part = imp[7:].split(" as ")[0].strip()
-            # Handle multiple imports: import foo, bar → just take first
-            module_part = module_part.split(",")[0].strip()
-        else:
+        module_part = self._extract_module_part(import_text)
+        if module_part is None:
             return None
 
         # Handle relative imports
