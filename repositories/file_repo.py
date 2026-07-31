@@ -229,11 +229,18 @@ class FileRepository(BaseRepository):
 
         cur.close()
 
+        # PostgreSQL's SUM(bigint) (total_bytes, over the BIGINT size column)
+        # returns numeric, which psycopg2 decodes as Decimal, not int, even
+        # though every value here fits comfortably in a Python int. Cast
+        # every aggregate explicitly at this boundary — rather than assume
+        # which PostgreSQL type maps to which Python type for each column —
+        # so every caller (including handle_brief's json.dumps of this dict)
+        # gets real, JSON-safe ints.
         return {
-            "total_files": total_files,
-            "total_bytes": total_bytes,
-            "files_with_sigs": files_with_sigs,
-            "total_sigs": total_sigs,
+            "total_files": int(total_files),
+            "total_bytes": int(total_bytes),
+            "files_with_sigs": int(files_with_sigs),
+            "total_sigs": int(total_sigs),
         }
 
     def get_unchanged_with_sigs(

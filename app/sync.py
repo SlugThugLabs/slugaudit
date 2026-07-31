@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import logging
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -13,8 +14,9 @@ from typing import Any, TextIO
 
 from app.manifest import PARSER_VERSION, SourceManifest, build_manifest
 from app.state import ProjectState, find_project_root, load_state, save_state, state_dir
-from repositories import FileRepository, ProjectRepository
+from repositories import make_file_repository, make_project_repository
 from services.import_service import reconcile_project
+from services.sqlite_migration import migrate_sqlite_findings
 
 
 logger = logging.getLogger("slugaudit-mcp.sync")
@@ -55,7 +57,7 @@ def _database_matches_state(
     state: ProjectState,
 ) -> bool:
     """Prove that local state identifies the database rows tools will query."""
-    project_repo = ProjectRepository(conn)
+    project_repo = make_project_repository(conn)
     project = project_repo.get_by_path(str(project_root))
     if project is None or str(project[0]) != state.project_id:
         return False
@@ -75,8 +77,27 @@ def _database_matches_state(
         return False
 
     return bool(
-        FileRepository(conn).get_manifest(state.project_id) == _state_hashes(state)
+        make_file_repository(conn).get_manifest(state.project_id) == _state_hashes(state)
     )
+
+
+def _migrate_legacy_sqlite_if_present(project_root: Path, project_id: str, conn: Any) -> None:
+    """Carry findings forward the first time PostgreSQL becomes available.
+
+    No-op on the SQLite backend itself (nothing to migrate *from*) and a
+    cheap no-op once a prior call already renamed the leftover file — see
+    services/sqlite_migration.py for the full rationale.
+    """
+    if isinstance(conn, sqlite3.Connection):
+        return
+    migrated = migrate_sqlite_findings(project_root, project_id, conn)
+    if migrated:
+        logger.info(
+            "Migrated %d finding(s) from the local SQLite backend to PostgreSQL "
+            "for %s",
+            migrated,
+            project_root,
+        )
 
 
 def _sync_locked(project_root: Path, conn: Any) -> ProjectState:
@@ -101,6 +122,7 @@ def _sync_locked(project_root: Path, conn: Any) -> ProjectState:
         # is required for audit_raw_sql to open a database-enforced READ ONLY
         # transaction and avoids returning idle transactions to the pool.
         conn.rollback()
+        _migrate_legacy_sqlite_if_present(project_root, state.project_id, conn)
         return state
 
     force_full = state is None or not database_matches
@@ -132,6 +154,7 @@ def _sync_locked(project_root: Path, conn: Any) -> ProjectState:
         synced_at=synced_at,
     )
     save_state(project_root, new_state)
+    _migrate_legacy_sqlite_if_present(project_root, new_state.project_id, conn)
     return new_state
 
 
@@ -146,9 +169,9 @@ async def ensure_synced(cwd: str, conn: Any | None = None) -> ProjectState:
         async with synchronized_project(cwd, conn) as state:
             return state
 
-    from app.pool import get_connection
+    from app.pool import get_connection_for_project
 
-    async with get_connection() as db_conn:
+    async with get_connection_for_project(cwd) as db_conn:
         async with synchronized_project(cwd, db_conn) as state:
             return state
 

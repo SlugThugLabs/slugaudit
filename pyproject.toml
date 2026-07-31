@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "psycopg2-binary>=2.9",
-    "mcp>=1.0.0",
+    "mcp>=1.29.0,<2",
     "regex>=2024.0",
     "tree-sitter>=0.23",
     "tree-sitter-rust",
@@ -30,7 +30,6 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = [
     "app*",
-    "briefing*",
     "domain*",
     "infrastructure*",
     "languages*",
@@ -42,7 +41,7 @@ include = [
 py-modules = ["mcp_server"]
 
 [tool.setuptools.data-files]
-"share/slugaudit-mcp" = ["schema.sql", "instructions.md", "config.toml.example"]
+"share/slugaudit-mcp" = ["schema.sql", "config.toml.example"]
 
 [tool.ruff]
 line-length = 100

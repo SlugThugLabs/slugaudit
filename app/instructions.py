@@ -10,6 +10,7 @@ call verifies the complete supported source set before answering: new and change
 files are parsed, deleted files and derived facts are purged, and only an atomic,
 current revision may be queried. Sync and parsing are automatic; there are no
 manual sync, rebuild, changed-file, parsing, or database-maintenance tools.
+Native host integrations bind calls to their active project automatically.
 
 Use audit_overview to orient, audit_search to find evidence, audit_read_file for
 source, audit_dependents for blast radius, audit_file_tree for structure, and

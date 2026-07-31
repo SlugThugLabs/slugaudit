@@ -4,26 +4,127 @@ Binds together: input validation (mcp/tools.py), auto-sync (mcp/sync.py),
 connection pool (mcp/pool.py), and handlers (mcp/handlers.py).
 """
 
+import asyncio
+import hmac
+import json
 import logging
 import os
-import json
+from pathlib import Path
+from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent
 
-from app.tools import TOOLS
-from app.handlers import HANDLERS
-from app.sync import synchronized_project
-from app.pool import get_connection as get_db, init_pool
-from typing import Any
-
+from app.activation import disable_project, enable_project
 from app.config import load_config
+from app.handlers import HANDLERS
 from app.instructions import MCP_INSTRUCTIONS
+from app.pool import get_connection_for_project as get_db, init_pool
+from app.sync import synchronized_project
+from app.tools import TOOLS
 
 logger = logging.getLogger("slugaudit-mcp.server")
 
 SERVER = Server("slugaudit-mcp", instructions=MCP_INSTRUCTIONS)
+
+# Reserved host-adapter protocol. Like the arguments a host injects for its
+# own built-in Read/Write/Bash tools, these two names are never advertised to
+# the model and are meant to be set only by the trusted host layer that
+# constructs each tool call, not by the model itself. See README's
+# "Host-adapter protocol" section for the full rationale and the one thing
+# SlugAudit genuinely cannot verify from inside this codebase: whether a
+# given host actually enforces that separation.
+PROJECT_ROOT_ARGUMENT = "_project_root"
+PROJECT_CONTROL_TOOL = "_slugaudit_project_control"
+
+# Optional, off-by-default hardening: require a shared secret alongside
+# _project_root. Exists for a host that doesn't already guarantee the
+# separation above; not evidence that any given host needs it. See README.
+HOST_TOKEN_ENV_VAR = "SLUGAUDIT_HOST_TOKEN"  # noqa: S105 - a name, not a secret
+HOST_TOKEN_ARGUMENT = "_host_token"  # noqa: S105 - a name, not a secret
+
+
+def _host_token_configured() -> str | None:
+    configured = os.environ.get(HOST_TOKEN_ENV_VAR)
+    return configured if configured else None
+
+
+def _host_token_matches(supplied: Any, configured: str) -> bool:
+    """Constant-time comparison so token checks can't be timed out."""
+    if not isinstance(supplied, str) or not supplied:
+        return False
+    return hmac.compare_digest(supplied, configured)
+
+
+def _extract_project_root(arguments: dict[str, Any]) -> str:
+    """Remove and normalize the host-injected root, preserving cwd fallback.
+
+    When SLUGAUDIT_HOST_TOKEN is configured, the override is only honored if
+    the caller also supplied a matching "_host_token" argument; otherwise it
+    is silently rejected (falls back to this process's own cwd) and logged,
+    exactly as if no _project_root had been sent at all.
+    """
+    injected = arguments.pop(PROJECT_ROOT_ARGUMENT, None)
+    supplied_token = arguments.pop(HOST_TOKEN_ARGUMENT, None)
+    if injected is None:
+        return os.getcwd()
+    if not isinstance(injected, str) or not injected.strip():
+        raise ValueError(f"{PROJECT_ROOT_ARGUMENT} must be a non-empty path string")
+
+    configured_token = _host_token_configured()
+    if configured_token is not None and not _host_token_matches(
+        supplied_token, configured_token
+    ):
+        logger.warning(
+            "Rejected %s: missing or invalid %s. Falling back to this "
+            "process's own working directory.",
+            PROJECT_ROOT_ARGUMENT,
+            HOST_TOKEN_ARGUMENT,
+        )
+        return os.getcwd()
+    return str(Path(injected).expanduser().resolve())
+
+
+def _control_content(action: str, project_root: str, changed: bool) -> TextContent:
+    """Return a small machine-readable result for native client adapters."""
+    return TextContent(
+        type="text",
+        text=json.dumps(
+            {
+                "slugaudit_control": {
+                    "action": action,
+                    "project_root": str(Path(project_root).resolve()),
+                    "changed": changed,
+                }
+            },
+            separators=(",", ":"),
+        ),
+    )
+
+
+async def _project_control(arguments: dict[str, Any]) -> list[TextContent]:
+    """Execute the hidden host lifecycle route without exposing it to AI tools."""
+    project_root = _extract_project_root(arguments)
+    action = arguments.pop("action", None)
+    if arguments:
+        unexpected = ", ".join(sorted(arguments))
+        raise ValueError(f"Unexpected project control arguments: {unexpected}")
+    if action == "on":
+        was_enabled = (Path(project_root) / ".planning" / "slugaudit").is_dir()
+        activation = enable_project(project_root)
+        return [_control_content(action, project_root, not was_enabled and activation.is_dir())]
+    if action == "off":
+        if not (Path(project_root) / ".planning" / "slugaudit").is_dir():
+            # Nothing to purge, and the SQLite backend's connection requires
+            # this directory to exist — check first so an already-disabled
+            # project behaves identically (no-op) under either backend,
+            # matching "on" not opening a connection when nothing changes.
+            return [_control_content(action, project_root, False)]
+        async with get_db(project_root) as conn:
+            changed = await asyncio.to_thread(disable_project, project_root, conn)
+        return [_control_content(action, project_root, changed)]
+    raise ValueError("Project control action must be exactly 'on' or 'off'")
 
 
 def _freshness_content(state: Any) -> TextContent:
@@ -55,25 +156,25 @@ async def list_tools() -> list[Any]:
 
 @SERVER.call_tool()  # type: ignore[untyped-decorator]
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-    cwd = os.getcwd()
+    routed_arguments = dict(arguments)
+    if name == PROJECT_CONTROL_TOOL:
+        return await _project_control(routed_arguments)
 
     try:
+        project_root = _extract_project_root(routed_arguments)
+
         # Single connection shared between sync and handler
-        async with get_db() as conn:
-            async with synchronized_project(cwd, conn) as state:
+        async with get_db(project_root) as conn:
+            async with synchronized_project(project_root, conn) as state:
                 handler = HANDLERS.get(name)
                 if handler is None:
                     return [TextContent(type="text", text=f"Unknown tool: {name}")]
-                content = await handler(conn, state, arguments)
+                content = await handler(conn, state, routed_arguments)
                 return [*content, _freshness_content(state)]
 
-    except ValueError as e:
-        return [TextContent(type="text", text=str(e))]
-    except RuntimeError as e:
-        return [TextContent(type="text", text=str(e))]
-    except Exception as e:
-        logger.error(f"Tool error ({name}): {e}", exc_info=True)
-        return [TextContent(type="text", text=f"Error: {str(e)}")]
+    except Exception:
+        logger.exception("Tool error (%s)", name)
+        raise
 
 
 async def run_server() -> None:
@@ -83,6 +184,19 @@ async def run_server() -> None:
         init_pool()
         logger.info(f"DB: {cfg.user}@{cfg.host}:{cfg.port}/{cfg.database}")
 
+    if _host_token_configured() is None:
+        logger.warning(
+            "%s is not set: any tool call carrying a %s argument will have "
+            "it honored unauthenticated, letting a caller point SlugAudit at "
+            "any directory this process can read. Set %s in this process's "
+            "environment and have your host adapter send the same value as "
+            "%s to require authentication for that override.",
+            HOST_TOKEN_ENV_VAR,
+            PROJECT_ROOT_ARGUMENT,
+            HOST_TOKEN_ENV_VAR,
+            HOST_TOKEN_ARGUMENT,
+        )
+
     async with stdio_server() as (read_stream, write_stream):
         await SERVER.run(
             read_stream,
@@ -91,4 +205,11 @@ async def run_server() -> None:
         )
 
 
-__all__ = ["run_server", "SERVER"]
+__all__ = [
+    "HOST_TOKEN_ARGUMENT",
+    "HOST_TOKEN_ENV_VAR",
+    "PROJECT_CONTROL_TOOL",
+    "PROJECT_ROOT_ARGUMENT",
+    "run_server",
+    "SERVER",
+]

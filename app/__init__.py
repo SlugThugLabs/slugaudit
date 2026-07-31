@@ -1,31 +1,14 @@
 """slugaudit-mcp server package.
 
 Cleanly separated modules for config, state, connection pooling,
-auto-sync, tool definitions, handlers, and server.
+auto-sync, tool definitions, handlers, and server. Deliberately does not
+eagerly re-export its submodules here: app.sync (and transitively app.server)
+imports from services.import_service, which imports app.manifest — eagerly
+importing that whole chain the moment anything merely imports the `app`
+package (e.g. `import services`, since services/import_service.py depends on
+app.manifest) creates a circular import. Every consumer in this codebase
+already imports the specific submodule it needs directly
+(`from app.pool import ...`, `from app.config import load_config`, etc.);
+`from app import <submodule>` still works via Python's standard submodule
+fallback without this package needing to import anything itself.
 """
-
-from app.config import load_config, Config
-from app.state import ProjectState, load_state, save_state
-from app.pool import get_connection, release_connection, init_pool
-from app.sync import ensure_synced
-from app.tools import TOOLS, validate_paths, validate_pattern, validate_sql_query
-from app.handlers import HANDLERS
-from app.server import run_server
-
-__all__ = [
-    "Config",
-    "load_config",
-    "ProjectState",
-    "load_state",
-    "save_state",
-    "get_connection",
-    "release_connection",
-    "init_pool",
-    "ensure_synced",
-    "TOOLS",
-    "validate_paths",
-    "validate_pattern",
-    "validate_sql_query",
-    "HANDLERS",
-    "run_server",
-]

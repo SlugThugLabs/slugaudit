@@ -113,6 +113,16 @@ class ImportRepository(BaseRepository):
         cur = self._cursor()
         if force:
             cur.execute("DELETE FROM dependency_edges WHERE project_id = %s", (project_id,))
+            # Deleting edges above but only re-resolving imports that were
+            # already NULL would silently orphan every edge that belonged to
+            # a file untouched by this sync (its file_imports row keeps its
+            # old resolved_path from a prior run and so never re-enters the
+            # rows selected below). Reset every import's resolved_path so the
+            # full set gets re-resolved and its edges rebuilt.
+            cur.execute(
+                "UPDATE file_imports SET resolved_path = NULL WHERE project_id = %s",
+                (project_id,),
+            )
 
         # Build path → id mapping
         path_to_id: dict[str, str] = self.get_file_map(project_id)

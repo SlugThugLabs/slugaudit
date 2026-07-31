@@ -21,7 +21,7 @@ class TestActivation(unittest.TestCase):
             root = Path(temporary)
             activation = enable_project(root)
             with patch(
-                "app.activation.ProjectRepository.purge_by_path", return_value=True
+                "repositories.ProjectRepository.purge_by_path", return_value=True
             ) as purge:
                 disabled = disable_project(root, object())
             self.assertTrue(disabled)
@@ -34,7 +34,7 @@ class TestActivation(unittest.TestCase):
             activation = enable_project(root)
             with (
                 patch(
-                    "app.activation.ProjectRepository.purge_by_path",
+                    "repositories.ProjectRepository.purge_by_path",
                     side_effect=RuntimeError("database unavailable"),
                 ),
                 self.assertRaises(RuntimeError),

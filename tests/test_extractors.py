@@ -1,5 +1,6 @@
 """Tests for all 8 language extractors — signature and import extraction."""
 
+import os
 import tempfile
 import unittest
 
@@ -81,6 +82,159 @@ class TestRustExtractor(unittest.TestCase):
         self.assertEqual(len(sigs), 1)
         self.assertEqual(sigs[0]["type"], "type_alias")
         self.assertEqual(sigs[0]["name"], "Result")
+
+    def test_deeply_nested_source_does_not_raise_recursion_error(self) -> None:
+        # Well past Python's default recursion limit (~1000). A recursive
+        # tree walker would raise RecursionError on this; the iterative
+        # walkers in languages/base.py and RustExtractor._walk_risk must not.
+        depth = 4000
+        source = (
+            b"fn deep() -> i32 {\n"
+            + b"if true {\n" * depth
+            + b"1.unwrap()"
+            + b"} else { 0 }\n" * depth
+            + b"}\n"
+        )
+        sigs = self.ext.extract_signatures("/tmp/deep.rs", source)
+        self.assertEqual(len(sigs), 1)
+        self.assertEqual(sigs[0]["name"], "deep")
+
+        risks = self.ext.extract_risk_patterns("/tmp/deep.rs", source)
+        risk_types = {r["pattern_type"] for r in risks}
+        self.assertIn("unwrap", risk_types)
+
+
+class TestRustImportResolution(unittest.TestCase):
+    """Brace-group expansion and cross-crate / `crate::` resolution.
+
+    Regression coverage for the four rust.py bugs: cross-crate imports being
+    abandoned, `crate::` resolving against the wrong root, brace groups never
+    being expanded, and unknown crates being misclassified as internal.
+    """
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+
+    def _write(self, relpath: str, content: str) -> None:
+        full = os.path.join(self.tmpdir, relpath)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8") as fh:
+            fh.write(content)
+
+    def _make_workspace(self) -> RustExtractor:
+        """A tiny multi-crate workspace mirroring slugid's shape.
+
+        No [workspace] members list is relied upon — each crate is
+        discovered purely by globbing for Cargo.toml files, as slugid itself
+        declares its members as root path-dependencies rather than a
+        [workspace] table.
+        """
+        self._write("Cargo.toml", '[package]\nname = "slugid-guardrails"\nversion = "0.1.0"\n')
+        self._write("contracts/Cargo.toml", '[package]\nname = "contracts"\nversion = "0.1.0"\n')
+        self._write("application/Cargo.toml", '[package]\nname = "application"\nversion = "0.1.0"\n')
+        self._write(
+            "infrastructure/Cargo.toml",
+            '[package]\nname = "slugid-infrastructure"\nversion = "0.1.0"\n',
+        )
+        return RustExtractor(self.tmpdir)
+
+    def test_nested_brace_expansion(self) -> None:
+        ext = self._make_workspace()
+        source = b"use a::{b::{c, d}, e};\n"
+        imps = ext.extract_imports("/tmp/test.rs", source)
+        texts = {i["import_text"] for i in imps}
+        self.assertEqual(texts, {"use a::b::c;", "use a::b::d;", "use a::e;"})
+
+    def test_self_in_brace_group(self) -> None:
+        ext = self._make_workspace()
+        source = b"use a::{self, b};\n"
+        imps = ext.extract_imports("/tmp/test.rs", source)
+        texts = {i["import_text"] for i in imps}
+        self.assertEqual(texts, {"use a;", "use a::b;"})
+
+    def test_glob_import_resolves_to_module(self) -> None:
+        ext = self._make_workspace()
+        source = b"use a::b::*;\n"
+        imps = ext.extract_imports("/tmp/test.rs", source)
+        self.assertEqual(len(imps), 1)
+        self.assertEqual(imps[0]["import_text"], "use a::b;")
+
+    def test_crate_map_normalizes_dash_to_underscore(self) -> None:
+        ext = self._make_workspace()
+        self.assertIn("slugid_infrastructure", ext.crate_map)
+        self.assertEqual(ext.crate_map["slugid_infrastructure"], "infrastructure/src")
+        self.assertEqual(ext.crate_map["contracts"], "contracts/src")
+        self.assertEqual(ext.crate_map["slugid_guardrails"], "src")
+
+    def test_cross_crate_import_resolves(self) -> None:
+        ext = self._make_workspace()
+        path_to_id = {"contracts/src/ports.rs": "id-ports"}
+        resolved = ext.resolve_import(
+            "use contracts::ports::ApplicationService;",
+            "client/src/app.rs",
+            path_to_id,
+        )
+        self.assertEqual(resolved, "contracts/src/ports.rs")
+
+    def test_cross_crate_dash_name_resolves(self) -> None:
+        ext = self._make_workspace()
+        path_to_id = {"infrastructure/src/config.rs": "id-config"}
+        resolved = ext.resolve_import(
+            "use slugid_infrastructure::config;",
+            "domain/src/lib.rs",
+            path_to_id,
+        )
+        self.assertEqual(resolved, "infrastructure/src/config.rs")
+
+    def test_crate_prefix_resolves_against_owning_crate_not_project_root(self) -> None:
+        ext = self._make_workspace()
+        path_to_id = {"application/src/services/registry.rs": "id-registry"}
+        # crate:: inside a non-root workspace member (application/src/services/mod.rs)
+        # must resolve against application/src, not <project_root>/src.
+        resolved = ext.resolve_import(
+            "use crate::services::registry::Registry;",
+            "application/src/services/mod.rs",
+            path_to_id,
+        )
+        self.assertEqual(resolved, "application/src/services/registry.rs")
+
+    def test_external_crate_not_resolved(self) -> None:
+        ext = self._make_workspace()
+        resolved = ext.resolve_import("use egui::Ui;", "client/src/app.rs", {})
+        self.assertIsNone(resolved)
+
+    def test_classify_unknown_crate_as_external(self) -> None:
+        ext = self._make_workspace()
+        source = (
+            b"use egui::Ui;\n"
+            b"use serde::Deserialize;\n"
+            b"use contracts::ports::ApplicationService;\n"
+        )
+        imps = ext.extract_imports("/tmp/test.rs", source)
+        by_text = {i["import_text"]: i["import_type"] for i in imps}
+        self.assertEqual(by_text["use egui::Ui;"], "external")
+        self.assertEqual(by_text["use serde::Deserialize;"], "external")
+        self.assertEqual(by_text["use contracts::ports::ApplicationService;"], "internal")
+
+    def test_resolution_never_points_outside_indexed_files(self) -> None:
+        """Never resolves to a path absent from path_to_id (the indexed file map)."""
+        ext = self._make_workspace()
+        path_to_id = {"contracts/src/ports.rs": "id-ports"}
+        resolved = ext.resolve_import(
+            "use contracts::ports::SomethingNotIndexed;",
+            "client/src/app.rs",
+            path_to_id,
+        )
+        # The leaf candidates don't exist in the index; only the
+        # parent-module fallback does.
+        self.assertEqual(resolved, "contracts/src/ports.rs")
+
+        no_match = ext.resolve_import(
+            "use contracts::nonexistent::Thing;",
+            "client/src/app.rs",
+            path_to_id,
+        )
+        self.assertIsNone(no_match)
 
 
 class TestPythonExtractor(unittest.TestCase):
@@ -207,6 +361,22 @@ class TestTypeScriptExtractor(unittest.TestCase):
         self.assertEqual(sigs[0]["type"], "variable")
         self.assertEqual(sigs[0]["name"], "MAX_SIZE")
 
+    def test_deeply_nested_source_does_not_raise_recursion_error(self) -> None:
+        # TypeScriptExtractor has its own _walk_tree override (export handling
+        # doesn't fit the shared base-class dispatch); it must be iterative
+        # too, not just the shared base.py walkers.
+        depth = 4000
+        source = (
+            b"export function deep(): number {\n"
+            + b"if (true) {\n" * depth
+            + b"return 1;\n"
+            + b"}\n" * depth
+            + b"return 0;\n}\n"
+        )
+        sigs = self.ext.extract_signatures("/tmp/deep.ts", source)
+        names = [s["name"] for s in sigs]
+        self.assertIn("deep", names)
+
 
 class TestGoExtractor(unittest.TestCase):
     """Go extractor: functions, methods, structs, interfaces, imports."""
@@ -244,6 +414,22 @@ class TestGoExtractor(unittest.TestCase):
         self.assertEqual(len(sigs), 1)
         self.assertEqual(sigs[0]["type"], "interface")
         self.assertEqual(sigs[0]["name"], "Stringer")
+
+    def test_deeply_nested_source_does_not_raise_recursion_error(self) -> None:
+        # Go uses the shared base.py _walk_tree/_walk_imports with no
+        # language-specific override; this proves the shared iterative
+        # walker (not just Rust's own _walk_risk) survives deep nesting.
+        depth = 4000
+        source = (
+            b"func Deep() int {\n"
+            + b"if true {\n" * depth
+            + b"return 1\n"
+            + b"}\n" * depth
+            + b"return 0\n}\n"
+        )
+        sigs = self.ext.extract_signatures("/tmp/deep.go", source)
+        names = [s["name"] for s in sigs]
+        self.assertIn("Deep", names)
 
     def test_extracts_import(self) -> None:
         source = b'import \"fmt\"\nimport \"os\"\n'

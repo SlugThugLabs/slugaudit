@@ -6,6 +6,22 @@ from typing import Any
 from abc import ABC, abstractmethod
 
 
+class _NodeCursor:
+    """Presents a tree-sitter node behind the `.node` attribute subclasses expect.
+
+    `_handle_signature_node`/`_handle_import_node` overrides only ever read
+    `cursor.node` (never navigate with it), so the iterative stack-based
+    walkers in `_walk_tree`/`_walk_imports` can hand every subclass a plain
+    node wrapped in this instead of maintaining one stateful `TreeCursor`
+    across a non-recursive traversal.
+    """
+
+    __slots__ = ("node",)
+
+    def __init__(self, node: Any) -> None:
+        self.node = node
+
+
 class BaseExtractor(ABC):
     """Abstract base for language-specific code extractors.
 
@@ -104,17 +120,23 @@ class BaseExtractor(ABC):
     # ── Shared tree walkers (override _handle_* for language-specific logic) ──
 
     def _walk_tree(self, cursor: Any, source_bytes: bytes, source_lines: list[str], signatures: list[Any], file_path: str) -> None:
-        """Recursively walk tree-sitter tree and extract signatures.
+        """Iteratively walk the tree-sitter tree (pre-order) and extract signatures.
 
-        Calls `_handle_signature_node()` for each node. Subclasses override
-        `_handle_signature_node()` for language-specific dispatch.
+        Calls `_handle_signature_node()` for each node, in the same node-then
+        -children-left-to-right order the previous recursive walk produced.
+        Subclasses override `_handle_signature_node()` for language-specific
+        dispatch. Iterative (explicit stack) rather than recursive so a
+        pathologically deep parse tree (generated code, deeply nested
+        expressions) cannot exhaust Python's call stack and abort an entire
+        sync batch with a RecursionError.
         """
-        self._handle_signature_node(cursor, source_bytes, source_lines, signatures, file_path)
-        if cursor.goto_first_child():
-            self._walk_tree(cursor, source_bytes, source_lines, signatures, file_path)
-            while cursor.goto_next_sibling():
-                self._walk_tree(cursor, source_bytes, source_lines, signatures, file_path)
-            cursor.goto_parent()
+        stack = [cursor.node]
+        while stack:
+            node = stack.pop()
+            self._handle_signature_node(
+                _NodeCursor(node), source_bytes, source_lines, signatures, file_path
+            )
+            stack.extend(reversed(node.children))
 
     def _handle_signature_node(self, cursor: Any, source_bytes: bytes, source_lines: list[str], signatures: list[Any], file_path: str) -> None:
         """Handle a single node during signature extraction.
@@ -125,17 +147,15 @@ class BaseExtractor(ABC):
         return
 
     def _walk_imports(self, cursor: Any, source_bytes: bytes, imports: list[Any], file_path: str) -> None:
-        """Recursively walk tree-sitter tree and extract imports.
+        """Iteratively walk the tree-sitter tree (pre-order) and extract imports.
 
-        Calls `_handle_import_node()` for each node. Subclasses override
-        `_handle_import_node()` for language-specific dispatch.
+        Same iterative-stack rationale as `_walk_tree`; see its docstring.
         """
-        self._handle_import_node(cursor, source_bytes, imports, file_path)
-        if cursor.goto_first_child():
-            self._walk_imports(cursor, source_bytes, imports, file_path)
-            while cursor.goto_next_sibling():
-                self._walk_imports(cursor, source_bytes, imports, file_path)
-            cursor.goto_parent()
+        stack = [cursor.node]
+        while stack:
+            node = stack.pop()
+            self._handle_import_node(_NodeCursor(node), source_bytes, imports, file_path)
+            stack.extend(reversed(node.children))
 
     def _handle_import_node(self, cursor: Any, source_bytes: bytes, imports: list[Any], file_path: str) -> None:
         """Handle a single node during import extraction.
@@ -188,27 +208,6 @@ class BaseExtractor(ABC):
         with open(filepath, "rb") as f:
             h.update(f.read())
         return h.hexdigest()
-
-    def find_source_files(self) -> list[str]:
-        """Find all source files in the project matching this language's extensions.
-
-        Returns paths relative to project_root.
-        Skips .git, target, node_modules, and hidden directories.
-        """
-        skip_dirs = {".git", "target", "node_modules", "__pycache__",
-                      ".venv", "venv", ".planning", ".claude",
-                      "dist", "build", ".next", ".nuxt"}
-        exts = self.source_extensions()
-        files = []
-        for dirpath, dirnames, filenames in os.walk(self.project_root):
-            dirnames[:] = [d for d in dirnames
-                           if not d.startswith(".") and d not in skip_dirs]
-            for f in filenames:
-                _, ext = os.path.splitext(f)
-                if ext in exts:
-                    rel = os.path.relpath(os.path.join(dirpath, f), self.project_root)
-                    files.append(rel)
-        return sorted(files)
 
     def collect_node_text(self, node: Any, source_bytes: bytes) -> str:
         """Extract text of a tree-sitter node from source bytes."""

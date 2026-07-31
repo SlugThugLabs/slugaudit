@@ -92,19 +92,19 @@ class TestAtomicImportReconciliation(unittest.TestCase):
                     return_value={"python": PythonExtractor()},
                 ),
                 patch(
-                    "services.import_service.ProjectRepository",
+                    "services.import_service.make_project_repository",
                     return_value=project_repo,
                 ),
                 patch(
-                    "services.import_service.FileRepository",
+                    "services.import_service.make_file_repository",
                     return_value=file_repo,
                 ),
                 patch(
-                    "services.import_service.ImportRepository",
+                    "services.import_service.make_import_repository",
                     return_value=import_repo,
                 ),
                 patch(
-                    "services.import_service.RiskPatternRepository",
+                    "services.import_service.make_risk_pattern_repository",
                     return_value=risk_repo,
                 ),
             ):
@@ -149,19 +149,19 @@ class TestAtomicImportReconciliation(unittest.TestCase):
                     return_value={"python": FailingExtractor()},
                 ),
                 patch(
-                    "services.import_service.ProjectRepository",
+                    "services.import_service.make_project_repository",
                     return_value=project_repo,
                 ),
                 patch(
-                    "services.import_service.FileRepository",
+                    "services.import_service.make_file_repository",
                     return_value=file_repo,
                 ),
                 patch(
-                    "services.import_service.ImportRepository",
+                    "services.import_service.make_import_repository",
                     return_value=import_repo,
                 ),
                 patch(
-                    "services.import_service.RiskPatternRepository",
+                    "services.import_service.make_risk_pattern_repository",
                     return_value=risk_repo,
                 ),
             ):

@@ -9,15 +9,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from app.manifest import PARSER_VERSION, SourceManifest, build_manifest
+from app.manifest import PARSER_VERSION, SourceManifest
 from domain import ImportResult
-from infrastructure import IFileSystem, get_connection, get_file_system
+from infrastructure import IFileSystem, get_file_system
 from languages import LANG_MAP
 from repositories import (
-    FileRepository,
-    ImportRepository,
-    ProjectRepository,
-    RiskPatternRepository,
+    make_file_repository,
+    make_import_repository,
+    make_project_repository,
+    make_risk_pattern_repository,
     repository_transaction,
 )
 
@@ -120,10 +120,10 @@ class ImportService:
         extractors = self._extractors(project_root, manifest)
         resolver = _PolyglotResolver(extractors)
 
-        project_repo = ProjectRepository(conn, auto_commit=False)
-        file_repo = FileRepository(conn, auto_commit=False)
-        import_repo = ImportRepository(conn, auto_commit=False)
-        risk_repo = RiskPatternRepository(conn, auto_commit=False)
+        project_repo = make_project_repository(conn, auto_commit=False)
+        file_repo = make_file_repository(conn, auto_commit=False)
+        import_repo = make_import_repository(conn, auto_commit=False)
+        risk_repo = make_risk_pattern_repository(conn, auto_commit=False)
 
         result = ImportResult()
         with repository_transaction(conn):
@@ -229,32 +229,6 @@ class ImportService:
         ).total_seconds()
         return result
 
-    def import_project(
-        self,
-        project_path: str,
-        project_name: str | None = None,
-        language: str | None = "auto",
-        connection_string: str | None = None,
-        on_progress: Callable[..., Any] | None = None,
-        conn: Any | None = None,
-    ) -> ImportResult:
-        """Compatibility wrapper that performs a complete atomic reconciliation."""
-        del project_name, language
-        owned_connection = conn is None
-        if conn is None:
-            conn = get_connection(connection_string)
-        try:
-            return self.reconcile_project(
-                project_path,
-                build_manifest(project_path),
-                conn=conn,
-                force_full=True,
-                on_progress=on_progress,
-            )
-        finally:
-            if owned_connection:
-                conn.close()
-
 
 def reconcile_project(
     project_path: str,
@@ -272,23 +246,4 @@ def reconcile_project(
     )
 
 
-def import_project(
-    project_path: str,
-    project_name: str | None = None,
-    language: str | None = "auto",
-    connection_string: str | None = None,
-    on_progress: Callable[..., Any] | None = None,
-    conn: Any | None = None,
-) -> ImportResult:
-    """Backward-compatible full import entry point."""
-    return ImportService().import_project(
-        project_path=project_path,
-        project_name=project_name,
-        language=language,
-        connection_string=connection_string,
-        on_progress=on_progress,
-        conn=conn,
-    )
-
-
-__all__ = ["ImportService", "import_project", "reconcile_project"]
+__all__ = ["ImportService", "reconcile_project"]

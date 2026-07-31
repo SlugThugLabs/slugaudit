@@ -81,3 +81,38 @@ def test_configured_pool_uses_thread_safe_psycopg_pool() -> None:
         assert pool.pool is threaded_pool
 
     constructor.assert_called_once()
+
+
+def test_failed_call_rolls_back_before_connection_is_reused() -> None:
+    events: list[str] = []
+    connection = MagicMock()
+    connection.rollback.side_effect = lambda: events.append("rollback")
+    pool = MagicMock()
+    pool.getconn.return_value = connection
+    pool.putconn.side_effect = lambda _connection: events.append("putconn")
+
+    async def run() -> None:
+        with (
+            patch.object(pool_module, "get_pool", return_value=pool),
+            patch.object(pool_module, "_ensure_schema", return_value=None),
+        ):
+            with pytest.raises(RuntimeError, match="query failed"):
+                async with pool_module.get_connection():
+                    raise RuntimeError("query failed")
+
+    asyncio.run(run())
+
+    connection.rollback.assert_called_once_with()
+    pool.putconn.assert_called_once_with(connection)
+    assert events == ["rollback", "putconn"]
+
+
+def test_connection_is_discarded_when_cleanup_rollback_fails() -> None:
+    connection = MagicMock()
+    connection.rollback.side_effect = RuntimeError("transaction is broken")
+    pool = MagicMock()
+
+    asyncio.run(pool_module._return_connection(pool, connection))
+
+    connection.close.assert_called_once_with()
+    pool.putconn.assert_not_called()

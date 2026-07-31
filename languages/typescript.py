@@ -56,27 +56,31 @@ class TypeScriptExtractor(BaseExtractor):
         return signatures
 
     def _walk_tree(self, cursor: Any, source_bytes: bytes, source_lines: list[str], signatures: list[Any], file_path: str) -> None:
-        node = cursor.node
-        node_type = node.type
+        """Iteratively walk the tree (pre-order), threading the `exported` flag.
 
-        if node_type == "export_statement":
-            # The exported declaration is inside
-            for child in node.named_children:
-                self._extract_declaration(child, source_bytes, source_lines, signatures, exported=True)
-                # Recurse into this child's subtree
-                cursor2 = child.walk()
-                if cursor2.goto_first_child():
-                    self._walk_tree(cursor2, source_bytes, source_lines, signatures, file_path)
-                    while cursor2.goto_next_sibling():
-                        self._walk_tree(cursor2, source_bytes, source_lines, signatures, file_path)
-        else:
-            self._extract_declaration(node, source_bytes, source_lines, signatures, exported=False)
-            # Recurse into children
-            if cursor.goto_first_child():
-                self._walk_tree(cursor, source_bytes, source_lines, signatures, file_path)
-                while cursor.goto_next_sibling():
-                    self._walk_tree(cursor, source_bytes, source_lines, signatures, file_path)
-                cursor.goto_parent()
+        Iterative (explicit stack) rather than recursive so a pathologically
+        deep parse tree can't raise RecursionError mid-sync — see
+        BaseExtractor._walk_tree for the full rationale. `export_statement`
+        keeps its special handling: the wrapped declaration is extracted once
+        with exported=True, and only *its* children (not the declaration node
+        itself again) continue through the normal exported=False dispatch.
+        """
+        stack: list[Any] = [cursor.node]
+        while stack:
+            node = stack.pop()
+            node_type = node.type
+
+            if node_type == "export_statement":
+                for child in node.named_children:
+                    self._extract_declaration(
+                        child, source_bytes, source_lines, signatures, exported=True
+                    )
+                    stack.extend(reversed(child.children))
+            else:
+                self._extract_declaration(
+                    node, source_bytes, source_lines, signatures, exported=False
+                )
+                stack.extend(reversed(node.children))
 
     def _extract_declaration(self, node: Any, source_bytes: bytes, source_lines: list[str], signatures: list[Any], exported: bool) -> None:
         """Extract a signature from a declaration node, if applicable."""

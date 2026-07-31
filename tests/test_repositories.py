@@ -2,6 +2,8 @@
 
 # ruff: noqa: S101 - pytest assertions provide the clearest contract failures.
 
+import json
+from decimal import Decimal
 from unittest.mock import MagicMock
 
 import pytest
@@ -127,3 +129,40 @@ def test_empty_risk_replacement_deletes_stale_patterns() -> None:
         "DELETE FROM risk_patterns WHERE file_id = %s", ("file-1",)
     )
     conn.commit.assert_not_called()
+
+
+def test_file_stats_total_bytes_is_a_real_int_not_decimal() -> None:
+    # files.size is BIGINT; PostgreSQL's SUM(bigint) returns numeric, which
+    # psycopg2 decodes as Decimal regardless of the actual value. A raw
+    # Decimal here broke audit_brief's json.dumps in production
+    # ("Object of type Decimal is not JSON serializable") the first time it
+    # was ever called with real file-size data — get_file_stats must return
+    # a plain int so every caller, JSON-serializing or not, gets one.
+    conn, cursor = _connection()
+    cursor.fetchone.side_effect = [
+        (3, Decimal("1024")),  # COUNT(*), COALESCE(SUM(size), 0)
+        (2,),  # files_with_sigs
+        (Decimal("7"),),  # COALESCE(SUM(jsonb_array_length(...)), 0)
+    ]
+
+    stats = FileRepository(conn).get_file_stats("project-1")
+
+    assert stats["total_bytes"] == 1024
+    assert type(stats["total_bytes"]) is int
+    json.dumps(stats)  # must not raise
+
+
+def test_project_status_total_size_is_a_real_int_not_decimal() -> None:
+    conn, cursor = _connection()
+    cursor.fetchone.side_effect = [
+        (3, Decimal("2048"), 2),  # COUNT(*), COALESCE(SUM(size), 0), with_sigs
+        (Decimal("9"),),  # SUM(jsonb_array_length(...))
+        (5,),  # file_imports COUNT(*)
+        (4,),  # dependency_edges COUNT(*)
+    ]
+
+    status = ProjectRepository(conn).get_status("project-1")
+
+    assert status["total_size"] == 2048
+    assert type(status["total_size"]) is int
+    json.dumps(status)  # must not raise

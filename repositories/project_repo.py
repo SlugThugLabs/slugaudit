@@ -315,13 +315,18 @@ class ProjectRepository(BaseRepository):
 
         cur.close()
 
+        # SUM(bigint) (total_size, over the BIGINT size column) returns
+        # numeric -> psycopg2 Decimal, not int. Cast every aggregate
+        # explicitly here rather than assume which PostgreSQL type maps to
+        # which Python type per column; see FileRepository.get_file_stats
+        # for the same fix and its root cause (a live audit_brief failure).
         return {
-            "file_count": file_count,
-            "total_size": total_size,
-            "files_with_sigs": with_sigs,
-            "signatures_count": total_sigs,
-            "imports_count": import_count,
-            "edge_count": edge_count,
+            "file_count": int(file_count),
+            "total_size": int(total_size),
+            "files_with_sigs": int(with_sigs),
+            "signatures_count": int(total_sigs),
+            "imports_count": int(import_count),
+            "edge_count": int(edge_count),
         }
 
     def get_findings_summary(self, project_id: str) -> list[tuple[int, str]]:

@@ -1,8 +1,132 @@
 """Schema service — database schema initialization."""
 
 import os
+import re
 import sysconfig
 from typing import Any
+
+_DOLLAR_TAG_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
+
+
+def _split_sql_statements(sql: str) -> list[str]:
+    """Split a .sql file into individually-executable statements.
+
+    A bare ``sql.split(";")`` breaks the moment schema.sql contains a
+    semicolon that isn't a statement terminator: inside a string literal,
+    a quoted identifier, a ``--``/``/* */`` comment, or (critically for any
+    future trigger/function migration) a ``$$``- or ``$tag$``-delimited
+    dollar-quoted body. This walks the text tracking which of those regions
+    it's in and only splits on a ``;`` outside all of them. Comment and
+    string content is preserved verbatim in the returned statements — this
+    only changes *where* the cuts happen, not what text ends up in each
+    statement.
+    """
+    statements: list[str] = []
+    current: list[str] = []
+    i = 0
+    n = len(sql)
+    in_single = False
+    in_double = False
+    block_comment_depth = 0
+    dollar_tag: str | None = None
+
+    while i < n:
+        ch = sql[i]
+
+        if dollar_tag is not None:
+            if sql.startswith(dollar_tag, i):
+                current.append(dollar_tag)
+                i += len(dollar_tag)
+                dollar_tag = None
+            else:
+                current.append(ch)
+                i += 1
+            continue
+
+        if block_comment_depth > 0:
+            if sql.startswith("/*", i):
+                block_comment_depth += 1
+                current.append("/*")
+                i += 2
+            elif sql.startswith("*/", i):
+                block_comment_depth -= 1
+                current.append("*/")
+                i += 2
+            else:
+                current.append(ch)
+                i += 1
+            continue
+
+        if in_single:
+            current.append(ch)
+            i += 1
+            if ch == "'":
+                if sql[i:i + 1] == "'":
+                    current.append("'")
+                    i += 1
+                else:
+                    in_single = False
+            continue
+
+        if in_double:
+            current.append(ch)
+            i += 1
+            if ch == '"':
+                if sql[i:i + 1] == '"':
+                    current.append('"')
+                    i += 1
+                else:
+                    in_double = False
+            continue
+
+        if sql.startswith("--", i):
+            end = sql.find("\n", i)
+            end = n if end == -1 else end + 1
+            current.append(sql[i:end])
+            i = end
+            continue
+
+        if sql.startswith("/*", i):
+            block_comment_depth = 1
+            current.append("/*")
+            i += 2
+            continue
+
+        if ch == "'":
+            in_single = True
+            current.append(ch)
+            i += 1
+            continue
+
+        if ch == '"':
+            in_double = True
+            current.append(ch)
+            i += 1
+            continue
+
+        if ch == "$":
+            match = _DOLLAR_TAG_RE.match(sql, i)
+            if match:
+                dollar_tag = match.group(0)
+                current.append(dollar_tag)
+                i += len(dollar_tag)
+                continue
+
+        if ch == ";":
+            statement = "".join(current).strip()
+            if statement:
+                statements.append(statement)
+            current = []
+            i += 1
+            continue
+
+        current.append(ch)
+        i += 1
+
+    tail = "".join(current).strip()
+    if tail:
+        statements.append(tail)
+    return statements
 
 
 class SchemaService:
@@ -55,7 +179,7 @@ class SchemaService:
         with open(self.schema_path) as f:
             schema_sql = f.read()
 
-        statements = [s.strip() for s in schema_sql.split(";") if s.strip()]
+        statements = _split_sql_statements(schema_sql)
         cur = conn.cursor()
         try:
             # Serialize startup migrations across MCP workers/processes. This is

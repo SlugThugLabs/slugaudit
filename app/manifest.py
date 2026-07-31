@@ -13,7 +13,7 @@ from pathlib import Path
 from languages import language_for_path, supported_extensions
 
 
-PARSER_VERSION = "treesitter-v1"
+PARSER_VERSION = "treesitter-v3"
 
 _SKIP_DIRS = frozenset(
     {

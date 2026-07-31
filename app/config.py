@@ -8,10 +8,15 @@ Priority (lowest to highest):
 
 import logging
 import os
+import stat
 import tomllib
 from dataclasses import dataclass
 
 logger = logging.getLogger("slugaudit-mcp.config")
+
+# Bits that must be clear: config.toml holds a plaintext DB password, so it
+# must not be readable or writable by anyone other than its owner.
+_INSECURE_MODE_BITS = stat.S_IRWXG | stat.S_IRWXO
 
 
 @dataclass
@@ -22,6 +27,8 @@ class Config:
     database: str = ""
     user: str = ""
     password: str = ""
+    pool_min: int = 1
+    pool_max: int = 5
 
     @property
     def is_configured(self) -> bool:
@@ -29,6 +36,22 @@ class Config:
 
 
 _config: Config | None = None
+
+
+def _check_config_file_permissions(path: str) -> None:
+    """Refuse a config file that anyone but its owner can read or write.
+
+    config.toml stores a plaintext database password. A world- or
+    group-readable copy turns a credentials leak into "any other local
+    account reads one file" — fail loudly instead of loading it silently.
+    """
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    if mode & _INSECURE_MODE_BITS:
+        raise RuntimeError(
+            f"Refusing to read {path}: it is readable or writable by group "
+            f"or other (mode {oct(mode)}). It stores a plaintext database "
+            f"password. Fix with: chmod 600 {path}"
+        )
 
 
 def load_config() -> Config:
@@ -49,6 +72,7 @@ def load_config() -> Config:
     if not cfg.host or not cfg.database or not cfg.user:
         config_path = _find_config()
         if config_path:
+            _check_config_file_permissions(config_path)
             with open(config_path, "rb") as f:
                 toml = tomllib.load(f)
             db = toml.get("database", {})
@@ -58,6 +82,8 @@ def load_config() -> Config:
             cfg.database = cfg.database or db.get("database", "")
             cfg.user = cfg.user or db.get("user", "")
             cfg.password = cfg.password or db.get("password", "")
+            cfg.pool_min = int(db.get("pool_min", cfg.pool_min))
+            cfg.pool_max = int(db.get("pool_max", cfg.pool_max))
 
     _config = cfg
     return cfg

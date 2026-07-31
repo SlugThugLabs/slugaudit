@@ -2,10 +2,12 @@
 
 from .schema_service import SchemaService
 from .import_service import ImportService
-from .briefing_service import BriefingService
+from .sqlite_schema_service import SqliteSchemaService
+from .sqlite_migration import migrate_sqlite_findings
 
 __all__ = [
     "SchemaService",
     "ImportService",
-    "BriefingService",
+    "SqliteSchemaService",
+    "migrate_sqlite_findings",
 ]

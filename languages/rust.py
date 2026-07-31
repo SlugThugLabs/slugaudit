@@ -1,6 +1,8 @@
 """Tree-sitter Rust extractor — extracts signatures and imports from .rs files."""
 
 import os
+import posixpath
+import tomllib
 
 from tree_sitter import Language, Parser
 import tree_sitter_rust as tsrust
@@ -28,6 +30,19 @@ class RustExtractor(BaseExtractor):
     VISIBILITY = "visibility_modifier"
     COMMENT = "line_comment"
     BLOCK_COMMENT = "block_comment"
+
+    # Cargo manifest directories to never descend into while mapping crates.
+    _CARGO_SKIP_DIRS = frozenset({"target", ".git", "node_modules", ".venv", "venv"})
+
+    def __init__(self, project_root: str) -> None:
+        super().__init__(project_root)
+        # Normalized crate (import) name -> crate source root, project-root-relative.
+        # Built lazily and cached: one filesystem walk per extractor instance,
+        # i.e. once per sync, never once per import.
+        self._crate_map: dict[str, str] | None = None
+        # hub file path -> its extracted `use` declarations, cached per sync
+        # (see _hub_reexports / _follow_reexport).
+        self._reexport_cache: dict[str, list[dict[str, Any]]] = {}
 
     @classmethod
     def name(cls) -> str:
@@ -341,28 +356,36 @@ class RustExtractor(BaseExtractor):
         return [{"pattern_type": k, "count": v} for k, v in counts.items() if v > 0]
 
     def _walk_risk(self, node: Any, source_bytes: bytes, counts: dict[str, int]) -> None:
-        t = node.type
+        """Iteratively visit every node (order doesn't matter for counting).
 
-        if t == "unsafe_block":
-            counts["unsafe_blocks"] = counts.get("unsafe_blocks", 0) + 1
+        Explicit stack rather than recursion — see BaseExtractor._walk_tree
+        for why: a pathologically deep expression tree must not raise
+        RecursionError mid-sync.
+        """
+        stack: list[Any] = [node]
+        while stack:
+            current = stack.pop()
+            t = current.type
 
-        elif t == "as_expression":
-            counts["as_casts"] = counts.get("as_casts", 0) + 1
+            if t == "unsafe_block":
+                counts["unsafe_blocks"] = counts.get("unsafe_blocks", 0) + 1
 
-        elif t == "macro_invocation":
-            text = self.collect_node_text(node, source_bytes)
-            if text.startswith("panic!"):
-                counts["panic"] = counts.get("panic", 0) + 1
-            elif text.startswith("unreachable!"):
-                counts["unreachable"] = counts.get("unreachable", 0) + 1
+            elif t == "as_expression":
+                counts["as_casts"] = counts.get("as_casts", 0) + 1
 
-        elif t == "call_expression":
-            method = self._get_call_method_name(node, source_bytes)
-            if method in ("unwrap", "expect"):
-                counts[method] = counts.get(method, 0) + 1
+            elif t == "macro_invocation":
+                text = self.collect_node_text(current, source_bytes)
+                if text.startswith("panic!"):
+                    counts["panic"] = counts.get("panic", 0) + 1
+                elif text.startswith("unreachable!"):
+                    counts["unreachable"] = counts.get("unreachable", 0) + 1
 
-        for child in node.children:
-            self._walk_risk(child, source_bytes, counts)
+            elif t == "call_expression":
+                method = self._get_call_method_name(current, source_bytes)
+                if method in ("unwrap", "expect"):
+                    counts[method] = counts.get(method, 0) + 1
+
+            stack.extend(current.children)
 
     def _get_call_method_name(self, node: Any, source_bytes: bytes) -> str | None:
         """Get the method name if this call_expression is a method call."""
@@ -380,14 +403,26 @@ class RustExtractor(BaseExtractor):
         node = cursor.node
 
         if node.type == self.USE_DECL:
-            imp_text = self.collect_node_text(node, source_bytes).strip()
-            imp_type = self._classify_import(imp_text)
-            imports.append({
-                "import_text": imp_text,
-                "import_type": imp_type,
-                "line_start": node.start_point[0] + 1,
-                "line_end": node.end_point[0] + 1,
-            })
+            # named_children is [visibility_modifier?, path_node]; the path
+            # node is always last regardless of whether visibility is present.
+            named = node.named_children
+            path_node = named[-1] if named else None
+            expanded = self._expand_use_node(path_node, source_bytes) if path_node is not None else []
+            if not expanded:
+                # Defensive fallback for a grammar shape we didn't anticipate —
+                # keep the raw text rather than silently dropping the import.
+                raw = self.collect_node_text(node, source_bytes).strip()
+                expanded = [raw[4:].rstrip(";").strip()] if raw.startswith("use ") else [raw]
+
+            for path in expanded:
+                imp_text = f"use {path};"
+                imp_type = self._classify_import(imp_text)
+                imports.append({
+                    "import_text": imp_text,
+                    "import_type": imp_type,
+                    "line_start": node.start_point[0] + 1,
+                    "line_end": node.end_point[0] + 1,
+                })
 
         elif node.type == self.MOD_DECL:
             # pub mod foo; — not an import but defines a module relationship
@@ -400,31 +435,188 @@ class RustExtractor(BaseExtractor):
                     "line_end": node.end_point[0] + 1,
                 })
 
+    def _expand_use_node(self, node: Any, source_bytes: bytes) -> list[str]:
+        """Expand a `use` path node into fully-qualified leaf import paths.
+
+        Handles arbitrary nesting of brace groups (`a::{b::{c, d}, e}`),
+        `self` inside a group (`a::{self, b}` -> `a`, `a::b`), glob imports
+        (`a::*` -> `a`), and `as` aliases (resolved by the real path, alias
+        discarded). Leaf paths never contain braces or wildcards.
+        """
+        node_type = node.type
+
+        if node_type == "use_list":
+            expanded: list[str] = []
+            for child in node.named_children:
+                expanded.extend(self._expand_use_node(child, source_bytes))
+            return expanded
+
+        if node_type == "scoped_use_list":
+            named = node.named_children
+            if len(named) < 2:
+                return []
+            prefix_text = self.collect_node_text(named[0], source_bytes).strip()
+            suffixes = self._expand_use_node(named[-1], source_bytes)
+            results: list[str] = []
+            for suffix in suffixes:
+                if suffix in ("", "self"):
+                    results.append(prefix_text)
+                else:
+                    results.append(f"{prefix_text}::{suffix}")
+            return results
+
+        if node_type == "use_as_clause":
+            # First named child is the real path; the alias identifier is
+            # irrelevant to resolution and classification.
+            named = node.named_children
+            if not named:
+                return []
+            return self._expand_use_node(named[0], source_bytes)
+
+        if node_type == "use_wildcard":
+            text = self.collect_node_text(node, source_bytes).strip()
+            if text.endswith("::*"):
+                return [text[:-3]]
+            if text == "*":
+                return []
+            return [text[:-1].rstrip(":")] if text.endswith("*") else [text]
+
+        if node_type in ("identifier", "type_identifier", "crate", "self", "super", "scoped_identifier"):
+            # Leaf or already-flat dotted path (may itself embed crate/self/super
+            # at its root) — the raw source slice is exactly the path text.
+            text = self.collect_node_text(node, source_bytes).strip()
+            return [text] if text else []
+
+        # Unrecognized node type: fall back to raw text rather than dropping it.
+        text = self.collect_node_text(node, source_bytes).strip()
+        return [text] if text else []
+
     def _classify_import(self, imp_text: str) -> str:
-        """Classify an import as internal or external."""
+        """Classify an import as internal (workspace crate) or external."""
         # Strip 'use ' prefix and trailing ';' for prefix matching
         imp = imp_text
         if imp.startswith("use "):
             imp = imp[4:]
         if imp.endswith(";"):
             imp = imp[:-1]
+        imp = imp.strip()
 
-        # External crates start with the crate name directly (not crate::, super::, self::)
+        # References into the current crate are always internal.
         internal_prefixes = ("crate::", "super::", "self::")
-        if any(imp.startswith(p) for p in internal_prefixes):
+        if any(imp.startswith(p) for p in internal_prefixes) or imp in ("crate", "super", "self"):
             return "internal"
 
-        # Known external crates (Rust standard library)
+        # Rust standard library / toolchain-provided — always external.
         external_prefixes = (
             "std::", "core::", "alloc::", "proc_macro::",
             "test::", "bench::", "compiler_builtins::",
         )
-        if any(imp.startswith(p) for p in external_prefixes):
+        if any(imp.startswith(p) for p in external_prefixes) or imp in ("std", "core", "alloc"):
             return "external"
 
-        # If it starts with a path pattern that looks like a workspace crate
-        # (contains ::), treat as internal for dependency resolution
-        return "internal"
+        # Otherwise: internal only if the first segment names a crate that
+        # actually lives in this workspace. Everything else (egui, serde,
+        # tracing, wgpu, ...) is a third-party dependency.
+        first_seg = imp.split("::", 1)[0].strip()
+        if first_seg in self.crate_map:
+            return "internal"
+        return "external"
+
+    # ── Workspace crate map ─────────────────────────────────────────────────
+
+    @property
+    def crate_map(self) -> dict[str, str]:
+        """Normalized crate (import) name -> crate source root (project-root-relative).
+
+        Built once per extractor instance (one instance is created per sync
+        in ImportService._extractors) and cached — never re-parsed per import.
+        """
+        if self._crate_map is None:
+            self._crate_map = self._build_crate_map()
+        return self._crate_map
+
+    def _find_cargo_tomls(self) -> list[str]:
+        """Absolute paths of every Cargo.toml under project_root, skipping build/vcs dirs."""
+        found: list[str] = []
+        for dirpath, dirnames, filenames in os.walk(self.project_root):
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in self._CARGO_SKIP_DIRS and not d.startswith(".")
+            ]
+            if "Cargo.toml" in filenames:
+                found.append(os.path.join(dirpath, "Cargo.toml"))
+        return found
+
+    def _join_rel(self, root: str, *parts: str) -> str:
+        """Join a project-root-relative directory with path parts (posix-style).
+
+        `root` of "" or "." means the project root itself.
+        """
+        segments = [root.strip("/")] if root and root != "." else []
+        segments.extend(p for p in parts if p)
+        return "/".join(segments)
+
+    def _build_crate_map(self) -> dict[str, str]:
+        """Discover every crate in the workspace and its source root.
+
+        There is no [workspace] members list to trust here — crates are
+        declared as path dependencies from the root package. So: glob every
+        Cargo.toml, read [package] name (normalizing '-' to '_' to match how
+        Rust import paths spell the crate), and honor [lib] path if present;
+        otherwise the source root is '<crate_dir>/src'.
+        """
+        crate_map: dict[str, str] = {}
+        for cargo_path in self._find_cargo_tomls():
+            try:
+                with open(cargo_path, "rb") as fh:
+                    data = tomllib.load(fh)
+            except (OSError, tomllib.TOMLDecodeError):
+                continue
+
+            package = data.get("package")
+            if not isinstance(package, dict):
+                continue
+            name = package.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            normalized_name = name.replace("-", "_")
+
+            crate_dir_abs = os.path.dirname(cargo_path)
+            crate_dir_rel = os.path.relpath(crate_dir_abs, self.project_root)
+            crate_dir_rel = "" if crate_dir_rel == "." else crate_dir_rel.replace(os.sep, "/")
+
+            lib_section = data.get("lib")
+            lib_path = lib_section.get("path") if isinstance(lib_section, dict) else None
+            if isinstance(lib_path, str) and lib_path:
+                lib_dir = posixpath.dirname(lib_path.replace(os.sep, "/"))
+                src_root = self._join_rel(crate_dir_rel, lib_dir) if lib_dir else crate_dir_rel
+            else:
+                src_root = self._join_rel(crate_dir_rel, "src")
+
+            crate_map[normalized_name] = src_root
+        return crate_map
+
+    def _owning_crate_source_root(self, source_file: str) -> str:
+        """Source root of the crate whose source tree contains `source_file`.
+
+        `crate::` must resolve against the root of the crate that *owns* the
+        file doing the importing, not against project_root/src. Chosen by
+        longest matching source-root prefix (the workspace root crate's
+        source root, e.g. "src", always matches everything and so only wins
+        when nothing more specific does).
+        """
+        best_root = ""
+        best_len = -1
+        for root in self.crate_map.values():
+            if root == "":
+                matches, length = True, 0
+            else:
+                matches = source_file == root or source_file.startswith(root + "/")
+                length = len(root)
+            if matches and length > best_len:
+                best_root = root
+                best_len = length
+        return best_root
 
     # ── Import resolution ──────────────────────────────────────────────────
 
@@ -432,9 +624,13 @@ class RustExtractor(BaseExtractor):
         """Resolve a Rust use statement to a file path.
 
         Handles:
-            use crate::foo::bar        → src/foo/bar.rs or src/foo/bar/mod.rs
-            use super::baz             → parent module's baz
-            use slugid_infrastructure::x → workspace crate (stays external for now)
+            use crate::foo::bar          -> resolved against the owning crate's source root
+            use super::baz               -> parent module's baz
+            use slugid_infrastructure::x -> workspace crate's source root (cross-crate)
+            use serde::Deserialize       -> external crate, unresolvable -> None
+
+        Only ever returns a path that is a key of `path_to_id`, so a resolved
+        edge can never point at a file absent from the index.
         """
         imp = import_text
 
@@ -443,22 +639,23 @@ class RustExtractor(BaseExtractor):
             imp = imp[4:]
         if imp.endswith(";"):
             imp = imp[:-1]
+        imp = imp.strip()
 
         # Strip pub mod to get module name
         if imp.startswith("pub mod "):
             mod_name = imp[8:].strip()
-            return self._resolve_mod_in_same_dir(mod_name, source_file)
+            return self._resolve_mod_in_same_dir(mod_name, source_file, path_to_id)
 
-        # Handle crate:: prefix
-        if imp.startswith("crate::"):
-            path_part = imp[7:]
-            # Split on :: and reconstruct as file path
-            segments = path_part.split("::")
-            return self._path_segments_to_file(segments, source_file)
+        # Handle crate:: prefix — resolve against the *owning* crate's root,
+        # not project_root/src.
+        if imp.startswith("crate::") or imp == "crate":
+            path_part = imp[7:] if imp.startswith("crate::") else ""
+            segments = [s for s in path_part.split("::") if s]
+            crate_root = self._owning_crate_source_root(source_file)
+            return self._segments_to_file(segments, crate_root, path_to_id)
 
         # Handle super:: prefix (walk up the directory tree)
-        if imp.startswith("super::"):
-            # Count super:: prefixes
+        if imp.startswith("super::") or imp == "super":
             parts = imp.split("::")
             super_count = 0
             for p in parts:
@@ -466,53 +663,148 @@ class RustExtractor(BaseExtractor):
                     super_count += 1
                 else:
                     break
-            remaining = "::".join(parts[super_count:])
+            remaining = [p for p in parts[super_count:] if p]
 
-            # Walk up from source file's directory
-            src_dir = os.path.dirname(source_file)
+            src_dir = posixpath.dirname(source_file)
             for _ in range(super_count):
-                src_dir = os.path.dirname(src_dir)
+                src_dir = posixpath.dirname(src_dir)
 
-            segments = remaining.split("::")
-            candidate = os.path.join(src_dir, *segments)
-            return self._try_file_paths(candidate)
+            return self._segments_to_file(remaining, src_dir, path_to_id)
 
         # Handle self:: prefix
-        if imp.startswith("self::"):
-            segments = imp[6:].split("::")
-            src_dir = os.path.dirname(source_file)
-            candidate = os.path.join(src_dir, *segments)
-            return self._try_file_paths(candidate)
+        if imp.startswith("self::") or imp == "self":
+            path_part = imp[6:] if imp.startswith("self::") else ""
+            segments = [s for s in path_part.split("::") if s]
+            src_dir = posixpath.dirname(source_file)
+            return self._segments_to_file(segments, src_dir, path_to_id)
 
-        # Handle just a path (no prefix) — probably a workspace crate
-        # Don't resolve these for now
+        # Cross-crate: first segment names a workspace crate.
+        first_seg, sep, rest = imp.partition("::")
+        first_seg = first_seg.strip()
+        if first_seg in self.crate_map:
+            remaining = [s for s in rest.split("::") if s] if sep else []
+            crate_root = self.crate_map[first_seg]
+            return self._segments_to_file(remaining, crate_root, path_to_id)
+
+        # First segment is std/core/alloc or an unknown (third-party) crate.
         return None
 
-    def _resolve_mod_in_same_dir(self, mod_name: str, source_file: str) -> str | None:
+    def _resolve_mod_in_same_dir(
+        self, mod_name: str, source_file: str, path_to_id: dict[str, Any]
+    ) -> str | None:
         """Resolve a module name in the same directory as source_file."""
-        src_dir = os.path.dirname(source_file)
-        candidate = os.path.join(src_dir, mod_name)
-        return self._try_file_paths(candidate)
+        src_dir = posixpath.dirname(source_file)
+        return self._segments_to_file([mod_name], src_dir, path_to_id)
 
-    def _path_segments_to_file(self, segments: list[str], source_file: str) -> str | None:
-        """Convert path segments (e.g. ['entities', 'card']) to a file path."""
-        # Remove last segment if it refers to a specific item (not a module)
-        # Rust convention: use crate::entities::card → src/entities/card.rs
-        if len(segments) >= 1:
-            candidate = os.path.join("src", *segments)
-            return self._try_file_paths(candidate)
+    # A module re-exporting an item can itself re-export from another module
+    # that re-exports it again; cap the chase rather than risk a cycle.
+    _MAX_REEXPORT_DEPTH = 4
+
+    def _segments_to_file(
+        self, segments: list[str], root: str, path_to_id: dict[str, Any], _depth: int = 0
+    ) -> str | None:
+        """Convert path segments relative to `root` into an indexed file path."""
+        if not segments:
+            # The module/crate root itself (e.g. `use crate;` or a resolved
+            # crate name with no further path).
+            return self._resolve_module_root(root, path_to_id)
+
+        base_path = self._join_rel(root, *segments)
+        resolved = self._try_file_paths(base_path, path_to_id)
+        if resolved is not None:
+            return resolved
+
+        # The last segment may name an item (struct/fn/trait/const/re-export)
+        # rather than a module — fall back to its containing module: either
+        # the parent directory's own module file, or, when the item sits
+        # directly at the root of this crate/module (e.g.
+        # `use contracts::ApplicationService;`), the module root itself.
+        parent_root = self._join_rel(root, *segments[:-1]) if len(segments) > 1 else root
+        hub = self._resolve_module_root(parent_root, path_to_id)
+        if hub is None:
+            return None
+        if _depth >= self._MAX_REEXPORT_DEPTH:
+            return hub
+
+        # The item may not be defined in `hub` itself but re-exported from a
+        # sibling module (`pub use sibling::{..., Item, ...};`), which is the
+        # common `pub use ports::{ApplicationService, ...}` pattern at a
+        # crate root. Follow that chain to the real definition site so the
+        # dependency edge lands on the file that actually defines the item.
+        item_name = segments[-1]
+        followed = self._follow_reexport(hub, parent_root, item_name, path_to_id, _depth + 1)
+        return followed if followed is not None else hub
+
+    def _resolve_module_root(self, root: str, path_to_id: dict[str, Any]) -> str | None:
+        """Resolve `root` itself (a directory) to its module/crate entry file."""
+        for candidate_name in ("mod.rs", "lib.rs", "main.rs"):
+            candidate = self._join_rel(root, candidate_name)
+            if candidate in path_to_id:
+                return candidate
+        # `root` may itself be a plain file module rather than a directory
+        # module, e.g. root="domain/src/entities" -> "domain/src/entities.rs".
+        file_candidate = root + ".rs"
+        if file_candidate in path_to_id:
+            return file_candidate
         return None
 
-    def _try_file_paths(self, base_path: str) -> str | None:
-        """Try common Rust file path conventions."""
-        candidates = [
-            base_path + ".rs",
-            base_path + "/mod.rs",
-            base_path.rsplit("/", 1)[0] + ".rs" if "/" in base_path else base_path + ".rs",
-        ]
+    def _try_file_paths(self, base_path: str, path_to_id: dict[str, Any]) -> str | None:
+        """Try common Rust file path conventions against the indexed file map.
+
+        Resolves only against `path_to_id` (never the filesystem) so a
+        resolved_path can never reference a file absent from the index.
+        """
+        candidates = [base_path + ".rs", base_path + "/mod.rs"]
         for candidate in candidates:
-            abspath = os.path.join(self.project_root, candidate)
-            if os.path.exists(abspath) and os.path.isfile(abspath):
+            if candidate in path_to_id:
+                return candidate
+        return None
+
+    def _hub_reexports(self, hub_path: str) -> list[dict[str, Any]]:
+        """`use` declarations found in `hub_path`, cached for this sync.
+
+        Reads the real file (needed to see the re-export's target module —
+        `path_to_id` alone can't tell us that); the return value from
+        `resolve_import` is still always gated through `path_to_id`, so this
+        can never manufacture a resolved_path absent from the index.
+        """
+        cached = self._reexport_cache.get(hub_path)
+        if cached is not None:
+            return cached
+        abs_path = os.path.join(self.project_root, hub_path)
+        try:
+            with open(abs_path, "rb") as fh:
+                content = fh.read()
+        except OSError:
+            self._reexport_cache[hub_path] = []
+            return []
+        imports = self.extract_imports(hub_path, content)
+        self._reexport_cache[hub_path] = imports
+        return imports
+
+    def _follow_reexport(
+        self,
+        hub_path: str,
+        hub_root: str,
+        item_name: str,
+        path_to_id: dict[str, Any],
+        depth: int,
+    ) -> str | None:
+        """If `hub_path` re-exports `item_name` from a sibling module, follow it."""
+        for reexport in self._hub_reexports(hub_path):
+            text = reexport["import_text"]
+            if not (text.startswith("use ") and text.endswith(";")):
+                continue
+            parts = [p for p in text[4:-1].split("::") if p]
+            if len(parts) < 2 or parts[-1] != item_name:
+                continue
+            prefix = parts[:-1]
+            if prefix and prefix[0] in ("crate", "self", "super"):
+                prefix = prefix[1:]
+            if not prefix:
+                continue
+            candidate = self._segments_to_file(prefix + [item_name], hub_root, path_to_id, depth)
+            if candidate is not None and candidate != hub_path:
                 return candidate
         return None
 

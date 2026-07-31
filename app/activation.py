@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.state import state_dir
-from repositories import ProjectRepository
+from repositories import make_project_repository
 
 
 def enable_project(project_root: str | Path) -> Path:
@@ -45,7 +45,7 @@ def disable_project(project_root: str | Path, conn: Any) -> bool:
     with lock_path.open("a+", encoding="utf-8") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
-            ProjectRepository(conn).purge_by_path(str(root))
+            make_project_repository(conn).purge_by_path(str(root))
             shutil.rmtree(activation)
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)

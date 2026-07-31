@@ -11,10 +11,15 @@ import json
 import logging
 import re
 import regex
+import sqlite3
 from pathlib import Path
 from typing import Any
 
-from repositories import FileRepository, FindingRepository, RiskPatternRepository
+from repositories import (
+    make_file_repository,
+    make_finding_repository,
+    make_risk_pattern_repository,
+)
 from app.tools import (
     validate_paths,
     validate_pattern,
@@ -24,6 +29,7 @@ from app.tools import (
     MAX_READ_CHARS,
     MAX_SQL_ROWS,
     MAX_SEARCH_RESULTS,
+    _mask_sql_string_literals,
 )
 from mcp.types import TextContent
 
@@ -76,7 +82,7 @@ def _render_tree(
 
 async def handle_overview(conn: Any, state: Any, args: dict[str, Any]) -> list[TextContent]:
     """Return a high-level project overview with directory tree."""
-    file_repo = FileRepository(conn)
+    file_repo = make_file_repository(conn)
     stats = await asyncio.to_thread(file_repo.get_file_stats, state.project_id)
 
     all_paths = await asyncio.to_thread(file_repo.get_all_paths_ordered, state.project_id)
@@ -142,7 +148,7 @@ async def handle_search(conn: Any, state: Any, args: dict[str, Any]) -> list[Tex
     else:
         compiled_pattern = None
 
-    file_repo = FileRepository(conn)
+    file_repo = make_file_repository(conn)
     rows = await asyncio.to_thread(
         file_repo.search_by_pattern,
         state.project_id, pattern, is_regex, max_results,
@@ -221,7 +227,7 @@ async def handle_read_file(conn: Any, state: Any, args: dict[str, Any]) -> list[
     if end_line is not None and end_line < start_line:
         return [TextContent(type="text", text="end_line must be at or after start_line.")]
 
-    file_repo = FileRepository(conn)
+    file_repo = make_file_repository(conn)
     rows = await asyncio.to_thread(
         file_repo.get_file_contents, state.project_id, paths,
     )
@@ -276,7 +282,7 @@ async def handle_dependents(conn: Any, state: Any, args: dict[str, Any]) -> list
             text="direction must be 'incoming' or 'outgoing'."
         )]
 
-    file_repo = FileRepository(conn)
+    file_repo = make_file_repository(conn)
     paths = await asyncio.to_thread(
         file_repo.get_dependents, state.project_id, file_path, direction,
     )
@@ -304,9 +310,9 @@ async def handle_dependents(conn: Any, state: Any, args: dict[str, Any]) -> list
 async def handle_brief(conn: Any, state: Any, args: dict[str, Any]) -> list[TextContent]:
     """Return compact global leads without biasing the AI toward changed files."""
     max_leads = min(max(int(args.get("max_leads", 50)), 1), 200)
-    file_repo = FileRepository(conn)
-    risk_repo = RiskPatternRepository(conn)
-    finding_repo = FindingRepository(conn)
+    file_repo = make_file_repository(conn)
+    risk_repo = make_risk_pattern_repository(conn)
+    finding_repo = make_finding_repository(conn)
     # A psycopg2 connection may move to a worker thread, but it cannot be used
     # concurrently by multiple workers.
     stats = await asyncio.to_thread(file_repo.get_file_stats, state.project_id)
@@ -383,7 +389,7 @@ async def handle_finding(conn: Any, state: Any, args: dict[str, Any]) -> list[Te
     if not isinstance(line_end, int) or line_end < line_start:
         return [TextContent(type="text", text="line_end must be at or after line_start.")]
 
-    file_repo = FileRepository(conn)
+    file_repo = make_file_repository(conn)
     identity = await asyncio.to_thread(
         file_repo.get_file_identity, state.project_id, path
     )
@@ -396,7 +402,7 @@ async def handle_finding(conn: Any, state: Any, args: dict[str, Any]) -> list[Te
     identity_hash = hashlib.sha256(identity_text.encode("utf-8")).hexdigest()
     message = f"{title.strip()}: {description.strip()}"
     finding_id, created = await asyncio.to_thread(
-        FindingRepository(conn).record,
+        make_finding_repository(conn).record,
         project_id=state.project_id,
         file_id=file_id,
         identity_hash=identity_hash,
@@ -438,34 +444,23 @@ def _scope_sql_query(query: str, project_id: str) -> str:
     project_filter = f"{alias}.project_id = %s"
     _ = project_id  # Bound by the caller; never interpolate project IDs.
 
-    # Walk through the query tracking paren depth and string literals
-    # to find the correct insertion point for the project_id filter.
+    # validate_sql_query already proved this query masks cleanly (no
+    # unterminated string literal). Masking blanks string contents in place
+    # without changing length or position, so this scan only needs to track
+    # paren depth while it looks for the correct insertion point for the
+    # project_id filter — real positions are then taken from the original q.
+    masked = _mask_sql_string_literals(q)
+    if masked is None:
+        raise ValueError("Raw SQL must not contain an unterminated string literal")
+
     depth = 0
-    in_string = False
-    quote_char = None
     i = 0
 
     where_pos = -1          # Position of WHERE keyword
     clause_pos = len(q)     # Position of next clause after FROM
 
-    while i < len(q):
-        c = q[i]
-
-        # Skip string literals
-        if in_string:
-            if c == "\\" and i + 1 < len(q):
-                i += 2
-                continue
-            if c == quote_char:
-                in_string = False
-            i += 1
-            continue
-
-        if c in ("'", '"', "`"):
-            in_string = True
-            quote_char = c
-            i += 1
-            continue
+    while i < len(masked):
+        c = masked[i]
 
         # Track paren depth to avoid subqueries
         if c == "(":
@@ -479,7 +474,7 @@ def _scope_sql_query(query: str, project_id: str) -> str:
 
         # Only look for keywords at the outermost depth
         if depth == 0:
-            remaining_upper = q[i:].upper()
+            remaining_upper = masked[i:].upper()
 
             # Check for WHERE (word boundary check)
             if where_pos < 0 and remaining_upper.startswith("WHERE"):
@@ -530,6 +525,22 @@ def _scope_sql_query(query: str, project_id: str) -> str:
 
 async def handle_raw_sql(conn: Any, state: Any, args: dict[str, Any]) -> list[TextContent]:
     """Run constrained SQL in a database-enforced read-only transaction."""
+    if isinstance(conn, sqlite3.Connection):
+        # The constrained-SELECT grammar (_scope_sql_query, validate_sql_query)
+        # and the BEGIN READ ONLY/statement_timeout enforcement below are both
+        # PostgreSQL-specific. Reimplementing them for a second SQL dialect
+        # isn't worth it for what's meant to be a zero-infrastructure local
+        # fallback — see CLAUDE.md. Configure PostgreSQL to use this tool.
+        return [TextContent(
+            type="text",
+            text=(
+                "audit_raw_sql requires PostgreSQL and is not available while "
+                "this project is running on the zero-config local SQLite "
+                "backend (no PGHOST/PGDATABASE/config.toml configured). "
+                "Every other tool works the same either way."
+            ),
+        )]
+
     query = validate_sql_query(args.get("query", ""))
     if query is None:
         return [TextContent(
@@ -584,7 +595,7 @@ async def handle_file_tree(conn: Any, state: Any, args: dict[str, Any]) -> list[
         return [TextContent(type="text", text="max_depth must be an integer.")]
     max_entries = 50  # Show up to 50 items per level
 
-    file_repo = FileRepository(conn)
+    file_repo = make_file_repository(conn)
     all_paths = await asyncio.to_thread(file_repo.get_all_paths_ordered, state.project_id)
     if not all_paths:
         return [TextContent(type="text", text="No files in project.")]

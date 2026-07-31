@@ -5,6 +5,10 @@
 # take priority over this file.
 #
 #   cp config.toml.example config.toml
+#   chmod 600 config.toml
+#
+# This file holds a plaintext password. The server refuses to load it if it
+# is readable or writable by anyone other than its owner.
 
 [database]
 # PostgreSQL connection for the audit database
@@ -13,3 +17,7 @@ port = 5432
 database = "slug_audit"
 user = "slug_audit"
 password = "change_me"
+
+# Optional: connection pool sizing (defaults shown; both are read and applied)
+# pool_min = 1
+# pool_max = 5

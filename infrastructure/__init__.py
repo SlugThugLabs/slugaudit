@@ -1,32 +1,24 @@
-"""Infrastructure layer — connection management, validation, file I/O."""
+"""Infrastructure layer — connection pooling and file I/O."""
 
-from .db import parse_connection_string, get_connection, ConnectionPool
-from .validators import (
-    validate_project_name,
-    validate_project_path,
-    validate_path_within,
-)
+from .db import ConnectionPool
 from .filesystem import (
     IFileSystem,
     LocalFileSystem,
     get_file_system,
     set_file_system,
-    MAX_FILE_SIZE,
 )
+from .sqlite_db import connect as sqlite_connect
+from .sqlite_db import sqlite_db_path
 
 __all__ = [
     # db
-    "parse_connection_string",
-    "get_connection",
     "ConnectionPool",
-    # validators
-    "validate_project_name",
-    "validate_project_path",
-    "validate_path_within",
+    # sqlite_db
+    "sqlite_connect",
+    "sqlite_db_path",
     # filesystem
     "IFileSystem",
     "LocalFileSystem",
     "get_file_system",
     "set_file_system",
-    "MAX_FILE_SIZE",
 ]

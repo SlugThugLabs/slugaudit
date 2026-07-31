@@ -1,10 +1,24 @@
 # SlugAudit MCP
 
-SlugAudit is a PostgreSQL-backed evidence index built for AI code auditors. It
+SlugAudit is a database-backed evidence index built for AI code auditors. It
 uses Tree-sitter to pre-parse supported source files and lets an AI search,
 retrieve, and connect evidence without repeatedly opening hundreds of flat
 files. SlugAudit does not decide whether code is correct; the AI still performs
 the audit judgment.
+
+**Zero setup by default.** With no PostgreSQL configured, SlugAudit stores
+its index in a per-project SQLite file — nothing to install, nothing to run.
+Configure PostgreSQL (see "Backends" below) if you want a shared index one
+server serves across multiple developers or machines; if you never do,
+you'll never notice it's an option.
+
+**This is infrastructure for an LLM, not a tool a human runs commands
+against.** Every tool in the "MCP tools" table below is called by the AI
+model — the same way it would call a built-in `Read` or `Grep` tool — never
+typed by a person. The *only* human-facing surface, at all, is the two-word
+activation toggle in the next section. If you're adding something a human is
+meant to invoke directly, it almost certainly belongs somewhere other than a
+new MCP tool here.
 
 ## Project contract
 
@@ -45,62 +59,126 @@ stale fallback.
 | `audit_file_tree` | Browse the complete indexed source tree |
 | `audit_brief` | Compact project-wide risk leads and open findings |
 | `audit_finding` | Persist an AI-reviewed conclusion against current evidence |
-| `audit_raw_sql` | Constrained, project-scoped, database-enforced read-only query |
+| `audit_raw_sql` | Constrained, project-scoped, database-enforced read-only query (PostgreSQL only — see "Backends") |
 
 Every successful response includes `slugaudit_meta` with the contract version,
 schema version, project ID, revision ID, manifest hash, sync timestamp, and
 `freshness: verified`. Automated risk patterns are leads, not findings or
 scores.
 
-## Installation and configuration
+## Host-adapter protocol and the `_project_root` override
 
-SlugAudit requires Python 3.11+ and PostgreSQL 15+.
+A native host integration (e.g. an editor's built-in agent, the same layer
+that already mediates `Read`/`Write`/`Bash` for that agent) can bind every
+tool call to whichever project is currently active by injecting a reserved
+`_project_root` argument, and can drive `/slugaudit on|off` through a reserved
+`_slugaudit_project_control` tool name. Neither name is advertised in the tool
+schemas presented to the model, and every schema sets
+`additionalProperties: false`.
+
+In the expected deployment shape — a host that, like it does for its own
+built-in tools, constructs the final tool-call arguments itself rather than
+forwarding whatever raw JSON the model emits — the model has no path to ever
+see or set either reserved name, and the section below is inert by
+construction. SlugAudit cannot verify that from inside this codebase, though:
+nothing about the MCP transport or JSON Schema *itself* guarantees a given
+host enforces that. The mechanism below exists as a way to make that
+guarantee explicit and checkable, for any host that doesn't, rather than as
+evidence that this class of host actually needs it. Do not read the existence
+of this section as SlugAudit treating its own calling model as an adversary
+by default — treat it as an available lever, off by default, for a host that
+turns out to need one. The lever:
+
+- If `SLUGAUDIT_HOST_TOKEN` is **not set** (the default), `_project_root` is
+  honored as sent, with a one-time startup log noting that this argument is
+  currently unauthenticated.
+- If `SLUGAUDIT_HOST_TOKEN` **is set**, `_project_root` is only honored when
+  the same call also supplies a matching `_host_token` argument (compared in
+  constant time). A missing or wrong token silently falls back to the
+  server process's own working directory — the same as if `_project_root`
+  had not been sent at all.
+
+To close this gap, set `SLUGAUDIT_HOST_TOKEN` to a long random value in the
+server's environment and configure your host adapter to send the same value
+as `_host_token` alongside `_project_root`. If your deployment only ever
+audits the single directory the server is launched in, you don't need
+`_project_root` at all — leave it unset and the server always uses its own
+`cwd`.
+
+## Backends
+
+SlugAudit resolves which database to use, in this order, every time a tool
+call needs one:
+
+1. Environment variables: `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`,
+   `PGPASSWORD`.
+2. `config.toml` (via `$SLUGAUDIT_CONFIG` or the default install path).
+3. **Neither resolves → SQLite**, one file per project at
+   `.planning/slugaudit/audit.db`. No installation, no server, no
+   configuration — this is what a fresh clone gets with zero setup.
+
+The two backends are not identical: the SQLite one is scoped to the 7 tables
+and 6 tools the current design actually uses (see CLAUDE.md), and
+`audit_raw_sql` specifically requires PostgreSQL — reimplementing its
+constrained-SQL grammar for a second dialect isn't worth it for what's meant
+to be a zero-infrastructure fallback. Every other tool behaves identically
+either way.
+
+**Switching from SQLite to PostgreSQL later is automatic.** The moment a
+project that's been running on SQLite gets a working PostgreSQL
+configuration, the next tool call syncs fresh into PostgreSQL and migrates
+that project's findings over (the only thing SQLite held that isn't just
+re-derived from source on every sync anyway), then renames the old file to
+`audit.db.migrated` rather than deleting it. Nothing needs to be triggered
+manually.
+
+### PostgreSQL setup (optional — for a shared, multi-machine index)
+
+SlugAudit requires **Python 3.11+**, and runs on **Linux or macOS only** —
+cross-process synchronization uses POSIX `fcntl` file locks, which do not
+exist on Windows. `mcp_server.py` checks this at startup and fails with a
+clear message rather than a raw `ImportError`. PostgreSQL itself needs
+**15+** only if you choose to configure it.
 
 ```bash
 ./setup.sh
+```
+
+`config.toml` holds a database password in plain text. The server refuses to
+load it if it is readable by anyone other than its owner — keep it at
+`chmod 600`:
+
+```bash
 cp config.toml.example config.toml
-.venv/bin/slugaudit-mcp
+chmod 600 config.toml
+$EDITOR config.toml
 ```
 
-Database settings can come from `config.toml`, a file selected by
-`SLUGAUDIT_CONFIG`, or standard `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, and
-`PGPASSWORD` environment variables. Environment values take precedence.
-
-Example stdio MCP registration:
-
-```json
-{
-  "slugaudit": {
-    "type": "stdio",
-    "command": "slugaudit-mcp"
-  }
-}
-```
-
-`claude-code-install.sh` and `grok-install.sh` register that same standalone
-stdio MCP executable for their respective clients. They do not fork the index,
-schema, or synchronization behavior.
-
-The MCP process must start in the project working directory, or beneath a
-parent containing `.planning/slugaudit/`. The schema is migrated automatically
-when the server first connects.
-
-## Source coverage
-
-Rust, Python, TypeScript/JavaScript, Go, Java, C, C++, and Ruby are indexed
-together in polyglot repositories. Git projects use tracked plus untracked,
-non-ignored files; non-Git projects use deterministic discovery. Generated,
-vendor, dependency, hidden-state, binary, and unsupported files are excluded.
-
-## Development gates
+## Verification
 
 ```bash
 python3 -m pytest -q
-mypy --strict app languages repositories services domain infrastructure briefing mcp_server.py
-ruff check app languages repositories services domain infrastructure briefing mcp_server.py
-python3 -m build
+mypy --strict app languages repositories services domain infrastructure mcp_server.py
+ruff check app languages repositories services domain infrastructure mcp_server.py
+git diff --check
 ```
 
-The standalone stdio MCP is the canonical engine. Native clients such as
-ClauRust should act as adapters for working-directory and `/slugaudit on|off`
-UX rather than maintaining a second schema or indexing implementation.
+`pytest -q` covers both backends. SQLite needs no gating — it's a Python
+stdlib module, so `tests/test_sqlite_backend.py`, `tests/test_sqlite_end_to_end.py`,
+and `tests/test_sqlite_migration.py` all run real (non-mocked) database
+behavior on every normal test run. PostgreSQL is the one backend that needs
+a real network server, so everything else stays mocked, and
+`tests/test_integration_db.py` additionally exercises the real schema
+migration, advisory lock, connection pool, and a repository round trip
+against a live PostgreSQL database. It is skipped by default and only runs
+when `SLUGAUDIT_RUN_DB_TESTS=1` is set:
+
+```bash
+SLUGAUDIT_RUN_DB_TESTS=1 PGHOST=... PGDATABASE=... PGUSER=... PGPASSWORD=... \
+  python3 -m pytest -q tests/test_integration_db.py
+```
+
+It creates and drops its own schema (`SLUGAUDIT_TEST_SCHEMA`, default
+`slugaudit_test`) via `search_path` and never touches `public` — but still
+point it at a database you're allowed to create/drop a schema in, never one
+holding real audit evidence.

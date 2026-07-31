@@ -1,11 +1,13 @@
 """Tests for MCP tool handlers."""
 
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.handlers import (
     HANDLERS,
+    handle_brief,
     handle_file_tree,
     handle_finding,
     handle_raw_sql,
@@ -127,11 +129,11 @@ class TestFindingHandler(unittest.IsolatedAsyncioTestCase):
         state = SimpleNamespace(project_id="project-1", revision_id="revision-1")
         with (
             patch(
-                "app.handlers.FileRepository.get_file_identity",
+                "repositories.FileRepository.get_file_identity",
                 return_value=("file-1", "hash-1"),
             ),
             patch(
-                "app.handlers.FindingRepository.record",
+                "repositories.FindingRepository.record",
                 return_value=("finding-1", True),
             ) as record,
         ):
@@ -156,7 +158,7 @@ class TestFindingHandler(unittest.IsolatedAsyncioTestCase):
     async def test_rejects_unknown_file(self) -> None:
         state = SimpleNamespace(project_id="project-1", revision_id="revision-1")
         with patch(
-            "app.handlers.FileRepository.get_file_identity", return_value=None
+            "repositories.FileRepository.get_file_identity", return_value=None
         ):
             result = await handle_finding(
                 object(),
@@ -173,11 +175,50 @@ class TestFindingHandler(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Indexed file not found", result[0].text)
 
 
+class TestBriefHandler(unittest.IsolatedAsyncioTestCase):
+    async def test_payload_is_fully_json_serializable(self) -> None:
+        # Regression test for a live production failure: audit_brief's
+        # json.dumps(payload) raised "Object of type Decimal is not JSON
+        # serializable" the first time it ran against a project with real
+        # file-size data, because files.size is BIGINT and PostgreSQL's
+        # SUM(bigint) returns numeric (-> psycopg2 Decimal). Fixed at the
+        # repository boundary (FileRepository.get_file_stats); this proves
+        # the handler's actual JSON output is valid end to end.
+        state = SimpleNamespace(project_id="project-1", project_name="demo")
+        with (
+            patch(
+                "repositories.FileRepository.get_file_stats",
+                return_value={
+                    "total_files": 3,
+                    "total_bytes": 1024,
+                    "files_with_sigs": 2,
+                    "total_sigs": 7,
+                },
+            ),
+            patch(
+                "repositories.RiskPatternRepository.get_project_patterns",
+                return_value=[("src/main.py", [("unwrap", 4)])],
+            ),
+            patch(
+                "repositories.FindingRepository.get_open_findings",
+                return_value=[
+                    ("src/main.py", 10, 12, "high", "correctness", "example finding")
+                ],
+            ),
+        ):
+            result = await handle_brief(object(), state, {})
+
+        payload = json.loads(result[0].text)  # must not raise
+        self.assertEqual(payload["stats"]["total_bytes"], 1024)
+        self.assertEqual(payload["risk_leads"][0]["path"], "src/main.py")
+        self.assertEqual(payload["open_findings"][0]["severity"], "high")
+
+
 class TestBoundedRetrieval(unittest.IsolatedAsyncioTestCase):
     async def test_read_file_applies_line_bounds(self) -> None:
         state = SimpleNamespace(project_id="project-1")
         with patch(
-            "app.handlers.FileRepository.get_file_contents",
+            "repositories.FileRepository.get_file_contents",
             return_value=[("src/main.py", "one\ntwo\nthree\nfour")],
         ):
             result = await handle_read_file(
@@ -193,7 +234,7 @@ class TestBoundedRetrieval(unittest.IsolatedAsyncioTestCase):
     async def test_file_tree_renders_lines_not_python_list(self) -> None:
         state = SimpleNamespace(project_id="project-1", project_name="demo")
         with patch(
-            "app.handlers.FileRepository.get_all_paths_ordered",
+            "repositories.FileRepository.get_all_paths_ordered",
             return_value=["src/main.py", "tests/test_main.py"],
         ):
             result = await handle_file_tree(object(), state, {})

@@ -180,7 +180,7 @@ TOOLS = [
             "total files, total signatures, and file extension breakdown. "
             "Start here before making other queries."
         ),
-        inputSchema={"type": "object", "properties": {}},
+        inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
     ),
     Tool(
         name="audit_search",
@@ -208,6 +208,7 @@ TOOLS = [
                 },
             },
             "required": ["pattern"],
+            "additionalProperties": False,
         },
     ),
     Tool(
@@ -233,6 +234,7 @@ TOOLS = [
                 },
             },
             "required": ["paths"],
+            "additionalProperties": False,
         },
     ),
     Tool(
@@ -253,6 +255,7 @@ TOOLS = [
                 },
             },
             "required": ["file_path"],
+            "additionalProperties": False,
         },
     ),
     Tool(
@@ -272,6 +275,7 @@ TOOLS = [
                     "minimum": 1,
                 },
             },
+            "additionalProperties": False,
         },
     ),
     Tool(
@@ -302,6 +306,7 @@ TOOLS = [
                 "title",
                 "description",
             ],
+            "additionalProperties": False,
         },
     ),
     Tool(
@@ -317,6 +322,7 @@ TOOLS = [
                 "query": {"type": "string"},
             },
             "required": ["query"],
+            "additionalProperties": False,
         },
     ),
     Tool(
@@ -338,6 +344,7 @@ TOOLS = [
                     "description": "Maximum depth of the directory tree (1=top level only)",
                 },
             },
+            "additionalProperties": False,
         },
     ),
 ]
