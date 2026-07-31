@@ -38,9 +38,9 @@ SERVER = Server("slugaudit-mcp", instructions=MCP_INSTRUCTIONS)
 PROJECT_ROOT_ARGUMENT = "_project_root"
 PROJECT_CONTROL_TOOL = "_slugaudit_project_control"
 
-# Optional, off-by-default hardening: require a shared secret alongside
-# _project_root. Exists for a host that doesn't already guarantee the
-# separation above; not evidence that any given host needs it. See README.
+# Shared secret gating the _project_root override. No unauthenticated
+# fallback: without SLUGAUDIT_HOST_TOKEN configured, _project_root is never
+# honored at all and this process always uses its own cwd. See README.
 HOST_TOKEN_ENV_VAR = "SLUGAUDIT_HOST_TOKEN"  # noqa: S105 - a name, not a secret
 HOST_TOKEN_ARGUMENT = "_host_token"  # noqa: S105 - a name, not a secret
 
@@ -60,10 +60,11 @@ def _host_token_matches(supplied: Any, configured: str) -> bool:
 def _extract_project_root(arguments: dict[str, Any]) -> str:
     """Remove and normalize the host-injected root, preserving cwd fallback.
 
-    When SLUGAUDIT_HOST_TOKEN is configured, the override is only honored if
-    the caller also supplied a matching "_host_token" argument; otherwise it
-    is silently rejected (falls back to this process's own cwd) and logged,
-    exactly as if no _project_root had been sent at all.
+    The override is only ever honored when SLUGAUDIT_HOST_TOKEN is
+    configured and the caller supplies a matching "_host_token" argument.
+    No unauthenticated fallback: if no token is configured at all, this
+    process always uses its own cwd, exactly as if no _project_root had
+    been sent — there is no backward-compatible "honor it anyway" path.
     """
     injected = arguments.pop(PROJECT_ROOT_ARGUMENT, None)
     supplied_token = arguments.pop(HOST_TOKEN_ARGUMENT, None)
@@ -73,9 +74,16 @@ def _extract_project_root(arguments: dict[str, Any]) -> str:
         raise ValueError(f"{PROJECT_ROOT_ARGUMENT} must be a non-empty path string")
 
     configured_token = _host_token_configured()
-    if configured_token is not None and not _host_token_matches(
-        supplied_token, configured_token
-    ):
+    if configured_token is None:
+        logger.warning(
+            "Rejected %s: %s is not configured, so this override can never "
+            "be authenticated. Falling back to this process's own working "
+            "directory.",
+            PROJECT_ROOT_ARGUMENT,
+            HOST_TOKEN_ENV_VAR,
+        )
+        return os.getcwd()
+    if not _host_token_matches(supplied_token, configured_token):
         logger.warning(
             "Rejected %s: missing or invalid %s. Falling back to this "
             "process's own working directory.",
@@ -185,12 +193,13 @@ async def run_server() -> None:
         logger.info(f"DB: {cfg.user}@{cfg.host}:{cfg.port}/{cfg.database}")
 
     if _host_token_configured() is None:
-        logger.warning(
-            "%s is not set: any tool call carrying a %s argument will have "
-            "it honored unauthenticated, letting a caller point SlugAudit at "
-            "any directory this process can read. Set %s in this process's "
-            "environment and have your host adapter send the same value as "
-            "%s to require authentication for that override.",
+        logger.info(
+            "%s is not set: this process will always use its own working "
+            "directory as the active project. Any %s argument on a tool "
+            "call is rejected outright rather than honored — there is no "
+            "unauthenticated fallback. Set %s in this process's environment "
+            "and have your host adapter send the same value as %s if you "
+            "need this server to serve more than one project directory.",
             HOST_TOKEN_ENV_VAR,
             PROJECT_ROOT_ARGUMENT,
             HOST_TOKEN_ENV_VAR,

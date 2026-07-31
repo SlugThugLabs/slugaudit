@@ -37,10 +37,14 @@ tool's actual reason to exist — reconsider it rather than adding it.
   schemas or indexing engines.
 - Automated risk patterns are leads. The AI supplies judgment and may persist
   reviewed conclusions with `audit_finding`.
-- `_project_root` and `_slugaudit_project_control` are privileged, not
-  default-safe (see README's "Host-adapter protocol" section). Do not widen
-  what they accept without also widening `SLUGAUDIT_HOST_TOKEN` enforcement
-  in `app/server.py`.
+- `_project_root` is default-safe by construction, not by convention: with no
+  `SLUGAUDIT_HOST_TOKEN` configured it is unconditionally rejected and the
+  process always uses its own `cwd` — there is no unauthenticated fallback
+  path (see README's "Host-adapter protocol" section). Do not reintroduce one
+  for "backward compatibility"; this project has no downstream deployments to
+  stay compatible with. Do not widen what `_project_root`/
+  `_slugaudit_project_control` accept without also widening
+  `SLUGAUDIT_HOST_TOKEN` enforcement in `app/server.py`.
 - Linux/macOS only. Do not introduce another POSIX-only dependency without
   updating the startup platform check in `mcp_server.py`, and do not silently
   drop the check either.

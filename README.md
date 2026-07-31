@@ -130,21 +130,23 @@ of this section as SlugAudit treating its own calling model as an adversary
 by default — treat it as an available lever, off by default, for a host that
 turns out to need one. The lever:
 
-- If `SLUGAUDIT_HOST_TOKEN` is **not set** (the default), `_project_root` is
-  honored as sent, with a one-time startup log noting that this argument is
-  currently unauthenticated.
-- If `SLUGAUDIT_HOST_TOKEN` **is set**, `_project_root` is only honored when
-  the same call also supplies a matching `_host_token` argument (compared in
-  constant time). A missing or wrong token silently falls back to the
-  server process's own working directory — the same as if `_project_root`
-  had not been sent at all.
+- `_project_root` is **never honored unless `SLUGAUDIT_HOST_TOKEN` is
+  configured** in the server's environment. There is no unauthenticated
+  fallback: with no token configured, every `_project_root` argument is
+  rejected outright and this process always uses its own `cwd`, exactly as
+  if `_project_root` had not been sent at all — the same as a fresh clone
+  with no host integration set up.
+- Once `SLUGAUDIT_HOST_TOKEN` **is set**, `_project_root` is only honored
+  when the same call also supplies a matching `_host_token` argument
+  (compared in constant time). A missing or wrong token falls back to the
+  server process's own working directory instead of erroring.
 
-To close this gap, set `SLUGAUDIT_HOST_TOKEN` to a long random value in the
-server's environment and configure your host adapter to send the same value
-as `_host_token` alongside `_project_root`. If your deployment only ever
-audits the single directory the server is launched in, you don't need
-`_project_root` at all — leave it unset and the server always uses its own
-`cwd`.
+To use `_project_root`, set `SLUGAUDIT_HOST_TOKEN` to a long random value in
+the server's environment and configure your host adapter to send the same
+value as `_host_token` alongside `_project_root`. If your deployment only
+ever audits the single directory the server is launched in, you don't need
+`_project_root` at all — leave `SLUGAUDIT_HOST_TOKEN` unset and the server
+always uses its own `cwd`.
 
 ## Backends
 

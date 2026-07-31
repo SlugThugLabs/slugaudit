@@ -39,10 +39,11 @@ async def _connection(connection: Any = None) -> AsyncIterator[Any]:
     yield connection if connection is not None else object()
 
 
+_TEST_TOKEN = "s3cr3t"  # noqa: S105 - a test fixture value, not a real secret
+
+
 class TestServerAdapterProtocol(unittest.IsolatedAsyncioTestCase):
-    async def test_reserved_project_root_overrides_cwd_and_is_not_sent_to_handler(
-        self,
-    ) -> None:
+    async def test_matching_host_token_authorizes_project_root_override(self) -> None:
         captured: dict[str, Any] = {}
 
         @asynccontextmanager
@@ -64,55 +65,28 @@ class TestServerAdapterProtocol(unittest.IsolatedAsyncioTestCase):
                 patch("app.server.get_db", return_value=_connection("database")),
                 patch("app.server.synchronized_project", side_effect=synchronized),
                 patch.dict("app.server.HANDLERS", {"audit_overview": handler}),
-                patch("app.server._host_token_configured", return_value=None),
-            ):
-                result = await call_tool(
-                    "audit_overview",
-                    {PROJECT_ROOT_ARGUMENT: str(root), "detail": "compact"},
-                )
-
-        self.assertEqual(captured["project_root"], str(root.resolve()))
-        self.assertEqual(captured["connection"], "database")
-        self.assertEqual(captured["handler_arguments"], {"detail": "compact"})
-        self.assertEqual(result[0].text, "overview")
-
-    async def test_matching_host_token_authorizes_project_root_override(self) -> None:
-        captured: dict[str, Any] = {}
-
-        @asynccontextmanager
-        async def synchronized(project_root: str, conn: Any) -> AsyncIterator[Any]:
-            captured["project_root"] = project_root
-            yield _published_state()
-
-        async def handler(
-            conn: Any, state: Any, arguments: dict[str, Any]
-        ) -> list[TextContent]:
-            captured["handler_arguments"] = arguments
-            return [TextContent(type="text", text="overview")]
-
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            with (
-                patch("app.server.os.getcwd", return_value="/wrong/project"),
-                patch("app.server.get_db", return_value=_connection("database")),
-                patch("app.server.synchronized_project", side_effect=synchronized),
-                patch.dict("app.server.HANDLERS", {"audit_overview": handler}),
-                patch("app.server._host_token_configured", return_value="s3cr3t"),
+                patch("app.server._host_token_configured", return_value=_TEST_TOKEN),
             ):
                 result = await call_tool(
                     "audit_overview",
                     {
                         PROJECT_ROOT_ARGUMENT: str(root),
-                        HOST_TOKEN_ARGUMENT: "s3cr3t",
+                        HOST_TOKEN_ARGUMENT: _TEST_TOKEN,
+                        "detail": "compact",
                     },
                 )
 
         self.assertEqual(captured["project_root"], str(root.resolve()))
-        self.assertEqual(captured["handler_arguments"], {})
+        self.assertEqual(captured["connection"], "database")
+        # Neither reserved argument leaks through to the handler.
+        self.assertEqual(captured["handler_arguments"], {"detail": "compact"})
         self.assertEqual(result[0].text, "overview")
 
     async def _assert_project_root_falls_back_to_cwd(
-        self, supplied_arguments: dict[str, Any]
+        self,
+        supplied_arguments: dict[str, Any],
+        *,
+        configured_token: str | None,
     ) -> None:
         captured: dict[str, Any] = {}
 
@@ -133,7 +107,10 @@ class TestServerAdapterProtocol(unittest.IsolatedAsyncioTestCase):
                 patch("app.server.get_db", return_value=_connection()),
                 patch("app.server.synchronized_project", side_effect=synchronized),
                 patch.dict("app.server.HANDLERS", {"audit_overview": handler}),
-                patch("app.server._host_token_configured", return_value="s3cr3t"),
+                patch(
+                    "app.server._host_token_configured",
+                    return_value=configured_token,
+                ),
             ):
                 await call_tool(
                     "audit_overview",
@@ -142,13 +119,28 @@ class TestServerAdapterProtocol(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(captured["project_root"], "/actual/cwd")
 
+    async def test_no_host_token_configured_rejects_project_root_outright(self) -> None:
+        # No unauthenticated fallback: with SLUGAUDIT_HOST_TOKEN unset, the
+        # override is never honored even if the caller happens to also send
+        # a plausible-looking _host_token value.
+        for supplied_arguments in (
+            {},
+            {HOST_TOKEN_ARGUMENT: "anything"},
+        ):
+            with self.subTest(arguments=supplied_arguments):
+                await self._assert_project_root_falls_back_to_cwd(
+                    supplied_arguments, configured_token=None
+                )
+
     async def test_missing_or_wrong_host_token_falls_back_to_cwd(self) -> None:
         for supplied_arguments in (
             {},
             {HOST_TOKEN_ARGUMENT: "wrong-token"},
         ):
             with self.subTest(arguments=supplied_arguments):
-                await self._assert_project_root_falls_back_to_cwd(supplied_arguments)
+                await self._assert_project_root_falls_back_to_cwd(
+                    supplied_arguments, configured_token=_TEST_TOKEN
+                )
 
     async def test_control_route_and_reserved_arguments_are_not_advertised(self) -> None:
         tools = await list_tools()
@@ -162,28 +154,33 @@ class TestServerAdapterProtocol(unittest.IsolatedAsyncioTestCase):
     async def test_on_creates_trigger_without_opening_database(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
-            with patch(
-                "app.server.get_db",
-                side_effect=AssertionError("on must not open the database"),
+            control_args = {
+                "action": "on",
+                PROJECT_ROOT_ARGUMENT: str(root),
+                HOST_TOKEN_ARGUMENT: _TEST_TOKEN,
+            }
+            with (
+                patch("app.server._host_token_configured", return_value=_TEST_TOKEN),
+                patch(
+                    "app.server.get_db",
+                    side_effect=AssertionError("on must not open the database"),
+                ),
             ):
-                result = await call_tool(
-                    PROJECT_CONTROL_TOOL,
-                    {"action": "on", PROJECT_ROOT_ARGUMENT: str(root)},
-                )
+                result = await call_tool(PROJECT_CONTROL_TOOL, dict(control_args))
 
             payload = json.loads(result[0].text)["slugaudit_control"]
             self.assertTrue((root / ".planning" / "slugaudit").is_dir())
             self.assertEqual(payload["action"], "on")
             self.assertTrue(payload["changed"])
 
-            with patch(
-                "app.server.get_db",
-                side_effect=AssertionError("on must not open the database"),
+            with (
+                patch("app.server._host_token_configured", return_value=_TEST_TOKEN),
+                patch(
+                    "app.server.get_db",
+                    side_effect=AssertionError("on must not open the database"),
+                ),
             ):
-                repeated = await call_tool(
-                    PROJECT_CONTROL_TOOL,
-                    {"action": "on", PROJECT_ROOT_ARGUMENT: str(root)},
-                )
+                repeated = await call_tool(PROJECT_CONTROL_TOOL, dict(control_args))
             repeated_payload = json.loads(repeated[0].text)["slugaudit_control"]
             self.assertFalse(repeated_payload["changed"])
 
@@ -194,6 +191,7 @@ class TestServerAdapterProtocol(unittest.IsolatedAsyncioTestCase):
             activation.mkdir(parents=True)
 
             with (
+                patch("app.server._host_token_configured", return_value=_TEST_TOKEN),
                 patch("app.server.get_db", return_value=_connection("database")),
                 patch(
                     "repositories.ProjectRepository.purge_by_path",
@@ -202,7 +200,11 @@ class TestServerAdapterProtocol(unittest.IsolatedAsyncioTestCase):
             ):
                 result = await call_tool(
                     PROJECT_CONTROL_TOOL,
-                    {"action": "off", PROJECT_ROOT_ARGUMENT: str(root)},
+                    {
+                        "action": "off",
+                        PROJECT_ROOT_ARGUMENT: str(root),
+                        HOST_TOKEN_ARGUMENT: _TEST_TOKEN,
+                    },
                 )
 
             payload = json.loads(result[0].text)["slugaudit_control"]
@@ -218,6 +220,7 @@ class TestServerAdapterProtocol(unittest.IsolatedAsyncioTestCase):
             activation.mkdir(parents=True)
 
             with (
+                patch("app.server._host_token_configured", return_value=_TEST_TOKEN),
                 patch("app.server.get_db", return_value=_connection()),
                 patch(
                     "repositories.ProjectRepository.purge_by_path",
@@ -230,6 +233,7 @@ class TestServerAdapterProtocol(unittest.IsolatedAsyncioTestCase):
                         arguments={
                             "action": "off",
                             PROJECT_ROOT_ARGUMENT: str(root),
+                            HOST_TOKEN_ARGUMENT: _TEST_TOKEN,
                         },
                     )
                 )

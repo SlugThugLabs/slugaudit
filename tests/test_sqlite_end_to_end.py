@@ -8,12 +8,17 @@ import sqlite3
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
+from unittest.mock import patch
 
 import app.config
 import app.pool
 from app.activation import enable_project
 from app.pool import get_connection_for_project
-from app.server import PROJECT_ROOT_ARGUMENT, call_tool
+from app.server import HOST_TOKEN_ARGUMENT, PROJECT_ROOT_ARGUMENT, call_tool
+from mcp.types import TextContent
+
+_TEST_TOKEN = "s3cr3t"  # noqa: S105 - a test fixture value, not a real secret
 
 
 def _force_unconfigured() -> None:
@@ -25,7 +30,13 @@ def _force_unconfigured() -> None:
 
 
 class _SqliteBackendTestCase(unittest.IsolatedAsyncioTestCase):
-    """Base class that pins the process to the SQLite backend for its tests."""
+    """Base class that pins the process to the SQLite backend for its tests.
+
+    Also authenticates _project_root for the duration of each test: with no
+    unauthenticated fallback (see app/server.py), every call in this file
+    needs a matching _host_token to actually target its TemporaryDirectory
+    rather than silently falling back to the real process cwd.
+    """
 
     def setUp(self) -> None:
         self._saved_env = {
@@ -34,6 +45,9 @@ class _SqliteBackendTestCase(unittest.IsolatedAsyncioTestCase):
         }
         self._original_find_config = app.config._find_config
         _force_unconfigured()
+        self.enterContext(
+            patch("app.server._host_token_configured", return_value=_TEST_TOKEN)
+        )
 
     def tearDown(self) -> None:
         for var, val in self._saved_env.items():
@@ -43,6 +57,10 @@ class _SqliteBackendTestCase(unittest.IsolatedAsyncioTestCase):
                 os.environ.pop(var, None)
         app.config._find_config = self._original_find_config
         app.config._config = None
+
+    async def _call(self, name: str, args: dict[str, Any]) -> list[TextContent]:
+        """call_tool with the test host token merged in automatically."""
+        return await call_tool(name, {**args, HOST_TOKEN_ARGUMENT: _TEST_TOKEN})
 
 
 class TestGetConnectionForProjectDispatch(_SqliteBackendTestCase):
@@ -71,26 +89,26 @@ class TestFullToolStackAgainstSqlite(_SqliteBackendTestCase):
             )
             enable_project(root)
 
-            overview = await call_tool("audit_overview", {PROJECT_ROOT_ARGUMENT: str(root)})
+            overview = await self._call("audit_overview", {PROJECT_ROOT_ARGUMENT: str(root)})
             self.assertIn("**Files:** 1", overview[0].text)
 
-            search = await call_tool(
+            search = await self._call(
                 "audit_search", {PROJECT_ROOT_ARGUMENT: str(root), "pattern": "eval"}
             )
             self.assertIn("app.py", search[0].text)
 
-            read = await call_tool(
+            read = await self._call(
                 "audit_read_file",
                 {PROJECT_ROOT_ARGUMENT: str(root), "paths": ["app.py"]},
             )
             self.assertIn("def risky", read[0].text)
 
-            brief = await call_tool("audit_brief", {PROJECT_ROOT_ARGUMENT: str(root)})
+            brief = await self._call("audit_brief", {PROJECT_ROOT_ARGUMENT: str(root)})
             payload = json.loads(brief[0].text)
             self.assertEqual(payload["risk_leads"][0]["path"], "app.py")
             self.assertEqual(payload["risk_leads"][0]["patterns"][0]["type"], "eval")
 
-            finding = await call_tool(
+            finding = await self._call(
                 "audit_finding",
                 {
                     PROJECT_ROOT_ARGUMENT: str(root),
@@ -104,7 +122,7 @@ class TestFullToolStackAgainstSqlite(_SqliteBackendTestCase):
             )
             self.assertIn('"created":true', finding[0].text)
 
-            brief2 = await call_tool("audit_brief", {PROJECT_ROOT_ARGUMENT: str(root)})
+            brief2 = await self._call("audit_brief", {PROJECT_ROOT_ARGUMENT: str(root)})
             payload2 = json.loads(brief2[0].text)
             self.assertEqual(len(payload2["open_findings"]), 1)
             self.assertEqual(payload2["open_findings"][0]["severity"], "high")
@@ -121,8 +139,8 @@ class TestFullToolStackAgainstSqlite(_SqliteBackendTestCase):
             (root / "b.py").write_text("y = 2\n", encoding="utf-8")
             enable_project(root)
 
-            await call_tool("audit_overview", {PROJECT_ROOT_ARGUMENT: str(root)})
-            result = await call_tool(
+            await self._call("audit_overview", {PROJECT_ROOT_ARGUMENT: str(root)})
+            result = await self._call(
                 "audit_dependents",
                 {PROJECT_ROOT_ARGUMENT: str(root), "file_path": "b.py"},
             )
@@ -133,9 +151,9 @@ class TestFullToolStackAgainstSqlite(_SqliteBackendTestCase):
             root = Path(tmp)
             (root / "a.py").write_text("x = 1\n", encoding="utf-8")
             enable_project(root)
-            await call_tool("audit_overview", {PROJECT_ROOT_ARGUMENT: str(root)})
+            await self._call("audit_overview", {PROJECT_ROOT_ARGUMENT: str(root)})
 
-            result = await call_tool(
+            result = await self._call(
                 "audit_raw_sql",
                 {PROJECT_ROOT_ARGUMENT: str(root), "query": "SELECT path FROM files"},
             )
@@ -147,12 +165,12 @@ class TestFullToolStackAgainstSqlite(_SqliteBackendTestCase):
             root = Path(tmp)
             (root / "a.py").write_text("x = 1\n", encoding="utf-8")
             enable_project(root)
-            await call_tool("audit_overview", {PROJECT_ROOT_ARGUMENT: str(root)})
+            await self._call("audit_overview", {PROJECT_ROOT_ARGUMENT: str(root)})
             self.assertTrue((root / ".planning" / "slugaudit" / "audit.db").exists())
 
             from app.server import PROJECT_CONTROL_TOOL
 
-            result = await call_tool(
+            result = await self._call(
                 PROJECT_CONTROL_TOOL, {PROJECT_ROOT_ARGUMENT: str(root), "action": "off"}
             )
             self.assertTrue(json.loads(result[0].text)["slugaudit_control"]["changed"])
@@ -163,7 +181,7 @@ class TestFullToolStackAgainstSqlite(_SqliteBackendTestCase):
             root = Path(tmp)  # never enabled
             from app.server import PROJECT_CONTROL_TOOL
 
-            result = await call_tool(
+            result = await self._call(
                 PROJECT_CONTROL_TOOL, {PROJECT_ROOT_ARGUMENT: str(root), "action": "off"}
             )
             payload = json.loads(result[0].text)["slugaudit_control"]
