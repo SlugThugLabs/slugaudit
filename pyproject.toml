@@ -3,6 +3,8 @@ name = "slugaudit-mcp"
 version = "0.1.0"
 description = "PostgreSQL-backed code audit intelligence for AI assistants"
 readme = "README.md"
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "psycopg2-binary>=2.9",

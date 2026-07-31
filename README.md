@@ -20,6 +20,18 @@ activation toggle in the next section. If you're adding something a human is
 meant to invoke directly, it almost certainly belongs somewhere other than a
 new MCP tool here.
 
+## Licensing
+
+SlugAudit is licensed under the [PolyForm Noncommercial License
+1.0.0](LICENSE) — free to use, modify, and redistribute for any
+noncommercial purpose (personal projects, research, internal tooling at a
+nonprofit or educational institution, etc.). No commercial use is licensed
+under these terms: incorporating SlugAudit into a commercial product or
+service, or otherwise using it for commercial advantage, requires a separate
+commercial license.
+
+If you want to use SlugAudit commercially, reach out first: **licensing@slugthuglabs.dev**.
+
 ## Project contract
 
 A project is enabled by the presence of `.planning/slugaudit/`. An integrating
