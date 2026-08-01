@@ -26,8 +26,12 @@ tool's actual reason to exist — reconsider it rather than adding it.
 
 - `.planning/slugaudit/` is the project activation trigger.
 - Project activation UX is only `/slugaudit on|off` in host adapters.
-- Every AI query must hash the complete supported source set and prove DB
-  freshness first.
+- Every AI query must hash the complete non-ignored, non-binary file set —
+  not just the 8 Tree-sitter languages — and prove DB freshness first. Every
+  file gets indexed for `audit_search`/`audit_read_file`; the 8 languages
+  additionally get signature/import/risk-pattern extraction. Never scope
+  discovery back down to a language allowlist — that reintroduces exactly
+  the "fall back to reading flat files" cost this tool exists to remove.
 - New and modified files replace their derived facts; deleted files purge all
   obsolete evidence.
 - Revision publication is transactional. Never expose partial evidence.

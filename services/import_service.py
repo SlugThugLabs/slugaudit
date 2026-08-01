@@ -164,10 +164,16 @@ class ImportService:
                         f"Source changed while SlugAudit was syncing: {relpath}"
                     )
 
-                extractor = extractors[source.language]
-                signatures = extractor.extract_signatures(absolute_path, content)
-                imports = extractor.extract_imports(absolute_path, content)
-                risks = extractor.extract_risk_patterns(absolute_path, content)
+                extractor = extractors.get(source.language) if source.language else None
+                if extractor is not None:
+                    signatures = extractor.extract_signatures(absolute_path, content)
+                    imports = extractor.extract_imports(absolute_path, content)
+                    risks = extractor.extract_risk_patterns(absolute_path, content)
+                else:
+                    # No registered Tree-sitter grammar for this file: it's
+                    # still fully indexed below (content, hash, search, read)
+                    # — just without signature/import/risk-pattern extraction.
+                    signatures, imports, risks = [], [], []
                 modified_at = datetime.fromtimestamp(
                     self.file_system.get_mtime(absolute_path), tz=UTC
                 ).isoformat()

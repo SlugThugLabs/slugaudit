@@ -129,7 +129,9 @@ class TestFilesystemManifest(unittest.TestCase):
             self.assertNotIn("src/main.py", deleted.files)
             self.assertNotEqual(deleted.manifest_hash, added.manifest_hash)
 
-    def test_manifest_excludes_state_generated_vendor_and_unsupported_files(self) -> None:
+    def test_manifest_excludes_generated_vendor_dirs_but_indexes_everything_else(
+        self,
+    ) -> None:
         with TemporaryDirectory() as tmp:
             project = Path(tmp)
             trigger = _activate(project)
@@ -141,7 +143,15 @@ class TestFilesystemManifest(unittest.TestCase):
 
             manifest = build_manifest(project)
 
-            self.assertEqual(set(manifest.files), {"app/main.py"})
+            # vendor/ and node_modules/ are excluded generated-dependency
+            # dirs; .planning/slugaudit (holding state.json) is SlugAudit's
+            # own control directory. Everything else is indexed regardless
+            # of extension — README.md has no Tree-sitter grammar but is
+            # still fully searchable/readable, just without signature
+            # extraction. See app/manifest.py's module docstring.
+            self.assertEqual(set(manifest.files), {"app/main.py", "README.md"})
+            self.assertEqual(manifest.files["app/main.py"].language, "python")
+            self.assertIsNone(manifest.files["README.md"].language)
 
 
 class TestReconciliationGate(unittest.TestCase):

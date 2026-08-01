@@ -13,7 +13,8 @@ class TestInitializationContract(unittest.TestCase):
         self.assertEqual(options.instructions, MCP_INSTRUCTIONS)
         self.assertIn("evidence index for AI auditors", options.instructions)
         self.assertIn(".planning/slugaudit/", options.instructions)
-        self.assertIn("there are no\nmanual sync", options.instructions)
+        self.assertIn("there are no manual\nsync", options.instructions)
+        self.assertIn("regardless of\nlanguage", options.instructions)
 
     def test_instructions_do_not_advertise_removed_tools(self) -> None:
         for removed in ("audit_changed", "audit_status", "audit_source", "audit_init_db"):

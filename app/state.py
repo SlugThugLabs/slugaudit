@@ -33,7 +33,7 @@ class ProjectState:
     file_count: int = 0
     signature_count: int = 0
     languages: list[str] = field(default_factory=list)
-    files: dict[str, dict[str, str | int]] = field(default_factory=dict)
+    files: dict[str, dict[str, str | int | None]] = field(default_factory=dict)
     contract_version: int = CONTRACT_VERSION
     schema_version: int = SCHEMA_VERSION
     parser_version: str = PARSER_VERSION
@@ -103,16 +103,17 @@ class ProjectState:
         if not isinstance(data["files"], dict):
             raise ValueError("state files must be an object")
 
-        files: dict[str, dict[str, str | int]] = {}
+        files: dict[str, dict[str, str | int | None]] = {}
         for path, metadata in data["files"].items():
             if not isinstance(path, str) or not isinstance(metadata, dict):
                 raise ValueError("invalid file manifest entry")
             if not {"hash", "size", "language"}.issubset(metadata):
                 raise ValueError(f"incomplete file manifest entry: {path}")
+            language = metadata["language"]
             files[path] = {
                 "hash": str(metadata["hash"]),
                 "size": int(metadata["size"]),
-                "language": str(metadata["language"]),
+                "language": str(language) if language is not None else None,
             }
 
         languages = data.get("languages")

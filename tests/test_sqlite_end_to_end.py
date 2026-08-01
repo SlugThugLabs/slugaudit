@@ -127,6 +127,45 @@ class TestFullToolStackAgainstSqlite(_SqliteBackendTestCase):
             self.assertEqual(len(payload2["open_findings"]), 1)
             self.assertEqual(payload2["open_findings"][0]["severity"], "high")
 
+    async def test_non_code_files_are_indexed_and_binary_files_are_not(self) -> None:
+        # The index isn't scoped to the 8 Tree-sitter languages: every
+        # non-ignored, non-binary file must be searchable and readable
+        # through the same tools, or an AI would have to fall back to its
+        # own Read/Grep for anything outside those languages — exactly what
+        # SlugAudit exists to remove. See app/manifest.py's module docstring.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "app.py").write_text("x = 1\n", encoding="utf-8")
+            (root / "README.md").write_text(
+                "# demo\nDATABASE_PASSWORD lives in .env\n", encoding="utf-8"
+            )
+            (root / ".env").write_text("DATABASE_PASSWORD=hunter2\n", encoding="utf-8")
+            (root / "Dockerfile").write_text("FROM python:3.12\n", encoding="utf-8")
+            (root / "config.yaml").write_text("debug: true\n", encoding="utf-8")
+            (root / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00binary\x00data")
+            enable_project(root)
+
+            overview = await self._call("audit_overview", {PROJECT_ROOT_ARGUMENT: str(root)})
+            self.assertIn("**Files:** 5", overview[0].text)  # everything but logo.png
+
+            search = await self._call(
+                "audit_search",
+                {PROJECT_ROOT_ARGUMENT: str(root), "pattern": "DATABASE_PASSWORD"},
+            )
+            self.assertIn("README.md", search[0].text)
+            self.assertIn(".env", search[0].text)
+
+            read = await self._call(
+                "audit_read_file",
+                {PROJECT_ROOT_ARGUMENT: str(root), "paths": ["Dockerfile", "config.yaml"]},
+            )
+            self.assertIn("FROM python:3.12", read[0].text)
+            self.assertIn("debug: true", read[0].text)
+
+            tree = await self._call("audit_file_tree", {PROJECT_ROOT_ARGUMENT: str(root)})
+            self.assertIn(".env", tree[0].text)
+            self.assertNotIn("logo.png", tree[0].text)
+
     async def test_dependents_tool_runs_end_to_end(self) -> None:
         # Dependency *resolution* correctness (does `from b import x` resolve
         # to b.py) is a languages/python.py concern, already covered by

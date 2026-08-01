@@ -1,4 +1,14 @@
-"""Deterministic discovery and hashing of a project's supported source files."""
+"""Deterministic discovery and hashing of a project's complete file set.
+
+Every non-ignored, non-binary file is discovered, hashed, and indexed for
+full-text search and retrieval (`audit_search`, `audit_read_file`) — not just
+the 8 languages with a registered Tree-sitter grammar. `language_for_path()`
+additionally being non-None for a file is what selects it for the extra
+signature/import/risk-pattern extraction pass in
+`services/import_service.py`; a file having no grammar never excludes it from
+the index itself. This is deliberate: an AI should never have to fall back to
+reading a flat file SlugAudit could have indexed instead.
+"""
 
 from __future__ import annotations
 
@@ -10,10 +20,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from languages import language_for_path, supported_extensions
+from languages import language_for_path
 
 
-PARSER_VERSION = "treesitter-v3"
+PARSER_VERSION = "treesitter-v4"
 
 _SKIP_DIRS = frozenset(
     {
@@ -37,14 +47,19 @@ _SKIP_DIRS = frozenset(
 
 @dataclass(frozen=True)
 class SourceFile:
-    """One source file in the on-disk manifest."""
+    """One file in the on-disk manifest.
+
+    ``language`` is None for files with no registered Tree-sitter grammar —
+    they're still fully indexed (content, hash, search, read), just without
+    the extra signature/import/risk-pattern extraction pass.
+    """
 
     path: str
     hash: str
     size: int
-    language: str
+    language: str | None
 
-    def to_dict(self) -> dict[str, str | int]:
+    def to_dict(self) -> dict[str, str | int | None]:
         return {
             "hash": self.hash,
             "size": self.size,
@@ -117,10 +132,26 @@ def _walk_paths(project_root: Path) -> list[str]:
     return paths
 
 
+def _is_binary(path: Path) -> bool:
+    """Cheap binary sniff: a NUL byte in the first chunk — the same heuristic
+    git itself uses. Binary files can't be meaningfully searched or read as
+    source text, so they're excluded from the index; everything else (any
+    extension, any language SlugAudit has no grammar for) is included.
+    """
+    try:
+        with path.open("rb") as source:
+            return b"\0" in source.read(8192)
+    except OSError:
+        return True
+
+
 def discover_source_paths(project_root: str | Path) -> list[str]:
-    """Return every supported, non-ignored source path in deterministic order."""
+    """Return every non-ignored, non-binary file path in deterministic order.
+
+    This is the complete indexed set, not just the 8 Tree-sitter languages —
+    see this module's docstring.
+    """
     root = Path(project_root).resolve()
-    extensions = supported_extensions()
     candidates = _git_paths(root)
     if candidates is None:
         candidates = _walk_paths(root)
@@ -130,10 +161,10 @@ def discover_source_paths(project_root: str | Path) -> list[str]:
         path = Path(relpath)
         if not path.parts or any(part in _SKIP_DIRS for part in path.parts):
             continue
-        if path.suffix.lower() not in extensions:
-            continue
         full_path = root / path
         if not full_path.is_file() or full_path.is_symlink():
+            continue
+        if _is_binary(full_path):
             continue
         result.append(path.as_posix())
     return sorted(set(result))
@@ -156,33 +187,32 @@ def _hash_manifest(entries: Iterable[SourceFile]) -> str:
         digest.update(b"\0")
         digest.update(entry.hash.encode("ascii"))
         digest.update(b"\0")
-        digest.update(entry.language.encode("ascii"))
+        digest.update((entry.language or "").encode("ascii"))
         digest.update(b"\0")
     digest.update(PARSER_VERSION.encode("ascii"))
     return digest.hexdigest()
 
 
 def build_manifest(project_root: str | Path) -> SourceManifest:
-    """Read and hash the complete supported source set."""
+    """Read and hash the complete indexed file set (see module docstring)."""
     root = Path(project_root).resolve()
     files: dict[str, SourceFile] = {}
     for relpath in discover_source_paths(root):
         digest, size = _hash_file(root / relpath)
-        language = language_for_path(relpath)
-        if language is None:
-            continue
         files[relpath] = SourceFile(
             path=relpath,
             hash=digest,
             size=size,
-            language=language,
+            language=language_for_path(relpath),
         )
 
     entries = [files[path] for path in sorted(files)]
     return SourceManifest(
         files=files,
         manifest_hash=_hash_manifest(entries),
-        languages=tuple(sorted({entry.language for entry in entries})),
+        languages=tuple(sorted(
+            {entry.language for entry in entries if entry.language is not None}
+        )),
     )
 
 

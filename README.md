@@ -1,10 +1,13 @@
 # SlugAudit MCP
 
-SlugAudit is a database-backed evidence index built for AI code auditors. It
-uses Tree-sitter to pre-parse supported source files and lets an AI search,
-retrieve, and connect evidence without repeatedly opening hundreds of flat
-files. SlugAudit does not decide whether code is correct; the AI still performs
-the audit judgment.
+SlugAudit is a database-backed evidence index built for AI code auditors.
+Every non-ignored, non-binary file in the project is indexed for full-text
+search and retrieval — not just source code; configs, docs, scripts, and
+infra-as-code included — so an AI never has to fall back to repeatedly
+opening flat files by hand. On top of that, files in one of 8 languages get
+an extra Tree-sitter pass: parsed signatures, resolved imports, and
+regex-based risk-pattern leads (see "Language support" below). SlugAudit does
+not decide whether code is correct; the AI still performs the audit judgment.
 
 **Zero setup by default.** With no PostgreSQL configured, SlugAudit stores
 its index in a per-project SQLite file — nothing to install, nothing to run.
@@ -49,7 +52,8 @@ then removes the directory. The reusable adapter functions are
 There are no human commands for importing, syncing, rebuilding, parsing,
 changed files, or database maintenance. Before every AI tool query SlugAudit:
 
-1. Discovers and hashes the complete supported, non-ignored source set.
+1. Discovers and hashes the complete non-ignored, non-binary file set — not
+   just the 8 parsed languages below (see "Language support").
 2. Proves the local manifest and published database revision agree.
 3. Parses and imports added files.
 4. Replaces every derived fact for modified files.
@@ -81,9 +85,17 @@ conclusion with `audit_finding` if one holds up.
 
 ## Language support — what actually works, honestly
 
-Eight languages, each via its own Tree-sitter grammar (`languages/<name>.py`).
-Every one of them extracts **signatures** (functions, classes, and similar
-top-level constructs) and **imports** (raw import statements plus best-effort
+**Every file gets indexed** — full content, searchable with `audit_search`,
+retrievable with `audit_read_file`, listed in `audit_overview` and
+`audit_file_tree` — regardless of language or extension. A `.env`, a
+Dockerfile, a YAML config, a shell script, a SQL migration: all in scope, all
+searchable, none of it requiring a fallback to the AI's own file-reading
+tools.
+
+Eight languages additionally get a Tree-sitter parsing pass, each via its own
+grammar (`languages/<name>.py`), on top of that base indexing. Every one of
+them extracts **signatures** (functions, classes, and similar top-level
+constructs) and **imports** (raw import statements plus best-effort
 resolution to a dependency graph edge between files), and every one has a
 handful of **risk patterns** (regex-based leads like `eval`, `unwrap`,
 `unsafe.Pointer` — see each extractor's `extract_risk_patterns` for the exact
