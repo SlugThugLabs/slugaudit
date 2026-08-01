@@ -17,8 +17,12 @@ language — configs, docs, scripts, infra-as-code, anything that isn't binary.
 You should never need to fall back to your own file-reading tools inside an
 active project; if a file exists in the repo, it is in this index. Files in
 one of the 8 languages with a Tree-sitter grammar additionally get parsed
-signatures, resolved imports, and risk-pattern leads; other files are fully
-indexed content without that extra structure.
+signatures — functions, methods, classes, and every variable/field
+declaration, not just top-level ones — resolved imports, and risk-pattern
+leads; other files are fully indexed content without that extra structure.
+To check how often a name is referenced, or whether two names look
+suspiciously similar, use audit_search over the full indexed content rather
+than assuming a name's role from its declaration alone.
 
 Use audit_overview to orient, audit_search to find evidence, audit_read_file for
 source, audit_dependents for blast radius, audit_file_tree for structure, and

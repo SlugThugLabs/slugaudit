@@ -18,6 +18,8 @@ class JavaExtractor(BaseExtractor):
     RECORD_DECL = "record_declaration"
     METHOD_DECL = "method_declaration"
     CONSTRUCTOR_DECL = "constructor_declaration"
+    FIELD_DECL = "field_declaration"
+    LOCAL_VAR_DECL = "local_variable_declaration"
     IMPORT_DECL = "import_declaration"
     MODIFIERS = "modifiers"
     COMMENT = "line_comment"
@@ -73,6 +75,11 @@ class JavaExtractor(BaseExtractor):
             sig = self._safe_extract(self._extract_method, node, source_bytes, source_lines)
             if sig:
                 signatures.append(sig)
+
+        elif node_type in (self.FIELD_DECL, self.LOCAL_VAR_DECL):
+            var_sigs = self._safe_extract(self._extract_variables, node, source_bytes)
+            if var_sigs:
+                signatures.extend(var_sigs)
 
     def _get_modifiers(self, node: Any, source_bytes: bytes) -> str:
         """Extract visibility/access modifiers from a definition node."""
@@ -145,6 +152,42 @@ class JavaExtractor(BaseExtractor):
             }
         except Exception:
             return None
+
+    def _extract_variables(self, node: Any, source_bytes: bytes) -> list[dict[str, Any]]:
+        """Every name declared by one field_declaration/local_variable_declaration.
+
+        Both node types share the same shape: modifiers?, a type node, then
+        one `variable_declarator` per comma-separated name (`int a, b;`).
+        Only the declarator's own `identifier` child is the name — its
+        initializer expression is a sibling, not a descendant, so a
+        reference inside the initializer can never be mistaken for a name.
+        """
+        visibility = self._get_modifiers(node, source_bytes)
+        kind = "field" if node.type == self.FIELD_DECL else "variable"
+        sig_text = self.collect_node_text(node, source_bytes).strip()[:200]
+        line_start = node.start_point[0] + 1
+        line_end = node.end_point[0] + 1
+
+        results = []
+        for child in node.named_children:
+            if child.type != "variable_declarator":
+                continue
+            for grandchild in child.named_children:
+                if grandchild.type == "identifier":
+                    results.append({
+                        "type": kind,
+                        "name": self.collect_node_text(grandchild, source_bytes).strip(),
+                        "signature": sig_text,
+                        "visibility": visibility,
+                        "doc_comment": "",
+                        "line_start": line_start,
+                        "line_end": line_end,
+                        "is_async": False,
+                        "is_unsafe": False,
+                        "generic_params": "",
+                    })
+                    break
+        return results
 
     # ── Import extraction ──────────────────────────────────────────────────
 

@@ -82,6 +82,11 @@ class RubyExtractor(BaseExtractor):
                 "generic_params": "",
             })
 
+        elif node_type == self.ASSIGNMENT:
+            var_sigs = self._safe_extract(self._extract_assignment, node, source_bytes)
+            if var_sigs:
+                signatures.extend(var_sigs)
+
     def _get_name(self, node: Any, source_bytes: bytes) -> str:
         for child in node.named_children:
             if child.type == "identifier":
@@ -161,6 +166,53 @@ class RubyExtractor(BaseExtractor):
             }
         except Exception:
             return None
+
+    _SIMPLE_ASSIGNMENT_TARGETS = frozenset(
+        {"identifier", "global_variable", "instance_variable", "class_variable", "constant"}
+    )
+
+    def _assignment_target_names(self, target: Any) -> list[Any]:
+        """Every name node one assignment target actually binds.
+
+        `element_reference` (`h[:k] = v`) and `call` (`obj.attr = v`, a
+        setter-method invocation, not a new binding) are deliberately left
+        unhandled — neither declares a variable. `left_assignment_list`
+        (`a, b = 1, 2`) recurses so multi-assignment is fully covered.
+        """
+        if target.type in self._SIMPLE_ASSIGNMENT_TARGETS:
+            return [target]
+        if target.type == "left_assignment_list":
+            names = []
+            for child in target.named_children:
+                names.extend(self._assignment_target_names(child))
+            return names
+        return []
+
+    def _extract_assignment(self, node: Any, source_bytes: bytes) -> list[dict[str, Any]]:
+        if not node.named_children:
+            return []
+        names = self._assignment_target_names(node.named_children[0])
+        if not names:
+            return []
+
+        sig_text = self.collect_node_text(node, source_bytes).strip()[:200]
+        line_start = node.start_point[0] + 1
+        line_end = node.end_point[0] + 1
+        return [
+            {
+                "type": "constant" if name_node.type == "constant" else "variable",
+                "name": self.collect_node_text(name_node, source_bytes).strip(),
+                "signature": sig_text,
+                "visibility": "",
+                "doc_comment": "",
+                "line_start": line_start,
+                "line_end": line_end,
+                "is_async": False,
+                "is_unsafe": False,
+                "generic_params": "",
+            }
+            for name_node in names
+        ]
 
     # ── Import extraction ──────────────────────────────────────────────────
 

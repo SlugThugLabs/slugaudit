@@ -83,6 +83,18 @@ class TestRustExtractor(unittest.TestCase):
         self.assertEqual(sigs[0]["type"], "type_alias")
         self.assertEqual(sigs[0]["name"], "Result")
 
+    def test_extracts_let_bindings_including_tuple_patterns(self) -> None:
+        source = (
+            b"fn f() {\n"
+            b"    let x = 1;\n"
+            b"    let mut y: i32 = 2;\n"
+            b"    let (a, b) = (1, 2);\n"
+            b"}\n"
+        )
+        sigs = self.ext.extract_signatures("/tmp/test.rs", source)
+        variables = {s["name"] for s in sigs if s["type"] == "variable"}
+        self.assertEqual(variables, {"x", "y", "a", "b"})
+
     def test_deeply_nested_source_does_not_raise_recursion_error(self) -> None:
         # Well past Python's default recursion limit (~1000). A recursive
         # tree walker would raise RecursionError on this; the iterative
@@ -304,6 +316,30 @@ class TestPythonExtractor(unittest.TestCase):
         self.assertEqual(names.count("fetch"), 1)
         self.assertTrue(sigs[0]["is_async"])
 
+    def test_extracts_module_and_local_variables_including_self_attrs(self) -> None:
+        source = (
+            b"TOP = 1\n"
+            b"def f():\n"
+            b"    x = 1\n"
+            b"    y: int = 2\n"
+            b"    a, b = 1, 2\n"
+            b"class C:\n"
+            b"    def __init__(self):\n"
+            b"        self.z = 1\n"
+            b"        self.p, self.q = 1, 2\n"
+        )
+        sigs = self.ext.extract_signatures("/tmp/test.py", source)
+        variables = {s["name"] for s in sigs if s["type"] == "variable"}
+        self.assertEqual(variables, {"TOP", "x", "y", "a", "b", "z", "p", "q"})
+
+    def test_type_annotation_identifier_is_not_mistaken_for_a_second_name(self) -> None:
+        # `y: int = 2` puts an `identifier` node ("int") inside the type
+        # annotation too — only the actual target ("y") must be extracted.
+        source = b"def f():\n    y: int = 2\n"
+        sigs = self.ext.extract_signatures("/tmp/test.py", source)
+        variables = [s["name"] for s in sigs if s["type"] == "variable"]
+        self.assertEqual(variables, ["y"])
+
 
 class TestTypeScriptExtractor(unittest.TestCase):
     """TypeScript extractor: functions, classes, interfaces, enums, imports."""
@@ -331,6 +367,18 @@ class TestTypeScriptExtractor(unittest.TestCase):
         self.assertEqual(len(sigs), 1)
         self.assertEqual(sigs[0]["type"], "class")
         self.assertEqual(sigs[0]["name"], "Animal")
+
+    def test_extracts_top_level_and_local_variables(self) -> None:
+        source = (
+            b"const TOP = 1;\n"
+            b"function f() {\n"
+            b"    let x = 1;\n"
+            b"    var y = 2;\n"
+            b"}\n"
+        )
+        sigs = self.ext.extract_signatures("/tmp/test.ts", source)
+        variables = {s["name"] for s in sigs if s["type"] == "variable"}
+        self.assertEqual(variables, {"TOP", "x", "y"})
 
     def test_extracts_interface(self) -> None:
         source = b"interface User {\n  name: string;\n  age: number;\n}\n"
@@ -473,6 +521,31 @@ class TestGoExtractor(unittest.TestCase):
         imps = self.ext.extract_imports("/tmp/test.go", source)
         self.assertGreaterEqual(len(imps), 2)
 
+    def test_extracts_var_const_and_short_var_declarations(self) -> None:
+        source = (
+            b"package main\n"
+            b"var Top = 1\n"
+            b"const C = 2\n"
+            b"func f() {\n"
+            b"    var x int = 1\n"
+            b"    y := 2\n"
+            b"    a, b := 1, 2\n"
+            b"    _, err := f2()\n"
+            b"}\n"
+        )
+        sigs = self.ext.extract_signatures("/tmp/test.go", source)
+        variables = {s["name"] for s in sigs if s["type"] == "variable"}
+        # The Go blank identifier `_` is never a real variable and must be excluded.
+        self.assertEqual(variables, {"Top", "C", "x", "y", "a", "b", "err"})
+
+    def test_short_var_rhs_identifier_is_not_mistaken_for_a_name(self) -> None:
+        # `y := existing` has an identifier on the RHS expression_list too —
+        # only the LHS expression_list's identifier is a new declaration.
+        source = b"func f() {\n    existing := 1\n    y := existing\n}\n"
+        sigs = self.ext.extract_signatures("/tmp/test.go", source)
+        variables = [s["name"] for s in sigs if s["type"] == "variable"]
+        self.assertEqual(sorted(variables), ["existing", "y"])
+
 
 class TestJavaExtractor(unittest.TestCase):
     """Java extractor: classes, interfaces, enums, methods, imports."""
@@ -502,6 +575,29 @@ class TestJavaExtractor(unittest.TestCase):
         imps = self.ext.extract_imports("/tmp/Test.java", source)
         self.assertEqual(len(imps), 2)
         self.assertIn("List", imps[0]["import_text"])
+
+    def test_extracts_fields_and_local_variables(self) -> None:
+        source = (
+            b"class Foo {\n"
+            b"    int field = 1;\n"
+            b"    static int sField = 2;\n"
+            b"    void f() {\n"
+            b"        int x = 1;\n"
+            b"        String s = \"a\";\n"
+            b"    }\n"
+            b"}\n"
+        )
+        sigs = self.ext.extract_signatures("/tmp/Foo.java", source)
+        fields = {s["name"] for s in sigs if s["type"] == "field"}
+        variables = {s["name"] for s in sigs if s["type"] == "variable"}
+        self.assertEqual(fields, {"field", "sField"})
+        self.assertEqual(variables, {"x", "s"})
+
+    def test_extracts_multiple_names_in_one_declaration(self) -> None:
+        source = b"class Foo {\n    void f() {\n        int a = 1, b = 2;\n    }\n}\n"
+        sigs = self.ext.extract_signatures("/tmp/Foo.java", source)
+        variables = {s["name"] for s in sigs if s["type"] == "variable"}
+        self.assertEqual(variables, {"a", "b"})
 
 
 class TestCExtractor(unittest.TestCase):
@@ -549,6 +645,45 @@ class TestCExtractor(unittest.TestCase):
         self.assertEqual(imps[0]["import_type"], "external")  # < >
         self.assertEqual(imps[1]["import_type"], "internal")   # " "
 
+    def test_extracts_global_local_and_multi_declarator_variables(self) -> None:
+        source = (
+            b"int global_arr[3];\n"
+            b"int a, b = 1;\n"
+            b"void f() {\n"
+            b"    int x = 1;\n"
+            b"    static int s = 2;\n"
+            b"}\n"
+        )
+        sigs = self.ext.extract_signatures("/tmp/test.c", source)
+        variables = {s["name"] for s in sigs if s["type"] == "variable"}
+        self.assertEqual(variables, {"global_arr", "a", "b", "x", "s"})
+        s_sig = next(s for s in sigs if s["name"] == "s")
+        self.assertEqual(s_sig["visibility"], "static")
+
+    def test_function_prototype_is_not_extracted_as_a_variable(self) -> None:
+        source = b"void proto(int x);\n"
+        sigs = self.ext.extract_signatures("/tmp/test.c", source)
+        self.assertEqual([s for s in sigs if s["type"] == "variable"], [])
+
+    def test_struct_typed_variable_does_not_duplicate_or_phantom_the_type(self) -> None:
+        # `struct Bar { int y; } instance;` must record the struct
+        # definition exactly once (the base walker's own STRUCT_SPEC dispatch
+        # handles it) plus the variable `instance` — never both from the
+        # `declaration`-level handling *and* the natural walk.
+        source = b"struct Bar { int y; } instance;\nstruct Baz b2;\n"
+        sigs = self.ext.extract_signatures("/tmp/test.c", source)
+        struct_names = [s["name"] for s in sigs if s["type"] == "struct"]
+        variables = {s["name"] for s in sigs if s["type"] == "variable"}
+        # struct Baz has no body here (just referencing an existing type) —
+        # it must never be reported as a second, phantom definition.
+        self.assertEqual(struct_names, ["Bar"])
+        self.assertEqual(variables, {"instance", "b2"})
+
+    def test_forward_declared_struct_is_not_a_phantom_definition(self) -> None:
+        source = b"struct Fwd;\nenum Color;\n"
+        sigs = self.ext.extract_signatures("/tmp/test.c", source)
+        self.assertEqual(sigs, [])
+
 
 class TestCppExtractor(unittest.TestCase):
     """C++ extractor: functions, classes, templates, namespaces, includes."""
@@ -574,19 +709,65 @@ class TestCppExtractor(unittest.TestCase):
         sigs = self.ext.extract_signatures("/tmp/test.cpp", source)
         self.assertTrue(any(s["type"] == "namespace" and s["name"] == "mylib" for s in sigs))
 
-    def test_extracts_template_fn(self) -> None:
+    def test_extracts_template_fn_exactly_once(self) -> None:
+        # Regression test: _extract_template used to reach into and extract
+        # the wrapped function_definition directly *and* let the base
+        # walker visit that same node naturally afterward, recording every
+        # templated function twice ("template_fn" and "function") — the
+        # same duplicate-extraction bug class documented in CLAUDE.md for
+        # Python's decorated definitions. Fixed by deleting the manual
+        # reach-in entirely; the plain "function" dispatch already handles
+        # it once, matching the README's documented "templates are captured
+        # as plain classes/functions" behavior.
         source = b"template <typename T>\nT max(T a, T b) {\n    return a > b ? a : b;\n}\n"
         sigs = self.ext.extract_signatures("/tmp/test.cpp", source)
-        self.assertTrue(
-            any(s["type"] == "template_fn" for s in sigs),
-            msg=f"No template_fn found. Got types: {[s['type'] for s in sigs]}"
-        )
+        matches = [s for s in sigs if s["name"] == "max"]
+        self.assertEqual(len(matches), 1, msg=f"Expected exactly one, got: {sigs}")
+        self.assertEqual(matches[0]["type"], "function")
+
+    def test_extracts_template_struct_exactly_once(self) -> None:
+        source = b"template <typename T>\nstruct Box { T value; };\n"
+        sigs = self.ext.extract_signatures("/tmp/test.cpp", source)
+        matches = [s for s in sigs if s["name"] == "Box"]
+        self.assertEqual(len(matches), 1, msg=f"Expected exactly one, got: {sigs}")
+        self.assertEqual(matches[0]["type"], "struct")
 
     def test_extracts_include(self) -> None:
         source = b'#include <iostream>\n#include "utils.hpp"\n'
         imps = self.ext.extract_imports("/tmp/test.cpp", source)
         self.assertEqual(len(imps), 2)
         self.assertIn("iostream", imps[0]["import_text"])
+
+    def test_extracts_global_local_and_multi_declarator_variables(self) -> None:
+        source = (
+            b"int global_arr[3];\n"
+            b"int a, b = 1;\n"
+            b"void f() {\n"
+            b"    int x = 1;\n"
+            b"    static int s = 2;\n"
+            b"}\n"
+        )
+        sigs = self.ext.extract_signatures("/tmp/test.cpp", source)
+        variables = {s["name"] for s in sigs if s["type"] == "variable"}
+        self.assertEqual(variables, {"global_arr", "a", "b", "x", "s"})
+
+    def test_function_prototype_is_not_extracted_as_a_variable(self) -> None:
+        source = b"void proto(int x);\n"
+        sigs = self.ext.extract_signatures("/tmp/test.cpp", source)
+        self.assertEqual([s for s in sigs if s["type"] == "variable"], [])
+
+    def test_class_typed_variable_does_not_duplicate_or_phantom_the_type(self) -> None:
+        source = b"class Bar { int y; } instance;\nclass Baz b2;\n"
+        sigs = self.ext.extract_signatures("/tmp/test.cpp", source)
+        class_names = [s["name"] for s in sigs if s["type"] == "class"]
+        variables = {s["name"] for s in sigs if s["type"] == "variable"}
+        self.assertEqual(class_names, ["Bar"])
+        self.assertEqual(variables, {"instance", "b2"})
+
+    def test_forward_declared_class_is_not_a_phantom_definition(self) -> None:
+        source = b"class Fwd;\n"
+        sigs = self.ext.extract_signatures("/tmp/test.cpp", source)
+        self.assertEqual(sigs, [])
 
 
 class TestRubyExtractor(unittest.TestCase):
@@ -634,6 +815,35 @@ class TestRubyExtractor(unittest.TestCase):
         imps = self.ext.extract_imports("/tmp/test.rb", source)
         self.assertEqual(len(imps), 2)
         self.assertIn("json", imps[0]["import_text"])
+
+    def test_extracts_globals_constants_and_multiple_assignment(self) -> None:
+        source = b"$g = 1\nTOP = 2\na, b = 1, 2\n"
+        sigs = self.ext.extract_signatures("/tmp/test.rb", source)
+        variables = {s["name"] for s in sigs if s["type"] == "variable"}
+        constants = {s["name"] for s in sigs if s["type"] == "constant"}
+        self.assertEqual(variables, {"$g", "a", "b"})
+        self.assertEqual(constants, {"TOP"})
+
+    def test_extracts_instance_and_class_variables_including_multi_assign(self) -> None:
+        source = (
+            b"class Foo\n"
+            b"  def initialize\n"
+            b"    @iv = 1\n"
+            b"    @@cv = 2\n"
+            b"    @y, @z = 1, 2\n"
+            b"  end\n"
+            b"end\n"
+        )
+        sigs = self.ext.extract_signatures("/tmp/test.rb", source)
+        variables = {s["name"] for s in sigs if s["type"] == "variable"}
+        self.assertEqual(variables, {"@iv", "@@cv", "@y", "@z"})
+
+    def test_element_and_attribute_assignment_are_not_new_variables(self) -> None:
+        # `h[:k] = 1` (element_reference) and `obj.attr = 1` (a setter-method
+        # call, not a new binding) must never be reported as variables.
+        source = b"h[:k] = 1\nobj.attr = 1\n"
+        sigs = self.ext.extract_signatures("/tmp/test.rb", source)
+        self.assertEqual(sigs, [])
 
 
 class TestAllExtractors(unittest.TestCase):

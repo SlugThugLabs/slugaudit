@@ -61,6 +61,11 @@ class PythonExtractor(BaseExtractor):
             if sig:
                 signatures.append(sig)
 
+        elif node_type == self.ASSIGNMENT:
+            var_sigs = self._safe_extract(self._extract_assignment, node, source_bytes)
+            if var_sigs:
+                signatures.extend(var_sigs)
+
     def _get_name(self, node: Any, source_bytes: bytes) -> str:
         for child in node.named_children:
             if child.type == "identifier":
@@ -145,6 +150,61 @@ class PythonExtractor(BaseExtractor):
             }
         except Exception:
             return None
+
+    def _assignment_target_names(self, target: Any) -> list[Any]:
+        """Every name node an assignment target actually binds.
+
+        `identifier` (`x = ...`) and `attribute` (`self.x = ...`, using its
+        trailing identifier) are terminal cases. `pattern_list`/`tuple_pattern`
+        (`a, b = ...`, `self.y, self.z = ...`) recurse into each element so
+        nested attribute targets are still found. Anything else (subscript
+        targets like `d[k] = v`, starred targets) isn't a variable binding
+        and is deliberately left unhandled.
+        """
+        if target.type == "identifier":
+            return [target]
+        if target.type == "attribute":
+            attr_children = target.named_children
+            return [attr_children[-1]] if attr_children and attr_children[-1].type == "identifier" else []
+        if target.type in ("pattern_list", "tuple_pattern"):
+            names = []
+            for child in target.named_children:
+                names.extend(self._assignment_target_names(child))
+            return names
+        return []
+
+    def _extract_assignment(self, node: Any, source_bytes: bytes) -> list[dict[str, Any]]:
+        """Every name bound by one assignment statement, at any depth.
+
+        Only the first named child (the target, always positionally first in
+        this grammar) is inspected — a type annotation (`y: int = 2`) puts an
+        `identifier` inside its `type` node too, which must never be mistaken
+        for a second variable name.
+        """
+        if not node.named_children:
+            return []
+        names = self._assignment_target_names(node.named_children[0])
+        if not names:
+            return []
+
+        sig_text = self.collect_node_text(node, source_bytes).strip()[:200]
+        line_start = node.start_point[0] + 1
+        line_end = node.end_point[0] + 1
+        return [
+            {
+                "type": "variable",
+                "name": self.collect_node_text(name_node, source_bytes).strip(),
+                "signature": sig_text,
+                "visibility": "",
+                "doc_comment": "",
+                "line_start": line_start,
+                "line_end": line_end,
+                "is_async": False,
+                "is_unsafe": False,
+                "generic_params": "",
+            }
+            for name_node in names
+        ]
 
     # ── Import extraction ──────────────────────────────────────────────────
 

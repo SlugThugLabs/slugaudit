@@ -20,7 +20,6 @@ class CppExtractor(BaseExtractor):
     UNION_SPEC = "union_specifier"
     ENUM_SPEC = "enum_specifier"
     TYPE_DEF = "type_definition"
-    TEMPLATE_DECL = "template_declaration"
     NAMESPACE_DEF = "namespace_definition"
     PREPROC_INCLUDE = "preproc_include"
     COMMENT = "comment"
@@ -62,14 +61,9 @@ class CppExtractor(BaseExtractor):
                 signatures.append(sig)
 
         elif node_type == self.DECLARATION:
-            sig = self._safe_extract(self._extract_type, node, source_bytes, source_lines)
-            if sig:
-                signatures.append(sig)
-
-        elif node_type == self.TEMPLATE_DECL:
-            sig = self._safe_extract(self._extract_template, node, source_bytes, source_lines)
-            if sig:
-                signatures.append(sig)
+            sigs = self._safe_extract(self._extract_declaration_signatures, node, source_bytes)
+            if sigs:
+                signatures.extend(sigs)
 
         elif node_type == self.NAMESPACE_DEF:
             sig = self._safe_extract(self._extract_namespace, node, source_bytes, source_lines)
@@ -139,58 +133,88 @@ class CppExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_type(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
-        try:
-            for child in node.named_children:
-                child_type = child.type
-                kind = None
-                if child_type == self.CLASS_SPEC:
-                    kind = "class"
-                elif child_type == self.STRUCT_SPEC:
-                    kind = "struct"
-                elif child_type == self.UNION_SPEC:
-                    kind = "union"
-                elif child_type == self.ENUM_SPEC:
-                    kind = "enum"
+    _TYPE_SPEC_BODY = {
+        "class_specifier": "field_declaration_list",
+        "struct_specifier": "field_declaration_list",
+        "union_specifier": "field_declaration_list",
+        "enum_specifier": "enumerator_list",
+    }
 
-                if kind:
-                    name = "unnamed"
-                    for c in child.named_children:
-                        if c.type == "identifier":
-                            name = self.collect_node_text(c, source_bytes)
-                            break
-                        if c.type == "type_identifier":
-                            name = self.collect_node_text(c, source_bytes)
-                            break
-                    if name == "unnamed":
-                        continue
+    def _has_body(self, spec_node: Any) -> bool:
+        """True only for an actual class/struct/union/enum *definition*.
 
-                    sig_text = self.collect_node_text(child, source_bytes)
-                    brace_idx = sig_text.find("{")
-                    if brace_idx >= 0:
-                        sig_text = sig_text[:brace_idx].strip() + " { ... }"
+        `class Foo;` (forward declaration) and `class Foo instance;`
+        (referencing an already-defined type) produce the exact same
+        `class_specifier`/etc. node shape as a real definition, minus the
+        body — without this check both would be misreported as a second,
+        phantom definition of `Foo`.
+        """
+        body_type = self._TYPE_SPEC_BODY.get(spec_node.type)
+        return body_type is not None and any(c.type == body_type for c in spec_node.named_children)
 
-                    doc = self._get_doc_comment_above(node, source_bytes, source_lines)
+    def _variable_name_from_declarator(self, child: Any, source_bytes: bytes) -> str | None:
+        """The bound name if `child` is itself one variable declarator."""
+        if child.type == "identifier":
+            return self.collect_node_text(child, source_bytes).strip()
+        if child.type in ("init_declarator", "pointer_declarator", "array_declarator", "reference_declarator"):
+            name = self._get_declarator_name(child, source_bytes)
+            return name if name != "unnamed" else None
+        return None
 
-                    return {
-                        "type": kind,
-                        "name": name,
-                        "signature": sig_text[:500],
-                        "visibility": "",
-                        "doc_comment": doc,
-                        "line_start": node.start_point[0] + 1,
-                        "line_end": node.end_point[0] + 1,
-                        "is_async": False,
-                        "is_unsafe": False,
-                        "generic_params": "",
-                    }
-            return None
-        except Exception:
-            return None
+    def _extract_declaration_signatures(self, node: Any, source_bytes: bytes) -> list[dict[str, Any]]:
+        """Every variable name one `declaration` node binds.
+
+        Mirrors C's `_extract_declaration_signatures` (see its docstring for
+        the full rationale): a prototype defines no variable, and an inline
+        class/struct/union/enum type is deliberately not re-extracted here
+        since the base walker already visits that nested node on its own
+        and `_extract_top_type` handles it — extracting it again here would
+        double-count it.
+        """
+        if any(c.type == "function_declarator" for c in node.named_children):
+            return []
+
+        visibility = ""
+        for child in node.named_children:
+            if child.type == "storage_class_specifier":
+                vis = self.collect_node_text(child, source_bytes).strip()
+                if vis in ("static", "extern", "inline"):
+                    visibility = vis
+                    break
+
+        sig_text = self.collect_node_text(node, source_bytes).strip()[:200]
+        line_start = node.start_point[0] + 1
+        line_end = node.end_point[0] + 1
+        results = []
+        for child in node.named_children:
+            name = self._variable_name_from_declarator(child, source_bytes)
+            if name:
+                results.append({
+                    "type": "variable",
+                    "name": name,
+                    "signature": sig_text,
+                    "visibility": visibility,
+                    "doc_comment": "",
+                    "line_start": line_start,
+                    "line_end": line_end,
+                    "is_async": False,
+                    "is_unsafe": False,
+                    "generic_params": "",
+                })
+        return results
 
     def _extract_top_type(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
-        """Extract a class/struct/union/enum at the top level."""
+        """Extract a class/struct/union/enum *definition* at the top level.
+
+        Not every class_specifier/struct_specifier/union_specifier/
+        enum_specifier is a definition — `class Foo;` (forward declaration)
+        produces the identical node shape minus the body, so it's excluded
+        via `_has_body` the same as inside `_extract_declaration_signatures`.
+        """
         try:
+            if not self._has_body(node):
+                return None
+
             kind_map = {
                 self.CLASS_SPEC: "class", self.STRUCT_SPEC: "struct",
                 self.UNION_SPEC: "union", self.ENUM_SPEC: "enum"
@@ -255,40 +279,6 @@ class CppExtractor(BaseExtractor):
                 "is_unsafe": False,
                 "generic_params": "",
             }
-        except Exception:
-            return None
-
-    def _extract_template(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
-        try:
-            # Extract the declaration inside the template
-            for child in node.named_children:
-                if child.type == self.FN_DEF:
-                    sig = self._extract_fn(child, source_bytes, source_lines)
-                    if sig:
-                        sig["type"] = "template_fn"
-                        # Prepend template parameters to signature
-                        template_params = ""
-                        for c in node.named_children:
-                            if c.type == "template_parameter_list":
-                                template_params = self.collect_node_text(c, source_bytes)
-                                break
-                        if template_params:
-                            sig["signature"] = f"template {template_params} {sig['signature']}"[:500]
-                        return sig
-
-                if child.type == self.DECLARATION:
-                    inner = self._extract_type(child, source_bytes, source_lines)
-                    if inner:
-                        inner["type"] = f"template_{inner['type']}"
-                        template_params = ""
-                        for c in node.named_children:
-                            if c.type == "template_parameter_list":
-                                template_params = self.collect_node_text(c, source_bytes)
-                                break
-                        if template_params:
-                            inner["signature"] = f"template {template_params} {inner['signature']}"[:500]
-                        return inner
-            return None
         except Exception:
             return None
 

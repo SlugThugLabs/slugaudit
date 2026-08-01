@@ -24,6 +24,7 @@ class RustExtractor(BaseExtractor):
     TYPE_ALIAS = "type_item"
     CONST = "const_item"
     STATIC = "static_item"
+    LET_DECL = "let_declaration"
     MACRO = "macro_definition"
     USE_DECL = "use_declaration"
     MOD_DECL = "mod_item"
@@ -109,6 +110,11 @@ class RustExtractor(BaseExtractor):
             sig = self._safe_extract(self._extract_macro, node, source_bytes, source_lines)
             if sig:
                 signatures.append(sig)
+
+        elif node_type == self.LET_DECL:
+            let_sigs = self._safe_extract(self._extract_let, node, source_bytes)
+            if let_sigs:
+                signatures.extend(let_sigs)
 
     def _get_visibility(self, node: Any, source_bytes: bytes) -> str:
         """Extract pub/pub(crate) from a definition node."""
@@ -315,6 +321,42 @@ class RustExtractor(BaseExtractor):
             }
         except Exception:
             return None
+
+    def _extract_let(self, node: Any, source_bytes: bytes) -> list[dict[str, Any]]:
+        """Every `let` binding, at any depth — simple and tuple patterns.
+
+        Struct/enum destructuring patterns (`let Foo { x, .. } = ...`) are a
+        known, documented gap: real but uncommon relative to simple and
+        tuple bindings, and not worth the added grammar surface for a first
+        pass at project-wide variable extraction.
+        """
+        names = []
+        for child in node.named_children:
+            if child.type == "identifier":
+                names.append(child)
+            elif child.type == "tuple_pattern":
+                names.extend(gc for gc in child.named_children if gc.type == "identifier")
+        if not names:
+            return []
+
+        sig_text = self.collect_node_text(node, source_bytes).strip()[:200]
+        line_start = node.start_point[0] + 1
+        line_end = node.end_point[0] + 1
+        return [
+            {
+                "type": "variable",
+                "name": self.collect_node_text(name_node, source_bytes).strip(),
+                "signature": sig_text,
+                "visibility": "",
+                "doc_comment": "",
+                "line_start": line_start,
+                "line_end": line_end,
+                "is_async": False,
+                "is_unsafe": False,
+                "generic_params": "",
+            }
+            for name_node in names
+        ]
 
     def _extract_macro(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
         try:

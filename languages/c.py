@@ -59,9 +59,9 @@ class CExtractor(BaseExtractor):
                 signatures.append(sig)
 
         elif node_type == self.DECLARATION:
-            sig = self._safe_extract(self._extract_declaration, node, source_bytes, source_lines)
-            if sig:
-                signatures.append(sig)
+            sigs = self._safe_extract(self._extract_declaration_signatures, node, source_bytes, source_lines)
+            if sigs:
+                signatures.extend(sigs)
 
     def _get_declarator_name(self, node: Any, source_bytes: bytes) -> str:
         """Extract the name from a declarator node."""
@@ -121,56 +121,102 @@ class CExtractor(BaseExtractor):
         except Exception:
             return None
 
-    def _extract_declaration(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
-        """Extract struct, union, enum type declarations."""
-        try:
-            for child in node.named_children:
-                child_type = child.type
-                kind = None
-                if child_type == self.STRUCT_SPEC:
-                    kind = "struct"
-                elif child_type == self.UNION_SPEC:
-                    kind = "union"
-                elif child_type == self.ENUM_SPEC:
-                    kind = "enum"
+    _TYPE_SPEC_BODY = {
+        "struct_specifier": "field_declaration_list",
+        "union_specifier": "field_declaration_list",
+        "enum_specifier": "enumerator_list",
+    }
 
-                if kind:
-                    name = self._get_declarator_name(child, source_bytes)
-                    if name == "unnamed":
-                        # Check if it has a name node directly
-                        for c in child.named_children:
-                            if c.type == "identifier":
-                                name = self.collect_node_text(c, source_bytes)
-                                break
-                        if name == "unnamed":
-                            continue
+    def _has_body(self, spec_node: Any) -> bool:
+        """True only for an actual struct/union/enum *definition*.
 
-                    sig_text = self.collect_node_text(child, source_bytes)
-                    brace_idx = sig_text.find("{")
-                    if brace_idx >= 0:
-                        sig_text = sig_text[:brace_idx].strip() + " { ... }"
+        `struct Foo;` (forward declaration) and `struct Foo instance;`
+        (referencing an already-defined type) produce the exact same
+        `struct_specifier` node shape as a real `struct Foo { ... };`
+        definition, minus the body — without this check both would be
+        misreported as a second, phantom definition of `Foo`.
+        """
+        body_type = self._TYPE_SPEC_BODY.get(spec_node.type)
+        return body_type is not None and any(c.type == body_type for c in spec_node.named_children)
 
-                    doc = self._get_doc_comment_above(node, source_bytes, source_lines)
+    def _variable_name_from_declarator(self, child: Any, source_bytes: bytes) -> str | None:
+        """The bound name if `child` is itself one variable declarator.
 
-                    return {
-                        "type": kind,
-                        "name": name,
-                        "signature": sig_text[:500],
-                        "visibility": "",
-                        "doc_comment": doc,
-                        "line_start": node.start_point[0] + 1,
-                        "line_end": node.end_point[0] + 1,
-                        "is_async": False,
-                        "is_unsafe": False,
-                        "generic_params": "",
-                    }
-            return None
-        except Exception:
-            return None
+        `identifier` is the bare-declaration case (`int a;`) and names
+        itself; `_get_declarator_name` already unwraps
+        init/pointer/array declarators (`b = 1`, `*p`, `arr[3]`) to find
+        the identifier nested inside them.
+        """
+        if child.type == "identifier":
+            return self.collect_node_text(child, source_bytes).strip()
+        if child.type in ("init_declarator", "pointer_declarator", "array_declarator"):
+            name = self._get_declarator_name(child, source_bytes)
+            return name if name != "unnamed" else None
+        return None
+
+    def _extract_declaration_signatures(
+        self, node: Any, source_bytes: bytes, source_lines: list[str]
+    ) -> list[dict[str, Any]]:
+        """Every variable name one `declaration` node binds.
+
+        This grammar node is heavily overloaded: function prototypes,
+        variable declarations (possibly several comma-separated names, with
+        or without initializers), and struct/union/enum definitions embedded
+        inline (with or without a trailing variable of that type) all share
+        it. A prototype defines no variable at all — skip it outright. An
+        inline struct/union/enum type is deliberately *not* re-extracted
+        here even when one is present: the base walker already visits that
+        nested struct_specifier/union_specifier/enum_specifier node on its
+        own and `_extract_top_type` handles it — extracting it again here
+        would double-count it, the same duplicate-extraction bug class
+        documented in CLAUDE.md for Python's decorated definitions.
+        """
+        if any(c.type == "function_declarator" for c in node.named_children):
+            return []
+
+        results: list[dict[str, Any]] = []
+        line_start = node.start_point[0] + 1
+        line_end = node.end_point[0] + 1
+
+        visibility = ""
+        for child in node.named_children:
+            if child.type == "storage_class_specifier":
+                vis = self.collect_node_text(child, source_bytes).strip()
+                if vis in ("static", "extern"):
+                    visibility = vis
+                    break
+
+        sig_text = self.collect_node_text(node, source_bytes).strip()[:200]
+        for child in node.named_children:
+            name = self._variable_name_from_declarator(child, source_bytes)
+            if name:
+                results.append({
+                    "type": "variable",
+                    "name": name,
+                    "signature": sig_text,
+                    "visibility": visibility,
+                    "doc_comment": "",
+                    "line_start": line_start,
+                    "line_end": line_end,
+                    "is_async": False,
+                    "is_unsafe": False,
+                    "generic_params": "",
+                })
+
+        return results
 
     def _extract_top_type(self, node: Any, source_bytes: bytes, source_lines: list[str]) -> dict[str, Any] | None:
-        """Extract a struct/union/enum at the top level (not inside a declaration)."""
+        """Extract a struct/union/enum *definition* at the top level.
+
+        Not every top-level struct_specifier/union_specifier/enum_specifier
+        is a definition — `struct Foo;` (forward declaration) produces the
+        identical node shape minus the body, so it must be excluded here
+        too, the same as inside `_extract_declaration_signatures`.
+        """
         try:
+            if not self._has_body(node):
+                return None
+
             kind_map = {self.STRUCT_SPEC: "struct", self.UNION_SPEC: "union", self.ENUM_SPEC: "enum"}
             kind = kind_map.get(node.type, "type")
 

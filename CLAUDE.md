@@ -99,7 +99,34 @@ language, so they're recorded here rather than only in commit history:
   `decorated_definition` branch, then the walker visited that same child
   again as an ordinary named child — recording every decorated function
   twice. Decorated classes never had this bug because `class_definition`
-  was only ever handled by the plain dispatch branch.
+  was only ever handled by the plain dispatch branch. C++'s
+  `template_declaration` handling shipped the identical bug independently
+  (found while adding variable extraction, not while looking for it):
+  `_extract_template` reached into and extracted a wrapped
+  `function_definition` as `"template_fn"`, and the walker then visited that
+  same node again naturally as plain `"function"` — every templated
+  function was recorded twice. Fixed the same way: delete the manual
+  reach-in, let the ordinary dispatch handle it once. The fix incidentally
+  made behavior match what the README already (accurately, by luck) claimed
+  — "templates are captured as plain classes/functions."
+- **A grammar's `declaration`-style node is often heavily overloaded, and
+  must be inspected for what it actually contains before deciding what it
+  is.** C and C++ share one `declaration` node type across function
+  prototypes, variable declarations (single or multiple comma-separated
+  names, with or without initializers), and inline struct/union/enum/class
+  definitions with or without a trailing variable of that type. The
+  pre-existing struct/union/enum handling stopped at the first matching
+  child and never checked for a body, so `struct Foo instance;` (no body —
+  just referencing an already-defined type) was misreported as a second,
+  phantom definition of `Foo`, and the real variable (`instance`) was never
+  extracted at all. Fixed by checking for the body node
+  (`field_declaration_list`/`enumerator_list`) before ever treating a
+  `struct_specifier`/etc. as a definition, in both the top-level dispatch
+  and the `declaration`-embedded case — and by never re-extracting that
+  embedded type at all, since the base walker already visits it as its own
+  node (see the `decorated_definition` lesson above; this is that same bug
+  shape, just discovered from the opposite direction — under-extraction
+  instead of over-extraction).
 
 `tests/test_import_resolution.py` and `tests/test_circular_imports.py` are
 the regression suites for these; `tests/test_extractors.py` has the specific

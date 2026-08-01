@@ -21,6 +21,11 @@ class GoExtractor(BaseExtractor):
     INTERFACE_TYPE = "interface_type"
     IMPORT_DECL = "import_declaration"
     IMPORT_SPEC = "import_spec"
+    VAR_DECL = "var_declaration"
+    VAR_SPEC = "var_spec"
+    CONST_DECL = "const_declaration"
+    CONST_SPEC = "const_spec"
+    SHORT_VAR_DECL = "short_var_declaration"
     COMMENT = "comment"
 
     def __init__(self, project_root: str) -> None:
@@ -67,6 +72,25 @@ class GoExtractor(BaseExtractor):
                     sig = self._safe_extract(self._extract_type_spec, child, source_bytes, source_lines)
                     if sig:
                         signatures.append(sig)
+
+        elif node_type == self.VAR_DECL:
+            for child in node.named_children:
+                if child.type == self.VAR_SPEC:
+                    var_sigs = self._safe_extract(self._extract_spec_vars, child, source_bytes)
+                    if var_sigs:
+                        signatures.extend(var_sigs)
+
+        elif node_type == self.CONST_DECL:
+            for child in node.named_children:
+                if child.type == self.CONST_SPEC:
+                    const_sigs = self._safe_extract(self._extract_spec_vars, child, source_bytes)
+                    if const_sigs:
+                        signatures.extend(const_sigs)
+
+        elif node_type == self.SHORT_VAR_DECL:
+            short_sigs = self._safe_extract(self._extract_short_var, node, source_bytes)
+            if short_sigs:
+                signatures.extend(short_sigs)
 
     def _get_name(self, node: Any, source_bytes: bytes) -> str:
         for child in node.named_children:
@@ -153,6 +177,46 @@ class GoExtractor(BaseExtractor):
             }
         except Exception:
             return None
+
+    def _variable_signature(self, name: str, node: Any, source_bytes: bytes) -> dict[str, Any]:
+        return {
+            "type": "variable",
+            "name": name,
+            "signature": self.collect_node_text(node, source_bytes).strip()[:200],
+            "visibility": "exported" if self._is_exported(name) else "",
+            "doc_comment": "",
+            "line_start": node.start_point[0] + 1,
+            "line_end": node.end_point[0] + 1,
+            "is_async": False,
+            "is_unsafe": False,
+            "generic_params": "",
+        }
+
+    def _extract_spec_vars(self, spec_node: Any, source_bytes: bytes) -> list[dict[str, Any]]:
+        """Every LHS name in one var_spec/const_spec — direct identifier
+        children only, so RHS identifiers (references, not declarations)
+        inside the spec's own expression_list are never mistaken for names.
+        """
+        return [
+            self._variable_signature(self.collect_node_text(child, source_bytes).strip(), spec_node, source_bytes)
+            for child in spec_node.named_children
+            if child.type == "identifier"
+        ]
+
+    def _extract_short_var(self, node: Any, source_bytes: bytes) -> list[dict[str, Any]]:
+        """`x := ...` / `x, y := ...` — only the first expression_list is the
+        LHS; the second is the RHS and must never be scanned for names.
+        `_` (Go's blank identifier) is never a real variable, so it's skipped.
+        """
+        lists = [c for c in node.named_children if c.type == "expression_list"]
+        if not lists:
+            return []
+        lhs = lists[0]
+        return [
+            self._variable_signature(self.collect_node_text(child, source_bytes).strip(), node, source_bytes)
+            for child in lhs.named_children
+            if child.type == "identifier" and self.collect_node_text(child, source_bytes).strip() != "_"
+        ]
 
     # ── Import extraction ──────────────────────────────────────────────────
 
