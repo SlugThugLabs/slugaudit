@@ -13,6 +13,22 @@ pub enum StoreError {
     Configure(#[source] rusqlite::Error),
     #[error(transparent)]
     Migration(#[from] super::migrations::MigrationError),
+    #[error("refusing to open a database path that is a symlink")]
+    Symlink,
+}
+
+/// A symlinked `project.db` could redirect reads or writes to an arbitrary
+/// file the process can reach — checked directly rather than relying on the
+/// activation directory's own symlink check (`project::activation`), since
+/// that only covers `.planning`/`.planning/slugaudit`, not the file inside.
+fn reject_symlink(path: &Path) -> Result<(), StoreError> {
+    if path
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(StoreError::Symlink);
+    }
+    Ok(())
 }
 
 /// Opens a read-write connection, creating the database file if needed, and
@@ -25,6 +41,7 @@ pub enum StoreError {
 /// be applied, or if the schema can't be migrated to the current version
 /// (including when the database is from a newer, unsupported version).
 pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
+    reject_symlink(path)?;
     let connection = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -47,6 +64,7 @@ pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
 /// Returns an error if the file doesn't exist or can't be opened read-only,
 /// or if the busy timeout can't be configured.
 pub fn open_read_only(path: &Path) -> Result<Connection, StoreError> {
+    reject_symlink(path)?;
     let connection = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -101,5 +119,27 @@ mod tests {
         let directory = tempfile::tempdir().expect("temp dir");
         let result = open_read_only(&directory.path().join("missing.db"));
         assert!(matches!(result, Err(StoreError::Open(_))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_db_path_is_rejected_for_both_read_write_and_read_only() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let real_target = directory.path().join("elsewhere.db");
+        let link_path = directory.path().join("project.db");
+        std::os::unix::fs::symlink(&real_target, &link_path).expect("create symlink");
+
+        assert!(matches!(
+            open_read_write(&link_path),
+            Err(StoreError::Symlink)
+        ));
+        assert!(matches!(
+            open_read_only(&link_path),
+            Err(StoreError::Symlink)
+        ));
+        assert!(
+            !real_target.exists(),
+            "the symlink target must never be created/opened"
+        );
     }
 }
