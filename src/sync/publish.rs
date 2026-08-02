@@ -1,24 +1,19 @@
-use super::analyze::analyze;
-use super::discovery::{self, DiscoveredFile, FileKind};
-use super::hash::{self, aggregate_manifest_hash};
+use super::discovery;
+use super::hash::aggregate_manifest_hash;
 use super::manifest::{self, ChangeStatus};
 use super::revision::{self, FileRecord};
-use crate::model::SourceIdentity;
+use super::sample::{self, sample_file, to_file_record};
 use rusqlite::Connection;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum PublishError {
     #[error(transparent)]
     Discovery(#[from] discovery::DiscoveryError),
-    #[error("failed to read {path}: {source}")]
-    Read {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
+    #[error(transparent)]
+    Sample(#[from] sample::SampleError),
     #[error(transparent)]
     Revision(#[from] revision::RevisionError),
     #[error("database error: {0}")]
@@ -32,45 +27,6 @@ pub struct PublishReport {
     pub modified: usize,
     pub deleted: usize,
     pub unchanged: usize,
-}
-
-struct Sample {
-    relative_path: String,
-    is_binary: bool,
-    content: Option<String>,
-    identity: SourceIdentity,
-    byte_len: u64,
-}
-
-fn sample_file(file: &DiscoveredFile) -> Result<Sample, PublishError> {
-    let bytes = std::fs::read(&file.absolute_path).map_err(|source| PublishError::Read {
-        path: file.absolute_path.clone(),
-        source,
-    })?;
-    let is_binary = file.kind == FileKind::Binary;
-    let content = (!is_binary).then(|| String::from_utf8_lossy(&bytes).into_owned());
-    Ok(Sample {
-        relative_path: file.relative_path.clone(),
-        is_binary,
-        byte_len: bytes.len() as u64,
-        identity: hash::hash_bytes(&file.relative_path, &bytes),
-        content,
-    })
-}
-
-fn to_file_record(sample: Sample) -> FileRecord {
-    let parsed = analyze(&sample.relative_path, sample.content.as_deref());
-    FileRecord {
-        relative_path: sample.relative_path,
-        is_binary: sample.is_binary,
-        content: sample.content,
-        identity: sample.identity,
-        byte_len: sample.byte_len,
-        language: parsed.language,
-        language_detected: parsed.language_detected,
-        run: parsed.run,
-        evidence: parsed.evidence,
-    }
 }
 
 struct CurrentRevision {

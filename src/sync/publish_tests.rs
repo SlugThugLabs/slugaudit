@@ -22,6 +22,53 @@ fn stored_paths(connection: &Connection) -> Vec<String> {
 }
 
 #[test]
+fn invalid_utf8_is_recorded_as_evidence_not_silently_swallowed() {
+    let project = tempfile::tempdir().expect("project dir");
+    // 0xFF is never valid as a UTF-8 lead byte.
+    write(
+        project.path(),
+        "garbled.txt",
+        &[b'a', b'b', 0xFF, b'c', b'd'],
+    );
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+
+    publish(&mut connection, project.path(), "1.0.0").expect("publish");
+
+    // The pack may also produce its own syntax-error diagnostic for this
+    // file, so check that an encoding-specific one exists among possibly
+    // several Diagnostic rows, rather than assuming there's only one.
+    let mut statement = connection
+        .prepare(
+            "SELECT json_extract(e.payload, '$.message') FROM evidence e \
+             JOIN files f ON f.id = e.file_id \
+             WHERE f.path = 'garbled.txt' AND e.kind = 'Diagnostic'",
+        )
+        .expect("prepare");
+    let messages: Vec<String> = statement
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    assert!(
+        messages.iter().any(|message| message.contains("UTF-8")),
+        "expected an encoding diagnostic among {messages:?}"
+    );
+
+    let content: String = connection
+        .query_row(
+            "SELECT content FROM files WHERE path = 'garbled.txt'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read content");
+    assert!(
+        content.contains('\u{FFFD}'),
+        "content should contain the replacement character"
+    );
+}
+
+#[test]
 fn first_sync_publishes_every_discovered_file() {
     let project = tempfile::tempdir().expect("project dir");
     write(project.path(), "src/main.rs", b"fn main() {}");

@@ -8,6 +8,7 @@ mod hash;
 mod manifest;
 mod publish;
 mod revision;
+mod sample;
 
 pub use discovery::{DiscoveredFile, DiscoveryError, FileKind, discover};
 pub use hash::{HashError, aggregate_manifest_hash, hash_bytes, hash_file};
