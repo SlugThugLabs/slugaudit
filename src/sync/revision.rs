@@ -1,5 +1,5 @@
 use crate::evidence::{self, EvidenceRow};
-use crate::model::{EvidenceItem, SourceIdentity};
+use crate::model::{EvidenceItem, ParserRun, SourceIdentity};
 use rusqlite::{Connection, params};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -13,10 +13,7 @@ pub struct FileRecord {
     pub byte_len: u64,
     pub language: Option<String>,
     pub language_detected: bool,
-    pub parser_availability: &'static str,
-    pub parse_outcome: &'static str,
-    pub parse_error_reason: Option<String>,
-    pub extraction_completeness: &'static str,
+    pub run: ParserRun,
     pub evidence: Vec<EvidenceItem>,
 }
 
@@ -24,6 +21,8 @@ pub struct FileRecord {
 pub enum RevisionError {
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
+    #[error("{path}: invalid parser run: {reason}")]
+    InvalidParserRun { path: String, reason: &'static str },
 }
 
 /// Publishes one revision atomically: upserts added/modified files and
@@ -62,6 +61,12 @@ pub fn publish_revision(
     }
 
     for file in upserts {
+        file.run
+            .validate()
+            .map_err(|reason| RevisionError::InvalidParserRun {
+                path: file.relative_path.clone(),
+                reason,
+            })?;
         tx.execute(
             "INSERT INTO files (\
                 path, file_kind, content, content_hash, hash_algorithm, byte_len, \
@@ -90,10 +95,10 @@ pub fn publish_revision(
                 file.byte_len,
                 file.language,
                 file.language_detected,
-                file.parser_availability,
-                file.parse_outcome,
-                file.parse_error_reason,
-                file.extraction_completeness,
+                file.run.availability.as_sql_text(),
+                file.run.outcome.as_sql_text(),
+                file.run.error_reason(),
+                file.run.completeness.as_sql_text(),
                 revision_db_id,
             ],
         )?;

@@ -44,14 +44,20 @@ CREATE TABLE IF NOT EXISTS files (
     modified_unix_seconds INTEGER,
     language TEXT,
     language_detected INTEGER NOT NULL DEFAULT 0 CHECK (language_detected IN (0, 1)),
-    parser_availability TEXT NOT NULL,
-    parse_outcome TEXT NOT NULL,
+    -- These three CHECK lists are the SQL mirror of
+    -- model::parser::{ParserAvailability, ParseOutcome, ExtractionCompleteness}
+    -- ::as_sql_text() — keep both in sync if a variant is ever added.
+    parser_availability TEXT NOT NULL
+        CHECK (parser_availability IN ('Available', 'Cached', 'Downloaded', 'Unavailable', 'LoadFailed')),
+    parse_outcome TEXT NOT NULL
+        CHECK (parse_outcome IN ('NotAttempted', 'Succeeded', 'SyntaxErrors', 'Failed')),
     -- Set only when parser_availability = 'LoadFailed' or parse_outcome =
     -- 'Failed'. Per-syntax-error detail lives in the evidence table as
     -- Diagnostic rows; this column is for the harder failure where process()
     -- itself returned an error rather than a tree with error nodes.
     parse_error_reason TEXT,
-    extraction_completeness TEXT NOT NULL,
+    extraction_completeness TEXT NOT NULL
+        CHECK (extraction_completeness IN ('Full', 'Partial', 'ContentOnly', 'Unavailable')),
     last_revision_id INTEGER NOT NULL REFERENCES revisions (id)
 );
 

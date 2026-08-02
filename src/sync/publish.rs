@@ -68,10 +68,7 @@ fn to_file_record(sample: Sample) -> FileRecord {
         byte_len: sample.byte_len,
         language: parsed.language,
         language_detected: parsed.language_detected,
-        parser_availability: parsed.parser_availability,
-        parse_outcome: parsed.parse_outcome,
-        parse_error_reason: parsed.parse_error_reason,
-        extraction_completeness: parsed.extraction_completeness,
+        run: parsed.run,
         evidence: parsed.evidence,
     }
 }
