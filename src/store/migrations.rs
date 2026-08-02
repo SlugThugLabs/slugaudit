@@ -16,8 +16,11 @@ pub enum MigrationError {
 
 /// Brings a freshly-opened database up to `CURRENT_SCHEMA_VERSION`.
 /// Migrations are forward-only: a database at a newer schema version than
-/// this build knows about is rejected rather than guessed at.
-pub fn ensure_current_schema(connection: &Connection) -> Result<(), MigrationError> {
+/// this build knows about is rejected rather than guessed at. Applying the
+/// schema and recording the new version happen in one transaction — SQLite
+/// supports transactional DDL, so a crash mid-migration can't leave tables
+/// created but `user_version` still reporting the old version.
+pub fn ensure_current_schema(connection: &mut Connection) -> Result<(), MigrationError> {
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(MigrationError::ReadVersion)?;
@@ -32,12 +35,12 @@ pub fn ensure_current_schema(connection: &Connection) -> Result<(), MigrationErr
         });
     }
 
-    connection
-        .execute_batch(SCHEMA_DDL)
+    let tx = connection.transaction().map_err(MigrationError::Apply)?;
+    tx.execute_batch(SCHEMA_DDL)
         .map_err(MigrationError::Apply)?;
-    connection
-        .pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)
+    tx.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)
         .map_err(MigrationError::Apply)?;
+    tx.commit().map_err(MigrationError::Apply)?;
     Ok(())
 }
 

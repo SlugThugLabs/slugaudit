@@ -42,7 +42,7 @@ fn reject_symlink(path: &Path) -> Result<(), StoreError> {
 /// (including when the database is from a newer, unsupported version).
 pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
     reject_symlink(path)?;
-    let connection = Connection::open_with_flags(
+    let mut connection = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_CREATE
@@ -50,7 +50,7 @@ pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
     )
     .map_err(StoreError::Open)?;
     configure(&connection)?;
-    super::migrations::ensure_current_schema(&connection)?;
+    super::migrations::ensure_current_schema(&mut connection)?;
     Ok(connection)
 }
 
