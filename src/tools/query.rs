@@ -1,5 +1,4 @@
-use super::context::ensure_synced;
-use crate::store;
+use super::context::{ensure_synced, open_verified_read_only};
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rusqlite::Row;
@@ -52,8 +51,7 @@ pub fn query(request: &Parameters<QueryRequest>) -> Result<Json<QueryResponse>, 
     }
 
     let synced = ensure_synced(path)?;
-    let connection = store::open_read_only(&synced.database_path)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    let connection = open_verified_read_only(&synced)?;
 
     // A hard cap regardless of what the caller asks for, plus one extra row
     // so truncation is exact rather than guessed at.

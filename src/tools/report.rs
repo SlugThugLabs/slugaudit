@@ -1,5 +1,4 @@
-use super::context::ensure_synced;
-use crate::store;
+use super::context::{ensure_synced, open_verified_read_only};
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rusqlite::Connection;
@@ -42,8 +41,7 @@ pub struct ReportResponse {
 /// syncing or querying the project's database fails.
 pub fn report(request: &Parameters<ReportRequest>) -> Result<Json<ReportResponse>, ErrorData> {
     let synced = ensure_synced(&request.0.path)?;
-    let connection = store::open_read_only(&synced.database_path)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    let connection = open_verified_read_only(&synced)?;
 
     let response = build_report(&connection, synced.revision_id)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;

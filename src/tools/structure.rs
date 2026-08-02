@@ -1,6 +1,5 @@
-use super::context::ensure_synced;
+use super::context::{ensure_synced, open_verified_read_only};
 use crate::model::saturating_u32;
-use crate::store;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use schemars::JsonSchema;
@@ -53,8 +52,7 @@ pub fn structure(
 ) -> Result<Json<StructureResponse>, ErrorData> {
     let StructureRequest { path, file, query } = &request.0;
     let synced = ensure_synced(path)?;
-    let connection = store::open_read_only(&synced.database_path)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    let connection = open_verified_read_only(&synced)?;
 
     let (content, language) = fetch_source(&connection, file)?;
 

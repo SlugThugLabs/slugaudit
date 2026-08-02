@@ -1,5 +1,4 @@
-use super::context::ensure_synced;
-use crate::store;
+use super::context::{ensure_synced, open_verified_read_write};
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rusqlite::params;
@@ -45,8 +44,7 @@ pub fn finding(request: &Parameters<FindingRequest>) -> Result<Json<FindingRespo
     validate(request)?;
 
     let synced = ensure_synced(&request.path)?;
-    let mut connection = store::open_read_write(&synced.database_path)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    let mut connection = open_verified_read_write(&synced)?;
 
     let source_hash: String = connection
         .query_row(
