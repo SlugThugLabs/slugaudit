@@ -58,12 +58,40 @@ fn sample_file(file: &DiscoveredFile) -> Result<Sample, PublishError> {
     })
 }
 
-fn current_revision_id(connection: &Connection) -> Result<Option<String>, PublishError> {
+fn to_file_record(sample: Sample) -> FileRecord {
+    let parsed = analyze(&sample.relative_path, sample.content.as_deref());
+    FileRecord {
+        relative_path: sample.relative_path,
+        is_binary: sample.is_binary,
+        content: sample.content,
+        identity: sample.identity,
+        byte_len: sample.byte_len,
+        language: parsed.language,
+        language_detected: parsed.language_detected,
+        parser_availability: parsed.parser_availability,
+        parse_outcome: parsed.parse_outcome,
+        parse_error_reason: parsed.parse_error_reason,
+        extraction_completeness: parsed.extraction_completeness,
+        evidence: parsed.evidence,
+    }
+}
+
+struct CurrentRevision {
+    revision_id: String,
+    parser_pack_version: String,
+}
+
+fn current_revision(connection: &Connection) -> Result<Option<CurrentRevision>, PublishError> {
     connection
         .query_row(
-            "SELECT revision_id FROM revisions WHERE is_current = 1",
+            "SELECT revision_id, parser_pack_version FROM revisions WHERE is_current = 1",
             [],
-            |row| row.get(0),
+            |row| {
+                Ok(CurrentRevision {
+                    revision_id: row.get(0)?,
+                    parser_pack_version: row.get(1)?,
+                })
+            },
         )
         .map(Some)
         .or_else(|error| match error {
@@ -130,11 +158,20 @@ pub fn publish(
         .count();
     let unchanged = discovered.len() - (added + modified);
 
+    let current = current_revision(connection)?;
+    // A file's content not changing doesn't mean its evidence is still
+    // valid — if the parser itself was upgraded, everything needs
+    // re-analysis even though every hash still matches.
+    let parser_version_changed = current
+        .as_ref()
+        .is_none_or(|revision| revision.parser_pack_version != parser_pack_version);
+
     if changes.is_empty()
-        && let Some(revision_id) = current_revision_id(connection)?
+        && !parser_version_changed
+        && let Some(current) = current
     {
         return Ok(PublishReport {
-            revision_id,
+            revision_id: current.revision_id,
             added: 0,
             modified: 0,
             deleted: 0,
@@ -142,11 +179,18 @@ pub fn publish(
         });
     }
 
-    let changed_paths: HashSet<&str> = changes
-        .iter()
-        .filter(|change| change.status != ChangeStatus::Deleted)
-        .map(|change| change.relative_path.as_str())
-        .collect();
+    let changed_paths: HashSet<String> = if parser_version_changed {
+        samples
+            .iter()
+            .map(|sample| sample.relative_path.clone())
+            .collect()
+    } else {
+        changes
+            .iter()
+            .filter(|change| change.status != ChangeStatus::Deleted)
+            .map(|change| change.relative_path.clone())
+            .collect()
+    };
     let deletions: Vec<String> = changes
         .iter()
         .filter(|change| change.status == ChangeStatus::Deleted)
@@ -155,23 +199,7 @@ pub fn publish(
     let upserts: Vec<FileRecord> = samples
         .into_iter()
         .filter(|sample| changed_paths.contains(sample.relative_path.as_str()))
-        .map(|sample| {
-            let parsed = analyze(&sample.relative_path, sample.content.as_deref());
-            FileRecord {
-                relative_path: sample.relative_path,
-                is_binary: sample.is_binary,
-                content: sample.content,
-                identity: sample.identity,
-                byte_len: sample.byte_len,
-                language: parsed.language,
-                language_detected: parsed.language_detected,
-                parser_availability: parsed.parser_availability,
-                parse_outcome: parsed.parse_outcome,
-                parse_error_reason: parsed.parse_error_reason,
-                extraction_completeness: parsed.extraction_completeness,
-                evidence: parsed.evidence,
-            }
-        })
+        .map(to_file_record)
         .collect();
 
     let revision_id = revision::publish_revision(

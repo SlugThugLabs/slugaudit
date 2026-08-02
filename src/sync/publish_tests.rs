@@ -53,6 +53,32 @@ fn unchanged_sync_reuses_the_current_revision_and_touches_nothing() {
 }
 
 #[test]
+fn a_parser_version_change_forces_reanalysis_despite_no_file_changes() {
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "lib.rs", b"pub fn a() {}\n");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+
+    let first = publish(&mut connection, project.path(), "1.0.0").expect("first publish");
+    // Nothing on disk changes, only the parser version does.
+    let second = publish(&mut connection, project.path(), "2.0.0").expect("second publish");
+
+    assert_ne!(
+        first.revision_id, second.revision_id,
+        "a parser version change must publish a new revision even with an unchanged file set"
+    );
+
+    let stored_version: String = connection
+        .query_row(
+            "SELECT parser_pack_version FROM revisions WHERE is_current = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read stored parser version");
+    assert_eq!(stored_version, "2.0.0");
+}
+
+#[test]
 fn modified_file_replaces_its_row_and_deleted_file_is_purged() {
     let project = tempfile::tempdir().expect("project dir");
     write(project.path(), "src/main.rs", b"fn main() {}");
