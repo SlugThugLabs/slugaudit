@@ -1,0 +1,4 @@
+# Proper nouns clippy's doc_markdown lint would otherwise flag as needing
+# backticks, as if they were code identifiers rather than product/format
+# names.
+doc-valid-idents = ["SlugAudit", "SQLite", ".."]

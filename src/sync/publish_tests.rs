@@ -1,0 +1,153 @@
+use super::*;
+use crate::store::open_read_write;
+use std::fs;
+
+fn write(root: &Path, relative: &str, content: &[u8]) {
+    let path = root.join(relative);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("create parent dirs");
+    }
+    fs::write(path, content).expect("write fixture file");
+}
+
+fn stored_paths(connection: &Connection) -> Vec<String> {
+    let mut statement = connection
+        .prepare("SELECT path FROM files ORDER BY path")
+        .expect("prepare");
+    statement
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect")
+}
+
+#[test]
+fn first_sync_publishes_every_discovered_file() {
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "src/main.rs", b"fn main() {}");
+    write(project.path(), "README.md", b"# Title");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+
+    let report = publish(&mut connection, project.path(), "1.0.0").expect("publish");
+    assert_eq!(report.added, 2);
+    assert_eq!(report.modified, 0);
+    assert_eq!(report.deleted, 0);
+    assert_eq!(stored_paths(&connection), vec!["README.md", "src/main.rs"]);
+}
+
+#[test]
+fn unchanged_sync_reuses_the_current_revision_and_touches_nothing() {
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "src/main.rs", b"fn main() {}");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+
+    let first = publish(&mut connection, project.path(), "1.0.0").expect("first publish");
+    let second = publish(&mut connection, project.path(), "1.0.0").expect("second publish");
+
+    assert_eq!(first.revision_id, second.revision_id);
+    assert_eq!(second.added, 0);
+    assert_eq!(second.modified, 0);
+    assert_eq!(second.unchanged, 1);
+}
+
+#[test]
+fn modified_file_replaces_its_row_and_deleted_file_is_purged() {
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "src/main.rs", b"fn main() {}");
+    write(project.path(), "src/lib.rs", b"pub fn lib() {}");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    publish(&mut connection, project.path(), "1.0.0").expect("first publish");
+
+    write(project.path(), "src/main.rs", b"fn main() { changed(); }");
+    fs::remove_file(project.path().join("src/lib.rs")).expect("remove file");
+
+    let report = publish(&mut connection, project.path(), "1.0.0").expect("second publish");
+    assert_eq!(report.modified, 1);
+    assert_eq!(report.deleted, 1);
+    assert_eq!(stored_paths(&connection), vec!["src/main.rs"]);
+
+    let content: String = connection
+        .query_row(
+            "SELECT content FROM files WHERE path = 'src/main.rs'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read content");
+    assert_eq!(content, "fn main() { changed(); }");
+}
+
+#[test]
+fn a_real_rust_file_gets_real_parsed_evidence_not_a_placeholder() {
+    let project = tempfile::tempdir().expect("project dir");
+    write(
+        project.path(),
+        "src/lib.rs",
+        b"pub fn greet() {\n    println!(\"hi\");\n}\n",
+    );
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+
+    publish(&mut connection, project.path(), "1.0.0").expect("publish");
+
+    let (language, availability, outcome, completeness): (String, String, String, String) =
+        connection
+            .query_row(
+                "SELECT language, parser_availability, parse_outcome, extraction_completeness \
+             FROM files WHERE path = 'src/lib.rs'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read file status");
+    assert_eq!(language, "rust");
+    assert_eq!(availability, "Available");
+    assert_eq!(outcome, "Succeeded");
+    assert_eq!(completeness, "Partial");
+
+    let structure_count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM evidence e JOIN files f ON f.id = e.file_id \
+             WHERE f.path = 'src/lib.rs' AND e.kind = 'Structure'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count structure evidence");
+    assert!(
+        structure_count >= 1,
+        "expected at least the greet() function"
+    );
+}
+
+#[test]
+fn deleting_a_file_cascades_its_evidence() {
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "src/main.rs", b"fn main() {}");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    publish(&mut connection, project.path(), "1.0.0").expect("first publish");
+
+    let file_id: i64 = connection
+        .query_row(
+            "SELECT id FROM files WHERE path = 'src/main.rs'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read file id");
+    connection
+        .execute(
+            "INSERT INTO evidence (file_id, key, kind, origin, span_availability, payload) \
+             VALUES (?1, 'main:0', 'Symbol', 'PackSymbol', 'PackOmitted', '{}')",
+            [file_id],
+        )
+        .expect("insert evidence");
+
+    fs::remove_file(project.path().join("src/main.rs")).expect("remove file");
+    publish(&mut connection, project.path(), "1.0.0").expect("second publish");
+
+    let remaining_evidence: i64 = connection
+        .query_row("SELECT count(*) FROM evidence", [], |row| row.get(0))
+        .expect("count evidence");
+    assert_eq!(remaining_evidence, 0);
+}
