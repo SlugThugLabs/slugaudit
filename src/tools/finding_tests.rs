@@ -150,3 +150,29 @@ fn a_finding_against_an_unindexed_file_is_a_typed_error() {
     let request = base_request(&project, "does_not_exist.rs");
     assert!(finding(&Parameters(request)).is_err());
 }
+
+#[test]
+fn a_line_number_past_the_files_real_length_is_a_typed_error() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let mut request = base_request(&project, "lib.rs");
+    request.line_start = 1;
+    request.line_end = 9_999;
+    assert!(finding(&Parameters(request)).is_err());
+}
+
+#[test]
+fn a_line_number_within_the_files_real_length_succeeds() {
+    let project = activated_project("lib.rs", b"line one\nline two\nline three\n");
+    let mut request = base_request(&project, "lib.rs");
+    request.line_start = 2;
+    request.line_end = 3;
+    assert!(finding(&Parameters(request)).is_ok());
+}
+
+#[test]
+fn an_oversized_description_is_a_typed_error() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let mut request = base_request(&project, "lib.rs");
+    request.description = "x".repeat(MAX_DESCRIPTION_LENGTH + 1);
+    assert!(finding(&Parameters(request)).is_err());
+}
