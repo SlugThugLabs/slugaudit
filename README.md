@@ -22,11 +22,26 @@ operations — but the user-facing experience is incomplete.
 - Four MCP tools: `report`, `query`, `structure`, `finding`
 
 **What's not yet implemented:**
-- No enable/disable or activation control (human interface missing)
+- No enable/disable *command* — see "Activation ownership" below, this
+  crate deliberately never creates or removes the activation marker itself
 - No background sync (every tool call re-samples everything)
 - No dependency graph traversal (edges table exists but stays empty)
 - No production documentation (install, MCP setup, recovery, upgrade)
 - No performance baseline or adversarial testing
+
+### Activation ownership
+
+A project is "enabled" purely by the presence of a `.planning/slugaudit/`
+directory at (or above) the path a tool call is made against —
+`src/project/activation.rs` walks up looking for it. This crate only ever
+*reads* that marker; it contains no tool, command, or code path that
+creates or removes it. Owning the human-facing enable/disable action —
+creating that directory when a person turns SlugAudit on for a project, and
+removing it (optionally purging the database) when they turn it off — is
+the responsibility of whatever *host application* embeds this MCP server
+(an editor extension, a CLI wrapper, or similar). That boundary is
+intentional: this crate is the evidence backend, not the UI for the one
+human-facing control described in `ARCHITECTURE.md`.
 
 **Planned for future versions:**
 - Background activation (pre-sync before first tool call)

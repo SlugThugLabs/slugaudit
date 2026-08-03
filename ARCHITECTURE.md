@@ -14,11 +14,15 @@ Everything downstream of project discovery — hashing, parsing, sync,
 evidence queries — is automatic and reachable only through MCP tool calls made
 by an AI client. A full sync happens on every tool call: every file is
 discovered, sampled, and hashed, then compared against stored state. If
-nothing has changed since the last revision, the write is skipped and the
-current revision is reused; the filesystem sampling still occurs. There is no
-enable/disable human interface, no manual sync command, and no background
-activation — activation and synchronization are not yet implemented. This is
-Phase 0 foundation code; see README.md for current limitations.
+nothing has changed since the last revision, the write is skipped, but the
+filesystem discovery and per-file sampling still happen — there is no
+optimization yet that skips re-reading unchanged files. There is no
+enable/disable human interface and no background pre-sync; a project is
+"active" purely by the presence of its `.planning/slugaudit/` marker
+directory, which this crate only ever reads — creating or removing that
+marker (the actual enable/disable action) is a host application's
+responsibility, not this crate's. This is Phase 0 foundation code; see
+README.md for current limitations.
 
 Evidence responses are shaped for AI consumption: compact, bounded, and
 deterministic. They carry no human-readability requirement — the goal is that
@@ -27,12 +31,13 @@ the response comfortably.
 
 The AI-facing tool surface is four tools: `report` (automatic project
 snapshot), `query` (arbitrary read-only SQL against the project's own
-SQLite file — search, symbol/import/diagnostic lookup, dependency traversal,
-and source retrieval all reach through this one tool), `structure`
-(Tree-sitter structural pattern matching for what normalized evidence
-doesn't cover), and `finding` (the one write, an AI-reviewed conclusion).
-`query`'s safety comes from a read-only connection and a row cap, not from
-parsing or restricting query text — see `IMPLEMENTATION_PLAN.md` Task 7.3.
+SQLite file — search, symbol/import/diagnostic lookup, and source retrieval
+all reach through this one tool; `dependency_edges` rows are reserved for a
+future resolver and stay empty today), `structure` (Tree-sitter structural
+pattern matching for what normalized evidence doesn't cover), and `finding`
+(the one write, an AI-reviewed conclusion). `query`'s safety comes from a
+read-only connection and a row cap, not from parsing or restricting query
+text.
 
 ## The database is a mirror, not a source of truth
 
