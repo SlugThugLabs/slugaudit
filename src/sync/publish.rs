@@ -1,16 +1,19 @@
-use super::discovery;
-use super::hash::aggregate_manifest_hash;
-use super::manifest::{self, ChangeStatus};
+use super::discovery::{self, DiscoveredFile};
+use super::publish_diff::{build_upserts_and_deletions, diff_against_stored};
+use super::race_hook;
 use super::revision::{self, FileRecord, RevisionError};
-use super::sample::{self, sample_file, to_file_record};
+use super::sample::{self, Sample, sample_file};
 use crate::model::ResourceLimits;
 use rusqlite::Connection;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::Path;
 use thiserror::Error;
 
-/// How many times a concurrent-publish CAS failure is retried before the
-/// error surfaces to the tool caller. Each retry re-samples the filesystem.
+/// How many times a retryable publish failure (a concurrent publisher won
+/// the CAS race, or a file changed on disk after being sampled) is retried
+/// before the error surfaces to the tool caller. Each retry re-discovers
+/// and re-samples the filesystem from scratch — it never reuses a stale
+/// sample.
 const MAX_CAS_RETRIES: usize = 4;
 
 #[derive(Debug, Error)]
@@ -27,6 +30,21 @@ pub enum PublishError {
         "import would load {total} bytes across sampled files, exceeding the {limit}-byte ceiling"
     )]
     ImportTooLarge { total: u64, limit: u64 },
+    /// A file's on-disk content changed between being sampled and the
+    /// publish transaction that would have written it as current. Caught by
+    /// `revalidate_unchanged_since_sample` immediately before the write;
+    /// the caller retries with an entirely fresh sample rather than
+    /// publishing a revision built from stale bytes.
+    #[error("{path} changed on disk after being sampled; retrying with a fresh sample")]
+    ChangedDuringSample { path: String },
+}
+
+fn is_retryable(error: &PublishError) -> bool {
+    matches!(
+        error,
+        PublishError::Revision(RevisionError::StaleBaseline { .. })
+            | PublishError::ChangedDuringSample { .. }
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,31 +84,91 @@ fn current_revision(connection: &Connection) -> Result<Option<CurrentRevision>, 
 /// what the database has stored, then publishes exactly the delta as one
 /// atomic CAS revision. A disk state identical to the current revision
 /// skips publishing entirely rather than churning out a no-op revision.
-/// Concurrent publishers are serialized by compare-and-swap on the current
-/// revision id: a loser re-samples and retries a bounded number of times.
+///
+/// Two independent hazards are retried the same way, up to
+/// `MAX_CAS_RETRIES` times, each retry re-sampling from scratch: another
+/// publisher committing first (compare-and-swap on the current revision
+/// id), and a file changing on disk after this attempt sampled it but
+/// before the write transaction it would land in. Neither is silently
+/// papered over — both fail closed into a retry rather than publishing a
+/// revision that doesn't match a real, stable disk state.
 ///
 /// # Errors
 ///
 /// Returns an error if discovery, reading a discovered file, resource
 /// limits are exceeded, or any database operation in the publish
-/// transaction fails (including exhausting CAS retries).
+/// transaction fails (including exhausting retries).
 pub fn publish(
     connection: &mut Connection,
     root: &Path,
     parser_pack_version: &str,
 ) -> Result<PublishReport, PublishError> {
-    let mut last_stale = None;
-    for _ in 0..MAX_CAS_RETRIES {
-        match try_publish(connection, root, parser_pack_version) {
-            Err(PublishError::Revision(RevisionError::StaleBaseline { expected, found })) => {
-                last_stale = Some(RevisionError::StaleBaseline { expected, found });
+    let mut attempt = 0_usize;
+    loop {
+        let result = try_publish(connection, root, parser_pack_version);
+        match &result {
+            Err(error) if is_retryable(error) && attempt + 1 < MAX_CAS_RETRIES => {
+                attempt += 1;
             }
-            other => return other,
+            _ => return result,
         }
     }
-    Err(PublishError::Revision(last_stale.expect(
-        "CAS loop only continues after StaleBaseline; retries exhausted implies one was stored",
-    )))
+}
+
+fn sample_all(
+    discovered: &[DiscoveredFile],
+    limits: &ResourceLimits,
+) -> Result<Vec<Sample>, PublishError> {
+    let mut total_bytes = 0_u64;
+    let mut samples = Vec::with_capacity(discovered.len());
+    for file in discovered {
+        let sample = sample_file(file, limits)?;
+        total_bytes = total_bytes.saturating_add(sample.byte_len);
+        if total_bytes > limits.max_total_import_bytes {
+            return Err(PublishError::ImportTooLarge {
+                total: total_bytes,
+                limit: limits.max_total_import_bytes,
+            });
+        }
+        samples.push(sample);
+    }
+    Ok(samples)
+}
+
+/// A revision published by this crate is not a true point-in-time atomic
+/// snapshot of the filesystem — no OS-level snapshot is taken, and nothing
+/// locks files against concurrent editors. It is instead a *verified
+/// collection of individually stable files*: every file this function is
+/// about to write is re-sampled and re-hashed one last time, and the
+/// publish is aborted (to be retried with an entirely fresh sample) if any
+/// of them no longer matches what was recorded during the original sample.
+/// This closes the gap between "we read this file" and "we told the
+/// database this is the file's current state" as tightly as is achievable
+/// without filesystem-level locking, which ordinary editors (atomic
+/// rename-on-save in particular) would defeat anyway.
+fn revalidate_unchanged_since_sample(
+    discovered: &[DiscoveredFile],
+    upserts: &[FileRecord],
+    limits: &ResourceLimits,
+) -> Result<(), PublishError> {
+    let by_path: HashMap<&str, &DiscoveredFile> = discovered
+        .iter()
+        .map(|file| (file.relative_path.as_str(), file))
+        .collect();
+    for upsert in upserts {
+        let unchanged = by_path
+            .get(upsert.relative_path.as_str())
+            .is_some_and(|file| {
+                sample_file(file, limits)
+                    .is_ok_and(|fresh| fresh.identity.content_hash == upsert.identity.content_hash)
+            });
+        if !unchanged {
+            return Err(PublishError::ChangedDuringSample {
+                path: upsert.relative_path.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn try_publish(
@@ -107,57 +185,9 @@ fn try_publish(
 
     let discovered = discovery::discover(root)?;
     let limits = ResourceLimits::default();
-    let mut total_bytes = 0_u64;
-    let mut samples = Vec::with_capacity(discovered.len());
-    for file in &discovered {
-        let sample = sample_file(file, &limits)?;
-        total_bytes = total_bytes.saturating_add(sample.byte_len);
-        if total_bytes > limits.max_total_import_bytes {
-            return Err(PublishError::ImportTooLarge {
-                total: total_bytes,
-                limit: limits.max_total_import_bytes,
-            });
-        }
-        samples.push(sample);
-    }
-
-    let mut stored_statement = connection.prepare("SELECT path, content_hash FROM files")?;
-    let stored_rows = stored_statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(stored_statement);
-
-    let stored_refs: Vec<(&str, &str)> = stored_rows
-        .iter()
-        .map(|(path, hash)| (path.as_str(), hash.as_str()))
-        .collect();
-    let current_refs: Vec<(&str, &str)> = samples
-        .iter()
-        .map(|sample| {
-            (
-                sample.relative_path.as_str(),
-                sample.identity.content_hash.as_str(),
-            )
-        })
-        .collect();
-    let changes = manifest::compare(stored_refs, current_refs.clone());
-    let manifest_hash = aggregate_manifest_hash(current_refs);
-
-    let added = changes
-        .iter()
-        .filter(|c| c.status == ChangeStatus::Added)
-        .count();
-    let modified = changes
-        .iter()
-        .filter(|c| c.status == ChangeStatus::Modified)
-        .count();
-    let deleted = changes
-        .iter()
-        .filter(|c| c.status == ChangeStatus::Deleted)
-        .count();
-    let unchanged = discovered.len() - (added + modified);
+    let samples = sample_all(&discovered, &limits)?;
+    race_hook::fire(root);
+    let diff = diff_against_stored(connection, &samples, discovered.len())?;
 
     // A file's content not changing doesn't mean its evidence is still
     // valid — if the parser itself was upgraded, everything needs
@@ -166,7 +196,7 @@ fn try_publish(
         .as_ref()
         .is_none_or(|revision| revision.parser_pack_version != parser_pack_version);
 
-    if changes.is_empty()
+    if diff.changes.is_empty()
         && !parser_version_changed
         && let Some(current) = baseline
     {
@@ -175,37 +205,18 @@ fn try_publish(
             added: 0,
             modified: 0,
             deleted: 0,
-            unchanged,
+            unchanged: diff.unchanged,
         });
     }
 
-    let changed_paths: HashSet<String> = if parser_version_changed {
-        samples
-            .iter()
-            .map(|sample| sample.relative_path.clone())
-            .collect()
-    } else {
-        changes
-            .iter()
-            .filter(|change| change.status != ChangeStatus::Deleted)
-            .map(|change| change.relative_path.clone())
-            .collect()
-    };
-    let deletions: Vec<String> = changes
-        .iter()
-        .filter(|change| change.status == ChangeStatus::Deleted)
-        .map(|change| change.relative_path.clone())
-        .collect();
-    let upserts: Vec<FileRecord> = samples
-        .into_iter()
-        .filter(|sample| changed_paths.contains(sample.relative_path.as_str()))
-        .map(|sample| to_file_record(sample, &limits))
-        .collect();
+    let (upserts, deletions) =
+        build_upserts_and_deletions(samples, &diff.changes, parser_version_changed, &limits);
+    revalidate_unchanged_since_sample(&discovered, &upserts, &limits)?;
 
     let revision_id = revision::publish_revision(
         connection,
         expected_current,
-        &manifest_hash,
+        &diff.manifest_hash,
         parser_pack_version,
         &upserts,
         &deletions,
@@ -213,13 +224,17 @@ fn try_publish(
 
     Ok(PublishReport {
         revision_id,
-        added,
-        modified,
-        deleted,
-        unchanged,
+        added: diff.added,
+        modified: diff.modified,
+        deleted: diff.deleted,
+        unchanged: diff.unchanged,
     })
 }
 
 #[cfg(test)]
 #[path = "publish_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "publish_race_tests.rs"]
+mod race_tests;

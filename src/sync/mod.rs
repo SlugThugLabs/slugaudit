@@ -7,6 +7,8 @@ mod discovery;
 mod hash;
 mod manifest;
 mod publish;
+mod publish_diff;
+mod race_hook;
 mod revision;
 mod sample;
 
