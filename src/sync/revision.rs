@@ -250,3 +250,7 @@ fn now_unix() -> i64 {
             i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
         })
 }
+
+#[cfg(test)]
+#[path = "revision_tests.rs"]
+mod tests;

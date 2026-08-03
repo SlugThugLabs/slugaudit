@@ -251,3 +251,7 @@ mod edges_tests;
 #[cfg(test)]
 #[path = "publish_acceptance_tests.rs"]
 mod acceptance_tests;
+
+#[cfg(test)]
+#[path = "publish_mutation_tests.rs"]
+mod mutation_tests;
