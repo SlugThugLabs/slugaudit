@@ -24,6 +24,7 @@ pub enum Command {
     Enable { path: PathBuf },
     Disable { path: PathBuf, assume_yes: bool },
     Connect { agent: Option<ConnectAgent> },
+    Install,
     Help,
 }
 
@@ -118,6 +119,7 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
                 .transpose()?;
             Ok(Command::Connect { agent })
         }
+        "install" => Ok(Command::Install),
         _ => Ok(Command::Help),
     }
 }
@@ -137,6 +139,9 @@ USAGE:
                                       MCP server in an AI agent. AGENT is one
                                       of: claude, grok, codex. Omit to pick
                                       from an interactive menu.
+    slugaudit-mcp install            Copy this binary to ~/.slugthug/bin/ so
+                                      it's on a stable path shared with future
+                                      slug-branded products.
     slugaudit-mcp help               Show this message
 ";
 
@@ -178,6 +183,11 @@ pub enum ConnectError {
 /// gets written into the agent's MCP config, so a `cargo install`'d binary
 /// keeps working across upgrades automatically.
 ///
+/// If `~/.slugthug/bin/slugaudit-mcp` exists (the user ran `install`), that
+/// stable path is registered instead of wherever the binary happens to sit
+/// right now — so rebuilding from source later doesn't stale the agent's
+/// registration.
+///
 /// Each agent is registered at its user/global scope so SlugAudit is
 /// available in every project rather than only the directory `connect` was
 /// run from. The server itself is per-project (each enabled project has
@@ -185,7 +195,21 @@ pub enum ConnectError {
 /// covers everything.
 pub fn run_connect(agent: ConnectAgent) -> Result<(), ConnectError> {
     let binary = std::env::current_exe().map_err(ConnectError::BinaryPath)?;
+    let binary = prefer_slugthug_binary(&binary);
     connect_one(agent, &binary)
+}
+
+/// If the user has run `install` and `~/.slugthug/bin/slugaudit-mcp`
+/// exists, return that path so `connect` registers the stable location
+/// rather than a one-off build artifact. Otherwise returns `current`
+/// unchanged.
+fn prefer_slugthug_binary(current: &Path) -> PathBuf {
+    let slugthug = slugthug_home().join("bin").join("slugaudit-mcp");
+    if slugthug.exists() {
+        slugthug
+    } else {
+        current.to_path_buf()
+    }
 }
 
 fn connect_one(agent: ConnectAgent, binary: &Path) -> Result<(), ConnectError> {
@@ -318,6 +342,71 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
         agent,
         &std::env::current_exe().map_err(ConnectError::BinaryPath)?,
     )
+}
+
+/// The shared home directory for all slug-branded products on this machine:
+/// `~/.slugthug/`. Binaries live under `bin/`, per-product data under
+/// `<product>/`, and an optional top-level `config.toml` covers shared
+/// PostgreSQL config for any product that needs it.
+pub fn slugthug_home() -> PathBuf {
+    std::env::var_os("SLUGTHUG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".slugthug"))
+        })
+        .expect("HOME must be set")
+}
+
+/// Errors from `install`.
+#[derive(Debug, Error)]
+pub enum InstallError {
+    #[error("could not locate the running binary: {0}")]
+    CurrentExe(std::io::Error),
+    #[error("could not create {path}: {inner}")]
+    Mkdir { path: String, inner: std::io::Error },
+    #[error("could not copy the binary to {path}: {inner}")]
+    Copy { path: String, inner: std::io::Error },
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+/// Copy the running binary into `~/.slugthug/bin/slugaudit-mcp`. Future
+/// slug-branded products (codeguard, the rebranded ClauRust, etc.) share
+/// the same `~/.slugthug/bin/` directory, so a user who adds it to PATH
+/// gets all of them in one go. `connect` registers this stable path in the
+/// agent's MCP config, so the agent keeps working across upgrades — just
+/// re-run `install` after building a new binary.
+pub fn run_install() -> Result<(), InstallError> {
+    let source = std::env::current_exe().map_err(InstallError::CurrentExe)?;
+    let bin_dir = slugthug_home().join("bin");
+    let target = bin_dir.join("slugaudit-mcp");
+
+    std::fs::create_dir_all(&bin_dir).map_err(|inner| InstallError::Mkdir {
+        path: bin_dir.display().to_string(),
+        inner,
+    })?;
+
+    std::fs::copy(&source, &target).map_err(|inner| InstallError::Copy {
+        path: target.display().to_string(),
+        inner,
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&target)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&target, perms)?;
+    }
+
+    println!("Installed slugaudit-mcp to {}", target.display());
+    println!(
+        "Add {} to your PATH, then run: slugaudit-mcp connect",
+        bin_dir.display()
+    );
+    Ok(())
 }
 
 /// # Errors

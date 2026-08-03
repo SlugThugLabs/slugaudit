@@ -20,6 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 return Ok(());
             }
+            Command::Install => return Ok(cli::run_install()?),
             Command::Help => {
                 print!("{}", cli::USAGE);
                 return Ok(());

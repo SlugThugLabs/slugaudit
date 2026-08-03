@@ -164,6 +164,31 @@ fn connect_writes_the_correct_registration_for_each_installed_agent() {
         binary.display()
     );
 
+    // Run `install` so the binary lands at the stable ~/.slugthug/bin/ path.
+    // `connect` prefers that path over the build artifact, mirroring the
+    // real user flow: install once, then connect (and reconnect after
+    // rebuilds) against the stable location.
+    let install_output = Command::new(&binary)
+        .args(["install"])
+        .output()
+        .expect("spawn install");
+    assert!(
+        install_output.status.success(),
+        "install failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&install_output.stdout),
+        String::from_utf8_lossy(&install_output.stderr),
+    );
+    let slugthug_binary = std::env::var_os("SLUGTHUG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".slugthug"))
+        .join("bin")
+        .join("slugaudit-mcp");
+    assert!(
+        slugthug_binary.is_file(),
+        "install did not produce {}",
+        slugthug_binary.display()
+    );
+
     for agent in agents {
         let config_path = match agent.connect_arg {
             "claude" => home().join(".claude.json"),
@@ -189,12 +214,12 @@ fn connect_writes_the_correct_registration_for_each_installed_agent() {
         );
 
         assert!(
-            (agent.is_registered)(&binary),
+            (agent.is_registered)(&slugthug_binary),
             "{} connect ran, but {} does not contain a slugaudit stdio \
              registration pointing at {}",
             agent.cli,
             config_path.display(),
-            binary.display(),
+            slugthug_binary.display(),
         );
 
         // Restore the user's original config.

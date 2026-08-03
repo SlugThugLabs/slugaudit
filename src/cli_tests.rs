@@ -144,3 +144,19 @@ fn connect_agent_from_str_rejects_empty_and_garbage() {
     assert!(ConnectAgent::from_str("not-an-agent").is_err());
     assert!(ConnectAgent::from_str("2").is_err());
 }
+
+#[test]
+fn install_parses_as_its_own_command() {
+    assert_eq!(
+        parse_args(vec!["install".to_owned()].into_iter()).unwrap(),
+        Command::Install
+    );
+}
+
+#[test]
+fn install_ignores_any_extra_arguments() {
+    assert_eq!(
+        parse_args(vec!["install".to_owned(), "--some-flag".to_owned()].into_iter()).unwrap(),
+        Command::Install
+    );
+}
