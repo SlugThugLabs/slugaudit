@@ -127,13 +127,87 @@ pub fn to_file_record(sample: Sample, limits: &ResourceLimits) -> FileRecord {
     }
 }
 
-fn apply_evidence_limits(items: &mut Vec<EvidenceItem>, limits: &ResourceLimits) {
-    let cap = limits.evidence.max_items_per_file;
-    if items.len() > cap {
-        items.truncate(cap);
+/// Reserved out of `max_payload_bytes_per_file` so the truncation marker
+/// itself never pushes a file's evidence over the cap it is reporting on.
+const TRUNCATION_MARKER_RESERVE_BYTES: usize = 512;
+
+/// Enforces all three evidence caps in one pass: per-item count, per-item
+/// payload bytes, and — the one the old truncate-then-retain version never
+/// checked — cumulative payload bytes across every kept item. A file with
+/// many small-but-not-tiny items (each under the per-item cap) could still
+/// serialize to a multi-megabyte evidence blob; this is what actually
+/// caught the 5,326,990-byte failure. Whenever anything is discarded, an
+/// explicit `Diagnostic` evidence item records it — the AI sees a "this
+/// file's evidence was truncated" signal instead of silently incomplete data.
+pub(crate) fn apply_evidence_limits(items: &mut Vec<EvidenceItem>, limits: &ResourceLimits) {
+    let cap = limits.evidence;
+    let original_len = items.len();
+    let max_items = cap.max_items_per_file.saturating_sub(1);
+    let max_bytes = cap
+        .max_payload_bytes_per_file
+        .saturating_sub(TRUNCATION_MARKER_RESERVE_BYTES);
+
+    let mut kept = Vec::with_capacity(original_len.min(cap.max_items_per_file));
+    let mut cumulative_bytes = 0_usize;
+    let mut oversized_dropped = 0_usize;
+    let mut limit_truncated = false;
+
+    for item in items.drain(..) {
+        if kept.len() >= max_items {
+            limit_truncated = true;
+            break;
+        }
+        let payload_bytes =
+            serde_json::to_vec(&item.payload).map_or(usize::MAX, |bytes| bytes.len());
+        if payload_bytes > cap.max_payload_bytes_per_item {
+            oversized_dropped += 1;
+            continue;
+        }
+        if cumulative_bytes.saturating_add(payload_bytes) > max_bytes {
+            limit_truncated = true;
+            break;
+        }
+        cumulative_bytes += payload_bytes;
+        kept.push(item);
     }
-    items.retain(|item| {
-        serde_json::to_vec(&item.payload)
-            .is_ok_and(|bytes| bytes.len() <= limits.evidence.max_payload_bytes_per_item)
-    });
+
+    let kept_len = kept.len();
+    *items = kept;
+    if limit_truncated || oversized_dropped > 0 {
+        items.push(truncation_evidence(
+            original_len,
+            kept_len,
+            oversized_dropped,
+        ));
+    }
 }
+
+fn truncation_evidence(
+    original_count: usize,
+    kept_count: usize,
+    oversized_dropped: usize,
+) -> EvidenceItem {
+    let dropped_for_cap = original_count
+        .saturating_sub(kept_count)
+        .saturating_sub(oversized_dropped);
+    EvidenceItem {
+        key: "evidence:truncated".to_owned(),
+        kind: EvidenceKind::Diagnostic,
+        origin: EvidenceOrigin::SourceContent,
+        span: SpanAvailability::DerivedEvidence,
+        payload: json!({
+            "message": format!(
+                "evidence limits discarded records: {oversized_dropped} item(s) exceeded the \
+                 per-item byte cap, {dropped_for_cap} item(s) dropped by the item-count or \
+                 cumulative-byte cap"
+            ),
+            "severity": "warning",
+            "original_item_count": original_count,
+            "kept_item_count": kept_count,
+        }),
+    }
+}
+
+#[cfg(test)]
+#[path = "sample_tests.rs"]
+mod tests;
