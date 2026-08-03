@@ -176,3 +176,10 @@ fn an_oversized_description_is_a_typed_error() {
     request.description = "x".repeat(MAX_DESCRIPTION_CHARS + 1);
     assert!(finding(&Parameters(request)).is_err());
 }
+
+#[test]
+fn an_empty_file_cannot_have_a_finding() {
+    let project = activated_project("empty.rs", b"");
+    let request = base_request(&project, "empty.rs");
+    assert!(finding(&Parameters(request)).is_err());
+}

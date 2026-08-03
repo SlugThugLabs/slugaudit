@@ -12,16 +12,15 @@ It does not detect bugs, assign suspicion, or replace the AI's reasoning.
 
 Exactly one control is human-facing: enabling or disabling SlugAudit for a
 project. Everything downstream of that — discovery, hashing, parsing, sync,
-purge on delete, search, evidence queries, dependency resolution — is
-automatic and reachable only through MCP tool calls made by an AI client.
-Enabling a project starts a full import immediately; it does not wait for an
-AI to make the first tool call. Every tool call independently re-verifies
-freshness before executing regardless of whether that initial import has
-finished, so a call arriving mid-import still only ever sees a verified
-revision or an explicit not-ready state, never partial data. There is no
-manual sync/rebuild/maintenance command for a human or an AI; freshness
-verification runs as a mandatory precondition of every tool call, not as a
-separate step either party remembers to invoke.
+purge on delete, search, evidence queries — is automatic and reachable only
+through MCP tool calls made by an AI client. A sync happens on every tool call
+to verify freshness: if nothing on disk has changed, that verification runs
+fast and reuses the current revision without re-sampling. There is no manual
+sync/rebuild/maintenance command for a human or an AI; freshness verification
+runs as a mandatory precondition of every tool call, not as a separate step
+either party remembers to invoke. Future versions may add background activation
+(an async import that completes before the first tool call) but the current
+implementation synchronizes on first use.
 
 Evidence responses are shaped for AI consumption: compact, bounded, and
 deterministic. They carry no human-readability requirement — the goal is that
@@ -82,9 +81,10 @@ parse source, build SQL, or format database rows themselves.
 
 The language pack is the parser and generic intelligence provider. SlugAudit
 normalizes its output into stable evidence records: definitions, imports,
-exports, symbols, comments, diagnostics, spans, and syntax-aware chunks. Raw
-Tree-sitter node information is retained where available so the AI can inspect
-evidence the normalizer does not understand.
+exports, symbols, comments, diagnostics, and spans. Syntax-aware chunks and
+raw Tree-sitter node information are reserved for future extraction; the
+schema and evidence types exist but extraction does not currently generate
+them.
 
 No eight-language extractor hierarchy will be recreated. Any language-specific
 behavior must be a small, tested adapter justified by an evidence gap.

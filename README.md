@@ -15,12 +15,14 @@ through MCP tool calls — never directly by a human, and never through a
 manually-invoked command.
 
 - Enabling or disabling a project is the only action a human ever takes.
-- Enabling a project starts a full import immediately, without waiting for an
-  AI to ask anything. Every tool call also re-verifies freshness before
-  executing, regardless of whether it arrives during, after, or race-adjacent
-  to that initial import. There is no manual sync, rebuild, or maintenance
+- On the first tool call for a project, SlugAudit indexes the entire codebase.
+  Subsequent tool calls re-verify freshness by sampling the filesystem: if
+  nothing has changed, verification is fast and reuses the current revision
+  without re-parsing. There is no manual sync, rebuild, or maintenance
   command for a human or an AI to invoke — the AI never has to trigger, wait
-  for, or think about synchronization itself.
+  for, or think about synchronization itself. (Future versions may implement
+  background activation that completes the initial import before the first
+  tool call.)
 - Tool responses are AI-consumed data, not formatted for human reading. There
   is no human-readability requirement on evidence shape — only completeness,
   boundedness, and query-ability matter.
