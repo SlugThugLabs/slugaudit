@@ -46,6 +46,11 @@ pub struct ResourceLimits {
     pub max_structure_query_bytes: usize,
     /// Maximum capture matches returned by one `structure` call.
     pub max_structure_matches: usize,
+    /// Wall-clock budget for one `structure` query's Tree-sitter execution,
+    /// enforced natively via `QueryCursorOptions::progress_callback` so a
+    /// pathological pattern (deep nesting, wildcard-heavy captures) can be
+    /// aborted mid-query rather than only after it returns.
+    pub max_structure_execution_time: std::time::Duration,
     pub evidence: EvidenceLimits,
 }
 
@@ -61,6 +66,7 @@ impl Default for ResourceLimits {
             max_query_value_bytes: 1024 * 1024,
             max_structure_query_bytes: 8_000,
             max_structure_matches: 500,
+            max_structure_execution_time: std::time::Duration::from_secs(5),
             evidence: EvidenceLimits::default(),
         }
     }
@@ -80,5 +86,8 @@ mod tests {
         assert!(limits.max_query_wall_clock.as_millis() > 0);
         assert!(limits.max_query_value_bytes > 0);
         assert!(limits.max_query_value_bytes <= limits.max_query_response_bytes);
+        assert!(limits.max_structure_query_bytes > 0);
+        assert!(limits.max_structure_matches > 0);
+        assert!(limits.max_structure_execution_time.as_millis() > 0);
     }
 }

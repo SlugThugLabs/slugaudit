@@ -1,5 +1,6 @@
 use super::discovery::{self, DiscoveredFile};
 use super::publish_diff::{build_upserts_and_deletions, diff_against_stored};
+use super::publish_log;
 use super::race_hook;
 use super::revision::{self, FileRecord, RevisionError};
 use super::sample::{self, Sample, sample_file};
@@ -106,28 +107,16 @@ pub fn publish(
     let mut attempt = 0_usize;
     loop {
         let result = try_publish(connection, root, parser_pack_version);
-        match &result {
-            Err(error) if is_retryable(error) && attempt + 1 < MAX_CAS_RETRIES => {
-                tracing::info!(attempt, reason = %error, "publish retrying");
-                attempt += 1;
-            }
-            Ok(report) => {
-                tracing::info!(
-                    revision_id = report.revision_id,
-                    added = report.added,
-                    modified = report.modified,
-                    deleted = report.deleted,
-                    unchanged = report.unchanged,
-                    retries = attempt,
-                    "publish completed"
-                );
-                return result;
-            }
-            Err(error) => {
-                tracing::warn!(retries = attempt, error = %error, "publish failed");
-                return result;
-            }
+        if let Err(error) = &result
+            && is_retryable(error)
+            && attempt + 1 < MAX_CAS_RETRIES
+        {
+            tracing::info!(attempt, reason = %error, "publish retrying");
+            attempt += 1;
+            continue;
         }
+        publish_log::log_outcome(&result, attempt);
+        return result;
     }
 }
 
@@ -258,3 +247,7 @@ mod race_tests;
 #[cfg(test)]
 #[path = "publish_edges_tests.rs"]
 mod edges_tests;
+
+#[cfg(test)]
+#[path = "publish_acceptance_tests.rs"]
+mod acceptance_tests;

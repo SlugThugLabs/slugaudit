@@ -82,13 +82,14 @@ identifiers, not content), and error messages from typed error variants
   by the caller.
 - **Resource-limit rejection**: every cap defined in `src/model/limits.rs`
   (file size, total import bytes, query response bytes, query value bytes,
-  query wall-clock/step budgets, structure query size and match count,
-  evidence item count/per-item/cumulative bytes) rejects with a typed error
-  identifying which limit was hit and its configured value — never a
-  truncated-but-unlabeled response, except where truncation is the
-  documented behavior itself (e.g. `query`'s row cap sets `truncated: true`
-  in the response rather than erroring, since partial results are more
-  useful there than a hard failure). `structure` currently bounds query
-  text size and match count but has no execution-time/CPU limit on the
-  Tree-sitter query itself — a pathological pattern against a large file
-  has no timeout today; this is a known gap, not a documented guarantee.
+  query wall-clock/step budgets, structure query text size, match count,
+  and execution time, evidence item count/per-item/cumulative bytes)
+  rejects with a typed error identifying which limit was hit and its
+  configured value — never a truncated-but-unlabeled response, except
+  where truncation is the documented behavior itself (e.g. `query`'s row
+  cap sets `truncated: true` in the response rather than erroring, since
+  partial results are more useful there than a hard failure). `structure`'s
+  execution-time budget uses Tree-sitter's native
+  `QueryCursorOptions::progress_callback`, checked periodically by the C
+  core during matching itself, so a pathological pattern is aborted
+  mid-query rather than only after it would have returned.

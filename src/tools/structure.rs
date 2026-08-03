@@ -4,7 +4,11 @@ use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
+use std::ops::ControlFlow;
+use std::time::Instant;
+use tree_sitter::{
+    Parser, Query, QueryCursor, QueryCursorOptions, QueryCursorState, StreamingIterator,
+};
 
 const MAX_TEXT_BYTES: usize = 2_000;
 
@@ -49,8 +53,18 @@ pub struct StructureResponse {
 pub fn structure(
     request: &Parameters<StructureRequest>,
 ) -> Result<Json<StructureResponse>, ErrorData> {
+    structure_with_limits(request, &ResourceLimits::default())
+}
+
+/// Test-only seam: production code always goes through [`structure`] with
+/// [`ResourceLimits::default`]; tests inject a tighter
+/// `max_structure_execution_time` to exercise the abort path without
+/// waiting out the production-sized budget.
+fn structure_with_limits(
+    request: &Parameters<StructureRequest>,
+    limits: &ResourceLimits,
+) -> Result<Json<StructureResponse>, ErrorData> {
     let StructureRequest { path, file, query } = &request.0;
-    let limits = ResourceLimits::default();
     if query.trim().is_empty() {
         return Err(ErrorData::invalid_params(
             "structure query must not be empty",
@@ -84,12 +98,7 @@ pub fn structure(
         .parse(&content, None)
         .ok_or_else(|| ErrorData::internal_error("parser returned no syntax tree", None))?;
 
-    let (matches, truncated) = run_query(
-        &compiled_query,
-        &tree,
-        &content,
-        limits.max_structure_matches,
-    );
+    let (matches, truncated) = run_query(&compiled_query, &tree, &content, limits)?;
 
     Ok(Json(StructureResponse {
         revision_id,
@@ -119,18 +128,43 @@ fn fetch_source(
     Ok((content, language))
 }
 
+/// Runs the compiled query under a native Tree-sitter execution-time budget:
+/// `QueryCursorOptions::progress_callback` fires periodically *during*
+/// matching (checked roughly every 100 internal operations by the C core),
+/// so a pathological pattern is aborted mid-query rather than only after it
+/// returns, unlike a wall-clock check wrapped around the whole call.
+///
+/// # Errors
+///
+/// Returns an error if `limits.max_structure_execution_time` is exceeded.
 fn run_query(
     compiled_query: &Query,
     tree: &tree_sitter::Tree,
     content: &str,
-    max_matches: usize,
-) -> (Vec<StructureMatch>, bool) {
+    limits: &ResourceLimits,
+) -> Result<(Vec<StructureMatch>, bool), ErrorData> {
     let capture_names = compiled_query.capture_names();
     let mut cursor = QueryCursor::new();
-    let mut captures = cursor.captures(compiled_query, tree.root_node(), content.as_bytes());
+    let deadline = Instant::now() + limits.max_structure_execution_time;
+    let mut timed_out = false;
+    let mut check_deadline = |_state: &QueryCursorState| -> ControlFlow<()> {
+        if Instant::now() >= deadline {
+            timed_out = true;
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    let options = QueryCursorOptions::new().progress_callback(&mut check_deadline);
+    let mut captures = cursor.captures_with_options(
+        compiled_query,
+        tree.root_node(),
+        content.as_bytes(),
+        options,
+    );
 
     let mut matches = Vec::new();
-    while matches.len() < max_matches
+    while matches.len() < limits.max_structure_matches
         && let Some((query_match, capture_index)) = captures.next()
     {
         let capture = query_match.captures[*capture_index];
@@ -153,8 +187,16 @@ fn run_query(
             text_truncated,
         });
     }
-    let truncated = matches.len() >= max_matches && captures.next().is_some();
-    (matches, truncated)
+    let truncated = matches.len() >= limits.max_structure_matches && captures.next().is_some();
+    drop(captures);
+
+    if timed_out {
+        return Err(ErrorData::invalid_params(
+            "structure query exceeded its execution time budget",
+            None,
+        ));
+    }
+    Ok((matches, truncated))
 }
 
 fn truncate_text(text: &str) -> (String, bool) {

@@ -126,4 +126,51 @@ mod tests {
             Err(ActivationError::SymlinkedActivationPath)
         );
     }
+
+    /// This crate never creates or removes the activation marker itself
+    /// (see README.md's "Activation ownership" section) — the realistic race
+    /// is a host application toggling `.planning/slugaudit` concurrently with
+    /// a lookup, simulating disabling/enabling the project mid-call.
+    /// `find_project_root` is a single synchronous ancestor walk with no
+    /// hook to pause it deterministically mid-loop, so this drives the race
+    /// with a real second thread hammering create/remove on the marker
+    /// directory while many real lookups run concurrently, asserting the
+    /// only two acceptable outcomes (a clean success matching the real root,
+    /// or a clean `NotActive`) and never a panic or any other error variant.
+    #[cfg(unix)]
+    #[test]
+    fn a_marker_toggled_concurrently_never_panics_or_returns_a_partial_state() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let root = directory.path().to_path_buf();
+        create_activation(&root);
+        let nested = root.join("src").join("nested");
+        fs::create_dir_all(&nested).expect("create nested dir");
+        let canonical_root = root.canonicalize().expect("canonicalize root");
+
+        let activation_dir = root.join(PLANNING_DIR).join(ACTIVATION_DIR);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_toggler = Arc::clone(&stop);
+        let toggler = std::thread::spawn(move || {
+            while !stop_toggler.load(Ordering::Relaxed) {
+                let _ = fs::remove_dir_all(&activation_dir);
+                let _ = fs::create_dir_all(&activation_dir);
+            }
+        });
+
+        for _ in 0..2_000 {
+            match find_project_root(&nested) {
+                Ok(found) => assert_eq!(found.as_path(), canonical_root),
+                Err(ActivationError::NotActive) => {}
+                Err(other) => {
+                    panic!("a benign concurrent marker toggle must never produce {other:?}")
+                }
+            }
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        toggler.join().expect("toggler thread joins");
+    }
 }

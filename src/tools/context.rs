@@ -158,34 +158,9 @@ fn verify_revision_matches(
 }
 
 #[cfg(test)]
-mod test_helpers {
-    use super::*;
-
-    pub fn open_verified_read_only(synced: &SyncedProject) -> Result<Connection, ErrorData> {
-        let mut connection = store::open_read_only(&synced.database_path)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        let tx = connection
-            .transaction_with_behavior(TransactionBehavior::Deferred)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        verify_revision_matches(&tx, &synced.revision_id)?;
-        tx.commit()
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        Ok(connection)
-    }
-
-    pub fn open_verified_read_write(synced: &SyncedProject) -> Result<Connection, ErrorData> {
-        let mut connection = store::open_read_write(&synced.database_path)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        let tx = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        verify_revision_matches(&tx, &synced.revision_id)?;
-        tx.commit()
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        Ok(connection)
-    }
-}
-
-#[cfg(test)]
 #[path = "context_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "context_race_tests.rs"]
+mod race_tests;

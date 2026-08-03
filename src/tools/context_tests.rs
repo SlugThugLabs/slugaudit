@@ -1,4 +1,3 @@
-use super::test_helpers::{open_verified_read_only, open_verified_read_write};
 use super::*;
 use std::fs;
 
@@ -10,16 +9,21 @@ fn activated_project(relative: &str, content: &[u8]) -> tempfile::TempDir {
     project
 }
 
+/// Exercises the real production entry point tools actually call, not a
+/// weaker stand-in: `with_verified_read` keeps the transaction open for the
+/// whole closure, so a real query issued from inside `f` proves verification
+/// and the read share one atomic snapshot end to end.
 #[test]
 fn a_verified_connection_succeeds_when_nothing_changed_since_sync() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let synced = ensure_synced(&project.path().to_string_lossy()).expect("sync");
 
-    let connection = open_verified_read_only(&synced).expect("still-fresh revision opens fine");
-    let count: i64 = connection
-        .query_row("SELECT count(*) FROM files", [], |row| row.get(0))
-        .expect("query");
-    assert_eq!(count, 1);
+    let count: i64 = with_verified_read(&synced, |tx| {
+        tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+    })
+    .expect("still-fresh revision opens fine and the closure's query runs");
+    assert_eq!(count, 1_i64);
 }
 
 #[test]
@@ -41,10 +45,18 @@ fn a_stale_synced_handle_fails_loudly_instead_of_returning_mismatched_data() {
         "the revision must actually have moved"
     );
 
-    let result = open_verified_read_only(&stale);
+    let ran_closure = std::cell::Cell::new(false);
+    let result = with_verified_read(&stale, |_tx| {
+        ran_closure.set(true);
+        Ok(())
+    });
     assert!(
         result.is_err(),
         "a stale revision handle must never silently open against newer data"
+    );
+    assert!(
+        !ran_closure.get(),
+        "the closure must never run against a revision that failed verification"
     );
 }
 
@@ -78,6 +90,9 @@ fn a_database_copied_from_a_different_project_root_fails_closed() {
     );
 }
 
+/// Same protection as the read side, proven end to end: `with_verified_write`
+/// must refuse to run its closure (a real INSERT) against a stale handle, and
+/// the row must never land.
 #[test]
 fn verified_read_write_has_the_same_protection() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
@@ -89,7 +104,57 @@ fn verified_read_write_has_the_same_protection() {
         b"pub fn a() { changed(); }\n",
     )
     .expect("modify file");
-    ensure_synced(&path).expect("second sync");
+    let fresh = ensure_synced(&path).expect("second sync");
 
-    assert!(open_verified_read_write(&stale).is_err());
+    let result = with_verified_write(&stale, |tx| {
+        tx.execute(
+            "INSERT INTO findings (\
+                path, source_hash, line_start, line_end, severity, category, title, \
+                description, created_at_unix, evidence_revision, status\
+             ) VALUES ('lib.rs', 'deadbeef', 1, 1, 'low', 'test', 'x', 'y', 0, 'r', 'current')",
+            [],
+        )
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+    });
+    assert!(result.is_err(), "a stale write handle must be rejected");
+
+    // Confirm the rejected write really never landed, through a fresh,
+    // correctly-revisioned handle rather than trusting the error alone.
+    let count: i64 = with_verified_read(&fresh, |tx| {
+        tx.query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+    })
+    .expect("fresh handle reads fine");
+    assert_eq!(
+        count, 0_i64,
+        "the closure's INSERT must never have executed once verification failed"
+    );
+}
+
+/// Proves `with_verified_write`'s closure genuinely executes and commits a
+/// real write when the revision is current, so the failure-path assertions
+/// above are meaningful contrasts rather than a tautology.
+#[test]
+fn verified_write_actually_commits_a_real_change_on_a_fresh_revision() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let synced = ensure_synced(&project.path().to_string_lossy()).expect("sync");
+
+    with_verified_write(&synced, |tx| {
+        tx.execute(
+            "INSERT INTO findings (\
+                path, source_hash, line_start, line_end, severity, category, title, \
+                description, created_at_unix, evidence_revision, status\
+             ) VALUES ('lib.rs', 'deadbeef', 1, 1, 'low', 'test', 'x', 'y', 0, 'r', 'current')",
+            [],
+        )
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+    })
+    .expect("write against a current revision succeeds");
+
+    let count: i64 = with_verified_read(&synced, |tx| {
+        tx.query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+    })
+    .expect("read back the committed row");
+    assert_eq!(count, 1_i64);
 }

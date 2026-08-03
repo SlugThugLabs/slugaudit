@@ -250,4 +250,36 @@ mod tests {
             "must never chmod a file this call didn't create"
         );
     }
+
+    /// Distinct from `a_symlinked_db_path_is_rejected_for_both_read_write_and_read_only`,
+    /// where the path is a symlink from the very first open: this proves the
+    /// TOCTOU case, where a path that was legitimately a real file at one
+    /// point in time gets replaced by a symlink later (e.g. a compromised or
+    /// misbehaving process racing the legitimate owner). Both `open_flags`'
+    /// `SQLITE_OPEN_NOFOLLOW` and the `reject_symlink` pre-check must catch
+    /// this on the *next* open, not just the first.
+    #[cfg(unix)]
+    #[test]
+    fn a_db_path_replaced_by_a_symlink_after_a_successful_open_is_rejected_on_the_next_open() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("project.db");
+
+        // A real, legitimate first open succeeds and migrates the schema.
+        let connection = open_read_write(&path).expect("first open on a real file succeeds");
+        drop(connection);
+        assert!(!path.symlink_metadata().unwrap().file_type().is_symlink());
+
+        // The path is now replaced by a symlink pointing elsewhere, as a
+        // TOCTOU attacker (or a racing process) might.
+        let elsewhere = directory.path().join("elsewhere.db");
+        std::fs::remove_file(&path).expect("remove the real file");
+        std::os::unix::fs::symlink(&elsewhere, &path).expect("replace it with a symlink");
+
+        assert!(matches!(open_read_write(&path), Err(StoreError::Symlink)));
+        assert!(matches!(open_read_only(&path), Err(StoreError::Symlink)));
+        assert!(
+            !elsewhere.exists(),
+            "the symlink target must never be created/opened through the replaced path"
+        );
+    }
 }

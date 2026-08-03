@@ -8,6 +8,7 @@ mod hash;
 mod manifest;
 mod publish;
 mod publish_diff;
+mod publish_log;
 mod race_hook;
 mod revision;
 mod revision_edges;

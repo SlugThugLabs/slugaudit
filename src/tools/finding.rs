@@ -182,3 +182,7 @@ fn now_unix() -> i64 {
 #[cfg(test)]
 #[path = "finding_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "finding_race_tests.rs"]
+mod race_tests;
