@@ -33,8 +33,12 @@ operations — but the user-facing experience is incomplete.
 - No enable/disable *command* — see "Activation ownership" below, this
   crate deliberately never creates or removes the activation marker itself
 - No background sync (every tool call re-samples everything)
-- No production documentation (install, MCP setup, recovery, upgrade)
-- No performance baseline or adversarial testing
+- No performance baseline (initial import, incremental sync, memory,
+  database size, or tool latency have not been measured/budgeted)
+
+See `PACKAGING.md` for installation, MCP registration, activation, database
+location/permissions, and upgrade/removal documentation. See
+`OBSERVABILITY.md` for tracing and operational-failure handling.
 
 ### Dependency-edge resolution scope
 
@@ -104,24 +108,34 @@ human-facing control described in `ARCHITECTURE.md`.
 
 ## Development
 
-The pinned toolchain is read from `rust-toolchain.toml`:
+The pinned toolchain is read from `rust-toolchain.toml`. Local development
+gates (same commands `.github/workflows/quality.yml` runs, with `--locked`):
 
 ```bash
 cargo fmt --all -- --check
-cargo check --all-targets --all-features
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
+cargo check --locked --all-targets --all-features
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
 bash tools/check_source_limits.sh
-cargo deny check advisories bans sources
-cargo deny check licenses
+cargo deny check advisories bans sources licenses
 cargo audit
+cargo build --release --locked
 ```
 
-`cargo deny check advisories bans sources` and `cargo deny check licenses`
-both pass as of this writing — `Cargo.toml` carries explicit license
-metadata (`PolyForm-Noncommercial-1.0.0`), so the license check is no longer
-blocked. `cargo audit` reports zero known vulnerabilities across the
-dependency tree.
+All of the above pass as of this writing — `Cargo.toml` carries explicit
+license metadata (`PolyForm-Noncommercial-1.0.0`), so the license check is
+not blocked; `cargo audit` reports zero known vulnerabilities across the
+222-crate dependency tree.
+
+CI additionally runs `tests/stdio_protocol.rs` (the real subprocess/
+JSON-RPC handshake test) as its own named step, a coverage check
+(`cargo llvm-cov`, gated at 89% line coverage — real measured coverage is
+above 93% as of this writing), and a mutation-testing step scoped to the
+CAS/retry/hash correctness surface (`src/sync/revision.rs`,
+`src/sync/publish.rs`, `src/sync/hash.rs`, `src/tools/context.rs` —
+currently zero surviving mutants on that scope, verified locally; the CI
+step itself is `continue-on-error` since a full-crate baseline hasn't been
+established).
 
 ### Unsafe code policy (`cargo geiger`)
 
