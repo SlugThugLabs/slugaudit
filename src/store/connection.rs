@@ -21,6 +21,14 @@ pub enum StoreError {
     Symlink,
     #[error("failed to set database file permissions: {0}")]
     Permissions(#[source] std::io::Error),
+    #[error(
+        "refusing to open a database on a network filesystem (NFS/CIFS/SMB): \
+         SQLite WAL mode is unreliable on network mounts and can produce locking \
+         corruption, stale reads, or SQLITE_BUSY/SQLITE_IOERR errors. \
+         Move the project to a local filesystem, or deactivate and re-enable \
+         SlugAudit after relocating it."
+    )]
+    NetworkFilesystem,
 }
 
 /// Opens with `SQLITE_OPEN_NOFOLLOW` so a path that is (or becomes) a
@@ -86,10 +94,13 @@ fn create_with_private_permissions_if_missing(_path: &Path) -> Result<(), StoreE
 /// # Errors
 ///
 /// Returns an error if the file can't be opened/created, if pragmas can't
-/// be applied, or if the schema can't be migrated to the current version
-/// (including when the database is from a newer, unsupported version).
+/// be applied, if the schema can't be migrated to the current version
+/// (including when the database is from a newer, unsupported version), or
+/// if the database path resides on a network filesystem (NFS/CIFS/SMB)
+/// where SQLite WAL mode is unreliable.
 pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
     reject_symlink(path)?;
+    reject_network_filesystem(path)?;
     create_with_private_permissions_if_missing(path)?;
     let mut connection =
         Connection::open_with_flags(path, open_flags(true)).map_err(StoreError::Open)?;
@@ -106,15 +117,104 @@ pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
 /// # Errors
 ///
 /// Returns an error if the file doesn't exist or can't be opened read-only,
-/// or if the busy timeout can't be configured.
+/// if the busy timeout can't be configured, or if the database path resides
+/// on a network filesystem (NFS/CIFS/SMB) where SQLite WAL mode is
+/// unreliable.
 pub fn open_read_only(path: &Path) -> Result<Connection, StoreError> {
     reject_symlink(path)?;
+    reject_network_filesystem(path)?;
     let connection =
         Connection::open_with_flags(path, open_flags(false)).map_err(StoreError::Open)?;
     connection
         .busy_timeout(BUSY_TIMEOUT)
         .map_err(StoreError::Configure)?;
     Ok(connection)
+}
+
+/// Refuses to open a database whose path resides on a network filesystem
+/// (NFS, CIFS, or SMB). SQLite's WAL journal mode — which `configure`
+/// enables on every read-write connection — is unreliable on network
+/// mounts: POSIX locking semantics don't translate cleanly across the
+/// network protocol, which can produce locking corruption, stale reads, or
+/// persistent `SQLITE_BUSY`/`SQLITE_IOERR` failures. The 5-second busy
+/// timeout compounds the problem by masking the underlying issue as a
+/// transient contention rather than a fundamental incompatibility.
+///
+/// On Linux, the filesystem type is determined by reading
+/// `/proc/self/mountinfo` and finding the most specific mount point that
+/// contains the database path, then checking its filesystem type against
+/// known network-filesystem names. On non-Linux platforms the check is
+/// skipped (returns `Ok(())`) since `/proc/self/mountinfo` is Linux-
+/// specific; network filesystems on other platforms are a much narrower
+/// slice of the audience, and a wrong positive here would block legitimate
+/// local-filesystem use.
+fn reject_network_filesystem(path: &Path) -> Result<(), StoreError> {
+    if is_on_network_filesystem(path) {
+        return Err(StoreError::NetworkFilesystem);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn is_on_network_filesystem(path: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string("/proc/self/mountinfo") else {
+        // If /proc/self/mountinfo is unavailable (e.g. sandboxed
+        // environment), err on the side of allowing the open rather
+        // than blocking legitimate use. The NFS risk is unchanged, but
+        // a missing mount table is not itself evidence of a network
+        // mount.
+        return false;
+    };
+
+    let path_str = match path.to_str() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    is_mountpoint_network_filesystem(&content, path_str)
+}
+
+/// Given the raw contents of `/proc/self/mountinfo` and a target path,
+/// returns true if the most specific mount point covering the path is a
+/// known network filesystem. Extracted as a pure function so the parsing
+/// logic can be unit-tested without an actual `/proc` mount table.
+#[cfg(target_os = "linux")]
+fn is_mountpoint_network_filesystem(mountinfo: &str, path_str: &str) -> bool {
+    let mut best_fs_type: Option<&str> = None;
+    let mut best_mount_len: usize = 0;
+
+    for line in mountinfo.lines() {
+        let Some(dash_idx) = line.find(" - ") else {
+            continue;
+        };
+        let after_dash = &line[dash_idx + 3..];
+        let Some(fs_type) = after_dash.split_whitespace().next() else {
+            continue;
+        };
+
+        let before_dash = &line[..dash_idx];
+        let mut fields = before_dash.split_whitespace();
+        // Skip: mount ID, parent ID, major:minor, root
+        let mount_point = fields.nth(4).unwrap_or("");
+
+        if path_str.starts_with(mount_point) && mount_point.len() > best_mount_len {
+            best_mount_len = mount_point.len();
+            best_fs_type = Some(fs_type);
+        }
+    }
+
+    let Some(fs_type) = best_fs_type else {
+        return false;
+    };
+    matches!(
+        fs_type,
+        "nfs" | "nfs4" | "cifs" | "smb" | "smb3" | "ncp" | "ncpfs" | "fusectl"
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_on_network_filesystem(_path: &Path) -> bool {
+    false
 }
 
 fn configure(connection: &Connection) -> Result<(), StoreError> {
@@ -281,5 +381,89 @@ mod tests {
             !elsewhere.exists(),
             "the symlink target must never be created/opened through the replaced path"
         );
+    }
+
+    /// A real temp-dir database on a local filesystem must open cleanly —
+    /// the NFS check must not produce false positives against ordinary
+    /// local paths. This is the most important invariant: blocking a
+    /// legitimate local open is strictly worse than missing an NFS mount.
+    #[test]
+    fn a_local_filesystem_database_is_not_mistaken_for_network_filesystem() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("project.db");
+        let result = open_read_write(&path);
+        assert!(
+            !matches!(result, Err(StoreError::NetworkFilesystem)),
+            "a local temp-dir database must not be rejected as a network filesystem, got: {result:?}"
+        );
+    }
+
+    /// The mountinfo parser must pick the most specific (longest) mount
+    /// point that covers the path, not just the first match. A path under
+    /// `/mnt/nfs/project` should match the `nfs` mount, not the root `/`
+    /// ext4 mount.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mountinfo_parser_picks_the_most_specific_mount_point() {
+        let mountinfo = "\
+26 23 0:24 / /sys rw,nosuid,nodev shared:7 - sysfs sysfs rw
+27 23 0:25 / /proc rw,nosuid,nodev shared:8 - proc proc rw
+1 23 259:1 / / rw shared:1 - ext4 /dev/sda1 rw
+100 1 0:100 / /mnt/nfs rw,relatime shared:50 - nfs server:/export rw
+101 100 0:101 /project /mnt/nfs/project rw,relatime shared:51 - nfs server:/export/project rw
+";
+        // Path under the most specific NFS mount.
+        assert!(is_mountpoint_network_filesystem(
+            mountinfo,
+            "/mnt/nfs/project/lib.rs"
+        ));
+        // Path under root (ext4) — not a network filesystem.
+        assert!(!is_mountpoint_network_filesystem(mountinfo, "/home/user/project/lib.rs"));
+        // Path under /sys — not a network filesystem.
+        assert!(!is_mountpoint_network_filesystem(mountinfo, "/sys/class/net"));
+    }
+
+    /// The mountinfo parser must recognize all the common network
+    /// filesystem type names, not just `nfs`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mountinfo_parser_recognizes_cifs_and_smb_as_network_filesystems() {
+        for fs_type in ["nfs", "nfs4", "cifs", "smb", "smb3"] {
+            let mountinfo = format!("1 0 0:1 / /mnt/share rw - {} server:/share rw", fs_type);
+            assert!(
+                is_mountpoint_network_filesystem(&mountinfo, "/mnt/share/file.txt"),
+                "{} should be detected as a network filesystem",
+                fs_type
+            );
+        }
+    }
+
+    /// A mountinfo line with optional fields (the `shared:NN` tokens and
+    /// others before the ` - ` separator) must still parse correctly —
+    /// the ` - ` is the reliable anchor, not field position from the start.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mountinfo_parser_handles_optional_fields_before_the_dash_separator() {
+        let mountinfo = "52 23 0:44 / /home/user rw,relatime shared:32 master:1 - nfs4 server:/data rw,vers=4.2";
+        assert!(is_mountpoint_network_filesystem(
+            mountinfo,
+            "/home/user/project/lib.rs"
+        ));
+    }
+
+    /// Malformed mountinfo lines (missing the ` - ` separator, missing
+    /// fields, empty lines) must be skipped gracefully rather than
+    /// panicking or misidentifying the filesystem.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mountinfo_parser_skips_malformed_lines_without_panicking() {
+        let mountinfo = "\
+not a valid line at all
+1 0 0:1 / / rw - ext4 /dev/sda1 rw
+another bad line
+missing dash separator / rw ext4
+";
+        // Should not panic; should identify / as ext4 (not network).
+        assert!(!is_mountpoint_network_filesystem(mountinfo, "/home/user/file.txt"));
     }
 }
