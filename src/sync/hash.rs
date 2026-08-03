@@ -1,6 +1,6 @@
 use crate::model::SourceIdentity;
+use crate::util;
 use sha2::{Digest, Sha256};
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -30,16 +30,7 @@ pub fn hash_bytes(relative_path: &str, bytes: &[u8]) -> SourceIdentity {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     let digest = hasher.finalize();
-    SourceIdentity::new(relative_path.to_owned(), hex_encode(&digest))
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut hex = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        // `write!` into a String never fails.
-        let _ = write!(hex, "{byte:02x}");
-    }
-    hex
+    SourceIdentity::new(relative_path.to_owned(), util::hex_encode(&digest))
 }
 
 /// A single deterministic hash over an entire file set: sorted by path so
@@ -58,7 +49,7 @@ pub fn aggregate_manifest_hash<'a>(
         hasher.update(hash.as_bytes());
         hasher.update(*b"\n");
     }
-    hex_encode(&hasher.finalize())
+    util::hex_encode(&hasher.finalize())
 }
 
 #[cfg(test)]

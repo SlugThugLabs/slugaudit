@@ -11,11 +11,16 @@ implementation; an older Python checkout exists elsewhere as reference
 material only and is not a runtime dependency and must not be ported
 automatically.
 
-**Status**: Phase 0 foundation. Only `src/model/` (shared typed contracts)
-and `src/parse/` (Tree-sitter language-pack boundary) are implemented, plus a
-no-op MCP server in `src/server.rs`. `ARCHITECTURE.md` describes the full
-target module tree (`tools/`, `project/`, `sync/`, `evidence/`, `store/`,
-`search/`, `graph/`) — none of those exist yet. Don't assume they do.
+**Status**: Phase 0 foundation. `src/model/` (shared typed contracts),
+`src/parse/` (Tree-sitter language-pack boundary), `src/tools/` (four MCP
+tools), `src/project/` (activation and root validation), `src/sync/`
+(manifest, change detection, revision publish), `src/evidence/`
+(normalization), `src/store/` (SQLite schema and connections), and
+`src/graph/` (dependency-edge resolution) are all implemented. `src/search/`
+is deliberately folded into `query` rather than a separate module. The
+server, tools, and sync machinery are functional; what remains is
+optimization (incremental sync that skips unchanged files) and a performance
+baseline, not missing core capability.
 
 **Human interface**: exactly one control is human-facing — enabling or
 disabling SlugAudit for a project. Enabling a project starts a full import
@@ -73,16 +78,18 @@ Planned module ownership (`ARCHITECTURE.md` has the full rationale):
 ```text
 src/main.rs      process entry point only
 src/server.rs    MCP transport and server lifecycle
-src/tools/       one small module per tool contract        (not yet built)
-src/project/     project activation and root validation    (not yet built)
-src/sync/        manifest, change detection, revision publish (not yet built)
+src/tools/       one small module per tool contract
+src/project/     project activation and root validation
+src/sync/        manifest, change detection, revision publish
 src/parse/       language detection and Tree-sitter pack calls
-src/evidence/    neutral extraction and evidence normalization (not yet built)
-src/store/       SQLite schema and repository operations   (not yet built)
-src/search/      bounded search and source retrieval        (not yet built)
-src/graph/       import/dependency relationship queries     (not yet built)
+src/evidence/    neutral extraction and evidence normalization
+src/store/       SQLite schema and repository operations
+src/graph/       import/dependency relationship queries
 src/model/       shared typed records and response metadata
 ```
+
+There is no separate `src/search/` module — bounded search is folded into
+`query`.
 
 Each module owns one reason to change. Tool handlers orchestrate — they must
 not parse source, build SQL, or format database rows themselves. The parser

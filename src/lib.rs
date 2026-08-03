@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod cli;
 pub mod evidence;
 pub mod graph;
 pub mod model;
@@ -9,3 +10,4 @@ pub mod server;
 pub mod store;
 pub mod sync;
 pub mod tools;
+pub mod util;

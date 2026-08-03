@@ -1,9 +1,9 @@
 use super::revision_edges;
 use crate::evidence::{self, EvidenceRow};
 use crate::model::{EvidenceItem, ParserRun, SourceIdentity};
+use crate::util;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,7 +50,7 @@ pub fn publish_revision(
     upserts: &[FileRecord],
     deletions: &[String],
 ) -> Result<String, RevisionError> {
-    let created_at = now_unix();
+    let created_at = util::now_unix();
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     assert_baseline(&tx, expected_current)?;
 
@@ -241,14 +241,6 @@ fn insert_evidence(
         ],
     )?;
     Ok(())
-}
-
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
-        })
 }
 
 #[cfg(test)]

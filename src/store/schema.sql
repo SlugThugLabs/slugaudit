@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS files (
     -- model::parser::{ParserAvailability, ParseOutcome, ExtractionCompleteness}
     -- ::as_sql_text() — keep both in sync if a variant is ever added.
     parser_availability TEXT NOT NULL
-        CHECK (parser_availability IN ('Available', 'Cached', 'Downloaded', 'Unavailable', 'LoadFailed')),
+        CHECK (parser_availability IN ('Available', 'Unavailable', 'LoadFailed')),
     parse_outcome TEXT NOT NULL
         CHECK (parse_outcome IN ('NotAttempted', 'Succeeded', 'SyntaxErrors', 'Failed')),
     -- Set only when parser_availability = 'LoadFailed' or parse_outcome =

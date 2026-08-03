@@ -153,7 +153,10 @@ fn execute_and_collect(
     limits: &ResourceLimits,
     abort_reason: &Arc<AtomicU8>,
 ) -> Result<(Vec<serde_json::Value>, bool), ErrorData> {
-    let wrapped = format!("SELECT * FROM ({trimmed}) LIMIT {}", MAX_ROWS + 1);
+    // The user SQL is wrapped on its own line so a trailing `-- line comment`
+    // terminates at the newline rather than swallowing the closing `)` and
+    // `LIMIT` clause, which would otherwise produce a confusing parse error.
+    let wrapped = format!("SELECT * FROM (\n{trimmed}\n) LIMIT {}", MAX_ROWS + 1);
     let mut statement = tx
         .prepare(&wrapped)
         .map_err(|error| describe_error(&error, abort_reason))?;

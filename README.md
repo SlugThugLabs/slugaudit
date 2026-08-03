@@ -30,9 +30,9 @@ operations — but the user-facing experience is incomplete.
   or not. See "Dependency-edge resolution scope" below for exact boundaries.
 
 **What's not yet implemented:**
-- No enable/disable *command* — see "Activation ownership" below, this
-  crate deliberately never creates or removes the activation marker itself
-- No background sync (every tool call re-samples everything)
+- No optimized incremental sync — every tool call re-discovers and
+  re-samples every file, even when nothing changed since the last revision
+  (the write itself is skipped in that case, but the filesystem walk isn't)
 - No performance baseline (initial import, incremental sync, memory,
   database size, or tool latency have not been measured/budgeted)
 
@@ -76,23 +76,39 @@ as a single import statement's `source` text in the first place). Concretely:
 
 A project is "enabled" purely by the presence of a `.planning/slugaudit/`
 directory at (or above) the path a tool call is made against —
-`src/project/activation.rs` walks up looking for it. This crate only ever
-*reads* that marker; it contains no tool, command, or code path that
-creates or removes it. Owning the human-facing enable/disable action —
-creating that directory when a person turns SlugAudit on for a project, and
-removing it (optionally purging the database) when they turn it off — is
-the responsibility of whatever *host application* embeds this MCP server
-(an editor extension, a CLI wrapper, or similar). That boundary is
-intentional: this crate is the evidence backend, not the UI for the one
-human-facing control described in `ARCHITECTURE.md`.
+`src/project/activation.rs` walks up looking for it. The only supported way
+to create or remove that marker is the binary's own CLI command, exposed
+directly to a human — not an MCP tool, not something an AI calls:
+
+```bash
+slugaudit-mcp-rust enable [PATH]   # default PATH: .
+slugaudit-mcp-rust disable [PATH]  # prompts before deleting; -y/--yes skips it
+slugaudit-mcp-rust help
+```
+
+`enable` creates the marker *and* runs the project's first import
+immediately, before the command returns — an AI's first tool call never
+pays that cost, matching the "starts an import immediately, in the
+background" description in `ARCHITECTURE.md` (here, "background" means
+"before any tool call is possible," not a detached process — `enable` is a
+short-lived CLI invocation that exits once the import completes). `disable`
+deletes the marker directory, which also deletes the project's database —
+every finding and every piece of evidence — so it asks for confirmation
+unless `-y`/`--yes` is passed.
+
+Running the binary with no arguments (or `serve`) is unchanged: it starts
+the MCP server over stdio, exactly as before. `enable`/`disable` are
+separate, synchronous, one-shot invocations of the same binary, not new
+MCP tools — a host application embedding this server (an editor extension,
+a wrapper script) can still shell out to these same two subcommands rather
+than reimplementing marker/database management itself.
 
 **Planned for future versions:**
-- Background activation (pre-sync before first tool call)
 - Broader dependency resolution: more languages, real module-resolution
   semantics (e.g. Rust workspace/`mod.rs` awareness, JS `node_modules`)
   rather than the syntax-and-file-existence heuristics described above
 - Optimized incremental sync (skip unchanged files)
-- Human interface controls and guides
+- A richer human interface (e.g. a status/list command) beyond enable/disable
 
 ## Current project rules
 

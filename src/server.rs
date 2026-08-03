@@ -16,7 +16,8 @@ const INSTRUCTIONS: &str = "SlugAudit supplies searchable, trustworthy evidence 
     actually reviewed. Dependency edges are resolved for Python (relative imports), Rust \
     (crate::/super::/self:: paths), and JS/TS (relative imports) — other languages and \
     absolute/external references are recorded as Unresolved/External, never silently dropped. \
-    Background activation is reserved for a future version. SlugAudit performs no automated risk \
+    Enable a project with `slugaudit-mcp-rust enable [PATH]` (runs the first import before \
+    returning); disable with `disable [PATH]`. SlugAudit performs no automated risk \
     detection and reaches no conclusions itself: it supplies evidence, the calling AI performs all \
     judgment.";
 

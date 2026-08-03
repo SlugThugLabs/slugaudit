@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ParserAvailability {
     Available,
-    Cached,
-    Downloaded,
     Unavailable,
     LoadFailed { reason: String },
 }
@@ -17,8 +15,6 @@ impl ParserAvailability {
     pub fn as_sql_text(&self) -> &'static str {
         match self {
             Self::Available => "Available",
-            Self::Cached => "Cached",
-            Self::Downloaded => "Downloaded",
             Self::Unavailable => "Unavailable",
             Self::LoadFailed { .. } => "LoadFailed",
         }
@@ -129,7 +125,7 @@ mod tests {
     #[test]
     fn parser_resource_and_parse_outcome_are_independent() {
         let run = ParserRun {
-            availability: ParserAvailability::Cached,
+            availability: ParserAvailability::Available,
             outcome: ParseOutcome::SyntaxErrors { count: 1 },
             completeness: ExtractionCompleteness::Partial,
         };

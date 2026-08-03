@@ -50,6 +50,18 @@ fn a_plain_select_returns_real_rows() {
     assert!(!response.truncated);
 }
 
+/// A trailing `-- line comment` must not swallow the `) LIMIT N` wrapper we
+/// append around the user's SQL. The fix puts the user SQL on its own line
+/// so the comment terminates before the closing paren.
+#[test]
+fn a_query_with_a_trailing_line_comment_still_executes() {
+    let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
+    let response = ask(&project, "SELECT path FROM files -- get paths")
+        .expect("query with trailing comment succeeds");
+    assert_eq!(response.rows.len(), 1);
+    assert_eq!(response.rows[0]["path"], "lib.rs");
+}
+
 #[test]
 fn joins_and_ctes_work_unlike_the_old_single_table_restriction() {
     let project = activated_project(&[("lib.rs", b"pub fn greet() {}\n")]);

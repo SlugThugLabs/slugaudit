@@ -1,10 +1,10 @@
 use super::context::{ensure_synced, with_verified_write};
+use crate::util;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rusqlite::{Transaction, params};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_TITLE_CHARS: usize = 200;
 const MAX_DESCRIPTION_CHARS: usize = 10_000;
@@ -65,7 +65,7 @@ fn insert_finding(
     let (source_hash, content) = fetch_file(tx, &request.file)?;
     validate_line_range(request, &content)?;
 
-    let created_at = now_unix();
+    let created_at = util::now_unix();
     tx.execute(
         "INSERT INTO findings (\
             path, source_hash, line_start, line_end, severity, category, title, description, \
@@ -169,14 +169,6 @@ fn validate_line_range(request: &FindingRequest, content: &str) -> Result<(), Er
         ));
     }
     Ok(())
-}
-
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
-        })
 }
 
 #[cfg(test)]

@@ -11,18 +11,22 @@ It does not detect bugs, assign suspicion, or replace the AI's reasoning.
 ## Human interface boundary
 
 Everything downstream of project discovery — hashing, parsing, sync,
-evidence queries — is automatic and reachable only through MCP tool calls made
-by an AI client. A full sync happens on every tool call: every file is
+evidence queries — is automatic and reachable only through MCP tool calls
+made by an AI client. A full sync happens on every tool call: every file is
 discovered, sampled, and hashed, then compared against stored state. If
 nothing has changed since the last revision, the write is skipped, but the
 filesystem discovery and per-file sampling still happen — there is no
-optimization yet that skips re-reading unchanged files. There is no
-enable/disable human interface and no background pre-sync; a project is
-"active" purely by the presence of its `.planning/slugaudit/` marker
-directory, which this crate only ever reads — creating or removing that
-marker (the actual enable/disable action) is a host application's
-responsibility, not this crate's. This is Phase 0 foundation code; see
-README.md for current limitations.
+optimization yet that skips re-reading unchanged files.
+
+The only human-facing control is enabling or disabling SlugAudit for a
+project, exposed as CLI commands on the binary (`slugaudit-mcp-rust enable
+[PATH]` / `disable [PATH]`), not as MCP tools. Enabling creates the
+`.planning/slugaudit/` marker directory and runs the first import
+immediately, before the command returns — an AI's first tool call never
+pays that cost. Disabling removes the marker directory and the project's
+database with it. A project is "active" purely by the presence of that
+marker directory; `src/project/activation.rs` walks up from the call path
+looking for it.
 
 Evidence responses are shaped for AI consumption: compact, bounded, and
 deterministic. They carry no human-readability requirement — the goal is that

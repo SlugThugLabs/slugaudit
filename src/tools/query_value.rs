@@ -2,6 +2,7 @@
 //! cap before a TEXT/BLOB value is cloned or hex-expanded. Kept separate
 //! from `query` itself so that module stays focused on orchestrating
 //! execution (budgets, response-size shrinking) rather than value framing.
+use crate::util;
 use rusqlite::Row;
 use rusqlite::types::{Type as SqlType, Value as SqlValue};
 
@@ -34,7 +35,7 @@ fn sql_value_to_json(
         }
         SqlValue::Blob(bytes) => {
             reject_oversized(bytes.len(), value_cap, index, SqlType::Blob)?;
-            Ok(serde_json::Value::String(hex_encode(bytes)))
+            Ok(serde_json::Value::String(util::hex_encode(bytes)))
         }
     }
 }
@@ -71,12 +72,3 @@ impl std::fmt::Display for ValueTooLarge {
 }
 
 impl std::error::Error for ValueTooLarge {}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut hex = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(hex, "{byte:02x}");
-    }
-    hex
-}

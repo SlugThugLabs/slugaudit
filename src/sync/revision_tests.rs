@@ -1,4 +1,4 @@
-use super::now_unix;
+use crate::util::now_unix;
 
 #[test]
 fn now_unix_tracks_real_wall_clock_time() {
