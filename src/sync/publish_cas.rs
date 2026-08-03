@@ -51,7 +51,7 @@ pub fn publish(
         let result = try_publish(connection, root, parser_pack_version);
         if let Err(error) = &result
             && is_retryable(error)
-            && attempt + 1 < MAX_CAS_RETRIES
+            && attempt < MAX_CAS_RETRIES
         {
             tracing::info!(attempt, reason = %error, "publish retrying");
             attempt += 1;

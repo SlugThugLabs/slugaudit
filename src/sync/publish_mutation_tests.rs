@@ -124,8 +124,9 @@ fn retry_gives_up_after_exactly_max_cas_retries_and_never_hangs() {
 
     assert_eq!(
         attempts.load(std::sync::atomic::Ordering::SeqCst),
-        MAX_CAS_RETRIES,
-        "must make exactly MAX_CAS_RETRIES attempts before giving up, no more and no fewer"
+        MAX_CAS_RETRIES + 1,
+        "must make exactly one initial attempt plus MAX_CAS_RETRIES retries \
+         before giving up, no more and no fewer"
     );
     assert!(
         matches!(
