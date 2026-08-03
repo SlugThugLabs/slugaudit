@@ -16,13 +16,13 @@ struct ServerProcess {
 
 impl ServerProcess {
     fn spawn() -> Self {
-        let binary = env!("CARGO_BIN_EXE_slugaudit-mcp-rust");
+        let binary = env!("CARGO_BIN_EXE_slugaudit-mcp");
         let mut child = Command::new(binary)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("spawn slugaudit-mcp-rust");
+            .expect("spawn slugaudit-mcp");
 
         let stdin = child.stdin.take().expect("stdin");
         let stdout = child.stdout.take().expect("stdout");

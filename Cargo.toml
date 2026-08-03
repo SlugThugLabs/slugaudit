@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 license = "PolyForm-Noncommercial-1.0.0"
 
+[[bin]]
+name = "slugaudit-mcp"
+path = "src/main.rs"
+
 [dependencies]
 ignore = "0.4"
 rmcp = { version = "2.2", default-features = false, features = ["server", "macros", "transport-io"] }

@@ -122,21 +122,21 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Command {
 }
 
 pub const USAGE: &str = "\
-slugaudit-mcp-rust — searchable, trustworthy codebase evidence over MCP
+slugaudit-mcp — searchable, trustworthy codebase evidence over MCP
 
 USAGE:
-    slugaudit-mcp-rust                    Run the MCP server (stdio transport)
-    slugaudit-mcp-rust serve              Same as running with no arguments
-    slugaudit-mcp-rust enable [PATH]      Turn SlugAudit on for PATH (default: .)
-                                           and run its first import immediately
-    slugaudit-mcp-rust disable [PATH]     Turn SlugAudit off for PATH (default: .),
-                                           deleting its database, findings, and evidence
-        -y, --yes                         Skip the confirmation prompt
-    slugaudit-mcp-rust connect [AGENT]    Register this binary as the `slugaudit`
-                                           MCP server in an AI agent. AGENT is one
-                                           of: claude, grok, codex. Omit to pick
-                                           from an interactive menu.
-    slugaudit-mcp-rust help               Show this message
+    slugaudit-mcp                    Run the MCP server (stdio transport)
+    slugaudit-mcp serve              Same as running with no arguments
+    slugaudit-mcp enable [PATH]      Turn SlugAudit on for PATH (default: .)
+                                      and run its first import immediately
+    slugaudit-mcp disable [PATH]     Turn SlugAudit off for PATH (default: .),
+                                      deleting its database, findings, and evidence
+        -y, --yes                    Skip the confirmation prompt
+    slugaudit-mcp connect [AGENT]    Register this binary as the `slugaudit`
+                                      MCP server in an AI agent. AGENT is one
+                                      of: claude, grok, codex. Omit to pick
+                                      from an interactive menu.
+    slugaudit-mcp help               Show this message
 ";
 
 #[derive(Debug, Error)]

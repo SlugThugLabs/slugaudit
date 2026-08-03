@@ -12,12 +12,12 @@ directly instead of reading hundreds of files one at a time.
 cargo install --path .
 
 # 2. Connect your agent — run this once, from any directory
-slugaudit-mcp-rust connect
+slugaudit-mcp connect
 
 # Or connect a specific agent directly:
-slugaudit-mcp-rust connect claude
-slugaudit-mcp-rust connect grok
-slugaudit-mcp-rust connect codex
+slugaudit-mcp connect claude
+slugaudit-mcp connect grok
+slugaudit-mcp connect codex
 ```
 
 `connect` with no argument shows an interactive menu of the supported
@@ -30,7 +30,7 @@ MCP server in that agent's config immediately.
 
 - **Server name:** `slugaudit`
 - **Transport:** stdio (the agent launches the binary on demand)
-- **Command:** the path to the `slugaudit-mcp-rust` binary itself
+- **Command:** the path to the `slugaudit-mcp` binary itself
   (resolved via `current_exe()`, so a `cargo install`-ed binary keeps
   working across upgrades automatically)
 
@@ -49,7 +49,7 @@ Connecting the MCP server only makes SlugAudit's tools *available* to the
 agent. To actually index a project, enable it:
 
 ```bash
-slugaudit-mcp-rust enable /path/to/project
+slugaudit-mcp enable /path/to/project
 ```
 
 That creates the activation marker and runs the first import
@@ -72,7 +72,7 @@ If you prefer to wire it up by hand, or your agent isn't one of the three
 above, register the binary as a stdio MCP server named `slugaudit`:
 
 ```
-slugaudit-mcp-rust
+slugaudit-mcp
 ```
 
 No arguments, no environment variables, no config file. The server uses
@@ -93,7 +93,7 @@ and on `PATH` before `connect` can register with it. Install Claude Code
 (`npm install -g @anthropic-ai/claude-code`), Grok, or Codex first.
 
 **Agent doesn't see the `query`/`report`/`structure`/`finding` tools** —
-the project probably isn't enabled yet. Run `slugaudit-mcp-rust enable
+the project probably isn't enabled yet. Run `slugaudit-mcp enable
 <path>` and wait for the import to finish before asking the agent to use
 SlugAudit on that project.
 

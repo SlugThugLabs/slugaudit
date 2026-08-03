@@ -57,10 +57,10 @@ cd slugaudit-mcp-rust
 cargo build --release
 ```
 
-The resulting binary is at `target/release/slugaudit-mcp-rust` — the name
-comes directly from `Cargo.toml`'s `[package] name = "slugaudit-mcp-rust"`
-(there is no `[[bin]]` section overriding it, so Cargo derives the binary
-name from the package name).
+The resulting binary is at `target/release/slugaudit-mcp` — the name is set
+by the `[[bin]]` section in `Cargo.toml`, which overrides the package name
+(`slugaudit-mcp-rust`) that Cargo would otherwise derive the binary name
+from.
 
 There is no `cargo install` path published yet (that would require a
 crates.io release, which doesn't exist), and no prebuilt binaries are
@@ -95,7 +95,7 @@ MCP-compatible clients, including Claude Code's `.mcp.json`):
 {
   "mcpServers": {
     "slugaudit": {
-      "command": "/absolute/path/to/slugaudit-mcp-rust/target/release/slugaudit-mcp-rust"
+      "command": "/absolute/path/to/slugaudit-mcp/target/release/slugaudit-mcp"
     }
   }
 }
@@ -233,7 +233,7 @@ $ cargo build --release --locked
     Finished `release` profile [optimized] target(s) in 52.97s
 ```
 
-producing a working `target/release/slugaudit-mcp-rust` binary (12,057,072
+producing a working `target/release/slugaudit-mcp` binary (12,057,072
 bytes). That binary was then driven with a real raw JSON-RPC-over-stdio
 script (no test harness, no mocked transport) against a scratch project
 activated the way section 4 describes:

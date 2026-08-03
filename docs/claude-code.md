@@ -3,7 +3,7 @@
 ## One-line setup
 
 ```bash
-slugaudit-mcp-rust connect claude
+slugaudit-mcp connect claude
 ```
 
 That's it. It writes the `slugaudit` stdio MCP server into your user-level
@@ -11,7 +11,7 @@ Claude Code config (`~/.claude.json`). Verify:
 
 ```bash
 claude mcp list
-# slugaudit: /path/to/slugaudit-mcp-rust - ✔ Connected
+# slugaudit: /path/to/slugaudit-mcp - ✔ Connected
 ```
 
 ## What you get
@@ -32,7 +32,7 @@ Connecting the MCP server makes the tools *available*. To actually index a
 codebase:
 
 ```bash
-slugaudit-mcp-rust enable /path/to/your-project
+slugaudit-mcp enable /path/to/your-project
 ```
 
 This creates `.slugaudit/` inside the project (the activation marker +
@@ -54,14 +54,14 @@ at the current executable.
 If you'd rather not use the `connect` command, add it by hand:
 
 ```bash
-claude mcp add slugaudit -s user -- $(which slugaudit-mcp-rust)
+claude mcp add slugaudit -s user -- $(which slugaudit-mcp)
 ```
 
 Or for a project-scoped registration (only available when working in that
 directory):
 
 ```bash
-claude mcp add slugaudit -s local -- $(which slugaudit-mcp-rust)
+claude mcp add slugaudit -s local -- $(which slugaudit-mcp)
 ```
 
 ## PostgreSQL / shared index
@@ -74,7 +74,7 @@ multiple developers or machines, create a `config.toml` (see
 ```bash
 claude mcp add slugaudit -s user \
   -e SLUGAUDIT_CONFIG=/path/to/config.toml \
-  -- $(which slugaudit-mcp-rust)
+  -- $(which slugaudit-mcp)
 ```
 
 Most users don't need this. SQLite is the default and the recommended
@@ -87,8 +87,8 @@ starting point.
 - **Tools don't appear in a session** — restart Claude Code after running
   `connect`. Already-running sessions won't see a newly registered MCP
   server.
-- **"project not enabled"** — run `slugaudit-mcp-rust enable <path>` for
+- **"project not enabled"** — run `slugaudit-mcp enable <path>` for
   the project you're working in.
 - **`/mcps` shows slugaudit as disconnected** — the binary path in your
   config may be stale (you moved or uninstalled it). Re-run
-  `slugaudit-mcp-rust connect claude` to refresh.
+  `slugaudit-mcp connect claude` to refresh.

@@ -3,7 +3,7 @@
 ## One-line setup
 
 ```bash
-slugaudit-mcp-rust connect codex
+slugaudit-mcp connect codex
 ```
 
 That registers the `slugaudit` stdio MCP server globally in
@@ -11,7 +11,7 @@ That registers the `slugaudit` stdio MCP server globally in
 
 ```bash
 codex mcp list
-# slugaudit  /path/to/slugaudit-mcp-rust  enabled
+# slugaudit  /path/to/slugaudit-mcp  enabled
 ```
 
 Codex has no user/project scope distinction — it always writes to the
@@ -24,7 +24,7 @@ Connecting the MCP server makes the tools available; enabling a project
 indexes it:
 
 ```bash
-slugaudit-mcp-rust enable /path/to/your-project
+slugaudit-mcp enable /path/to/your-project
 ```
 
 This creates `.slugaudit/` inside the project and runs the first import.
@@ -40,7 +40,7 @@ at the current executable.
 ## Manual alternative
 
 ```bash
-codex mcp add slugaudit -- $(which slugaudit-mcp-rust)
+codex mcp add slugaudit -- $(which slugaudit-mcp)
 ```
 
 ## PostgreSQL / shared index
@@ -51,7 +51,7 @@ machines instead of the default per-project SQLite:
 ```bash
 codex mcp add slugaudit \
   --env SLUGAUDIT_CONFIG=/path/to/config.toml \
-  -- $(which slugaudit-mcp-rust)
+  -- $(which slugaudit-mcp)
 ```
 
 See `config.toml.example` in the repo for the format. Most users don't
@@ -62,7 +62,7 @@ need this.
 - **`codex` not found** — install the Codex CLI first.
 - **Tools don't appear after `connect`** — restart Codex. Already-running
   sessions won't pick up a newly registered MCP server.
-- **"project not enabled"** — run `slugaudit-mcp-rust enable <path>`.
+- **"project not enabled"** — run `slugaudit-mcp enable <path>`.
 - **Codex shows the server as "Unsupported"** — this is a Codex display
   quirk for stdio servers that don't declare OAuth metadata. The server
   is still functional; verify with `codex mcp list` and try a `query`
