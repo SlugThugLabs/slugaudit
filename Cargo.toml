@@ -15,7 +15,7 @@ sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "sync", "time"] }
 tree-sitter = "0.26"
-tree-sitter-language-pack = "1.13.7"
+tree-sitter-language-pack = "=1.13.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 

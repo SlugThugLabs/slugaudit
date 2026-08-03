@@ -1,6 +1,7 @@
 use super::*;
 use rmcp::handler::server::wrapper::Parameters;
 use std::fs;
+use std::time::Duration;
 
 fn activated_project(files: &[(&str, &[u8])]) -> tempfile::TempDir {
     let project = tempfile::tempdir().expect("project dir");
@@ -21,6 +22,21 @@ fn ask(project: &tempfile::TempDir, sql: &str) -> Result<QueryResponse, ErrorDat
         path: project.path().to_string_lossy().into_owned(),
         sql: sql.to_owned(),
     }))
+    .map(|Json(response)| response)
+}
+
+fn ask_with_limits(
+    project: &tempfile::TempDir,
+    sql: &str,
+    limits: &ResourceLimits,
+) -> Result<QueryResponse, ErrorData> {
+    query_with_limits(
+        &Parameters(QueryRequest {
+            path: project.path().to_string_lossy().into_owned(),
+            sql: sql.to_owned(),
+        }),
+        limits,
+    )
     .map(|Json(response)| response)
 }
 
@@ -105,4 +121,97 @@ fn an_inactive_project_is_a_typed_error_not_a_panic() {
     let project = tempfile::tempdir().expect("project dir");
     let result = ask(&project, "SELECT 1");
     assert!(result.is_err());
+}
+
+#[test]
+fn an_oversized_text_or_blob_value_is_rejected_before_being_expanded() {
+    let project = activated_project(&[]);
+    let limits = ResourceLimits {
+        max_query_value_bytes: 1024,
+        ..ResourceLimits::default()
+    };
+    // zeroblob/printf avoid embedding a huge literal in the test source:
+    // SQLite materializes the oversized value, and the per-value cap must
+    // reject it before it is cloned or hex-expanded into JSON.
+    for sql in [
+        "SELECT zeroblob(4096) AS huge",
+        "SELECT printf('%.*c', 4096, 'x') AS huge",
+    ] {
+        let error =
+            ask_with_limits(&project, sql, &limits).expect_err("oversized value is rejected");
+        assert!(
+            error.message.contains("per-value cap"),
+            "unexpected message for {sql}: {}",
+            error.message
+        );
+    }
+}
+
+#[test]
+fn full_response_framing_is_counted_toward_the_byte_cap() {
+    let project = activated_project(&[]);
+    // Small enough that many individually-tiny rows still overflow once the
+    // outer QueryResponse struct and array framing are counted.
+    let limits = ResourceLimits {
+        max_query_response_bytes: 300,
+        ..ResourceLimits::default()
+    };
+    let response = ask_with_limits(
+        &project,
+        "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 100) SELECT x FROM cnt",
+        &limits,
+    )
+    .expect("query succeeds even though it must drop rows to fit");
+    assert!(response.truncated);
+    let encoded = serde_json::to_vec(&response).expect("response serializes");
+    assert!(
+        encoded.len() <= limits.max_query_response_bytes,
+        "encoded response ({} bytes) exceeds the {}-byte cap",
+        encoded.len(),
+        limits.max_query_response_bytes
+    );
+}
+
+#[test]
+fn a_pathological_query_is_aborted_by_the_step_budget() {
+    let project = activated_project(&[]);
+    let limits = ResourceLimits {
+        max_query_vm_steps: 10,
+        ..ResourceLimits::default()
+    };
+    let result = ask_with_limits(
+        &project,
+        "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5000) SELECT x FROM cnt",
+        &limits,
+    );
+    let error = result.expect_err("runaway query is aborted, not run to completion");
+    assert!(
+        error.message.contains("step budget"),
+        "unexpected message: {}",
+        error.message
+    );
+}
+
+#[test]
+fn a_pathological_query_is_aborted_by_the_wall_clock_budget() {
+    let project = activated_project(&[]);
+    // Effectively zero: by the time the progress handler first fires (every
+    // 1000 VM steps), any positive elapsed time trips this deadline, while
+    // the step budget stays at its generous default so it is not what
+    // catches the query.
+    let limits = ResourceLimits {
+        max_query_wall_clock: Duration::from_nanos(1),
+        ..ResourceLimits::default()
+    };
+    let result = ask_with_limits(
+        &project,
+        "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5000) SELECT x FROM cnt",
+        &limits,
+    );
+    let error = result.expect_err("runaway query is aborted, not run to completion");
+    assert!(
+        error.message.contains("time budget"),
+        "unexpected message: {}",
+        error.message
+    );
 }

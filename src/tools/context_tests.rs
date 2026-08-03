@@ -49,6 +49,36 @@ fn a_stale_synced_handle_fails_loudly_instead_of_returning_mismatched_data() {
 }
 
 #[test]
+fn a_database_copied_from_a_different_project_root_fails_closed() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let path = project.path().to_string_lossy().into_owned();
+    ensure_synced(&path).expect("first sync establishes the project row");
+
+    // Simulate a database file copied in from a different project: rewrite
+    // the stored root_path directly through a raw connection, bypassing
+    // ensure_synced entirely.
+    let database_path = project
+        .path()
+        .join(".planning")
+        .join("slugaudit")
+        .join("project.db");
+    let raw = rusqlite::Connection::open(&database_path).expect("open raw connection");
+    raw.execute(
+        "UPDATE project SET root_path = ?1 WHERE id = 1",
+        rusqlite::params!["/some/other/project/root"],
+    )
+    .expect("simulate a copied database from another project");
+    drop(raw);
+
+    let result = ensure_synced(&path);
+    assert!(
+        result.is_err(),
+        "a database whose stored root_path doesn't match this project's canonical root \
+         must never be silently accepted"
+    );
+}
+
+#[test]
 fn verified_read_write_has_the_same_protection() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let path = project.path().to_string_lossy().into_owned();

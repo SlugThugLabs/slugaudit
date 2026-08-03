@@ -1,13 +1,19 @@
 use super::context::{ensure_synced, with_verified_read};
+use super::query_value::row_to_json;
 use crate::model::ResourceLimits;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rusqlite::Row;
-use rusqlite::types::Value as SqlValue;
+use rusqlite::Transaction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::Instant;
 
 const MAX_ROWS: usize = 500;
+const ABORT_NONE: u8 = 0;
+const ABORT_STEP_BUDGET: u8 = 1;
+const ABORT_WALL_CLOCK: u8 = 2;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct QueryRequest {
@@ -31,15 +37,37 @@ pub struct QueryResponse {
     pub truncated: bool,
 }
 
+/// Borrowed mirror of `QueryResponse`, used to measure the exact serialized
+/// size of a candidate response — struct and array framing included —
+/// without cloning the row vector.
+#[derive(Serialize)]
+struct QueryResponseView<'a> {
+    revision_id: &'a str,
+    rows: &'a [serde_json::Value],
+    truncated: bool,
+}
+
 /// # Errors
 ///
 /// Returns an error if `request.path` isn't an active project, `sql` is
 /// empty or too long, the query fails to parse or execute (including any
 /// attempted write, which SQLite itself rejects on this connection), the
-/// VM step budget is exhausted, or a result value can't be represented.
+/// VM-step or wall-clock budget is exhausted, or a result value can't be
+/// represented (including a single TEXT/BLOB value over the per-value cap).
 pub fn query(request: &Parameters<QueryRequest>) -> Result<Json<QueryResponse>, ErrorData> {
+    query_with_limits(request, &ResourceLimits::default())
+}
+
+/// Test-only seam: production code always goes through [`query`] with
+/// [`ResourceLimits::default`]; tests inject tighter limits to exercise
+/// truncation and budget paths without waiting out production-sized caps.
+/// Private (not `pub`), but visible to the `tests` submodule below like any
+/// other item in this module.
+fn query_with_limits(
+    request: &Parameters<QueryRequest>,
+    limits: &ResourceLimits,
+) -> Result<Json<QueryResponse>, ErrorData> {
     let QueryRequest { path, sql } = &request.0;
-    let limits = ResourceLimits::default();
     let trimmed = sql.trim().trim_end_matches(';');
     if trimmed.is_empty() {
         return Err(ErrorData::invalid_params("sql must not be empty", None));
@@ -53,55 +81,15 @@ pub fn query(request: &Parameters<QueryRequest>) -> Result<Json<QueryResponse>, 
 
     let synced = ensure_synced(path)?;
     let revision_id = synced.revision_id.clone();
-    let (rows, truncated) = with_verified_read(&synced, |tx| {
-        // Progress handler aborts runaway queries (cartesian products, deep
-        // recursive CTEs) after a fixed VM-step budget.
-        let mut steps = 0_u32;
-        let max_steps = limits.max_query_vm_steps;
-        tx.progress_handler(
-            1000,
-            Some(move || {
-                steps = steps.saturating_add(1000);
-                steps > max_steps
-            }),
-        );
+    let (mut rows, mut truncated) =
+        with_verified_read(&synced, |tx| run_query(tx, trimmed, limits))?;
 
-        let wrapped = format!("SELECT * FROM ({trimmed}) LIMIT {}", MAX_ROWS + 1);
-        let mut statement = tx
-            .prepare(&wrapped)
-            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-        let column_names: Vec<String> = statement
-            .column_names()
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
-
-        let mapped = statement
-            .query_map([], |row| row_to_json(row, &column_names))
-            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-
-        let mut rows = Vec::new();
-        let mut total_bytes = 0_usize;
-        let mut truncated = false;
-        for row in mapped {
-            let value = row.map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-            let encoded = serde_json::to_vec(&value)
-                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-            if rows.len() >= MAX_ROWS
-                || total_bytes.saturating_add(encoded.len()) > limits.max_query_response_bytes
-            {
-                truncated = true;
-                break;
-            }
-            total_bytes += encoded.len();
-            rows.push(value);
-        }
-
-        // Clear the handler so it does not outlive this call on a pooled
-        // connection (we drop the connection, but be explicit).
-        tx.progress_handler(0, None::<fn() -> bool>);
-        Ok((rows, truncated))
-    })?;
+    shrink_to_fit(
+        &revision_id,
+        &mut rows,
+        &mut truncated,
+        limits.max_query_response_bytes,
+    )?;
 
     Ok(Json(QueryResponse {
         revision_id,
@@ -110,33 +98,112 @@ pub fn query(request: &Parameters<QueryRequest>) -> Result<Json<QueryResponse>, 
     }))
 }
 
-fn row_to_json(row: &Row, column_names: &[String]) -> rusqlite::Result<serde_json::Value> {
-    let mut object = serde_json::Map::with_capacity(column_names.len());
-    for (index, name) in column_names.iter().enumerate() {
-        let value: SqlValue = row.get(index)?;
-        object.insert(name.clone(), sql_value_to_json(&value));
-    }
-    Ok(serde_json::Value::Object(object))
+/// Executes `trimmed` under a VM-step and wall-clock budget, returning at
+/// most `MAX_ROWS + 1` rows so the caller can detect row-count truncation.
+fn run_query(
+    tx: &Transaction<'_>,
+    trimmed: &str,
+    limits: &ResourceLimits,
+) -> Result<(Vec<serde_json::Value>, bool), ErrorData> {
+    // Progress handler aborts runaway queries after a fixed VM-step budget,
+    // or after a wall-clock deadline — a query can do relatively few steps
+    // that are each individually slow (disk I/O stalls), which the step
+    // count alone would not catch quickly.
+    let abort_reason = Arc::new(AtomicU8::new(ABORT_NONE));
+    let handler_reason = Arc::clone(&abort_reason);
+    let mut steps = 0_u32;
+    let max_steps = limits.max_query_vm_steps;
+    let deadline = Instant::now() + limits.max_query_wall_clock;
+    tx.progress_handler(
+        1000,
+        Some(move || {
+            steps = steps.saturating_add(1000);
+            if steps > max_steps {
+                handler_reason.store(ABORT_STEP_BUDGET, Ordering::Relaxed);
+                return true;
+            }
+            if Instant::now() >= deadline {
+                handler_reason.store(ABORT_WALL_CLOCK, Ordering::Relaxed);
+                return true;
+            }
+            false
+        }),
+    );
+
+    let result = execute_and_collect(tx, trimmed, limits, &abort_reason);
+
+    // Clear the handler so it does not outlive this call on a pooled
+    // connection (we drop the connection, but be explicit).
+    tx.progress_handler(0, None::<fn() -> bool>);
+    result
 }
 
-fn sql_value_to_json(value: &SqlValue) -> serde_json::Value {
-    match value {
-        SqlValue::Null => serde_json::Value::Null,
-        SqlValue::Integer(number) => serde_json::Value::from(*number),
-        SqlValue::Real(number) => serde_json::Number::from_f64(*number)
-            .map_or(serde_json::Value::Null, serde_json::Value::Number),
-        SqlValue::Text(text) => serde_json::Value::String(text.clone()),
-        SqlValue::Blob(bytes) => serde_json::Value::String(hex_encode(bytes)),
+/// Runs the wrapped `SELECT`, mapping each row while tagging any error with
+/// the abort reason the progress handler may have already recorded.
+fn execute_and_collect(
+    tx: &Transaction<'_>,
+    trimmed: &str,
+    limits: &ResourceLimits,
+    abort_reason: &Arc<AtomicU8>,
+) -> Result<(Vec<serde_json::Value>, bool), ErrorData> {
+    let wrapped = format!("SELECT * FROM ({trimmed}) LIMIT {}", MAX_ROWS + 1);
+    let mut statement = tx
+        .prepare(&wrapped)
+        .map_err(|error| describe_error(&error, abort_reason))?;
+    let column_names: Vec<String> = statement
+        .column_names()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let value_cap = limits.max_query_value_bytes;
+    let mapped = statement
+        .query_map([], move |row| row_to_json(row, &column_names, value_cap))
+        .map_err(|error| describe_error(&error, abort_reason))?;
+    let mut rows = Vec::new();
+    for row in mapped {
+        rows.push(row.map_err(|error| describe_error(&error, abort_reason))?);
     }
+    let truncated = rows.len() > MAX_ROWS;
+    rows.truncate(MAX_ROWS);
+    Ok((rows, truncated))
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut hex = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(hex, "{byte:02x}");
+/// Converts an aborted-query error into a message naming which budget was
+/// hit, rather than surfacing SQLite's generic "interrupted" text as if it
+/// were always the step budget.
+fn describe_error(error: &rusqlite::Error, abort_reason: &Arc<AtomicU8>) -> ErrorData {
+    let message = match abort_reason.load(Ordering::Relaxed) {
+        ABORT_STEP_BUDGET => format!("query exceeded its virtual-machine step budget: {error}"),
+        ABORT_WALL_CLOCK => format!("query exceeded its wall-clock time budget: {error}"),
+        _ => error.to_string(),
+    };
+    ErrorData::invalid_params(message, None)
+}
+
+/// Enforces the full serialized `QueryResponse` size, framing included, by
+/// dropping rows from the end and re-measuring until the candidate fits.
+/// Correctness over raw performance: `MAX_ROWS` caps the work at 500 rows.
+fn shrink_to_fit(
+    revision_id: &str,
+    rows: &mut Vec<serde_json::Value>,
+    truncated: &mut bool,
+    max_bytes: usize,
+) -> Result<(), ErrorData> {
+    loop {
+        let view = QueryResponseView {
+            revision_id,
+            rows,
+            truncated: *truncated,
+        };
+        let encoded_len = serde_json::to_vec(&view)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+            .len();
+        if encoded_len <= max_bytes || rows.is_empty() {
+            return Ok(());
+        }
+        rows.pop();
+        *truncated = true;
     }
-    hex
 }
 
 #[cfg(test)]

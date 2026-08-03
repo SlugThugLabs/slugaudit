@@ -47,17 +47,35 @@ fn open_flags(read_write: bool) -> OpenFlags {
     flags
 }
 
-/// Restrict a newly created database to owner read/write. Called only when
-/// the file did not exist before open, so existing admin choices are kept.
+/// If `path` doesn't exist yet, creates it with owner-only permissions set
+/// atomically at creation time (`O_CREAT | O_EXCL` plus the mode, in one
+/// syscall) so there is never a window where the file exists with a wider,
+/// umask-derived mode before being tightened after the fact. If another
+/// process wins the race and creates the file first, `create_new` fails
+/// with `AlreadyExists`; that's fine — the file already exists, so we fall
+/// through and let `Connection::open_with_flags` open it as-is. We never
+/// `chmod` a file this call didn't create: doing so on a path we didn't
+/// just create atomically would be a TOCTOU/symlink race against whatever
+/// actually created it (the `reject_symlink` pre-check plus
+/// `SQLITE_OPEN_NOFOLLOW` already guard the open itself).
 #[cfg(unix)]
-fn set_private_permissions(path: &Path) -> Result<(), StoreError> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(PRIVATE_MODE))
-        .map_err(StoreError::Permissions)
+fn create_with_private_permissions_if_missing(path: &Path) -> Result<(), StoreError> {
+    use std::io::ErrorKind;
+    use std::os::unix::fs::OpenOptionsExt;
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(PRIVATE_MODE)
+        .open(path)
+    {
+        Ok(_file) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(StoreError::Permissions(error)),
+    }
 }
 
 #[cfg(not(unix))]
-fn set_private_permissions(_path: &Path) -> Result<(), StoreError> {
+fn create_with_private_permissions_if_missing(_path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
@@ -72,12 +90,9 @@ fn set_private_permissions(_path: &Path) -> Result<(), StoreError> {
 /// (including when the database is from a newer, unsupported version).
 pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
     reject_symlink(path)?;
-    let created = !path.exists();
+    create_with_private_permissions_if_missing(path)?;
     let mut connection =
         Connection::open_with_flags(path, open_flags(true)).map_err(StoreError::Open)?;
-    if created {
-        set_private_permissions(path)?;
-    }
     configure(&connection)?;
     super::migrations::ensure_current_schema(&mut connection)?;
     Ok(connection)
@@ -178,5 +193,43 @@ mod tests {
         open_read_write(&path).expect("create database");
         let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
         assert_eq!(mode, PRIVATE_MODE);
+    }
+
+    /// The file is created with `O_CREAT | O_EXCL` and the private mode in
+    /// one syscall (see `create_with_private_permissions_if_missing`), so
+    /// there is no separate "create, then chmod" step for a single-threaded
+    /// test to catch mid-window. What we can prove here: losing the create
+    /// race to another process (simulated by pre-creating the file with a
+    /// wider mode, as a concurrent creator might under a permissive umask)
+    /// doesn't panic, doesn't get chmod'd out from under its actual owner,
+    /// and still yields a working, migrated connection.
+    #[cfg(unix)]
+    #[test]
+    fn losing_the_concurrent_create_race_still_opens_cleanly_without_touching_permissions() {
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("project.db");
+
+        // Simulate another process winning the create race with a wider,
+        // umask-derived mode.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o644)
+            .open(&path)
+            .expect("simulate a concurrent creator");
+
+        let connection = open_read_write(&path).expect("open the already-created database");
+        let enabled: i64 = connection
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("connection is usable");
+        assert_eq!(enabled, 1);
+
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o644,
+            "must never chmod a file this call didn't create"
+        );
     }
 }

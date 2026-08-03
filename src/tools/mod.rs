@@ -5,6 +5,7 @@
 mod context;
 mod finding;
 mod query;
+mod query_value;
 mod report;
 mod structure;
 

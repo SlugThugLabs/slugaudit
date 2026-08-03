@@ -91,6 +91,17 @@ pub fn with_verified_write<T>(
     Ok(result)
 }
 
+/// Creates the (sole) project row on first sync, and on every later sync
+/// verifies the stored `root_path` still matches the canonical root this
+/// process resolved. `INSERT OR IGNORE` alone would silently accept a
+/// database file copied in from a different project (e.g. its
+/// `.planning/slugaudit/project.db` copied over another project's) and
+/// happily serve stale, unrelated data through it — fail closed instead.
+///
+/// # Errors
+///
+/// Returns an error if the insert/select fails, or if the database's
+/// stored `root_path` doesn't match `root`.
 fn ensure_project_row(connection: &Connection, root: &Path) -> Result<(), ErrorData> {
     let root_path = root.to_string_lossy();
     let created_at = SystemTime::now()
@@ -106,6 +117,21 @@ fn ensure_project_row(connection: &Connection, root: &Path) -> Result<(), ErrorD
             rusqlite::params![root_path.as_ref(), created_at],
         )
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+
+    let stored_root_path: String = connection
+        .query_row("SELECT root_path FROM project WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    if stored_root_path != root_path {
+        return Err(ErrorData::invalid_params(
+            format!(
+                "database at this location belongs to a different project root \
+                 (expected {root_path}, found {stored_root_path})"
+            ),
+            None,
+        ));
+    }
     Ok(())
 }
 
