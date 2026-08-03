@@ -11,6 +11,8 @@
 //! the agent can reach SlugAudit's tools without the user hand-writing
 //! config. With no argument it presents an interactive menu; pass an agent
 //! name to connect it directly.
+#![allow(clippy::print_stdout)]
+
 use crate::project::{self, ProjectRoot};
 use crate::{parse, store, sync};
 use std::io::{BufRead, Write as _};
