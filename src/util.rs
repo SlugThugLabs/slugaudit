@@ -1,5 +1,11 @@
 //! Small shared helpers used across multiple modules, kept here to avoid
 //! drifting duplicate implementations.
+//!
+//! This module is intentionally narrow: only helpers with no more specific
+//! home belong here. If a new helper clearly belongs to an existing module
+//! (e.g. a hashing utility belongs in `sync::hash`, a time utility belongs
+//! wherever the majority of its callers live), put it there instead of
+//! defaulting to `util`. This file should not become a dumping ground.
 
 use std::fmt::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
