@@ -10,17 +10,15 @@ It does not detect bugs, assign suspicion, or replace the AI's reasoning.
 
 ## Human interface boundary
 
-Exactly one control is human-facing: enabling or disabling SlugAudit for a
-project. Everything downstream of that — discovery, hashing, parsing, sync,
-purge on delete, search, evidence queries — is automatic and reachable only
-through MCP tool calls made by an AI client. A sync happens on every tool call
-to verify freshness: if nothing on disk has changed, that verification runs
-fast and reuses the current revision without re-sampling. There is no manual
-sync/rebuild/maintenance command for a human or an AI; freshness verification
-runs as a mandatory precondition of every tool call, not as a separate step
-either party remembers to invoke. Future versions may add background activation
-(an async import that completes before the first tool call) but the current
-implementation synchronizes on first use.
+Everything downstream of project discovery — hashing, parsing, sync,
+evidence queries — is automatic and reachable only through MCP tool calls made
+by an AI client. A full sync happens on every tool call: every file is
+discovered, sampled, and hashed, then compared against stored state. If
+nothing has changed since the last revision, the write is skipped and the
+current revision is reused; the filesystem sampling still occurs. There is no
+enable/disable human interface, no manual sync command, and no background
+activation — activation and synchronization are not yet implemented. This is
+Phase 0 foundation code; see README.md for current limitations.
 
 Evidence responses are shaped for AI consumption: compact, bounded, and
 deterministic. They carry no human-readability requirement — the goal is that

@@ -7,28 +7,32 @@ reasoning.
 This directory is the new Rust implementation. The older Python checkout is
 reference material only and is not a runtime dependency.
 
-## Human interface
+## Current state (Phase 0 foundation)
 
-SlugAudit has exactly one human-facing control: turning it on or off for a
-project. Every other behavior is automatic and reachable only by an AI client
-through MCP tool calls — never directly by a human, and never through a
-manually-invoked command.
+This is early-stage code. The core correctness mechanisms are in place — no
+partial states, atomic writes, concurrent-safe publishes, resource-bounded
+operations — but the user-facing experience is incomplete.
 
-- Enabling or disabling a project is the only action a human ever takes.
-- On the first tool call for a project, SlugAudit indexes the entire codebase.
-  Subsequent tool calls re-verify freshness by sampling the filesystem: if
-  nothing has changed, verification is fast and reuses the current revision
-  without re-parsing. There is no manual sync, rebuild, or maintenance
-  command for a human or an AI to invoke — the AI never has to trigger, wait
-  for, or think about synchronization itself. (Future versions may implement
-  background activation that completes the initial import before the first
-  tool call.)
-- Tool responses are AI-consumed data, not formatted for human reading. There
-  is no human-readability requirement on evidence shape — only completeness,
-  boundedness, and query-ability matter.
-- Once a project is enabled, the AI queries the database for files, symbols,
-  imports, and dependencies. It never needs to read a source file directly to
-  get that information.
+**What works:**
+- Every tool call syncs the project: discovers, hashes, and parses all files,
+  then compares against stored state
+- Findings are tied to file hashes and auto-invalidate when code changes
+- Concurrent reads see consistent revisions; concurrent publishes use CAS
+- Resource limits on all operations (files, memory, responses, query steps)
+- Four MCP tools: `report`, `query`, `structure`, `finding`
+
+**What's not yet implemented:**
+- No enable/disable or activation control (human interface missing)
+- No background sync (every tool call re-samples everything)
+- No dependency graph traversal (edges table exists but stays empty)
+- No production documentation (install, MCP setup, recovery, upgrade)
+- No performance baseline or adversarial testing
+
+**Planned for future versions:**
+- Background activation (pre-sync before first tool call)
+- Dependency resolution (populate edges table for graph queries)
+- Optimized incremental sync (skip unchanged files)
+- Human interface controls and guides
 
 ## Current project rules
 
