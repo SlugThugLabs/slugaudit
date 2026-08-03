@@ -46,8 +46,10 @@ pub enum PublishError {
     /// publish transaction that would have written it as current. Caught by
     /// `revalidate_unchanged_since_sample` immediately before the write;
     /// the caller retries with an entirely fresh sample rather than
-    /// publishing a revision built from stale bytes.
-    #[error("{path} changed on disk after being sampled; retrying with a fresh sample")]
+    /// publishing a revision built from stale bytes. When this error
+    /// reaches the caller (after CAS retries are exhausted), the caller
+    /// should retry the whole tool call.
+    #[error("{path} changed on disk after being sampled; retry the call")]
     ChangedDuringSample { path: String },
 }
 
