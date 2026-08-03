@@ -220,7 +220,13 @@ impl SlugAuditServer {
     }
 
     #[tool(
-        description = "Persist an AI-reviewed conclusion, tied to the file's current hash. Never generates a conclusion itself; auto-invalidates (status becomes stale) the moment the file's hash changes."
+        description = "Persist a conclusion you have personally reviewed about a specific file \
+         and line range. Supply `path` (any path in the active project, to select the database), \
+         `file` (project-relative path of the file), `line_start`/`line_end` (one-based inclusive), \
+         plus `severity`, `category`, `title`, and `description` (all your own judgment — SlugAudit \
+         never generates these). The finding is bound to the file's current content hash and \
+         auto-invalidates (status becomes stale) the moment that file changes, so findings never \
+         outlive the source they were about. Use this to record reviewed issues, not raw diagnostics."
     )]
     async fn finding(
         &self,

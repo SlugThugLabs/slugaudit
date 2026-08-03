@@ -23,6 +23,35 @@ pub struct EvidenceKindCount {
     pub count: i64,
 }
 
+/// How many import edges fell into each resolution bucket. A project with
+/// mostly `External` and `Unresolved` edges and very few `Resolved` ones
+/// has an import graph the evidence can't connect — useful context for an
+/// AI deciding how much to trust dependency traversal for this project.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ImportResolutionCount {
+    /// One of `Resolved`, `Unresolved`, or `External`.
+    pub kind: String,
+    pub count: i64,
+}
+
+/// A file whose parse failed or was not attempted, with enough detail for
+/// an AI to decide whether the failure is worth investigating or just
+/// noise (e.g. a `.claude_output.txt` scratch file that should have been
+/// excluded, vs. a real source file with a genuine syntax error).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ParserFailureFile {
+    pub path: String,
+    pub parse_outcome: String,
+    /// Set only when the parser returned a hard error (not just syntax
+    /// error nodes). `None` for `NotAttempted` and `SyntaxErrors`.
+    pub parse_error_reason: Option<String>,
+}
+
+/// Cap on how many parser-failure files to include in the report. Enough
+/// to surface the pattern (e.g. "all failures are scratch files") without
+/// letting a project with thousands of broken files bloat the response.
+const MAX_PARSER_FAILURE_FILES: usize = 20;
+
 /// Automatic project snapshot: what evidence exists, not what's suspicious
 /// about it. No score, no risk leads, no safe/unsafe claim.
 #[derive(Debug, Serialize, JsonSchema)]
@@ -32,7 +61,19 @@ pub struct ReportResponse {
     pub languages: Vec<LanguageCount>,
     pub evidence_counts: Vec<EvidenceKindCount>,
     pub parser_failure_count: i64,
+    /// Up to `MAX_PARSER_FAILURE_FILES` files with parse failures, so the
+    /// AI can see whether failures are concentrated in scratch/temp files
+    /// (noise) or in real source files (worth investigating).
+    pub parser_failure_files: Vec<ParserFailureFile>,
     pub open_finding_count: i64,
+    /// How many import edges are Resolved vs Unresolved vs External — a
+    /// key asymmetry signal. A project with mostly External/Unresolved
+    /// imports has a disconnected import graph that dependency traversal
+    /// can't help with.
+    pub import_resolution: Vec<ImportResolutionCount>,
+    /// Total number of Diagnostic evidence items (e.g. linter or compiler
+    /// diagnostics extracted from source files).
+    pub diagnostic_count: i64,
 }
 
 /// # Errors
@@ -95,8 +136,59 @@ fn build_report(
         [],
         |row| row.get(0),
     )?;
+
+    // Individual files with parse failures, capped so a project with
+    // thousands of broken files doesn't bloat the report. Ordered by path
+    // for determinism. The AI uses this to distinguish noise (scratch
+    // files, non-source files) from real source files worth investigating.
+    let mut failure_stmt = connection.prepare(
+        "SELECT path, parse_outcome, parse_error_reason \
+         FROM files \
+         WHERE file_kind = 'indexed' \
+           AND (parser_availability != 'Available' OR parse_outcome = 'Failed') \
+         ORDER BY path \
+         LIMIT ?1",
+    )?;
+    let parser_failure_files = failure_stmt
+        .query_map([MAX_PARSER_FAILURE_FILES], |row| {
+            Ok(ParserFailureFile {
+                path: row.get(0)?,
+                parse_outcome: row.get(1)?,
+                parse_error_reason: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(failure_stmt);
+
     let open_finding_count: i64 = connection.query_row(
         "SELECT count(*) FROM findings WHERE status = 'current'",
+        [],
+        |row| row.get(0),
+    )?;
+
+    // Import resolution breakdown — the key asymmetry signal. A project
+    // where most imports are External or Unresolved has a disconnected
+    // import graph; dependency traversal won't help much there.
+    let mut import_resolution_stmt = connection.prepare(
+        "SELECT resolution_kind, count(*) \
+         FROM dependency_edges \
+         GROUP BY resolution_kind ORDER BY resolution_kind",
+    )?;
+    let import_resolution = import_resolution_stmt
+        .query_map([], |row| {
+            Ok(ImportResolutionCount {
+                kind: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(import_resolution_stmt);
+
+    // Total diagnostics — linter/compiler diagnostics extracted from source
+    // files. Separate from parser failures: a file can parse fine but
+    // still have diagnostics.
+    let diagnostic_count: i64 = connection.query_row(
+        "SELECT count(*) FROM evidence WHERE kind = 'Diagnostic'",
         [],
         |row| row.get(0),
     )?;
@@ -108,6 +200,7 @@ fn build_report(
         file_count,
         parser_failure_count,
         open_finding_count,
+        diagnostic_count,
         "report built"
     );
     Ok(ReportResponse {
@@ -116,7 +209,10 @@ fn build_report(
         languages,
         evidence_counts,
         parser_failure_count,
+        parser_failure_files,
         open_finding_count,
+        import_resolution,
+        diagnostic_count,
     })
 }
 

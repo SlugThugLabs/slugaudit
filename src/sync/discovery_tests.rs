@@ -160,3 +160,32 @@ fn a_file_replaced_by_a_symlink_between_syncs_is_never_dereferenced() {
         "a path replaced by a symlink must be skipped, not reindexed or dereferenced"
     );
 }
+
+/// Scratch, temp, and editor-swap files must never be indexed — their
+/// parse failures would otherwise pollute the project's evidence with
+/// noise that has nothing to do with the source the project intends to
+/// maintain. This covers both AI-generated scratch output (the
+/// `.claude_output.txt` pattern that dominates real-world noise) and the
+/// generic temp/backup patterns an editor or human leaves behind.
+#[test]
+fn scratch_and_temp_files_are_excluded_from_discovery() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let root = directory.path();
+    write(root, "src/lib.rs", b"pub fn lib() {}");
+    write(root, "scratch.py", b"print('scratch')");
+    write(root, "session.tmp", b"temp data");
+    write(root, "notes.bak", b"backup");
+    write(root, "buffer.swp", b"swap");
+    write(root, "file~", b"emacs backup");
+    write(root, "output.claude_output.txt", b"claude session output");
+
+    let files = discover(root).expect("discover");
+    let paths: Vec<&str> = files
+        .iter()
+        .map(|f| f.relative_path.as_str())
+        .collect();
+    assert_eq!(
+        paths, vec!["src/lib.rs"],
+        "only the real source file should be discovered, scratch/temp files must be excluded, got: {paths:?}"
+    );
+}

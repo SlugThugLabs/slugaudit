@@ -13,19 +13,37 @@ const MAX_CATEGORY_CHARS: usize = 100;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FindingRequest {
-    /// Any path inside the active project.
+    /// Any path inside the active project — used to select which project's
+    /// database to write to. Must be a path that `slugaudit enable` was run on.
+    #[schemars(description = "Any path inside the active project, used to select the database")]
     pub path: String,
-    /// Project-relative path the finding is about.
+    /// Project-relative path of the file the finding is about. Must be a file
+    /// that SlugAudit has already indexed (i.e. it exists in the project at
+    /// the time of the last `report`/`publish`).
+    #[schemars(description = "Project-relative path of the file this finding is about")]
     pub file: String,
-    /// One-based inclusive start line.
+    /// One-based line number where the finding starts (inclusive).
+    #[schemars(description = "One-based inclusive start line of the finding")]
     pub line_start: u32,
-    /// One-based inclusive end line.
+    /// One-based line number where the finding ends (inclusive). Must be >= line_start.
+    #[schemars(description = "One-based inclusive end line of the finding")]
     pub line_end: u32,
-    /// AI-supplied; SlugAudit never generates this.
+    /// How serious the finding is, in your own words — e.g. "critical",
+    /// "high", "medium", "low", "informational". SlugAudit does not enforce a
+    /// fixed set of values; use whatever scale is meaningful for your review.
+    #[schemars(description = "Severity of the finding, e.g. critical/high/medium/low/informational")]
     pub severity: String,
-    /// AI-supplied; SlugAudit never generates this.
+    /// A short label for what kind of issue this is — e.g. "security",
+    /// "performance", "correctness", "style", "maintainability". SlugAudit
+    /// does not enforce a fixed taxonomy.
+    #[schemars(description = "Category label for the finding, e.g. security/performance/correctness/style")]
     pub category: String,
+    /// A concise, one-line title summarizing the finding. Max 200 characters.
+    #[schemars(description = "Concise one-line title summarizing the finding (max 200 chars)")]
     pub title: String,
+    /// A fuller explanation of what the issue is, why it matters, and (if
+    /// relevant) how to fix it. Max 10,000 characters.
+    #[schemars(description = "Detailed description of the finding, its impact, and any remediation (max 10000 chars)")]
     pub description: String,
 }
 

@@ -8,6 +8,26 @@ const EXCLUDED_COMPONENT: &str = ".git";
 /// heuristic class as git/ripgrep: a NUL byte in the sample means binary.
 const BINARY_SNIFF_BYTES: usize = 8_000;
 
+/// Scratch, temp, and editor-swap file suffixes/prefixes that are almost
+/// never legitimate project source. Their parse failures would otherwise
+/// pollute the project's evidence with noise from AI-generated session
+/// output and editor backups — things that exist transiently on disk but
+/// aren't source the project intends to maintain. Checked against the
+/// file name (last component) only, so a real file named `scratch.py` in
+/// a subdirectory is still excluded (vanishingly rare), while anyone who
+/// genuinely needs one can override via `.gitignore`.
+fn is_scratch_file(relative: &Path) -> bool {
+    let Some(file_name) = relative.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    file_name.ends_with(".claude_output.txt")
+        || file_name.starts_with("scratch.")
+        || file_name.ends_with(".tmp")
+        || file_name.ends_with(".bak")
+        || file_name.ends_with(".swp")
+        || file_name.ends_with('~')
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileKind {
     Indexed,
@@ -100,6 +120,9 @@ pub fn discover(root: &Path) -> Result<Vec<DiscoveredFile>, DiscoveryError> {
             .strip_prefix(root)
             .map_err(|_| DiscoveryError::NotRelative(absolute_path.clone()))?;
         if is_excluded(relative_path) {
+            continue;
+        }
+        if is_scratch_file(relative_path) {
             continue;
         }
         let kind = sniff_kind(&absolute_path)?;

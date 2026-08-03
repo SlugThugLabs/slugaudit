@@ -40,7 +40,17 @@ fn reports_real_counts_for_an_active_project() {
             .any(|entry| entry.kind == "Structure")
     );
     assert_eq!(response.0.parser_failure_count, 0);
+    assert!(
+        response.0.parser_failure_files.is_empty(),
+        "a cleanly-parsing project should have no parser failure files"
+    );
     assert_eq!(response.0.open_finding_count, 0);
+    // A single-file project with no imports has no dependency edges.
+    assert!(
+        response.0.import_resolution.is_empty(),
+        "a single-file project has no import edges"
+    );
+    assert_eq!(response.0.diagnostic_count, 0);
 }
 
 #[test]
