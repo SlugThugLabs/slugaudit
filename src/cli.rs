@@ -84,7 +84,7 @@ impl std::str::FromStr for ConnectAgent {
 /// currently only an unknown agent name passed to `connect`. The caller
 /// (main) prints the message to stderr and exits non-zero; keeping the
 /// exit out of this function makes the parser testable.
-#[must_use]
+#[must_use = "the returned Command must be dispatched by the caller"]
 pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
     let Some(first) = args.next() else {
         return Ok(Command::Serve);
