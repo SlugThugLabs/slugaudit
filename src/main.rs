@@ -10,6 +10,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli::parse_args(std::env::args().skip(1)) {
         Command::Enable { path } => return Ok(cli::run_enable(&path)?),
         Command::Disable { path, assume_yes } => return Ok(cli::run_disable(&path, assume_yes)?),
+        Command::Connect { agent } => {
+            match agent {
+                Some(agent) => cli::run_connect(agent)?,
+                None => cli::run_connect_interactive()?,
+            }
+            return Ok(());
+        }
         Command::Help => {
             print!("{}", cli::USAGE);
             return Ok(());
