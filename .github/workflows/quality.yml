@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  checks: write
 
 jobs:
   quality:
@@ -19,7 +20,24 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97.1
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
+
+      # tree-sitter-language-pack's build.rs downloads a ~450 MB parser-
+      # sources tarball from GitHub releases at build time whenever its
+      # OUT_DIR cache is empty (confirmed locally: a from-scratch build logs
+      # "Downloading parser sources from
+      # https://github.com/xberg-io/tree-sitter-language-pack/releases/...").
+      # That is a distinct concern from the runtime "parser-pack cache miss"
+      # surfaced in tool response metadata (src/model/parser.rs's
+      # `ParserAvailability::Cached` / `Downloaded`), which only describes
+      # an already-running server's own grammar loading, not this crate's
+      # build. Swatinem/rust-cache keys its cache on Cargo.lock (plus job
+      # context) and caches the whole `target/` tree, including build-script
+      # OUT_DIRs — a hand-rolled `actions/cache` step can't target the
+      # download directory directly because its path includes a
+      # build-hash segment that isn't stable across cache keys.
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -28,15 +46,82 @@ jobs:
         run: bash tools/check_source_limits.sh
 
       - name: Check compilation
-        run: cargo check --all-targets --all-features
+        run: cargo check --all-targets --all-features --locked
 
       - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       - name: Run tests
-        run: cargo test --all-targets --all-features
+        run: cargo test --all-targets --all-features --locked
 
-      - name: Check dependency advisories, bans, and sources
+      # tests/stdio_protocol.rs spawns the compiled binary and speaks real
+      # JSON-RPC/MCP over its stdio pipes — the only test in the suite that
+      # exercises the actual transport rather than calling Rust functions
+      # directly. It's already covered by the "Run tests" step above; this
+      # step re-runs it alone so a regression here shows up as its own
+      # failing, individually named CI check instead of requiring someone to
+      # expand the bulk test log to notice it.
+      - name: Real stdio protocol handshake
+        run: cargo test --test stdio_protocol --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Check dependency advisories, bans, sources, and licenses
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check advisories bans sources
+          command: check advisories bans sources licenses
+
+      # cargo-geiger transitive-unsafe review policy (see README.md's
+      # "Unsafe code policy" section): `#![forbid(unsafe_code)]` gives a
+      # hard, compiler-enforced 0/0 guarantee for slugaudit-mcp-rust's own
+      # source, so that half needs no CI gate at all. Transitive unsafe in
+      # dependencies performing FFI/syscalls/cryptography (tree-sitter,
+      # rusqlite's bundled SQLite, tokio, ring/rustls) is expected and is
+      # reviewed by hand whenever a new dependency is added, rather than
+      # gated here — cargo-geiger's own output is noisy (unrelated
+      # deprecation/lint warnings from every transitive crate it scans) and
+      # its metric counts have no natural pass/fail threshold. This is a
+      # deliberate scope decision, not a gap to fill in later.
+
+      - name: Security audit (RustSec advisory-db)
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install coverage tooling
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      # Threshold is real measured line coverage (91.88% as of 2026-08-02,
+      # via `cargo llvm-cov --all-targets --all-features --summary-only` run
+      # locally against this revision) minus a few points of margin so
+      # normal coverage noise doesn't flake the gate. Recalibrate this
+      # number deliberately as real coverage moves — it is not an
+      # aspirational target picked in advance.
+      - name: Coverage (cargo llvm-cov)
+        run: cargo llvm-cov --all-targets --all-features --fail-under-lines 89
+
+      - name: Install mutation testing tooling
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      # Scoped to the highest-value correctness surface — revision
+      # publishing, CAS/hash comparison, and the freshness-verification
+      # entry point tool handlers share — rather than the whole crate; a
+      # full-crate cargo-mutants run is far too slow to run on every CI
+      # push. continue-on-error: true because a mutation-survivor baseline
+      # for this surface hasn't been fully established yet (survivors are
+      # being triaged in a separate, ongoing workstream); this step's job
+      # right now is to make survivor-count regressions visible over time,
+      # not to hard-block merges before that baseline exists.
+      - name: Mutation testing (revision, publish, hash, context)
+        continue-on-error: true
+        run: |
+          cargo mutants \
+            --file src/sync/revision.rs \
+            --file src/sync/publish.rs \
+            --file src/sync/hash.rs \
+            --file src/tools/context.rs
