@@ -447,7 +447,8 @@ fn disable_with_input(path: &Path, assume_yes: bool, input: impl BufRead) -> Res
     }
     if !assume_yes {
         let prompt = format!(
-            "This will permanently delete {} (database, findings, evidence). Continue? [y/N] ",
+            "This will archive {} to ~/.slugthug/trash/ and then disable SlugAudit for this \
+             project (database, findings, evidence). Continue? [y/N] ",
             activation.display()
         );
         if !confirm(&prompt, input)? {
@@ -456,7 +457,10 @@ fn disable_with_input(path: &Path, assume_yes: bool, input: impl BufRead) -> Res
         }
     }
     project::disable(&root)?;
-    println!("SlugAudit disabled for {}", root.as_path().display());
+    println!(
+        "SlugAudit disabled for {} (archived to ~/.slugthug/trash/)",
+        root.as_path().display()
+    );
     Ok(())
 }
 

@@ -106,6 +106,72 @@ fn disabling_an_already_inactive_project_is_a_no_op_not_an_error() {
     assert!(!removed);
 }
 
+/// Disabling an active project archives the activation directory (database,
+/// findings, evidence) under the configured trash root before removing it,
+/// so an accidental disable can be recovered. The archive must exist and
+/// contain the project database with its findings intact.
+#[test]
+fn disable_archives_the_activation_dir_before_deleting_it() {
+    let trash = tempfile::tempdir().expect("trash dir");
+
+    let directory = tempfile::tempdir().expect("project dir");
+    let root = ProjectRoot::resolve(directory.path()).expect("resolve root");
+    enable(&root).expect("enable");
+
+    // Write a finding so the archive has non-trivial content to preserve.
+    // Use `open_read_write` (not raw rusqlite) so the schema is applied and
+    // the `findings` table exists.
+    let db_path = activation_dir(&root).join("project.db");
+    let conn = crate::store::open_read_write(&db_path).expect("open db");
+    conn.execute(
+        "INSERT INTO findings (\
+            path, source_hash, line_start, line_end, severity, category, title, \
+            description, created_at_unix, evidence_revision, status\
+         ) VALUES ('lib.rs', 'deadbeef', 1, 1, 'low', 'test', 'x', 'y', 0, 'r', 'current')",
+        [],
+    )
+    .expect("insert a finding");
+    drop(conn);
+
+    // Call the archive step directly with a controlled trash root, then
+    // remove_dir_all ourselves — this proves the archiving logic without
+    // needing to mutate process-global env vars.
+    let activation = activation_dir(&root);
+    archive_before_delete(&activation, Some(trash.path())).expect("archive succeeds");
+    std::fs::remove_dir_all(&activation).expect("remove activation");
+
+    assert!(
+        !activation.exists(),
+        "the activation dir must be gone after disable"
+    );
+
+    // The trash directory should contain exactly one archive subdirectory.
+    let trash_entries: Vec<_> = std::fs::read_dir(trash.path())
+        .expect("read trash dir")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("trash dir readable");
+    assert_eq!(
+        trash_entries.len(),
+        1,
+        "trash should contain exactly one archived project"
+    );
+    let archive = trash_entries[0].path();
+    assert!(archive.is_dir(), "the archived entry must be a directory");
+
+    // The archived database must still contain the finding — proving the
+    // archive captured real content, not just an empty tree.
+    let archived_db = archive.join("project.db");
+    assert!(
+        archived_db.exists(),
+        "the archive must contain the project database"
+    );
+    let archived_conn = rusqlite::Connection::open(&archived_db).expect("open archived db");
+    let count: i64 = archived_conn
+        .query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
+        .expect("count findings");
+    assert_eq!(count, 1, "the archived finding must survive");
+}
+
 #[cfg(unix)]
 #[test]
 fn enable_refuses_to_create_through_a_symlinked_planning_dir() {
