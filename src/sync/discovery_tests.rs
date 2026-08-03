@@ -180,12 +180,10 @@ fn scratch_and_temp_files_are_excluded_from_discovery() {
     write(root, "output.claude_output.txt", b"claude session output");
 
     let files = discover(root).expect("discover");
-    let paths: Vec<&str> = files
-        .iter()
-        .map(|f| f.relative_path.as_str())
-        .collect();
+    let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
     assert_eq!(
-        paths, vec!["src/lib.rs"],
+        paths,
+        vec!["src/lib.rs"],
         "only the real source file should be discovered, scratch/temp files must be excluded, got: {paths:?}"
     );
 }

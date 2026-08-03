@@ -36,8 +36,11 @@ fn finding_status(connection: &Connection, id: i64) -> String {
 #[test]
 fn persists_exactly_the_supplied_conclusion() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let response =
-        finding(&Parameters(base_request(&project, "lib.rs")), &SyncRecencyCache::new()).expect("finding succeeds");
+    let response = finding(
+        &Parameters(base_request(&project, "lib.rs")),
+        &SyncRecencyCache::new(),
+    )
+    .expect("finding succeeds");
 
     assert_eq!(response.0.status, "current");
     assert!(!response.0.source_hash.is_empty());
@@ -47,8 +50,11 @@ fn persists_exactly_the_supplied_conclusion() {
 #[test]
 fn a_modified_file_invalidates_its_finding_on_next_sync() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let response =
-        finding(&Parameters(base_request(&project, "lib.rs")), &SyncRecencyCache::new()).expect("finding succeeds");
+    let response = finding(
+        &Parameters(base_request(&project, "lib.rs")),
+        &SyncRecencyCache::new(),
+    )
+    .expect("finding succeeds");
     let id = response.0.id;
 
     fs::write(
@@ -70,8 +76,11 @@ fn a_modified_file_invalidates_its_finding_on_next_sync() {
 #[test]
 fn a_deleted_file_invalidates_its_finding_on_next_sync() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let response =
-        finding(&Parameters(base_request(&project, "lib.rs")), &SyncRecencyCache::new()).expect("finding succeeds");
+    let response = finding(
+        &Parameters(base_request(&project, "lib.rs")),
+        &SyncRecencyCache::new(),
+    )
+    .expect("finding succeeds");
     let id = response.0.id;
 
     fs::remove_file(project.path().join("lib.rs")).expect("delete file");
@@ -90,8 +99,11 @@ fn a_deleted_file_invalidates_its_finding_on_next_sync() {
 fn an_untouched_file_keeps_its_finding_current() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     fs::write(project.path().join("other.rs"), b"pub fn b() {}\n").expect("write second file");
-    let response =
-        finding(&Parameters(base_request(&project, "lib.rs")), &SyncRecencyCache::new()).expect("finding succeeds");
+    let response = finding(
+        &Parameters(base_request(&project, "lib.rs")),
+        &SyncRecencyCache::new(),
+    )
+    .expect("finding succeeds");
     let id = response.0.id;
 
     fs::write(

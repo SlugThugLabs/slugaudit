@@ -27,10 +27,7 @@ pub enum ActivationError {
     #[error("failed to update the activation directory: {0}")]
     Io(#[from] std::io::Error),
     #[error("could not archive {path} before deletion: {inner}")]
-    Archive {
-        path: String,
-        inner: std::io::Error,
-    },
+    Archive { path: String, inner: std::io::Error },
 }
 
 /// The `.planning/slugaudit` directory under a resolved project root.
@@ -136,7 +133,10 @@ pub fn disable(root: &ProjectRoot) -> Result<bool, ActivationError> {
 /// the delete proceeds; this is the only case where data is deleted without
 /// a backup, and it only happens in environments where SlugAudit cannot
 /// be installed or connected anyway.
-fn archive_before_delete(activation: &Path, trash_root: Option<&Path>) -> Result<(), ActivationError> {
+fn archive_before_delete(
+    activation: &Path,
+    trash_root: Option<&Path>,
+) -> Result<(), ActivationError> {
     let Some(trash) = trash_root else {
         return Ok(());
     };

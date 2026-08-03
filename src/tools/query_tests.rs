@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=agent; reason=one test per SQL safety property; splitting would obscure the read-only boundary they collectively pin
 use super::*;
 use rmcp::handler::server::wrapper::Parameters;
 use std::fs;

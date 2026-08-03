@@ -1,5 +1,4 @@
 #![forbid(unsafe_code)]
-
 // Stdout is the MCP JSON-RPC transport in serve mode. Any `println!` or
 // `print!` that reaches it mid-serve corrupts the stream and fails every
 // in-flight call. `clippy::print_stdout` is denied at the crate root so a
@@ -10,6 +9,7 @@
 #![deny(clippy::print_stdout)]
 
 pub mod cli;
+pub mod connect;
 pub mod evidence;
 pub mod graph;
 pub mod model;

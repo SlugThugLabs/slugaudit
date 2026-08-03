@@ -2,6 +2,7 @@
 
 use rmcp::{ServiceExt, transport::stdio};
 use slugaudit_mcp_rust::cli::{self, Command};
+use slugaudit_mcp_rust::connect;
 use slugaudit_mcp_rust::server::SlugAuditServer;
 use tracing_subscriber::EnvFilter;
 
@@ -15,8 +16,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Command::Connect { agent } => {
                 match agent {
-                    Some(agent) => cli::run_connect(agent)?,
-                    None => cli::run_connect_interactive()?,
+                    Some(agent) => connect::run_connect(agent)?,
+                    None => connect::run_connect_interactive()?,
                 }
                 return Ok(());
             }

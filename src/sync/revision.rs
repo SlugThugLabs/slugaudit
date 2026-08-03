@@ -28,7 +28,9 @@ pub enum RevisionError {
     /// Another publisher committed between our filesystem sample and this
     /// write. The caller must re-sample and retry rather than overwrite a
     /// newer revision with older disk state.
-    #[error("concurrent publish won the race (expected current {expected}, found {found}); retry the call")]
+    #[error(
+        "concurrent publish won the race (expected current {expected}, found {found}); retry the call"
+    )]
     StaleBaseline { expected: String, found: String },
 }
 

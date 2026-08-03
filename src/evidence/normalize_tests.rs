@@ -79,14 +79,14 @@ fn unknown_language_is_a_typed_error_not_a_panic() {
 
 #[test]
 fn rust_let_bindings_surface_as_variable_symbols() {
-    let source = "fn pick(first: u32, second: u32) -> u32 {\n    let winner = first;\n    winner\n}\n";
+    let source =
+        "fn pick(first: u32, second: u32) -> u32 {\n    let winner = first;\n    winner\n}\n";
     let items = extract("rust", source).expect("process rust");
 
     let vars: Vec<&EvidenceItem> = items
         .iter()
         .filter(|item| {
-            item.kind == EvidenceKind::Symbol
-                && item.payload["kind"].as_str() == Some("Variable")
+            item.kind == EvidenceKind::Symbol && item.payload["kind"].as_str() == Some("Variable")
         })
         .collect();
 
@@ -117,8 +117,14 @@ fn rust_parameters_surface_as_variable_symbols() {
         .map(|item| item.payload["name"].as_str().expect("name is a string"))
         .collect();
 
-    assert!(names.contains(&"name"), "expected param `name`, got {names:?}");
-    assert!(names.contains(&"age"), "expected param `age`, got {names:?}");
+    assert!(
+        names.contains(&"name"),
+        "expected param `name`, got {names:?}"
+    );
+    assert!(
+        names.contains(&"age"),
+        "expected param `age`, got {names:?}"
+    );
 }
 
 #[test]
@@ -130,8 +136,7 @@ fn rust_struct_fields_surface_as_field_symbols() {
         .iter()
         .filter(|item| {
             item.kind == EvidenceKind::Symbol
-                && item.payload["kind"].as_str()
-                    == Some(r#"Other("Field")"#)
+                && item.payload["kind"].as_str() == Some(r#"Other("Field")"#)
         })
         .collect();
 
@@ -140,8 +145,14 @@ fn rust_struct_fields_surface_as_field_symbols() {
         .map(|item| item.payload["name"].as_str().expect("name is a string"))
         .collect();
 
-    assert!(names.contains(&"name"), "expected field `name`, got {names:?}");
-    assert!(names.contains(&"age"), "expected field `age`, got {names:?}");
+    assert!(
+        names.contains(&"name"),
+        "expected field `name`, got {names:?}"
+    );
+    assert!(
+        names.contains(&"age"),
+        "expected field `age`, got {names:?}"
+    );
 }
 
 #[test]
@@ -171,8 +182,7 @@ fn python_assignments_surface_as_variable_symbols() {
     let names: Vec<&str> = items
         .iter()
         .filter(|item| {
-            item.kind == EvidenceKind::Symbol
-                && item.origin == EvidenceOrigin::PackSymbol
+            item.kind == EvidenceKind::Symbol && item.origin == EvidenceOrigin::PackSymbol
         })
         .map(|item| item.payload["name"].as_str().expect("name is a string"))
         .collect();

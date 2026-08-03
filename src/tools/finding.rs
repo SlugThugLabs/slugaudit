@@ -31,19 +31,25 @@ pub struct FindingRequest {
     /// How serious the finding is, in your own words — e.g. "critical",
     /// "high", "medium", "low", "informational". SlugAudit does not enforce a
     /// fixed set of values; use whatever scale is meaningful for your review.
-    #[schemars(description = "Severity of the finding, e.g. critical/high/medium/low/informational")]
+    #[schemars(
+        description = "Severity of the finding, e.g. critical/high/medium/low/informational"
+    )]
     pub severity: String,
     /// A short label for what kind of issue this is — e.g. "security",
     /// "performance", "correctness", "style", "maintainability". SlugAudit
     /// does not enforce a fixed taxonomy.
-    #[schemars(description = "Category label for the finding, e.g. security/performance/correctness/style")]
+    #[schemars(
+        description = "Category label for the finding, e.g. security/performance/correctness/style"
+    )]
     pub category: String,
     /// A concise, one-line title summarizing the finding. Max 200 characters.
     #[schemars(description = "Concise one-line title summarizing the finding (max 200 chars)")]
     pub title: String,
     /// A fuller explanation of what the issue is, why it matters, and (if
     /// relevant) how to fix it. Max 10,000 characters.
-    #[schemars(description = "Detailed description of the finding, its impact, and any remediation (max 10000 chars)")]
+    #[schemars(
+        description = "Detailed description of the finding, its impact, and any remediation (max 10000 chars)"
+    )]
     pub description: String,
 }
 

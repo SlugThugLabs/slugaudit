@@ -5,6 +5,7 @@
 //! module owns resolution logic, not persistence.
 mod reference;
 mod resolve;
+mod resolve_rust;
 
 use std::collections::HashSet;
 

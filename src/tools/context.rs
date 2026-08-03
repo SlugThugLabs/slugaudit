@@ -71,10 +71,7 @@ pub struct SyncedProject {
 ///
 /// Returns an error if `path` isn't inside an active project, or if sync
 /// itself fails.
-pub fn ensure_synced(
-    path: &str,
-    cache: &SyncRecencyCache,
-) -> Result<SyncedProject, ErrorData> {
+pub fn ensure_synced(path: &str, cache: &SyncRecencyCache) -> Result<SyncedProject, ErrorData> {
     let root = project::find_project_root(Path::new(path))
         .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
     let database_path = project::database_path(&root);

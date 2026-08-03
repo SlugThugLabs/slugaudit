@@ -1,7 +1,9 @@
 use crate::tools;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rmcp::model::{Meta, ProgressNotificationParam, ProgressToken, ProtocolVersion, ServerCapabilities, ServerInfo};
+use rmcp::model::{
+    Meta, ProgressNotificationParam, ProgressToken, ProtocolVersion, ServerCapabilities, ServerInfo,
+};
 use rmcp::{ErrorData, Peer, RoleServer, ServerHandler, tool, tool_handler, tool_router};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -179,9 +181,12 @@ impl SlugAuditServer {
     ) -> Result<Json<tools::ReportResponse>, ErrorData> {
         let cache = self.sync_recency.clone();
         let progress = progress_target(meta, &peer);
-        run_blocking(Arc::clone(&self.blocking_ops), "report", move || {
-            tools::report(&request, &cache)
-        }, progress)
+        run_blocking(
+            Arc::clone(&self.blocking_ops),
+            "report",
+            move || tools::report(&request, &cache),
+            progress,
+        )
         .await
     }
 
@@ -196,9 +201,12 @@ impl SlugAuditServer {
     ) -> Result<Json<tools::QueryResponse>, ErrorData> {
         let cache = self.sync_recency.clone();
         let progress = progress_target(meta, &peer);
-        run_blocking(Arc::clone(&self.blocking_ops), "query", move || {
-            tools::query(&request, &cache)
-        }, progress)
+        run_blocking(
+            Arc::clone(&self.blocking_ops),
+            "query",
+            move || tools::query(&request, &cache),
+            progress,
+        )
         .await
     }
 
@@ -213,9 +221,12 @@ impl SlugAuditServer {
     ) -> Result<Json<tools::StructureResponse>, ErrorData> {
         let cache = self.sync_recency.clone();
         let progress = progress_target(meta, &peer);
-        run_blocking(Arc::clone(&self.blocking_ops), "structure", move || {
-            tools::structure(&request, &cache)
-        }, progress)
+        run_blocking(
+            Arc::clone(&self.blocking_ops),
+            "structure",
+            move || tools::structure(&request, &cache),
+            progress,
+        )
         .await
     }
 
@@ -236,9 +247,12 @@ impl SlugAuditServer {
     ) -> Result<Json<tools::FindingResponse>, ErrorData> {
         let cache = self.sync_recency.clone();
         let progress = progress_target(meta, &peer);
-        run_blocking(Arc::clone(&self.blocking_ops), "finding", move || {
-            tools::finding(&request, &cache)
-        }, progress)
+        run_blocking(
+            Arc::clone(&self.blocking_ops),
+            "finding",
+            move || tools::finding(&request, &cache),
+            progress,
+        )
         .await
     }
 }
@@ -247,9 +261,11 @@ impl SlugAuditServer {
 /// server peer. Returns `Some` only when the client supplied a progress
 /// token, which signals that it understands MCP progress notifications and
 /// would like to receive them for this call.
-fn progress_target(meta: Meta, peer: &Peer<RoleServer>) -> Option<(Peer<RoleServer>, ProgressToken)> {
-    meta.get_progress_token()
-        .map(|token| (peer.clone(), token))
+fn progress_target(
+    meta: Meta,
+    peer: &Peer<RoleServer>,
+) -> Option<(Peer<RoleServer>, ProgressToken)> {
+    meta.get_progress_token().map(|token| (peer.clone(), token))
 }
 
 #[tool_handler(router = self.tool_router)]

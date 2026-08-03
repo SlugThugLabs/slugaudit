@@ -3,6 +3,7 @@
 
 mod connection;
 mod migrations;
+mod netfs;
 
 pub use connection::{StoreError, open_read_only, open_read_write};
 pub use migrations::MigrationError;
