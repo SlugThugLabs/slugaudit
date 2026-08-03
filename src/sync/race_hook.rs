@@ -30,14 +30,15 @@ pub(crate) fn set(root: &Path, hook: impl FnOnce() + Send + 'static) {
 /// A no-op outside tests (this module is `cfg(test)`-only besides this one
 /// always-compiled entry point, so it compiles to nothing in release
 /// builds) and a no-op for any root nobody armed a hook for.
-pub(crate) fn fire(_root: &Path) {
+#[cfg_attr(not(test), allow(unused_variables))]
+pub(crate) fn fire(root: &Path) {
     #[cfg(test)]
     {
         let hook = HOOKS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_mut()
-            .and_then(|hooks| hooks.remove(_root));
+            .and_then(|hooks| hooks.remove(root));
         if let Some(hook) = hook {
             hook();
         }

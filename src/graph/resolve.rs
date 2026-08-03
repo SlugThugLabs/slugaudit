@@ -100,7 +100,7 @@ fn parent_dir(relative_path: &str) -> String {
     Path::new(relative_path)
         .parent()
         .map(Path::to_string_lossy)
-        .map_or_else(String::new, |cow| cow.into_owned())
+        .map_or_else(String::new, std::borrow::Cow::into_owned)
 }
 
 pub(super) fn resolve(

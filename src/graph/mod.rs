@@ -30,6 +30,11 @@ pub struct ResolvedEdge {
 /// because it couldn't be parsed or resolved; it becomes `"Unresolved"`
 /// instead, preserving the raw text for the AI to inspect.
 #[must_use]
+// Generalizing over `S: BuildHasher` here would ripple through resolve_one
+// and every per-language resolver in `resolve.rs` for no real benefit —
+// the only caller (`sync::revision_edges`) always builds a plain
+// `HashSet<&str>` from a `Vec<String>` of file paths.
+#[allow(clippy::implicit_hasher)]
 pub fn resolve_imports(
     language: &str,
     importing_relative_path: &str,

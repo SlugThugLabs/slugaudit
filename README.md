@@ -121,9 +121,32 @@ cargo audit
 both pass as of this writing — `Cargo.toml` carries explicit license
 metadata (`PolyForm-Noncommercial-1.0.0`), so the license check is no longer
 blocked. `cargo audit` reports zero known vulnerabilities across the
-dependency tree. Native or transitive unsafe code in third-party crates is
-reported separately (e.g. `cargo geiger`, not yet wired into CI); this
-project will not add direct unsafe Rust.
+dependency tree.
+
+### Unsafe code policy (`cargo geiger`)
+
+`#![forbid(unsafe_code)]` at the crate root means `cargo geiger` reports
+`0/0` unsafe usage for `slugaudit-mcp-rust` itself, on every metric
+(functions, expressions, impls, traits, methods) — this is a hard compiler
+guarantee, not a policy that could silently regress.
+
+Transitive dependencies are a different matter and are expected to contain
+unsafe code: `tree-sitter` (native grammar FFI), `rusqlite`'s `bundled`
+feature (vendored SQLite C), `tokio` (OS-level async I/O primitives), and
+`ring`/`rustls` (cryptography, pulled in transitively by `rmcp`'s transport
+layer) all report real unsafe usage under `cargo geiger`, and forbidding
+unsafe transitively is not a meaningful goal — it would make every one of
+those crates unusable while claiming a guarantee this project doesn't
+actually need. The policy is: **zero unsafe in `src/`, enforced by the
+compiler; unsafe in a dependency is acceptable when that dependency is
+doing FFI, syscalls, or cryptography a pure-Rust implementation can't
+avoid, and unacceptable if a dependency uses unsafe for reasons unrelated
+to those (a manual review call, not an automated gate)**. `cargo geiger` is
+run manually to review the dependency tree when adding a new dependency; it
+is not wired into CI as a blocking gate, since geiger's own warning output
+is itself noisy (unrelated deprecation/lint warnings from scanning every
+transitive crate) and its metric-count output has no natural pass/fail
+threshold to gate on — it's a review tool, not a correctness check.
 
 ## Source-size gate
 

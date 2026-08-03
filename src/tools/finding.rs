@@ -21,7 +21,7 @@ pub struct FindingRequest {
     pub line_start: u32,
     /// One-based inclusive end line.
     pub line_end: u32,
-    /// AI-supplied; SpugAudit never generates this.
+    /// AI-supplied; SlugAudit never generates this.
     pub severity: String,
     /// AI-supplied; SlugAudit never generates this.
     pub category: String,
