@@ -1,6 +1,7 @@
 use super::analyze::analyze;
 use super::discovery::{DiscoveredFile, FileKind};
 use super::hash;
+use super::publish::PublishError;
 use super::revision::FileRecord;
 use crate::model::{
     EvidenceItem, EvidenceKind, EvidenceOrigin, ResourceLimits, SourceIdentity, SpanAvailability,
@@ -206,6 +207,30 @@ fn truncation_evidence(
             "kept_item_count": kept_count,
         }),
     }
+}
+
+/// Samples every discovered file, accumulating the total byte count and
+/// failing closed if the project-wide import ceiling is exceeded. Kept
+/// here (next to `sample_file`) rather than in `publish` — it's a sampling
+/// concern, not an orchestration one.
+pub(super) fn sample_all(
+    discovered: &[DiscoveredFile],
+    limits: &ResourceLimits,
+) -> Result<Vec<Sample>, PublishError> {
+    let mut total_bytes = 0_u64;
+    let mut samples = Vec::with_capacity(discovered.len());
+    for file in discovered {
+        let sample = sample_file(file, limits)?;
+        total_bytes = total_bytes.saturating_add(sample.byte_len);
+        if total_bytes > limits.max_total_import_bytes {
+            return Err(PublishError::ImportTooLarge {
+                total: total_bytes,
+                limit: limits.max_total_import_bytes,
+            });
+        }
+        samples.push(sample);
+    }
+    Ok(samples)
 }
 
 #[cfg(test)]
