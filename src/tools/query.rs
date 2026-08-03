@@ -1,4 +1,5 @@
-use super::context::{ensure_synced, open_verified_read_only};
+use super::context::{ensure_synced, with_verified_read};
+use crate::model::ResourceLimits;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rusqlite::Row;
@@ -7,7 +8,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 const MAX_ROWS: usize = 500;
-const MAX_QUERY_LENGTH: usize = 10_000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct QueryRequest {
@@ -35,47 +35,76 @@ pub struct QueryResponse {
 ///
 /// Returns an error if `request.path` isn't an active project, `sql` is
 /// empty or too long, the query fails to parse or execute (including any
-/// attempted write, which SQLite itself rejects on this connection), or a
-/// result value can't be represented.
+/// attempted write, which SQLite itself rejects on this connection), the
+/// VM step budget is exhausted, or a result value can't be represented.
 pub fn query(request: &Parameters<QueryRequest>) -> Result<Json<QueryResponse>, ErrorData> {
     let QueryRequest { path, sql } = &request.0;
+    let limits = ResourceLimits::default();
     let trimmed = sql.trim().trim_end_matches(';');
     if trimmed.is_empty() {
         return Err(ErrorData::invalid_params("sql must not be empty", None));
     }
-    if sql.len() > MAX_QUERY_LENGTH {
+    if sql.len() > limits.max_query_sql_bytes {
         return Err(ErrorData::invalid_params(
-            format!("sql exceeds {MAX_QUERY_LENGTH} characters"),
+            format!("sql exceeds {} bytes", limits.max_query_sql_bytes),
             None,
         ));
     }
 
     let synced = ensure_synced(path)?;
-    let connection = open_verified_read_only(&synced)?;
+    let revision_id = synced.revision_id.clone();
+    let (rows, truncated) = with_verified_read(&synced, |tx| {
+        // Progress handler aborts runaway queries (cartesian products, deep
+        // recursive CTEs) after a fixed VM-step budget.
+        let mut steps = 0_u32;
+        let max_steps = limits.max_query_vm_steps;
+        tx.progress_handler(
+            1000,
+            Some(move || {
+                steps = steps.saturating_add(1000);
+                steps > max_steps
+            }),
+        );
 
-    // A hard cap regardless of what the caller asks for, plus one extra row
-    // so truncation is exact rather than guessed at.
-    let wrapped = format!("SELECT * FROM ({trimmed}) LIMIT {}", MAX_ROWS + 1);
-    let mut statement = connection
-        .prepare(&wrapped)
-        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-    let column_names: Vec<String> = statement
-        .column_names()
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+        let wrapped = format!("SELECT * FROM ({trimmed}) LIMIT {}", MAX_ROWS + 1);
+        let mut statement = tx
+            .prepare(&wrapped)
+            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+        let column_names: Vec<String> = statement
+            .column_names()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
 
-    let mut rows = statement
-        .query_map([], |row| row_to_json(row, &column_names))
-        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+        let mapped = statement
+            .query_map([], |row| row_to_json(row, &column_names))
+            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
 
-    let truncated = rows.len() > MAX_ROWS;
-    rows.truncate(MAX_ROWS);
+        let mut rows = Vec::new();
+        let mut total_bytes = 0_usize;
+        let mut truncated = false;
+        for row in mapped {
+            let value = row.map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+            let encoded = serde_json::to_vec(&value)
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+            if rows.len() >= MAX_ROWS
+                || total_bytes.saturating_add(encoded.len()) > limits.max_query_response_bytes
+            {
+                truncated = true;
+                break;
+            }
+            total_bytes += encoded.len();
+            rows.push(value);
+        }
+
+        // Clear the handler so it does not outlive this call on a pooled
+        // connection (we drop the connection, but be explicit).
+        tx.progress_handler(0, None::<fn() -> bool>);
+        Ok((rows, truncated))
+    })?;
 
     Ok(Json(QueryResponse {
-        revision_id: synced.revision_id,
+        revision_id,
         rows,
         truncated,
     }))

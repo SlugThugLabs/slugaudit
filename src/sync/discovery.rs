@@ -33,6 +33,11 @@ pub enum DiscoveryError {
     },
     #[error("discovered path {0} is not relative to the project root")]
     NotRelative(PathBuf),
+    /// Relative paths are stored and queried as UTF-8 text. A non-UTF-8
+    /// path is rejected rather than lossily rewritten, which would make
+    /// the stored path unusable for round-tripping back to disk.
+    #[error("discovered path {0} is not valid UTF-8")]
+    NonUtf8Path(PathBuf),
 }
 
 fn is_excluded(relative: &Path) -> bool {
@@ -98,8 +103,12 @@ pub fn discover(root: &Path) -> Result<Vec<DiscoveredFile>, DiscoveryError> {
             continue;
         }
         let kind = sniff_kind(&absolute_path)?;
+        let relative_path = relative_path
+            .to_str()
+            .ok_or_else(|| DiscoveryError::NonUtf8Path(absolute_path.clone()))?
+            .replace('\\', "/");
         discovered.push(DiscoveredFile {
-            relative_path: relative_path.to_string_lossy().replace('\\', "/"),
+            relative_path,
             absolute_path,
             kind,
         });

@@ -1,12 +1,17 @@
 use super::discovery;
 use super::hash::aggregate_manifest_hash;
 use super::manifest::{self, ChangeStatus};
-use super::revision::{self, FileRecord};
+use super::revision::{self, FileRecord, RevisionError};
 use super::sample::{self, sample_file, to_file_record};
+use crate::model::ResourceLimits;
 use rusqlite::Connection;
 use std::collections::HashSet;
 use std::path::Path;
 use thiserror::Error;
+
+/// How many times a concurrent-publish CAS failure is retried before the
+/// error surfaces to the tool caller. Each retry re-samples the filesystem.
+const MAX_CAS_RETRIES: usize = 4;
 
 #[derive(Debug, Error)]
 pub enum PublishError {
@@ -18,6 +23,10 @@ pub enum PublishError {
     Revision(#[from] revision::RevisionError),
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
+    #[error(
+        "import would load {total} bytes across sampled files, exceeding the {limit}-byte ceiling"
+    )]
+    ImportTooLarge { total: u64, limit: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,23 +64,62 @@ fn current_revision(connection: &Connection) -> Result<Option<CurrentRevision>, 
 
 /// Discovers, hashes, and diffs the project's current disk state against
 /// what the database has stored, then publishes exactly the delta as one
-/// atomic revision. A disk state identical to the current revision skips
-/// publishing entirely rather than churning out a no-op revision.
+/// atomic CAS revision. A disk state identical to the current revision
+/// skips publishing entirely rather than churning out a no-op revision.
+/// Concurrent publishers are serialized by compare-and-swap on the current
+/// revision id: a loser re-samples and retries a bounded number of times.
 ///
 /// # Errors
 ///
-/// Returns an error if discovery, reading a discovered file, or any
-/// database operation in the publish transaction fails.
+/// Returns an error if discovery, reading a discovered file, resource
+/// limits are exceeded, or any database operation in the publish
+/// transaction fails (including exhausting CAS retries).
 pub fn publish(
     connection: &mut Connection,
     root: &Path,
     parser_pack_version: &str,
 ) -> Result<PublishReport, PublishError> {
+    let mut last_stale = None;
+    for _ in 0..MAX_CAS_RETRIES {
+        match try_publish(connection, root, parser_pack_version) {
+            Err(PublishError::Revision(RevisionError::StaleBaseline { expected, found })) => {
+                last_stale = Some(RevisionError::StaleBaseline { expected, found });
+            }
+            other => return other,
+        }
+    }
+    Err(PublishError::Revision(last_stale.expect(
+        "CAS loop only continues after StaleBaseline; retries exhausted implies one was stored",
+    )))
+}
+
+fn try_publish(
+    connection: &mut Connection,
+    root: &Path,
+    parser_pack_version: &str,
+) -> Result<PublishReport, PublishError> {
+    // Baseline is read before the expensive filesystem sample so the write
+    // transaction can refuse to commit if another publisher landed first.
+    let baseline = current_revision(connection)?;
+    let expected_current = baseline
+        .as_ref()
+        .map(|revision| revision.revision_id.as_str());
+
     let discovered = discovery::discover(root)?;
-    let samples = discovered
-        .iter()
-        .map(sample_file)
-        .collect::<Result<Vec<_>, _>>()?;
+    let limits = ResourceLimits::default();
+    let mut total_bytes = 0_u64;
+    let mut samples = Vec::with_capacity(discovered.len());
+    for file in &discovered {
+        let sample = sample_file(file, &limits)?;
+        total_bytes = total_bytes.saturating_add(sample.byte_len);
+        if total_bytes > limits.max_total_import_bytes {
+            return Err(PublishError::ImportTooLarge {
+                total: total_bytes,
+                limit: limits.max_total_import_bytes,
+            });
+        }
+        samples.push(sample);
+    }
 
     let mut stored_statement = connection.prepare("SELECT path, content_hash FROM files")?;
     let stored_rows = stored_statement
@@ -111,17 +159,16 @@ pub fn publish(
         .count();
     let unchanged = discovered.len() - (added + modified);
 
-    let current = current_revision(connection)?;
     // A file's content not changing doesn't mean its evidence is still
     // valid — if the parser itself was upgraded, everything needs
     // re-analysis even though every hash still matches.
-    let parser_version_changed = current
+    let parser_version_changed = baseline
         .as_ref()
         .is_none_or(|revision| revision.parser_pack_version != parser_pack_version);
 
     if changes.is_empty()
         && !parser_version_changed
-        && let Some(current) = current
+        && let Some(current) = baseline
     {
         return Ok(PublishReport {
             revision_id: current.revision_id,
@@ -152,11 +199,12 @@ pub fn publish(
     let upserts: Vec<FileRecord> = samples
         .into_iter()
         .filter(|sample| changed_paths.contains(sample.relative_path.as_str()))
-        .map(to_file_record)
+        .map(|sample| to_file_record(sample, &limits))
         .collect();
 
     let revision_id = revision::publish_revision(
         connection,
+        expected_current,
         &manifest_hash,
         parser_pack_version,
         &upserts,

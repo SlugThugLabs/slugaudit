@@ -2,7 +2,9 @@ use super::analyze::analyze;
 use super::discovery::{DiscoveredFile, FileKind};
 use super::hash;
 use super::revision::FileRecord;
-use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, SourceIdentity, SpanAvailability};
+use crate::model::{
+    EvidenceItem, EvidenceKind, EvidenceOrigin, ResourceLimits, SourceIdentity, SpanAvailability,
+};
 use serde_json::json;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -14,6 +16,12 @@ pub enum SampleError {
         path: PathBuf,
         #[source]
         source: std::io::Error,
+    },
+    #[error("{path} is {size} bytes, exceeding the {limit}-byte per-file import ceiling")]
+    TooLarge {
+        path: PathBuf,
+        size: u64,
+        limit: u64,
     },
 }
 
@@ -34,12 +42,36 @@ pub struct Sample {
 
 /// # Errors
 ///
-/// Returns an error if `file.absolute_path` can't be read.
-pub fn sample_file(file: &DiscoveredFile) -> Result<Sample, SampleError> {
+/// Returns an error if `file.absolute_path` can't be read, or if its size
+/// exceeds `limits.max_file_bytes`.
+pub fn sample_file(file: &DiscoveredFile, limits: &ResourceLimits) -> Result<Sample, SampleError> {
+    let metadata = std::fs::metadata(&file.absolute_path).map_err(|source| SampleError::Read {
+        path: file.absolute_path.clone(),
+        source,
+    })?;
+    let size = metadata.len();
+    if size > limits.max_file_bytes {
+        return Err(SampleError::TooLarge {
+            path: file.absolute_path.clone(),
+            size,
+            limit: limits.max_file_bytes,
+        });
+    }
+
     let bytes = std::fs::read(&file.absolute_path).map_err(|source| SampleError::Read {
         path: file.absolute_path.clone(),
         source,
     })?;
+    // Re-check after the read: the file may have grown between stat and
+    // read (TOCTOU). Prefer failing closed over indexing a huge buffer.
+    if bytes.len() as u64 > limits.max_file_bytes {
+        return Err(SampleError::TooLarge {
+            path: file.absolute_path.clone(),
+            size: bytes.len() as u64,
+            limit: limits.max_file_bytes,
+        });
+    }
+
     let is_binary = file.kind == FileKind::Binary;
     let (content, utf8_lossy) = if is_binary {
         (None, false)
@@ -74,12 +106,14 @@ fn utf8_lossy_evidence() -> EvidenceItem {
 
 /// Runs pack analysis on a sampled file and folds the result into a
 /// storable `FileRecord`, appending an encoding diagnostic when the
-/// content required lossy UTF-8 conversion.
-pub fn to_file_record(sample: Sample) -> FileRecord {
+/// content required lossy UTF-8 conversion and capping evidence to
+/// `limits.evidence`.
+pub fn to_file_record(sample: Sample, limits: &ResourceLimits) -> FileRecord {
     let mut parsed = analyze(&sample.relative_path, sample.content.as_deref());
     if sample.utf8_lossy {
         parsed.evidence.push(utf8_lossy_evidence());
     }
+    apply_evidence_limits(&mut parsed.evidence, limits);
     FileRecord {
         relative_path: sample.relative_path,
         is_binary: sample.is_binary,
@@ -91,4 +125,15 @@ pub fn to_file_record(sample: Sample) -> FileRecord {
         run: parsed.run,
         evidence: parsed.evidence,
     }
+}
+
+fn apply_evidence_limits(items: &mut Vec<EvidenceItem>, limits: &ResourceLimits) {
+    let cap = limits.evidence.max_items_per_file;
+    if items.len() > cap {
+        items.truncate(cap);
+    }
+    items.retain(|item| {
+        serde_json::to_vec(&item.payload)
+            .is_ok_and(|bytes| bytes.len() <= limits.evidence.max_payload_bytes_per_item)
+    });
 }

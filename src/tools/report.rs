@@ -1,7 +1,7 @@
-use super::context::{ensure_synced, open_verified_read_only};
+use super::context::{ensure_synced, with_verified_read};
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rusqlite::Connection;
+use rusqlite::Transaction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -41,15 +41,16 @@ pub struct ReportResponse {
 /// syncing or querying the project's database fails.
 pub fn report(request: &Parameters<ReportRequest>) -> Result<Json<ReportResponse>, ErrorData> {
     let synced = ensure_synced(&request.0.path)?;
-    let connection = open_verified_read_only(&synced)?;
-
-    let response = build_report(&connection, synced.revision_id)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    let revision_id = synced.revision_id.clone();
+    let response = with_verified_read(&synced, |tx| {
+        build_report(tx, revision_id.clone())
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+    })?;
     Ok(Json(response))
 }
 
 fn build_report(
-    connection: &Connection,
+    connection: &Transaction<'_>,
     revision_id: String,
 ) -> Result<ReportResponse, rusqlite::Error> {
     let file_count: i64 =
@@ -81,8 +82,13 @@ fn build_report(
         .collect::<Result<Vec<_>, _>>()?;
     drop(evidence_statement);
 
+    // Failures include load/availability problems *and* parses that ran
+    // and then failed — both are "the AI cannot trust this file's
+    // structural evidence" conditions.
     let parser_failure_count: i64 = connection.query_row(
-        "SELECT count(*) FROM files WHERE file_kind = 'indexed' AND parser_availability != 'Available'",
+        "SELECT count(*) FROM files WHERE file_kind = 'indexed' AND (\
+            parser_availability != 'Available' OR parse_outcome = 'Failed'\
+         )",
         [],
         |row| row.get(0),
     )?;

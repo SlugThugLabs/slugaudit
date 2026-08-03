@@ -1,12 +1,11 @@
-use super::context::{ensure_synced, open_verified_read_only};
-use crate::model::saturating_u32;
+use super::context::{ensure_synced, with_verified_read};
+use crate::model::{ResourceLimits, saturating_u32};
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
 
-const MAX_MATCHES: usize = 500;
 const MAX_TEXT_BYTES: usize = 2_000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -46,15 +45,31 @@ pub struct StructureResponse {
 ///
 /// Returns an error if `request.path` isn't an active project, `request.file`
 /// isn't indexed with a detected, pack-supported language, the query text
-/// fails to compile, or the parser returns no tree.
+/// is empty/too large or fails to compile, or the parser returns no tree.
 pub fn structure(
     request: &Parameters<StructureRequest>,
 ) -> Result<Json<StructureResponse>, ErrorData> {
     let StructureRequest { path, file, query } = &request.0;
-    let synced = ensure_synced(path)?;
-    let connection = open_verified_read_only(&synced)?;
+    let limits = ResourceLimits::default();
+    if query.trim().is_empty() {
+        return Err(ErrorData::invalid_params(
+            "structure query must not be empty",
+            None,
+        ));
+    }
+    if query.len() > limits.max_structure_query_bytes {
+        return Err(ErrorData::invalid_params(
+            format!(
+                "structure query exceeds {} bytes",
+                limits.max_structure_query_bytes
+            ),
+            None,
+        ));
+    }
 
-    let (content, language) = fetch_source(&connection, file)?;
+    let synced = ensure_synced(path)?;
+    let revision_id = synced.revision_id.clone();
+    let (content, language) = with_verified_read(&synced, |tx| fetch_source(tx, file))?;
 
     let ts_language = tree_sitter_language_pack::get_language(&language)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -69,10 +84,15 @@ pub fn structure(
         .parse(&content, None)
         .ok_or_else(|| ErrorData::internal_error("parser returned no syntax tree", None))?;
 
-    let (matches, truncated) = run_query(&compiled_query, &tree, &content);
+    let (matches, truncated) = run_query(
+        &compiled_query,
+        &tree,
+        &content,
+        limits.max_structure_matches,
+    );
 
     Ok(Json(StructureResponse {
-        revision_id: synced.revision_id,
+        revision_id,
         language,
         matches,
         truncated,
@@ -103,13 +123,14 @@ fn run_query(
     compiled_query: &Query,
     tree: &tree_sitter::Tree,
     content: &str,
+    max_matches: usize,
 ) -> (Vec<StructureMatch>, bool) {
     let capture_names = compiled_query.capture_names();
     let mut cursor = QueryCursor::new();
     let mut captures = cursor.captures(compiled_query, tree.root_node(), content.as_bytes());
 
     let mut matches = Vec::new();
-    while matches.len() < MAX_MATCHES
+    while matches.len() < max_matches
         && let Some((query_match, capture_index)) = captures.next()
     {
         let capture = query_match.captures[*capture_index];
@@ -132,7 +153,7 @@ fn run_query(
             text_truncated,
         });
     }
-    let truncated = matches.len() >= MAX_MATCHES && captures.next().is_some();
+    let truncated = matches.len() >= max_matches && captures.next().is_some();
     (matches, truncated)
 }
 

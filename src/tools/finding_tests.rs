@@ -173,6 +173,6 @@ fn a_line_number_within_the_files_real_length_succeeds() {
 fn an_oversized_description_is_a_typed_error() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let mut request = base_request(&project, "lib.rs");
-    request.description = "x".repeat(MAX_DESCRIPTION_LENGTH + 1);
+    request.description = "x".repeat(MAX_DESCRIPTION_CHARS + 1);
     assert!(finding(&Parameters(request)).is_err());
 }

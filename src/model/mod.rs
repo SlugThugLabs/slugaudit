@@ -13,7 +13,7 @@ pub use capability::{
 };
 pub use evidence::{EvidenceItem, EvidenceKind, EvidenceSet, SpanAvailability};
 pub use freshness::{FreshnessInput, VerifiedRevision};
-pub use limits::EvidenceLimits;
+pub use limits::{EvidenceLimits, ResourceLimits};
 pub use parser::{
     EvidenceOrigin, ExtractionCompleteness, ParseOutcome, ParserAvailability, ParserRun,
 };

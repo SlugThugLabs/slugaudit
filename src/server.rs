@@ -8,10 +8,11 @@ const INSTRUCTIONS: &str = "SlugAudit supplies searchable, trustworthy evidence 
     parsed structure, symbols, imports, and prior AI-reviewed findings — so an audit never has to \
     re-derive facts by reading flat files. Use `report` for an automatic snapshot of what evidence \
     exists, `query` for arbitrary read-only SQL against the project's own database (search, symbol/ \
-    import/diagnostic lookup, dependency traversal, and source retrieval all reach through it), \
-    `structure` for Tree-sitter structural pattern matching, and `finding` to persist a conclusion \
-    you have actually reviewed. SlugAudit performs no automated risk detection and reaches no \
-    conclusions itself: it supplies evidence, the calling AI performs all judgment.";
+    import/diagnostic lookup, and source retrieval all reach through it; dependency_edges rows are \
+    reserved for a future resolver and are empty today), `structure` for Tree-sitter structural \
+    pattern matching, and `finding` to persist a conclusion you have actually reviewed. SlugAudit \
+    performs no automated risk detection and reaches no conclusions itself: it supplies evidence, \
+    the calling AI performs all judgment.";
 
 #[derive(Clone)]
 pub struct SlugAuditServer {

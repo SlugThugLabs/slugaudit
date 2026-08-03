@@ -4,6 +4,10 @@ use std::time::Duration;
 use thiserror::Error;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Owner-only access for newly created database files. Existing files keep
+/// whatever mode they already have — we never widen permissions.
+#[cfg(unix)]
+const PRIVATE_MODE: u32 = 0o600;
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -15,12 +19,14 @@ pub enum StoreError {
     Migration(#[from] super::migrations::MigrationError),
     #[error("refusing to open a database path that is a symlink")]
     Symlink,
+    #[error("failed to set database file permissions: {0}")]
+    Permissions(#[source] std::io::Error),
 }
 
-/// A symlinked `project.db` could redirect reads or writes to an arbitrary
-/// file the process can reach — checked directly rather than relying on the
-/// activation directory's own symlink check (`project::activation`), since
-/// that only covers `.planning`/`.planning/slugaudit`, not the file inside.
+/// Opens with `SQLITE_OPEN_NOFOLLOW` so a path that is (or becomes) a
+/// symlink is rejected atomically by SQLite rather than by a separate
+/// `lstat` that races with the open. The pre-check remains as a clearer
+/// error for the common case where the path is already a symlink.
 fn reject_symlink(path: &Path) -> Result<(), StoreError> {
     if path
         .symlink_metadata()
@@ -28,6 +34,30 @@ fn reject_symlink(path: &Path) -> Result<(), StoreError> {
     {
         return Err(StoreError::Symlink);
     }
+    Ok(())
+}
+
+fn open_flags(read_write: bool) -> OpenFlags {
+    let mut flags = OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    if read_write {
+        flags |= OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE;
+    } else {
+        flags |= OpenFlags::SQLITE_OPEN_READ_ONLY;
+    }
+    flags
+}
+
+/// Restrict a newly created database to owner read/write. Called only when
+/// the file did not exist before open, so existing admin choices are kept.
+#[cfg(unix)]
+fn set_private_permissions(path: &Path) -> Result<(), StoreError> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(PRIVATE_MODE))
+        .map_err(StoreError::Permissions)
+}
+
+#[cfg(not(unix))]
+fn set_private_permissions(_path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
@@ -42,13 +72,12 @@ fn reject_symlink(path: &Path) -> Result<(), StoreError> {
 /// (including when the database is from a newer, unsupported version).
 pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
     reject_symlink(path)?;
-    let mut connection = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(StoreError::Open)?;
+    let created = !path.exists();
+    let mut connection =
+        Connection::open_with_flags(path, open_flags(true)).map_err(StoreError::Open)?;
+    if created {
+        set_private_permissions(path)?;
+    }
     configure(&connection)?;
     super::migrations::ensure_current_schema(&mut connection)?;
     Ok(connection)
@@ -65,11 +94,8 @@ pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
 /// or if the busy timeout can't be configured.
 pub fn open_read_only(path: &Path) -> Result<Connection, StoreError> {
     reject_symlink(path)?;
-    let connection = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(StoreError::Open)?;
+    let connection =
+        Connection::open_with_flags(path, open_flags(false)).map_err(StoreError::Open)?;
     connection
         .busy_timeout(BUSY_TIMEOUT)
         .map_err(StoreError::Configure)?;
@@ -141,5 +167,16 @@ mod tests {
             !real_target.exists(),
             "the symlink target must never be created/opened"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_newly_created_database_gets_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("project.db");
+        open_read_write(&path).expect("create database");
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, PRIVATE_MODE);
     }
 }

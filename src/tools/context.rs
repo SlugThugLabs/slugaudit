@@ -1,7 +1,8 @@
 use crate::{parse, project, store, sync};
 use rmcp::ErrorData;
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A project brought fully up to date, ready for a tool to query. Every
 /// tool calls this first — there is no separate sync/rebuild entry point
@@ -9,6 +10,8 @@ use std::path::{Path, PathBuf};
 pub struct SyncedProject {
     pub database_path: PathBuf,
     pub revision_id: String,
+    #[allow(dead_code)]
+    pub root: PathBuf,
 }
 
 /// Resolves the active project from `path`, publishes a fresh revision,
@@ -27,6 +30,7 @@ pub fn ensure_synced(path: &str) -> Result<SyncedProject, ErrorData> {
 
     let mut connection = store::open_read_write(&database_path)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    ensure_project_row(&connection, root.as_path())?;
     let report = sync::publish(&mut connection, root.as_path(), parse::PACK_VERSION)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
     drop(connection);
@@ -34,43 +38,75 @@ pub fn ensure_synced(path: &str) -> Result<SyncedProject, ErrorData> {
     Ok(SyncedProject {
         database_path,
         revision_id: report.revision_id,
+        root: root.as_path().to_path_buf(),
     })
 }
 
-/// Opens a read-only connection and confirms it still sees the exact
-/// revision `synced` verified — never the caller's job to remember. Sync
-/// and read happen on separate connections (a read-only one can't run
-/// `sync::publish`, which needs to write), so a concurrent publish from
-/// another process in the gap between them is possible in principle. This
-/// closes that gap by detecting it rather than silently returning data
-/// under a stale label: if the current revision has moved on, the call
-/// fails explicitly instead of returning a response whose `revision_id`
-/// doesn't match what was actually read.
+/// Runs `f` inside one deferred read transaction that first pins the
+/// revision `synced` claimed. Verification and every subsequent read share
+/// that snapshot, so a concurrent publish cannot change what the tool sees
+/// mid-response — the call either observes the expected revision entirely
+/// or fails the revision check before any tool data is read.
 ///
 /// # Errors
 ///
-/// Returns an error if the connection can't be opened, or if the current
-/// revision no longer matches `synced.revision_id`.
-pub fn open_verified_read_only(synced: &SyncedProject) -> Result<Connection, ErrorData> {
-    let connection = store::open_read_only(&synced.database_path)
+/// Returns an error if the connection can't be opened, the revision no
+/// longer matches, or `f` itself fails.
+pub fn with_verified_read<T>(
+    synced: &SyncedProject,
+    f: impl FnOnce(&Transaction<'_>) -> Result<T, ErrorData>,
+) -> Result<T, ErrorData> {
+    let mut connection = store::open_read_only(&synced.database_path)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    verify_revision_matches(&connection, &synced.revision_id)?;
-    Ok(connection)
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Deferred)
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    verify_revision_matches(&tx, &synced.revision_id)?;
+    let result = f(&tx)?;
+    tx.commit()
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    Ok(result)
 }
 
-/// The `finding` tool's counterpart to [`open_verified_read_only`] — writes
-/// still need a read-write connection, but the same concurrent-publish gap
-/// applies and gets the same explicit-failure treatment.
+/// Write-side counterpart: one immediate transaction holds the revision
+/// check, any lookups, validation, and the write together.
 ///
 /// # Errors
 ///
-/// Returns an error if the connection can't be opened, or if the current
-/// revision no longer matches `synced.revision_id`.
-pub fn open_verified_read_write(synced: &SyncedProject) -> Result<Connection, ErrorData> {
-    let connection = store::open_read_write(&synced.database_path)
+/// Returns an error if the connection can't be opened, the revision no
+/// longer matches, or `f` itself fails.
+pub fn with_verified_write<T>(
+    synced: &SyncedProject,
+    f: impl FnOnce(&Transaction<'_>) -> Result<T, ErrorData>,
+) -> Result<T, ErrorData> {
+    let mut connection = store::open_read_write(&synced.database_path)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    verify_revision_matches(&connection, &synced.revision_id)?;
-    Ok(connection)
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    verify_revision_matches(&tx, &synced.revision_id)?;
+    let result = f(&tx)?;
+    tx.commit()
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    Ok(result)
+}
+
+fn ensure_project_row(connection: &Connection, root: &Path) -> Result<(), ErrorData> {
+    let root_path = root.to_string_lossy();
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+        });
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO project (\
+                id, project_id, root_path, contract_version, schema_version, created_at_unix\
+             ) VALUES (1, 'default', ?1, 1, 1, ?2)",
+            rusqlite::params![root_path.as_ref(), created_at],
+        )
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    Ok(())
 }
 
 fn verify_revision_matches(
@@ -93,6 +129,35 @@ fn verify_revision_matches(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod test_helpers {
+    use super::*;
+
+    pub fn open_verified_read_only(synced: &SyncedProject) -> Result<Connection, ErrorData> {
+        let mut connection = store::open_read_only(&synced.database_path)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        verify_revision_matches(&tx, &synced.revision_id)?;
+        tx.commit()
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        Ok(connection)
+    }
+
+    pub fn open_verified_read_write(synced: &SyncedProject) -> Result<Connection, ErrorData> {
+        let mut connection = store::open_read_write(&synced.database_path)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        verify_revision_matches(&tx, &synced.revision_id)?;
+        tx.commit()
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        Ok(connection)
+    }
 }
 
 #[cfg(test)]

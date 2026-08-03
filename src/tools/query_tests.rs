@@ -80,7 +80,10 @@ fn empty_sql_is_a_typed_error() {
 #[test]
 fn oversized_sql_is_a_typed_error() {
     let project = activated_project(&[]);
-    let huge = format!("SELECT {}", "1+".repeat(MAX_QUERY_LENGTH));
+    let huge = format!(
+        "SELECT {}",
+        "1+".repeat(crate::model::ResourceLimits::default().max_query_sql_bytes)
+    );
     let result = ask(&project, &huge);
     assert!(result.is_err());
 }
