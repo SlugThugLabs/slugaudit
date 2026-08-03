@@ -1,8 +1,8 @@
 use crate::tools;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rmcp::model::{ProtocolVersion, ServerCapabilities, ServerInfo};
-use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
+use rmcp::model::{Meta, ProgressNotificationParam, ProgressToken, ProtocolVersion, ServerCapabilities, ServerInfo};
+use rmcp::{ErrorData, Peer, RoleServer, ServerHandler, tool, tool_handler, tool_router};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::Instrument;
@@ -70,14 +70,39 @@ impl Default for SlugAuditServer {
 /// the blocking closure via `blocking_span.enter()`, a sync guard, since
 /// `spawn_blocking` runs on a thread the async instrumentation above does
 /// not automatically follow.
+///
+/// When `progress` is `Some`, sends MCP progress notifications at three
+/// points: "queued" before waiting on the semaphore, "working" once the
+/// permit is acquired, and "completed" when the blocking work finishes
+/// (whether it succeeded or failed). This lets the MCP consumer distinguish
+/// a call that is queued behind the semaphore bound from one that is
+/// actively running, rather than appearing frozen. The notifications are
+/// best-effort: send failures are silently ignored so a broken progress
+/// channel can never turn a successful tool call into an error.
 async fn run_blocking<T: Send + 'static>(
     semaphore: Arc<Semaphore>,
     tool_name: &'static str,
     work: impl FnOnce() -> Result<T, ErrorData> + Send + 'static,
+    progress: Option<(Peer<RoleServer>, ProgressToken)>,
 ) -> Result<T, ErrorData> {
     let span = tracing::info_span!("tool_call", tool = tool_name);
     let started = std::time::Instant::now();
     let blocking_span = span.clone();
+
+    // Notify the consumer that the call has been received and is either
+    // queued (waiting for a blocking permit) or about to start. Sending
+    // this before the semaphore acquire is what makes a queued call
+    // visible instead of silent.
+    if let Some((ref peer, ref token)) = progress {
+        let _ = peer
+            .notify_progress(
+                ProgressNotificationParam::new(token.clone(), 0.0)
+                    .with_total(1.0)
+                    .with_message(format!("{tool_name} queued")),
+            )
+            .await;
+    }
+
     let result = async {
         tracing::info!("tool call started");
         // `acquire_owned` returns an `OwnedSemaphorePermit` that holds an
@@ -91,6 +116,20 @@ async fn run_blocking<T: Send + 'static>(
             .acquire_owned()
             .await
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+
+        // Now that we hold a permit, the call is actively running on a
+        // blocking thread. Tell the consumer so it can update any visible
+        // queue/progress state.
+        if let Some((ref peer, ref token)) = progress {
+            let _ = peer
+                .notify_progress(
+                    ProgressNotificationParam::new(token.clone(), 0.5)
+                        .with_total(1.0)
+                        .with_message(format!("{tool_name} working")),
+                )
+                .await;
+        }
+
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let _guard = blocking_span.enter();
@@ -101,6 +140,20 @@ async fn run_blocking<T: Send + 'static>(
     }
     .instrument(span.clone())
     .await;
+
+    // Final progress notification: the work is done and the response is
+    // about to be returned. Progress reaches 1.0 whether the work succeeded
+    // or failed — "completed" describes the operation's lifecycle, not its
+    // outcome.
+    if let Some((ref peer, ref token)) = progress {
+        let _ = peer
+            .notify_progress(
+                ProgressNotificationParam::new(token.clone(), 1.0)
+                    .with_total(1.0)
+                    .with_message(format!("{tool_name} completed")),
+            )
+            .await;
+    }
 
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let _guard = span.enter();
@@ -120,12 +173,15 @@ impl SlugAuditServer {
     )]
     async fn report(
         &self,
+        meta: Meta,
+        peer: Peer<RoleServer>,
         request: Parameters<tools::ReportRequest>,
     ) -> Result<Json<tools::ReportResponse>, ErrorData> {
         let cache = self.sync_recency.clone();
+        let progress = progress_target(meta, &peer);
         run_blocking(Arc::clone(&self.blocking_ops), "report", move || {
             tools::report(&request, &cache)
-        })
+        }, progress)
         .await
     }
 
@@ -134,12 +190,15 @@ impl SlugAuditServer {
     )]
     async fn query(
         &self,
+        meta: Meta,
+        peer: Peer<RoleServer>,
         request: Parameters<tools::QueryRequest>,
     ) -> Result<Json<tools::QueryResponse>, ErrorData> {
         let cache = self.sync_recency.clone();
+        let progress = progress_target(meta, &peer);
         run_blocking(Arc::clone(&self.blocking_ops), "query", move || {
             tools::query(&request, &cache)
-        })
+        }, progress)
         .await
     }
 
@@ -148,12 +207,15 @@ impl SlugAuditServer {
     )]
     async fn structure(
         &self,
+        meta: Meta,
+        peer: Peer<RoleServer>,
         request: Parameters<tools::StructureRequest>,
     ) -> Result<Json<tools::StructureResponse>, ErrorData> {
         let cache = self.sync_recency.clone();
+        let progress = progress_target(meta, &peer);
         run_blocking(Arc::clone(&self.blocking_ops), "structure", move || {
             tools::structure(&request, &cache)
-        })
+        }, progress)
         .await
     }
 
@@ -162,14 +224,26 @@ impl SlugAuditServer {
     )]
     async fn finding(
         &self,
+        meta: Meta,
+        peer: Peer<RoleServer>,
         request: Parameters<tools::FindingRequest>,
     ) -> Result<Json<tools::FindingResponse>, ErrorData> {
         let cache = self.sync_recency.clone();
+        let progress = progress_target(meta, &peer);
         run_blocking(Arc::clone(&self.blocking_ops), "finding", move || {
             tools::finding(&request, &cache)
-        })
+        }, progress)
         .await
     }
+}
+
+/// Builds the optional progress target from a request's `Meta` and the
+/// server peer. Returns `Some` only when the client supplied a progress
+/// token, which signals that it understands MCP progress notifications and
+/// would like to receive them for this call.
+fn progress_target(meta: Meta, peer: &Peer<RoleServer>) -> Option<(Peer<RoleServer>, ProgressToken)> {
+    meta.get_progress_token()
+        .map(|token| (peer.clone(), token))
 }
 
 #[tool_handler(router = self.tool_router)]
