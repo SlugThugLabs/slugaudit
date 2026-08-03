@@ -20,14 +20,53 @@ operations — but the user-facing experience is incomplete.
 - Concurrent reads see consistent revisions; concurrent publishes use CAS
 - Resource limits on all operations (files, memory, responses, query steps)
 - Four MCP tools: `report`, `query`, `structure`, `finding`
+- Dependency-edge resolution (`src/graph/`): captured `Import` evidence is
+  resolved into `dependency_edges` rows on every publish. Python (relative
+  imports), Rust (`crate::`/`super::`/`self::` paths), and JS/TS (relative
+  imports) resolve to real project files when one exists; everything else —
+  unrecognized languages, absolute/bare-name imports, unmatched relative
+  imports — is recorded as `External`/`Unresolved` rather than dropped, so
+  `query`'s recursive-CTE traversal always sees the full picture, resolved
+  or not. See "Dependency-edge resolution scope" below for exact boundaries.
 
 **What's not yet implemented:**
 - No enable/disable *command* — see "Activation ownership" below, this
   crate deliberately never creates or removes the activation marker itself
 - No background sync (every tool call re-samples everything)
-- No dependency graph traversal (edges table exists but stays empty)
 - No production documentation (install, MCP setup, recovery, upgrade)
 - No performance baseline or adversarial testing
+
+### Dependency-edge resolution scope
+
+`src/graph/` resolves what it can prove from syntax and the project's own
+known file set — it does not run a real module resolver for any language,
+and does not attempt cross-language resolution at all (a Python file calling
+into a Rust extension, for instance, is out of scope; it isn't expressible
+as a single import statement's `source` text in the first place). Concretely:
+
+- **Python**: only relative imports (`from . import x`, `from ..pkg import
+  y`) resolve; absolute imports (`import os`, `from collections import X`)
+  are always `External` — without a configured package root there is no
+  reliable way to distinguish a project-absolute import from a stdlib/
+  third-party one.
+- **Rust**: only `crate::`/`super::`/`self::` paths resolve, assumed to be
+  rooted at a `src/` directory. A `use` path's trailing segments may name
+  an item (a function/type/const) rather than a further nested module —
+  the resolver tries the full segment chain as a directory path first, then
+  progressively shorter prefixes, since there's no semantic information
+  available to tell which case applies. `super::`/`self::` resolution is a
+  directory-based heuristic (parent/same directory of the importing file),
+  not a real module-tree walk, and is always reported at `"Low"`
+  confidence for that reason. Multi-crate workspaces aren't specially
+  handled.
+- **JavaScript/TypeScript**: only relative imports (`./x`, `../x`) resolve,
+  by trying common extensions and directory-index forms against the known
+  file set. Bare package names are always `External` — no `node_modules`
+  resolution is attempted.
+- Every other language, and every import that doesn't match a rule above,
+  is recorded as `Unresolved` (if it looked project-relative but nothing
+  matched) or `External` (if it looks like a third-party/stdlib reference)
+  — the raw import statement text is always preserved either way.
 
 ### Activation ownership
 
@@ -45,7 +84,9 @@ human-facing control described in `ARCHITECTURE.md`.
 
 **Planned for future versions:**
 - Background activation (pre-sync before first tool call)
-- Dependency resolution (populate edges table for graph queries)
+- Broader dependency resolution: more languages, real module-resolution
+  semantics (e.g. Rust workspace/`mod.rs` awareness, JS `node_modules`)
+  rather than the syntax-and-file-existence heuristics described above
 - Optimized incremental sync (skip unchanged files)
 - Human interface controls and guides
 

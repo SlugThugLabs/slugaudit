@@ -10,6 +10,7 @@ mod publish;
 mod publish_diff;
 mod race_hook;
 mod revision;
+mod revision_edges;
 mod sample;
 
 pub use discovery::{DiscoveredFile, DiscoveryError, FileKind, discover};

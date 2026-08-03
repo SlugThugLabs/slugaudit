@@ -238,3 +238,7 @@ mod tests;
 #[cfg(test)]
 #[path = "publish_race_tests.rs"]
 mod race_tests;
+
+#[cfg(test)]
+#[path = "publish_edges_tests.rs"]
+mod edges_tests;

@@ -9,11 +9,15 @@ use tokio::sync::Semaphore;
 const INSTRUCTIONS: &str = "SlugAudit supplies searchable, trustworthy evidence about a codebase — \
     parsed structure, symbols, imports, diagnostics, and prior AI-reviewed findings. Use `report` \
     for an automatic snapshot of what evidence exists, `query` for arbitrary read-only SQL against \
-    the project's own database (search, symbol/import/diagnostic lookup, and source retrieval all \
-    reach through it), `structure` for Tree-sitter structural pattern matching, and `finding` to \
-    persist a conclusion you have actually reviewed. Dependency graph resolution and background \
-    activation are reserved for future versions. SlugAudit performs no automated risk detection \
-    and reaches no conclusions itself: it supplies evidence, the calling AI performs all judgment.";
+    the project's own database (search, symbol/import/diagnostic lookup, dependency traversal via \
+    recursive CTEs over dependency_edges, and source retrieval all reach through it), `structure` \
+    for Tree-sitter structural pattern matching, and `finding` to persist a conclusion you have \
+    actually reviewed. Dependency edges are resolved for Python (relative imports), Rust \
+    (crate::/super::/self:: paths), and JS/TS (relative imports) — other languages and \
+    absolute/external references are recorded as Unresolved/External, never silently dropped. \
+    Background activation is reserved for a future version. SlugAudit performs no automated risk \
+    detection and reaches no conclusions itself: it supplies evidence, the calling AI performs all \
+    judgment.";
 
 /// Every tool handler does filesystem discovery, SQLite I/O, and (on first
 /// sync) Tree-sitter parsing — all synchronous, potentially slow work that

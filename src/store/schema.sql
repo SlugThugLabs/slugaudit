@@ -97,8 +97,10 @@ CREATE TABLE IF NOT EXISTS dependency_edges (
     from_file_id INTEGER NOT NULL REFERENCES files (id) ON DELETE CASCADE,
     to_file_id INTEGER REFERENCES files (id) ON DELETE CASCADE,
     raw_import_text TEXT NOT NULL,
-    resolution_kind TEXT NOT NULL,
-    confidence TEXT
+    -- Mirrors src/graph/resolve.rs::ResolutionKind::as_sql_text() — keep
+    -- both in sync if a variant is ever added.
+    resolution_kind TEXT NOT NULL CHECK (resolution_kind IN ('Resolved', 'Unresolved', 'External')),
+    confidence TEXT CHECK (confidence IS NULL OR confidence IN ('High', 'Low'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_edges_from ON dependency_edges (from_file_id);

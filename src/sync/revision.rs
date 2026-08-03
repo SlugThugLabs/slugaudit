@@ -1,6 +1,8 @@
+use super::revision_edges;
 use crate::evidence::{self, EvidenceRow};
 use crate::model::{EvidenceItem, ParserRun, SourceIdentity};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
@@ -71,8 +73,18 @@ pub fn publish_revision(
         tx.execute("DELETE FROM files WHERE path = ?1", params![path])?;
     }
 
+    let mut upserted_ids = Vec::with_capacity(upserts.len());
     for file in upserts {
-        upsert_file(&tx, file, revision_db_id)?;
+        upserted_ids.push(upsert_file(&tx, file, revision_db_id)?);
+    }
+
+    // Edges are resolved after every upsert/deletion has landed, against
+    // the complete post-transaction path set — so a file added earlier in
+    // this same loop is a valid resolution target for one added later.
+    let all_paths = revision_edges::known_paths(&tx)?;
+    let all_paths_ref: HashSet<&str> = all_paths.iter().map(String::as_str).collect();
+    for (file, file_id) in upserts.iter().zip(upserted_ids.iter().copied()) {
+        revision_edges::resolve_and_store(&tx, file, file_id, &all_paths_ref)?;
     }
 
     let touched_paths: Vec<&str> = upserts
@@ -120,7 +132,7 @@ fn upsert_file(
     tx: &rusqlite::Transaction<'_>,
     file: &FileRecord,
     revision_db_id: i64,
-) -> Result<(), RevisionError> {
+) -> Result<i64, RevisionError> {
     file.run
         .validate()
         .map_err(|reason| RevisionError::InvalidParserRun {
@@ -172,7 +184,7 @@ fn upsert_file(
     for item in &file.evidence {
         insert_evidence(tx, file_id, &evidence::to_row(item))?;
     }
-    Ok(())
+    Ok(file_id)
 }
 
 /// A finding is stale the moment its file's content hash no longer matches

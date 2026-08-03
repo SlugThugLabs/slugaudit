@@ -31,13 +31,17 @@ the response comfortably.
 
 The AI-facing tool surface is four tools: `report` (automatic project
 snapshot), `query` (arbitrary read-only SQL against the project's own
-SQLite file — search, symbol/import/diagnostic lookup, and source retrieval
-all reach through this one tool; `dependency_edges` rows are reserved for a
-future resolver and stay empty today), `structure` (Tree-sitter structural
-pattern matching for what normalized evidence doesn't cover), and `finding`
-(the one write, an AI-reviewed conclusion). `query`'s safety comes from a
-read-only connection and a row cap, not from parsing or restricting query
-text.
+SQLite file — search, symbol/import/diagnostic lookup, dependency traversal
+via recursive CTEs over `dependency_edges`, and source retrieval all reach
+through this one tool), `structure` (Tree-sitter structural pattern matching
+for what normalized evidence doesn't cover), and `finding` (the one write,
+an AI-reviewed conclusion). `query`'s safety comes from a read-only
+connection and a row cap, not from parsing or restricting query text.
+`dependency_edges` is populated by `src/graph/` on every publish, resolving
+Python/Rust/JS-TS relative and crate-internal imports against the project's
+own file set — see README.md's "Dependency-edge resolution scope" for
+exactly which import forms resolve and which are recorded `External`/
+`Unresolved`.
 
 ## The database is a mirror, not a source of truth
 
@@ -65,17 +69,22 @@ src/server.rs    MCP transport and server lifecycle
 src/tools/       one module per tool: report, query, structure, finding
 src/project/     project activation and root validation
 src/sync/        discovery, hashing, manifest diff, atomic revision publish
+src/graph/       import-evidence → dependency_edges resolution
 src/parse/       language detection and Tree-sitter pack calls
 src/evidence/    neutral extraction and evidence normalization
 src/store/       SQLite schema, connections, migrations
 src/model/       shared typed records and response metadata
 ```
 
-There is no separate `src/search/` or `src/graph/` module. Bounded search
-folded into `query` (an FTS5/index layer may back it later without changing
-the tool contract). Dependency-graph resolution (imports → `dependency_edges`
-rows) is not built yet — import evidence is captured but not resolved into
-edges.
+There is no separate `src/search/` module. Bounded search is folded into
+`query` (an FTS5/index layer may back it later without changing the tool
+contract). `src/graph/` resolves each file's captured `Import` evidence into
+`dependency_edges` rows as part of the same publish transaction that writes
+`files`/`evidence` — reachable only through `sync::revision::publish_revision`,
+never a second write path. It parses the raw import statement text per
+language (Python/Rust/JS-TS today) and checks candidate paths against the
+project's own known file set; anything it can't place is `Unresolved` or
+`External`, never dropped. See README.md for the exact per-language scope.
 
 Each module owns one reason to change. Tool handlers orchestrate; they do not
 parse source, build SQL, or format database rows themselves.
