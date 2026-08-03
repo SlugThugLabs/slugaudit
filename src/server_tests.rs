@@ -3,15 +3,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[tokio::test]
 async fn run_blocking_propagates_a_successful_result() {
-    let semaphore = Semaphore::new(4);
-    let result = run_blocking(&semaphore, "test", || Ok::<_, ErrorData>(42)).await;
+    let semaphore = Arc::new(Semaphore::new(4));
+    let result = run_blocking(Arc::clone(&semaphore), "test", || Ok::<_, ErrorData>(42)).await;
     assert_eq!(result.expect("ok"), 42);
 }
 
 #[tokio::test]
 async fn run_blocking_propagates_the_tools_own_typed_error() {
-    let semaphore = Semaphore::new(4);
-    let result: Result<(), ErrorData> = run_blocking(&semaphore, "test", || {
+    let semaphore = Arc::new(Semaphore::new(4));
+    let result: Result<(), ErrorData> = run_blocking(Arc::clone(&semaphore), "test", || {
         Err(ErrorData::invalid_params("bad request", None))
     })
     .await;
@@ -21,8 +21,8 @@ async fn run_blocking_propagates_the_tools_own_typed_error() {
 
 #[tokio::test]
 async fn a_panic_inside_the_blocking_closure_surfaces_as_a_typed_error_not_a_crash() {
-    let semaphore = Semaphore::new(4);
-    let result: Result<(), ErrorData> = run_blocking(&semaphore, "test", || panic!("boom")).await;
+    let semaphore = Arc::new(Semaphore::new(4));
+    let result: Result<(), ErrorData> = run_blocking(Arc::clone(&semaphore), "test", || panic!("boom")).await;
     assert!(
         result.is_err(),
         "a panicking tool must fail the call, not take down the process"
@@ -48,7 +48,7 @@ async fn the_semaphore_bounds_concurrent_blocking_work() {
         let current = Arc::clone(&current);
         let peak = Arc::clone(&peak);
         handles.push(tokio::spawn(async move {
-            run_blocking(&semaphore, "test", move || {
+            run_blocking(Arc::clone(&semaphore), "test", move || {
                 let now = current.fetch_add(1, Ordering::SeqCst) + 1;
                 peak.fetch_max(now, Ordering::SeqCst);
                 std::thread::sleep(std::time::Duration::from_millis(20));

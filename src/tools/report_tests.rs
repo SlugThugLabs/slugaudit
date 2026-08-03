@@ -16,9 +16,12 @@ fn reports_real_counts_for_an_active_project() {
     )
     .expect("write fixture");
 
-    let response = report(&Parameters(ReportRequest {
-        path: project.path().to_string_lossy().into_owned(),
-    }))
+    let response = report(
+        &Parameters(ReportRequest {
+            path: project.path().to_string_lossy().into_owned(),
+        }),
+        &SyncRecencyCache::new(),
+    )
     .expect("report succeeds");
 
     assert_eq!(response.0.file_count, 1);
@@ -43,8 +46,11 @@ fn reports_real_counts_for_an_active_project() {
 #[test]
 fn an_inactive_project_is_a_typed_error_not_a_panic() {
     let project = tempfile::tempdir().expect("project dir");
-    let result = report(&Parameters(ReportRequest {
-        path: project.path().to_string_lossy().into_owned(),
-    }));
+    let result = report(
+        &Parameters(ReportRequest {
+            path: project.path().to_string_lossy().into_owned(),
+        }),
+        &SyncRecencyCache::new(),
+    );
     assert!(result.is_err());
 }

@@ -7,6 +7,8 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::Instrument;
 
+use crate::tools::SyncRecencyCache;
+
 const INSTRUCTIONS: &str = "SlugAudit supplies searchable, trustworthy evidence about a codebase — \
     parsed structure, symbols, imports, diagnostics, and prior AI-reviewed findings. Use `report` \
     for an automatic snapshot of what evidence exists, `query` for arbitrary read-only SQL against \
@@ -32,6 +34,7 @@ const MAX_CONCURRENT_BLOCKING_OPS: usize = 8;
 pub struct SlugAuditServer {
     tool_router: ToolRouter<Self>,
     blocking_ops: Arc<Semaphore>,
+    sync_recency: SyncRecencyCache,
 }
 
 impl SlugAuditServer {
@@ -40,6 +43,7 @@ impl SlugAuditServer {
         Self {
             tool_router: Self::tool_router(),
             blocking_ops: Arc::new(Semaphore::new(MAX_CONCURRENT_BLOCKING_OPS)),
+            sync_recency: SyncRecencyCache::new(),
         }
     }
 }
@@ -67,7 +71,7 @@ impl Default for SlugAuditServer {
 /// `spawn_blocking` runs on a thread the async instrumentation above does
 /// not automatically follow.
 async fn run_blocking<T: Send + 'static>(
-    semaphore: &Semaphore,
+    semaphore: Arc<Semaphore>,
     tool_name: &'static str,
     work: impl FnOnce() -> Result<T, ErrorData> + Send + 'static,
 ) -> Result<T, ErrorData> {
@@ -76,11 +80,19 @@ async fn run_blocking<T: Send + 'static>(
     let blocking_span = span.clone();
     let result = async {
         tracing::info!("tool call started");
-        let _permit = semaphore
-            .acquire()
+        // `acquire_owned` returns an `OwnedSemaphorePermit` that holds an
+        // `Arc` clone of the semaphore, so the permit is `'static` and can
+        // be moved into `spawn_blocking`. This matters for cancellation:
+        // if the outer tool-call future is cancelled, the permit stays
+        // held inside the (still-running) blocking task instead of being
+        // returned to the pool prematurely — keeping the semaphore's bound
+        // honest for the full duration of the work.
+        let permit = semaphore
+            .acquire_owned()
             .await
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
         tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             let _guard = blocking_span.enter();
             work()
         })
@@ -110,8 +122,9 @@ impl SlugAuditServer {
         &self,
         request: Parameters<tools::ReportRequest>,
     ) -> Result<Json<tools::ReportResponse>, ErrorData> {
-        run_blocking(&self.blocking_ops, "report", move || {
-            tools::report(&request)
+        let cache = self.sync_recency.clone();
+        run_blocking(Arc::clone(&self.blocking_ops), "report", move || {
+            tools::report(&request, &cache)
         })
         .await
     }
@@ -123,7 +136,11 @@ impl SlugAuditServer {
         &self,
         request: Parameters<tools::QueryRequest>,
     ) -> Result<Json<tools::QueryResponse>, ErrorData> {
-        run_blocking(&self.blocking_ops, "query", move || tools::query(&request)).await
+        let cache = self.sync_recency.clone();
+        run_blocking(Arc::clone(&self.blocking_ops), "query", move || {
+            tools::query(&request, &cache)
+        })
+        .await
     }
 
     #[tool(
@@ -133,8 +150,9 @@ impl SlugAuditServer {
         &self,
         request: Parameters<tools::StructureRequest>,
     ) -> Result<Json<tools::StructureResponse>, ErrorData> {
-        run_blocking(&self.blocking_ops, "structure", move || {
-            tools::structure(&request)
+        let cache = self.sync_recency.clone();
+        run_blocking(Arc::clone(&self.blocking_ops), "structure", move || {
+            tools::structure(&request, &cache)
         })
         .await
     }
@@ -146,8 +164,9 @@ impl SlugAuditServer {
         &self,
         request: Parameters<tools::FindingRequest>,
     ) -> Result<Json<tools::FindingResponse>, ErrorData> {
-        run_blocking(&self.blocking_ops, "finding", move || {
-            tools::finding(&request)
+        let cache = self.sync_recency.clone();
+        run_blocking(Arc::clone(&self.blocking_ops), "finding", move || {
+            tools::finding(&request, &cache)
         })
         .await
     }

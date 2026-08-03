@@ -1,8 +1,49 @@
 use crate::{parse, project, store, sync};
 use rmcp::ErrorData;
 use rusqlite::{Connection, Transaction, TransactionBehavior};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// If a project was successfully synced within this window, `ensure_synced`
+/// skips the full publish (discovery + sample + diff) and returns the
+/// current revision id directly. The caller's `with_verified_read` /
+/// `with_verified_write` revision check catches any concurrent publish
+/// that landed in the window, so correctness is preserved — this is purely
+/// a performance optimization for rapid successive tool calls against a
+/// quiescent project.
+const RECENCY_WINDOW: Duration = Duration::from_secs(5);
+
+/// Thread-safe cache of (project root → last successful sync time). One
+/// instance lives on `SlugAuditServer` and is cloned into each tool call's
+/// `spawn_blocking` closure. Lost on process restart (first call after
+/// restart does a full sync — the current behaviour).
+#[derive(Clone, Default)]
+pub struct SyncRecencyCache {
+    inner: Arc<Mutex<HashMap<PathBuf, Instant>>>,
+}
+
+impl SyncRecencyCache {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns true if `root` was synced within the recency window.
+    fn is_recent(&self, root: &Path) -> bool {
+        let guard = self.inner.lock().unwrap();
+        guard
+            .get(root)
+            .is_some_and(|instant| instant.elapsed() < RECENCY_WINDOW)
+    }
+
+    /// Records that `root` was just synced successfully.
+    fn record(&self, root: PathBuf) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.insert(root, Instant::now());
+    }
+}
 
 /// A project brought fully up to date, ready for a tool to query. Every
 /// tool calls this first — there is no separate sync/rebuild entry point
@@ -19,14 +60,39 @@ pub struct SyncedProject {
 /// current (nothing changed on disk), this still verifies that rather than
 /// trusting a cached assumption.
 ///
+/// When `cache` reports a successful sync for this project within the
+/// recency window, the full publish is skipped and the current revision
+/// id is read directly from the database instead. This avoids paying a
+/// filesystem walk + re-hash on every tool call when the project is
+/// quiescent. The caller's revision check in `with_verified_read` /
+/// `with_verified_write` remains the correctness boundary.
+///
 /// # Errors
 ///
 /// Returns an error if `path` isn't inside an active project, or if sync
 /// itself fails.
-pub fn ensure_synced(path: &str) -> Result<SyncedProject, ErrorData> {
+pub fn ensure_synced(
+    path: &str,
+    cache: &SyncRecencyCache,
+) -> Result<SyncedProject, ErrorData> {
     let root = project::find_project_root(Path::new(path))
         .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
     let database_path = project::database_path(&root);
+
+    // Recency short-circuit: skip the full publish (discovery + sample +
+    // diff) when this project was synced recently. A concurrent publish
+    // that landed inside the window is caught by the revision check in
+    // with_verified_read / with_verified_write, so this is safe.
+    if cache.is_recent(root.as_path()) {
+        let connection = store::open_read_only(&database_path)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        let revision_id = current_revision_id(&connection)?;
+        return Ok(SyncedProject {
+            database_path,
+            revision_id,
+            root: root.as_path().to_path_buf(),
+        });
+    }
 
     let mut connection = store::open_read_write(&database_path)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -34,6 +100,8 @@ pub fn ensure_synced(path: &str) -> Result<SyncedProject, ErrorData> {
     let report = sync::publish(&mut connection, root.as_path(), parse::PACK_VERSION)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
     drop(connection);
+
+    cache.record(root.as_path().to_path_buf());
 
     Ok(SyncedProject {
         database_path,
@@ -133,6 +201,16 @@ fn ensure_project_row(connection: &Connection, root: &Path) -> Result<(), ErrorD
         ));
     }
     Ok(())
+}
+
+fn current_revision_id(connection: &Connection) -> Result<String, ErrorData> {
+    connection
+        .query_row(
+            "SELECT revision_id FROM revisions WHERE is_current = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))
 }
 
 fn verify_revision_matches(

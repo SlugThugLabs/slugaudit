@@ -9,6 +9,7 @@ mod query_value;
 mod report;
 mod structure;
 
+pub use context::{SyncRecencyCache, ensure_synced};
 pub use finding::{FindingRequest, FindingResponse, finding};
 pub use query::{QueryRequest, QueryResponse, query};
 pub use report::{ReportRequest, ReportResponse, report};

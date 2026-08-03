@@ -18,10 +18,13 @@ fn activated_project(files: &[(&str, &[u8])]) -> tempfile::TempDir {
 }
 
 fn ask(project: &tempfile::TempDir, sql: &str) -> Result<QueryResponse, ErrorData> {
-    query(&Parameters(QueryRequest {
-        path: project.path().to_string_lossy().into_owned(),
-        sql: sql.to_owned(),
-    }))
+    query(
+        &Parameters(QueryRequest {
+            path: project.path().to_string_lossy().into_owned(),
+            sql: sql.to_owned(),
+        }),
+        &SyncRecencyCache::new(),
+    )
     .map(|Json(response)| response)
 }
 
@@ -36,6 +39,7 @@ fn ask_with_limits(
             sql: sql.to_owned(),
         }),
         limits,
+        &SyncRecencyCache::new(),
     )
     .map(|Json(response)| response)
 }
