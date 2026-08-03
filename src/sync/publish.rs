@@ -108,9 +108,25 @@ pub fn publish(
         let result = try_publish(connection, root, parser_pack_version);
         match &result {
             Err(error) if is_retryable(error) && attempt + 1 < MAX_CAS_RETRIES => {
+                tracing::info!(attempt, reason = %error, "publish retrying");
                 attempt += 1;
             }
-            _ => return result,
+            Ok(report) => {
+                tracing::info!(
+                    revision_id = report.revision_id,
+                    added = report.added,
+                    modified = report.modified,
+                    deleted = report.deleted,
+                    unchanged = report.unchanged,
+                    retries = attempt,
+                    "publish completed"
+                );
+                return result;
+            }
+            Err(error) => {
+                tracing::warn!(retries = attempt, error = %error, "publish failed");
+                return result;
+            }
         }
     }
 }

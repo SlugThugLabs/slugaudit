@@ -70,6 +70,17 @@ impl ServerProcess {
             .recv_timeout(Duration::from_secs(2))
             .is_ok()
     }
+
+    /// Drains whatever stderr lines have arrived so far (short grace
+    /// period, non-blocking once quiet) into one string, for asserting
+    /// specific diagnostic content landed there.
+    fn stderr_snapshot(&self) -> String {
+        let mut lines = Vec::new();
+        while let Ok(line) = self.stderr_lines.recv_timeout(Duration::from_millis(500)) {
+            lines.push(line);
+        }
+        lines.join("\n")
+    }
 }
 
 impl Drop for ServerProcess {
@@ -197,5 +208,27 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
     assert!(
         server.has_stderr_output(),
         "startup diagnostics should reach stderr"
+    );
+
+    // Structured tracing (src/server.rs's `run_blocking`, src/tools/*.rs)
+    // must actually reach stderr with the fields it claims to record, and
+    // — the point of this whole test file — none of that can leak onto
+    // stdout, which every prior `recv_stdout_line` + `serde_json::from_str`
+    // call above already implicitly guarantees (any stray non-JSON text on
+    // a stdout line would have failed parsing), but assert it explicitly
+    // for the tracing content specifically since that's new since this
+    // test was first written.
+    let stderr = server.stderr_snapshot();
+    assert!(
+        stderr.contains("tool_call") && stderr.contains(r#"tool="report""#),
+        "expected a report tool_call span in stderr, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("report built") && stderr.contains("revision_id"),
+        "expected report's per-tool tracing fields in stderr, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("\"jsonrpc\""),
+        "stderr must never carry JSON-RPC protocol content: {stderr}"
     );
 }

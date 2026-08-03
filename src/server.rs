@@ -5,6 +5,7 @@ use rmcp::model::{ProtocolVersion, ServerCapabilities, ServerInfo};
 use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
+use tracing::Instrument;
 
 const INSTRUCTIONS: &str = "SlugAudit supplies searchable, trustworthy evidence about a codebase — \
     parsed structure, symbols, imports, diagnostics, and prior AI-reviewed findings. Use `report` \
@@ -52,17 +53,51 @@ impl Default for SlugAuditServer {
 /// async task's worker thread, after acquiring a permit that caps how many
 /// such operations run concurrently. `Semaphore::acquire` only errors if
 /// the semaphore has been explicitly closed, which this server never does.
+///
+/// Wraps the whole call — permit wait, blocking work, and outcome — in one
+/// span per tool call, logged to stderr only (see `main.rs`'s subscriber
+/// setup): a start event, then completion/failure with elapsed time. Never
+/// logs `work`'s actual arguments or return value — only the tool name and
+/// timing/outcome, so SQL text, file content, and finding text never reach
+/// the log. `work` itself may add its own fields to the current span (e.g.
+/// revision id, row/edge counts) by calling `tracing::Span::current()`
+/// from inside `tools::*` — the span is entered for the full duration of
+/// the blocking closure via `blocking_span.enter()`, a sync guard, since
+/// spawn_blocking runs on a thread the async instrumentation above does
+/// not automatically follow.
 async fn run_blocking<T: Send + 'static>(
     semaphore: &Semaphore,
+    tool_name: &'static str,
     work: impl FnOnce() -> Result<T, ErrorData> + Send + 'static,
 ) -> Result<T, ErrorData> {
-    let _permit = semaphore
-        .acquire()
-        .await
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    tokio::task::spawn_blocking(work)
+    let span = tracing::info_span!("tool_call", tool = tool_name);
+    let started = std::time::Instant::now();
+    let blocking_span = span.clone();
+    let result = async {
+        tracing::info!("tool call started");
+        let _permit = semaphore
+            .acquire()
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        tokio::task::spawn_blocking(move || {
+            let _guard = blocking_span.enter();
+            work()
+        })
         .await
         .map_err(|error| ErrorData::internal_error(format!("tool task failed: {error}"), None))?
+    }
+    .instrument(span.clone())
+    .await;
+
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let _guard = span.enter();
+    match &result {
+        Ok(_) => tracing::info!(duration_ms = elapsed_ms, "tool call completed"),
+        Err(error) => {
+            tracing::warn!(duration_ms = elapsed_ms, error = %error.message, "tool call failed")
+        }
+    }
+    result
 }
 
 #[tool_router]
@@ -74,7 +109,10 @@ impl SlugAuditServer {
         &self,
         request: Parameters<tools::ReportRequest>,
     ) -> Result<Json<tools::ReportResponse>, ErrorData> {
-        run_blocking(&self.blocking_ops, move || tools::report(&request)).await
+        run_blocking(&self.blocking_ops, "report", move || {
+            tools::report(&request)
+        })
+        .await
     }
 
     #[tool(
@@ -84,7 +122,7 @@ impl SlugAuditServer {
         &self,
         request: Parameters<tools::QueryRequest>,
     ) -> Result<Json<tools::QueryResponse>, ErrorData> {
-        run_blocking(&self.blocking_ops, move || tools::query(&request)).await
+        run_blocking(&self.blocking_ops, "query", move || tools::query(&request)).await
     }
 
     #[tool(
@@ -94,7 +132,10 @@ impl SlugAuditServer {
         &self,
         request: Parameters<tools::StructureRequest>,
     ) -> Result<Json<tools::StructureResponse>, ErrorData> {
-        run_blocking(&self.blocking_ops, move || tools::structure(&request)).await
+        run_blocking(&self.blocking_ops, "structure", move || {
+            tools::structure(&request)
+        })
+        .await
     }
 
     #[tool(
@@ -104,7 +145,10 @@ impl SlugAuditServer {
         &self,
         request: Parameters<tools::FindingRequest>,
     ) -> Result<Json<tools::FindingResponse>, ErrorData> {
-        run_blocking(&self.blocking_ops, move || tools::finding(&request)).await
+        run_blocking(&self.blocking_ops, "finding", move || {
+            tools::finding(&request)
+        })
+        .await
     }
 }
 

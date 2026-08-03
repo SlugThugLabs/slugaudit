@@ -91,6 +91,13 @@ fn query_with_limits(
         limits.max_query_response_bytes,
     )?;
 
+    // Row count and truncation, never the SQL text or the rows themselves.
+    tracing::info!(
+        revision_id,
+        row_count = rows.len(),
+        truncated,
+        "query executed"
+    );
     Ok(Json(QueryResponse {
         revision_id,
         rows,

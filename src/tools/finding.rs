@@ -86,8 +86,14 @@ fn insert_finding(
     )
     .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
 
+    let id = tx.last_insert_rowid();
+    // File, line range, and id are structural metadata about *where* a
+    // finding landed — never the title/description/severity/category
+    // text, which is exactly the AI-authored judgment content that must
+    // stay out of logs.
+    tracing::info!(revision_id, file = request.file, id, "finding recorded");
     Ok(FindingResponse {
-        id: tx.last_insert_rowid(),
+        id,
         revision_id: revision_id.to_owned(),
         source_hash,
         status: "current",

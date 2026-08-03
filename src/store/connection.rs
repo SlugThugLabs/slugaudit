@@ -162,6 +162,24 @@ mod tests {
         assert!(matches!(result, Err(StoreError::Open(_))));
     }
 
+    /// A corrupted/non-SQLite file at the database path must fail closed
+    /// with a typed error, not panic and not silently treat garbage bytes
+    /// as an empty database (SQLite validates lazily on first real access,
+    /// not at `open_with_flags` itself, so this only surfaces once
+    /// `configure` issues its first pragma).
+    #[test]
+    fn a_corrupted_database_file_fails_closed_with_a_typed_error() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("project.db");
+        std::fs::write(&path, b"not a sqlite database, just garbage bytes").expect("write garbage");
+
+        let result = open_read_write(&path);
+        assert!(
+            matches!(result, Err(StoreError::Configure(_))),
+            "expected a typed Configure error, got {result:?}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_symlinked_db_path_is_rejected_for_both_read_write_and_read_only() {

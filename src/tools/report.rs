@@ -98,6 +98,15 @@ fn build_report(
         |row| row.get(0),
     )?;
 
+    // Counts and the revision id only — never row content — attached to
+    // whatever span `run_blocking` (src/server.rs) currently has entered.
+    tracing::info!(
+        revision_id,
+        file_count,
+        parser_failure_count,
+        open_finding_count,
+        "report built"
+    );
     Ok(ReportResponse {
         revision_id,
         file_count,
