@@ -7,8 +7,9 @@
 //! Nothing is ever silently dropped: every import evidence item produces
 //! exactly one edge row.
 use super::reference::ImportReference;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ResolutionKind {
@@ -31,6 +32,41 @@ pub(super) struct Resolution {
     pub(super) kind: ResolutionKind,
     pub(super) confidence: Option<&'static str>,
     pub(super) to_relative_path: Option<String>,
+}
+
+/// Tracks how many imports have been encountered per unsupported language
+/// during this process lifetime, so the first encounter logs a warning and
+/// the total is logged when it changes. This makes unsupported languages
+/// visible (to stderr, where the AI host reads diagnostics) rather than
+/// silently collapsing into `Unresolved` edges that are indistinguishable
+/// from genuinely missing files. `OnceLock` is used rather than a plain
+/// `Mutex` so the map is lazily allocated on first unknown-language
+/// encounter — the common case (only supported languages) pays nothing.
+static UNKNOWN_LANGUAGE_COUNTS: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
+
+/// Records an import from an unsupported language and emits a diagnostic
+/// warning. The first import from a given language logs a warning; each
+/// subsequent one from the same language updates the running tally so the
+/// final logged count reflects the full scale of unsupported-language
+/// imports in this process.
+fn record_unsupported_language(language: &str) {
+    let counts = UNKNOWN_LANGUAGE_COUNTS
+        .get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = counts.lock().unwrap();
+    let entry = guard.entry(language.to_owned()).or_insert(0);
+    *entry += 1;
+    let count = *entry;
+    if count == 1 {
+        tracing::warn!(
+            language,
+            "unsupported language for import resolution; \
+             imports from {} files will be recorded as Unresolved edges \
+             (indistinguishable from genuinely missing files)",
+            language,
+        );
+    } else {
+        tracing::info!(language, count, "unsupported-language import");
+    }
 }
 
 fn unresolved() -> Resolution {
@@ -115,7 +151,10 @@ pub(super) fn resolve(
             resolve_js(reference, importing_relative_path, known_paths)
         }
         "rust" => resolve_rust(reference, importing_relative_path, known_paths),
-        _ => unresolved(),
+        other => {
+            record_unsupported_language(other);
+            unresolved()
+        }
     }
 }
 
