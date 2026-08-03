@@ -107,9 +107,10 @@ fn matches_are_capped_and_truncation_is_reported() {
 
 #[test]
 fn a_pathological_query_is_aborted_by_the_execution_time_budget() {
+    use std::fmt::Write as _;
     let mut content = String::new();
     for index in 0..200 {
-        content.push_str(&format!("pub fn f{index}() {{}}\n"));
+        writeln!(content, "pub fn f{index}() {{}}").expect("write to a String never fails");
     }
     let project = activated_project("lib.rs", content.as_bytes());
     let limits = ResourceLimits {

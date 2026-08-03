@@ -100,6 +100,12 @@ impl Drop for ServerProcess {
     }
 }
 
+// One continuous live server process exercising a real sequence of calls
+// is the point of this test — splitting it into several #[test] fns would
+// each need to re-spawn and re-initialize a fresh process, losing exactly
+// the "state carries correctly across a real session" property this test
+// exists to prove.
+#[allow(clippy::too_many_lines)]
 #[test]
 fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
     let project = tempfile::tempdir().expect("project dir");

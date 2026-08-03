@@ -1,8 +1,8 @@
 //! Targeted coverage for boundary/control-flow conditions that plain
 //! behavioral tests don't pin down precisely enough to catch an off-by-one
 //! or operator-swap regression — added after a `cargo-mutants` run against
-//! this module found these exact gaps. Split out of publish_tests.rs/
-//! publish_race_tests.rs to keep both under the source-size gate.
+//! this module found these exact gaps. Split out of `publish_tests.rs`/
+//! `publish_race_tests.rs` to keep both under the source-size gate.
 use super::*;
 use crate::store::open_read_write;
 use std::fs;

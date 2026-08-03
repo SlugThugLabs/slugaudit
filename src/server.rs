@@ -63,7 +63,7 @@ impl Default for SlugAuditServer {
 /// revision id, row/edge counts) by calling `tracing::Span::current()`
 /// from inside `tools::*` — the span is entered for the full duration of
 /// the blocking closure via `blocking_span.enter()`, a sync guard, since
-/// spawn_blocking runs on a thread the async instrumentation above does
+/// `spawn_blocking` runs on a thread the async instrumentation above does
 /// not automatically follow.
 async fn run_blocking<T: Send + 'static>(
     semaphore: &Semaphore,
@@ -94,7 +94,7 @@ async fn run_blocking<T: Send + 'static>(
     match &result {
         Ok(_) => tracing::info!(duration_ms = elapsed_ms, "tool call completed"),
         Err(error) => {
-            tracing::warn!(duration_ms = elapsed_ms, error = %error.message, "tool call failed")
+            tracing::warn!(duration_ms = elapsed_ms, error = %error.message, "tool call failed");
         }
     }
     result
