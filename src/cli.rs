@@ -79,18 +79,23 @@ impl std::str::FromStr for ConnectAgent {
     }
 }
 
+/// Parses the process arguments into a `Command`. Returns `Err` with a
+/// human-readable message when the input can't be mapped to a command —
+/// currently only an unknown agent name passed to `connect`. The caller
+/// (main) prints the message to stderr and exits non-zero; keeping the
+/// exit out of this function makes the parser testable.
 #[must_use]
-pub fn parse_args(mut args: impl Iterator<Item = String>) -> Command {
+pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
     let Some(first) = args.next() else {
-        return Command::Serve;
+        return Ok(Command::Serve);
     };
     match first.as_str() {
-        "serve" => Command::Serve,
-        "enable" => Command::Enable {
+        "serve" => Ok(Command::Serve),
+        "enable" => Ok(Command::Enable {
             path: args
                 .next()
                 .map_or_else(|| PathBuf::from("."), PathBuf::from),
-        },
+        }),
         "disable" => {
             let mut path = None;
             let mut assume_yes = false;
@@ -101,23 +106,19 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Command {
                     path = Some(PathBuf::from(arg));
                 }
             }
-            Command::Disable {
+            Ok(Command::Disable {
                 path: path.unwrap_or_else(|| PathBuf::from(".")),
                 assume_yes,
-            }
+            })
         }
         "connect" => {
-            let agent = args.next().map(|s| {
-                ConnectAgent::from_str(&s)
-                    .map_err(|e| {
-                        eprintln!("Error: {e}");
-                        std::process::exit(1);
-                    })
-                    .unwrap()
-            });
-            Command::Connect { agent }
+            let agent = args
+                .next()
+                .map(|s| ConnectAgent::from_str(&s))
+                .transpose()?;
+            Ok(Command::Connect { agent })
         }
-        _ => Command::Help,
+        _ => Ok(Command::Help),
     }
 }
 
