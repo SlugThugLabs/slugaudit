@@ -138,22 +138,36 @@ pub(super) fn parent_dir(relative_path: &str) -> String {
         .map_or_else(String::new, std::borrow::Cow::into_owned)
 }
 
+/// Languages `resolve()` actually models. Every other language's imports
+/// are recorded as `Unresolved` edges — the same verdict a genuinely
+/// broken import gets — so this is exposed (via `graph::is_supported_language`)
+/// for callers that need to tell the two apart, e.g. the `report` tool
+/// distinguishing "we don't parse this language" from "this import is
+/// really broken."
+pub(super) fn is_supported_language(language: &str) -> bool {
+    matches!(
+        language,
+        "python" | "javascript" | "typescript" | "jsx" | "tsx" | "rust"
+    )
+}
+
 pub(super) fn resolve(
     language: &str,
     reference: &ImportReference,
     importing_relative_path: &str,
     known_paths: &HashSet<&str>,
 ) -> Resolution {
+    if !is_supported_language(language) {
+        record_unsupported_language(language);
+        return unresolved();
+    }
     match language {
         "python" => resolve_python(reference, importing_relative_path, known_paths),
         "javascript" | "typescript" | "jsx" | "tsx" => {
             resolve_js(reference, importing_relative_path, known_paths)
         }
         "rust" => super::resolve_rust::resolve(reference, importing_relative_path, known_paths),
-        other => {
-            record_unsupported_language(other);
-            unresolved()
-        }
+        _ => unreachable!("is_supported_language and this match must stay in sync"),
     }
 }
 

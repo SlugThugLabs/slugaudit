@@ -41,6 +41,16 @@ pub struct DiscoveredFile {
     pub kind: FileKind,
 }
 
+/// A file the walk found but could not include, with why. Discovery
+/// continues past these rather than failing the entire project — one
+/// unreadable or non-UTF8-named file must not make every file in the
+/// project unqueryable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedFile {
+    pub absolute_path: PathBuf,
+    pub reason: String,
+}
+
 #[derive(Debug, Error)]
 pub enum DiscoveryError {
     #[error("failed to walk project files: {0}")]
@@ -92,14 +102,17 @@ fn sniff_kind(path: &Path) -> Result<FileKind, DiscoveryError> {
 /// Walks the project root for non-binary and binary files alike, honoring
 /// standard ignore files, never descending into VCS internals or
 /// SlugAudit's own activation directory, and never following symlinks that
-/// leave the project root. Returns paths in deterministic sorted order.
+/// leave the project root. Returns discovered files in deterministic sorted
+/// order, plus any files the walk found but could not include (unreadable,
+/// non-UTF8 path, etc.) — those are skipped individually rather than
+/// failing the whole walk, so a single bad file can't make an entire
+/// project unqueryable.
 ///
 /// # Errors
 ///
-/// Returns an error if the walk itself fails (e.g. an unreadable
-/// directory), a discovered path isn't relative to `root`, or a file can't
-/// be read to sniff whether it's binary.
-pub fn discover(root: &Path) -> Result<Vec<DiscoveredFile>, DiscoveryError> {
+/// Returns an error only if the walk itself fails outright (e.g. the
+/// project root isn't readable at all).
+pub fn discover(root: &Path) -> Result<(Vec<DiscoveredFile>, Vec<SkippedFile>), DiscoveryError> {
     // `standard_filters` sets several flags at once, including `hidden`; it
     // must run before the explicit `hidden(false)` override or it silently
     // wins and dotfiles/dotdirs (e.g. `.github/`) vanish from the walk.
@@ -110,34 +123,64 @@ pub fn discover(root: &Path) -> Result<Vec<DiscoveredFile>, DiscoveryError> {
         .build();
 
     let mut discovered = Vec::new();
+    let mut skipped = Vec::new();
     for entry in walker {
-        let entry = entry?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                skipped.push(SkippedFile {
+                    absolute_path: root.to_path_buf(),
+                    reason: DiscoveryError::Walk(error).to_string(),
+                });
+                continue;
+            }
+        };
         if !entry.file_type().is_some_and(|kind| kind.is_file()) {
             continue;
         }
         let absolute_path = entry.path().to_path_buf();
-        let relative_path = absolute_path
-            .strip_prefix(root)
-            .map_err(|_| DiscoveryError::NotRelative(absolute_path.clone()))?;
+        let relative_path = match absolute_path.strip_prefix(root) {
+            Ok(relative_path) => relative_path,
+            Err(_) => {
+                skipped.push(SkippedFile {
+                    reason: DiscoveryError::NotRelative(absolute_path.clone()).to_string(),
+                    absolute_path,
+                });
+                continue;
+            }
+        };
         if is_excluded(relative_path) {
             continue;
         }
         if is_scratch_file(relative_path) {
             continue;
         }
-        let kind = sniff_kind(&absolute_path)?;
-        let relative_path = relative_path
-            .to_str()
-            .ok_or_else(|| DiscoveryError::NonUtf8Path(absolute_path.clone()))?
-            .replace('\\', "/");
+        let kind = match sniff_kind(&absolute_path) {
+            Ok(kind) => kind,
+            Err(error) => {
+                skipped.push(SkippedFile {
+                    reason: error.to_string(),
+                    absolute_path,
+                });
+                continue;
+            }
+        };
+        let Some(relative_path) = relative_path.to_str() else {
+            skipped.push(SkippedFile {
+                reason: DiscoveryError::NonUtf8Path(absolute_path.clone()).to_string(),
+                absolute_path,
+            });
+            continue;
+        };
         discovered.push(DiscoveredFile {
-            relative_path,
+            relative_path: relative_path.replace('\\', "/"),
             absolute_path,
             kind,
         });
     }
     discovered.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-    Ok(discovered)
+    skipped.sort_by(|a, b| a.absolute_path.cmp(&b.absolute_path));
+    Ok((discovered, skipped))
 }
 
 #[cfg(test)]

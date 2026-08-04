@@ -46,6 +46,11 @@ pub fn publish(
     root: &Path,
     parser_pack_version: &str,
 ) -> Result<PublishReport, PublishError> {
+    if !is_valid_parser_pack_version(parser_pack_version) {
+        return Err(PublishError::InvalidParserPackVersion(
+            parser_pack_version.to_owned(),
+        ));
+    }
     let mut attempt = 0_usize;
     loop {
         let result = try_publish(connection, root, parser_pack_version);
@@ -60,4 +65,11 @@ pub fn publish(
         publish_log::log_outcome(&result, attempt);
         return result;
     }
+}
+
+fn is_valid_parser_pack_version(version: &str) -> bool {
+    !version.is_empty()
+        && version
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
 }

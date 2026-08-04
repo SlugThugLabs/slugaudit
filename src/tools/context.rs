@@ -1,10 +1,14 @@
 use crate::{parse, project, store, sync};
 use rmcp::ErrorData;
-use rusqlite::{Connection, Transaction, TransactionBehavior};
+use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+#[path = "context_transactions.rs"]
+mod context_transactions;
+pub(crate) use context_transactions::{with_verified_read, with_verified_write};
 
 /// If a project was successfully synced within this window, `ensure_synced`
 /// skips the full publish (discovery + sample + diff) and returns the
@@ -14,6 +18,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// a performance optimization for rapid successive tool calls against a
 /// quiescent project.
 const RECENCY_WINDOW: Duration = Duration::from_secs(5);
+const CONTRACT_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 1;
 
 /// Thread-safe cache of (project root → last successful sync time). One
 /// instance lives on `SlugAuditServer` and is cloned into each tool call's
@@ -43,6 +49,23 @@ impl SyncRecencyCache {
         let mut guard = self.inner.lock().unwrap();
         guard.insert(root, Instant::now());
     }
+}
+
+/// Wraps a low-level store/rusqlite error with which operation failed and
+/// a generic recovery hint, instead of surfacing the bare `Display` text
+/// alone — that names no operation and gives the caller no next step.
+/// Mirrors `tools::query::describe_error`, which does the same kind of
+/// translation for query-specific errors; this is the equivalent for the
+/// sync/revision-verification errors that flow through every tool call.
+pub(super) fn internal_error(context: &str, error: impl std::fmt::Display) -> ErrorData {
+    ErrorData::internal_error(
+        format!(
+            "{context}: {error}. This is often transient (a concurrent \
+             sync, publish, or disable) — retry the call. If it keeps \
+             happening, the project may need to be disabled and re-enabled."
+        ),
+        None,
+    )
 }
 
 /// A project brought fully up to date, ready for a tool to query. Every
@@ -81,8 +104,17 @@ pub fn ensure_synced(path: &str, cache: &SyncRecencyCache) -> Result<SyncedProje
     // that landed inside the window is caught by the revision check in
     // with_verified_read / with_verified_write, so this is safe.
     if cache.is_recent(root.as_path()) {
-        let connection = store::open_read_only(&database_path)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        // Use the configured read-write opener here as well: unlike a
+        // read-only SQLite open, it validates pragmas/schema eagerly so a
+        // corrupt disposable cache can be rebuilt before any tool sees it.
+        let connection = match store::open_read_write(&database_path) {
+            Ok(connection) => connection,
+            Err(error) if error.is_corruption() => {
+                recreate_corrupt_database(&database_path)?;
+                return publish_from_scratch(&root, database_path, cache);
+            }
+            Err(error) => return Err(internal_error("opening the project database", error)),
+        };
         let revision_id = current_revision_id(&connection)?;
         return Ok(SyncedProject {
             database_path,
@@ -91,11 +123,22 @@ pub fn ensure_synced(path: &str, cache: &SyncRecencyCache) -> Result<SyncedProje
         });
     }
 
-    let mut connection = store::open_read_write(&database_path)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    let mut connection = match store::open_read_write(&database_path) {
+        Ok(connection) => connection,
+        Err(error) if error.is_corruption() => {
+            recreate_corrupt_database(&database_path)?;
+            return publish_from_scratch(&root, database_path, cache);
+        }
+        Err(error) => {
+            return Err(internal_error(
+                "opening the project database for sync",
+                error,
+            ));
+        }
+    };
     ensure_project_row(&connection, root.as_path())?;
     let report = sync::publish(&mut connection, root.as_path(), parse::PACK_VERSION)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        .map_err(|error| internal_error("publishing a new revision", error))?;
     drop(connection);
 
     cache.record(root.as_path().to_path_buf());
@@ -107,53 +150,28 @@ pub fn ensure_synced(path: &str, cache: &SyncRecencyCache) -> Result<SyncedProje
     })
 }
 
-/// Runs `f` inside one deferred read transaction that first pins the
-/// revision `synced` claimed. Verification and every subsequent read share
-/// that snapshot, so a concurrent publish cannot change what the tool sees
-/// mid-response — the call either observes the expected revision entirely
-/// or fails the revision check before any tool data is read.
-///
-/// # Errors
-///
-/// Returns an error if the connection can't be opened, the revision no
-/// longer matches, or `f` itself fails.
-pub fn with_verified_read<T>(
-    synced: &SyncedProject,
-    f: impl FnOnce(&Transaction<'_>) -> Result<T, ErrorData>,
-) -> Result<T, ErrorData> {
-    let mut connection = store::open_read_only(&synced.database_path)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    let tx = connection
-        .transaction_with_behavior(TransactionBehavior::Deferred)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    verify_revision_matches(&tx, &synced.revision_id)?;
-    let result = f(&tx)?;
-    tx.commit()
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    Ok(result)
+fn publish_from_scratch(
+    root: &project::ProjectRoot,
+    database_path: PathBuf,
+    cache: &SyncRecencyCache,
+) -> Result<SyncedProject, ErrorData> {
+    let mut connection = store::open_read_write(&database_path)
+        .map_err(|error| internal_error("recreating the project database", error))?;
+    ensure_project_row(&connection, root.as_path())?;
+    let report = sync::publish(&mut connection, root.as_path(), parse::PACK_VERSION)
+        .map_err(|error| internal_error("publishing a replacement revision", error))?;
+    drop(connection);
+    cache.record(root.as_path().to_path_buf());
+    Ok(SyncedProject {
+        database_path,
+        revision_id: report.revision_id,
+        root: root.as_path().to_path_buf(),
+    })
 }
 
-/// Write-side counterpart: one immediate transaction holds the revision
-/// check, any lookups, validation, and the write together.
-///
-/// # Errors
-///
-/// Returns an error if the connection can't be opened, the revision no
-/// longer matches, or `f` itself fails.
-pub fn with_verified_write<T>(
-    synced: &SyncedProject,
-    f: impl FnOnce(&Transaction<'_>) -> Result<T, ErrorData>,
-) -> Result<T, ErrorData> {
-    let mut connection = store::open_read_write(&synced.database_path)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    let tx = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    verify_revision_matches(&tx, &synced.revision_id)?;
-    let result = f(&tx)?;
-    tx.commit()
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    Ok(result)
+fn recreate_corrupt_database(path: &Path) -> Result<(), ErrorData> {
+    store::discard_corrupt_database(path)
+        .map_err(|error| internal_error("discarding the corrupt project database", error))
 }
 
 /// Creates the (sole) project row on first sync, and on every later sync
@@ -178,16 +196,29 @@ fn ensure_project_row(connection: &Connection, root: &Path) -> Result<(), ErrorD
         .execute(
             "INSERT OR IGNORE INTO project (\
                 id, project_id, root_path, contract_version, schema_version, created_at_unix\
-             ) VALUES (1, 'default', ?1, 1, 1, ?2)",
-            rusqlite::params![root_path.as_ref(), created_at],
+             ) VALUES (1, 'default', ?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                root_path.as_ref(),
+                CONTRACT_VERSION,
+                SCHEMA_VERSION,
+                created_at
+            ],
         )
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        .map_err(|error| internal_error("recording project metadata", error))?;
 
-    let stored_root_path: String = connection
-        .query_row("SELECT root_path FROM project WHERE id = 1", [], |row| {
-            row.get(0)
-        })
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    let (stored_root_path, contract_version, schema_version): (String, i64, i64) = connection
+        .query_row(
+            "SELECT root_path, contract_version, schema_version FROM project WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|error| internal_error("reading project metadata", error))?;
+    if contract_version != CONTRACT_VERSION || schema_version != SCHEMA_VERSION {
+        return Err(internal_error(
+            "validating project metadata",
+            format!("unsupported contract/schema version ({contract_version}/{schema_version})"),
+        ));
+    }
     if stored_root_path != root_path {
         return Err(ErrorData::invalid_params(
             format!(
@@ -207,7 +238,7 @@ fn current_revision_id(connection: &Connection) -> Result<String, ErrorData> {
             [],
             |row| row.get(0),
         )
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+        .map_err(|error| internal_error("reading the current revision", error))
 }
 
 fn verify_revision_matches(
@@ -220,7 +251,7 @@ fn verify_revision_matches(
             [],
             |row| row.get(0),
         )
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        .map_err(|error| internal_error("reading the current revision", error))?;
     if current != expected_revision_id {
         return Err(ErrorData::internal_error(
             format!(

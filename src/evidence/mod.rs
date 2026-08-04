@@ -2,6 +2,7 @@
 //! `process()` output into SlugAudit's own typed evidence records.
 
 mod normalize;
+mod normalize_builders;
 mod sql;
 
 pub use normalize::extract;

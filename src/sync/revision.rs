@@ -52,9 +52,13 @@ pub fn publish_revision(
     upserts: &[FileRecord],
     deletions: &[String],
 ) -> Result<String, RevisionError> {
-    let created_at = util::now_unix();
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     assert_baseline(&tx, expected_current)?;
+    let persisted_time: Option<i64> =
+        tx.query_row("SELECT max(created_at_unix) FROM revisions", [], |row| {
+            row.get(0)
+        })?;
+    let created_at = util::at_least_timestamp(util::now_unix(), persisted_time);
 
     // `revision_id` is derived from the row's own autoincrement id, which
     // SQLite guarantees unique — safer than deriving it from manifest_hash,

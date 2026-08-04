@@ -30,6 +30,48 @@ pub enum StoreError {
          SlugAudit after relocating it."
     )]
     NetworkFilesystem,
+    #[error("could not verify whether the database is on a network filesystem: {0}")]
+    NetworkFilesystemCheck(#[source] std::io::Error),
+}
+
+impl StoreError {
+    #[must_use]
+    pub fn is_corruption(&self) -> bool {
+        match self {
+            Self::Open(error) | Self::Configure(error) => matches!(
+                error,
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if matches!(
+                        failure.code,
+                        rusqlite::ErrorCode::DatabaseCorrupt
+                            | rusqlite::ErrorCode::NotADatabase
+                    )
+            ),
+            Self::Migration(error) => error.is_corruption(),
+            Self::Symlink
+            | Self::Permissions(_)
+            | Self::NetworkFilesystem
+            | Self::NetworkFilesystemCheck(_) => false,
+        }
+    }
+}
+
+/// Discards a corrupt derived database and its SQLite journal sidecars.
+/// Callers must recreate the schema and republish from project files.
+pub fn discard_corrupt_database(path: &Path) -> Result<(), std::io::Error> {
+    for suffix in ["", "-wal", "-shm"] {
+        let candidate = if suffix.is_empty() {
+            path.to_path_buf()
+        } else {
+            Path::new(&format!("{}{}", path.display(), suffix)).to_path_buf()
+        };
+        match std::fs::remove_file(candidate) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 /// Opens with `SQLITE_OPEN_NOFOLLOW` so a path that is (or becomes) a

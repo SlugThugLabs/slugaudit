@@ -23,6 +23,7 @@ fn ask(project: &tempfile::TempDir, sql: &str) -> Result<QueryResponse, ErrorDat
         &Parameters(QueryRequest {
             path: project.path().to_string_lossy().into_owned(),
             sql: sql.to_owned(),
+            offset: 0,
         }),
         &SyncRecencyCache::new(),
     )
@@ -38,6 +39,7 @@ fn ask_with_limits(
         &Parameters(QueryRequest {
             path: project.path().to_string_lossy().into_owned(),
             sql: sql.to_owned(),
+            offset: 0,
         }),
         limits,
         &SyncRecencyCache::new(),

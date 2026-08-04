@@ -62,7 +62,16 @@ pub(super) fn try_publish(
         .as_ref()
         .map(|revision| revision.revision_id.as_str());
 
-    let discovered = discovery::discover(root)?;
+    let (discovered, skipped) = discovery::discover(root)?;
+    if !skipped.is_empty() {
+        for file in &skipped {
+            tracing::warn!(
+                path = %file.absolute_path.display(),
+                reason = %file.reason,
+                "skipping unreadable/invalid file during discovery"
+            );
+        }
+    }
     let limits = ResourceLimits::default();
     let samples = sample_all(&discovered, &limits)?;
     race_hook::fire(root);
@@ -82,6 +91,7 @@ pub(super) fn try_publish(
             modified: 0,
             deleted: 0,
             unchanged: diff.unchanged,
+            skipped,
         });
     }
 
@@ -104,5 +114,6 @@ pub(super) fn try_publish(
         modified: diff.modified,
         deleted: diff.deleted,
         unchanged: diff.unchanged,
+        skipped,
     })
 }

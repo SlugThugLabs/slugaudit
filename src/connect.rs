@@ -4,7 +4,8 @@
 //! own config format and we never corrupt it.
 #![allow(clippy::print_stdout)]
 
-use super::cli::{ConnectAgent, ConnectError, slugthug_home};
+use super::cli::{ConnectAgent, ConnectError};
+use crate::install::{running_binary, slugthug_home};
 use std::io::{BufRead as _, Write as _};
 use std::path::{Path, PathBuf};
 
@@ -24,7 +25,7 @@ use std::path::{Path, PathBuf};
 /// its own `.slugaudit/` SQLite index), so a single global registration
 /// covers everything.
 pub fn run_connect(agent: ConnectAgent) -> Result<(), ConnectError> {
-    let binary = std::env::current_exe().map_err(ConnectError::BinaryPath)?;
+    let binary = running_binary().map_err(ConnectError::BinaryPath)?;
     let binary = prefer_slugthug_binary(&binary);
     connect_one(agent, &binary)
 }
@@ -34,7 +35,10 @@ pub fn run_connect(agent: ConnectAgent) -> Result<(), ConnectError> {
 /// rather than a one-off build artifact. Otherwise returns `current`
 /// unchanged.
 fn prefer_slugthug_binary(current: &Path) -> PathBuf {
-    let slugthug = slugthug_home().join("bin").join("slugaudit-mcp");
+    let Some(home) = slugthug_home() else {
+        return current.to_path_buf();
+    };
+    let slugthug = home.join("bin").join("slugaudit-mcp");
     if slugthug.exists() {
         slugthug
     } else {
@@ -168,8 +172,5 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
         })
         .unwrap();
 
-    connect_one(
-        agent,
-        &std::env::current_exe().map_err(ConnectError::BinaryPath)?,
-    )
+    connect_one(agent, &running_binary().map_err(ConnectError::BinaryPath)?)
 }

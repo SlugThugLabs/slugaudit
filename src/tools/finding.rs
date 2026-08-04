@@ -92,7 +92,12 @@ fn insert_finding(
     let (source_hash, content) = fetch_file(tx, &request.file)?;
     validate_line_range(request, &content)?;
 
-    let created_at = util::now_unix();
+    let persisted_time: Option<i64> = tx
+        .query_row("SELECT max(created_at_unix) FROM findings", [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    let created_at = util::at_least_timestamp(util::now_unix(), persisted_time);
     tx.execute(
         "INSERT INTO findings (\
             path, source_hash, line_start, line_end, severity, category, title, description, \

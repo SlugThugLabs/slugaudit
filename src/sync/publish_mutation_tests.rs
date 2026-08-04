@@ -43,7 +43,7 @@ fn is_retryable_is_true_only_for_the_two_documented_race_hazards() {
 fn sample_all_rejects_strictly_over_the_byte_limit_not_at_or_under_it() {
     let project = tempfile::tempdir().expect("project dir");
     write(project.path(), "a.rs", b"12345");
-    let discovered = discovery::discover(project.path()).expect("discover");
+    let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
 
     let exact = ResourceLimits {
         max_total_import_bytes: 5,
@@ -134,5 +134,40 @@ fn retry_gives_up_after_exactly_max_cas_retries_and_never_hangs() {
             Err(PublishError::Revision(RevisionError::StaleBaseline { .. }))
         ),
         "must give up with a StaleBaseline error after exhausting retries, got {result:?}"
+    );
+}
+
+/// A single bad file anywhere in the project (here: a non-UTF8 filename,
+/// which is real and filesystem-legal on Unix but can't be stored/queried
+/// as text) must not fail the whole publish — every other file must still
+/// be discovered, sampled, and committed, with the bad file recorded in
+/// `PublishReport::skipped` instead of aborting discovery outright. Uses a
+/// non-UTF8 name rather than permission bits so the test is meaningful
+/// when run as root (which bypasses permission checks entirely).
+#[cfg(unix)]
+#[test]
+fn one_bad_file_does_not_block_publishing_the_rest_of_the_project() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "good.rs", b"fn good() {}\n");
+    let bad_name = OsString::from_vec(vec![b'b', b'a', 0xFF, b'd', b'.', b'r', b's']);
+    std::fs::write(project.path().join(&bad_name), b"fn bad() {}\n")
+        .expect("write non-UTF-8-named file");
+
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    let report = publish(&mut connection, project.path(), "1.0.0")
+        .expect("publish must succeed despite one bad file");
+
+    assert_eq!(
+        report.added, 1,
+        "the good file must still be indexed, not blocked by the unrelated bad file"
+    );
+    assert_eq!(
+        report.skipped.len(),
+        1,
+        "the bad file must be recorded as skipped, not silently dropped or fatal"
     );
 }

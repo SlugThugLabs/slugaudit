@@ -31,7 +31,7 @@ fn stored_paths(connection: &Connection) -> Vec<String> {
 fn a_file_changed_after_sampling_is_detected_and_rejected() {
     let project = tempfile::tempdir().expect("project dir");
     write(project.path(), "lib.rs", b"original\n");
-    let discovered = discovery::discover(project.path()).expect("discover");
+    let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
     let limits = ResourceLimits::default();
     let samples = sample_all(&discovered, &limits).expect("sample");
     // `parser_version_changed: true` forces every sampled file into
@@ -55,7 +55,7 @@ fn a_file_changed_after_sampling_is_detected_and_rejected() {
 fn an_unchanged_file_passes_revalidation() {
     let project = tempfile::tempdir().expect("project dir");
     write(project.path(), "lib.rs", b"stable\n");
-    let discovered = discovery::discover(project.path()).expect("discover");
+    let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
     let limits = ResourceLimits::default();
     let samples = sample_all(&discovered, &limits).expect("sample");
     let (upserts, _deletions) = build_upserts_and_deletions(samples, &[], true, &limits);

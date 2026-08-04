@@ -9,6 +9,16 @@ mod resolve_rust;
 
 use std::collections::HashSet;
 
+/// True if `resolve_imports` actually models `language`'s import syntax.
+/// Imports from any other language are recorded as `Unresolved` edges —
+/// the same verdict a genuinely broken import gets — so callers that need
+/// to tell "we don't parse this language" apart from "this import is
+/// really broken" (e.g. the `report` tool) should check this first.
+#[must_use]
+pub fn is_supported_language(language: &str) -> bool {
+    resolve::is_supported_language(language)
+}
+
 /// One import evidence item's resolution outcome, ready to become a
 /// `dependency_edges` row. `to_relative_path` is `None` unless
 /// `resolution_kind` is `"Resolved"`.

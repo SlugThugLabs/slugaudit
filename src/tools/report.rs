@@ -74,6 +74,14 @@ pub struct ReportResponse {
     /// Total number of Diagnostic evidence items (e.g. linter or compiler
     /// diagnostics extracted from source files).
     pub diagnostic_count: i64,
+    /// Of the `Unresolved` count in `import_resolution`, how many are from
+    /// files whose language import resolution doesn't model at all (as
+    /// opposed to a genuinely broken/missing import in a supported
+    /// language). SlugAudit records both as `Unresolved` edges since it
+    /// can't tell them apart at resolution time, but they mean very
+    /// different things: a high count here means "we can't see this
+    /// language's imports yet," not "this project's imports are broken."
+    pub unsupported_language_unresolved_count: i64,
 }
 
 /// # Errors
@@ -193,6 +201,23 @@ fn build_report(
         |row| row.get(0),
     )?;
 
+    // Of the Unresolved edges, how many come from a file whose language
+    // import resolution doesn't model at all. Computed in Rust rather than
+    // SQL so the language list has one source of truth
+    // (`graph::is_supported_language`), not a second copy embedded in a
+    // query string that could drift out of sync with it.
+    let mut unresolved_language_stmt = connection.prepare(
+        "SELECT f.language FROM dependency_edges de \
+         JOIN files f ON f.id = de.from_file_id \
+         WHERE de.resolution_kind = 'Unresolved'",
+    )?;
+    let unsupported_language_unresolved_count = unresolved_language_stmt
+        .query_map([], |row| row.get::<_, Option<String>>(0))?
+        .filter_map(|result| result.ok().flatten())
+        .filter(|language| !crate::graph::is_supported_language(language))
+        .count() as i64;
+    drop(unresolved_language_stmt);
+
     // Counts and the revision id only — never row content — attached to
     // whatever span `run_blocking` (src/server.rs) currently has entered.
     tracing::info!(
@@ -213,6 +238,7 @@ fn build_report(
         open_finding_count,
         import_resolution,
         diagnostic_count,
+        unsupported_language_unresolved_count,
     })
 }
 

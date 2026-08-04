@@ -51,6 +51,8 @@ pub enum PublishError {
     /// should retry the whole tool call.
     #[error("{path} changed on disk after being sampled; retry the call")]
     ChangedDuringSample { path: String },
+    #[error("invalid parser pack version {0:?}; expected a non-empty numeric dotted version")]
+    InvalidParserPackVersion(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +62,9 @@ pub struct PublishReport {
     pub modified: usize,
     pub deleted: usize,
     pub unchanged: usize,
+    /// Files the discovery walk found but could not include (unreadable,
+    /// non-UTF8 path, etc.), with why. Never fails the publish by itself.
+    pub skipped: Vec<super::discovery::SkippedFile>,
 }
 
 #[cfg(test)]

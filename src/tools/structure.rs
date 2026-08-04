@@ -1,5 +1,5 @@
 use super::context::{SyncRecencyCache, ensure_synced, with_verified_read};
-use crate::model::{ResourceLimits, saturating_u32};
+use crate::model::{ResourceLimits, char_column, saturating_u32};
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use schemars::JsonSchema;
@@ -35,6 +35,15 @@ pub struct StructureMatch {
     pub end_column: u32,
     pub text: String,
     pub text_truncated: bool,
+    /// True if `text` and/or `capture_name` above could not actually be
+    /// extracted for this match (non-UTF8-boundary node span, or a capture
+    /// index outside the compiled query's capture table) and were replaced
+    /// with an empty string as a fallback. Should never be true in
+    /// practice — both would indicate a tree-sitter/query invariant
+    /// violation, not legitimately empty data — but callers should not
+    /// treat `text: ""` as "this node has no text" without checking this
+    /// flag first.
+    pub extraction_failed: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -104,7 +113,7 @@ fn structure_with_limits(
 
     Ok(Json(StructureResponse {
         revision_id,
-        language,
+        language: language.to_owned(),
         matches,
         truncated,
     }))
@@ -171,22 +180,27 @@ fn run_query(
     {
         let capture = query_match.captures[*capture_index];
         let node = capture.node;
-        let node_text = node.utf8_text(content.as_bytes()).unwrap_or_default();
+        let (node_text, text_extraction_failed) = match node.utf8_text(content.as_bytes()) {
+            Ok(text) => (text, false),
+            Err(_) => ("", true),
+        };
         let (text, text_truncated) = truncate_text(node_text);
+        let (capture_name, capture_name_missing) = match capture_names.get(capture.index as usize) {
+            Some(name) => ((*name).to_owned(), false),
+            None => (String::new(), true),
+        };
         matches.push(StructureMatch {
-            capture_name: capture_names
-                .get(capture.index as usize)
-                .map(|name| (*name).to_owned())
-                .unwrap_or_default(),
+            capture_name,
             node_kind: node.kind().to_owned(),
             start_byte: node.start_byte() as u64,
             end_byte: node.end_byte() as u64,
             start_line: saturating_u32(node.start_position().row),
-            start_column: saturating_u32(node.start_position().column),
+            start_column: char_column(content, node.start_byte()),
             end_line: saturating_u32(node.end_position().row),
-            end_column: saturating_u32(node.end_position().column),
+            end_column: char_column(content, node.end_byte()),
             text,
             text_truncated,
+            extraction_failed: text_extraction_failed || capture_name_missing,
         });
     }
     let truncated = matches.len() >= limits.max_structure_matches && captures.next().is_some();

@@ -4,6 +4,13 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Position {
     pub line: u32,
+    /// A **character** offset from the start of the line (counting Unicode
+    /// scalar values, i.e. `str::chars()`), not a byte offset. Tree-sitter's
+    /// own `Point::column` is a byte offset, so every caller that derives a
+    /// `Position` from a Tree-sitter node must convert via [`char_column`]
+    /// rather than copying `Point::column` directly — otherwise any source
+    /// line containing a multi-byte UTF-8 character reports a column too
+    /// large for everything after it on that line.
     pub column: u32,
 }
 
@@ -13,6 +20,19 @@ pub struct Position {
 #[must_use]
 pub fn saturating_u32(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+/// Converts a Tree-sitter byte offset into the character offset from the
+/// start of its line, for use as [`Position::column`]. Tree-sitter's
+/// `Point::column` counts bytes since the last `\n` (or the start of
+/// `source`), not characters — copying it directly produces a column too
+/// large for any position after a multi-byte UTF-8 character on the same
+/// line. `byte_offset` must land on a UTF-8 char boundary in `source`,
+/// which every Tree-sitter node boundary does for a well-formed parse.
+#[must_use]
+pub fn char_column(source: &str, byte_offset: usize) -> u32 {
+    let line_start = source[..byte_offset].rfind('\n').map_or(0, |idx| idx + 1);
+    saturating_u32(source[line_start..byte_offset].chars().count())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

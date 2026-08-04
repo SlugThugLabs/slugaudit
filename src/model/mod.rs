@@ -12,4 +12,4 @@ pub use parser::{
     EvidenceOrigin, ExtractionCompleteness, ParseOutcome, ParserAvailability, ParserRun,
 };
 pub use source::{FileMetadata, LanguageSelection, SourceIdentity, SourceSnapshot};
-pub use span::{Position, Span, SpanError, saturating_u32};
+pub use span::{Position, Span, SpanError, char_column, saturating_u32};

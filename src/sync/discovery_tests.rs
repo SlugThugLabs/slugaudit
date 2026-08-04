@@ -17,7 +17,7 @@ fn discovers_source_config_and_doc_files_in_sorted_order() {
     write(root, "README.md", b"# Title");
     write(root, ".github/workflows/ci.yml", b"name: ci");
 
-    let files = discover(root).expect("discover");
+    let (files, _skipped) = discover(root).expect("discover");
     let paths: Vec<&str> = files
         .iter()
         .map(|file| file.relative_path.as_str())
@@ -38,7 +38,7 @@ fn classifies_binary_files_without_dropping_them() {
         &[0x89, b'P', b'N', b'G', 0x00, 0x01, 0x02],
     );
 
-    let files = discover(root).expect("discover");
+    let (files, _skipped) = discover(root).expect("discover");
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].kind, FileKind::Binary);
 }
@@ -50,7 +50,7 @@ fn excludes_the_activation_directory() {
     write(root, "src/lib.rs", b"pub fn lib() {}");
     write(root, ".planning/slugaudit/project.db", b"sqlite-bytes");
 
-    let files = discover(root).expect("discover");
+    let (files, _skipped) = discover(root).expect("discover");
     let paths: Vec<&str> = files
         .iter()
         .map(|file| file.relative_path.as_str())
@@ -65,7 +65,7 @@ fn excludes_git_internals() {
     write(root, "src/lib.rs", b"pub fn lib() {}");
     write(root, ".git/HEAD", b"ref: refs/heads/main");
 
-    let files = discover(root).expect("discover");
+    let (files, _skipped) = discover(root).expect("discover");
     let paths: Vec<&str> = files
         .iter()
         .map(|file| file.relative_path.as_str())
@@ -81,7 +81,7 @@ fn honors_gitignore_content() {
     write(root, "ignored.txt", b"should not appear");
     write(root, "kept.txt", b"should appear");
 
-    let files = discover(root).expect("discover");
+    let (files, _skipped) = discover(root).expect("discover");
     let paths: Vec<&str> = files
         .iter()
         .map(|file| file.relative_path.as_str())
@@ -92,13 +92,15 @@ fn honors_gitignore_content() {
 }
 
 /// Relative paths are stored/queried as UTF-8 text, so a filename that
-/// isn't valid UTF-8 must be rejected loudly rather than panicking or
-/// silently vanishing from the walk. Unix filenames are just bytes (no
+/// isn't valid UTF-8 must be skipped individually, with the reason
+/// recorded, rather than panicking or failing the entire discovery walk
+/// (a single bad filename anywhere in a project must not make every other
+/// file in that project unqueryable). Unix filenames are just bytes (no
 /// NUL, no `/`), so a lone `0xFF` byte is real and filesystem-legal here
 /// even though it can never be valid UTF-8.
 #[cfg(unix)]
 #[test]
-fn a_non_utf8_filename_is_a_typed_error_not_a_panic() {
+fn a_non_utf8_filename_is_skipped_not_a_panic_or_a_whole_walk_failure() {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
 
@@ -106,11 +108,18 @@ fn a_non_utf8_filename_is_a_typed_error_not_a_panic() {
     let root = directory.path();
     let bad_name = OsString::from_vec(vec![b'b', b'a', 0xFF, b'd', b'.', b't', b'x', b't']);
     std::fs::write(root.join(&bad_name), b"content").expect("write non-UTF-8-named file");
+    std::fs::write(root.join("good.txt"), b"content").expect("write a normal file");
 
-    let result = discover(root);
-    assert!(
-        matches!(result, Err(DiscoveryError::NonUtf8Path(_))),
-        "expected NonUtf8Path, got {result:?}"
+    let (files, skipped) = discover(root).expect("a bad filename must not fail the whole walk");
+    assert_eq!(
+        files.len(),
+        1,
+        "the good file must still be discovered despite the bad one"
+    );
+    assert_eq!(
+        skipped.len(),
+        1,
+        "the bad filename must be recorded as skipped"
     );
 }
 
@@ -129,7 +138,7 @@ fn a_file_replaced_by_a_symlink_between_syncs_is_never_dereferenced() {
     let root = directory.path();
     write(root, "lib.rs", b"pub fn a() {}\n");
 
-    let first = discover(root).expect("first discover");
+    let (first, _skipped) = discover(root).expect("first discover");
     assert_eq!(
         first
             .iter()
@@ -147,7 +156,7 @@ fn a_file_replaced_by_a_symlink_between_syncs_is_never_dereferenced() {
     std::fs::remove_file(root.join("lib.rs")).expect("remove the real file");
     std::os::unix::fs::symlink(&secret, root.join("lib.rs")).expect("replace with a symlink");
 
-    let second = discover(root).expect("second discover does not error or panic");
+    let (second, _skipped) = discover(root).expect("second discover does not error or panic");
     // `follow_links(false)` makes walkdir/ignore report the symlink's own
     // (non-regular) file type via `lstat` rather than following it, so
     // `discover`'s `is_file()` filter drops it entirely: the replaced
@@ -179,7 +188,7 @@ fn scratch_and_temp_files_are_excluded_from_discovery() {
     write(root, "file~", b"emacs backup");
     write(root, "output.claude_output.txt", b"claude session output");
 
-    let files = discover(root).expect("discover");
+    let (files, _skipped) = discover(root).expect("discover");
     let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
     assert_eq!(
         paths,

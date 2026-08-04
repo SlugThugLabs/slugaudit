@@ -1,11 +1,17 @@
 // slugaudit-line-exception: approved-by=agent; reason=one match arm per Tree-sitter evidence kind; splitting by kind would hide the exhaustiveness this file exists to guarantee
 use crate::model::{
-    EvidenceItem, EvidenceKind, EvidenceOrigin, Position, Span, SpanAvailability, saturating_u32,
+    EvidenceItem, EvidenceKind, EvidenceOrigin, Position, Span, SpanAvailability, char_column,
+    saturating_u32,
 };
 use serde_json::json;
 use tree_sitter_language_pack::{
-    CommentInfo, DiagnosticSeverity, DocstringInfo, Error as PackError, ExportInfo, ImportInfo,
-    ProcessConfig, Span as PackSpan, StructureItem, SymbolInfo, SymbolKind, get_parser, process,
+    DiagnosticSeverity, Error as PackError, ProcessConfig, Span as PackSpan, SymbolKind,
+    get_parser, process,
+};
+
+use super::normalize_builders::{
+    comment_item, diagnostic_item, docstring_item, export_item, flatten_structure, import_item,
+    symbol_item,
 };
 
 /// Runs the language pack's generic `process()` intelligence and flattens
@@ -26,35 +32,30 @@ pub fn extract(language: &str, source: &str) -> Result<Vec<EvidenceItem>, PackEr
     let mut items = Vec::new();
     let mut counter = 0usize;
     for item in &result.structure {
-        flatten_structure(item, &mut items, &mut counter);
+        flatten_structure(item, source, &mut items, &mut counter);
     }
     for (index, item) in result.imports.iter().enumerate() {
-        items.push(import_item(index, item));
+        items.push(import_item(index, item, source));
     }
     for (index, item) in result.exports.iter().enumerate() {
-        items.push(export_item(index, item));
+        items.push(export_item(index, item, source));
     }
     for (index, item) in result.comments.iter().enumerate() {
-        items.push(comment_item(index, item));
+        items.push(comment_item(index, item, source));
     }
     for (index, item) in result.docstrings.iter().enumerate() {
-        items.push(docstring_item(index, item));
+        items.push(docstring_item(index, item, source));
     }
     for (index, item) in result.symbols.iter().enumerate() {
-        items.push(symbol_item(index, item));
+        items.push(symbol_item(index, item, source));
     }
-    for (index, diagnostic) in result.diagnostics.iter().enumerate() {
-        items.push(EvidenceItem {
-            key: format!("diagnostic:{index}"),
-            kind: EvidenceKind::Diagnostic,
-            origin: EvidenceOrigin::PackStructure,
-            span: convert_span(&diagnostic.span),
-            payload: json!({
-                "message": diagnostic.message,
-                "severity": severity_text(&diagnostic.severity),
-            }),
-        });
-    }
+    items.extend(
+        result
+            .diagnostics
+            .iter()
+            .enumerate()
+            .map(|(index, diagnostic)| diagnostic_item(index, diagnostic, source)),
+    );
 
     // The language pack's `process()` extracts structure, imports, exports,
     // comments, docstrings, symbols, and diagnostics — but not individual
@@ -190,16 +191,18 @@ fn named_children(
     (0..node.named_child_count() as u32).filter_map(move |i| node.named_child(i))
 }
 
-fn node_span(node: &tree_sitter_language_pack::Node, _source: &str) -> SpanAvailability {
+fn node_span(node: &tree_sitter_language_pack::Node, source: &str) -> SpanAvailability {
+    let start_byte = node.start_byte();
+    let end_byte = node.end_byte();
     let start = Position {
         line: saturating_u32(node.start_position().row),
-        column: saturating_u32(node.start_position().column),
+        column: char_column(source, start_byte),
     };
     let end = Position {
         line: saturating_u32(node.end_position().row),
-        column: saturating_u32(node.end_position().column),
+        column: char_column(source, end_byte),
     };
-    match Span::new(node.start_byte() as u64, node.end_byte() as u64, start, end) {
+    match Span::new(start_byte as u64, end_byte as u64, start, end) {
         Ok(span) => SpanAvailability::Present(span),
         Err(_) => SpanAvailability::NormalizerUnavailable {
             reason: "binding span failed local range validation".into(),
@@ -207,14 +210,14 @@ fn node_span(node: &tree_sitter_language_pack::Node, _source: &str) -> SpanAvail
     }
 }
 
-fn convert_span(span: &PackSpan) -> SpanAvailability {
+pub(super) fn convert_span(span: &PackSpan, source: &str) -> SpanAvailability {
     let start = Position {
         line: saturating_u32(span.start_line),
-        column: saturating_u32(span.start_column),
+        column: char_column(source, span.start_byte),
     };
     let end = Position {
         line: saturating_u32(span.end_line),
-        column: saturating_u32(span.end_column),
+        column: char_column(source, span.end_byte),
     };
     match Span::new(span.start_byte as u64, span.end_byte as u64, start, end) {
         Ok(converted) => SpanAvailability::Present(converted),
@@ -224,103 +227,11 @@ fn convert_span(span: &PackSpan) -> SpanAvailability {
     }
 }
 
-fn severity_text(severity: &DiagnosticSeverity) -> &'static str {
+pub(super) fn severity_text(severity: &DiagnosticSeverity) -> &'static str {
     match severity {
         DiagnosticSeverity::Error => "error",
         DiagnosticSeverity::Warning => "warning",
         DiagnosticSeverity::Info => "info",
-    }
-}
-
-fn flatten_structure(item: &StructureItem, items: &mut Vec<EvidenceItem>, counter: &mut usize) {
-    let key = format!("structure:{counter}");
-    *counter += 1;
-    items.push(EvidenceItem {
-        key,
-        kind: EvidenceKind::Structure,
-        origin: EvidenceOrigin::PackStructure,
-        span: convert_span(&item.span),
-        payload: json!({
-            "kind": format!("{:?}", item.kind),
-            "name": item.name,
-            "visibility": item.visibility,
-            "decorators": item.decorators,
-            "signature": item.signature,
-        }),
-    });
-    for child in &item.children {
-        flatten_structure(child, items, counter);
-    }
-}
-
-fn import_item(index: usize, item: &ImportInfo) -> EvidenceItem {
-    EvidenceItem {
-        key: format!("import:{index}"),
-        kind: EvidenceKind::Import,
-        origin: EvidenceOrigin::PackStructure,
-        span: convert_span(&item.span),
-        payload: json!({
-            "source": item.source,
-            "items": item.items,
-            "alias": item.alias,
-            "is_wildcard": item.is_wildcard,
-        }),
-    }
-}
-
-fn export_item(index: usize, item: &ExportInfo) -> EvidenceItem {
-    EvidenceItem {
-        key: format!("export:{index}"),
-        kind: EvidenceKind::Export,
-        origin: EvidenceOrigin::PackStructure,
-        span: convert_span(&item.span),
-        payload: json!({
-            "name": item.name,
-            "kind": format!("{:?}", item.kind),
-        }),
-    }
-}
-
-fn comment_item(index: usize, item: &CommentInfo) -> EvidenceItem {
-    EvidenceItem {
-        key: format!("comment:{index}"),
-        kind: EvidenceKind::Comment,
-        origin: EvidenceOrigin::PackStructure,
-        span: convert_span(&item.span),
-        payload: json!({
-            "text": item.text,
-            "kind": format!("{:?}", item.kind),
-            "associated_node": item.associated_node,
-        }),
-    }
-}
-
-fn docstring_item(index: usize, item: &DocstringInfo) -> EvidenceItem {
-    EvidenceItem {
-        key: format!("docstring:{index}"),
-        kind: EvidenceKind::Docstring,
-        origin: EvidenceOrigin::PackStructure,
-        span: convert_span(&item.span),
-        payload: json!({
-            "text": item.text,
-            "format": format!("{:?}", item.format),
-            "associated_item": item.associated_item,
-        }),
-    }
-}
-
-fn symbol_item(index: usize, item: &SymbolInfo) -> EvidenceItem {
-    EvidenceItem {
-        key: format!("symbol:{index}"),
-        kind: EvidenceKind::Symbol,
-        origin: EvidenceOrigin::PackSymbol,
-        span: convert_span(&item.span),
-        payload: json!({
-            "name": item.name,
-            "kind": format!("{:?}", item.kind),
-            "type_annotation": item.type_annotation,
-            "doc": item.doc,
-        }),
     }
 }
 

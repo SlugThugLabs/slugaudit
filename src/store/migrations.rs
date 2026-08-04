@@ -14,6 +14,27 @@ pub enum MigrationError {
     UnsupportedVersion { found: i64, supported: i64 },
 }
 
+impl MigrationError {
+    #[must_use]
+    pub fn is_corruption(&self) -> bool {
+        match self {
+            Self::ReadVersion(error) | Self::Apply(error) => is_corruption(error),
+            Self::UnsupportedVersion { .. } => false,
+        }
+    }
+}
+
+fn is_corruption(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(failure, _)
+            if matches!(
+                failure.code,
+                rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase
+            )
+    )
+}
+
 /// Brings a freshly-opened database up to `CURRENT_SCHEMA_VERSION`.
 /// Migrations are forward-only: a database at a newer schema version than
 /// this build knows about is rejected rather than guessed at. Applying the

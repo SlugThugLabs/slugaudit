@@ -1,20 +1,12 @@
+use super::database_path::database_path;
 use super::root::{ProjectRoot, RootError};
+use crate::store::open_read_write;
+use rusqlite::Connection;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 const PLANNING_DIR: &str = ".planning";
 const ACTIVATION_DIR: &str = "slugaudit";
-
-/// Top-level trash directory under the shared home (`~/.slugthug/trash/`).
-/// Disabled projects are moved here rather than deleted outright, so an
-/// accidental `disable` can be recovered by restoring the archived tree.
-fn trash_root() -> Option<PathBuf> {
-    std::env::var_os("SLUGTHUG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        .map(|home| home.join(".slugthug").join("trash"))
-}
 
 #[derive(Debug, Error)]
 pub enum ActivationError {
@@ -26,8 +18,13 @@ pub enum ActivationError {
     SymlinkedActivationPath,
     #[error("failed to update the activation directory: {0}")]
     Io(#[from] std::io::Error),
-    #[error("could not archive {path} before deletion: {inner}")]
-    Archive { path: String, inner: std::io::Error },
+    #[error("database operation failed while disabling the project: {0}")]
+    Database(#[source] crate::store::StoreError),
+    #[error(
+        "could not safely disable: another connection appears to be using the \
+         database ({0}). Wait for other SlugAudit tool calls to finish and retry."
+    )]
+    DatabaseBusy(#[source] rusqlite::Error),
 }
 
 /// The `.planning/slugaudit` directory under a resolved project root.
@@ -101,11 +98,9 @@ pub fn enable(root: &ProjectRoot) -> Result<PathBuf, ActivationError> {
 }
 
 /// Removes `.planning/slugaudit` under `root` — the one action that turns
-/// SlugAudit "off." Before deletion, the activation directory (database,
-/// findings, evidence, everything) is archived under `~/.slugthug/trash/`
-/// with a timestamped name, so an accidental disable can be recovered by
-/// restoring the archived tree. If archiving fails, the disable is aborted
-/// (fail closed: never delete without a backup).
+/// SlugAudit "off." The activation directory is disposable derived state;
+/// it is deleted after acquiring an exclusive database lock so no archive or
+/// stale SQLite copy is created.
 ///
 /// Returns `false` if it was already absent rather than treating that as
 /// an error.
@@ -113,70 +108,49 @@ pub fn enable(root: &ProjectRoot) -> Result<PathBuf, ActivationError> {
 /// # Errors
 ///
 /// Returns an error if a `.planning`/`.planning/slugaudit` component is a
-/// symlink (refuses to remove through one), if archiving fails, or if
-/// removal fails.
+/// symlink (refuses to remove through one), if the database cannot be locked,
+/// or if removal fails.
 pub fn disable(root: &ProjectRoot) -> Result<bool, ActivationError> {
     let activation = validated_activation_dir(root.as_path())?;
     if !activation.exists() {
         return Ok(false);
     }
-    archive_before_delete(&activation, trash_root().as_deref())?;
+    let database_lock = acquire_database_lock(root)?;
     std::fs::remove_dir_all(&activation)?;
+    drop(database_lock);
     Ok(true)
 }
 
-/// Copies `activation` into `<trash_root>/<timestamp>-<project>/` before it
-/// is deleted. The copy must succeed before the caller proceeds to
-/// `remove_dir_all` — destroying data without a backup is strictly worse
-/// than leaving the activation dir untouched. When `trash_root` is `None`
-/// (neither `SLUGTHUG_HOME` nor `HOME` is set), archiving is skipped and
-/// the delete proceeds; this is the only case where data is deleted without
-/// a backup, and it only happens in environments where SlugAudit cannot
-/// be installed or connected anyway.
-fn archive_before_delete(
-    activation: &Path,
-    trash_root: Option<&Path>,
-) -> Result<(), ActivationError> {
-    let Some(trash) = trash_root else {
-        return Ok(());
-    };
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as u64);
-    let project_name = activation
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .unwrap_or("project");
-    let archive = trash.join(format!("{timestamp}-{project_name}"));
-
-    std::fs::create_dir_all(trash).map_err(|inner| ActivationError::Archive {
-        path: trash.display().to_string(),
-        inner,
-    })?;
-    copy_dir_recursive(activation, &archive).map_err(|inner| ActivationError::Archive {
-        path: archive.display().to_string(),
-        inner,
-    })?;
-    Ok(())
-}
-
-/// Recursively copies `src` into `dst`, mirroring the directory tree and
-/// all file contents. `std::fs` has no `copy_dir_all`, so this walks the
-/// tree itself. Used only for archiving a project before disable.
-fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let src_child = entry.path();
-        let dst_child = dst.join(entry.file_name());
-        if src_child.is_dir() {
-            copy_dir_recursive(&src_child, &dst_child)?;
-        } else {
-            std::fs::copy(&src_child, &dst_child)?;
-        }
+/// Acquires an exclusive database connection before removal. The connection
+/// remains alive through `remove_dir_all`, so a concurrent SQLite session
+/// cannot publish while the activation directory and its WAL sidecars are
+/// being removed.
+fn acquire_database_lock(root: &ProjectRoot) -> Result<Option<Connection>, ActivationError> {
+    let db_path = database_path(root);
+    if !db_path.exists() {
+        return Ok(None);
     }
-    Ok(())
+    let connection = open_read_write(&db_path).map_err(ActivationError::Database)?;
+    // EXCLUSIVE locking is held by this connection until it is dropped. It
+    // therefore covers the database lock and removal as one guarded window.
+    connection
+        .pragma_update(None, "locking_mode", "EXCLUSIVE")
+        .map_err(ActivationError::DatabaseBusy)?;
+    connection
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            let busy: i64 = row.get(0)?;
+            Ok(busy)
+        })
+        .map_err(ActivationError::DatabaseBusy)
+        .and_then(|busy| {
+            if busy == 0 {
+                Ok(Some(connection))
+            } else {
+                Err(ActivationError::DatabaseBusy(
+                    rusqlite::Error::ExecuteReturnedResults,
+                ))
+            }
+        })
 }
 
 #[cfg(test)]

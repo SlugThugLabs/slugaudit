@@ -19,38 +19,27 @@ use std::path::Path;
 /// timeout compounds the problem by masking the underlying issue as a
 /// transient contention rather than a fundamental incompatibility.
 ///
-/// On Linux, the filesystem type is determined by reading
-/// `/proc/self/mountinfo` and finding the most specific mount point that
-/// contains the database path, then checking its filesystem type against
-/// known network-filesystem names. On non-Linux platforms the check is
-/// skipped (returns `Ok(())`) since `/proc/self/mountinfo` is Linux-
-/// specific; network filesystems on other platforms are a much narrower
-/// slice of the audience, and a wrong positive here would block legitimate
-/// local-filesystem use.
+/// On Linux, the filesystem type is determined from `/proc/self/mountinfo`.
+/// macOS and Windows use their native filesystem inspection commands. Other
+/// platforms fail closed rather than silently accepting an unknown mount.
 pub(super) fn reject_network_filesystem(path: &Path) -> Result<(), StoreError> {
-    if is_on_network_filesystem(path) {
+    if is_on_network_filesystem(path)? {
         return Err(StoreError::NetworkFilesystem);
     }
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn is_on_network_filesystem(path: &Path) -> bool {
-    let Ok(content) = std::fs::read_to_string("/proc/self/mountinfo") else {
-        // If /proc/self/mountinfo is unavailable (e.g. sandboxed
-        // environment), err on the side of allowing the open rather
-        // than blocking legitimate use. The NFS risk is unchanged, but
-        // a missing mount table is not itself evidence of a network
-        // mount.
-        return false;
-    };
+fn is_on_network_filesystem(path: &Path) -> Result<bool, StoreError> {
+    let content = std::fs::read_to_string("/proc/self/mountinfo")
+        .map_err(StoreError::NetworkFilesystemCheck)?;
 
     let path_str = match path.to_str() {
         Some(p) => p,
-        None => return false,
+        None => return Ok(false),
     };
 
-    is_mountpoint_network_filesystem(&content, path_str)
+    Ok(is_mountpoint_network_filesystem(&content, path_str))
 }
 
 /// Given the raw contents of `/proc/self/mountinfo` and a target path,
@@ -92,8 +81,49 @@ fn is_mountpoint_network_filesystem(mountinfo: &str, path_str: &str) -> bool {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn is_on_network_filesystem(_path: &Path) -> bool {
-    false
+fn is_on_network_filesystem(path: &Path) -> Result<bool, StoreError> {
+    #[cfg(target_os = "macos")]
+    let output = std::process::Command::new("stat")
+        .args(["-f", "%T"])
+        .arg(path)
+        .output()
+        .map_err(StoreError::NetworkFilesystemCheck)?;
+
+    #[cfg(target_os = "windows")]
+    let output = {
+        let volume = path
+            .components()
+            .next()
+            .and_then(|component| match component {
+                std::path::Component::Prefix(prefix) => Some(prefix.as_os_str()),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                StoreError::NetworkFilesystemCheck(std::io::Error::other(
+                    "database path has no Windows volume prefix",
+                ))
+            })?;
+        std::process::Command::new("fsutil")
+            .args(["fsinfo", "volumeinfo"])
+            .arg(volume)
+            .output()
+            .map_err(StoreError::NetworkFilesystemCheck)?
+    };
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    return Err(StoreError::NetworkFilesystemCheck(std::io::Error::other(
+        "filesystem inspection is not implemented on this platform",
+    )));
+
+    if !output.status.success() {
+        return Err(StoreError::NetworkFilesystemCheck(std::io::Error::other(
+            "filesystem inspection command failed",
+        )));
+    }
+    let text = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+    Ok(["nfs", "nfs4", "cifs", "smb", "smb3", "ncp", "ncpfs"]
+        .iter()
+        .any(|kind| text.contains(kind)))
 }
 #[cfg(test)]
 mod tests {

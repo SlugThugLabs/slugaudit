@@ -24,6 +24,9 @@ pub struct QueryRequest {
     /// that comes from the connection itself, not from inspecting this
     /// text: there is no keyword blocklist or table allowlist.
     pub sql: String,
+    /// Number of matching rows to skip when paging through a result.
+    #[serde(default)]
+    pub offset: usize,
 }
 
 /// Arbitrary read-only query results: one JSON object per row, column
@@ -35,6 +38,8 @@ pub struct QueryResponse {
     pub revision_id: String,
     pub rows: Vec<serde_json::Value>,
     pub truncated: bool,
+    /// Use this as the next request's `offset` when present.
+    pub next_offset: Option<usize>,
 }
 
 /// Borrowed mirror of `QueryResponse`, used to measure the exact serialized
@@ -45,6 +50,7 @@ struct QueryResponseView<'a> {
     revision_id: &'a str,
     rows: &'a [serde_json::Value],
     truncated: bool,
+    next_offset: Option<usize>,
 }
 
 /// # Errors
@@ -71,7 +77,7 @@ fn query_with_limits(
     limits: &ResourceLimits,
     cache: &SyncRecencyCache,
 ) -> Result<Json<QueryResponse>, ErrorData> {
-    let QueryRequest { path, sql } = &request.0;
+    let QueryRequest { path, sql, offset } = &request.0;
     let trimmed = sql.trim().trim_end_matches(';');
     if trimmed.is_empty() {
         return Err(ErrorData::invalid_params("sql must not be empty", None));
@@ -86,14 +92,16 @@ fn query_with_limits(
     let synced = ensure_synced(path, cache)?;
     let revision_id = synced.revision_id.clone();
     let (mut rows, mut truncated) =
-        with_verified_read(&synced, |tx| run_query(tx, trimmed, limits))?;
+        with_verified_read(&synced, |tx| run_query(tx, trimmed, *offset, limits))?;
 
     shrink_to_fit(
         &revision_id,
         &mut rows,
         &mut truncated,
+        *offset,
         limits.max_query_response_bytes,
     )?;
+    let next_offset = truncated.then_some(offset.saturating_add(rows.len()));
 
     // Row count and truncation, never the SQL text or the rows themselves.
     tracing::info!(
@@ -106,6 +114,7 @@ fn query_with_limits(
         revision_id,
         rows,
         truncated,
+        next_offset,
     }))
 }
 
@@ -114,6 +123,7 @@ fn query_with_limits(
 fn run_query(
     tx: &Transaction<'_>,
     trimmed: &str,
+    offset: usize,
     limits: &ResourceLimits,
 ) -> Result<(Vec<serde_json::Value>, bool), ErrorData> {
     // Progress handler aborts runaway queries after a fixed VM-step budget,
@@ -141,7 +151,7 @@ fn run_query(
         }),
     );
 
-    let result = execute_and_collect(tx, trimmed, limits, &abort_reason);
+    let result = execute_and_collect(tx, trimmed, offset, limits, &abort_reason);
 
     // Clear the handler so it does not outlive this call on a pooled
     // connection (we drop the connection, but be explicit).
@@ -154,13 +164,17 @@ fn run_query(
 fn execute_and_collect(
     tx: &Transaction<'_>,
     trimmed: &str,
+    offset: usize,
     limits: &ResourceLimits,
     abort_reason: &Arc<AtomicU8>,
 ) -> Result<(Vec<serde_json::Value>, bool), ErrorData> {
     // The user SQL is wrapped on its own line so a trailing `-- line comment`
     // terminates at the newline rather than swallowing the closing `)` and
     // `LIMIT` clause, which would otherwise produce a confusing parse error.
-    let wrapped = format!("SELECT * FROM (\n{trimmed}\n) LIMIT {}", MAX_ROWS + 1);
+    let wrapped = format!(
+        "SELECT * FROM (\n{trimmed}\n) LIMIT {} OFFSET {offset}",
+        MAX_ROWS + 1
+    );
     let mut statement = tx
         .prepare(&wrapped)
         .map_err(|error| describe_error(&error, abort_reason))?;
@@ -201,6 +215,7 @@ fn shrink_to_fit(
     revision_id: &str,
     rows: &mut Vec<serde_json::Value>,
     truncated: &mut bool,
+    offset: usize,
     max_bytes: usize,
 ) -> Result<(), ErrorData> {
     loop {
@@ -208,6 +223,7 @@ fn shrink_to_fit(
             revision_id,
             rows,
             truncated: *truncated,
+            next_offset: (*truncated).then_some(offset.saturating_add(rows.len())),
         };
         let encoded_len = serde_json::to_vec(&view)
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?

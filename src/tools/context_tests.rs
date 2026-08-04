@@ -5,6 +5,31 @@ fn cache() -> SyncRecencyCache {
     SyncRecencyCache::new()
 }
 
+#[test]
+fn a_corrupt_derived_database_is_discarded_and_rebuilt_from_project_files() {
+    let project = activated_project("lib.rs", b"pub fn rebuilt() {}\n");
+    let path = project.path().to_string_lossy().into_owned();
+    let cache = cache();
+    ensure_synced(&path, &cache).expect("initial sync");
+
+    let database = project.path().join(".planning/slugaudit/project.db");
+    fs::write(&database, b"corrupt sqlite bytes").expect("corrupt derived database");
+    fs::write(
+        database.with_file_name("project.db-wal"),
+        b"stale wal sidecar",
+    )
+    .expect("write stale wal sidecar");
+
+    let rebuilt = ensure_synced(&path, &cache).expect("corrupt cache is rebuilt");
+    assert!(!rebuilt.revision_id.is_empty());
+    assert!(rebuilt.database_path.exists(), "rebuilt database exists");
+    let connection = crate::store::open_read_only(&rebuilt.database_path).expect("rebuilt db");
+    let count: i64 = connection
+        .query_row("SELECT count(*) FROM files", [], |row| row.get(0))
+        .expect("rebuilt file row");
+    assert_eq!(count, 1);
+}
+
 fn activated_project(relative: &str, content: &[u8]) -> tempfile::TempDir {
     let project = tempfile::tempdir().expect("project dir");
     fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
@@ -54,13 +79,18 @@ fn a_stale_synced_handle_fails_loudly_instead_of_returning_mismatched_data() {
         ran_closure.set(true);
         Ok(())
     });
-    assert!(
-        result.is_err(),
-        "a stale revision handle must never silently open against newer data"
-    );
+    let error = result.expect_err("a stale revision handle must never open against newer data");
     assert!(
         !ran_closure.get(),
         "the closure must never run against a revision that failed verification"
+    );
+    // The message must actually be actionable, not a bare rusqlite/io
+    // Display string with no guidance — this is the specific caller-facing
+    // gap `internal_error` exists to close.
+    let message = error.message.to_string();
+    assert!(
+        message.contains("retry the call"),
+        "expected a retry hint in the error message, got: {message}"
     );
 }
 

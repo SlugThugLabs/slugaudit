@@ -76,6 +76,26 @@ fn matches_against_unicode_source_without_panicking() {
     assert_eq!(response.matches[0].text, "caf\u{e9}");
 }
 
+/// `start_column`/`end_column` must count *characters* since the start of
+/// the line, not bytes. A multi-byte UTF-8 character earlier on the same
+/// line (`é`, 2 bytes but 1 character) must not shift the column of
+/// everything after it — Tree-sitter's own `Point::column` is byte-based,
+/// so this pins the conversion rather than a raw pass-through.
+#[test]
+fn columns_count_characters_not_bytes_on_a_line_with_multibyte_utf8() {
+    let project = activated_project("lib.rs", "let x = \"caf\u{e9}\"; let bar = 1;\n".as_bytes());
+    let response = ask(&project, "lib.rs", "(identifier) @name").expect("query succeeds");
+    let bar = response
+        .matches
+        .iter()
+        .find(|m| m.text == "bar")
+        .expect("bar identifier is matched");
+    assert_eq!(
+        bar.start_column, 20,
+        "column must count the 1-character é, not its 2 UTF-8 bytes"
+    );
+}
+
 #[test]
 fn an_oversized_query_is_a_typed_error() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");

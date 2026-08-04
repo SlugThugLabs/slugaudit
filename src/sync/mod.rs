@@ -17,7 +17,7 @@ mod revision;
 mod revision_edges;
 mod sample;
 
-pub use discovery::{DiscoveredFile, DiscoveryError, FileKind, discover};
+pub use discovery::{DiscoveredFile, DiscoveryError, FileKind, SkippedFile, discover};
 pub use hash::{HashError, aggregate_manifest_hash, hash_bytes, hash_file};
 pub use manifest::{ChangeStatus, FileChange, compare};
 pub use publish::{PublishError, PublishReport, publish};
