@@ -38,7 +38,10 @@ impl SyncRecencyCache {
 
     /// Returns true if `root` was synced within the recency window.
     fn is_recent(&self, root: &Path) -> bool {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.lock().unwrap_or_else(|poisoned| {
+            tracing::error!("sync recency cache lock was poisoned; recovering cached state");
+            poisoned.into_inner()
+        });
         guard
             .get(root)
             .is_some_and(|instant| instant.elapsed() < RECENCY_WINDOW)
@@ -46,7 +49,10 @@ impl SyncRecencyCache {
 
     /// Records that `root` was just synced successfully.
     fn record(&self, root: PathBuf) {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock().unwrap_or_else(|poisoned| {
+            tracing::error!("sync recency cache lock was poisoned; recovering cached state");
+            poisoned.into_inner()
+        });
         guard.insert(root, Instant::now());
     }
 }

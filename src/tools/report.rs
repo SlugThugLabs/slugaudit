@@ -211,9 +211,12 @@ fn build_report(
          JOIN files f ON f.id = de.from_file_id \
          WHERE de.resolution_kind = 'Unresolved'",
     )?;
-    let unsupported_language_unresolved_count = unresolved_language_stmt
+    let unresolved_languages: Vec<Option<String>> = unresolved_language_stmt
         .query_map([], |row| row.get::<_, Option<String>>(0))?
-        .filter_map(|result| result.ok().flatten())
+        .collect::<Result<_, _>>()?;
+    let unsupported_language_unresolved_count = unresolved_languages
+        .into_iter()
+        .flatten()
         .filter(|language| !crate::graph::is_supported_language(language))
         .count() as i64;
     drop(unresolved_language_stmt);

@@ -166,11 +166,8 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
     let agent = choice
         .ok()
         .and_then(|i| ConnectAgent::all().get(i).copied())
-        .ok_or_else(|| {
-            eprintln!("Invalid choice.");
-            std::process::exit(1);
-        })
-        .unwrap();
+        .ok_or(ConnectError::InvalidChoice)?;
 
-    connect_one(agent, &running_binary().map_err(ConnectError::BinaryPath)?)
+    let binary = running_binary().map_err(ConnectError::BinaryPath)?;
+    connect_one(agent, &prefer_slugthug_binary(&binary))
 }

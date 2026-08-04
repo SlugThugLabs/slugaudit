@@ -158,12 +158,12 @@ Permissions, from `src/store/connection.rs`:
 - **On Unix** (Linux, macOS): a newly created database file is opened with
   `O_CREAT | O_EXCL` and mode `0600` (owner read/write only) in a single
   syscall, so there is no window where the file briefly exists with wider,
-  umask-derived permissions before being tightened. An **existing** file's
-  permissions are never changed — SlugAudit never widens or narrows
-  permissions on a database file it didn't just create itself, to avoid a
-  TOCTOU race against whatever process actually created it. Verified
-  directly in this pass: creating a fresh project and making one real tool
-  call against it produced a database file with mode `600`.
+  umask-derived permissions before being tightened. An **existing** file with
+  group or other access is rejected rather than opened; SlugAudit does not
+  chmod a file it did not create itself, avoiding a TOCTOU race against
+  whatever process actually created it. Verified directly in this pass:
+  creating a fresh project and making one real tool call against it produced
+  a database file with mode `600`.
 - **On non-Unix** (Windows): permission tightening is a no-op (see
   section 1) — the file is created with whatever default permissions the
   OS/filesystem applies, and SlugAudit makes no attempt to restrict access

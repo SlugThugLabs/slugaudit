@@ -136,6 +136,36 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
 }
 
 #[test]
+fn malformed_language_value_is_reported_instead_of_dropped() {
+    use crate::store::open_read_write;
+
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    connection
+        .execute(
+            "INSERT INTO revisions \
+             (revision_id, manifest_hash, parser_pack_version, created_at_unix, is_current) \
+             VALUES ('r1', 'h', '1.0.0', 0, 1)",
+            [],
+        )
+        .expect("insert revision");
+    connection
+        .execute(
+            "INSERT INTO files \
+             (path, file_kind, content, content_hash, hash_algorithm, byte_len, language, \
+              language_detected, parser_availability, parse_outcome, extraction_completeness, \
+              last_revision_id) \
+             VALUES ('broken.bin', 'indexed', '', 'h', 'blake3', 0, CAST(X'FF' AS BLOB), \
+                     1, 'Unavailable', 'Failed', 'Unavailable', 1)",
+            [],
+        )
+        .expect("insert malformed language");
+
+    let tx = connection.transaction().expect("begin transaction");
+    assert!(build_report(&tx, "r1".to_owned()).is_err());
+}
+
+#[test]
 fn an_inactive_project_is_a_typed_error_not_a_panic() {
     let project = tempfile::tempdir().expect("project dir");
     let result = report(

@@ -51,7 +51,10 @@ static UNKNOWN_LANGUAGE_COUNTS: OnceLock<Mutex<HashMap<String, usize>>> = OnceLo
 /// imports in this process.
 fn record_unsupported_language(language: &str) {
     let counts = UNKNOWN_LANGUAGE_COUNTS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = counts.lock().unwrap();
+    let mut guard = counts.lock().unwrap_or_else(|poisoned| {
+        tracing::error!("unsupported-language counter lock was poisoned; recovering counts");
+        poisoned.into_inner()
+    });
     let entry = guard.entry(language.to_owned()).or_insert(0);
     *entry += 1;
     let count = *entry;

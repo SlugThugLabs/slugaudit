@@ -5,8 +5,8 @@ use std::time::Duration;
 use thiserror::Error;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-/// Owner-only access for newly created database files. Existing files keep
-/// whatever mode they already have — we never widen permissions.
+/// Owner-only access for newly created database files. Existing files with
+/// broader access are rejected rather than silently exposed.
 #[cfg(unix)]
 const PRIVATE_MODE: u32 = 0o600;
 
@@ -132,6 +132,32 @@ fn create_with_private_permissions_if_missing(_path: &Path) -> Result<(), StoreE
     Ok(())
 }
 
+/// Refuse existing database files that are readable or writable by group or
+/// other users. The index can contain source-derived evidence and must not be
+/// opened under weaker permissions merely because it was created elsewhere.
+#[cfg(unix)]
+fn reject_insecure_permissions(path: &Path) -> Result<(), StoreError> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(StoreError::Permissions(error)),
+    };
+    let mode = metadata.permissions().mode();
+    if mode & 0o077 != 0 {
+        return Err(StoreError::Permissions(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("database mode {mode:o} is broader than owner-only 600"),
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn reject_insecure_permissions(_path: &Path) -> Result<(), StoreError> {
+    Ok(())
+}
+
 /// Opens a read-write connection, creating the database file if needed, and
 /// brings its schema up to date. This is the only connection sync/store
 /// repositories write through.
@@ -147,6 +173,7 @@ pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
     reject_symlink(path)?;
     reject_network_filesystem(path)?;
     create_with_private_permissions_if_missing(path)?;
+    reject_insecure_permissions(path)?;
     let mut connection =
         Connection::open_with_flags(path, open_flags(true)).map_err(StoreError::Open)?;
     configure(&connection)?;
@@ -168,6 +195,7 @@ pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
 pub fn open_read_only(path: &Path) -> Result<Connection, StoreError> {
     reject_symlink(path)?;
     reject_network_filesystem(path)?;
+    reject_insecure_permissions(path)?;
     let connection =
         Connection::open_with_flags(path, open_flags(false)).map_err(StoreError::Open)?;
     connection
@@ -231,6 +259,12 @@ mod tests {
         let directory = tempfile::tempdir().expect("temp dir");
         let path = directory.path().join("project.db");
         std::fs::write(&path, b"not a sqlite database, just garbage bytes").expect("write garbage");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .expect("protect garbage fixture");
+        }
 
         let result = open_read_write(&path);
         assert!(
@@ -278,11 +312,11 @@ mod tests {
     /// test to catch mid-window. What we can prove here: losing the create
     /// race to another process (simulated by pre-creating the file with a
     /// wider mode, as a concurrent creator might under a permissive umask)
-    /// doesn't panic, doesn't get chmod'd out from under its actual owner,
-    /// and still yields a working, migrated connection.
+    /// doesn't panic or get chmod'd out from under its actual owner; the
+    /// security boundary rejects the wider mode without modifying it.
     #[cfg(unix)]
     #[test]
-    fn losing_the_concurrent_create_race_still_opens_cleanly_without_touching_permissions() {
+    fn a_database_created_with_wider_permissions_is_rejected_without_touching_permissions() {
         use std::os::unix::fs::OpenOptionsExt;
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().expect("temp dir");
@@ -297,11 +331,10 @@ mod tests {
             .open(&path)
             .expect("simulate a concurrent creator");
 
-        let connection = open_read_write(&path).expect("open the already-created database");
-        let enabled: i64 = connection
-            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
-            .expect("connection is usable");
-        assert_eq!(enabled, 1);
+        assert!(matches!(
+            open_read_write(&path),
+            Err(StoreError::Permissions(_))
+        ));
 
         let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
         assert_eq!(

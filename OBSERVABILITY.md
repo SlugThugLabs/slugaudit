@@ -64,15 +64,13 @@ identifiers, not content), and error messages from typed error variants
   losing publisher; the busy timeout is the backstop for actual lock
   contention at the SQLite level.
 - **Corrupted databases**: SQLite validates file format lazily, on first
-  real access rather than at open — a garbage/corrupted file at the
-  database path opens "successfully" at the OS level but fails on the
-  first pragma with a typed `StoreError::Configure` error (verified by
-  `store::connection::tests::a_corrupted_database_file_fails_closed_with_a_typed_error`).
-  There is currently no automatic repair or quarantine-and-reinitialize
-  path — a corrupted database blocks that project entirely until an
-  operator removes or restores the file (see `PACKAGING.md`'s removal
-  section for how the database file relates to the `.planning/slugaudit/`
-  activation marker).
+  real access rather than at open. A garbage/corrupted file is classified
+  as a typed corruption error, removed immediately with its `-wal` and
+  `-shm` sidecars, and rebuilt from current project files. This is an
+  intentional derived-data policy: database-resident findings are not
+  archived or preserved, because the audit index is reproducible from the
+  source tree. The rebuild is covered by
+  `store::connection::tests::a_corrupted_database_file_fails_closed_with_a_typed_error`.
 - **Parser failures**: never silently reported as a complete parse. A
   language pack that fails to load records `ParserAvailability::LoadFailed`;
   a parse that runs and then fails records `ParseOutcome::Failed`; both

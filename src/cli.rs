@@ -150,6 +150,8 @@ USAGE:
 /// that benefits from distinct, actionable messages.
 #[derive(Debug, Error)]
 pub enum ConnectError {
+    #[error("invalid agent choice; choose one of the listed options")]
+    InvalidChoice,
     #[error("binary path unavailable: {0}")]
     BinaryPath(std::io::Error),
     #[error("{agent} CLI ({cli}) not found on PATH — install it first")]
