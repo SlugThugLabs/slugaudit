@@ -2,7 +2,6 @@
 
 use rmcp::{ServiceExt, transport::stdio};
 use slugaudit_mcp_rust::cli::{self, Command};
-use slugaudit_mcp_rust::commands;
 use slugaudit_mcp_rust::connect;
 use slugaudit_mcp_rust::install;
 use slugaudit_mcp_rust::server::SlugAuditServer;
@@ -12,10 +11,6 @@ use tracing_subscriber::EnvFilter;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli::parse_args(std::env::args().skip(1)) {
         Ok(cmd) => match cmd {
-            Command::Enable { path } => return Ok(commands::run_enable(&path)?),
-            Command::Disable { path, assume_yes } => {
-                return Ok(commands::run_disable(&path, assume_yes)?);
-            }
             Command::Connect { agent } => {
                 match agent {
                     Some(agent) => connect::run_connect(agent)?,

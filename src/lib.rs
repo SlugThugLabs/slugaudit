@@ -9,7 +9,6 @@
 #![deny(clippy::print_stdout)]
 
 pub mod cli;
-pub mod commands;
 pub mod connect;
 pub mod evidence;
 pub mod graph;

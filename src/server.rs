@@ -17,13 +17,10 @@ const INSTRUCTIONS: &str = "SlugAudit supplies searchable, trustworthy evidence 
     the project's own database (search, symbol/import/diagnostic lookup, dependency traversal via \
     recursive CTEs over dependency_edges, and source retrieval all reach through it), `structure` \
     for Tree-sitter structural pattern matching, and `finding` to persist a conclusion you have \
-    actually reviewed. Dependency edges are resolved for Python (relative imports), Rust \
-    (crate::/super::/self:: paths), and JS/TS (relative imports) — other languages and \
-    absolute/external references are recorded as Unresolved/External, never silently dropped. \
-    Enable a project with `slugaudit-mcp-rust enable [PATH]` (runs the first import before \
-    returning); disable with `disable [PATH]`. SlugAudit performs no automated risk \
-    detection and reaches no conclusions itself: it supplies evidence, the calling AI performs all \
-    judgment.";
+    actually reviewed. Use `project_control` with `action` = `\"on\"` to enable a project (creates \
+    the activation directory and runs the first import) or `\"off\"` to disable it. \
+    SlugAudit performs no automated risk detection and reaches no conclusions itself: it supplies \
+    evidence, the calling AI performs all judgment.";
 
 /// Every tool handler does filesystem discovery, SQLite I/O, and (on first
 /// sync) Tree-sitter parsing — all synchronous, potentially slow work that
@@ -255,12 +252,28 @@ impl SlugAuditServer {
         )
         .await
     }
-}
 
-/// Builds the optional progress target from a request's `Meta` and the
-/// server peer. Returns `Some` only when the client supplied a progress
-/// token, which signals that it understands MCP progress notifications and
-/// would like to receive them for this call.
+    #[tool(
+        description = "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable \
+         a project (creates the activation directory and runs the initial import), or `\"off\"` to \
+         disable it (removes the activation directory and purges its database). Supply `path` to \
+         target a specific project root; defaults to the current directory."
+    )]
+    async fn project_control(
+        &self,
+        _meta: Meta,
+        _peer: Peer<RoleServer>,
+        request: Parameters<tools::ProjectControlRequest>,
+    ) -> Result<Json<tools::ProjectControlResponse>, ErrorData> {
+        run_blocking(
+            Arc::clone(&self.blocking_ops),
+            "project_control",
+            move || tools::project_control(&request),
+            None,
+        )
+        .await
+    }
+}
 fn progress_target(
     meta: Meta,
     peer: &Peer<RoleServer>,

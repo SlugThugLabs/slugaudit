@@ -1,28 +1,16 @@
 //! The `slugaudit-mcp-rust` binary's command-line surface: `serve` (the
-//! MCP server, the default with no arguments) and `enable`/`disable` — the
-//! one human-facing control described in `ARCHITECTURE.md`, exposed here
-//! as real commands instead of a "go create this directory yourself"
-//! workaround. `enable` also runs the project's first import immediately,
-//! before returning, rather than waiting for an AI to make the first tool
-//! call.
-//!
-//! `connect` registers the running binary as a stdio MCP server named
-//! `slugaudit` in a supported AI agent (Claude Code, Grok, or Codex) so
-//! the agent can reach SlugAudit's tools without the user hand-writing
-//! config. With no argument it presents an interactive menu; pass an agent
-//! name to connect it directly.
+//! MCP server, the default with no arguments). `connect` registers the
+//! running binary as a stdio MCP server named `slugaudit` in a supported AI
+//! agent (Claude Code, Grok, or Codex). `install` copies the binary to a
+//! stable path so it survives rebuilds.
 #![allow(clippy::print_stdout)]
-// slugaudit-line-exception: approved-by=agent; reason=argument parsing, enable/disable, and install are one cohesive CLI surface; splitting further would scatter a single user-facing contract across files
 
-use std::path::PathBuf;
 use std::str::FromStr;
 use thiserror::Error;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Serve,
-    Enable { path: PathBuf },
-    Disable { path: PathBuf, assume_yes: bool },
     Connect { agent: Option<ConnectAgent> },
     Install,
     Help,
@@ -92,26 +80,6 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
     };
     match first.as_str() {
         "serve" => Ok(Command::Serve),
-        "enable" => Ok(Command::Enable {
-            path: args
-                .next()
-                .map_or_else(|| PathBuf::from("."), PathBuf::from),
-        }),
-        "disable" => {
-            let mut path = None;
-            let mut assume_yes = false;
-            for arg in args {
-                if arg == "-y" || arg == "--yes" {
-                    assume_yes = true;
-                } else {
-                    path = Some(PathBuf::from(arg));
-                }
-            }
-            Ok(Command::Disable {
-                path: path.unwrap_or_else(|| PathBuf::from(".")),
-                assume_yes,
-            })
-        }
         "connect" => {
             let agent = args
                 .next()
@@ -130,11 +98,6 @@ slugaudit-mcp — searchable, trustworthy codebase evidence over MCP
 USAGE:
     slugaudit-mcp                    Run the MCP server (stdio transport)
     slugaudit-mcp serve              Same as running with no arguments
-    slugaudit-mcp enable [PATH]      Turn SlugAudit on for PATH (default: .)
-                                      and run its first import immediately
-    slugaudit-mcp disable [PATH]     Turn SlugAudit off for PATH (default: .),
-                                      deleting its database, findings, and evidence
-        -y, --yes                    Skip the confirmation prompt
     slugaudit-mcp connect [AGENT]    Register this binary as the `slugaudit`
                                       MCP server in an AI agent. AGENT is one
                                       of: claude, grok, codex. Omit to pick
