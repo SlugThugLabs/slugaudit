@@ -1,0 +1,149 @@
+# Decision log
+
+The dated decision log required by plan-audit amendment 21.1 ("a dated plan
+decision log"). Every deliberate choice that deviates from, pins, or adds
+specificity to `IMPLEMENTATION_PLAN.md` gets an entry here. Entries are
+append-only; superseded decisions are marked and left in place.
+
+Format: date — title; status; context; decision; rationale; consequences.
+
+## 2026-08-02 — Coverage gate threshold set at 89%
+
+- **Status**: decided
+- **Context**: plan-audit required a coverage policy; the plan itself did
+  not fix a number.
+- **Decision**: CI gates line coverage at ≥ 89%
+  (`cargo llvm-cov --fail-under-lines 89`). Measured real coverage on
+  2026-08-02 was 91.88%; the gate is measured-minus-margin, not an
+  aspirational target.
+- **Rationale**: a margin below real coverage avoids flaky CI while still
+  catching large regressions.
+- **Consequences**: the number is recalibrated deliberately when real
+  coverage moves; it must not be ratcheted down to silence a regression.
+
+## 2026-08-03 — Rust import resolution made workspace-aware
+
+- **Status**: decided
+- **Context**: `crate::`/`super::`/`self::` resolution was a directory
+  heuristic resolving ~3% of a real workspace's imports.
+- **Decision**: anchor `crate::` at the owning crate's `src` by walking up
+  to the nearest indexed `Cargo.toml`; support glob imports, non-`mod.rs`
+  module trees, trailing-item-name prefix fallback, and multi-crate
+  workspaces. Verdicts for `super::`/`self::` remain `"Low"` confidence
+  because `mod` declarations are not read.
+- **Rationale**: real resolution on a real workspace (3% → 97%) without
+  pretending to be a compiler.
+- **Consequences**: `.planning/README.md` "Dependency-edge resolution scope"
+  now describes workspace-aware behavior.
+
+## 2026-08-03 — Oversized modules split to restore the source-size gate
+
+- **Status**: decided
+- **Context**: several production files crossed the 200-code-line limit
+  during development; the gate had been allowed to rot.
+- **Decision**: split modules by ownership (sync/publish into
+  publish/revision/hash/manifest; store into connection/migrations/
+  repositories) and restored `tools/check_source_limits.sh` as a hard CI
+  step. Splits must follow `IMPLEMENTATION_PLAN.md` §2.2 (one primary
+  reason to change) — no hiding logic in macros or giant constants.
+- **Rationale**: the limit exists to keep ownership boundaries legible; an
+  exception requires a documented `slugaudit-line-exception` reason.
+
+## 2026-08-04 — Audit lifecycle hardened; failures surfaced
+
+- **Status**: decided
+- **Context**: plan-audit findings around audit lifecycle and project
+  indexing had been accepted but not yet addressed.
+- **Decision**: implement the audit corrections (project indexing and
+  lifecycle hardening) before further feature work, per §19 phase rules
+  (no next phase while an unresolved correctness failure exists).
+
+## 2026-08-09 — Incremental sync optimized; clippy warnings cleared
+
+- **Status**: decided
+- **Context**: every tool call re-discovered and re-hashed every file.
+- **Decision**: add incremental reconciliation — unchanged files keep their
+  hashes and derived evidence; only dirty/deleted paths are re-processed.
+  Gate must remain `clippy -D warnings` clean.
+
+## 2026-08-10 — Watcher-backed barrier sync becomes the production path
+
+- **Status**: decided
+- **Context**: incremental reconcile raced with events arriving during
+  reconciliation (events lost or desynced watcher state).
+- **Decision**: `SourceSyncManager` owns a per-project filesystem watcher.
+  When trusted and events are pending, `reconcile_dirty_paths` runs; a full
+  publish runs only when the watcher is untrusted or unavailable. A barrier
+  loop (`sync_with_barrier`, capped at `MAX_BARRIER_LOOPS = 16`) drains
+  events arriving during reconciliation and marks the watcher `Desynced`
+  under a pathological event producer. Watcher health is exposed via the
+  `health` tool.
+- **Rationale**: correctness under concurrent edits without losing events;
+  a bounded loop prevents an unbounded drain.
+
+## 2026-08-10 — Resolver split into a language-agnostic trait architecture
+
+- **Status**: decided
+- **Context**: `src/graph/resolver.rs` (522 LoC) violated the source-size
+  gate and conflated languages.
+- **Decision**: split into `registry.rs` + `generic.rs` + `python.rs` +
+  `js.rs` + `path_helpers.rs`, with a per-language trait (the
+  language-agnostic resolver architecture) so new languages register
+  without touching existing resolvers.
+- **Consequences**: `ARCHITECTURE.md` documents the five-file resolver
+  structure.
+
+## 2026-08-10 — Runtime databases removed from git tracking
+
+- **Status**: decided
+- **Context**: the per-project runtime database
+  (`.planning/slugaudit/project.db*`) was accidentally committed.
+- **Decision**: the runtime database is never versioned — it is gitignored,
+  machine-local, and excluded from discovery by `src/sync/discovery.rs`
+  itself.
+- **Rationale**: the index is reproducible from source; per §21.4
+  corruption policy the database is derived data, not an artifact.
+
+## 2026-08-10 — Windows owner-only permissions deferred
+
+- **Status**: decided (supersedes nothing; parked)
+- **Context**: Windows `CreateFileW` + `SECURITY_ATTRIBUTES` owner-only
+  permission work was proposed for `src/store/connection.rs`.
+- **Decision**: defer Windows-specific permission hardening; keep the Unix
+  owner-only `0o600` path as the reviewed behavior. Revisit only if a
+  Windows consumer materializes.
+- **Rationale**: the product targets stdio MCP hosts on developer
+  workstations; no Windows requirement exists yet.
+
+## 2026-08-10 — Project control moved into the MCP surface; CLI simplified
+
+- **Status**: decided
+- **Context**: an earlier iteration exposed `enable`/`disable` as human
+  CLI subcommands.
+- **Decision**: enable/disable is now the `project_control` MCP tool
+  (`action = "on"` creates the marker and runs the first import
+  immediately; `action = "off"` removes the marker and purges the
+  database under an exclusive lock). The CLI is `serve` (default),
+  `connect [AGENT]` (register as the MCP server for Claude Code/Grok/
+  Codex), `install`, and `help`. No human-facing sync/rebuild command
+  exists.
+- **Rationale**: §1 requires exactly one human-facing control; everything
+  else must flow through AI-invoked MCP calls.
+
+## Open items tracked in this log
+
+- **Performance baseline (Task 9.2)** — `benches/` (discovery, parsing,
+  search, sync) and `.planning/PERFORMANCE.md` do not exist yet. Benchmark
+  builds must be a dev-only dependency (criterion) and stay separate from
+  correctness gates (plan-audit PHASE-09).
+- **Phase 12 acceptance fixture** — the representative multi-language
+  fixture repository with a versioned golden manifest and evidence contract
+  is not built yet (plan-audit PHASE-12 requires exact counts, schemas,
+  latency budgets, restart behavior, partial-language expectations, and
+  zero-skipped critical tests).
+- **Full-crate mutation baseline** — CI mutation is scoped to
+  revision/publish/hash/context and `continue-on-error`; a full-crate
+  baseline and survivor triage is an ongoing workstream.
+- **`criterion` addition** — when benchmarks are added, criterion becomes a
+  dev-dependency; record its license (`Apache-2.0`/`MIT`) against the
+  allow-list at that time.
