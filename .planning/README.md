@@ -4,41 +4,71 @@ SlugAudit supplies an AI with searchable, trustworthy evidence about a codebase.
 It does not decide whether code is buggy, assign severity, or replace the AI's
 reasoning.
 
-This directory is the new Rust implementation. The older Python checkout is
+This directory is the Rust implementation. The older Python checkout is
 reference material only and is not a runtime dependency.
 
-## Current state (Phase 0 foundation)
+## Current state
 
-This is early-stage code. The core correctness mechanisms are in place — no
-partial states, atomic writes, concurrent-safe publishes, resource-bounded
-operations — but the user-facing experience is incomplete.
+The core correctness mechanisms are in place and exercised by an end-to-end
+test suite: atomic revision publishes, concurrent-safe CAS writes,
+watcher-backed incremental sync, resource-bounded operations, and
+AI-reviewed findings that auto-invalidate on source change. All quality
+gates pass (fmt, clippy `-D warnings`, source-size gate, 281 tests, coverage
+≥ 89%).
 
 **What works:**
-- Every tool call syncs the project: discovers, hashes, and parses all files,
-  then compares against stored state
-- Findings are tied to file hashes and auto-invalidate when code changes
-- Concurrent reads see consistent revisions; concurrent publishes use CAS
-- Resource limits on all operations (files, memory, responses, query steps)
-- Four MCP tools: `report`, `query`, `structure`, `finding`
-- Dependency-edge resolution (`src/graph/`): captured `Import` evidence is
-  resolved into `dependency_edges` rows on every publish. Python (relative
-  imports), Rust (`crate::`/`super::`/`self::` paths), and JS/TS (relative
-  imports) resolve to real project files when one exists; everything else —
-  unrecognized languages, absolute/bare-name imports, unmatched relative
-  imports — is recorded as `External`/`Unresolved` rather than dropped, so
-  `query`'s recursive-CTE traversal always sees the full picture, resolved
-  or not. See "Dependency-edge resolution scope" below for exact boundaries.
+- **Six MCP tools** — `report` (automatic snapshot), `query` (read-only SQL
+  against the project's own database; search, symbol/import/diagnostic
+  lookup, and dependency traversal via recursive CTEs all reach through it),
+  `structure` (tree-sitter structural pattern matching), `finding` (the one
+  write — persists an AI-reviewed conclusion bound to a file hash),
+  `project_control` (enable/disable a project), and `health` (operational
+  snapshot: watcher health, unreconciled counts, tool-call counters,
+  last-sync timestamp).
+- **Watcher-backed incremental sync** — `SourceSyncManager` tracks a
+  filesystem watcher per project. When the watcher is trusted and events are
+  pending, only dirty/deleted paths are re-hashed and re-indexed
+  (`reconcile_dirty_paths`); a full publish runs only when the watcher is
+  untrusted (restart, integrity violation) or unavailable. The barrier sync
+  loop (`sync_with_barrier`, capped at `MAX_BARRIER_LOOPS = 16`) drains
+  events that arrive during reconciliation instead of losing them, and
+  marks the watcher `Desynced` under a pathological event producer.
+- **Atomic, hash-verified revisions** — every publish computes a BLAKE3
+  manifest hash and swaps `revisions.is_current` in one transaction;
+  concurrent publishers detect the mismatch via compare-and-swap and retry.
+- **Findings tied to file hashes** — a finding is stored with the file's
+  current `content_hash` and becomes `stale` the moment that hash changes;
+  SlugAudit never creates a finding itself.
+- **Progress notifications** — `server_runner` emits MCP
+  `/notifications/progress` at three wire points per tool call
+  (`ensuring_current`, `publishing`, `completed`), plus per-file sampling
+  events from the sync layer, so long-running calls are never silent.
+- **Dependency-edge resolution** (`src/graph/`) — captured `Import`
+  evidence is resolved into `dependency_edges` rows on every publish.
+  See "Dependency-edge resolution scope" below for exact boundaries.
+- **Resource limits on all operations** — files, memory, responses, query
+  steps, and raw evidence are bounded, with truncation metadata when a
+  budget is reached.
+- **Freshness verification before every answer** — tools bind one verified
+  revision for the whole read; a stale handle fails loudly with a retry
+  hint rather than serving mismatched data.
 
 **What's not yet implemented:**
-- No optimized incremental sync — every tool call re-discovers and
-  re-samples every file, even when nothing changed since the last revision
-  (the write itself is skipped in that case, but the filesystem walk isn't)
-- No performance baseline (initial import, incremental sync, memory,
-  database size, or tool latency have not been measured/budgeted)
+- No performance baseline (initial import, unchanged-sync, changed-sync,
+  search latency, memory, and database-growth have not been measured or
+  budgeted; `benches/` and `.planning/PERFORMANCE.md` don't exist yet).
+- No representative multi-language fixture repository with a versioned
+  golden manifest (Phase 12 acceptance fixture).
+- No full-crate mutation-testing baseline (CI mutation is scoped to
+  revision/publish/hash/context and `continue-on-error`).
 
 See `PACKAGING.md` for installation, MCP registration, activation, database
 location/permissions, and upgrade/removal documentation. See
-`OBSERVABILITY.md` for tracing and operational-failure handling.
+`OBSERVABILITY.md` for tracing and operational-failure handling. See
+`ARCHITECTURE.md` for the module map and data-flow. See
+`.planning/DEPENDENCIES.md` for the dependency policy and inventory,
+`.planning/RELEASE_CHECKLIST.md` for the release gate, and
+`.planning/DECISIONS.md` for the dated decision log.
 
 ### Dependency-edge resolution scope
 
@@ -53,16 +83,15 @@ as a single import statement's `source` text in the first place). Concretely:
   are always `External` — without a configured package root there is no
   reliable way to distinguish a project-absolute import from a stdlib/
   third-party one.
-- **Rust**: only `crate::`/`super::`/`self::` paths resolve, assumed to be
-  rooted at a `src/` directory. A `use` path's trailing segments may name
-  an item (a function/type/const) rather than a further nested module —
-  the resolver tries the full segment chain as a directory path first, then
-  progressively shorter prefixes, since there's no semantic information
-  available to tell which case applies. `super::`/`self::` resolution is a
-  directory-based heuristic (parent/same directory of the importing file),
-  not a real module-tree walk, and is always reported at `"Low"`
-  confidence for that reason. Multi-crate workspaces aren't specially
-  handled.
+- **Rust**: `crate::`/`super::`/`self::` paths resolve against a
+  workspace-aware module tree. `crate::` is anchored at the owning crate's
+  `src` (walking up to the nearest indexed `Cargo.toml`), so multi-crate
+  workspaces work. Glob imports (`use super::*;`) point at the globbed
+  module's file, non-`mod.rs` module trees are handled, and trailing item
+  names (a function/type/const rather than a further module) fall back to
+  progressively shorter segment prefixes. `super::`/`self::` verdicts stay
+  `"Low"` confidence because `mod` declarations are not read. Everything
+  else (`std::`, bare crate names) is `External`.
 - **JavaScript/TypeScript**: only relative imports (`./x`, `../x`) resolve,
   by trying common extensions and directory-index forms against the known
   file set. Bare package names are always `External` — no `node_modules`
@@ -76,39 +105,34 @@ as a single import statement's `source` text in the first place). Concretely:
 
 A project is "enabled" purely by the presence of a `.planning/slugaudit/`
 directory at (or above) the path a tool call is made against —
-`src/project/activation.rs` walks up looking for it. The only supported way
-to create or remove that marker is the binary's own CLI command, exposed
-directly to a human — not an MCP tool, not something an AI calls:
+`src/project/activation.rs` walks up looking for it. The one supported way
+to create or remove that marker is the `project_control` MCP tool, exposed
+to the calling AI (which a human drives):
 
-```bash
-slugaudit-mcp-rust enable [PATH]   # default PATH: .
-slugaudit-mcp-rust disable [PATH]  # prompts before deleting; -y/--yes skips it
-slugaudit-mcp-rust help
-```
+- `project_control` with `action = "on"` creates the marker **and** runs
+  the project's first import immediately, before the tool returns — an AI's
+  later tool calls never pay that cost, matching the "starts an import
+  immediately, in the background" description in `ARCHITECTURE.md`.
+- `project_control` with `action = "off"` removes the marker and purges the
+  project's database — every finding and every piece of evidence — after
+  acquiring an exclusive database lock so no concurrent publish can race
+  the removal.
 
-`enable` creates the marker *and* runs the project's first import
-immediately, before the command returns — an AI's first tool call never
-pays that cost, matching the "starts an import immediately, in the
-background" description in `ARCHITECTURE.md` (here, "background" means
-"before any tool call is possible," not a detached process — `enable` is a
-short-lived CLI invocation that exits once the import completes). `disable`
-deletes the marker directory, which also deletes the project's database —
-every finding and every piece of evidence — so it asks for confirmation
-unless `-y`/`--yes` is passed.
-
-Running the binary with no arguments (or `serve`) is unchanged: it starts
-the MCP server over stdio, exactly as before. `enable`/`disable` are
-separate, synchronous, one-shot invocations of the same binary, not new
-MCP tools — a host application embedding this server (an editor extension,
-a wrapper script) can still shell out to these same two subcommands rather
-than reimplementing marker/database management itself.
+The CLI itself (`slugaudit-mcp`) has four commands: `serve` (the MCP server,
+the default with no arguments), `connect [AGENT]` (register this binary as
+the `slugaudit` MCP server in Claude Code, Grok, or Codex), `install` (copy
+the binary to `~/.slugthug/bin/`), and `help`. There is no human-facing
+enable/disable CLI command and no manual sync/rebuild command — enabling is
+the single human-facing control, everything else flows through MCP tool
+calls.
 
 **Planned for future versions:**
+- A performance baseline (`benches/` + `.planning/PERFORMANCE.md`)
 - Broader dependency resolution: more languages, real module-resolution
-  semantics (e.g. Rust workspace/`mod.rs` awareness, JS `node_modules`)
-  rather than the syntax-and-file-existence heuristics described above
-- Optimized incremental sync (skip unchanged files)
-- A richer human interface (e.g. a status/list command) beyond enable/disable
+  semantics (e.g. JS `node_modules`) rather than the
+  syntax-and-file-existence heuristics described above
+- A richer human interface (e.g. a status/list command) beyond the MCP
+  tool surface
 
 ## Current project rules
 
@@ -121,6 +145,9 @@ than reimplementing marker/database management itself.
 - Tool handlers orchestrate. Parsing, evidence normalization, persistence,
   search, and relationship queries remain separate ownership areas.
 - The AI performs audit reasoning. Automated extraction must remain neutral.
+- The per-project runtime database (`.planning/slugaudit/project.db*`) is
+  never versioned — it is gitignored, machine-local, and excluded from
+  discovery by `src/sync/discovery.rs` itself.
 
 ## Development
 
@@ -141,17 +168,15 @@ cargo build --release --locked
 All of the above pass as of this writing — `Cargo.toml` carries explicit
 license metadata (`PolyForm-Noncommercial-1.0.0`), so the license check is
 not blocked; `cargo audit` reports zero known vulnerabilities across the
-222-crate dependency tree.
+dependency tree.
 
 CI additionally runs `tests/stdio_protocol.rs` (the real subprocess/
 JSON-RPC handshake test) as its own named step, a coverage check
-(`cargo llvm-cov`, gated at 89% line coverage — real measured coverage is
-above 93% as of this writing), and a mutation-testing step scoped to the
-CAS/retry/hash correctness surface (`src/sync/revision.rs`,
-`src/sync/publish.rs`, `src/sync/hash.rs`, `src/tools/context.rs` —
-currently zero surviving mutants on that scope, verified locally; the CI
-step itself is `continue-on-error` since a full-crate baseline hasn't been
-established).
+(`cargo llvm-cov`, gated at 89% line coverage), and a mutation-testing step
+scoped to the CAS/retry/hash/freshness correctness surface
+(`src/sync/revision.rs`, `src/sync/publish*.rs`, `src/sync/hash.rs`,
+`src/tools/context.rs`). The mutation step is `continue-on-error` because a
+full-crate baseline hasn't been established.
 
 ### Unsafe code policy (`cargo geiger`)
 
@@ -202,5 +227,6 @@ resource limits must add focused tests before it is considered complete.
 
 ## Status
 
-The repository is in the Phase 0 foundation stage. The server behavior and
-module tree are intentionally not claimed to be complete.
+The repository is functional and gate-clean; remaining work is
+performance baselining and the end-to-end acceptance fixture — see the top
+of this file.
