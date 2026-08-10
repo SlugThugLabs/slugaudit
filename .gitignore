@@ -1,1 +1,6 @@
 /target
+
+# Per-project SlugAudit runtime database (created when the repo is activated).
+# Never version: it is binary, machine-local, and excluded from discovery by
+# src/sync/discovery.rs itself.
+/.planning/slugaudit/
