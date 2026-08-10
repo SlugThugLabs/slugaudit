@@ -9,7 +9,9 @@ name = "slugaudit-mcp"
 path = "src/main.rs"
 
 [dependencies]
+blake3 = "1"
 ignore = "0.4"
+notify = "7"
 rmcp = { version = "2.2", default-features = false, features = ["server", "macros", "transport-io"] }
 rusqlite = { version = "0.37", features = ["bundled", "hooks"] }
 schemars = "1"

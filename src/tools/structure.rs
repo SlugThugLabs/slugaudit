@@ -1,4 +1,4 @@
-use super::context::{SyncRecencyCache, ensure_synced, with_verified_read};
+use super::context::{ensure_synced, with_verified_read};
 use crate::model::{ResourceLimits, char_column, saturating_u32};
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -61,9 +61,8 @@ pub struct StructureResponse {
 /// is empty/too large or fails to compile, or the parser returns no tree.
 pub fn structure(
     request: &Parameters<StructureRequest>,
-    cache: &SyncRecencyCache,
 ) -> Result<Json<StructureResponse>, ErrorData> {
-    structure_with_limits(request, &ResourceLimits::default(), cache)
+    structure_with_limits(request, &ResourceLimits::default())
 }
 
 /// Test-only seam: production code always goes through [`structure`] with
@@ -73,7 +72,6 @@ pub fn structure(
 fn structure_with_limits(
     request: &Parameters<StructureRequest>,
     limits: &ResourceLimits,
-    cache: &SyncRecencyCache,
 ) -> Result<Json<StructureResponse>, ErrorData> {
     let StructureRequest { path, file, query } = &request.0;
     if query.trim().is_empty() {
@@ -92,7 +90,7 @@ fn structure_with_limits(
         ));
     }
 
-    let synced = ensure_synced(path, cache)?;
+    let synced = ensure_synced(path)?;
     let revision_id = synced.revision_id.clone();
     let (content, language) = with_verified_read(&synced, |tx| fetch_source(tx, file))?;
 

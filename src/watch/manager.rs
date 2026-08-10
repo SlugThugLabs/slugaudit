@@ -1,0 +1,213 @@
+//! Filesystem watcher manager. Owns the `notify` watcher and dispatches
+//! events to per-project `WatchState`. Runs on a dedicated background
+//! thread; the MCP server interacts with it only through this manager.
+
+use super::state::{WatchState, WatcherHealth, normalize_relative_path};
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+/// Manages filesystem watchers for all active projects. One instance lives
+/// on the `SlugAuditServer` (or its sync manager). Each project gets its
+/// own `WatchState`; the manager routes `notify` events to the right state.
+#[derive(Clone, Default)]
+pub struct WatchManager {
+    inner: Arc<Mutex<WatchManagerInner>>,
+}
+
+struct WatchManagerInner {
+    /// Per-project watch state, keyed by canonical project root.
+    projects: HashMap<PathBuf, WatchState>,
+    /// The underlying notify watcher. May be absent if the platform
+    /// doesn't support filesystem watching.
+    watcher: Option<RecommendedWatcher>,
+}
+
+impl WatchManager {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates a new WatchManager with a `notify` watcher if the platform
+    /// supports it. Returns `Unavailable` health for the first project if
+    /// the watcher can't be created.
+    pub fn with_watcher() -> Self {
+        let inner = WatchManagerInner {
+            projects: HashMap::new(),
+            watcher: None,
+        };
+        let manager = Self {
+            inner: Arc::new(Mutex::new(inner)),
+        };
+
+        // Try to create a notify watcher. If it fails, we'll operate in
+        // Unavailable mode — the sync layer will do full verification on
+        // every call.
+        let manager_clone = manager.clone();
+        match RecommendedWatcher::new(
+            move |result: Result<Event, notify::Error>| {
+                match result {
+                    Ok(event) => {
+                        manager_clone.handle_event(event);
+                    }
+                    Err(error) => {
+                        // Watcher error (e.g., queue overflow, watch removed).
+                        // Mark all projects as Desynced so the next ensure_current
+                        // does a full verification.
+                        tracing::warn!(
+                            error = %error,
+                            "filesystem watcher error; marking all projects for re-verification"
+                        );
+                        let guard = manager_clone.inner.lock().unwrap();
+                        for (_root, state) in guard.projects.iter() {
+                            state.set_health(WatcherHealth::Desynced);
+                        }
+                    }
+                }
+            },
+            Config::default(),
+        ) {
+            Ok(watcher) => {
+                let mut guard = manager.inner.lock().unwrap();
+                guard.watcher = Some(watcher);
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "filesystem watcher unavailable; SlugAudit will use full verification"
+                );
+            }
+        }
+
+        manager
+    }
+
+    /// Start watching `root`. Returns the `WatchState` for the project.
+    /// If the watcher is unavailable, returns a state with `Unavailable`
+    /// health.
+    pub fn watch(&self, root: &Path) -> WatchState {
+        let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+
+        let mut guard = self.inner.lock().unwrap();
+
+        // If we already have a state for this project, return it.
+        if let Some(state) = guard.projects.get(&canonical) {
+            return state.clone();
+        }
+
+        let state = WatchState::new();
+
+        // Try to add the watch.
+        if let Some(ref mut watcher) = guard.watcher {
+            match watcher.watch(&canonical, RecursiveMode::Recursive) {
+                Ok(()) => {
+                    tracing::info!(root = %canonical.display(), "watching project");
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        root = %canonical.display(),
+                        error = %error,
+                        "failed to watch project root; using Unavailable health"
+                    );
+                    state.set_health(WatcherHealth::Unavailable);
+                }
+            }
+        } else {
+            state.set_health(WatcherHealth::Unavailable);
+        }
+
+        // After restart, we don't trust the watcher history. The sync layer
+        // must verify the current filesystem state before serving evidence.
+        state.set_health(WatcherHealth::NeedsVerification);
+
+        guard.projects.insert(canonical.clone(), state.clone());
+        state
+    }
+
+    /// Stop watching `root` and remove its state.
+    pub fn unwatch(&self, root: &Path) {
+        let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+
+        let mut guard = self.inner.lock().unwrap();
+
+        if let Some(ref mut watcher) = guard.watcher {
+            let _ = watcher.unwatch(&canonical);
+        }
+
+        guard.projects.remove(&canonical);
+    }
+
+    /// Get the `WatchState` for `root`, if it exists.
+    pub fn get(&self, root: &Path) -> Option<WatchState> {
+        let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let guard = self.inner.lock().unwrap();
+        guard.projects.get(&canonical).cloned()
+    }
+
+    /// Handle a `notify` event: normalize the path and mark it dirty/deleted.
+    fn handle_event(&self, event: Event) {
+        // We need to find which project this path belongs to. For now, we
+        // do a simple prefix match against all watched projects.
+        let paths: Vec<PathBuf> = event.paths.clone();
+
+        let guard = self.inner.lock().unwrap();
+
+        for path in &paths {
+            for (project_root, state) in &guard.projects {
+                if let Some(relative) = normalize_relative_path(project_root, path) {
+                    // Skip SlugAudit's own activation directory and other
+                    // excluded paths — same rules as discovery.
+                    if is_excluded_path(&relative) {
+                        continue;
+                    }
+
+                    match event.kind {
+                        EventKind::Remove(_) => {
+                            state.mark_deleted(relative);
+                        }
+                        EventKind::Modify(_) | EventKind::Create(_) => {
+                            state.mark_dirty(relative);
+                        }
+                        _ => {}
+                    }
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Paths that should be ignored by the watcher, mirroring `sync::discovery`.
+fn is_excluded_path(relative: &str) -> bool {
+    relative.starts_with(".planning/slugaudit")
+        || relative.split('/').any(|component| component == ".git")
+        || relative.ends_with(".claude_output.txt")
+        || relative.ends_with(".tmp")
+        || relative.ends_with(".bak")
+        || relative.ends_with(".swp")
+        || relative.ends_with('~')
+}
+
+impl Default for WatchManagerInner {
+    fn default() -> Self {
+        Self {
+            projects: HashMap::new(),
+            watcher: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_excluded_path_filters_slugaudit_and_scratch_files() {
+        assert!(is_excluded_path(".planning/slugaudit/project.db"));
+        assert!(is_excluded_path(".git/config"));
+        assert!(is_excluded_path("src/lib.rs~"));
+        assert!(is_excluded_path("notes.tmp"));
+        assert!(!is_excluded_path("src/lib.rs"));
+        assert!(!is_excluded_path("README.md"));
+    }
+}

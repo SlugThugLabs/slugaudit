@@ -2,7 +2,7 @@
 //! synced, and format a response. They own no parsing, SQL, or storage
 //! logic themselves — that lives in `sync`, `store`, and `evidence`.
 
-mod context;
+pub(crate) mod context;
 mod finding;
 mod project_control;
 mod query;
@@ -10,7 +10,7 @@ mod query_value;
 mod report;
 mod structure;
 
-pub use context::{SyncRecencyCache, ensure_synced};
+pub use context::ensure_synced;
 pub use finding::{FindingRequest, FindingResponse, finding};
 pub use project_control::{ProjectControlRequest, ProjectControlResponse, project_control};
 pub use query::{QueryRequest, QueryResponse, query};

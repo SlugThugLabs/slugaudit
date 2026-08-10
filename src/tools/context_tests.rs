@@ -1,16 +1,11 @@
 use super::*;
 use std::fs;
 
-fn cache() -> SyncRecencyCache {
-    SyncRecencyCache::new()
-}
-
 #[test]
 fn a_corrupt_derived_database_is_discarded_and_rebuilt_from_project_files() {
     let project = activated_project("lib.rs", b"pub fn rebuilt() {}\n");
     let path = project.path().to_string_lossy().into_owned();
-    let cache = cache();
-    ensure_synced(&path, &cache).expect("initial sync");
+    ensure_synced(&path).expect("initial sync");
 
     let database = project.path().join(".planning/slugaudit/project.db");
     fs::write(&database, b"corrupt sqlite bytes").expect("corrupt derived database");
@@ -20,7 +15,7 @@ fn a_corrupt_derived_database_is_discarded_and_rebuilt_from_project_files() {
     )
     .expect("write stale wal sidecar");
 
-    let rebuilt = ensure_synced(&path, &cache).expect("corrupt cache is rebuilt");
+    let rebuilt = ensure_synced(&path).expect("corrupt cache is rebuilt");
     assert!(!rebuilt.revision_id.is_empty());
     assert!(rebuilt.database_path.exists(), "rebuilt database exists");
     let connection = crate::store::open_read_only(&rebuilt.database_path).expect("rebuilt db");
@@ -45,7 +40,7 @@ fn activated_project(relative: &str, content: &[u8]) -> tempfile::TempDir {
 #[test]
 fn a_verified_connection_succeeds_when_nothing_changed_since_sync() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let synced = ensure_synced(&project.path().to_string_lossy(), &cache()).expect("sync");
+    let synced = ensure_synced(&project.path().to_string_lossy()).expect("sync");
 
     let count: i64 = with_verified_read(&synced, |tx| {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
@@ -59,7 +54,7 @@ fn a_verified_connection_succeeds_when_nothing_changed_since_sync() {
 fn a_stale_synced_handle_fails_loudly_instead_of_returning_mismatched_data() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let path = project.path().to_string_lossy().into_owned();
-    let stale = ensure_synced(&path, &cache()).expect("first sync");
+    let stale = ensure_synced(&path).expect("first sync");
 
     // Simulate a concurrent publish from another process: modify the file
     // and sync again independently of `stale`.
@@ -68,7 +63,7 @@ fn a_stale_synced_handle_fails_loudly_instead_of_returning_mismatched_data() {
         b"pub fn a() { changed(); }\n",
     )
     .expect("modify file");
-    let fresh = ensure_synced(&path, &cache()).expect("second sync");
+    let fresh = ensure_synced(&path).expect("second sync");
     assert_ne!(
         stale.revision_id, fresh.revision_id,
         "the revision must actually have moved"
@@ -98,7 +93,7 @@ fn a_stale_synced_handle_fails_loudly_instead_of_returning_mismatched_data() {
 fn a_database_copied_from_a_different_project_root_fails_closed() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let path = project.path().to_string_lossy().into_owned();
-    ensure_synced(&path, &cache()).expect("first sync establishes the project row");
+    ensure_synced(&path).expect("first sync establishes the project row");
 
     // Simulate a database file copied in from a different project: rewrite
     // the stored root_path directly through a raw connection, bypassing
@@ -116,7 +111,7 @@ fn a_database_copied_from_a_different_project_root_fails_closed() {
     .expect("simulate a copied database from another project");
     drop(raw);
 
-    let result = ensure_synced(&path, &cache());
+    let result = ensure_synced(&path);
     assert!(
         result.is_err(),
         "a database whose stored root_path doesn't match this project's canonical root \
@@ -131,14 +126,14 @@ fn a_database_copied_from_a_different_project_root_fails_closed() {
 fn verified_read_write_has_the_same_protection() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let path = project.path().to_string_lossy().into_owned();
-    let stale = ensure_synced(&path, &cache()).expect("first sync");
+    let stale = ensure_synced(&path).expect("first sync");
 
     fs::write(
         project.path().join("lib.rs"),
         b"pub fn a() { changed(); }\n",
     )
     .expect("modify file");
-    let fresh = ensure_synced(&path, &cache()).expect("second sync");
+    let fresh = ensure_synced(&path).expect("second sync");
 
     let result = with_verified_write(&stale, |tx| {
         tx.execute(
@@ -171,7 +166,7 @@ fn verified_read_write_has_the_same_protection() {
 #[test]
 fn verified_write_actually_commits_a_real_change_on_a_fresh_revision() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let synced = ensure_synced(&project.path().to_string_lossy(), &cache()).expect("sync");
+    let synced = ensure_synced(&project.path().to_string_lossy()).expect("sync");
 
     with_verified_write(&synced, |tx| {
         tx.execute(
@@ -193,56 +188,15 @@ fn verified_write_actually_commits_a_real_change_on_a_fresh_revision() {
     assert_eq!(count, 1_i64);
 }
 
-/// When the recency cache reports a recent sync, `ensure_synced` must skip
-/// the full publish (discovery + sample + diff) and return the current
-/// revision id directly. Proved by syncing, modifying a file on disk, then
-/// syncing again with the same cache within the window: if the publish ran,
-/// the revision would move; if it was skipped, the revision stays put.
+/// Two syncs against an unchanged project converge on the same revision —
+/// the publish is deterministic.
 #[test]
-fn a_recent_cache_hit_skips_the_full_publish_even_when_files_changed() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let path = project.path().to_string_lossy().into_owned();
-    let cache = cache();
-
-    let first = ensure_synced(&path, &cache).expect("first sync");
-
-    // Change the file on disk. A full publish would detect this and
-    // advance the revision; a cache hit must not.
-    fs::write(
-        project.path().join("lib.rs"),
-        b"pub fn a() { changed(); }\n",
-    )
-    .expect("modify file");
-
-    let second = ensure_synced(&path, &cache).expect("second sync within recency window");
-    assert_eq!(
-        first.revision_id, second.revision_id,
-        "a recency-cache hit must skip the publish entirely, leaving the revision unchanged \
-         even though the file was modified on disk"
-    );
-
-    // The returned revision is still valid for a read: the DB wasn't
-    // republished, so the revision check passes.
-    let count: i64 = with_verified_read(&second, |tx| {
-        tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))
-    })
-    .expect("cached revision still opens fine");
-    assert_eq!(count, 1_i64);
-}
-
-/// A cache miss (fresh cache, or cache expired) must run the full publish.
-/// Two syncs with independent caches against an unchanged project both
-/// succeed and return the same revision id — the second one did the work
-/// rather than trusting the first.
-#[test]
-fn a_cache_miss_runs_the_full_publish_and_returns_the_current_revision() {
+fn two_syncs_against_unchanged_project_converge_on_same_revision() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let path = project.path().to_string_lossy().into_owned();
 
-    let first = ensure_synced(&path, &cache()).expect("first sync");
-    // Independent cache — no recency credit from the first sync.
-    let second = ensure_synced(&path, &cache()).expect("second sync with fresh cache");
+    let first = ensure_synced(&path).expect("first sync");
+    let second = ensure_synced(&path).expect("second sync");
 
     assert_eq!(
         first.revision_id, second.revision_id,

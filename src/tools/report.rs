@@ -1,4 +1,4 @@
-use super::context::{SyncRecencyCache, ensure_synced, with_verified_read};
+use super::context::{ensure_synced, with_verified_read};
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rusqlite::Transaction;
@@ -88,11 +88,8 @@ pub struct ReportResponse {
 ///
 /// Returns an error if `request.path` isn't inside an active project, or if
 /// syncing or querying the project's database fails.
-pub fn report(
-    request: &Parameters<ReportRequest>,
-    cache: &SyncRecencyCache,
-) -> Result<Json<ReportResponse>, ErrorData> {
-    let synced = ensure_synced(&request.0.path, cache)?;
+pub fn report(request: &Parameters<ReportRequest>) -> Result<Json<ReportResponse>, ErrorData> {
+    let synced = ensure_synced(&request.0.path)?;
     let revision_id = synced.revision_id.clone();
     let response = with_verified_read(&synced, |tx| {
         build_report(tx, revision_id.clone())

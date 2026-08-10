@@ -19,14 +19,11 @@ fn activated_project(files: &[(&str, &[u8])]) -> tempfile::TempDir {
 }
 
 fn ask(project: &tempfile::TempDir, sql: &str) -> Result<QueryResponse, ErrorData> {
-    query(
-        &Parameters(QueryRequest {
-            path: project.path().to_string_lossy().into_owned(),
-            sql: sql.to_owned(),
-            offset: 0,
-        }),
-        &SyncRecencyCache::new(),
-    )
+    query(&Parameters(QueryRequest {
+        path: project.path().to_string_lossy().into_owned(),
+        sql: sql.to_owned(),
+        offset: 0,
+    }))
     .map(|Json(response)| response)
 }
 
@@ -42,7 +39,6 @@ fn ask_with_limits(
             offset: 0,
         }),
         limits,
-        &SyncRecencyCache::new(),
     )
     .map(|Json(response)| response)
 }
@@ -74,16 +70,14 @@ fn joins_and_ctes_work_unlike_the_old_single_table_restriction() {
     let project = activated_project(&[("lib.rs", b"pub fn greet() {}\n")]);
     let response = ask(
         &project,
-        "SELECT f.path, e.kind FROM files f JOIN evidence e ON e.file_id = f.id WHERE e.kind = 'Structure'",
-    )
+        "SELECT f.path, e.kind FROM files f JOIN evidence e ON e.file_id = f.id WHERE e.kind = 'Structure'")
     .expect("join query succeeds");
     assert_eq!(response.rows.len(), 1);
     assert_eq!(response.rows[0]["path"], "lib.rs");
 
     let recursive = ask(
         &project,
-        "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5) SELECT x FROM cnt",
-    )
+        "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5) SELECT x FROM cnt")
     .expect("recursive CTE query succeeds");
     assert_eq!(recursive.rows.len(), 5);
 }
@@ -128,8 +122,7 @@ fn results_are_capped_and_truncation_is_reported() {
     let project = activated_project(&[]);
     let response = ask(
         &project,
-        "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 600) SELECT x FROM cnt",
-    )
+        "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 600) SELECT x FROM cnt")
     .expect("recursive CTE query succeeds");
     assert_eq!(response.rows.len(), MAX_ROWS);
     assert!(response.truncated);
@@ -178,8 +171,7 @@ fn full_response_framing_is_counted_toward_the_byte_cap() {
     let response = ask_with_limits(
         &project,
         "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 100) SELECT x FROM cnt",
-        &limits,
-    )
+        &limits)
     .expect("query succeeds even though it must drop rows to fit");
     assert!(response.truncated);
     let encoded = serde_json::to_vec(&response).expect("response serializes");

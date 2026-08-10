@@ -1,6 +1,4 @@
 use crate::model::SourceIdentity;
-use crate::util;
-use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -27,10 +25,8 @@ pub fn hash_file(relative_path: &str, absolute_path: &Path) -> Result<SourceIden
 
 #[must_use]
 pub fn hash_bytes(relative_path: &str, bytes: &[u8]) -> SourceIdentity {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    SourceIdentity::new(relative_path.to_owned(), util::hex_encode(&digest))
+    let digest = blake3::hash(bytes);
+    SourceIdentity::new(relative_path.to_owned(), digest.to_string())
 }
 
 /// A single deterministic hash over an entire file set: sorted by path so
@@ -39,17 +35,17 @@ pub fn hash_bytes(relative_path: &str, bytes: &[u8]) -> SourceIdentity {
 pub fn aggregate_manifest_hash<'a>(
     entries: impl IntoIterator<Item = (&'a str, &'a str)>,
 ) -> String {
+    let mut hasher = blake3::Hasher::new();
     let mut sorted: Vec<(&str, &str)> = entries.into_iter().collect();
     sorted.sort_by(|a, b| a.0.cmp(b.0));
 
-    let mut hasher = Sha256::new();
     for (path, hash) in sorted {
         hasher.update(path.as_bytes());
-        hasher.update([0]);
+        hasher.update(&[0]);
         hasher.update(hash.as_bytes());
-        hasher.update(*b"\n");
+        hasher.update(b"\n");
     }
-    util::hex_encode(&hasher.finalize())
+    hasher.finalize().to_string()
 }
 
 #[cfg(test)]
@@ -73,7 +69,7 @@ mod tests {
     #[test]
     fn hash_algorithm_is_recorded() {
         let identity = hash_bytes("a.rs", b"content");
-        assert_eq!(identity.hash_algorithm, "sha256-bytes-v1");
+        assert_eq!(identity.hash_algorithm, "blake3-v1");
     }
 
     #[test]

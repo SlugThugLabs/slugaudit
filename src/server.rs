@@ -9,8 +9,6 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::Instrument;
 
-use crate::tools::SyncRecencyCache;
-
 const INSTRUCTIONS: &str = "SlugAudit supplies searchable, trustworthy evidence about a codebase — \
     parsed structure, symbols, imports, diagnostics, and prior AI-reviewed findings. Use `report` \
     for an automatic snapshot of what evidence exists, `query` for arbitrary read-only SQL against \
@@ -33,7 +31,6 @@ const MAX_CONCURRENT_BLOCKING_OPS: usize = 8;
 pub struct SlugAuditServer {
     tool_router: ToolRouter<Self>,
     blocking_ops: Arc<Semaphore>,
-    sync_recency: SyncRecencyCache,
 }
 
 impl SlugAuditServer {
@@ -42,7 +39,6 @@ impl SlugAuditServer {
         Self {
             tool_router: Self::tool_router(),
             blocking_ops: Arc::new(Semaphore::new(MAX_CONCURRENT_BLOCKING_OPS)),
-            sync_recency: SyncRecencyCache::new(),
         }
     }
 }
@@ -176,12 +172,11 @@ impl SlugAuditServer {
         peer: Peer<RoleServer>,
         request: Parameters<tools::ReportRequest>,
     ) -> Result<Json<tools::ReportResponse>, ErrorData> {
-        let cache = self.sync_recency.clone();
         let progress = progress_target(meta, &peer);
         run_blocking(
             Arc::clone(&self.blocking_ops),
             "report",
-            move || tools::report(&request, &cache),
+            move || tools::report(&request),
             progress,
         )
         .await
@@ -196,12 +191,11 @@ impl SlugAuditServer {
         peer: Peer<RoleServer>,
         request: Parameters<tools::QueryRequest>,
     ) -> Result<Json<tools::QueryResponse>, ErrorData> {
-        let cache = self.sync_recency.clone();
         let progress = progress_target(meta, &peer);
         run_blocking(
             Arc::clone(&self.blocking_ops),
             "query",
-            move || tools::query(&request, &cache),
+            move || tools::query(&request),
             progress,
         )
         .await
@@ -216,12 +210,11 @@ impl SlugAuditServer {
         peer: Peer<RoleServer>,
         request: Parameters<tools::StructureRequest>,
     ) -> Result<Json<tools::StructureResponse>, ErrorData> {
-        let cache = self.sync_recency.clone();
         let progress = progress_target(meta, &peer);
         run_blocking(
             Arc::clone(&self.blocking_ops),
             "structure",
-            move || tools::structure(&request, &cache),
+            move || tools::structure(&request),
             progress,
         )
         .await
@@ -242,12 +235,11 @@ impl SlugAuditServer {
         peer: Peer<RoleServer>,
         request: Parameters<tools::FindingRequest>,
     ) -> Result<Json<tools::FindingResponse>, ErrorData> {
-        let cache = self.sync_recency.clone();
         let progress = progress_target(meta, &peer);
         run_blocking(
             Arc::clone(&self.blocking_ops),
             "finding",
-            move || tools::finding(&request, &cache),
+            move || tools::finding(&request),
             progress,
         )
         .await

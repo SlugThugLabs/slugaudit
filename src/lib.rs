@@ -21,3 +21,4 @@ pub mod store;
 pub mod sync;
 pub mod tools;
 pub mod util;
+pub mod watch;

@@ -1,4 +1,4 @@
-use super::context::{SyncRecencyCache, ensure_synced, with_verified_read};
+use super::context::{ensure_synced, with_verified_read};
 use super::query_value::row_to_json;
 use crate::model::ResourceLimits;
 use rmcp::ErrorData;
@@ -60,11 +60,8 @@ struct QueryResponseView<'a> {
 /// attempted write, which SQLite itself rejects on this connection), the
 /// VM-step or wall-clock budget is exhausted, or a result value can't be
 /// represented (including a single TEXT/BLOB value over the per-value cap).
-pub fn query(
-    request: &Parameters<QueryRequest>,
-    cache: &SyncRecencyCache,
-) -> Result<Json<QueryResponse>, ErrorData> {
-    query_with_limits(request, &ResourceLimits::default(), cache)
+pub fn query(request: &Parameters<QueryRequest>) -> Result<Json<QueryResponse>, ErrorData> {
+    query_with_limits(request, &ResourceLimits::default())
 }
 
 /// Test-only seam: production code always goes through [`query`] with
@@ -75,7 +72,6 @@ pub fn query(
 fn query_with_limits(
     request: &Parameters<QueryRequest>,
     limits: &ResourceLimits,
-    cache: &SyncRecencyCache,
 ) -> Result<Json<QueryResponse>, ErrorData> {
     let QueryRequest { path, sql, offset } = &request.0;
     let trimmed = sql.trim().trim_end_matches(';');
@@ -89,7 +85,7 @@ fn query_with_limits(
         ));
     }
 
-    let synced = ensure_synced(path, cache)?;
+    let synced = ensure_synced(path)?;
     let revision_id = synced.revision_id.clone();
     let (mut rows, mut truncated) =
         with_verified_read(&synced, |tx| run_query(tx, trimmed, *offset, limits))?;

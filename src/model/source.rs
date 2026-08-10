@@ -32,7 +32,7 @@ impl SourceIdentity {
         Self {
             relative_path,
             content_hash,
-            hash_algorithm: "sha256-bytes-v1".into(),
+            hash_algorithm: "blake3-v1".into(),
         }
     }
 }
