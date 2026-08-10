@@ -152,22 +152,35 @@ impl WatchManager {
     }
 
     /// Handle a `notify` event: normalize the path and mark it dirty/deleted.
+    /// Uses `try_lock` to avoid blocking the watcher's background thread if
+    /// the sync layer holds the lock — stale events are harmless because the
+    /// sync layer will do a full verification on the next `ensure_current`.
     fn handle_event(&self, event: Event) {
-        // We need to find which project this path belongs to. For now, we
-        // do a simple prefix match against all watched projects.
         let paths: Vec<PathBuf> = event.paths.clone();
 
-        let guard = self.inner.lock().unwrap();
+        let Ok(mut guard) = self.inner.try_lock() else {
+            // Sync layer holds the lock — skip this event. The sync layer
+            // will do a full verification on the next `ensure_current`, so
+            // missing an event here is harmless.
+            return;
+        };
+
+        // Check if any project roots have been deleted (e.g. tempdirs
+        // dropped after tests). If so, unwatch and remove them to prevent
+        // the map from accumulating stale entries.
+        let deleted_roots: Vec<PathBuf> = guard
+            .projects
+            .keys()
+            .filter(|root| !root.exists())
+            .cloned()
+            .collect();
 
         for path in &paths {
             for (project_root, state) in &guard.projects {
                 if let Some(relative) = normalize_relative_path(project_root, path) {
-                    // Skip SlugAudit's own activation directory and other
-                    // excluded paths — same rules as discovery.
                     if is_excluded_path(&relative) {
                         continue;
                     }
-
                     match event.kind {
                         EventKind::Remove(_) => {
                             state.mark_deleted(relative);
@@ -180,6 +193,14 @@ impl WatchManager {
                     break;
                 }
             }
+        }
+
+        for root in &deleted_roots {
+            if let Some(ref mut watcher) = guard.watcher {
+                let _ = watcher.unwatch(root);
+            }
+            guard.projects.remove(root);
+            tracing::info!(root = %root.display(), "removed watch for deleted project root");
         }
     }
 }
