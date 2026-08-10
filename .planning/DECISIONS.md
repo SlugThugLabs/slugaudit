@@ -147,3 +147,23 @@ Format: date — title; status; context; decision; rationale; consequences.
 - **`criterion` addition** — when benchmarks are added, criterion becomes a
   dev-dependency; record its license (`Apache-2.0`/`MIT`) against the
   allow-list at that time.
+
+## 2026-08-10 — notify 7 → 8.2.0 to eliminate RUSTSEC-2024-0384
+
+- **Status**: decided
+- **Context**: `cargo deny check advisories` failed on RUSTSEC-2024-0384
+  (`instant` unmaintained), reached only through `notify 7` → `notify-types
+  1.0.1` → `instant 0.1.13`. `cargo update` cannot fix it; `instant` has no
+  safe upgrade and deny.toml forbids ignores (`ignore = []`).
+- **Decision**: bump `notify` to `8` (lock: 8.2.0), which drops the
+  `notify-types`/`instant` path. Same-day compatible lock refresh
+  (`cargo update`) collapsed thiserror 1.x, windows-sys 0.45, jni-sys 0.3.1,
+  and cesu8 duplicates.
+- **Rationale**: the repo policy bans advisory ignores; the watcher API
+  surface used (`RecommendedWatcher::new`, `watch`, `Config`, `EventKind`)
+  is unchanged in notify 8, so `src/watch/manager.rs` required no changes.
+- **Consequences**: advisory gate green; duplicate outcome recorded per
+  policy 5 — notify 8 adds windows-sys 0.60/targets 0.53 entries alongside
+  ring's 0.52.6 (warn-level, platform-only, Windows targets never built
+  here). Full gate validated on pinned 1.97.1: build, 281 tests passed,
+  `cargo deny check` all-ok, clippy -D warnings clean.

@@ -47,7 +47,7 @@ Versions are the locked versions in `Cargo.lock` as of this writing.
 |---|---|---|---|
 | `blake3` | 1.8.6 | Content hashing of raw file bytes (manifest, findings invalidation) | yes (SIMD; Rust impl with C fallbacks) |
 | `ignore` | 0.4.31 | Ignore-aware file discovery (`.gitignore`-compatible) | no |
-| `notify` | 7.0.0 | Per-project filesystem watcher for incremental sync | yes (inotify/kqueue/FSEvents/Win32 backends) |
+| `notify` | 8.2.0 | Per-project filesystem watcher for incremental sync | yes (inotify/kqueue/FSEvents/Win32 backends) |
 | `rmcp` | 2.2.0 | MCP server SDK: stdio transport, tool schema, protocol frames, progress notifications | no (async over tokio) |
 | `rusqlite` | 0.37.0 | SQLite access with `bundled` SQLite and `hooks` features | yes (bundled SQLite C library) |
 | `schemars` | 1.2.2 | JSON-schema derivation for MCP tool input schemas | no |
