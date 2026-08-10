@@ -1,10 +1,14 @@
 //! Integration tests for the filesystem watcher and sync manager.
 //! These tests verify that SlugAudit correctly tracks filesystem changes
 //! and reconciles them before serving evidence.
+//!
+//! Note: `normalize_relative_path`'s unit tests live in `path::tests` —
+//! `manager::handle_event` exercises the same path end-to-end here, so
+//! one path through the watcher is enough to prove it and the unit
+//! coverage stays simple.
 
 use crate::watch::{WatchManager, WatchState, WatcherHealth};
 use std::fs;
-use std::path::Path;
 
 /// Create a temporary project with the activation directory.
 fn create_project() -> tempfile::TempDir {
@@ -115,38 +119,5 @@ fn watch_state_sequence_is_monotonic() {
         };
         assert!(seq > prev_seq);
         prev_seq = seq;
-    }
-}
-
-#[test]
-fn normalize_relative_path_strips_prefix() {
-    let root = Path::new("/projects/myapp");
-    assert_eq!(
-        crate::watch::normalize_relative_path(root, Path::new("/projects/myapp/src/lib.rs")),
-        Some("src/lib.rs".to_owned())
-    );
-}
-
-#[test]
-fn normalize_relative_path_rejects_outside_root() {
-    let root = Path::new("/projects/myapp");
-    assert!(
-        crate::watch::normalize_relative_path(root, Path::new("/other/project/src/lib.rs"))
-            .is_none()
-    );
-}
-
-#[test]
-fn normalize_relative_path_uses_forward_slashes() {
-    let root = Path::new("/projects/myapp");
-    let result =
-        crate::watch::normalize_relative_path(root, Path::new("/projects/myapp/src\\lib.rs"));
-    // On Windows, the path might use backslashes.
-    // The function should normalize to forward slashes.
-    if let Some(normalized) = result {
-        assert!(
-            !normalized.contains('\\'),
-            "path should use forward slashes"
-        );
     }
 }

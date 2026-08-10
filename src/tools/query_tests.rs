@@ -19,11 +19,14 @@ fn activated_project(files: &[(&str, &[u8])]) -> tempfile::TempDir {
 }
 
 fn ask(project: &tempfile::TempDir, sql: &str) -> Result<QueryResponse, ErrorData> {
-    query(&Parameters(QueryRequest {
-        path: project.path().to_string_lossy().into_owned(),
-        sql: sql.to_owned(),
-        offset: 0,
-    }))
+    query(
+        &Parameters(QueryRequest {
+            path: project.path().to_string_lossy().into_owned(),
+            sql: sql.to_owned(),
+            offset: 0,
+        }),
+        &crate::progress::NoopProgressSink,
+    )
     .map(|Json(response)| response)
 }
 
@@ -39,6 +42,7 @@ fn ask_with_limits(
             offset: 0,
         }),
         limits,
+        &crate::progress::NoopProgressSink,
     )
     .map(|Json(response)| response)
 }

@@ -10,6 +10,7 @@ use super::revalidate::revalidate_unchanged_since_sample;
 use super::revision;
 use super::sample::sample_all;
 use crate::model::ResourceLimits;
+use crate::progress::ProgressSink;
 use rusqlite::Connection;
 use std::path::Path;
 
@@ -56,6 +57,7 @@ pub(super) fn try_publish(
     connection: &mut Connection,
     root: &Path,
     parser_pack_version: &str,
+    sink: &dyn ProgressSink,
 ) -> Result<PublishReport, PublishError> {
     let baseline = current_revision(connection)?;
     let expected_current = baseline
@@ -73,7 +75,7 @@ pub(super) fn try_publish(
         }
     }
     let limits = ResourceLimits::default();
-    let samples = sample_all(&discovered, &limits)?;
+    let samples = sample_all(&discovered, &limits, sink)?;
     race_hook::fire(root);
     let diff = diff_against_stored(connection, &samples, discovered.len())?;
 

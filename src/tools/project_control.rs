@@ -66,6 +66,7 @@ fn err(msg: impl Into<String>) -> ErrorData {
 /// the project was already off.
 pub fn project_control(
     request: &Parameters<ProjectControlRequest>,
+    sink: &dyn crate::progress::ProgressSink,
 ) -> Result<Json<ProjectControlResponse>, ErrorData> {
     let inner = &request.0;
     let path_str = inner.path.as_deref().unwrap_or(".").to_string();
@@ -73,17 +74,20 @@ pub fn project_control(
     let root = ProjectRoot::resolve(&path).map_err(|e| err(format!("resolve: {e}")))?;
 
     match inner.action {
-        ProjectControlAction::On => enable(&root),
+        ProjectControlAction::On => enable(&root, sink),
         ProjectControlAction::Off => disable(&root),
     }
 }
 
-fn enable(root: &ProjectRoot) -> Result<Json<ProjectControlResponse>, ErrorData> {
+fn enable(
+    root: &ProjectRoot,
+    sink: &dyn crate::progress::ProgressSink,
+) -> Result<Json<ProjectControlResponse>, ErrorData> {
     project::enable(root).map_err(|e| err(format!("enable: {e}")))?;
     let db_path = project::database_path(root);
     let mut connection =
         store::open_read_write(&db_path).map_err(|e| err(format!("database: {e}")))?;
-    let report = sync::publish(&mut connection, root.as_path(), parse::PACK_VERSION)
+    let report = sync::publish(&mut connection, root.as_path(), parse::PACK_VERSION, sink)
         .map_err(|e| err(format!("import: {e}")))?;
     Ok(Json(ProjectControlResponse {
         status: "enabled".into(),

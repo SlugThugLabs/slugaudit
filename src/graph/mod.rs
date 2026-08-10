@@ -5,8 +5,8 @@
 //! module owns resolution logic, not persistence.
 mod reference;
 mod resolve;
-pub(crate) mod resolver;
 mod resolve_rust;
+pub(crate) mod resolver;
 
 use std::collections::HashSet;
 

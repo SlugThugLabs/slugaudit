@@ -6,6 +6,7 @@ use super::revision::FileRecord;
 use crate::model::{
     EvidenceItem, EvidenceKind, EvidenceOrigin, ResourceLimits, SourceIdentity, SpanAvailability,
 };
+use crate::progress::{ProgressEvent, ProgressSink};
 use serde_json::json;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -213,13 +214,21 @@ fn truncation_evidence(
 /// failing closed if the project-wide import ceiling is exceeded. Kept
 /// here (next to `sample_file`) rather than in `publish` — it's a sampling
 /// concern, not an orchestration one.
+///
+/// Emits one [`ProgressEvent::Sampling`] per file through `sink` so a
+/// long-running publish surfaces per-file progress to a stateful
+/// consumer (MCP progress notifications, a CLI status bar, etc.),
+/// which is the only way a user has any signal that a big first
+/// import is still alive.
 pub(super) fn sample_all(
     discovered: &[DiscoveredFile],
     limits: &ResourceLimits,
+    sink: &dyn ProgressSink,
 ) -> Result<Vec<Sample>, PublishError> {
     let mut total_bytes = 0_u64;
     let mut samples = Vec::with_capacity(discovered.len());
-    for file in discovered {
+    let total = discovered.len();
+    for (current, file) in discovered.iter().enumerate() {
         let sample = sample_file(file, limits)?;
         total_bytes = total_bytes.saturating_add(sample.byte_len);
         if total_bytes > limits.max_total_import_bytes {
@@ -228,6 +237,14 @@ pub(super) fn sample_all(
                 limit: limits.max_total_import_bytes,
             });
         }
+        sink.emit(ProgressEvent::Sampling {
+            phase: "publishing",
+            // `current` is 0-based in the loop but 1-based in the
+            // progress event — operators reading `{i}/{total}` equate
+            // "1 of N" with the first file, not the zeroth.
+            current: current + 1,
+            total,
+        });
         samples.push(sample);
     }
     Ok(samples)

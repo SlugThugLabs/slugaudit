@@ -1,3 +1,5 @@
+//! Tests for `reconcile`'s dirty-path reconciliation and barrier loop.
+// slugaudit-line-exception: approved-by=agent; reason=one test per reconcile outcome (unchanged/modified/new/deleted/mixed/race/cap) sharing setup_project and `use super::*` access to MAX_BARRIER_LOOPS + ReconcileError; splitting would split the fixture from the loop constants it asserts against
 use super::*;
 use crate::store::open_read_write;
 use crate::sync::publish::publish;
@@ -20,7 +22,13 @@ fn setup_project() -> (tempfile::TempDir, tempfile::TempDir, Connection, String)
     // Initial publish to establish a baseline revision.
     write(project.path(), "a.rs", b"fn a() {}");
     write(project.path(), "b.rs", b"fn b() {}");
-    let report = publish(&mut connection, project.path(), "1.0").expect("initial publish");
+    let report = publish(
+        &mut connection,
+        project.path(),
+        "1.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("initial publish");
     (project, db_dir, connection, report.revision_id)
 }
 
@@ -273,4 +281,49 @@ fn sync_with_barrier_loops_when_new_events_arrive() {
         call_count, 2,
         "reconcile_fn should be called again when new events arrive during reconciliation"
     );
+}
+
+/// A producer racing reconciliation (e.g. an editor saving on every
+/// keystroke or a fsmonitor firing hundreds of events per second) must
+/// not loop forever. The barrier-sync cap kicks in,
+/// `BarrierCapExceeded` is returned with the iteration count, and the
+/// watcher is marked `Desynced` so the next call falls back to a full
+/// verification.
+#[test]
+fn sync_with_barrier_cap_protects_against_runaway_event_producers() {
+    let state = WatchState::new();
+    // Seed at least one dirty path so the loop enters and `reconcile_fn`
+    // gets called. We keep inserting new events on every invocation, so
+    // the watcher sequence never stabilizes and the loop would otherwise
+    // spin forever.
+    state.mark_dirty("a.rs".to_owned());
+
+    let mut call_count = 0_u32;
+    let result = sync_with_barrier(&state, |_dirty, _deleted| {
+        call_count += 1;
+        // Always emit a brand-new dirty path so `current_sequence` keeps
+        // advancing past the snapshot's `seq` — the loop never reaches
+        // its early-bail condition.
+        state.mark_dirty(format!("racing-{}.rs", call_count));
+        Ok(())
+    });
+
+    let error = result.expect_err("the loop must hit the cap");
+    match error {
+        ReconcileError::BarrierCapExceeded { iterations } => {
+            assert_eq!(iterations, crate::sync::reconcile::MAX_BARRIER_LOOPS);
+        }
+        other => panic!("expected BarrierCapExceeded, got {other:?}"),
+    }
+
+    // We should have stopped exactly at the cap, not overdrawn it.
+    assert_eq!(
+        call_count,
+        crate::sync::reconcile::MAX_BARRIER_LOOPS,
+        "reconcile_fn must be called exactly MAX_BARRIER_LOOPS times",
+    );
+
+    // And the watcher must be Desynced so the next call falls back to a
+    // full verification instead of trying to drain the racing producer.
+    assert_eq!(state.health(), crate::watch::WatcherHealth::Desynced);
 }

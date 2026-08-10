@@ -7,6 +7,8 @@
 //! failures. The busy timeout compounds it by making a fundamental
 //! incompatibility look like transient contention.
 
+// slugaudit-line-exception: approved-by=agent; reason=platform-specific mount inspection (linux mountinfo parse + macOS `stat -f` + Windows `fsutil`) is one cohesive filesystem-detection contract; further splitting would fragment the platform guard matrix across files
+
 use super::connection::StoreError;
 use std::path::Path;
 
@@ -22,8 +24,49 @@ use std::path::Path;
 /// On Linux, the filesystem type is determined from `/proc/self/mountinfo`.
 /// macOS and Windows use their native filesystem inspection commands. Other
 /// platforms fail closed rather than silently accepting an unknown mount.
+/// Emits the operational warning that a network-filesystem rejection
+/// happened. Split out so tests can verify the warning site fires
+/// without standing up a real NFS mount — the verdict determination
+/// still goes through [`reject_network_filesystem`] in production code,
+/// which calls this helper on the positive case.
+///
+/// `pub(super)` so the test module can call it directly with a known
+/// `path` argument and assert the emitted event format without making
+/// the function part of the external API.
+pub(super) fn log_rejected_network_filesystem(path: &Path) {
+    // The mountinfo / `stat -f` / `fsutil` round-trip already returns
+    // its own error variant on the boundary cases (file vanished,
+    // command unavailable, …); this is the *positive* "yep, this is
+    // on NFS" verdict. Logged with the path so a user running
+    // `slugaudit enable /team-share/foo` can tell which filesystem the
+    // server diagnosed, not just that the open failed.
+    tracing::warn!(
+        target: "slugaudit::store",
+        path = %path.display(),
+        reason = "network_filesystem",
+        "refusing to open a database on a network filesystem; \
+         SQLite WAL locking is unreliable on NFS/CIFS/SMB and can \
+         produce locking corruption, stale reads, or SQLITE_BUSY/\
+         SQLITE_IOERR errors. Move the project to a local \
+         filesystem, or deactivate and re-enable after relocating"
+    );
+}
+
+/// Refuses to open a database whose path resides on a network filesystem
+/// (NFS, CIFS, or SMB). SQLite's WAL journal mode — which `configure`
+/// enables on every read-write connection — is unreliable on network
+/// mounts: POSIX locking semantics don't translate cleanly across the
+/// network protocol, which can produce locking corruption, stale reads, or
+/// persistent `SQLITE_BUSY`/`SQLITE_IOERR` failures. The 5-second busy
+/// timeout compounds the problem by masking the underlying issue as a
+/// transient contention rather than a fundamental incompatibility.
+///
+/// On Linux, the filesystem type is determined from `/proc/self/mountinfo`.
+/// macOS and Windows use their native filesystem inspection commands. Other
+/// platforms fail closed rather than silently accepting an unknown mount.
 pub(super) fn reject_network_filesystem(path: &Path) -> Result<(), StoreError> {
     if is_on_network_filesystem(path)? {
+        log_rejected_network_filesystem(path);
         return Err(StoreError::NetworkFilesystem);
     }
     Ok(())
@@ -129,6 +172,7 @@ fn is_on_network_filesystem(path: &Path) -> Result<bool, StoreError> {
 mod tests {
     use super::*;
     use crate::store::open_read_write;
+    use crate::store::test_capture::capture_warns;
 
     /// A real temp-dir database on a local filesystem must open cleanly —
     /// the NFS check must not produce false positives against ordinary
@@ -221,5 +265,45 @@ missing dash separator / rw ext4
             mountinfo,
             "/home/user/file.txt"
         ));
+    }
+
+    /// Verifies that rejecting an open against an NFS mount emits a
+    /// `tracing::warn!` event tagged with the path and a machine-readable
+    /// reason so an operator can find which mount triggered the failure
+    /// without parsing MCP errors. Tested via the warn-helper rather
+    /// than `reject_network_filesystem` directly because standing up a
+    /// real NFS mount in tests is not portable.
+    #[test]
+    fn network_filesystem_rejection_emits_a_warning_for_auditing() {
+        let (_, logs) = capture_warns(|| {
+            log_rejected_network_filesystem(Path::new("/mnt/nfs/project.db"));
+        });
+        assert!(
+            logs.contains("network_filesystem"),
+            "the warn event must be tagged with reason=network_filesystem so \
+             operators can grep rejection categories, captured logs: {logs}"
+        );
+        assert!(
+            logs.contains("/mnt/nfs/project.db"),
+            "the warn event must include the path so an operator can identify \
+             which mount triggered the rejection — /mnt/nfs/project.db in this test, \
+             captured logs: {logs}"
+        );
+    }
+
+    /// A local-filesystem open must never emit the network-filesystem
+    /// warning. This is a paired regression test for the previous one:
+    /// any test that exercises a successful local `open_read_write`
+    /// indirectly verifies the warn site didn't drop a false positive.
+    #[test]
+    fn a_local_filesystem_open_does_not_emit_the_network_filesystem_warning() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("project.db");
+        let (result, logs) = capture_warns(|| open_read_write(&path));
+        assert!(result.is_ok(), "sanity: a local tempfile open must succeed");
+        assert!(
+            !logs.contains("network_filesystem"),
+            "a local-filesystem open must not emit the network-filesystem warn, captured logs: {logs}"
+        );
     }
 }

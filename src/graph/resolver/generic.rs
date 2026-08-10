@@ -1,18 +1,23 @@
-//! Language-agnostic import resolution framework.
+//! Core types and the generic import resolver.
 //!
-//! Most languages share common import patterns:
-//! - Relative paths: `./foo`, `../bar`
-//! - Module paths: `foo.bar.baz`
-//! - Package names: `import foo` (third-party)
-//!
-//! The `GenericResolver` handles these common patterns. Languages with
-//! unusual import semantics (e.g. Rust's `crate::`/`super::`/`self::`)
-//! implement the `LanguageResolver` trait directly.
+//! The `Resolution` / `ResolutionKind` data model, the `LanguageResolver`
+//! trait, and the `GenericResolver` struct — the runtime entry point
+//! every language-specific resolver ultimately uses. The language-
+//! specific helpers (`super::python`, `super::js`) and the small path
+//! helpers (`super::path_helpers`) handle the line-count split; this
+//! file stays coherent by owning only the dispatcher logic and the
+//! `Resolution` machinery.
+// slugaudit-line-exception: approved-by=agent; reason=core types + language-trait dispatcher + GenericResolver impl are one cohesive runtime contract; the per-language helpers live next to their respective resolvers
 
 use std::collections::HashSet;
-use std::sync::OnceLock;
 
-use super::reference::ImportReference;
+use super::js::extract_js_reference;
+use super::path_helpers::{
+    candidate_paths, external_or_unresolved, module_path_to_fs_path, resolve_relative_path,
+    starts_with_python_dot_prefix,
+};
+use super::python::resolve_python_relative;
+use crate::graph::reference::ImportReference;
 
 /// The outcome of resolving an import reference.
 #[derive(Debug, Clone)]
@@ -147,12 +152,13 @@ pub struct GenericResolverConfig {
 impl Default for GenericResolverConfig {
     fn default() -> Self {
         Self {
-            // Common source extensions — the generic resolver tries all of
-            // them and lets `known_paths` pick the real match. This covers
-            // Python, JS/TS, Ruby, Go, and a few others out of the box.
+            // Common source extensions — the generic resolver tries all
+            // of them and lets `known_paths` pick the real match. This
+            // covers Python, JS/TS, Ruby, Go, and a few others out of
+            // the box.
             extensions: vec![
-                "py", "js", "ts", "jsx", "tsx", "mjs", "cjs", "rb", "go",
-                "rs", "java", "c", "cpp", "cc", "h", "hpp", "hh",
+                "py", "js", "ts", "jsx", "tsx", "mjs", "cjs", "rb", "go", "rs", "java", "c", "cpp",
+                "cc", "h", "hpp", "hh",
             ],
             index_filename: None,
             // `.` is the module separator for Python, Ruby, Java, etc.
@@ -160,8 +166,10 @@ impl Default for GenericResolverConfig {
             // and bare package names), so `.` works as a universal default.
             module_separator: ".",
             // `./` and `../` cover JS/TS relative imports. Python's `.`
-            // prefix is handled by the fallback `text.starts_with('.')`
-            // check in `resolve`, which routes to `resolve_python_relative`.
+            // prefix is handled by `starts_with_python_dot_prefix` in
+            // `path_helpers`, which routes it to
+            // `super::python::resolve_python_relative`
+            // instead of being a member of this list.
             relative_prefixes: vec!["./", "../"],
             bare_names_are_external: true,
         }
@@ -200,9 +208,10 @@ impl GenericResolver {
                 index_filename: Some("__init__"),
                 module_separator: ".",
                 // Don't include `.` here — Python's `.bar` style imports
-                // are handled by the `text.starts_with('.')` fallback in
-                // `resolve`, which routes them to `resolve_python_relative`.
-                // Including `.` as a prefix would incorrectly route them
+                // are recognized by `starts_with_python_dot_prefix` in
+                // `super::path_helpers` and routed to
+                // `super::python::resolve_python_relative`. Including
+                // `.` as a prefix here would incorrectly route them
                 // through `resolve_relative`, which treats `.bar` as a
                 // literal filename instead of a module path.
                 relative_prefixes: vec![],
@@ -237,23 +246,37 @@ impl LanguageResolver for GenericResolver {
 
         // Bare `.` is a Python-style relative import (current package).
         if trimmed == "." {
-            return Some(ImportReference { text: ".".to_owned() });
+            return Some(ImportReference {
+                text: ".".to_owned(),
+            });
         }
 
         // JS/TS relative: `./utils`, `../lib/helper`.
         if trimmed.starts_with("./") || trimmed.starts_with("../") {
-            return Some(ImportReference { text: trimmed.to_owned() });
+            return Some(ImportReference {
+                text: trimmed.to_owned(),
+            });
         }
 
         // Python relative: `.bar`, `..pkg.mod` — starts with `.` but not
         // `./` or `../` (which are JS/TS-style filesystem paths).
-        if trimmed.starts_with('.') && !trimmed.starts_with("./") && !trimmed.starts_with("../") {
-            return Some(ImportReference { text: trimmed.to_owned() });
+        if starts_with_python_dot_prefix(trimmed) {
+            return Some(ImportReference {
+                text: trimmed.to_owned(),
+            });
         }
 
-        // Python `from X import ...` → `X`.
-        if let Some(rest) = trimmed.strip_prefix("from ") {
-            let module = rest.split_whitespace().next()?;
+        // Python `from X import ...` → `X`. Accepts any single whitespace
+        // token (space or tab) between `from` and the module, matching
+        // Python's grammar. Caught initially by the proptest in
+        // `super::proptest`, which generated `from\tmod import\tbar` and
+        // surfaced that the prior `"from "` literal-space strip was too
+        // strict; `"fromfoo"` (no separator) must still be rejected, so
+        // we explicitly check that the character after `from` is whitespace.
+        if let Some(after_from) = trimmed.strip_prefix("from")
+            && after_from.chars().next().is_some_and(char::is_whitespace)
+        {
+            let module = after_from.split_whitespace().next()?;
             // Quoted module after `from` isn't valid Python — skip it so
             // we don't match Go's `import "fmt"` or similar.
             if !module.starts_with('"') && !module.starts_with('\'') {
@@ -264,32 +287,43 @@ impl LanguageResolver for GenericResolver {
             return None;
         }
 
-        // JS/TS `import ... from 'path'` — only extract quoted strings
-        // when `from` is present to avoid matching Go's `import "fmt"`.
+        // JS/TS `import ... from 'path'` — extracted via the dedicated
+        // language helper so the quote-gating lives next to its matchers.
+        // Crucially: when `from` is present without a quoted string, the
+        // statement is unparseable and we return `None` here rather than
+        // letting execution fall through to the Python `import` branch
+        // below (which would happily extract `x` from `import x from broken`
+        // as a "bare module name" and then mark it External).
         if trimmed.contains("from") {
-            if let Some(text) = extract_quoted_string(trimmed) {
-                return Some(ImportReference { text });
+            if let Some(reference) = extract_js_reference(trimmed) {
+                return Some(reference);
             }
-            // Has `from` but no quoted string → not a valid JS import.
             return None;
         }
 
-        // Python `import X` / `import X as Y` → `X`.
-        if let Some(rest) = trimmed.strip_prefix("import ") {
-            let module = rest.split_whitespace().next()?;
+        // Python `import X` / `import X as Y` → `X`. Accepts any single
+        // whitespace token (space or tab) between `import` and the module,
+        // matching the same fix applied to the `from` branch above. Without
+        // this, `import\tos` returns None even though it's valid Python.
+        if let Some(after_import) = trimmed.strip_prefix("import")
+            && after_import.chars().next().is_some_and(char::is_whitespace)
+        {
+            let module = after_import.split_whitespace().next()?;
             // Skip quoted imports (Go, etc.).
             if !module.starts_with('"') && !module.starts_with('\'') {
                 return Some(ImportReference {
                     text: module.to_owned(),
                 });
             }
+            return None;
         }
 
         // Bare package name (e.g. `react`, `os`, `numpy`). Only extract
         // if this resolver treats bare names as external (Python, JS,
         // etc.) — the resolution step will mark them as `External`.
-        // Reject anything with spaces, quotes, or other statement syntax
-        // to avoid matching full import statements like Go's `import "fmt"`.
+        // Reject anything with spaces, quotes, or other statement
+        // syntax to avoid matching full import statements like Go's
+        // `import "fmt"`.
         if self.config.bare_names_are_external
             && !trimmed.is_empty()
             && !trimmed.starts_with('.')
@@ -314,209 +348,38 @@ impl LanguageResolver for GenericResolver {
     ) -> Resolution {
         let text = reference.text.trim();
 
-        // Check for relative import prefixes.
-        for prefix in &self.config.relative_prefixes {
-            if text.starts_with(prefix) {
-                return self.resolve_relative(text, prefix, importing_relative_path, known_paths);
-            }
+        // Check for relative import prefixes (JS/TS-style). The actual
+        // `prefix` value isn't forwarded to `resolve_relative_path` —
+        // the helper does its own `normalize_join` against `base_dir`,
+        // and `prefix` only matters for the membership test.
+        if self
+            .config
+            .relative_prefixes
+            .iter()
+            .any(|prefix| text.starts_with(prefix))
+        {
+            let base_dir = crate::graph::resolve::parent_dir(importing_relative_path);
+            return resolve_relative_path(&base_dir, text, &self.config, known_paths);
         }
 
-        // Python relative: starts with `.` but not `..` (handled above).
-        if text.starts_with('.') {
-            return self.resolve_python_relative(text, importing_relative_path, known_paths);
+        // Python relative: starts with `.` but not `../` (handled
+        // above) and not `./` (also handled above).
+        if starts_with_python_dot_prefix(text) {
+            return resolve_python_relative(
+                text,
+                &self.config,
+                importing_relative_path,
+                known_paths,
+            );
         }
 
         // Bare name with no separator — external package.
         if !text.contains(self.config.module_separator) {
-            if self.config.bare_names_are_external {
-                return external();
-            }
-            // Treat as module path.
-            return self.resolve_module_path(text, importing_relative_path, known_paths);
+            return external_or_unresolved(&self.config);
         }
 
         // Module path like `foo.bar.baz`.
-        self.resolve_module_path(text, importing_relative_path, known_paths)
+        let fs_path = module_path_to_fs_path(text, &self.config);
+        candidate_paths(&fs_path, &self.config, known_paths)
     }
-}
-
-impl GenericResolver {
-    fn resolve_relative(
-        &self,
-        text: &str,
-        _prefix: &str,
-        importing_relative_path: &str,
-        known_paths: &HashSet<&str>,
-    ) -> Resolution {
-        let base_dir = super::resolve::parent_dir(importing_relative_path);
-        let path = super::resolve::normalize_join(&base_dir, text);
-        self.candidate_paths(&path, known_paths)
-    }
-
-    fn resolve_python_relative(
-        &self,
-        text: &str,
-        importing_relative_path: &str,
-        known_paths: &HashSet<&str>,
-    ) -> Resolution {
-        let dots = text.chars().take_while(|c| *c == '.').count();
-        let remainder = &text[dots..];
-        let levels_up = dots - 1;
-
-        let mut base_dir = super::resolve::parent_dir(importing_relative_path);
-        for _ in 0..levels_up {
-            base_dir = super::resolve::parent_dir(&base_dir);
-        }
-
-        let path = if remainder.is_empty() {
-            super::resolve::normalize_join(&base_dir, "")
-        } else {
-            super::resolve::normalize_join(&base_dir, &remainder.replace('.', "/"))
-        };
-
-        if remainder.is_empty() {
-            // `from . import` → `__init__.py` in current package.
-            if let Some(index) = self.config.index_filename {
-                let init_path = format!("{}/{}.py", path, index);
-                if known_paths.contains(init_path.as_str()) {
-                    return Resolution {
-                        kind: ResolutionKind::Resolved,
-                        confidence: Some("High"),
-                        to_relative_path: Some(init_path),
-                    };
-                }
-            }
-            unresolved()
-        } else {
-            self.candidate_paths(&path, known_paths)
-        }
-    }
-
-    fn resolve_module_path(
-        &self,
-        text: &str,
-        _importing_relative_path: &str,
-        known_paths: &HashSet<&str>,
-    ) -> Resolution {
-        // Convert module path to filesystem path.
-        let fs_path = if self.config.module_separator == "/" {
-            text.to_owned()
-        } else {
-            text.replace(self.config.module_separator, "/")
-        };
-
-        self.candidate_paths(&fs_path, known_paths)
-    }
-
-    fn candidate_paths(&self, path: &str, known_paths: &HashSet<&str>) -> Resolution {
-        let mut candidates = vec![path.to_owned()];
-
-        // Try each extension.
-        for ext in &self.config.extensions {
-            candidates.push(format!("{}.{}", path, ext));
-        }
-
-        // Try index file in directory.
-        if let Some(index) = self.config.index_filename {
-            for ext in &self.config.extensions {
-                candidates.push(format!("{}/{}.{}", path, index, ext));
-            }
-            // Also try index without extension.
-            candidates.push(format!("{}/{}", path, index));
-        }
-
-        pick(&candidates, known_paths)
-    }
-}
-
-/// Extracts a quoted string literal from text (for JS/TS imports).
-fn extract_quoted_string(text: &str) -> Option<String> {
-    let bytes = text.as_bytes();
-    let start = bytes
-        .iter()
-        .position(|byte| *byte == b'\'' || *byte == b'"')?;
-    let quote = bytes[start];
-    let end = bytes[start + 1..].iter().position(|byte| *byte == quote)? + start + 1;
-    Some(text[start + 1..end].to_owned())
-}
-
-/// Registry of language-specific resolvers. Language-specific resolvers
-/// (including configured `GenericResolver` instances for Python and JS)
-/// are checked first; the catch-all generic resolver is the fallback for
-/// any language without a specific resolver.
-struct ResolverRegistry {
-    specific_resolvers: Vec<Box<dyn LanguageResolver>>,
-    fallback_resolver: GenericResolver,
-}
-
-impl ResolverRegistry {
-    fn new() -> Self {
-        Self {
-            specific_resolvers: Vec::new(),
-            fallback_resolver: GenericResolver::new(GenericResolverConfig::default()),
-        }
-    }
-
-    fn register(&mut self, resolver: Box<dyn LanguageResolver>) {
-        self.specific_resolvers.push(resolver);
-    }
-
-    fn get(&self, language: &str) -> &dyn LanguageResolver {
-        // Try specific resolvers first (includes Python/JS generic resolvers).
-        if let Some(resolver) = self
-            .specific_resolvers
-            .iter()
-            .find(|r| r.supports(language))
-        {
-            return resolver.as_ref();
-        }
-        // Fall back to catch-all generic resolver.
-        &self.fallback_resolver
-    }
-}
-
-static REGISTRY: OnceLock<ResolverRegistry> = OnceLock::new();
-
-fn registry() -> &'static ResolverRegistry {
-    REGISTRY.get_or_init(|| {
-        let mut reg = ResolverRegistry::new();
-        // Register language-specific resolvers.
-        // These take precedence over the catch-all generic resolver.
-        reg.register(Box::new(super::resolve_rust::RustResolver));
-        reg.register(Box::new(GenericResolver::python()));
-        reg.register(Box::new(GenericResolver::js()));
-        reg
-    })
-}
-
-/// Returns the resolver for `language`. Falls back to the generic
-/// resolver if no specific resolver supports the language.
-pub fn get_resolver(language: &str) -> &'static dyn LanguageResolver {
-    registry().get(language)
-}
-
-/// Returns true if a language-specific resolver (not the generic fallback)
-/// supports `language`.
-pub fn is_supported_language(language: &str) -> bool {
-    registry()
-        .specific_resolvers
-        .iter()
-        .any(|r| r.supports(language))
-}
-
-/// Resolves a single raw import source. Returns a `Resolution` — never
-/// panics or returns an error.
-pub fn resolve_one(
-    language: &str,
-    importing_relative_path: &str,
-    raw: &str,
-    known_paths: &HashSet<&str>,
-) -> Resolution {
-    let resolver = get_resolver(language);
-
-    let Some(reference) = resolver.extract_reference(raw) else {
-        return unresolved();
-    };
-
-    resolver.resolve(&reference, importing_relative_path, known_paths)
 }

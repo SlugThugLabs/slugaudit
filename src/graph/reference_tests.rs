@@ -3,21 +3,33 @@ use crate::graph::resolver::get_resolver;
 #[test]
 fn python_relative_and_absolute_forms() {
     let resolver = get_resolver("python");
-    assert_eq!(resolver.extract_reference("from . import foo").unwrap().text, ".");
     assert_eq!(
-        resolver.extract_reference("from .bar import baz").unwrap().text,
+        resolver
+            .extract_reference("from . import foo")
+            .unwrap()
+            .text,
+        "."
+    );
+    assert_eq!(
+        resolver
+            .extract_reference("from .bar import baz")
+            .unwrap()
+            .text,
         ".bar"
     );
     assert_eq!(
-        resolver.extract_reference("from ..pkg.mod import qux").unwrap().text,
+        resolver
+            .extract_reference("from ..pkg.mod import qux")
+            .unwrap()
+            .text,
         "..pkg.mod"
     );
+    assert_eq!(resolver.extract_reference("import os").unwrap().text, "os");
     assert_eq!(
-        resolver.extract_reference("import os").unwrap().text,
-        "os"
-    );
-    assert_eq!(
-        resolver.extract_reference("import numpy as np").unwrap().text,
+        resolver
+            .extract_reference("import numpy as np")
+            .unwrap()
+            .text,
         "numpy"
     );
     assert_eq!(
@@ -47,7 +59,10 @@ fn javascript_and_typescript_quoted_paths() {
         "../lib/helper"
     );
     assert_eq!(
-        resolver.extract_reference("import React from 'react';").unwrap().text,
+        resolver
+            .extract_reference("import React from 'react';")
+            .unwrap()
+            .text,
         "react"
     );
     assert_eq!(

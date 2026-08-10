@@ -33,7 +33,8 @@ fn a_file_changed_after_sampling_is_detected_and_rejected() {
     write(project.path(), "lib.rs", b"original\n");
     let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
     let limits = ResourceLimits::default();
-    let samples = sample_all(&discovered, &limits).expect("sample");
+    let samples =
+        sample_all(&discovered, &limits, &crate::progress::NoopProgressSink).expect("sample");
     // `parser_version_changed: true` forces every sampled file into
     // `upserts` regardless of the (deliberately empty) diff — otherwise an
     // empty `changes` list would make `upserts` empty too, and revalidation
@@ -57,7 +58,8 @@ fn an_unchanged_file_passes_revalidation() {
     write(project.path(), "lib.rs", b"stable\n");
     let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
     let limits = ResourceLimits::default();
-    let samples = sample_all(&discovered, &limits).expect("sample");
+    let samples =
+        sample_all(&discovered, &limits, &crate::progress::NoopProgressSink).expect("sample");
     let (upserts, _deletions) = build_upserts_and_deletions(samples, &[], true, &limits);
 
     assert!(revalidate_unchanged_since_sample(&discovered, &upserts, &limits).is_ok());
@@ -78,7 +80,13 @@ fn a_file_changed_mid_sample_is_retried_and_the_final_revision_reflects_the_late
         write(&project_path, "lib.rs", b"version two\n");
     });
 
-    let report = publish(&mut connection, project.path(), "1.0.0").expect("publish converges");
+    let report = publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("publish converges");
 
     let content: String = connection
         .query_row(
@@ -104,7 +112,13 @@ fn two_connections_publishing_concurrently_the_loser_retries_and_converges() {
     let db_path = db_dir.path().join("project.db");
     {
         let mut setup = open_read_write(&db_path).expect("open db");
-        publish(&mut setup, project.path(), "1.0.0").expect("bootstrap publish");
+        publish(
+            &mut setup,
+            project.path(),
+            "1.0.0",
+            &crate::progress::NoopProgressSink,
+        )
+        .expect("bootstrap publish");
     }
 
     let (tx_pause, rx_pause) = std::sync::mpsc::channel::<()>();
@@ -119,7 +133,12 @@ fn two_connections_publishing_concurrently_the_loser_retries_and_converges() {
     let handle = std::thread::spawn(move || {
         write(&project_path, "b.rs", b"fn b() {}\n");
         let mut connection_a = open_read_write(&db_path_a).expect("open db (A)");
-        publish(&mut connection_a, &project_path, "1.0.0")
+        publish(
+            &mut connection_a,
+            &project_path,
+            "1.0.0",
+            &crate::progress::NoopProgressSink,
+        )
     });
 
     // A has sampled (a.rs, b.rs) and is now parked in the hook, holding no
@@ -128,7 +147,13 @@ fn two_connections_publishing_concurrently_the_loser_retries_and_converges() {
     rx_pause.recv().expect("A reached the barrier");
     write(project.path(), "c.rs", b"fn c() {}\n");
     let mut connection_b = open_read_write(&db_path).expect("open db (B)");
-    let report_b = publish(&mut connection_b, project.path(), "1.0.0").expect("B publishes first");
+    let report_b = publish(
+        &mut connection_b,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("B publishes first");
     drop(connection_b);
 
     // Release A. Its first attempt must lose the CAS race in
@@ -162,7 +187,13 @@ fn a_noop_retry_after_losing_the_cas_race_converges_on_the_winners_revision() {
     let db_path = db_dir.path().join("project.db");
     {
         let mut setup = open_read_write(&db_path).expect("open db");
-        publish(&mut setup, project.path(), "1.0.0").expect("bootstrap publish");
+        publish(
+            &mut setup,
+            project.path(),
+            "1.0.0",
+            &crate::progress::NoopProgressSink,
+        )
+        .expect("bootstrap publish");
     }
 
     let (tx_pause, rx_pause) = std::sync::mpsc::channel::<()>();
@@ -178,13 +209,24 @@ fn a_noop_retry_after_losing_the_cas_race_converges_on_the_winners_revision() {
         // A makes no novel change of its own — everything it eventually
         // reports must come from re-sampling after B's publish.
         let mut connection_a = open_read_write(&db_path_a).expect("open db (A)");
-        publish(&mut connection_a, &project_path, "1.0.0")
+        publish(
+            &mut connection_a,
+            &project_path,
+            "1.0.0",
+            &crate::progress::NoopProgressSink,
+        )
     });
 
     rx_pause.recv().expect("A reached the barrier");
     write(project.path(), "b.rs", b"fn b() {}\n");
     let mut connection_b = open_read_write(&db_path).expect("open db (B)");
-    let report_b = publish(&mut connection_b, project.path(), "1.0.0").expect("B publishes");
+    let report_b = publish(
+        &mut connection_b,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("B publishes");
     drop(connection_b);
 
     tx_resume.send(()).expect("signal resume");

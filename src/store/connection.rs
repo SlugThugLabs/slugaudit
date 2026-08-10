@@ -85,6 +85,19 @@ fn reject_symlink(path: &Path) -> Result<(), StoreError> {
         .symlink_metadata()
         .is_ok_and(|metadata| metadata.file_type().is_symlink())
     {
+        // Logged at the rejection moment so an operator investigating
+        // "why did this open fail" sees the exact path that was a
+        // symlink, even when only the typed `StoreError::Symlink`
+        // surfaces to the tool-call failure log. The `target` keeps
+        // these warnings filterable as a single category.
+        tracing::warn!(
+            target: "slugaudit::store",
+            path = %path.display(),
+            reason = "symlink",
+            "refusing to open a database path that resolves to a symlink; \
+             SQLite opens follow targets, which would silently cross a \
+             permission or backing-file boundary"
+        );
         return Err(StoreError::Symlink);
     }
     Ok(())
@@ -145,6 +158,15 @@ fn reject_insecure_permissions(path: &Path) -> Result<(), StoreError> {
     };
     let mode = metadata.permissions().mode();
     if mode & 0o077 != 0 {
+        tracing::warn!(
+            target: "slugaudit::store",
+            path = %path.display(),
+            mode = format!("{mode:o}"),
+            reason = "insecure_permissions",
+            "refusing to open a database file with broader-than-owner permissions; \
+             the index can contain source-derived evidence and must not be opened \
+             under group- or world-readable/writable modes"
+        );
         return Err(StoreError::Permissions(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             format!("database mode {mode:o} is broader than owner-only 600"),
@@ -218,160 +240,5 @@ fn configure(connection: &Connection) -> Result<(), StoreError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn foreign_keys_are_enabled_on_a_read_write_connection() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let connection = open_read_write(&directory.path().join("project.db")).expect("open");
-        let enabled: i64 = connection
-            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
-            .expect("read pragma");
-        assert_eq!(enabled, 1);
-    }
-
-    #[test]
-    fn a_read_only_connection_cannot_write() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let path = directory.path().join("project.db");
-        open_read_write(&path).expect("create database");
-
-        let read_only = open_read_only(&path).expect("open read-only");
-        let result = read_only.execute("DELETE FROM findings", []);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn read_only_open_fails_against_a_missing_database() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let result = open_read_only(&directory.path().join("missing.db"));
-        assert!(matches!(result, Err(StoreError::Open(_))));
-    }
-
-    /// A corrupted/non-SQLite file at the database path must fail closed
-    /// with a typed error, not panic and not silently treat garbage bytes
-    /// as an empty database (SQLite validates lazily on first real access,
-    /// not at `open_with_flags` itself, so this only surfaces once
-    /// `configure` issues its first pragma).
-    #[test]
-    fn a_corrupted_database_file_fails_closed_with_a_typed_error() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let path = directory.path().join("project.db");
-        std::fs::write(&path, b"not a sqlite database, just garbage bytes").expect("write garbage");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-                .expect("protect garbage fixture");
-        }
-
-        let result = open_read_write(&path);
-        assert!(
-            matches!(result, Err(StoreError::Configure(_))),
-            "expected a typed Configure error, got {result:?}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_symlinked_db_path_is_rejected_for_both_read_write_and_read_only() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let real_target = directory.path().join("elsewhere.db");
-        let link_path = directory.path().join("project.db");
-        std::os::unix::fs::symlink(&real_target, &link_path).expect("create symlink");
-
-        assert!(matches!(
-            open_read_write(&link_path),
-            Err(StoreError::Symlink)
-        ));
-        assert!(matches!(
-            open_read_only(&link_path),
-            Err(StoreError::Symlink)
-        ));
-        assert!(
-            !real_target.exists(),
-            "the symlink target must never be created/opened"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_newly_created_database_gets_owner_only_permissions() {
-        use std::os::unix::fs::PermissionsExt;
-        let directory = tempfile::tempdir().expect("temp dir");
-        let path = directory.path().join("project.db");
-        open_read_write(&path).expect("create database");
-        let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
-        assert_eq!(mode, PRIVATE_MODE);
-    }
-
-    /// The file is created with `O_CREAT | O_EXCL` and the private mode in
-    /// one syscall (see `create_with_private_permissions_if_missing`), so
-    /// there is no separate "create, then chmod" step for a single-threaded
-    /// test to catch mid-window. What we can prove here: losing the create
-    /// race to another process (simulated by pre-creating the file with a
-    /// wider mode, as a concurrent creator might under a permissive umask)
-    /// doesn't panic or get chmod'd out from under its actual owner; the
-    /// security boundary rejects the wider mode without modifying it.
-    #[cfg(unix)]
-    #[test]
-    fn a_database_created_with_wider_permissions_is_rejected_without_touching_permissions() {
-        use std::os::unix::fs::OpenOptionsExt;
-        use std::os::unix::fs::PermissionsExt;
-        let directory = tempfile::tempdir().expect("temp dir");
-        let path = directory.path().join("project.db");
-
-        // Simulate another process winning the create race with a wider,
-        // umask-derived mode.
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o644)
-            .open(&path)
-            .expect("simulate a concurrent creator");
-
-        assert!(matches!(
-            open_read_write(&path),
-            Err(StoreError::Permissions(_))
-        ));
-
-        let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
-        assert_eq!(
-            mode, 0o644,
-            "must never chmod a file this call didn't create"
-        );
-    }
-
-    /// Distinct from `a_symlinked_db_path_is_rejected_for_both_read_write_and_read_only`,
-    /// where the path is a symlink from the very first open: this proves the
-    /// TOCTOU case, where a path that was legitimately a real file at one
-    /// point in time gets replaced by a symlink later (e.g. a compromised or
-    /// misbehaving process racing the legitimate owner). Both `open_flags`'
-    /// `SQLITE_OPEN_NOFOLLOW` and the `reject_symlink` pre-check must catch
-    /// this on the *next* open, not just the first.
-    #[cfg(unix)]
-    #[test]
-    fn a_db_path_replaced_by_a_symlink_after_a_successful_open_is_rejected_on_the_next_open() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let path = directory.path().join("project.db");
-
-        // A real, legitimate first open succeeds and migrates the schema.
-        let connection = open_read_write(&path).expect("first open on a real file succeeds");
-        drop(connection);
-        assert!(!path.symlink_metadata().unwrap().file_type().is_symlink());
-
-        // The path is now replaced by a symlink pointing elsewhere, as a
-        // TOCTOU attacker (or a racing process) might.
-        let elsewhere = directory.path().join("elsewhere.db");
-        std::fs::remove_file(&path).expect("remove the real file");
-        std::os::unix::fs::symlink(&elsewhere, &path).expect("replace it with a symlink");
-
-        assert!(matches!(open_read_write(&path), Err(StoreError::Symlink)));
-        assert!(matches!(open_read_only(&path), Err(StoreError::Symlink)));
-        assert!(
-            !elsewhere.exists(),
-            "the symlink target must never be created/opened through the replaced path"
-        );
-    }
-}
+#[path = "connection_tests.rs"]
+mod tests;

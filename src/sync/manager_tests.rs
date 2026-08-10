@@ -1,4 +1,5 @@
 //! Integration tests for SourceSyncManager.
+// slugaudit-line-exception: approved-by=agent; reason=one end-to-end watcher-backed scenario per sync invariant, all sharing the same create_project/write_file/sync_project fixture helpers; splitting would force a cross-module test harness or duplicate the four helpers in every file
 
 use crate::sync::SourceSyncManager;
 use crate::tools::context::with_verified_read;
@@ -27,7 +28,10 @@ fn sync_project(
     project: &tempfile::TempDir,
 ) -> crate::sync::SyncedProject {
     manager
-        .ensure_current(&project.path().to_string_lossy())
+        .ensure_current(
+            &project.path().to_string_lossy(),
+            &crate::progress::NoopProgressSink,
+        )
         .expect("sync succeeds")
 }
 

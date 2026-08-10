@@ -2,7 +2,10 @@
 //! events to per-project `WatchState`. Runs on a dedicated background
 //! thread; the MCP server interacts with it only through this manager.
 
-use super::state::{WatchState, WatcherHealth, normalize_relative_path};
+use super::path::normalize_relative_path;
+use super::state::WatchState;
+use super::types::WatcherHealth;
+use crate::util::lock_or_recover;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -60,7 +63,7 @@ impl WatchManager {
                             error = %error,
                             "filesystem watcher error; marking all projects for re-verification"
                         );
-                        let guard = manager_clone.inner.lock().unwrap();
+                        let guard = lock_or_recover(&manager_clone.inner);
                         for state in guard.projects.values() {
                             state.set_health(WatcherHealth::Desynced);
                         }
@@ -70,7 +73,7 @@ impl WatchManager {
             Config::default(),
         ) {
             Ok(watcher) => {
-                let mut guard = manager.inner.lock().unwrap();
+                let mut guard = lock_or_recover(&manager.inner);
                 guard.watcher = Some(watcher);
             }
             Err(_) => {
@@ -89,7 +92,7 @@ impl WatchManager {
     pub fn watch(&self, root: &Path) -> WatchState {
         let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
 
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = lock_or_recover(&self.inner);
 
         // If we already have a state for this project, return it.
         if let Some(state) = guard.projects.get(&canonical) {
@@ -135,7 +138,7 @@ impl WatchManager {
     pub fn unwatch(&self, root: &Path) {
         let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
 
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = lock_or_recover(&self.inner);
 
         if let Some(ref mut watcher) = guard.watcher {
             let _ = watcher.unwatch(&canonical);
@@ -147,8 +150,36 @@ impl WatchManager {
     /// Get the `WatchState` for `root`, if it exists.
     pub fn get(&self, root: &Path) -> Option<WatchState> {
         let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-        let guard = self.inner.lock().unwrap();
+        let guard = lock_or_recover(&self.inner);
         guard.projects.get(&canonical).cloned()
+    }
+
+    /// Iterates every active `WatchState`. Used by the `health` MCP
+    /// tool to enumerate the projects currently registered with the
+    /// server. Order is unspecified — callers must not depend on it.
+    ///
+    /// Returns owned `WatchState` clones (the manager itself stays
+    /// alive). Each clone is independent of the manager's lifetime;
+    /// dropping, cloning, and querying are all safe.
+    pub fn iter(&self) -> Vec<(PathBuf, WatchState)> {
+        let guard = lock_or_recover(&self.inner);
+        guard
+            .projects
+            .iter()
+            .map(|(root, state)| (root.clone(), state.clone()))
+            .collect()
+    }
+
+    /// Snapshots the inner data of every active `WatchState` without
+    /// holding the lock across the iteration. Used for observability
+    /// where the caller wants an immediate cross-project view.
+    pub fn snapshot_all(&self) -> Vec<crate::watch::ProjectWatchState> {
+        let guard = lock_or_recover(&self.inner);
+        guard
+            .projects
+            .values()
+            .map(|state| state.snapshot())
+            .collect()
     }
 
     /// Handle a `notify` event: normalize the path and mark it dirty/deleted.
@@ -195,10 +226,17 @@ impl WatchManager {
             }
         }
 
+        // Deliberately no `watcher.unwatch(root)` here: this loop runs on
+        // the notify event-loop thread, and notify-rs's `unwatch` blocks
+        // waiting for a response from that same loop — calling it from
+        // inside a callback deadlocks (the loop can't service the request
+        // while it's inside the handler). It's also unnecessary: the
+        // kernel auto-removes the inotify watch when the watched
+        // directory is deleted, so notify already treats the watch as
+        // gone. `unwatch` remains safe from `WatchManager::unwatch`,
+        // which the sync layer calls from a tool thread, never from the
+        // event loop.
         for root in &deleted_roots {
-            if let Some(ref mut watcher) = guard.watcher {
-                let _ = watcher.unwatch(root);
-            }
             guard.projects.remove(root);
             tracing::info!(root = %root.display(), "removed watch for deleted project root");
         }

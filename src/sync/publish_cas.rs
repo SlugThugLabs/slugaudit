@@ -8,6 +8,7 @@ use super::publish::{PublishError, PublishReport};
 use super::publish_attempt::try_publish;
 use super::publish_log;
 use super::revision::RevisionError;
+use crate::progress::ProgressSink;
 use rusqlite::Connection;
 use std::path::Path;
 
@@ -45,15 +46,19 @@ pub fn publish(
     connection: &mut Connection,
     root: &Path,
     parser_pack_version: &str,
+    sink: &dyn ProgressSink,
 ) -> Result<PublishReport, PublishError> {
     if !is_valid_parser_pack_version(parser_pack_version) {
         return Err(PublishError::InvalidParserPackVersion(
             parser_pack_version.to_owned(),
         ));
     }
+    sink.emit(crate::progress::ProgressEvent::Started {
+        phase: "publishing",
+    });
     let mut attempt = 0_usize;
-    loop {
-        let result = try_publish(connection, root, parser_pack_version);
+    let result = loop {
+        let result = try_publish(connection, root, parser_pack_version, sink);
         if let Err(error) = &result
             && is_retryable(error)
             && attempt < MAX_CAS_RETRIES
@@ -63,8 +68,12 @@ pub fn publish(
             continue;
         }
         publish_log::log_outcome(&result, attempt);
-        return result;
-    }
+        break result;
+    };
+    sink.emit(crate::progress::ProgressEvent::Completed {
+        phase: "publishing",
+    });
+    result
 }
 
 fn is_valid_parser_pack_version(version: &str) -> bool {

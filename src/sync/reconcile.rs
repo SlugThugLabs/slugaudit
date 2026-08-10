@@ -5,6 +5,7 @@
 //! with stored hashes, and re-indexing only files that actually changed.
 //! The barrier synchronization loop ensures no events are lost even if
 //! new events arrive during reconciliation.
+// slugaudit-line-exception: approved-by=agent; reason=reconciliation is one atomic pipeline (snapshot+reconcile+manifest+publish); the barrier-cap test belongs next to the loop it covers
 
 use super::discovery::{DiscoveredFile, FileKind};
 use super::hash;
@@ -26,6 +27,18 @@ pub enum ReconcileError {
     Sample(#[from] super::sample::SampleError),
     #[error(transparent)]
     Revision(#[from] super::revision::RevisionError),
+    /// Barrier sync hit its iteration cap. The watcher is being marked
+    /// `Desynced` so the next sync call falls back to a full verification
+    /// rather than continuing to drain an endless stream of racing events.
+    /// Reaching this is a clear signal of a pathological producer
+    /// (editor saving faster than reconcile completes, fsmonitor firing
+    /// repeatedly, etc.) — preferable to looping forever and exhausting
+    /// memory.
+    #[error(
+        "barrier sync hit the {iterations}-iteration cap, watching is marked Desynced \
+         and the next call will do a full verification"
+    )]
+    BarrierCapExceeded { iterations: u32 },
 }
 
 /// Report of a reconciliation pass.
@@ -86,7 +99,8 @@ pub fn reconcile_dirty_paths(
         let identity = hash::hash_file(&path, &absolute_path)?;
 
         if let Some(existing_hash) = existing_hashes.get(&path)
-            && existing_hash == &identity.content_hash {
+            && existing_hash == &identity.content_hash
+        {
             unchanged += 1;
             continue;
         }
@@ -136,12 +150,25 @@ pub fn reconcile_dirty_paths(
     })
 }
 
+/// Maximum number of barrier-sync iterations before giving up. A
+/// pathological editor that emits events faster than reconciliation
+/// completes would otherwise loop forever, exhausting memory and never
+/// returning to the caller. With this cap, the watcher is marked
+/// `Desynced` and the next sync call falls back to a full verification.
+pub const MAX_BARRIER_LOOPS: u32 = 16;
+
 /// Implements the barrier synchronization loop.
 ///
 /// Snapshots the dirty/deleted sets (without acknowledging), reconciles
 /// them, and then checks if new events arrived during reconciliation. If
 /// so, loops and reconciles the new events. Continues until the watcher
 /// sequence stabilizes, then acknowledges through the final sequence.
+///
+/// Bounded by [`MAX_BARRIER_LOOPS`]: exceeding the cap signals an
+/// external producer racing reconciliation, which is logged and surfaced
+/// as a [`ReconcileError::BarrierCapExceeded`] after marking the watcher
+/// `Desynced` so subsequent calls do a full verification rather than
+/// spinning.
 ///
 /// If `reconcile_fn` fails, the error propagates and the dirty sets remain
 /// unacknowledged — the caller is responsible for marking the watcher
@@ -151,20 +178,33 @@ pub fn sync_with_barrier(
     reconcile_fn: impl FnMut(HashSet<String>, HashSet<String>) -> Result<(), ReconcileError>,
 ) -> Result<(), ReconcileError> {
     let mut reconcile_fn = reconcile_fn;
+    let mut iterations: u32 = 0;
     loop {
         let (seq, dirty, deleted) = state.snapshot_dirty();
 
         if dirty.is_empty() && deleted.is_empty() {
-            break Ok(());
+            return Ok(());
         }
 
         reconcile_fn(dirty, deleted)?;
+        iterations += 1;
+
+        if iterations >= MAX_BARRIER_LOOPS {
+            tracing::warn!(
+                iterations,
+                "barrier sync hit its iteration cap; marking watcher Desynced",
+            );
+            state.set_health(crate::watch::WatcherHealth::Desynced);
+            return Err(ReconcileError::BarrierCapExceeded {
+                iterations: MAX_BARRIER_LOOPS,
+            });
+        }
 
         // Check if more events arrived during reconciliation.
         if state.current_sequence() == seq {
             // No new events — acknowledge through this sequence.
             state.acknowledge_through(seq);
-            break Ok(());
+            return Ok(());
         }
         // Otherwise, loop and reconcile the new events. The next
         // snapshot_dirty call will pick them up.
@@ -218,9 +258,8 @@ fn compute_manifest_hash(
             rows.into_iter().collect()
         } else {
             let placeholders = vec!["?"; exclude_count].join(", ");
-            let sql = format!(
-                "SELECT path, content_hash FROM files WHERE path NOT IN ({placeholders})"
-            );
+            let sql =
+                format!("SELECT path, content_hash FROM files WHERE path NOT IN ({placeholders})");
             let params: Vec<&dyn rusqlite::ToSql> = upserts
                 .iter()
                 .map(|r| &r.relative_path as &dyn rusqlite::ToSql)

@@ -15,11 +15,14 @@ fn ask(
     file: &str,
     query: &str,
 ) -> Result<StructureResponse, ErrorData> {
-    structure(&Parameters(StructureRequest {
-        path: project.path().to_string_lossy().into_owned(),
-        file: file.to_owned(),
-        query: query.to_owned(),
-    }))
+    structure(
+        &Parameters(StructureRequest {
+            path: project.path().to_string_lossy().into_owned(),
+            file: file.to_owned(),
+            query: query.to_owned(),
+        }),
+        &crate::progress::NoopProgressSink,
+    )
     .map(|Json(response)| response)
 }
 
@@ -118,6 +121,7 @@ fn matches_are_capped_and_truncation_is_reported() {
             query: "(function_item name: (identifier) @name)".to_owned(),
         }),
         &limits,
+        &crate::progress::NoopProgressSink,
     )
     .map(|Json(response)| response)
     .expect("query succeeds even though it must truncate");
@@ -148,6 +152,7 @@ fn a_pathological_query_is_aborted_by_the_execution_time_budget() {
             query: "(function_item name: (identifier) @name)".to_owned(),
         }),
         &limits,
+        &crate::progress::NoopProgressSink,
     )
     .map(|Json(response)| response);
     let error = result.expect_err("runaway query is aborted, not run to completion");

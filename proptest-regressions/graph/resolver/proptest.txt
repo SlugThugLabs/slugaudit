@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3f00ffd4883c6a1883ca2e59cf5accd7dc3236b0d684873ea86cc7e8eb56ecc8 # shrinks to (raw, expected_module) = ("fromaimporta", "a")
+cc c6947531f9e89832eff4b2051097bd1dc5a241b153a153a76c43930f039afa96 # shrinks to (raw, expected_module) = ("from\ta import\ta", "a")
+cc 5af8ca33f686e7695390673720781e57270d2668b63b1593ce9cc70c6243230f # shrinks to (raw, expected_module, sym) = ("from a.b\timport b", "a.b", "b")

@@ -7,7 +7,7 @@
 //! `src/sync/publish_race_tests.rs`.
 use super::*;
 use crate::sync;
-use crate::tools::context::with_verified_read;
+use crate::tools::context::{ensure_synced_no_progress, with_verified_read};
 use std::fs;
 use std::sync::mpsc;
 
@@ -33,7 +33,7 @@ fn base_request(project: &tempfile::TempDir, file: &str) -> FindingRequest {
 }
 
 fn finding_count(project: &tempfile::TempDir) -> i64 {
-    let fresh = ensure_synced(&project.path().to_string_lossy()).expect("re-sync");
+    let fresh = ensure_synced_no_progress(&project.path().to_string_lossy()).expect("re-sync");
     with_verified_read(&fresh, |tx| {
         tx.query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))
@@ -44,14 +44,15 @@ fn finding_count(project: &tempfile::TempDir) -> i64 {
 /// Deterministic: a full publish is made to land and commit, on its own
 /// connection, strictly between the moment a finding write captures its
 /// revision and the moment its write transaction actually begins — mirroring
-/// exactly what `finding()` itself does (`ensure_synced`, then later
+/// exactly what `finding(...)` itself does (`ensure_synced`, then later
 /// `with_verified_write`). The write must detect it verified against a
 /// superseded revision and fail with the typed retry error, inserting
 /// nothing.
 #[test]
 fn a_publish_landing_between_revision_capture_and_the_write_is_detected_not_corrupted() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let synced = ensure_synced(&project.path().to_string_lossy()).expect("initial sync");
+    let synced =
+        ensure_synced_no_progress(&project.path().to_string_lossy()).expect("initial sync");
     let original_revision_id = synced.revision_id.clone();
     let revision_for_insert = synced.revision_id.clone();
     let database_path = synced.database_path.clone();
@@ -80,8 +81,13 @@ fn a_publish_landing_between_revision_capture_and_the_write_is_detected_not_corr
     )
     .expect("modify file");
     let mut connection = crate::store::open_read_write(&database_path).expect("open db (writer)");
-    let report = sync::publish(&mut connection, project.path(), crate::parse::PACK_VERSION)
-        .expect("concurrent publish succeeds");
+    let report = sync::publish(
+        &mut connection,
+        project.path(),
+        crate::parse::PACK_VERSION,
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("concurrent publish succeeds");
     assert_ne!(
         report.revision_id, original_revision_id,
         "the concurrent publish must actually have moved the revision"
@@ -115,7 +121,8 @@ fn a_publish_landing_between_revision_capture_and_the_write_is_detected_not_corr
 #[test]
 fn a_finding_write_racing_a_real_publish_never_corrupts_state_whichever_wins() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let synced = ensure_synced(&project.path().to_string_lossy()).expect("initial sync");
+    let synced =
+        ensure_synced_no_progress(&project.path().to_string_lossy()).expect("initial sync");
     let revision_id = synced.revision_id.clone();
     let database_path = synced.database_path.clone();
     let request = base_request(&project, "lib.rs");
@@ -135,7 +142,12 @@ fn a_finding_write_racing_a_real_publish_never_corrupts_state_whichever_wins() {
         barrier.wait();
         let mut connection =
             crate::store::open_read_write(&database_path).expect("open db (publisher)");
-        sync::publish(&mut connection, &publish_root, crate::parse::PACK_VERSION)
+        sync::publish(
+            &mut connection,
+            &publish_root,
+            crate::parse::PACK_VERSION,
+            &crate::progress::NoopProgressSink,
+        )
     });
 
     let write_result = writer.join().expect("writer thread joins");

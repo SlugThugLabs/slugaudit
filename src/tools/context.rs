@@ -1,3 +1,4 @@
+use crate::progress::ProgressSink;
 use crate::sync;
 use rmcp::ErrorData;
 use std::sync::OnceLock;
@@ -18,6 +19,14 @@ static SYNC_MANAGER: OnceLock<sync::SourceSyncManager> = OnceLock::new();
 
 fn get_sync_manager() -> &'static sync::SourceSyncManager {
     SYNC_MANAGER.get_or_init(sync::SourceSyncManager::with_watcher)
+}
+
+/// Returns the process-wide `SourceSyncManager`. Same instance every
+/// call; `tools::health` uses this to read counters and iterate the
+/// watcher's per-project `WatchState`s without going through the
+/// ensure-current side effect of `ensure_synced`.
+pub(crate) fn sync_manager() -> &'static sync::SourceSyncManager {
+    get_sync_manager()
 }
 
 /// Wraps a low-level store/rusqlite error with which operation failed and
@@ -42,12 +51,30 @@ pub(super) fn internal_error(context: &str, error: impl std::fmt::Display) -> Er
 /// and returns a handle to its current revision. A concurrent publish is
 /// caught by the revision check in `with_verified_read` / `with_verified_write`.
 ///
+/// `sink` carries progress events from the sync layer (per-file sampling
+/// during publish, plus `Started`/`Completed` markers for the overall
+/// `ensuring_current` phase) to the MCP-aware server, which turns the
+/// events into `/notifications/progress` notifications. Tests pass
+/// `&NoopProgressSink`; callers that don't have an MCP connection
+/// should as well.
+///
 /// # Errors
 ///
 /// Returns an error if `path` isn't inside an active project, or if sync
 /// itself fails.
-pub fn ensure_synced(path: &str) -> Result<SyncedProject, ErrorData> {
-    get_sync_manager().ensure_current(path)
+pub fn ensure_synced(path: &str, sink: &dyn ProgressSink) -> Result<SyncedProject, ErrorData> {
+    get_sync_manager().ensure_current(path, sink)
+}
+
+/// Backwards-compatible shim that calls [`ensure_synced`] with a no-op
+/// sink. Tests and CLI paths seeded before Phase 2.2 use this so they
+/// don't have to thread `&NoopProgressSink` by hand. Exposed under the
+/// `cfg(test)` gate so production callers must take a real progress
+/// sink and commit to the wire-point contract documented in
+/// `ARCHITECTURE.md`.
+#[cfg(test)]
+pub(crate) fn ensure_synced_no_progress(path: &str) -> Result<SyncedProject, ErrorData> {
+    ensure_synced(path, &crate::progress::NoopProgressSink)
 }
 
 fn verify_revision_matches(

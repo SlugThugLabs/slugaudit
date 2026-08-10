@@ -8,10 +8,32 @@
 //! defaulting to `util`. This file should not become a dumping ground.
 
 use std::fmt::Write as _;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static LAST_UNIX_TIME: AtomicI64 = AtomicI64::new(0);
+
+/// Acquires a mutex guard, recovering the inner value if the mutex was
+/// poisoned by a previous holder panicking. Without this recovery, a
+/// single panic inside any critical section guarded by a `Mutex` would
+/// crash the entire process on the next event: `Mutex::lock()` returns a
+/// `PoisonError`, and unwrapping it propagates the original panic out of
+/// the calling thread.
+///
+/// Recovery is logged at `error` (poisoning is an unexpected, recoverable
+/// condition we want visible) but never escalated — the inner data is
+/// already maintained across panic boundaries inside the `MutexGuard`,
+/// so a successor lock just continues the work. The trade-off: the
+/// recovered data may be in a logically inconsistent state (a partially-
+/// applied mutation that panicked mid-step), so callers that mutate
+/// multiple fields atomically document and test that invariant.
+pub(crate) fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| {
+        tracing::error!("mutex was poisoned; recovering inner value");
+        poisoned.into_inner()
+    })
+}
 
 /// Hex-encodes a byte slice as a lowercase hex string. Used by both the
 /// hashing layer and the query value converter.
@@ -53,3 +75,7 @@ pub(crate) fn now_unix() -> i64 {
 pub(crate) fn at_least_timestamp(observed: i64, persisted: Option<i64>) -> i64 {
     observed.max(persisted.unwrap_or(0))
 }
+
+#[cfg(test)]
+#[path = "util_tests.rs"]
+mod tests;

@@ -60,8 +60,11 @@ struct QueryResponseView<'a> {
 /// attempted write, which SQLite itself rejects on this connection), the
 /// VM-step or wall-clock budget is exhausted, or a result value can't be
 /// represented (including a single TEXT/BLOB value over the per-value cap).
-pub fn query(request: &Parameters<QueryRequest>) -> Result<Json<QueryResponse>, ErrorData> {
-    query_with_limits(request, &ResourceLimits::default())
+pub fn query(
+    request: &Parameters<QueryRequest>,
+    sink: &dyn crate::progress::ProgressSink,
+) -> Result<Json<QueryResponse>, ErrorData> {
+    query_with_limits(request, &ResourceLimits::default(), sink)
 }
 
 /// Test-only seam: production code always goes through [`query`] with
@@ -72,6 +75,7 @@ pub fn query(request: &Parameters<QueryRequest>) -> Result<Json<QueryResponse>, 
 fn query_with_limits(
     request: &Parameters<QueryRequest>,
     limits: &ResourceLimits,
+    sink: &dyn crate::progress::ProgressSink,
 ) -> Result<Json<QueryResponse>, ErrorData> {
     let QueryRequest { path, sql, offset } = &request.0;
     let trimmed = sql.trim().trim_end_matches(';');
@@ -85,7 +89,7 @@ fn query_with_limits(
         ));
     }
 
-    let synced = ensure_synced(path)?;
+    let synced = ensure_synced(path, sink)?;
     let revision_id = synced.revision_id.clone();
     let (mut rows, mut truncated) =
         with_verified_read(&synced, |tx| run_query(tx, trimmed, *offset, limits))?;

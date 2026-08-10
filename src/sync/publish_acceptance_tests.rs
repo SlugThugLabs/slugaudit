@@ -117,7 +117,13 @@ fn a_realistic_polyglot_project_syncs_correctly_end_to_end() {
     // Will be "renamed" (delete + add with identical content) on the next sync.
     write(project.path(), "old_name.py", b"y = 2\n");
 
-    let first = publish(&mut connection, project.path(), "1.0.0").expect("first publish");
+    let first = publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("first publish");
     assert_eq!(first.added, 10);
     assert_eq!(first.deleted, 0);
 
@@ -168,7 +174,13 @@ fn a_realistic_polyglot_project_syncs_correctly_end_to_end() {
     fs::remove_file(project.path().join("old_name.py")).expect("remove old name");
     write(project.path(), "new_name.py", b"y = 2\n");
 
-    let second = publish(&mut connection, project.path(), "1.0.0").expect("second publish");
+    let second = publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("second publish");
     assert_eq!(
         second.deleted, 2,
         "the outright deletion and the old half of the rename both count as deletions"

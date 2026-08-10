@@ -70,9 +70,18 @@ impl std::str::FromStr for ConnectAgent {
 
 /// Parses the process arguments into a `Command`. Returns `Err` with a
 /// human-readable message when the input can't be mapped to a command —
-/// currently only an unknown agent name passed to `connect`. The caller
-/// (main) prints the message to stderr and exits non-zero; keeping the
-/// exit out of this function makes the parser testable.
+/// an unrecognized first argument, or an unknown agent name passed to
+/// `connect`. The caller (`main`) prints the message to stderr and exits
+/// non-zero; keeping the exit out of this function makes the parser
+/// testable.
+///
+/// Important: an unknown first argument is **an error**, not a help
+/// invocation. A `Command::Help` is reserved for an explicit `"help"`
+/// command and for the empty-argument case (where the caller would
+/// arguably want help too, but launching the MCP server is the
+/// documented default behavior — `serve` and the empty arg are the
+/// same). User-typo'd commands should be reported, not silently
+/// downgraded to a help screen, to avoid surprises in pipes and CI.
 #[must_use = "the returned Command must be dispatched by the caller"]
 pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
     let Some(first) = args.next() else {
@@ -80,6 +89,7 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
     };
     match first.as_str() {
         "serve" => Ok(Command::Serve),
+        "help" => Ok(Command::Help),
         "connect" => {
             let agent = args
                 .next()
@@ -88,7 +98,9 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
             Ok(Command::Connect { agent })
         }
         "install" => Ok(Command::Install),
-        _ => Ok(Command::Help),
+        other => Err(format!(
+            "unknown command {other:?}; expected one of: serve, connect, install, help"
+        )),
     }
 }
 

@@ -51,7 +51,13 @@ fn a_python_relative_import_resolves_to_the_real_sibling_file() {
     let db_dir = tempfile::tempdir().expect("db dir");
     let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
 
-    publish(&mut connection, project.path(), "1.0.0").expect("publish");
+    publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("publish");
 
     let all = edges(&connection);
     let resolved = all
@@ -81,7 +87,13 @@ fn a_rust_crate_use_path_resolves_to_the_real_module_file() {
     let db_dir = tempfile::tempdir().expect("db dir");
     let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
 
-    publish(&mut connection, project.path(), "1.0.0").expect("publish");
+    publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("publish");
 
     let all = edges(&connection);
     let resolved = all
@@ -102,7 +114,13 @@ fn an_external_crate_use_is_recorded_as_external_with_no_target() {
     let db_dir = tempfile::tempdir().expect("db dir");
     let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
 
-    publish(&mut connection, project.path(), "1.0.0").expect("publish");
+    publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("publish");
 
     let all = edges(&connection);
     let external = all
@@ -122,10 +140,22 @@ fn a_modified_file_gets_its_edges_replaced_not_duplicated() {
     write(project.path(), "pkg/main.py", b"from .a import x\n");
     let db_dir = tempfile::tempdir().expect("db dir");
     let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
-    publish(&mut connection, project.path(), "1.0.0").expect("first publish");
+    publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("first publish");
 
     write(project.path(), "pkg/main.py", b"from .b import y\n");
-    publish(&mut connection, project.path(), "1.0.0").expect("second publish");
+    publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("second publish");
 
     let all = edges(&connection);
     let from_main: Vec<&Edge> = all
@@ -148,7 +178,13 @@ fn a_deleted_target_file_cascades_away_its_incoming_edge() {
     write(project.path(), "pkg/main.py", b"from .helper import f\n");
     let db_dir = tempfile::tempdir().expect("db dir");
     let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
-    publish(&mut connection, project.path(), "1.0.0").expect("first publish");
+    publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("first publish");
     assert!(
         edges(&connection)
             .iter()
@@ -156,7 +192,13 @@ fn a_deleted_target_file_cascades_away_its_incoming_edge() {
     );
 
     fs::remove_file(project.path().join("pkg/helper.py")).expect("delete target");
-    publish(&mut connection, project.path(), "1.0.0").expect("second publish");
+    publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("second publish");
 
     assert!(
         !edges(&connection)

@@ -26,10 +26,14 @@
 //! This loops until the watcher sequence stabilizes.
 
 mod manager;
+mod path;
 mod state;
+mod types;
 
 #[cfg(test)]
 mod tests;
 
 pub use manager::WatchManager;
-pub use state::{ProjectWatchState, WatchState, WatcherHealth, normalize_relative_path};
+pub use path::normalize_relative_path;
+pub use state::WatchState;
+pub use types::{ProjectWatchState, WatcherHealth};

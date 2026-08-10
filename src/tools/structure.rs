@@ -61,8 +61,9 @@ pub struct StructureResponse {
 /// is empty/too large or fails to compile, or the parser returns no tree.
 pub fn structure(
     request: &Parameters<StructureRequest>,
+    sink: &dyn crate::progress::ProgressSink,
 ) -> Result<Json<StructureResponse>, ErrorData> {
-    structure_with_limits(request, &ResourceLimits::default())
+    structure_with_limits(request, &ResourceLimits::default(), sink)
 }
 
 /// Test-only seam: production code always goes through [`structure`] with
@@ -72,6 +73,7 @@ pub fn structure(
 fn structure_with_limits(
     request: &Parameters<StructureRequest>,
     limits: &ResourceLimits,
+    sink: &dyn crate::progress::ProgressSink,
 ) -> Result<Json<StructureResponse>, ErrorData> {
     let StructureRequest { path, file, query } = &request.0;
     if query.trim().is_empty() {
@@ -90,7 +92,7 @@ fn structure_with_limits(
         ));
     }
 
-    let synced = ensure_synced(path)?;
+    let synced = ensure_synced(path, sink)?;
     let revision_id = synced.revision_id.clone();
     let (content, language) = with_verified_read(&synced, |tx| fetch_source(tx, file))?;
 

@@ -180,7 +180,11 @@ fn rust_super_glob_from_a_top_level_module_resolves_to_the_crate_root() {
         "crates/api/src/lib.rs",
         "crates/api/src/codex_adapter.rs",
     ]);
-    let result = RustResolver.resolve(&refer("super::*"), "crates/api/src/codex_adapter.rs", &known);
+    let result = RustResolver.resolve(
+        &refer("super::*"),
+        "crates/api/src/codex_adapter.rs",
+        &known,
+    );
     assert_eq!(result.kind, ResolutionKind::Resolved);
     assert_eq!(
         result.to_relative_path.as_deref(),

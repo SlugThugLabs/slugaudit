@@ -14,10 +14,31 @@ fn explicit_serve() {
 }
 
 #[test]
-fn unrecognized_input_shows_help_rather_than_silently_serving() {
+fn unrecognized_input_returns_a_descriptive_error_rather_than_silently_serving() {
+    let err = parse_args(vec!["foobar".to_owned()].into_iter()).unwrap_err();
+    assert!(err.contains("unknown command"));
+    assert!(err.contains("foobar"));
+    assert!(err.contains("serve") && err.contains("connect") && err.contains("install"));
+}
+
+#[test]
+fn explicit_help_command_parses_as_help() {
     assert_eq!(
-        parse_args(vec!["foobar".to_owned()].into_iter()).unwrap(),
+        parse_args(vec!["help".to_owned()].into_iter()).unwrap(),
         Command::Help
+    );
+}
+
+#[test]
+fn case_mismatched_known_command_is_an_error() {
+    // Edge case: a user runs `slugaudit SErve` (mixed case). Currently
+    // the parser is case-sensitive — we don't normalize to lowercase.
+    // Record the behavior so future case-insensitive work is a
+    // deliberate change, not a quiet backward-incompat.
+    let result = parse_args(vec!["SErve".to_owned()].into_iter());
+    assert!(
+        result.is_err(),
+        "case-sensitive commands are the documented behavior; the test name and assertion must agree"
     );
 }
 

@@ -71,11 +71,14 @@ pub struct FindingResponse {
 /// isn't indexed with real content, required text fields are empty or
 /// exceed their length limit, line numbers are zero or reversed,
 /// `line_end` exceeds the file's actual line count, or the write fails.
-pub fn finding(request: &Parameters<FindingRequest>) -> Result<Json<FindingResponse>, ErrorData> {
+pub fn finding(
+    request: &Parameters<FindingRequest>,
+    sink: &dyn crate::progress::ProgressSink,
+) -> Result<Json<FindingResponse>, ErrorData> {
     let request = &request.0;
     validate_text_fields(request)?;
 
-    let synced = ensure_synced(&request.path)?;
+    let synced = ensure_synced(&request.path, sink)?;
     let revision_id = synced.revision_id.clone();
     let response = with_verified_write(&synced, |tx| insert_finding(tx, request, &revision_id))?;
     Ok(Json(response))

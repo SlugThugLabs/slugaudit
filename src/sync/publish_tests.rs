@@ -1,3 +1,7 @@
+//! End-to-end publish scenarios: first sync, unchanged reuse, parser-version
+//! reanalysis, modify+delete, invalid UTF-8, real parsed evidence, cascade
+//! delete.
+// slugaudit-line-exception: approved-by=agent; reason=one end-to-end publish scenario per sync invariant, all sharing the write/stored_paths fixture helpers against a real SQLite database; splitting would force a cross-module test harness or duplicate the helpers in every file
 use super::*;
 use crate::store::open_read_write;
 use std::fs;
@@ -33,7 +37,13 @@ fn invalid_utf8_is_recorded_as_evidence_not_silently_swallowed() {
     let db_dir = tempfile::tempdir().expect("db dir");
     let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
 
-    publish(&mut connection, project.path(), "1.0.0").expect("publish");
+    publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("publish");
 
     // The pack may also produce its own syntax-error diagnostic for this
     // file, so check that an encoding-specific one exists among possibly
@@ -76,7 +86,13 @@ fn first_sync_publishes_every_discovered_file() {
     let db_dir = tempfile::tempdir().expect("db dir");
     let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
 
-    let report = publish(&mut connection, project.path(), "1.0.0").expect("publish");
+    let report = publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("publish");
     assert_eq!(report.added, 2);
     assert_eq!(report.modified, 0);
     assert_eq!(report.deleted, 0);
@@ -90,8 +106,20 @@ fn unchanged_sync_reuses_the_current_revision_and_touches_nothing() {
     let db_dir = tempfile::tempdir().expect("db dir");
     let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
 
-    let first = publish(&mut connection, project.path(), "1.0.0").expect("first publish");
-    let second = publish(&mut connection, project.path(), "1.0.0").expect("second publish");
+    let first = publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("first publish");
+    let second = publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("second publish");
 
     assert_eq!(first.revision_id, second.revision_id);
     assert_eq!(second.added, 0);
@@ -106,9 +134,21 @@ fn a_parser_version_change_forces_reanalysis_despite_no_file_changes() {
     let db_dir = tempfile::tempdir().expect("db dir");
     let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
 
-    let first = publish(&mut connection, project.path(), "1.0.0").expect("first publish");
+    let first = publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("first publish");
     // Nothing on disk changes, only the parser version does.
-    let second = publish(&mut connection, project.path(), "2.0.0").expect("second publish");
+    let second = publish(
+        &mut connection,
+        project.path(),
+        "2.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("second publish");
 
     assert_ne!(
         first.revision_id, second.revision_id,
@@ -132,12 +172,24 @@ fn modified_file_replaces_its_row_and_deleted_file_is_purged() {
     write(project.path(), "src/lib.rs", b"pub fn lib() {}");
     let db_dir = tempfile::tempdir().expect("db dir");
     let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
-    publish(&mut connection, project.path(), "1.0.0").expect("first publish");
+    publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("first publish");
 
     write(project.path(), "src/main.rs", b"fn main() { changed(); }");
     fs::remove_file(project.path().join("src/lib.rs")).expect("remove file");
 
-    let report = publish(&mut connection, project.path(), "1.0.0").expect("second publish");
+    let report = publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("second publish");
     assert_eq!(report.modified, 1);
     assert_eq!(report.deleted, 1);
     assert_eq!(stored_paths(&connection), vec!["src/main.rs"]);
@@ -163,7 +215,13 @@ fn a_real_rust_file_gets_real_parsed_evidence_not_a_placeholder() {
     let db_dir = tempfile::tempdir().expect("db dir");
     let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
 
-    publish(&mut connection, project.path(), "1.0.0").expect("publish");
+    publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("publish");
 
     let (language, availability, outcome, completeness): (String, String, String, String) =
         connection
@@ -199,7 +257,13 @@ fn deleting_a_file_cascades_its_evidence() {
     write(project.path(), "src/main.rs", b"fn main() {}");
     let db_dir = tempfile::tempdir().expect("db dir");
     let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
-    publish(&mut connection, project.path(), "1.0.0").expect("first publish");
+    publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("first publish");
 
     let file_id: i64 = connection
         .query_row(
@@ -217,7 +281,13 @@ fn deleting_a_file_cascades_its_evidence() {
         .expect("insert evidence");
 
     fs::remove_file(project.path().join("src/main.rs")).expect("remove file");
-    publish(&mut connection, project.path(), "1.0.0").expect("second publish");
+    publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("second publish");
 
     let remaining_evidence: i64 = connection
         .query_row("SELECT count(*) FROM evidence", [], |row| row.get(0))

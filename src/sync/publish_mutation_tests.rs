@@ -50,7 +50,7 @@ fn sample_all_rejects_strictly_over_the_byte_limit_not_at_or_under_it() {
         ..ResourceLimits::default()
     };
     assert!(
-        sample_all(&discovered, &exact).is_ok(),
+        sample_all(&discovered, &exact, &crate::progress::NoopProgressSink).is_ok(),
         "a total exactly at the limit must be accepted, not rejected"
     );
 
@@ -60,7 +60,11 @@ fn sample_all_rejects_strictly_over_the_byte_limit_not_at_or_under_it() {
     };
     assert!(
         matches!(
-            sample_all(&discovered, &one_under_needed),
+            sample_all(
+                &discovered,
+                &one_under_needed,
+                &crate::progress::NoopProgressSink
+            ),
             Err(PublishError::ImportTooLarge { .. })
         ),
         "one byte over the limit must be rejected"
@@ -83,7 +87,13 @@ fn arm_permanent_racer(
         let count = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         write(&root, &format!("racer-{count}.rs"), b"fn racer() {}\n");
         let mut racer = open_read_write(&db_path).expect("open racer db");
-        publish(&mut racer, &root, "1.0.0").expect("racer publish");
+        publish(
+            &mut racer,
+            &root,
+            "1.0.0",
+            &crate::progress::NoopProgressSink,
+        )
+        .expect("racer publish");
         arm_permanent_racer(root, db_path, attempts);
     });
 }
@@ -96,7 +106,13 @@ fn retry_gives_up_after_exactly_max_cas_retries_and_never_hangs() {
     let db_path = db_dir.path().join("project.db");
     {
         let mut setup = open_read_write(&db_path).expect("open db");
-        publish(&mut setup, project.path(), "1.0.0").expect("bootstrap publish");
+        publish(
+            &mut setup,
+            project.path(),
+            "1.0.0",
+            &crate::progress::NoopProgressSink,
+        )
+        .expect("bootstrap publish");
     }
 
     let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -110,7 +126,12 @@ fn retry_gives_up_after_exactly_max_cas_retries_and_never_hangs() {
     let root = project.path().to_path_buf();
     std::thread::spawn(move || {
         let mut connection_a = open_read_write(&db_path).expect("open db (A)");
-        let _ = tx.send(publish(&mut connection_a, &root, "1.0.0"));
+        let _ = tx.send(publish(
+            &mut connection_a,
+            &root,
+            "1.0.0",
+            &crate::progress::NoopProgressSink,
+        ));
     });
 
     // A generous bound: a correct implementation returns almost instantly.
@@ -158,8 +179,13 @@ fn one_bad_file_does_not_block_publishing_the_rest_of_the_project() {
 
     let db_dir = tempfile::tempdir().expect("db dir");
     let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
-    let report = publish(&mut connection, project.path(), "1.0.0")
-        .expect("publish must succeed despite one bad file");
+    let report = publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("publish must succeed despite one bad file");
 
     assert_eq!(
         report.added, 1,

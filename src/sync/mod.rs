@@ -6,6 +6,7 @@ mod analyze;
 mod discovery;
 mod hash;
 mod manager;
+mod manager_meta;
 mod manifest;
 mod publish;
 mod publish_attempt;

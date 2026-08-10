@@ -34,7 +34,8 @@ fn clone_synced(synced: &SyncedProject) -> SyncedProject {
 #[test]
 fn a_read_in_progress_never_observes_a_concurrent_publishs_change() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let synced = ensure_synced(&project.path().to_string_lossy()).expect("initial sync");
+    let synced =
+        ensure_synced_no_progress(&project.path().to_string_lossy()).expect("initial sync");
     let reader_synced = clone_synced(&synced);
 
     let (tx_paused, rx_paused) = mpsc::channel::<()>();
@@ -89,8 +90,13 @@ fn a_read_in_progress_never_observes_a_concurrent_publishs_change() {
     .expect("modify file");
     fs::write(project.path().join("new.rs"), b"pub fn b() {}\n").expect("add file");
     let mut connection = store::open_read_write(&synced.database_path).expect("open db (writer)");
-    let report = sync::publish(&mut connection, project.path(), parse::PACK_VERSION)
-        .expect("concurrent publish succeeds");
+    let report = sync::publish(
+        &mut connection,
+        project.path(),
+        parse::PACK_VERSION,
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("concurrent publish succeeds");
     assert_ne!(
         report.revision_id, synced.revision_id,
         "the concurrent publish must actually have moved the revision"
@@ -117,7 +123,7 @@ fn a_read_in_progress_never_observes_a_concurrent_publishs_change() {
     // A brand new, independently-synced read does see the new state — this
     // is what confirms the publish really did land, not merely that nothing
     // happened.
-    let fresh = ensure_synced(&project.path().to_string_lossy()).expect("re-sync");
+    let fresh = ensure_synced_no_progress(&project.path().to_string_lossy()).expect("re-sync");
     let fresh_count: i64 = with_verified_read(&fresh, |tx| {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))
