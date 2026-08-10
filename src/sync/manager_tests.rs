@@ -210,7 +210,7 @@ fn barrier_loop_catches_events_during_reconciliation() {
     let project = create_project();
     write_file(&project, "lib.rs", b"pub fn a() {}\n");
 
-    let synced = sync_project(&manager, &project);
+    let _synced = sync_project(&manager, &project);
 
     // Modify the file — this marks it dirty.
     write_file(&project, "lib.rs", b"pub fn b() {}\n");

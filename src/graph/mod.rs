@@ -5,6 +5,7 @@
 //! module owns resolution logic, not persistence.
 mod reference;
 mod resolve;
+pub(crate) mod resolver;
 mod resolve_rust;
 
 use std::collections::HashSet;
@@ -16,7 +17,7 @@ use std::collections::HashSet;
 /// really broken" (e.g. the `report` tool) should check this first.
 #[must_use]
 pub fn is_supported_language(language: &str) -> bool {
-    resolve::is_supported_language(language)
+    resolver::is_supported_language(language)
 }
 
 /// One import evidence item's resolution outcome, ready to become a
@@ -41,10 +42,6 @@ pub struct ResolvedEdge {
 /// because it couldn't be parsed or resolved; it becomes `"Unresolved"`
 /// instead, preserving the raw text for the AI to inspect.
 #[must_use]
-// Generalizing over `S: BuildHasher` here would ripple through resolve_one
-// and every per-language resolver in `resolve.rs` for no real benefit —
-// the only caller (`sync::revision_edges`) always builds a plain
-// `HashSet<&str>` from a `Vec<String>` of file paths.
 #[allow(clippy::implicit_hasher)]
 pub fn resolve_imports(
     language: &str,
@@ -64,15 +61,7 @@ fn resolve_one(
     raw: &str,
     known_paths: &HashSet<&str>,
 ) -> ResolvedEdge {
-    let Some(reference) = reference::extract(language, raw) else {
-        return ResolvedEdge {
-            raw_import_text: raw.to_owned(),
-            resolution_kind: "Unresolved",
-            confidence: None,
-            to_relative_path: None,
-        };
-    };
-    let resolution = resolve::resolve(language, &reference, importing_relative_path, known_paths);
+    let resolution = resolver::resolve_one(language, importing_relative_path, raw, known_paths);
     ResolvedEdge {
         raw_import_text: raw.to_owned(),
         resolution_kind: resolution.kind.as_sql_text(),

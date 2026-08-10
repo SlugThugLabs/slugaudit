@@ -10,9 +10,8 @@
 //! module's own file rather than a nested one.
 
 use super::reference::ImportReference;
-use super::resolve::{
-    Resolution, ResolutionKind, external, normalize_join, parent_dir, pick, unresolved,
-};
+use super::resolver::{LanguageResolver, Resolution, ResolutionKind, external, pick, unresolved};
+use super::resolve::{normalize_join, parent_dir};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -22,6 +21,44 @@ use std::path::Path;
 /// distinction right is what makes `super::`/`self::` resolve correctly in
 /// ordinary (non-`mod.rs`) module trees.
 const RUST_MODULE_ROOT_STEMS: [&str; 3] = ["mod", "lib", "main"];
+
+/// Rust-specific import resolver. Handles `crate::`/`super::`/`self::`
+/// semantics that the generic resolver can't model.
+pub struct RustResolver;
+
+impl LanguageResolver for RustResolver {
+    fn supports(&self, language: &str) -> bool {
+        language == "rust"
+    }
+
+    fn extract_reference(&self, raw: &str) -> Option<ImportReference> {
+        let without_visibility = raw
+            .trim()
+            .trim_start_matches("pub(crate) ")
+            .trim_start_matches("pub(super) ")
+            .trim_start_matches("pub(self) ")
+            .trim_start_matches("pub ");
+        let rest = without_visibility.strip_prefix("use ")?;
+        let end = rest.find([';', '{', ' ']).map_or(rest.len(), |index| index);
+        let path = rest[..end].trim_end_matches("::");
+        if path.is_empty() {
+            None
+        } else {
+            Some(ImportReference {
+                text: path.to_owned(),
+            })
+        }
+    }
+
+    fn resolve(
+        &self,
+        reference: &ImportReference,
+        importing_relative_path: &str,
+        known_paths: &HashSet<&str>,
+    ) -> Resolution {
+        resolve(reference, importing_relative_path, known_paths)
+    }
+}
 
 fn file_stem(relative_path: &str) -> String {
     Path::new(relative_path)
@@ -139,7 +176,7 @@ fn resolve_rust_from_base(
 /// `mod.rs`-shaped still resolve. Both remain `"Low"` confidence: without
 /// reading `mod` declarations we cannot prove which interpretation the
 /// compiler would pick.
-pub(super) fn resolve(
+fn resolve(
     reference: &ImportReference,
     importing_relative_path: &str,
     known_paths: &HashSet<&str>,
@@ -172,7 +209,6 @@ pub(super) fn resolve(
     }
 
     if text == "super" || text.starts_with("super::") {
-        // `super::super::…` walks up one module per repetition.
         let mut rest = text.strip_prefix("super::").unwrap_or("");
         let mut strict = parent_dir(&rust_module_dir(importing_relative_path));
         let mut legacy = parent_dir(&parent_dir(importing_relative_path));
