@@ -77,22 +77,25 @@ Record in the release notes:
       file exists; `*_tests.rs` count matches).
 - [ ] `OBSERVABILITY.md` matches current tracing/operational behavior.
 - [ ] `.planning/README.md` "Current state" matches the code being released.
-- [ ] `.planning/PERFORMANCE.md` exists and records the baseline for this
-      release (Task 9.2; **pending** — see decision log).
+- [x] `.planning/PERFORMANCE.md` exists and records the baseline for this
+      release (Task 9.2; recorded 2026-08-10 — see decision log).
 - [ ] No documentation claims behavior the tool does not provide ("risk
       leads", "automatic bugs", "audit completed", manual sync commands).
 - [ ] `.planning/RELEASE_CHECKLIST.md` itself is current.
 
 ## 4. End-to-end acceptance (Task 12.2 / §20)
 
+- [x] The multi-language fixture with versioned golden manifest and
+      evidence contract exists and is asserted by `tests/fixture_contract.rs`
+      (Task 12.1, recorded 2026-08-10 — see decision log).
 - [ ] The fixture repository workflow runs against the real binary:
       activate → server start → `initialize` → `report` → `query` (symbol,
       source span, recursive-CTE dependency traversal, parser diagnostics)
       → `structure` pattern match → write-through-`query` rejected at the
       connection level → `finding` persisted → source modified → stale
       finding + new revision verified.
-      (**Pending:** Phase 12 fixture with versioned golden manifest — see
-      decision log.)
+      (**Pending:** the real-MCP workflow test — Task 12.2 — see decision
+      log.)
 - [ ] All responses carry verified freshness metadata.
 - [ ] All evidence responses are bounded (limits metadata present where
       applicable).

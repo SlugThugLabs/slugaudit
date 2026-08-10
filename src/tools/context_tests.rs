@@ -33,6 +33,20 @@ fn activated_project(relative: &str, content: &[u8]) -> tempfile::TempDir {
     project
 }
 
+/// Deterministic sync for the freshness tests: a local manager with NO
+/// filesystem watcher, so every `ensure_current` runs a full publish and a
+/// content change always moves the revision. The global watcher-backed
+/// manager (`ensure_synced_no_progress`) delivers modify events on an async
+/// watcher thread — under parallel test load the second sync in these
+/// tests could return the same revision if the event hadn't landed yet,
+/// turning a deterministic "stale handle must be rejected" assertion into a
+/// flaky one.
+fn synced_locally(path: &str) -> SyncedProject {
+    crate::sync::SourceSyncManager::new()
+        .ensure_current(path, &crate::progress::NoopProgressSink)
+        .expect("local sync")
+}
+
 /// Exercises the real production entry point tools actually call, not a
 /// weaker stand-in: `with_verified_read` keeps the transaction open for the
 /// whole closure, so a real query issued from inside `f` proves verification
@@ -54,7 +68,7 @@ fn a_verified_connection_succeeds_when_nothing_changed_since_sync() {
 fn a_stale_synced_handle_fails_loudly_instead_of_returning_mismatched_data() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let path = project.path().to_string_lossy().into_owned();
-    let stale = ensure_synced_no_progress(&path).expect("first sync");
+    let stale = synced_locally(&path);
 
     // Simulate a concurrent publish from another process: modify the file
     // and sync again independently of `stale`.
@@ -63,7 +77,7 @@ fn a_stale_synced_handle_fails_loudly_instead_of_returning_mismatched_data() {
         b"pub fn a() { changed(); }\n",
     )
     .expect("modify file");
-    let fresh = ensure_synced_no_progress(&path).expect("second sync");
+    let fresh = synced_locally(&path);
     assert_ne!(
         stale.revision_id, fresh.revision_id,
         "the revision must actually have moved"
@@ -126,14 +140,14 @@ fn a_database_copied_from_a_different_project_root_fails_closed() {
 fn verified_read_write_has_the_same_protection() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let path = project.path().to_string_lossy().into_owned();
-    let stale = ensure_synced_no_progress(&path).expect("first sync");
+    let stale = synced_locally(&path);
 
     fs::write(
         project.path().join("lib.rs"),
         b"pub fn a() { changed(); }\n",
     )
     .expect("modify file");
-    let fresh = ensure_synced_no_progress(&path).expect("second sync");
+    let fresh = synced_locally(&path);
 
     let result = with_verified_write(&stale, |tx| {
         tx.execute(

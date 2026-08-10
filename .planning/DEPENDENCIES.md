@@ -66,11 +66,13 @@ Versions are the locked versions in `Cargo.lock` as of this writing.
 |---|---|---|
 | `proptest` | 1.11.0 | Property tests for paths, spans, evidence limits, resolution round-trips |
 | `tempfile` | 3.27.0 | Fixture databases, temp project roots, watcher-scenario scratch dirs |
+| `criterion` | 0.5.1 | Benchmark harness for `benches/` (Task 9.2); `harness = false` bench targets only |
 
-`criterion` is not yet a dependency. Performance benchmarks (Task 9.2) are a
-planned, separate addition — when added, it must be a dev-dependency so the
-release binary is unaffected, and benchmark builds must stay separate from
-the correctness gates (see `.planning/PERFORMANCE.md` once created).
+`criterion` is a dev-dependency only, so the release binary is unaffected.
+Benchmark builds are separate targets and are never part of the correctness
+gates (`cargo test --all-targets` compiles them but does not run them);
+results and the run protocol live in `.planning/PERFORMANCE.md`. Default
+features are used (no `html_reports`, so no plotters in the graph).
 
 ## Native/FFI and transitive unsafe
 

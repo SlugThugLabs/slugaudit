@@ -1,5 +1,12 @@
 //! Shared fixture generation and helpers for the benchmark suite.
 //!
+//! This module is compiled into every bench binary, but each benchmark uses
+//! a different subset of its items (parsing only needs the samples, sync
+//! only the generator and `touch_rust_file`). Dead-code is expected and
+//! allowed here — the lint would otherwise fire in every target where an
+//! item happens to be unused.
+#![allow(dead_code)]
+//!
 //! All content is generated deterministically from the file count, so the
 //! same fixture is reproducible across runs and machines (Task 9.2:
 //! "benchmarks run reproducibly on the same fixture"). The tree covers five
@@ -102,7 +109,7 @@ pub fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
                 rust_index += 1;
                 write(
                     &format!("src/rust/mod_{k}.rs"),
-                    &rust_source(k, sibling(k, rust_count), mix.below(100)),
+                    &rust_source(k, sibling(k, rust_count), mix.below(100) as u64),
                 );
             }
             3 | 4 | 9 => {
@@ -110,7 +117,7 @@ pub fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
                 python_index += 1;
                 write(
                     &format!("src/python/mod_{k}.py"),
-                    &python_source(k, sibling(k, python_count), mix.below(100)),
+                    &python_source(k, sibling(k, python_count), mix.below(100) as u64),
                 );
             }
             5 => {
@@ -118,7 +125,7 @@ pub fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
                 js_index += 1;
                 write(
                     &format!("src/js/mod_{k}.js"),
-                    &js_source(k, sibling(k, js_count), mix.below(100)),
+                    &js_source(k, sibling(k, js_count), mix.below(100) as u64),
                 );
             }
             6 => {
@@ -126,7 +133,7 @@ pub fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
                 ts_index += 1;
                 write(
                     &format!("src/ts/mod_{k}.ts"),
-                    &ts_source(k, sibling(k, ts_count), mix.below(100)),
+                    &ts_source(k, sibling(k, ts_count), mix.below(100) as u64),
                 );
             }
             _ => write(

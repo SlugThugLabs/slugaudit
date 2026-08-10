@@ -28,16 +28,27 @@ fn walk_and_hash(root: &std::path::Path) -> u64 {
 fn bench_discovery(c: &mut Criterion) {
     let small = tempfile::tempdir().expect("temp dir");
     let large = tempfile::tempdir().expect("temp dir");
-    common::generate_fixture(small.path(), common::SMALL);
-    common::generate_fixture(large.path(), common::LARGE);
+    let small_stats = common::generate_fixture(small.path(), common::SMALL);
+    let large_stats = common::generate_fixture(large.path(), common::LARGE);
+    eprintln!(
+        "fixture_stats: small={{files={}, bytes={}}} large={{files={}, bytes={}}}",
+        small_stats.file_count,
+        small_stats.total_bytes,
+        large_stats.file_count,
+        large_stats.total_bytes,
+    );
 
     let mut group = c.benchmark_group("discovery");
     group.sample_size(30);
 
     group.bench_function("walk_small", |b| b.iter(|| walk(small.path())));
     group.bench_function("walk_large", |b| b.iter(|| walk(large.path())));
-    group.bench_function("walk_and_hash_small", |b| b.iter(|| walk_and_hash(small.path())));
-    group.bench_function("walk_and_hash_large", |b| b.iter(|| walk_and_hash(large.path())));
+    group.bench_function("walk_and_hash_small", |b| {
+        b.iter(|| walk_and_hash(small.path()))
+    });
+    group.bench_function("walk_and_hash_large", |b| {
+        b.iter(|| walk_and_hash(large.path()))
+    });
 
     group.finish();
 }

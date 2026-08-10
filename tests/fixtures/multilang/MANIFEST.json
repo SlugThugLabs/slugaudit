@@ -1,0 +1,419 @@
+{
+  "contract_version": 1,
+  "dependency_edges": {
+    "external_count": 4,
+    "resolved": [
+      [
+        "javascript/app.js",
+        "javascript/helper.js"
+      ],
+      [
+        "javascript/circular_a.js",
+        "javascript/circular_b.js"
+      ],
+      [
+        "javascript/circular_b.js",
+        "javascript/circular_a.js"
+      ],
+      [
+        "python/package/circular_a.py",
+        "python/package/circular_b.py"
+      ],
+      [
+        "python/package/circular_b.py",
+        "python/package/circular_a.py"
+      ],
+      [
+        "python/package/core.py",
+        "python/package/circular_a.py"
+      ],
+      [
+        "python/package/core.py",
+        "python/package/helpers.py"
+      ],
+      [
+        "rust/src/lib.rs",
+        "rust/src/util.rs"
+      ],
+      [
+        "typescript/index.ts",
+        "typescript/widget.ts"
+      ]
+    ],
+    "unresolved_count": 4,
+    "unsupported_language_unresolved_count": 4
+  },
+  "file_set": [
+    ".gitignore",
+    "Makefile",
+    "README.md",
+    "assets/logo.bin",
+    "config/config.json",
+    "config/settings.yaml",
+    "docs/architecture.md",
+    "go/main.go",
+    "go/util.go",
+    "javascript/app.js",
+    "javascript/circular_a.js",
+    "javascript/circular_b.js",
+    "javascript/helper.js",
+    "python/__init__.py",
+    "python/package/__init__.py",
+    "python/package/broken.py",
+    "python/package/circular_a.py",
+    "python/package/circular_b.py",
+    "python/package/core.py",
+    "python/package/helpers.py",
+    "ruby/app.rb",
+    "ruby/helper.rb",
+    "rust/Cargo.toml",
+    "rust/src/lib.rs",
+    "rust/src/util.rs",
+    "scripts/run.sh",
+    "typescript/index.ts",
+    "typescript/widget.ts"
+  ],
+  "files": {
+    ".gitignore": {
+      "byte_len": 33,
+      "content_hash": "f0b9fcedba280e325ddaf675bb18b91455c3437407c3aa0cf92f7103d4495748",
+      "evidence_counts": {},
+      "extraction_completeness": "Unavailable",
+      "file_kind": "indexed",
+      "language": null,
+      "parse_outcome": "NotAttempted"
+    },
+    "Makefile": {
+      "byte_len": 46,
+      "content_hash": "0a441614edb8406051fcb7ce87cb6d41ab611c85dc22227c7f4e45fa2578414c",
+      "evidence_counts": {},
+      "extraction_completeness": "Unavailable",
+      "file_kind": "indexed",
+      "language": null,
+      "parse_outcome": "NotAttempted"
+    },
+    "README.md": {
+      "byte_len": 1225,
+      "content_hash": "63af3cecc46745f536ebcef65d84ac387903a4130119dbd1f821864a8c208d26",
+      "evidence_counts": {},
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "markdown",
+      "parse_outcome": "Succeeded"
+    },
+    "assets/logo.bin": {
+      "byte_len": 9,
+      "content_hash": "b2dd5ae83242db73123e9ae773db45f5c222dbd064358812b010b7e0f2712644",
+      "evidence_counts": {},
+      "extraction_completeness": "Unavailable",
+      "file_kind": "binary",
+      "language": null,
+      "parse_outcome": "NotAttempted"
+    },
+    "config/config.json": {
+      "byte_len": 69,
+      "content_hash": "add730b7d9f9e0220ebfb9c4644405ee59088c74f4286e52072f916b0eaa6c8c",
+      "evidence_counts": {},
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "json",
+      "parse_outcome": "Succeeded"
+    },
+    "config/settings.yaml": {
+      "byte_len": 62,
+      "content_hash": "78fd646ac16014a166d23abdcf2bd1af59854bca5c31b30033746f2b1037c3f0",
+      "evidence_counts": {},
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "yaml",
+      "parse_outcome": "Succeeded"
+    },
+    "docs/architecture.md": {
+      "byte_len": 425,
+      "content_hash": "7bd36db4efaf71275f80bc5fe0a881e1609e855555c54bc8b916f4d9a0d04696",
+      "evidence_counts": {},
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "markdown",
+      "parse_outcome": "Succeeded"
+    },
+    "go/main.go": {
+      "byte_len": 95,
+      "content_hash": "ed79421e0ac30981b92a31788013581e48eeb8b17bded6baff21d9b3c1f10c71",
+      "evidence_counts": {
+        "Import": 3,
+        "Structure": 1,
+        "Symbol": 1
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "go",
+      "parse_outcome": "Succeeded"
+    },
+    "go/util.go": {
+      "byte_len": 91,
+      "content_hash": "817ded5947b59a2b9314bd70ff6baa6a93fa7aa0f2af2edefd7b43ea8ed275dd",
+      "evidence_counts": {
+        "Import": 2,
+        "Structure": 1,
+        "Symbol": 1
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "go",
+      "parse_outcome": "Succeeded"
+    },
+    "javascript/app.js": {
+      "byte_len": 142,
+      "content_hash": "be8376c80d95b2e2f7d526929f40813ef75864a8ce8eae5648b6f18ca342f9c5",
+      "evidence_counts": {
+        "Export": 1,
+        "Import": 2,
+        "Structure": 1,
+        "Symbol": 1
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "javascript",
+      "parse_outcome": "Succeeded"
+    },
+    "javascript/circular_a.js": {
+      "byte_len": 82,
+      "content_hash": "099ac26a51e8cad7db3a0e2d963f8c803bf99802268f322b1be6e2868492239b",
+      "evidence_counts": {
+        "Export": 1,
+        "Import": 1,
+        "Structure": 1,
+        "Symbol": 1
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "javascript",
+      "parse_outcome": "Succeeded"
+    },
+    "javascript/circular_b.js": {
+      "byte_len": 82,
+      "content_hash": "f720f7da6a71ee9b40711bfe3f829086e3e0aa8bc14c59af0fd637d2cdc3c6b9",
+      "evidence_counts": {
+        "Export": 1,
+        "Import": 1,
+        "Structure": 1,
+        "Symbol": 1
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "javascript",
+      "parse_outcome": "Succeeded"
+    },
+    "javascript/helper.js": {
+      "byte_len": 49,
+      "content_hash": "68f46b8958e25f0e6e2acb225f839fecd4ab8993f421c62e8a034bf477fb8b07",
+      "evidence_counts": {
+        "Export": 1,
+        "Structure": 1,
+        "Symbol": 1
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "javascript",
+      "parse_outcome": "Succeeded"
+    },
+    "python/__init__.py": {
+      "byte_len": 0,
+      "content_hash": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+      "evidence_counts": {},
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "python",
+      "parse_outcome": "Succeeded"
+    },
+    "python/package/__init__.py": {
+      "byte_len": 0,
+      "content_hash": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+      "evidence_counts": {},
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "python",
+      "parse_outcome": "Succeeded"
+    },
+    "python/package/broken.py": {
+      "byte_len": 22,
+      "content_hash": "c3dc6f3e04cfe20b325475d1e960780d947893f286b06a11e7786a472898463e",
+      "evidence_counts": {
+        "Diagnostic": 1,
+        "Structure": 1,
+        "Symbol": 1
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "python",
+      "parse_outcome": "SyntaxErrors"
+    },
+    "python/package/circular_a.py": {
+      "byte_len": 81,
+      "content_hash": "c6f4d0a523ff6994d218e25be23d72b8beda6e2359b697eedd69f95024dd191a",
+      "evidence_counts": {
+        "Import": 1,
+        "Structure": 1,
+        "Symbol": 1
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "python",
+      "parse_outcome": "Succeeded"
+    },
+    "python/package/circular_b.py": {
+      "byte_len": 81,
+      "content_hash": "321ec7ae23f68b7518c8b69a1f0a8821495fa0b4c3607b1568c86012d329e1b4",
+      "evidence_counts": {
+        "Import": 1,
+        "Structure": 1,
+        "Symbol": 1
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "python",
+      "parse_outcome": "Succeeded"
+    },
+    "python/package/core.py": {
+      "byte_len": 214,
+      "content_hash": "df2fcbe39b543f61b8be6a82585ffcef7dc47d142657f134aa701d9b2f10a05c",
+      "evidence_counts": {
+        "Import": 3,
+        "Structure": 1,
+        "Symbol": 1
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "python",
+      "parse_outcome": "Succeeded"
+    },
+    "python/package/helpers.py": {
+      "byte_len": 41,
+      "content_hash": "42e541e6accb01f4ea86255baf8436108f6ef694717d807a819edd37fb662f40",
+      "evidence_counts": {
+        "Structure": 1,
+        "Symbol": 1
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "python",
+      "parse_outcome": "Succeeded"
+    },
+    "ruby/app.rb": {
+      "byte_len": 93,
+      "content_hash": "0a3f115abd4933b5f8b0b84a92e8ce84ff71425347a55c3ed3e9aaf0198a39bd",
+      "evidence_counts": {
+        "Structure": 1
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "ruby",
+      "parse_outcome": "Succeeded"
+    },
+    "ruby/helper.rb": {
+      "byte_len": 26,
+      "content_hash": "4b18c2438d4ddc84042d489b1e806617765fdc831d8ff951fe55f21a21d9d9d0",
+      "evidence_counts": {
+        "Structure": 1
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "ruby",
+      "parse_outcome": "Succeeded"
+    },
+    "rust/Cargo.toml": {
+      "byte_len": 123,
+      "content_hash": "a26e83ac802323575c7718bb94a567cf581438ae5dd27174cb8f6147d3c2a532",
+      "evidence_counts": {},
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "toml",
+      "parse_outcome": "Succeeded"
+    },
+    "rust/src/lib.rs": {
+      "byte_len": 331,
+      "content_hash": "85e39a57008e817c8a5e545704bbd301648e4af40bd459863b929637e40a51f7",
+      "evidence_counts": {
+        "Comment": 4,
+        "Import": 1,
+        "Structure": 3,
+        "Symbol": 4
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "rust",
+      "parse_outcome": "Succeeded"
+    },
+    "rust/src/util.rs": {
+      "byte_len": 140,
+      "content_hash": "3bdcb4a36c706cd57bd5ffbdfc4ccaa90b1223217e391371d1cf11aec6797243",
+      "evidence_counts": {
+        "Structure": 2,
+        "Symbol": 3
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "rust",
+      "parse_outcome": "Succeeded"
+    },
+    "scripts/run.sh": {
+      "byte_len": 61,
+      "content_hash": "ae0ecd2b4e230c7273aa583639797889367f05742f0f97efc364697bc17e8521",
+      "evidence_counts": {
+        "Comment": 1
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "bash",
+      "parse_outcome": "Succeeded"
+    },
+    "typescript/index.ts": {
+      "byte_len": 146,
+      "content_hash": "500213e89a3d4d5d78498cba8b540b46171700191f6c627be190b3730b649430",
+      "evidence_counts": {
+        "Export": 1,
+        "Import": 1,
+        "Structure": 1,
+        "Symbol": 1
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "typescript",
+      "parse_outcome": "Succeeded"
+    },
+    "typescript/widget.ts": {
+      "byte_len": 192,
+      "content_hash": "292e611ad9688aeee01e23210a707a6584964a50a5e904ba07718d54ca597ee8",
+      "evidence_counts": {
+        "Export": 1,
+        "Import": 1,
+        "Structure": 3,
+        "Symbol": 1
+      },
+      "extraction_completeness": "Partial",
+      "file_kind": "indexed",
+      "language": "typescript",
+      "parse_outcome": "Succeeded"
+    }
+  },
+  "notes": "Informational. Reviewed by hand: malformed Python flagged as SyntaxErrors with diagnostics, both circular import pairs resolve in both directions, binary classified inert, Go/Ruby imports honestly Unresolved (unsupported languages). Per-file content_hash pins the fixture source itself, so any fixture edit fails the contract until the manifest is deliberately regenerated.",
+  "parser_pack_version": "1.13.7",
+  "searchability": {
+    "indexed_files_with_content": 27
+  },
+  "totals": {
+    "binary": 1,
+    "diagnostic_count": 1,
+    "evidence_by_kind": {
+      "Comment": 5,
+      "Diagnostic": 1,
+      "Export": 6,
+      "Import": 17,
+      "Structure": 22,
+      "Symbol": 20
+    },
+    "file_count": 28,
+    "indexed": 27
+  }
+}

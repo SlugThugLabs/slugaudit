@@ -17,7 +17,12 @@ use slugaudit_mcp_rust::evidence::extract;
 use std::time::Instant;
 use tree_sitter_language_pack::get_parser;
 
-fn bench_extract<'a>(group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>, name: &str, language: &'a str, sample: &'a str) {
+fn bench_extract<'a>(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    name: &str,
+    language: &'a str,
+    sample: &'a str,
+) {
     group.bench_function(name, |b| {
         b.iter(|| {
             let items = extract(black_box(language), black_box(sample)).expect("extract");
@@ -34,18 +39,49 @@ fn bench_parsing(c: &mut Criterion) {
             // Offline / missing-grammar environment: report and skip rather
             // than failing the whole bench run. Sync benchmarks degrade
             // gracefully; this one cannot.
-            eprintln!("parser unavailable (offline or missing grammar): {error}; skipping parsing benches");
+            eprintln!(
+                "parser unavailable (offline or missing grammar): {error}; skipping parsing benches"
+            );
             return;
         }
     };
     eprintln!("parser_cold_load_rust: {:?}", cold_start.elapsed());
     drop(parser);
 
+    // Force-load the remaining grammars before any benchmark runs so every
+    // extract bench below measures genuinely warm parse + extraction (the
+    // first sample of each bench would otherwise include that grammar's
+    // one-time load, which is exactly what the cold-load line captures for
+    // Rust).
+    for language in ["python", "javascript", "typescript"] {
+        let loaded = get_parser(language);
+        assert!(
+            loaded.is_ok(),
+            "{language} parser loads; a missing grammar would make its extract bench meaningless"
+        );
+        drop(loaded);
+    }
+
     let mut group = c.benchmark_group("parsing");
     bench_extract(&mut group, "extract_rust", "rust", common::RUST_SAMPLE);
-    bench_extract(&mut group, "extract_python", "python", common::PYTHON_SAMPLE);
-    bench_extract(&mut group, "extract_javascript", "javascript", common::JS_SAMPLE);
-    bench_extract(&mut group, "extract_typescript", "typescript", common::TS_SAMPLE);
+    bench_extract(
+        &mut group,
+        "extract_python",
+        "python",
+        common::PYTHON_SAMPLE,
+    );
+    bench_extract(
+        &mut group,
+        "extract_javascript",
+        "javascript",
+        common::JS_SAMPLE,
+    );
+    bench_extract(
+        &mut group,
+        "extract_typescript",
+        "typescript",
+        common::TS_SAMPLE,
+    );
     group.finish();
 }
 

@@ -54,13 +54,14 @@ gates pass (fmt, clippy `-D warnings`, source-size gate, 281 tests, coverage
   hint rather than serving mismatched data.
 
 **What's not yet implemented:**
-- No performance baseline (initial import, unchanged-sync, changed-sync,
-  search latency, memory, and database-growth have not been measured or
-  budgeted; `benches/` and `.planning/PERFORMANCE.md` don't exist yet).
-- No representative multi-language fixture repository with a versioned
-  golden manifest (Phase 12 acceptance fixture).
+- No real-MCP end-to-end workflow test yet (Task 12.2: activate →
+  initialize → report → query → structure → finding → modify → verify
+  stale). The fixture and its golden-manifest contract (Task 12.1) are
+  done — `tests/fixtures/multilang/` + `tests/fixture_contract.rs`.
 - No full-crate mutation-testing baseline (CI mutation is scoped to
   revision/publish/hash/context and `continue-on-error`).
+- Startup latency and peak memory have no measured budget yet (noted in
+  `.planning/PERFORMANCE.md`); everything else in Task 9.2 has a baseline.
 
 See `PACKAGING.md` for installation, MCP registration, activation, database
 location/permissions, and upgrade/removal documentation. See
@@ -127,7 +128,6 @@ the single human-facing control, everything else flows through MCP tool
 calls.
 
 **Planned for future versions:**
-- A performance baseline (`benches/` + `.planning/PERFORMANCE.md`)
 - Broader dependency resolution: more languages, real module-resolution
   semantics (e.g. JS `node_modules`) rather than the
   syntax-and-file-existence heuristics described above
@@ -227,6 +227,10 @@ resource limits must add focused tests before it is considered complete.
 
 ## Status
 
-The repository is functional and gate-clean; remaining work is
-performance baselining and the end-to-end acceptance fixture — see the top
-of this file.
+The repository is functional and gate-clean. The performance baseline
+(`.planning/PERFORMANCE.md`, Task 9.2) and the Phase 12 acceptance fixture
+with its versioned golden manifest and evidence contract
+(`tests/fixtures/multilang/`, `tests/fixture_contract.rs`) are recorded
+and passing; remaining work is the real-MCP end-to-end workflow test
+(Task 12.2) and the full release gate (Task 12.3) — see the top of this
+file.

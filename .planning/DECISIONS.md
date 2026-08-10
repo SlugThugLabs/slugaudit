@@ -130,17 +130,86 @@ Format: date — title; status; context; decision; rationale; consequences.
 - **Rationale**: §1 requires exactly one human-facing control; everything
   else must flow through AI-invoked MCP calls.
 
+## 2026-08-10 — Performance baseline added (Task 9.2)
+
+- **Status**: decided
+- **Context**: Task 9.2 and plan-audit PHASE-09 required reproducible
+  benchmarks with recorded budgets and a regression policy; neither
+  existed.
+- **Decision**: add `criterion` as a dev-dependency with four
+  `harness = false` bench targets (`discovery`, `parsing`, `search`,
+  `sync`) sharing a deterministic fixture generator in
+  `benches/common/mod.rs`. Record the machine, fixture definition, exact
+  command, results, budgets, and regression thresholds in
+  `.planning/PERFORMANCE.md`. Benchmark builds stay separate from
+  correctness gates (`cargo test --all-targets` compiles, never runs,
+  them).
+- **Rationale**: deterministic splitmix64-seeded fixtures make runs
+  reproducible across machines; explicit budgets and a ≥ 20% median
+  regression threshold give the numbers a gate they can actually fail.
+- **Consequences**: the sync benches run with `SourceSyncManager::new()`
+  (no watcher), so unchanged/changed sync numbers are worst-case
+  full-verification publishes; the watcher-trusted incremental path
+  remains covered by functional tests.
+
+## 2026-08-10 — Freshness tests made deterministic (watcher-timing flake)
+
+- **Status**: decided
+- **Context**: `tools::context::tests::{verified_read_write_has_the_same_protection,
+  a_stale_synced_handle_fails_loudly_instead_of_returning_mismatched_data}`
+  failed intermittently under parallel full-suite runs while always passing
+  in isolation. Both used the global watcher-backed manager for the second
+  sync: if the async `notify` event for the modified file had not reached
+  the watcher thread before the second `ensure_current`, the revision did
+  not move and the stale handle was wrongly accepted.
+- **Decision**: those tests sync through a local
+  `SourceSyncManager::new()` (no watcher) via a `synced_locally` helper, so
+  every `ensure_current` is a full publish and a content change always
+  moves the revision. Found while validating the Task 9.2 benchmark work;
+  no production code changed.
+- **Rationale**: the tests assert stale-handle rejection, not watcher event
+  delivery; the concurrent-publish isolation property remains covered by
+  `context_race_tests.rs`.
+- **Consequences**: full suite passes consistently (verified twice under
+  parallel load).
+
+## 2026-08-10 — Phase 12 acceptance fixture and golden manifest (Task 12.1)
+
+- **Status**: decided
+- **Context**: plan-audit PHASE-12 required a versioned fixture contract
+  with a golden manifest, evidence counts/statuses, partial-language
+  expectations, and zero-skipped critical tests; nothing existed.
+- **Decision**: check in a 28-file polyglot fixture at
+  `tests/fixtures/multilang/` (rust, python, typescript, go, ruby — all in
+  the old Python eight-language set — plus **javascript**, the one
+  language outside the old eight; malformed Python source; a Python and a
+  JavaScript circular import pair; config, docs, scripts, and a binary
+  file). Add `tests/fixture_contract.rs`, which publishes a temp-dir copy
+  of the fixture and asserts the database matches the versioned golden
+  manifest (`MANIFEST.json`, contract version 1), with a documented
+  `SLUGAUDIT_REGEN_MANIFEST=1` regeneration mode that dumps raw
+  dependency edges for hand review.
+- **Rationale**: golden-manifest discipline (pin pack output, review
+  regenerations) is the only way exact evidence expectations stay honest
+  across a 306-parser pack. The fixture deliberately includes languages
+  SlugAudit does not resolve (Go/Ruby) so partial capability is asserted
+  as `unsupported_language_unresolved_count`, not hidden.
+- **Consequences**: the contract test caught a real test bug on first run
+  (database placed inside the project root got indexed as binary; moved to
+  `.planning/slugaudit/` matching production). The manifest is
+  deterministic (5 consecutive identical passes).
+
 ## Open items tracked in this log
 
-- **Performance baseline (Task 9.2)** — `benches/` (discovery, parsing,
-  search, sync) and `.planning/PERFORMANCE.md` do not exist yet. Benchmark
-  builds must be a dev-only dependency (criterion) and stay separate from
-  correctness gates (plan-audit PHASE-09).
-- **Phase 12 acceptance fixture** — the representative multi-language
-  fixture repository with a versioned golden manifest and evidence contract
-  is not built yet (plan-audit PHASE-12 requires exact counts, schemas,
-  latency budgets, restart behavior, partial-language expectations, and
-  zero-skipped critical tests).
+- **Performance baseline (Task 9.2)** — **done 2026-08-10**: `benches/`
+  (discovery, parsing, search, sync) + `.planning/PERFORMANCE.md` exist;
+  budgets proposed, startup and peak-memory budgets still unmeasured
+  (noted in PERFORMANCE.md).
+- **Phase 12 acceptance fixture (Task 12.1)** — **done 2026-08-10**:
+  fixture + golden manifest + contract test as above. Task 12.2 (the
+  real-MCP workflow test: activate → initialize → report → query →
+  structure → finding → modify → stale-finding verification) and Task
+  12.3 (the complete release gate) remain.
 - **Full-crate mutation baseline** — CI mutation is scoped to
   revision/publish/hash/context and `continue-on-error`; a full-crate
   baseline and survivor triage is an ongoing workstream.
