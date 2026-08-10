@@ -119,7 +119,13 @@ impl WatchManager {
 
         // After restart, we don't trust the watcher history. The sync layer
         // must verify the current filesystem state before serving evidence.
-        state.set_health(WatcherHealth::NeedsVerification);
+        // But if the watcher is Unavailable, we must not overwrite that —
+        // Unavailable means every call must do full verification, and setting
+        // NeedsVerification here would let the next call incorrectly transition
+        // to Healthy after a single full publish.
+        if state.health() != WatcherHealth::Unavailable {
+            state.set_health(WatcherHealth::NeedsVerification);
+        }
 
         guard.projects.insert(canonical.clone(), state.clone());
         state

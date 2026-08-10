@@ -122,18 +122,36 @@ impl SourceSyncManager {
                             None,
                         )
                     })?;
+                // Drain any events that arrived during the full verification.
+                // `publish` walks the filesystem and parses files, which takes
+                // time — events can arrive while it runs. If we don't drain
+                // them here, they'd wait until the next MCP call to be
+                // reconciled, leaving the database stale in the interim.
+                self.reconcile(root.as_path(), &state, &mut connection)
+                    .map_err(|error| {
+                        ErrorData::internal_error(
+                            format!("draining events after verification: {error}"),
+                            None,
+                        )
+                    })?;
                 state.set_health(WatcherHealth::Healthy);
                 report.revision_id
             }
             WatcherHealth::Healthy => {
-                if state.has_unreconciled_events() {
-                    self.reconcile(root.as_path(), &state, &mut connection)
-                        .map_err(|error| {
-                            ErrorData::internal_error(
-                                format!("reconciling watcher events: {error}"),
-                                None,
-                            )
-                        })?;
+                if state.has_unreconciled_events()
+                    && let Err(error) =
+                        self.reconcile(root.as_path(), &state, &mut connection)
+                {
+                    // `snapshot_dirty` cleared the dirty sets, but
+                    // reconciliation failed — the events are lost. Mark
+                    // the watcher untrusted so the next call does a full
+                    // verification rather than silently serving stale
+                    // evidence.
+                    state.set_health(WatcherHealth::Desynced);
+                    return Err(ErrorData::internal_error(
+                        format!("reconciling watcher events: {error}"),
+                        None,
+                    ));
                 }
                 current_revision_id(&connection)
                     .map_err(|error| {
@@ -171,39 +189,35 @@ impl SourceSyncManager {
         })
     }
 
-    /// Reconciles unreconciled watcher events against the database in a
-    /// single atomic revision. Takes the dirty/deleted sets from `state`,
-    /// re-hashes dirty files, and only re-indexes those whose content hash
-    /// actually changed. Deleted paths are removed (cascading evidence and
-    /// dependency edges via foreign keys). If no dirty path's hash differs
-    /// from what's stored and there are no deletions, no revision is
-    /// published.
+    /// Reconciles unreconciled watcher events against the database using
+    /// barrier synchronization: reconciles dirty/deleted paths, then checks
+    /// if new events arrived during reconciliation and loops until the
+    /// watcher sequence stabilizes. Only acknowledges events after the
+    /// reconciliation succeeds.
     ///
     /// # Errors
     ///
     /// Returns an error if reading a dirty file, querying the database, or
-    /// committing the revision fails.
+    /// committing the revision fails. On failure, the watcher health should
+    /// be set to `NeedsVerification` or `Desynced` so the next call re-verifies.
     pub fn reconcile(
         &self,
         root: &Path,
         state: &WatchState,
         connection: &mut Connection,
     ) -> Result<(), SyncError> {
-        let (_seq, dirty, deleted) = state.take_dirty();
-
-        if dirty.is_empty() && deleted.is_empty() {
-            return Ok(());
-        }
-
         let expected_current = current_revision_id(connection)?;
 
-        let _report = super::reconcile::reconcile_dirty_paths(
-            connection,
-            root,
-            dirty,
-            deleted,
-            expected_current.as_deref(),
-        )?;
+        super::reconcile::sync_with_barrier(state, |dirty, deleted| {
+            super::reconcile::reconcile_dirty_paths(
+                connection,
+                root,
+                dirty,
+                deleted,
+                expected_current.as_deref(),
+            )?;
+            Ok(())
+        })?;
 
         Ok(())
     }

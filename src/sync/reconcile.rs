@@ -138,30 +138,36 @@ pub fn reconcile_dirty_paths(
 
 /// Implements the barrier synchronization loop.
 ///
-/// Takes a barrier (current watcher sequence), reconciles all dirty/deleted
-/// paths up to that barrier, and then checks if new events arrived during
-/// reconciliation. If so, loops and reconciles the new events. Continues
-/// until the watcher sequence stabilizes.
+/// Snapshots the dirty/deleted sets (without acknowledging), reconciles
+/// them, and then checks if new events arrived during reconciliation. If
+/// so, loops and reconciles the new events. Continues until the watcher
+/// sequence stabilizes, then acknowledges through the final sequence.
+///
+/// If `reconcile_fn` fails, the error propagates and the dirty sets remain
+/// unacknowledged — the caller is responsible for marking the watcher
+/// untrusted so the next call re-verifies.
 pub fn sync_with_barrier(
     state: &crate::watch::WatchState,
-    reconcile_fn: impl FnMut(HashSet<String>, HashSet<String>, u64) -> Result<(), ReconcileError>,
+    reconcile_fn: impl FnMut(HashSet<String>, HashSet<String>) -> Result<(), ReconcileError>,
 ) -> Result<(), ReconcileError> {
     let mut reconcile_fn = reconcile_fn;
     loop {
-        let _barrier = state.current_sequence();
-        let (seq, dirty, deleted) = state.take_dirty();
+        let (seq, dirty, deleted) = state.snapshot_dirty();
 
         if dirty.is_empty() && deleted.is_empty() {
             break Ok(());
         }
 
-        reconcile_fn(dirty, deleted, seq)?;
+        reconcile_fn(dirty, deleted)?;
 
         // Check if more events arrived during reconciliation.
         if state.current_sequence() == seq {
+            // No new events — acknowledge through this sequence.
+            state.acknowledge_through(seq);
             break Ok(());
         }
-        // Otherwise, loop and reconcile the new events.
+        // Otherwise, loop and reconcile the new events. The next
+        // snapshot_dirty call will pick them up.
     }
 }
 

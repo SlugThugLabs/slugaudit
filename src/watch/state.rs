@@ -94,16 +94,27 @@ impl WatchState {
         guard.watcher_sequence
     }
 
-    /// Take the current dirty and deleted sets for reconciliation, advancing
-    /// `last_verified_sequence` to `watcher_sequence`. Returns the sequence
-    /// that was verified.
-    pub fn take_dirty(&self) -> (u64, HashSet<String>, HashSet<String>) {
+    /// Snapshot the current dirty and deleted sets for reconciliation,
+    /// clearing them so new events can be recorded separately. Does NOT
+    /// advance `last_verified_sequence` — the caller must call
+    /// `acknowledge_through` after reconciliation succeeds. Returns the
+    /// current sequence so the caller can later acknowledge through it.
+    pub fn snapshot_dirty(&self) -> (u64, HashSet<String>, HashSet<String>) {
         let mut guard = self.inner.lock().unwrap();
         let seq = guard.watcher_sequence;
         let dirty = std::mem::take(&mut guard.dirty_paths);
         let deleted = std::mem::take(&mut guard.deleted_paths);
-        guard.last_verified_sequence = seq;
         (seq, dirty, deleted)
+    }
+
+    /// Acknowledge that reconciliation through `seq` succeeded. Advances
+    /// `last_verified_sequence` to `seq` only if the watcher hasn't since
+    /// advanced past it (i.e. no new events need reconciliation).
+    pub fn acknowledge_through(&self, seq: u64) {
+        let mut guard = self.inner.lock().unwrap();
+        if guard.watcher_sequence == seq {
+            guard.last_verified_sequence = seq;
+        }
     }
 
     /// Returns the current watcher sequence.
@@ -152,11 +163,20 @@ mod tests {
         state.mark_dirty("src/lib.rs".to_owned());
         state.mark_deleted("src/lib.rs".to_owned());
 
-        let (seq, dirty, deleted) = state.take_dirty();
+        let (seq, dirty, deleted) = state.snapshot_dirty();
         assert_eq!(seq, 2);
         assert!(dirty.is_empty());
         assert!(deleted.contains("src/lib.rs"));
         assert_eq!(deleted.len(), 1);
+
+        // last_verified_sequence should NOT have advanced yet
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.last_verified_sequence, 0);
+
+        // After acknowledge_through, it should advance
+        state.acknowledge_through(seq);
+        let snapshot2 = state.snapshot();
+        assert_eq!(snapshot2.last_verified_sequence, 2);
     }
 
     #[test]
@@ -166,9 +186,50 @@ mod tests {
             state.mark_dirty("src/lib.rs".to_owned());
         }
 
-        let (seq, dirty, _) = state.take_dirty();
+        let (seq, dirty, _) = state.snapshot_dirty();
         assert_eq!(seq, 5);
         assert_eq!(dirty.len(), 1);
         assert!(dirty.contains("src/lib.rs"));
+
+        // last_verified_sequence should NOT have advanced yet
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.last_verified_sequence, 0);
+    }
+
+    #[test]
+    fn snapshot_dirty_does_not_advance_last_verified_sequence() {
+        let state = WatchState::new();
+        state.mark_dirty("a.rs".to_owned());
+        state.mark_dirty("b.rs".to_owned());
+
+        let (seq, _, _) = state.snapshot_dirty();
+        assert_eq!(seq, 2);
+
+        // last_verified_sequence should still be 0
+        assert_eq!(state.snapshot().last_verified_sequence, 0);
+
+        // has_unreconciled_events should still be true
+        assert!(state.has_unreconciled_events());
+
+        // After acknowledge, it should be false
+        state.acknowledge_through(seq);
+        assert!(!state.has_unreconciled_events());
+    }
+
+    #[test]
+    fn acknowledge_through_ignores_stale_seq() {
+        let state = WatchState::new();
+        state.mark_dirty("a.rs".to_owned());
+        let (seq, _, _) = state.snapshot_dirty();
+
+        // New event arrives after snapshot but before acknowledge
+        state.mark_dirty("b.rs".to_owned());
+
+        // Acknowledging through the old seq should NOT advance
+        state.acknowledge_through(seq);
+        assert_eq!(state.snapshot().last_verified_sequence, 0);
+
+        // has_unreconciled_events should still be true
+        assert!(state.has_unreconciled_events());
     }
 }

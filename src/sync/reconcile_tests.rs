@@ -218,7 +218,7 @@ fn sync_with_barrier_stops_when_no_events() {
     let state = WatchState::new();
     let mut call_count = 0;
 
-    let result = sync_with_barrier(&state, |_dirty, _deleted, _seq| {
+    let result = sync_with_barrier(&state, |_dirty, _deleted| {
         call_count += 1;
         Ok(())
     });
@@ -238,7 +238,7 @@ fn sync_with_barrier_calls_reconcile_for_dirty_events() {
     let mut call_count = 0;
     let mut received_paths: Option<HashSet<String>> = None;
 
-    let result = sync_with_barrier(&state, |dirty, _deleted, _seq| {
+    let result = sync_with_barrier(&state, |dirty, _deleted| {
         call_count += 1;
         received_paths = Some(dirty);
         Ok(())
@@ -259,7 +259,7 @@ fn sync_with_barrier_loops_when_new_events_arrive() {
 
     let mut call_count = 0;
 
-    let result = sync_with_barrier(&state, |_dirty, _deleted, _seq| {
+    let result = sync_with_barrier(&state, |_dirty, _deleted| {
         call_count += 1;
         // Simulate a new event arriving during reconciliation.
         if call_count == 1 {

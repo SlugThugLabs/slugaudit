@@ -96,7 +96,7 @@ fn watch_state_collapses_repeated_events() {
         assert_eq!(seq, i + 1);
     }
 
-    let (seq, dirty, deleted) = state.take_dirty();
+    let (seq, dirty, deleted) = state.snapshot_dirty();
     assert_eq!(seq, 10);
     assert_eq!(dirty.len(), 3); // file0.rs, file1.rs, file2.rs
     assert!(deleted.is_empty());
