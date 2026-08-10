@@ -6,25 +6,15 @@
 //! event set, then either does a full publish (untrusted watcher) or an
 //! incremental reconcile (trusted watcher with pending events).
 
-use super::analyze;
-use super::hash;
 use super::publish;
 use super::revision;
-use super::revision::FileRecord;
-use super::sample;
-use crate::model::ResourceLimits;
 use crate::store;
 use crate::watch::{WatchManager, WatchState, WatcherHealth};
 use crate::{parse, project};
 use rmcp::ErrorData;
 use rusqlite::{Connection, OptionalExtension};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-
-/// Bytes sampled from the start of a file to decide binary vs. text, same
-/// heuristic class as `sync::discovery`.
-const BINARY_SNIFF_BYTES: usize = 8_000;
 
 /// A project brought fully up to date, ready for a tool to query. Defined
 /// here (rather than in `tools::context`) so that `SourceSyncManager` can
@@ -44,6 +34,8 @@ pub enum SyncError {
     Database(#[from] rusqlite::Error),
     #[error("revision error: {0}")]
     Revision(#[from] revision::RevisionError),
+    #[error("reconcile error: {0}")]
+    Reconcile(#[from] super::reconcile::ReconcileError),
     #[error("IO error reading {path}: {source}")]
     Read {
         path: PathBuf,
@@ -203,105 +195,14 @@ impl SourceSyncManager {
             return Ok(());
         }
 
-        // Snapshot the current file→hash map from the database.
-        let mut stored: HashMap<String, String> = connection
-            .prepare("SELECT path, content_hash FROM files")?
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<Result<HashMap<_, _>, _>>()?;
-
-        let limits = ResourceLimits::default();
-        let mut upserts = Vec::new();
-        let mut deletions = Vec::new();
-
-        // Process dirty paths. A path that is in both `dirty` and `deleted`
-        // (e.g. deleted then recreated between watcher events) is treated
-        // as dirty — the file exists now, so we reconcile it as a
-        // modification.
-        for relative_path in &dirty {
-            let absolute_path = root.join(relative_path);
-
-            let bytes = match std::fs::read(&absolute_path) {
-                Ok(bytes) => bytes,
-                Err(source) => {
-                    // The file may have been deleted after the watcher
-                    // recorded the modify event. Skip it — if it's truly
-                    // gone, a subsequent delete event will handle it.
-                    tracing::warn!(
-                        path = %absolute_path.display(),
-                        error = %source,
-                        "skipping unreadable dirty path during reconcile"
-                    );
-                    continue;
-                }
-            };
-
-            let identity = hash::hash_bytes(relative_path, &bytes);
-
-            if let Some(stored_hash) = stored.get(relative_path) {
-                if stored_hash == &identity.content_hash {
-                    // Content unchanged — no need to re-index.
-                    continue;
-                }
-            }
-
-            // Hash differs (or the file is new). Parse and build a
-            // FileRecord.
-            let is_binary = sniff_binary(&bytes);
-            let content = if is_binary {
-                None
-            } else {
-                Some(String::from_utf8_lossy(&bytes).into_owned())
-            };
-
-            let parsed = analyze::analyze(relative_path, content.as_deref());
-            let mut evidence = parsed.evidence;
-            sample::apply_evidence_limits(&mut evidence, &limits);
-
-            upserts.push(FileRecord {
-                relative_path: relative_path.clone(),
-                is_binary,
-                content,
-                identity: identity.clone(),
-                byte_len: bytes.len() as u64,
-                language: parsed.language,
-                language_detected: parsed.language_detected,
-                run: parsed.run,
-                evidence,
-            });
-
-            stored.insert(relative_path.clone(), identity.content_hash);
-        }
-
-        // Process deleted paths — but only those not also in `dirty` (those
-        // were already handled above as modifications).
-        for relative_path in &deleted {
-            if dirty.contains(relative_path) {
-                continue;
-            }
-            if stored.contains_key(relative_path) {
-                deletions.push(relative_path.clone());
-                stored.remove(relative_path);
-            }
-        }
-
-        if upserts.is_empty() && deletions.is_empty() {
-            return Ok(());
-        }
-
-        let manifest_hash =
-            hash::aggregate_manifest_hash(stored.iter().map(|(p, h)| (p.as_str(), h.as_str())));
-
         let expected_current = current_revision_id(connection)?;
 
-        let _revision_id = revision::publish_revision(
+        let _report = super::reconcile::reconcile_dirty_paths(
             connection,
+            root,
+            dirty,
+            deleted,
             expected_current.as_deref(),
-            &manifest_hash,
-            parse::PACK_VERSION,
-            &upserts,
-            &deletions,
         )?;
 
         Ok(())
@@ -400,13 +301,6 @@ fn ensure_project_row(connection: &mut Connection, root: &Path) -> Result<(), Er
         ));
     }
     Ok(())
-}
-
-/// Sniffs the first `BINARY_SNIFF_BYTES` bytes for a NUL byte — same
-/// heuristic class as `sync::discovery::sniff_kind`.
-fn sniff_binary(bytes: &[u8]) -> bool {
-    let sample_len = std::cmp::min(bytes.len(), BINARY_SNIFF_BYTES);
-    bytes[..sample_len].contains(&0)
 }
 
 #[cfg(test)]

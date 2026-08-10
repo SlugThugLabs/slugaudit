@@ -85,11 +85,10 @@ pub fn reconcile_dirty_paths(
 
         let identity = hash::hash_file(&path, &absolute_path)?;
 
-        if let Some(existing_hash) = existing_hashes.get(&path) {
-            if existing_hash == &identity.content_hash {
-                unchanged += 1;
-                continue;
-            }
+        if let Some(existing_hash) = existing_hashes.get(&path)
+            && existing_hash == &identity.content_hash {
+            unchanged += 1;
+            continue;
         }
 
         // Hash differs or file is new — sample, parse, analyze, and add
@@ -192,27 +191,51 @@ fn query_existing_hashes(
 
 /// Computes the aggregate manifest hash from the post-reconciliation file
 /// set: existing DB state, updated with upserts, minus deletions.
+///
+/// Avoids reading rows that will be replaced or removed: upserted paths are
+/// overwritten in-memory, and deleted paths are excluded at the SQL level so
+/// we don't pay to read rows we'll immediately discard.
 fn compute_manifest_hash(
     connection: &Connection,
     upserts: &[revision::FileRecord],
     deletions: &[String],
 ) -> Result<String, rusqlite::Error> {
-    let mut all_files: Vec<(String, String)> = connection
-        .prepare("SELECT path, content_hash FROM files")?
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+    let current_refs: BTreeMap<String, String> = {
+        let exclude_count = upserts.len() + deletions.len();
+        if exclude_count == 0 {
+            let rows: Vec<(String, String)> = connection
+                .prepare("SELECT path, content_hash FROM files")?
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows.into_iter().collect()
+        } else {
+            let placeholders = vec!["?"; exclude_count].join(", ");
+            let sql = format!(
+                "SELECT path, content_hash FROM files WHERE path NOT IN ({placeholders})"
+            );
+            let params: Vec<&dyn rusqlite::ToSql> = upserts
+                .iter()
+                .map(|r| &r.relative_path as &dyn rusqlite::ToSql)
+                .chain(deletions.iter().map(|p| p as &dyn rusqlite::ToSql))
+                .collect();
+            let rows: Vec<(String, String)> = connection
+                .prepare(&sql)?
+                .query_map(params.as_slice(), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows.into_iter().collect()
+        }
+    };
 
-    let mut current_refs: BTreeMap<String, String> = all_files.drain(..).collect();
+    let mut current_refs = current_refs;
     for record in upserts {
         current_refs.insert(
             record.relative_path.clone(),
             record.identity.content_hash.clone(),
         );
-    }
-    for path in deletions {
-        current_refs.remove(path);
     }
 
     Ok(hash::aggregate_manifest_hash(

@@ -16,6 +16,7 @@ pub struct WatchManager {
     inner: Arc<Mutex<WatchManagerInner>>,
 }
 
+#[derive(Default)]
 struct WatchManagerInner {
     /// Per-project watch state, keyed by canonical project root.
     projects: HashMap<PathBuf, WatchState>,
@@ -60,7 +61,7 @@ impl WatchManager {
                             "filesystem watcher error; marking all projects for re-verification"
                         );
                         let guard = manager_clone.inner.lock().unwrap();
-                        for (_root, state) in guard.projects.iter() {
+                        for state in guard.projects.values() {
                             state.set_health(WatcherHealth::Desynced);
                         }
                     }
@@ -186,15 +187,6 @@ fn is_excluded_path(relative: &str) -> bool {
         || relative.ends_with(".bak")
         || relative.ends_with(".swp")
         || relative.ends_with('~')
-}
-
-impl Default for WatchManagerInner {
-    fn default() -> Self {
-        Self {
-            projects: HashMap::new(),
-            watcher: None,
-        }
-    }
 }
 
 #[cfg(test)]
