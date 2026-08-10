@@ -27,5 +27,30 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 which = "7"
 
 [dev-dependencies]
+criterion = "0.5"
 proptest = "1"
 tempfile = "3"
+
+# Criterion benchmarks (Task 9.2). Each bench target is its own binary with
+# `harness = false` so criterion provides main(); `cargo test --all-targets`
+# compiles them but never runs them, keeping correctness gates separate
+# from benchmark builds (plan-audit PHASE-09).
+[[bench]]
+name = "discovery"
+path = "benches/discovery.rs"
+harness = false
+
+[[bench]]
+name = "parsing"
+path = "benches/parsing.rs"
+harness = false
+
+[[bench]]
+name = "search"
+path = "benches/search.rs"
+harness = false
+
+[[bench]]
+name = "sync"
+path = "benches/sync.rs"
+harness = false
