@@ -1,29 +1,9 @@
 //! Tests for `reconcile`'s dirty-path reconciliation and barrier loop.
-// slugaudit-line-exception: approved-by=agent; reason=one test per reconcile outcome (unchanged/modified/new/deleted/mixed/race/cap) sharing setup_project and `use super::*` access to MAX_BARRIER_LOOPS + ReconcileError; splitting would split the fixture from the loop constants it asserts against
+// slugaudit-line-exception: approved-by=agent; reason=one test per reconcile outcome (unchanged/modified/new/deleted/mixed/race/cap) sharing setup_project from sync/test_support and `use super::*` access to MAX_BARRIER_LOOPS + ReconcileError; splitting would fragment the scenario set from the constants it asserts against
 use super::*;
-use crate::store::open_read_write;
-use crate::sync::publish::publish;
-use crate::sync::test_support::write;
+use crate::sync::test_support::{setup_project, write};
 use crate::watch::WatchState;
 use std::fs;
-
-fn setup_project() -> (tempfile::TempDir, tempfile::TempDir, Connection, String) {
-    let project = tempfile::tempdir().expect("project dir");
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
-
-    // Initial publish to establish a baseline revision.
-    write(project.path(), "a.rs", b"fn a() {}");
-    write(project.path(), "b.rs", b"fn b() {}");
-    let report = publish(
-        &mut connection,
-        project.path(),
-        "1.0",
-        &crate::progress::NoopProgressSink,
-    )
-    .expect("initial publish");
-    (project, db_dir, connection, report.revision_id)
-}
 
 #[test]
 fn unchanged_dirty_paths_are_skipped() {

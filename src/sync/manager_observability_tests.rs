@@ -5,32 +5,9 @@
 
 use crate::sync::SourceSyncManager;
 use crate::sync::race_hook;
+use crate::sync::test_support::{create_project, sync_project, write_file};
 use crate::watch::WatcherHealth;
 use std::fs;
-
-fn create_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp dir");
-    fs::create_dir_all(dir.path().join(".planning").join("slugaudit"))
-        .expect("create activation dir");
-    dir
-}
-
-fn write_file(project: &tempfile::TempDir, relative: &str, content: &[u8]) {
-    let path = project.path().join(relative);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent dirs");
-    }
-    fs::write(path, content).expect("write file");
-}
-
-fn sync_project(manager: &SourceSyncManager, project: &tempfile::TempDir) {
-    manager
-        .ensure_current(
-            &project.path().to_string_lossy(),
-            &crate::progress::NoopProgressSink,
-        )
-        .expect("sync succeeds");
-}
 
 fn open_db(project: &tempfile::TempDir) -> rusqlite::Connection {
     let database = project.path().join(".planning/slugaudit/project.db");

@@ -3,26 +3,8 @@
 //! under the source-size hard cap.
 
 use super::*;
-use crate::store::open_read_write;
 use crate::sync::publish::publish;
-use crate::sync::test_support::write;
-
-fn setup_project() -> (tempfile::TempDir, tempfile::TempDir, Connection) {
-    let project = tempfile::tempdir().expect("project dir");
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
-
-    write(project.path(), "a.rs", b"fn a() {}");
-    write(project.path(), "b.rs", b"fn b() {}");
-    publish(
-        &mut connection,
-        project.path(),
-        "1.0",
-        &crate::progress::NoopProgressSink,
-    )
-    .expect("initial publish");
-    (project, db_dir, connection)
-}
+use crate::sync::test_support::{setup_project, write};
 
 /// A binary file that changes on disk must stay classified as binary —
 /// `content` stays NULL and `file_kind` stays 'binary', matching what a
@@ -31,7 +13,7 @@ fn setup_project() -> (tempfile::TempDir, tempfile::TempDir, Connection) {
 /// modified binary as lossy UTF-8 text.
 #[test]
 fn modified_binary_dirty_path_stays_binary_excluded() {
-    let (project, _db_dir, mut connection) = setup_project();
+    let (project, _db_dir, mut connection, _revision) = setup_project();
 
     // Add a binary file (NUL bytes) and publish — the initial import
     // sniffs it as binary and stores it without content.

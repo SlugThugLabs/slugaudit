@@ -1,39 +1,13 @@
 //! Integration tests for SourceSyncManager.
-// slugaudit-line-exception: approved-by=agent; reason=one end-to-end watcher-backed scenario per sync invariant, all sharing the same create_project/write_file/sync_project fixture helpers; splitting would force a cross-module test harness or duplicate the four helpers in every file
+// slugaudit-line-exception: approved-by=agent; reason=one end-to-end watcher-backed scenario per sync invariant, sharing the create_project/write_file/sync_project fixtures from sync/test_support; splitting would fragment the scenario set from its shared fixtures
 
 use crate::sync::SourceSyncManager;
+use crate::sync::test_support::{create_project, sync_project, write_file};
 use crate::tools::context::with_verified_read;
 use rmcp::ErrorData;
 use std::fs;
 use std::thread;
 use std::time::Duration;
-
-fn create_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp dir");
-    fs::create_dir_all(dir.path().join(".planning").join("slugaudit"))
-        .expect("create activation dir");
-    dir
-}
-
-fn write_file(project: &tempfile::TempDir, relative: &str, content: &[u8]) {
-    let path = project.path().join(relative);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent dirs");
-    }
-    fs::write(path, content).expect("write file");
-}
-
-fn sync_project(
-    manager: &SourceSyncManager,
-    project: &tempfile::TempDir,
-) -> crate::sync::SyncedProject {
-    manager
-        .ensure_current(
-            &project.path().to_string_lossy(),
-            &crate::progress::NoopProgressSink,
-        )
-        .expect("sync succeeds")
-}
 
 fn db_error(error: rusqlite::Error) -> ErrorData {
     ErrorData::internal_error(error.to_string(), None)
