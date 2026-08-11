@@ -195,6 +195,15 @@ tables above; medians in nanoseconds, release budgets where they map).
   everything else ≤ 1.03x, several benches measured faster
   (`walk_small` 0.82x). The wall-clock timeout instrumentation added
   after the baseline caused no measurable regression.
+- **2026-08-10, tree-sitter-language-pack 1.13.7 → 1.14.3**: the
+  baseline above was recorded against the 1.13.7 engine. The bump to
+  1.14.3 (306 → 371 languages) changed the parsing engine; the perf gate
+  was re-run against the new engine and PASSED at worst 1.02x (`search`
+  benches; `sync_40` measured *faster*, 0.77x–0.89x), so the committed
+  `perf_baseline.json` remains a valid upper bound. The baseline is not
+  re-recorded in that change; re-record deliberately
+  (`bash tools/check_performance.sh --record`) before any future release
+  if the engine continues to move.
 - **Observed variance**: the reduced-sample protocol on the fast benches
   swings roughly ±25% run-to-run on unchanged code (e.g. `walk_small`
   0.82x, `changed_file_sync_40` 0.76x in the same run) — that is noise,
@@ -211,6 +220,10 @@ tables above; medians in nanoseconds, release budgets where they map).
 cargo bench --locked --bench discovery --bench parsing --bench search --bench sync \
   -- --sample-size 20 --warm-up-time 2 --measurement-time 10
 ```
+
+Note: after any `tree-sitter-language-pack` bump, re-run the gate once
+against the committed baseline before assuming it still holds; it passed
+for 1.14.3 at worst 1.02x (see above).
 
 Capture `time:` medians and the `db_size_after_*` lines, update this file,
 and record a dated entry in `DECISIONS.md` for any change in machine or

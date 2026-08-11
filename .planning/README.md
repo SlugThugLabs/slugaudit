@@ -13,7 +13,7 @@ The core correctness mechanisms are in place and exercised by an end-to-end
 test suite: atomic revision publishes, concurrent-safe CAS writes,
 watcher-backed incremental sync, resource-bounded operations, and
 AI-reviewed findings that auto-invalidate on source change. All quality
-gates pass (fmt, clippy `-D warnings`, source-size gate, 329 tests, coverage
+gates pass (fmt, clippy `-D warnings`, source-size gate, 343 tests, coverage
 ≥ 89%).
 
 **What works:**
@@ -240,11 +240,9 @@ resource limits must add focused tests before it is considered complete.
 ## Status
 
 The repository is functional and gate-clean. The performance baseline
-(`.planning/PERFORMANCE.md`, Task 9.2), the Phase 12 acceptance fixture
-with its versioned golden manifest and evidence contract
-(`tests/fixtures/multilang/`, `tests/fixture_contract.rs`), and the
+(`.planning/PERFORMANCE.md`, Task 9.2) and the
 real-MCP end-to-end workflow test (`tests/stdio_protocol.rs`, Task 12.2)
-are all recorded and passing. The release gate was executed and recorded
+are recorded and passing. The release gate was executed and recorded
 on 2026-08-10 (`.planning/RELEASE_CHECKLIST.md`, Task 12.3): every gate
 green — fmt, check, clippy `-D warnings`, 332 tests, source limits,
 `cargo audit` (0 advisories), `cargo deny` (all ok), coverage 89.32%,

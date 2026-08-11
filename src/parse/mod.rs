@@ -10,10 +10,10 @@ pub use language::{detect_language, language_available};
 ///
 /// `tree-sitter-language-pack` exposes no runtime `VERSION` constant, so
 /// this string is manually duplicated from the exact pin
-/// (`tree-sitter-language-pack = "=1.13.7"`) in `Cargo.toml`. Bumping the
+/// (`tree-sitter-language-pack = "=1.14.3"`) in `Cargo.toml`. Bumping the
 /// dependency requires updating both together; the test below fails
 /// loudly if they ever drift apart.
-pub const PACK_VERSION: &str = "1.13.7";
+pub const PACK_VERSION: &str = "1.14.3";
 
 #[cfg(test)]
 mod tests {
@@ -37,7 +37,7 @@ mod tests {
             .nth(1)
             .expect("quoted version requirement on the dependency line");
         assert_eq!(
-            pinned_version, "=1.13.7",
+            pinned_version, "=1.14.3",
             "Cargo.toml must keep an exact (`=`) pin on tree-sitter-language-pack"
         );
         assert_eq!(pinned_version.trim_start_matches('='), super::PACK_VERSION);
