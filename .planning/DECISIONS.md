@@ -389,6 +389,33 @@ Format: date — title; status; context; decision; rationale; consequences.
   `exclude_count == 0` fallback behind the empty-set early return, and the
   unused public `activate` method.
 
+## 2026-08-10 — Performance regression gate wired into CI (Task 9.2 completion)
+
+- **Status**: decided
+- **Context**: the Task 9.2 baseline recorded budgets and a ≥ 20% median
+  regression threshold, but nothing enforced either — the numbers had no
+  gate they could actually fail.
+- **Decision**: add `tools/check_performance.sh`, which runs the four
+  criterion benches at a reduced sample size (`--sample-size 10
+  --warm-up-time 1 --measurement-time 3`), parses criterion's
+  `new/estimates.json` medians, and fails when any bench exceeds the
+  recorded median by more than the threshold (default 20%) or its
+  recorded release budget. The baseline lives in a committed
+  machine-readable file (`.planning/perf_baseline.json`, derived from
+  PERFORMANCE.md's 2026-08-10 tables); `--record` regenerates it
+  deliberately. CI runs the gate as a regular step.
+- **Rationale**: same discipline as the coverage gate — the gated numbers
+  are printed explicitly, and re-recording is a deliberate, documented
+  act, never a silent way to hide a regression. The reduced-sample CI
+  protocol is intentionally noisier than the recording protocol, which is
+  exactly why the looser 20% threshold gates.
+- **Consequences**: first gate run (2026-08-10, on the recording machine)
+  PASS — worst ratio `sync_40/first_sync` 1.14x (noise), everything else
+  ≤ 1.03x; the post-baseline wall-clock timeout instrumentation showed no
+  measurable regression. Cross-machine caveat documented: a runner on
+  different hardware must re-record the baseline or the gate will be red
+  by construction.
+
 ## 2026-08-10 — License decision: PolyForm Noncommercial 1.0.0 applied
 
 - **Status**: decided

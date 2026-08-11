@@ -169,6 +169,42 @@ proxy; budgets scale with fixture size.
   thresholds does not. Sync/parse/benchmark runs are excluded from the
   correctness gates by construction (separate build targets).
 
+## CI regression gate
+
+`tools/check_performance.sh` is wired into CI and fails the build when any
+bench regresses more than the threshold against the committed
+machine-readable baseline (`.planning/perf_baseline.json`, derived from the
+tables above; medians in nanoseconds, release budgets where they map).
+
+- **Command**: `bash tools/check_performance.sh [threshold-percent]`
+- **CI protocol**: the four benches run with a reduced sample size
+  (`--sample-size 10 --warm-up-time 1 --measurement-time 3`) so the gate
+  stays ~3–5 min; the recorded baseline used the longer protocol (20/2/10).
+  The reduced-sample run is noisier, which is why the 20% regression
+  threshold — not the tighter 10% — is the gate.
+- **Output**: a per-bench table of baseline / measured / ratio / verdict,
+  with `PASS` or a `FAIL:` line per regression (median ratio > 1 + 20%, or
+  a measured median over its recorded budget).
+- **Re-recording**: baselines are machine-class specific. When the machine
+  or protocol changes, regenerate and commit the baseline deliberately
+  (`bash tools/check_performance.sh --record`), update this file, and
+  record the change in `DECISIONS.md` — do not silently re-record to hide
+  a regression.
+- **First gate run (2026-08-10)**: PASS against the baseline on the
+  recording machine; worst ratio `sync_40/first_sync` 1.14x (noise),
+  everything else ≤ 1.03x, several benches measured faster
+  (`walk_small` 0.82x). The wall-clock timeout instrumentation added
+  after the baseline caused no measurable regression.
+- **Observed variance**: the reduced-sample protocol on the fast benches
+  swings roughly ±25% run-to-run on unchanged code (e.g. `walk_small`
+  0.82x, `changed_file_sync_40` 0.76x in the same run) — that is noise,
+  not signal. If a red run's ratios cluster around 1.15–1.30x on the
+  sub-ms benches only, treat it as noise and re-run before re-recording;
+  a regression that matters also shows up on the ms-scale sync benches,
+  where variance is a few percent. A bench that produces no measurements
+  fails the gate (a silently-skipped group is exactly what the gate
+  exists to catch).
+
 ## To re-run
 
 ```bash

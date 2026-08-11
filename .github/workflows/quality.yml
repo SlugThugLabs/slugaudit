@@ -116,6 +116,18 @@ jobs:
       - name: Coverage (cargo llvm-cov)
         run: bash tools/check_coverage.sh
 
+      # Performance regression gate: runs the four criterion benches with a
+      # reduced sample size (~3–5 min) and fails when any median regresses
+      # more than the threshold (default 20%) against the committed
+      # baseline (.planning/perf_baseline.json). Baselines are machine-
+      # class specific — if the runner hardware differs from the machine
+      # that recorded the baseline, re-record it deliberately
+      # (`bash tools/check_performance.sh --record`) and commit the result,
+      # per the regression policy in .planning/PERFORMANCE.md. If this step
+      # proves too slow for every push, move it to a nightly schedule.
+      - name: Performance regression (criterion)
+        run: bash tools/check_performance.sh
+
       - name: Install mutation testing tooling
         uses: taiki-e/install-action@v2
         with:
