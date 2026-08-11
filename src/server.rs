@@ -19,16 +19,19 @@ use rmcp::{ErrorData, Peer, RoleServer, ServerHandler, tool, tool_handler, tool_
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
-const INSTRUCTIONS: &str = "SlugAudit supplies searchable, trustworthy evidence about a codebase — \
-    parsed structure, symbols, imports, diagnostics, and prior AI-reviewed findings. Use `report` \
-    for an automatic snapshot of what evidence exists, `query` for arbitrary read-only SQL against \
-    the project's own database (search, symbol/import/diagnostic lookup, dependency traversal via \
-    recursive CTEs over dependency_edges, and source retrieval all reach through it), `structure` \
-    for Tree-sitter structural pattern matching, and `finding` to persist a conclusion you have \
-    actually reviewed. Use `project_control` with `action` = `\"on\"` to enable a project (creates \
-    the activation directory and runs the first import) or `\"off\"` to disable it. \
-    SlugAudit performs no automated risk detection and reaches no conclusions itself: it supplies \
-    evidence, the calling AI performs all judgment.";
+const INSTRUCTIONS: &str = "SlugAudit does not audit. It is not an auditor and never will be: it \
+    performs no risk detection, assigns no severity, draws no conclusions, and offers no \
+    recommendations. Every judgment in your response — what is buggy, how severe, what to fix — \
+    is entirely yours. SlugAudit's only job is to supply searchable, trustworthy evidence about a \
+    codebase: parsed structure, symbols, imports, diagnostics, and prior AI-authored findings. \
+    Use `report` for an automatic snapshot of what evidence exists, `query` for arbitrary \
+    read-only SQL against the project's own database (search, symbol/import/diagnostic lookup, \
+    dependency traversal via recursive CTEs over dependency_edges, and source retrieval all reach \
+    through it), `structure` for Tree-sitter structural pattern matching, and `finding` to persist \
+    a conclusion you have actually reviewed. Use `project_control` with `action` = `\"on\"` to \
+    enable a project (creates the activation directory and runs the first import) or `\"off\"` to \
+    disable it. Never claim SlugAudit identified, rated, or recommended anything — it cannot; \
+    evidence is not judgment.";
 
 #[derive(Clone)]
 pub struct SlugAuditServer {

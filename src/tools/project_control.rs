@@ -1,5 +1,5 @@
-//! Project enable/disable control. Exposed as an MCP tool so the TUI can
-//! drive activation via `/slugaudit on` / `/slugaudit off`.
+//! Project enable/disable control. Exposed as an MCP tool so the calling
+//! AI can drive activation: `project_control` with `action = "on"` / `"off"`.
 //!
 //! `on` creates the activation directory and runs the initial import.
 //! `off` removes the activation directory and purges the project database.

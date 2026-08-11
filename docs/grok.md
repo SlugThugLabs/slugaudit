@@ -33,15 +33,12 @@ you want.
 ## Enable a project
 
 Connecting the MCP server makes the tools available; enabling a project
-indexes it:
-
-```bash
-slugaudit-mcp enable /path/to/your-project
-```
-
-This creates `.slugaudit/` inside the project and runs the first import.
-After that, Grok can query the project's evidence through the four
-SlugAudit tools (`query`, `report`, `structure`, `finding`).
+indexes it. Have the agent call the `project_control` tool with
+`action = "on"` (optionally with a project path). This creates the
+activation marker and SQLite database under `.planning/slugaudit/` inside
+the project and runs the first import. After that, Grok can query the
+project's evidence through all six SlugAudit tools (`query`, `report`,
+`structure`, `finding`, `project_control`, `health`).
 
 ## Re-running `connect`
 
@@ -55,24 +52,11 @@ at the current executable.
 grok mcp add slugaudit --scope user -- $(which slugaudit-mcp)
 ```
 
-## PostgreSQL / shared index
-
-To serve one shared PostgreSQL index across multiple developers or
-machines instead of the default per-project SQLite:
-
-```bash
-grok mcp add slugaudit --scope user \
-  -e "SLUGAUDIT_CONFIG=/path/to/config.toml" \
-  -- $(which slugaudit-mcp)
-```
-
-See `config.toml.example` in the repo for the format. Most users don't
-need this.
-
 ## Troubleshooting
 
 - **`grok` not found** — install the Grok CLI first.
 - **Tools don't appear after `connect`** — restart Grok, or run `/mcps`
   and press `r` to refresh the MCP server list.
-- **"project not enabled"** — run `slugaudit-mcp enable <path>`.
+- **"project not enabled"** — have the agent call `project_control` with
+  `action = "on"` for the project.
 - **Diagnose connection issues:** `grok mcp doctor slugaudit`

@@ -14,7 +14,7 @@ const MAX_CATEGORY_CHARS: usize = 100;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FindingRequest {
     /// Any path inside the active project — used to select which project's
-    /// database to write to. Must be a path that `slugaudit enable` was run on.
+    /// database to write to. Must be a path inside an enabled project.
     #[schemars(description = "Any path inside the active project, used to select the database")]
     pub path: String,
     /// Project-relative path of the file the finding is about. Must be a file

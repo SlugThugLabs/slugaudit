@@ -1,9 +1,8 @@
 //! Project root resolution and activation. `.planning/slugaudit/` existing
-//! is the only human-facing control in the whole product: its presence
-//! enables SlugAudit for a project, its absence disables it. `enable`/
-//! `disable` are the one supported way to create or remove that marker —
-//! exposed to a human via the `slugaudit-mcp-rust enable`/`disable` CLI
-//! commands (`src/cli.rs`).
+//! is the only on/off control in the whole product: its presence enables
+//! SlugAudit for a project, its absence disables it. `enable`/`disable`
+//! are the one supported way to create or remove that marker — exposed to
+//! the AI via the `project_control` MCP tool (`src/tools/project_control.rs`), not via any CLI command.
 
 mod activation;
 mod database_path;

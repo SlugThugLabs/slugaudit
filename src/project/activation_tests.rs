@@ -123,10 +123,9 @@ fn enable_refuses_to_create_through_a_symlinked_planning_dir() {
 }
 
 /// `find_project_root` is a read-only lookup that can race a concurrent
-/// toggle of `.planning/slugaudit` — whether that's the `enable`/
-/// `disable` CLI commands (`src/cli.rs`) or a host application doing
-/// the same thing directly, the marker can be created or removed
-/// mid-lookup. `find_project_root` is a single synchronous ancestor
+/// toggle of `.planning/slugaudit` — whether that's the `project_control`
+/// MCP tool's `enable`/`disable` or a host application doing the same
+/// thing directly, the marker can be created or removed mid-lookup. `find_project_root` is a single synchronous ancestor
 /// walk with no hook to pause it deterministically mid-loop, so this
 /// drives the race with a real second thread hammering create/remove
 /// on the marker directory while many real lookups run concurrently,

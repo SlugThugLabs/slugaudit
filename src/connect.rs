@@ -22,8 +22,8 @@ use std::path::{Path, PathBuf};
 /// Each agent is registered at its user/global scope so SlugAudit is
 /// available in every project rather than only the directory `connect` was
 /// run from. The server itself is per-project (each enabled project has
-/// its own `.slugaudit/` SQLite index), so a single global registration
-/// covers everything.
+/// its own `.planning/slugaudit/project.db` SQLite index), so a single
+/// global registration covers everything.
 pub fn run_connect(agent: ConnectAgent) -> Result<(), ConnectError> {
     let binary = running_binary().map_err(ConnectError::BinaryPath)?;
     let binary = prefer_slugthug_binary(&binary);

@@ -17,27 +17,28 @@ claude mcp list
 ## What you get
 
 Once connected *and* a project is enabled (see below), Claude Code gains
-four tools:
+six tools:
 
 | Tool | What it does |
 |------|-------------|
 | `query` | Arbitrary read-only SQL against the project's SQLite index. The real workhorse — joins, CTEs, the lot. Row-capped for safety. |
-| `report` | Automatic snapshot of the current revision: file counts, languages, what changed since last import. |
+| `report` | Automatic snapshot of the current revision: file counts, languages, what changed since last import. No score, no risk leads. |
 | `structure` | Tree-sitter structural pattern matching across 300+ languages. |
-| `finding` | The one write tool — records an audit finding against the evidence. |
+| `finding` | The one write tool — records a conclusion the AI has personally reviewed, bound to the file's hash. |
+| `project_control` | Enable/disable SlugAudit for a project (`action = "on"` / `"off"`). |
+| `health` | Operational snapshot: watcher health, unreconciled counts, last-sync timestamp. |
+
+SlugAudit itself never audits — it supplies evidence, and the AI does all
+the judging.
 
 ## Enable a project
 
 Connecting the MCP server makes the tools *available*. To actually index a
-codebase:
-
-```bash
-slugaudit-mcp enable /path/to/your-project
-```
-
-This creates `.slugaudit/` inside the project (the activation marker +
-SQLite database) and runs the first import immediately. After that,
-Claude Code can query it.
+codebase, have the agent call the `project_control` tool with
+`action = "on"` (optionally with a project path). This creates the
+activation marker and SQLite database under `.planning/slugaudit/` inside
+the project and runs the first import immediately. After that, Claude
+Code can query it.
 
 You only enable once per project. Subsequent Claude Code sessions pick it
 up automatically — every tool call re-verifies freshness and waits on any
@@ -64,22 +65,6 @@ directory):
 claude mcp add slugaudit -s local -- $(which slugaudit-mcp)
 ```
 
-## PostgreSQL / shared index
-
-By default SlugAudit uses zero-config SQLite — one `.slugaudit/project.db`
-per enabled project. If you want a single shared PostgreSQL index across
-multiple developers or machines, create a `config.toml` (see
-`config.toml.example` in the repo) and register with the env var:
-
-```bash
-claude mcp add slugaudit -s user \
-  -e SLUGAUDIT_CONFIG=/path/to/config.toml \
-  -- $(which slugaudit-mcp)
-```
-
-Most users don't need this. SQLite is the default and the recommended
-starting point.
-
 ## Troubleshooting
 
 - **`claude` not found** — install Claude Code:
@@ -87,8 +72,8 @@ starting point.
 - **Tools don't appear in a session** — restart Claude Code after running
   `connect`. Already-running sessions won't see a newly registered MCP
   server.
-- **"project not enabled"** — run `slugaudit-mcp enable <path>` for
-  the project you're working in.
+- **"project not enabled"** — have the agent call `project_control` with
+  `action = "on"` for the project you're working in.
 - **`/mcps` shows slugaudit as disconnected** — the binary path in your
   config may be stale (you moved or uninstalled it). Re-run
   `slugaudit-mcp connect claude` to refresh.

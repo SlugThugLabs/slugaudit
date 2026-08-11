@@ -76,16 +76,16 @@ confirmed directly in `src/main.rs`, which calls
 `SlugAuditServer::new().serve(stdio())` from `rmcp::transport::stdio`.
 There is no HTTP/SSE transport, no socket, and no other way to talk to it.
 
-`src/main.rs` takes **no command-line arguments** and reads **no
-environment variables** (confirmed by inspection — there is no
-`std::env::args()` or `std::env::var()` call anywhere in `src/main.rs` or
-`src/server.rs`). Every behavior the server has (which project it's
-operating on, etc.) is driven entirely by the path arguments passed inside
-individual MCP tool calls, not by process-level configuration. Concretely,
-that also means the `tracing-subscriber` `env-filter` feature this project
-depends on is not currently wired up to `RUST_LOG` or any other
-environment variable in `main.rs` — logging verbosity is not
-runtime-configurable today.
+The binary has four commands, parsed in `src/cli.rs`: `serve` (the MCP
+server; also the default when no argument is given), `connect [AGENT]`
+(register this binary as the `slugaudit` MCP server in Claude Code, Grok,
+or Codex), `install` (copy the binary to `~/.slugthug/bin/`), and `help`.
+There is no project-facing CLI configuration: every behavior of the
+server (which project it's operating on, etc.) is driven entirely by the
+path arguments passed inside individual MCP tool calls, not by
+process-level configuration. The only environment variable any command
+reads is `SLUGTHUG_HOME` (falling back to `$HOME/.slugthug`), used by
+`install` and `connect` to locate the stable install directory.
 
 A typical MCP client config entry (the exact JSON shape varies by client —
 this shows the common `"mcpServers"` object shape used by several
@@ -106,38 +106,31 @@ isn't installed anywhere on `PATH` by this project's build process.
 
 ## 4. Enabling and disabling a project
 
-SlugAudit's crate deliberately does **not** implement project
-activation/deactivation itself — see README.md's "Activation ownership"
-section for the full rationale. `src/project/activation.rs` only ever
-*reads* an activation marker; it contains no code path that creates or
-removes one. Owning that human-facing control is left to whatever host
-application eventually embeds this MCP server.
+Activation is driven by the `project_control` MCP tool
+(`src/tools/project_control.rs`), which is how an AI enables or disables a
+project from inside the agent session:
 
-Until that host application exists, here is the precise manual workaround
-for enabling a project during development or manual testing today:
+- `action = "on"` calls `src/project/activation.rs`'s `enable`, creating
+  the `.planning/slugaudit/` marker directory and running the project's
+  first import before the tool returns.
+- `action = "off"` calls `disable`, removing the marker directory and
+  purging the project's database (every finding and every piece of
+evidence).
 
-```bash
-mkdir -p /path/to/your/project/.planning/slugaudit
-```
+Underneath, activation is purely the existence of a directory literally
+named `.planning/slugaudit` (the constants are `PLANNING_DIR = ".planning"`
+and `ACTIVATION_DIR = "slugaudit"`): `src/project/activation.rs` walks up
+from the path given in each tool call looking for that marker, and treats
+its existence as the sole "this project is enabled" signal. The nearest
+ancestor directory containing the marker becomes the project root.
 
-That's it — `src/project/activation.rs` walks up from the path given in
-each tool call looking for a directory literally named `.planning/slugaudit`
-(the constants are `PLANNING_DIR = ".planning"` and
-`ACTIVATION_DIR = "slugaudit"`), and treats its existence as the sole
-"this project is enabled" signal. The nearest ancestor directory
-containing that marker becomes the project root.
-
-**To disable a project**, remove that same directory:
-
-```bash
-rm -rf /path/to/your/project/.planning/slugaudit
-```
-
-This is a manual workaround for development and testing use today, **not**
-the intended long-term human-facing UX described in `ARCHITECTURE.md` and
-`CLAUDE.md` — the real interface is a single human-facing enable/disable
-control owned by a future host application, not a directory a person is
-expected to create by hand.
+The marker is never versioned — it is gitignored, machine-local, and
+excluded from discovery by `src/sync/discovery.rs` itself. During
+development or manual testing you can still create it by hand
+(`mkdir -p /path/to/your/project/.planning/slugaudit`) or remove it
+(`rm -rf /path/to/your/project/.planning/slugaudit`), but the supported
+surface is the `project_control` MCP tool — there is no enable/disable
+CLI command.
 
 ## 5. Database location and permissions
 

@@ -37,9 +37,9 @@ pub(super) fn log_rejected_network_filesystem(path: &Path) {
     // The mountinfo / `stat -f` / `fsutil` round-trip already returns
     // its own error variant on the boundary cases (file vanished,
     // command unavailable, …); this is the *positive* "yep, this is
-    // on NFS" verdict. Logged with the path so a user running
-    // `slugaudit enable /team-share/foo` can tell which filesystem the
-    // server diagnosed, not just that the open failed.
+    // on NFS" verdict. Logged with the path so an operator enabling a
+    // project on `/team-share/foo` (via `project_control`) can tell which
+    // filesystem the server diagnosed, not just that the open failed.
     tracing::warn!(
         target: "slugaudit::store",
         path = %path.display(),
