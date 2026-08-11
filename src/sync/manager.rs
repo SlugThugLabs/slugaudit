@@ -10,8 +10,10 @@
 use super::manager_meta::{current_revision_id, ensure_project_row};
 use super::publish;
 use super::revision;
+use crate::model::ResourceLimits;
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::store;
+use crate::util::Deadline;
 use crate::watch::{WatchManager, WatchState, WatcherHealth};
 use crate::{parse, project};
 use rmcp::ErrorData;
@@ -353,14 +355,21 @@ impl SourceSyncManager {
         connection: &mut Connection,
     ) -> Result<(), SyncError> {
         let expected_current = current_revision_id(connection)?;
+        let limits = ResourceLimits::default();
+        // One deadline for the whole barrier operation — every iteration
+        // and every per-path reconcile inside it — so a pathological
+        // event producer can't stall a tool call indefinitely.
+        let deadline = Deadline::after(limits.max_sync_wall_clock);
 
-        super::reconcile::sync_with_barrier(state, |dirty, deleted| {
-            super::reconcile::reconcile_dirty_paths(
+        super::reconcile::sync_with_barrier_with_deadline(state, &deadline, |dirty, deleted| {
+            super::reconcile::reconcile_dirty_paths_with_deadline(
                 connection,
                 root,
                 dirty,
                 deleted,
                 expected_current.as_deref(),
+                &limits,
+                &deadline,
             )?;
             Ok(())
         })?;

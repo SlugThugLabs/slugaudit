@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=agent; reason=single-file read/hash/classify, evidence caps, and the batch sampling loop (with its wall-clock deadline variant) are one cohesive sampling pipeline; splitting the 206-code-line module would scatter to_file_record's evidence capping away from the loop that feeds it
 use super::analyze::analyze;
 use super::discovery::{DiscoveredFile, FileKind};
 use super::hash;
@@ -7,6 +8,7 @@ use crate::model::{
     EvidenceItem, EvidenceKind, EvidenceOrigin, ResourceLimits, SourceIdentity, SpanAvailability,
 };
 use crate::progress::{ProgressEvent, ProgressSink};
+use crate::util::Deadline;
 use serde_json::json;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -211,24 +213,35 @@ fn truncation_evidence(
 }
 
 /// Samples every discovered file, accumulating the total byte count and
-/// failing closed if the project-wide import ceiling is exceeded. Kept
-/// here (next to `sample_file`) rather than in `publish` — it's a sampling
-/// concern, not an orchestration one.
+/// failing closed if the project-wide import ceiling is exceeded — or if
+/// an explicit [`Deadline`] (checked once per file) is spent, so a
+/// pathological repo (a huge tree, a hung filesystem) fails closed with
+/// [`PublishError::TimeBudgetExceeded`] instead of stalling the publish
+/// forever. The deadline is created by the caller so the whole operation
+/// shares one budget across sampling, diffing, revalidation, and retries.
+/// Kept here (next to `sample_file`) rather than in `publish` — it's a
+/// sampling concern, not an orchestration one.
 ///
 /// Emits one [`ProgressEvent::Sampling`] per file through `sink` so a
 /// long-running publish surfaces per-file progress to a stateful
 /// consumer (MCP progress notifications, a CLI status bar, etc.),
 /// which is the only way a user has any signal that a big first
 /// import is still alive.
-pub(super) fn sample_all(
+pub(super) fn sample_all_with_deadline(
     discovered: &[DiscoveredFile],
     limits: &ResourceLimits,
     sink: &dyn ProgressSink,
+    deadline: &Deadline,
 ) -> Result<Vec<Sample>, PublishError> {
     let mut total_bytes = 0_u64;
     let mut samples = Vec::with_capacity(discovered.len());
     let total = discovered.len();
     for (current, file) in discovered.iter().enumerate() {
+        if let Some(elapsed) = deadline.exceeded() {
+            return Err(PublishError::TimeBudgetExceeded {
+                elapsed_ms: elapsed.as_millis(),
+            });
+        }
         let sample = sample_file(file, limits)?;
         total_bytes = total_bytes.saturating_add(sample.byte_len);
         if total_bytes > limits.max_total_import_bytes {

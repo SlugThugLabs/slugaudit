@@ -307,3 +307,52 @@ Format: date — title; status; context; decision; rationale; consequences.
   equivalents run and marks those three items with reasons; a dedicated
   mutation run is required before tagging a release.
 
+## 2026-08-10 — Wall-clock timeouts on publish/reconcile (last Reliability item)
+
+- **Status**: decided
+- **Context**: the due-diligence audit's Reliability category was open on
+  one item: a pathological repo (giant directory tree, pathological event
+  producer, adversarial single file) could stall a tool call
+  indefinitely because discovery, sampling, and reconciliation had no
+  wall-clock budget — only the `query`/`structure` tools were deadline-
+  bounded.
+- **Decision**: follow the codebase's own `query`/`structure` pattern
+  rather than introducing threads or async cancellation: add
+  `ResourceLimits.max_sync_wall_clock` (default 60 s), a `util::Deadline`
+  helper (`started` + `budget`, `exceeded() -> Option<Duration>` using
+  `elapsed >= budget` so zero/nanosecond budgets trip deterministically),
+  and cooperative deadline checks at every hot-loop boundary: the
+  discovery walk (`discover_with_deadline`), per-file sampling
+  (`sample_all_with_deadline`), per-file tree-sitter analysis in
+  `build_upserts_and_deletions` (which now returns `Result` — parse
+  failures stay evidence, only `TimeBudgetExceeded` is an error),
+  `diff_against_stored` entry, per-dirty-path and per-barrier-iteration
+  reconcile (`reconcile_dirty_paths_with_deadline` +
+  `sync_with_barrier_with_deadline`), and the CAS retry loop. One
+  deadline spans all CAS retries (`publish_with_limits`); one shared
+  deadline spans all barrier iterations (manager::reconcile). Existing
+  public signatures are unchanged — `publish`/`discover`/`sync_with_barrier`
+  delegate with default limits; new `_with_deadline` variants are
+  `pub(crate)`.
+- **Rationale**: cooperative checks match the established pattern, keep
+  the architecture single-threaded per tool call, and are deterministically
+  testable with zero/nanosecond budgets (7 new tests in
+  `src/sync/timeout_tests.rs`: publish, reconcile, barrier, and discovery
+  all fail with `TimeBudgetExceeded` under `Duration::ZERO`). The
+  malformed-source-is-evidence invariant is untouched — the only new
+  publish failure mode is the budget itself.
+- **Consequences**: budgets are per-phase, not per-call: the common paths
+  are single-phase (Healthy→reconcile ≤ 60 s; Unavailable→publish ≤ 60 s);
+  the rare untrusted path (publish + post-verification drain) can reach
+  ~120 s. Nothing is unbounded anymore — the acceptance criterion is
+  "a pathological repo cannot stall a tool call", not "always under one
+  budget". A single pathological file's tree-sitter parse is not
+  interruptible mid-parse (same accepted limitation as `query`/
+  `structure`). `sample.rs` grew to 206 code lines and carries a
+  `slugaudit-line-exception` (one cohesive sampling pipeline — splitting
+  would scatter `to_file_record`'s evidence capping away from the loop
+  that feeds it); `publish_race_tests.rs` stayed gate-clean (198 lines)
+  by inlining its far-future deadline rather than adding an exception.
+  Full gates green: 337 lib tests (7 new timeout + 2 deadline unit),
+  fmt, clippy `-D warnings`, source-limits PASS, no-duplicates PASS.
+

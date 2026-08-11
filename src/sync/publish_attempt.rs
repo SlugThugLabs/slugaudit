@@ -8,9 +8,10 @@ use super::publish_diff::{build_upserts_and_deletions, diff_against_stored};
 use super::race_hook;
 use super::revalidate::revalidate_unchanged_since_sample;
 use super::revision;
-use super::sample::sample_all;
+use super::sample::sample_all_with_deadline;
 use crate::model::ResourceLimits;
 use crate::progress::ProgressSink;
+use crate::util::Deadline;
 use rusqlite::Connection;
 use std::path::Path;
 
@@ -58,13 +59,15 @@ pub(super) fn try_publish(
     root: &Path,
     parser_pack_version: &str,
     sink: &dyn ProgressSink,
+    limits: &ResourceLimits,
+    deadline: &Deadline,
 ) -> Result<PublishReport, PublishError> {
     let baseline = current_revision(connection)?;
     let expected_current = baseline
         .as_ref()
         .map(|revision| revision.revision_id.as_str());
 
-    let (discovered, skipped) = discovery::discover(root)?;
+    let (discovered, skipped) = discovery::discover_with_deadline(root, deadline)?;
     if !skipped.is_empty() {
         for file in &skipped {
             tracing::warn!(
@@ -74,10 +77,9 @@ pub(super) fn try_publish(
             );
         }
     }
-    let limits = ResourceLimits::default();
-    let samples = sample_all(&discovered, &limits, sink)?;
+    let samples = sample_all_with_deadline(&discovered, limits, sink, deadline)?;
     race_hook::fire(root);
-    let diff = diff_against_stored(connection, &samples, discovered.len())?;
+    let diff = diff_against_stored(connection, &samples, discovered.len(), deadline)?;
 
     let parser_version_changed = baseline
         .as_ref()
@@ -97,9 +99,14 @@ pub(super) fn try_publish(
         });
     }
 
-    let (upserts, deletions) =
-        build_upserts_and_deletions(samples, &diff.changes, parser_version_changed, &limits);
-    revalidate_unchanged_since_sample(&discovered, &upserts, &limits)?;
+    let (upserts, deletions) = build_upserts_and_deletions(
+        samples,
+        &diff.changes,
+        parser_version_changed,
+        limits,
+        deadline,
+    )?;
+    revalidate_unchanged_since_sample(&discovered, &upserts, limits, deadline)?;
 
     let revision_id = revision::publish_revision(
         connection,

@@ -20,7 +20,7 @@ pub(super) use super::revalidate::revalidate_unchanged_since_sample;
 #[cfg(test)]
 pub(super) use super::revision::RevisionError;
 #[cfg(test)]
-pub(super) use super::sample::sample_all;
+pub(super) use super::sample::sample_all_with_deadline;
 #[cfg(test)]
 pub(super) use crate::model::ResourceLimits;
 #[cfg(test)]
@@ -53,6 +53,8 @@ pub enum PublishError {
     ChangedDuringSample { path: String },
     #[error("invalid parser pack version {0:?}; expected a non-empty numeric dotted version")]
     InvalidParserPackVersion(String),
+    #[error("publish exceeded its wall-clock time budget after {elapsed_ms} ms")]
+    TimeBudgetExceeded { elapsed_ms: u128 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

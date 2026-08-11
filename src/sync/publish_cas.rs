@@ -8,7 +8,9 @@ use super::publish::{PublishError, PublishReport};
 use super::publish_attempt::try_publish;
 use super::publish_log;
 use super::revision::RevisionError;
+use crate::model::ResourceLimits;
 use crate::progress::ProgressSink;
+use crate::util::Deadline;
 use rusqlite::Connection;
 use std::path::Path;
 
@@ -48,6 +50,28 @@ pub fn publish(
     parser_pack_version: &str,
     sink: &dyn ProgressSink,
 ) -> Result<PublishReport, PublishError> {
+    publish_with_limits(
+        connection,
+        root,
+        parser_pack_version,
+        sink,
+        &ResourceLimits::default(),
+    )
+}
+
+/// [`publish`] under an explicit [`ResourceLimits`]. The wall-clock
+/// [`Deadline`] is created once here — not inside `try_publish` — so a
+/// single budget spans every CAS retry; a pathological repo cannot restart
+/// the clock on each retry and stall the tool call indefinitely. Each
+/// retry re-samples from scratch and fails closed with
+/// [`PublishError::TimeBudgetExceeded`] once the budget is spent.
+pub(crate) fn publish_with_limits(
+    connection: &mut Connection,
+    root: &Path,
+    parser_pack_version: &str,
+    sink: &dyn ProgressSink,
+    limits: &ResourceLimits,
+) -> Result<PublishReport, PublishError> {
     if !is_valid_parser_pack_version(parser_pack_version) {
         return Err(PublishError::InvalidParserPackVersion(
             parser_pack_version.to_owned(),
@@ -56,12 +80,21 @@ pub fn publish(
     sink.emit(crate::progress::ProgressEvent::Started {
         phase: "publishing",
     });
+    let deadline = Deadline::after(limits.max_sync_wall_clock);
     let mut attempt = 0_usize;
     let result = loop {
-        let result = try_publish(connection, root, parser_pack_version, sink);
+        let result = try_publish(
+            connection,
+            root,
+            parser_pack_version,
+            sink,
+            limits,
+            &deadline,
+        );
         if let Err(error) = &result
             && is_retryable(error)
             && attempt < MAX_CAS_RETRIES
+            && deadline.exceeded().is_none()
         {
             tracing::info!(attempt, reason = %error, "publish retrying");
             attempt += 1;

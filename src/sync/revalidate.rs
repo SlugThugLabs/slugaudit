@@ -8,6 +8,7 @@ use super::publish::PublishError;
 use super::revision::FileRecord;
 use super::sample::sample_file;
 use crate::model::ResourceLimits;
+use crate::util::Deadline;
 use std::collections::HashMap;
 
 /// Re-samples every file this function is about to write and aborts if any
@@ -25,12 +26,18 @@ pub(super) fn revalidate_unchanged_since_sample(
     discovered: &[DiscoveredFile],
     upserts: &[FileRecord],
     limits: &ResourceLimits,
+    deadline: &Deadline,
 ) -> Result<(), PublishError> {
     let by_path: HashMap<&str, &DiscoveredFile> = discovered
         .iter()
         .map(|file| (file.relative_path.as_str(), file))
         .collect();
     for upsert in upserts {
+        if let Some(elapsed) = deadline.exceeded() {
+            return Err(PublishError::TimeBudgetExceeded {
+                elapsed_ms: elapsed.as_millis(),
+            });
+        }
         let unchanged = by_path
             .get(upsert.relative_path.as_str())
             .is_some_and(|file| {

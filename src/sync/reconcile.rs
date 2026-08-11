@@ -12,6 +12,7 @@ use super::hash;
 use super::revision;
 use super::sample;
 use crate::model::ResourceLimits;
+use crate::util::Deadline;
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -41,6 +42,8 @@ pub enum ReconcileError {
          and the next call will do a full verification"
     )]
     BarrierCapExceeded { iterations: u32 },
+    #[error("reconcile exceeded its wall-clock time budget after {elapsed_ms} ms")]
+    TimeBudgetExceeded { elapsed_ms: u128 },
 }
 
 /// Report of a reconciliation pass.
@@ -78,6 +81,32 @@ pub fn reconcile_dirty_paths(
     expected_revision: Option<&str>,
 ) -> Result<ReconcileReport, ReconcileError> {
     let limits = ResourceLimits::default();
+    reconcile_dirty_paths_with_deadline(
+        connection,
+        root,
+        dirty,
+        deleted,
+        expected_revision,
+        &limits,
+        &Deadline::after(limits.max_sync_wall_clock),
+    )
+}
+
+/// [`reconcile_dirty_paths`] under an explicit [`ResourceLimits`] and
+/// [`Deadline`], checked once per dirty path so a pathological set (a huge
+/// number of events, a hung filesystem) fails closed with
+/// [`ReconcileError::TimeBudgetExceeded`] instead of stalling the tool
+/// call forever. The deadline is created by the caller so the whole
+/// barrier-sync operation shares one budget across its iterations.
+pub(crate) fn reconcile_dirty_paths_with_deadline(
+    connection: &mut Connection,
+    root: &Path,
+    dirty: HashSet<String>,
+    deleted: HashSet<String>,
+    expected_revision: Option<&str>,
+    limits: &ResourceLimits,
+    deadline: &Deadline,
+) -> Result<ReconcileReport, ReconcileError> {
     let mut upserts = Vec::new();
     let mut deletions = Vec::new();
     let mut reconciled = 0usize;
@@ -88,6 +117,11 @@ pub fn reconcile_dirty_paths(
     let existing_hashes = query_existing_hashes(connection, &dirty)?;
 
     for path in dirty {
+        if let Some(elapsed) = deadline.exceeded() {
+            return Err(ReconcileError::TimeBudgetExceeded {
+                elapsed_ms: elapsed.as_millis(),
+            });
+        }
         let absolute_path = root.join(&path);
 
         // If the file no longer exists on disk, treat it as a deletion.
@@ -117,8 +151,8 @@ pub fn reconcile_dirty_paths(
             absolute_path: absolute_path.clone(),
             kind,
         };
-        let sample = sample::sample_file(&discovered, &limits)?;
-        let record = sample::to_file_record(sample, &limits);
+        let sample = sample::sample_file(&discovered, limits)?;
+        let record = sample::to_file_record(sample, limits);
         upserts.push(record);
         reconciled += 1;
     }
@@ -182,13 +216,39 @@ pub fn sync_with_barrier(
     state: &crate::watch::WatchState,
     reconcile_fn: impl FnMut(HashSet<String>, HashSet<String>) -> Result<(), ReconcileError>,
 ) -> Result<(), ReconcileError> {
+    sync_with_barrier_with_deadline(
+        state,
+        &Deadline::after(ResourceLimits::default().max_sync_wall_clock),
+        reconcile_fn,
+    )
+}
+
+/// [`sync_with_barrier`] under an explicit [`Deadline`], checked once per
+/// iteration so a pathological producer (an editor saving faster than
+/// reconcile completes) fails closed with
+/// [`ReconcileError::TimeBudgetExceeded`] instead of draining events
+/// indefinitely. The deadline is created by the caller so the whole
+/// barrier-sync operation — every iteration, and every per-path reconcile
+/// inside it — shares one budget.
+pub(crate) fn sync_with_barrier_with_deadline(
+    state: &crate::watch::WatchState,
+    deadline: &Deadline,
+    reconcile_fn: impl FnMut(HashSet<String>, HashSet<String>) -> Result<(), ReconcileError>,
+) -> Result<(), ReconcileError> {
     let mut reconcile_fn = reconcile_fn;
     let mut iterations: u32 = 0;
     loop {
         let (seq, dirty, deleted) = state.snapshot_dirty();
 
         if dirty.is_empty() && deleted.is_empty() {
+            // Nothing left to reconcile is a success even if the budget is
+            // spent — there is no work left to stall on.
             return Ok(());
+        }
+        if let Some(elapsed) = deadline.exceeded() {
+            return Err(ReconcileError::TimeBudgetExceeded {
+                elapsed_ms: elapsed.as_millis(),
+            });
         }
 
         reconcile_fn(dirty, deleted)?;

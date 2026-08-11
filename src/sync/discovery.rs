@@ -1,3 +1,5 @@
+use crate::model::ResourceLimits;
+use crate::util::Deadline;
 use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -68,6 +70,8 @@ pub enum DiscoveryError {
     /// the stored path unusable for round-tripping back to disk.
     #[error("discovered path {0} is not valid UTF-8")]
     NonUtf8Path(PathBuf),
+    #[error("discovery exceeded its wall-clock time budget after {elapsed_ms} ms")]
+    TimeBudgetExceeded { elapsed_ms: u128 },
 }
 
 fn is_excluded(relative: &Path) -> bool {
@@ -119,6 +123,22 @@ pub(crate) fn sniff_kind(path: &Path) -> Result<FileKind, DiscoveryError> {
 /// Returns an error only if the walk itself fails outright (e.g. the
 /// project root isn't readable at all).
 pub fn discover(root: &Path) -> Result<(Vec<DiscoveredFile>, Vec<SkippedFile>), DiscoveryError> {
+    discover_with_deadline(
+        root,
+        &Deadline::after(ResourceLimits::default().max_sync_wall_clock),
+    )
+}
+
+/// [`discover`] under an explicit wall-clock [`Deadline`], checked once per
+/// walked entry so a pathological tree (huge, or on a hung network
+/// filesystem) fails closed with [`DiscoveryError::TimeBudgetExceeded`]
+/// instead of stalling the publish forever. The deadline is created by the
+/// caller so the whole operation — discovery plus sampling plus retries —
+/// shares one budget.
+pub(crate) fn discover_with_deadline(
+    root: &Path,
+    deadline: &Deadline,
+) -> Result<(Vec<DiscoveredFile>, Vec<SkippedFile>), DiscoveryError> {
     // `standard_filters` sets several flags at once, including `hidden`; it
     // must run before the explicit `hidden(false)` override or it silently
     // wins and dotfiles/dotdirs (e.g. `.github/`) vanish from the walk.
@@ -131,6 +151,11 @@ pub fn discover(root: &Path) -> Result<(Vec<DiscoveredFile>, Vec<SkippedFile>), 
     let mut discovered = Vec::new();
     let mut skipped = Vec::new();
     for entry in walker {
+        if let Some(elapsed) = deadline.exceeded() {
+            return Err(DiscoveryError::TimeBudgetExceeded {
+                elapsed_ms: elapsed.as_millis(),
+            });
+        }
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {

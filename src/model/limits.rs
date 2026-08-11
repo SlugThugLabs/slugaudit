@@ -51,6 +51,16 @@ pub struct ResourceLimits {
     /// pathological pattern (deep nesting, wildcard-heavy captures) can be
     /// aborted mid-query rather than only after it returns.
     pub max_structure_execution_time: std::time::Duration,
+    /// Wall-clock budget for one sync operation — a full publish (including
+    /// all CAS retries) or one barrier-sync reconcile pass (including all
+    /// barrier iterations). Enforced cooperatively inside the hot loops
+    /// (per discovered file, per dirty path, per barrier iteration), so a
+    /// pathological repo (huge tree, hung network filesystem) fails closed
+    /// with a `TimeBudgetExceeded` error instead of stalling the tool call
+    /// indefinitely. Generous by default — the measured baseline for a
+    /// 200-file import is ~160 ms — because legitimate large imports must
+    /// not be cut off; this bounds hangs, not real work.
+    pub max_sync_wall_clock: std::time::Duration,
     pub evidence: EvidenceLimits,
 }
 
@@ -67,6 +77,7 @@ impl Default for ResourceLimits {
             max_structure_query_bytes: 8_000,
             max_structure_matches: 500,
             max_structure_execution_time: std::time::Duration::from_secs(5),
+            max_sync_wall_clock: std::time::Duration::from_secs(60),
             evidence: EvidenceLimits::default(),
         }
     }
@@ -89,5 +100,6 @@ mod tests {
         assert!(limits.max_structure_query_bytes > 0);
         assert!(limits.max_structure_matches > 0);
         assert!(limits.max_structure_execution_time.as_millis() > 0);
+        assert!(limits.max_sync_wall_clock.as_millis() > 0);
     }
 }

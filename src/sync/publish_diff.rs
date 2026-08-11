@@ -9,6 +9,7 @@ use super::publish::PublishError;
 use super::revision::FileRecord;
 use super::sample::{Sample, to_file_record};
 use crate::model::ResourceLimits;
+use crate::util::Deadline;
 use rusqlite::Connection;
 use std::collections::HashSet;
 
@@ -25,7 +26,13 @@ pub(super) fn diff_against_stored(
     connection: &Connection,
     samples: &[Sample],
     discovered_len: usize,
+    deadline: &Deadline,
 ) -> Result<Diff, PublishError> {
+    if let Some(elapsed) = deadline.exceeded() {
+        return Err(PublishError::TimeBudgetExceeded {
+            elapsed_ms: elapsed.as_millis(),
+        });
+    }
     let mut stored_statement = connection.prepare("SELECT path, content_hash FROM files")?;
     let stored_rows = stored_statement
         .query_map([], |row| {
@@ -79,7 +86,8 @@ pub(super) fn build_upserts_and_deletions(
     changes: &[FileChange],
     parser_version_changed: bool,
     limits: &ResourceLimits,
-) -> (Vec<FileRecord>, Vec<String>) {
+    deadline: &Deadline,
+) -> Result<(Vec<FileRecord>, Vec<String>), PublishError> {
     let changed_paths: HashSet<String> = if parser_version_changed {
         samples
             .iter()
@@ -97,10 +105,19 @@ pub(super) fn build_upserts_and_deletions(
         .filter(|change| change.status == ChangeStatus::Deleted)
         .map(|change| change.relative_path.clone())
         .collect();
-    let upserts: Vec<FileRecord> = samples
-        .into_iter()
-        .filter(|sample| changed_paths.contains(sample.relative_path.as_str()))
-        .map(|sample| to_file_record(sample, limits))
-        .collect();
-    (upserts, deletions)
+    let mut upserts = Vec::with_capacity(changed_paths.len());
+    for sample in samples {
+        if changed_paths.contains(sample.relative_path.as_str()) {
+            // `to_file_record` runs tree-sitter analysis — the publish
+            // path's most expensive per-file work — so it must sit inside
+            // the deadline check rather than after it.
+            if let Some(elapsed) = deadline.exceeded() {
+                return Err(PublishError::TimeBudgetExceeded {
+                    elapsed_ms: elapsed.as_millis(),
+                });
+            }
+            upserts.push(to_file_record(sample, limits));
+        }
+    }
+    Ok((upserts, deletions))
 }

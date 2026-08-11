@@ -27,3 +27,12 @@ pub use manifest::{ChangeStatus, FileChange, compare};
 pub use publish::{PublishError, PublishReport, publish};
 pub use reconcile::{ReconcileError, ReconcileReport, reconcile_dirty_paths, sync_with_barrier};
 pub use revision::{FileRecord, RevisionError};
+
+#[cfg(test)]
+#[path = "timeout_tests.rs"]
+mod timeout_tests;
+
+#[cfg(test)]
+pub(super) use publish_cas::publish_with_limits;
+#[cfg(test)]
+pub(super) use reconcile::{reconcile_dirty_paths_with_deadline, sync_with_barrier_with_deadline};

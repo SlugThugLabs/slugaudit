@@ -33,19 +33,23 @@ fn a_file_changed_after_sampling_is_detected_and_rejected() {
     write(project.path(), "lib.rs", b"original\n");
     let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
     let limits = ResourceLimits::default();
-    let samples =
-        sample_all(&discovered, &limits, &crate::progress::NoopProgressSink).expect("sample");
+    let sink = crate::progress::NoopProgressSink;
+    // A far-future deadline so these tests exercise the race logic, not the
+    // wall-clock budget.
+    let deadline = crate::util::Deadline::after(std::time::Duration::from_secs(60));
+    let samples = sample_all_with_deadline(&discovered, &limits, &sink, &deadline).expect("sample");
     // `parser_version_changed: true` forces every sampled file into
     // `upserts` regardless of the (deliberately empty) diff — otherwise an
     // empty `changes` list would make `upserts` empty too, and revalidation
     // over zero files would trivially pass no matter what this test does.
-    let (upserts, _deletions) = build_upserts_and_deletions(samples, &[], true, &limits);
+    let (upserts, _deletions) =
+        build_upserts_and_deletions(samples, &[], true, &limits, &deadline).expect("build upserts");
 
     // Simulate an editor saving a new version in the gap between sampling
     // and the write that would have published the old sample as current.
     write(project.path(), "lib.rs", b"changed after sampling\n");
 
-    let result = revalidate_unchanged_since_sample(&discovered, &upserts, &limits);
+    let result = revalidate_unchanged_since_sample(&discovered, &upserts, &limits, &deadline);
     assert!(
         matches!(&result, Err(PublishError::ChangedDuringSample { path }) if path == "lib.rs"),
         "expected ChangedDuringSample, got {result:?}"
@@ -58,11 +62,13 @@ fn an_unchanged_file_passes_revalidation() {
     write(project.path(), "lib.rs", b"stable\n");
     let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
     let limits = ResourceLimits::default();
-    let samples =
-        sample_all(&discovered, &limits, &crate::progress::NoopProgressSink).expect("sample");
-    let (upserts, _deletions) = build_upserts_and_deletions(samples, &[], true, &limits);
+    let sink = crate::progress::NoopProgressSink;
+    let deadline = crate::util::Deadline::after(std::time::Duration::from_secs(60));
+    let samples = sample_all_with_deadline(&discovered, &limits, &sink, &deadline).expect("sample");
+    let (upserts, _deletions) =
+        build_upserts_and_deletions(samples, &[], true, &limits, &deadline).expect("build upserts");
 
-    assert!(revalidate_unchanged_since_sample(&discovered, &upserts, &limits).is_ok());
+    assert!(revalidate_unchanged_since_sample(&discovered, &upserts, &limits, &deadline).is_ok());
 }
 
 #[test]

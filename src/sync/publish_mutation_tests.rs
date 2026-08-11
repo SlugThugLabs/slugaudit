@@ -45,12 +45,19 @@ fn sample_all_rejects_strictly_over_the_byte_limit_not_at_or_under_it() {
     write(project.path(), "a.rs", b"12345");
     let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
 
+    let generous = crate::util::Deadline::after(std::time::Duration::from_secs(60));
     let exact = ResourceLimits {
         max_total_import_bytes: 5,
         ..ResourceLimits::default()
     };
     assert!(
-        sample_all(&discovered, &exact, &crate::progress::NoopProgressSink).is_ok(),
+        sample_all_with_deadline(
+            &discovered,
+            &exact,
+            &crate::progress::NoopProgressSink,
+            &generous
+        )
+        .is_ok(),
         "a total exactly at the limit must be accepted, not rejected"
     );
 
@@ -60,10 +67,11 @@ fn sample_all_rejects_strictly_over_the_byte_limit_not_at_or_under_it() {
     };
     assert!(
         matches!(
-            sample_all(
+            sample_all_with_deadline(
                 &discovered,
                 &one_under_needed,
-                &crate::progress::NoopProgressSink
+                &crate::progress::NoopProgressSink,
+                &generous
             ),
             Err(PublishError::ImportTooLarge { .. })
         ),
