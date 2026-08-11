@@ -53,3 +53,16 @@ cargo build --release
   any in-flight import before executing — never answers from partial state.
 - **Resource-bounded.** File size, query steps, wall clock, and response
   size are all capped. `#![forbid(unsafe_code)]` at the crate root.
+
+## License
+
+Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+Free for noncommercial purposes — research, personal study, hobby and
+amateur projects, and use by charitable, educational, research, or
+government organizations.
+
+**Commercial use requires a separate license.** Contact the copyright
+holder (SlugThugLabs) for terms before any commercial distribution or use.
+
+This is not an OSI-approved open-source license.

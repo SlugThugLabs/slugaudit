@@ -246,6 +246,8 @@ are all recorded and passing. The release gate was executed and recorded
 on 2026-08-10 (`.planning/RELEASE_CHECKLIST.md`, Task 12.3): every gate
 green — fmt, check, clippy `-D warnings`, 332 tests, source limits,
 `cargo audit` (0 advisories), `cargo deny` (all ok), coverage 89.32%,
-release build sha256 recorded. Remaining: the scoped mutation baseline, a
-startup/memory budget, and the license decision (PolyForm-Noncommercial
-blocks commercial distribution) — see the top of this file.
+release build sha256 recorded. The license is decided and applied:
+`LICENSE` carries the full PolyForm Noncommercial 1.0.0 text — noncommercial
+use is free; commercial use requires a separate license from the copyright
+holder (SlugThugLabs). Remaining: the scoped mutation baseline and a
+startup/memory budget — see the top of this file.

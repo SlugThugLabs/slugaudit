@@ -356,3 +356,25 @@ Format: date — title; status; context; decision; rationale; consequences.
   Full gates green: 337 lib tests (7 new timeout + 2 deadline unit),
   fmt, clippy `-D warnings`, source-limits PASS, no-duplicates PASS.
 
+## 2026-08-10 — License decision: PolyForm Noncommercial 1.0.0 applied
+
+- **Status**: decided
+- **Context**: `Cargo.toml` declared `license =
+  "PolyForm-Noncommercial-1.0.0"` but no `LICENSE` file existed — the
+  metadata was not legally applied — and the decision was still listed as
+  open in `.planning/README.md`.
+- **Decision**: keep `PolyForm-Noncommercial-1.0.0`. Add the full official
+  license text as `LICENSE` (with a `Required Notice` line — copyright
+  SlugThugLabs), reference it from `README.md`, and close the open item.
+  Noncommercial use is free; commercial use requires a separate license
+  from the copyright holder (a commercial license channel is the intended
+  revenue path).
+- **Rationale**: the goal is shared source with a reserved commercial
+  revenue path; permissive licensing would forfeit that. The license is
+  not OSI-approved open source, so adoption is deliberately gated to
+  noncommercial users and organizations.
+- **Consequences**: `cargo deny check licenses` continues to pass
+  (already allow-listed); `cargo package` ships the `LICENSE` file; any
+  commercial distribution requires executing a commercial license with
+  the copyright holder first.
+
