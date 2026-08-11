@@ -38,15 +38,7 @@ impl StoreError {
     #[must_use]
     pub fn is_corruption(&self) -> bool {
         match self {
-            Self::Open(error) | Self::Configure(error) => matches!(
-                error,
-                rusqlite::Error::SqliteFailure(failure, _)
-                    if matches!(
-                        failure.code,
-                        rusqlite::ErrorCode::DatabaseCorrupt
-                            | rusqlite::ErrorCode::NotADatabase
-                    )
-            ),
+            Self::Open(error) | Self::Configure(error) => super::is_rusqlite_corruption(error),
             Self::Migration(error) => error.is_corruption(),
             Self::Symlink
             | Self::Permissions(_)

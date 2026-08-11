@@ -33,6 +33,9 @@ pub use revision::{FileRecord, RevisionError};
 mod timeout_tests;
 
 #[cfg(test)]
+pub(crate) mod test_support;
+
+#[cfg(test)]
 pub(super) use publish_cas::publish_with_limits;
 #[cfg(test)]
 pub(super) use reconcile::{reconcile_dirty_paths_with_deadline, sync_with_barrier_with_deadline};

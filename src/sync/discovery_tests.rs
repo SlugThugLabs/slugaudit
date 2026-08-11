@@ -1,13 +1,6 @@
 use super::*;
+use crate::sync::test_support::write;
 use std::fs;
-
-fn write(root: &Path, relative: &str, content: &[u8]) {
-    let path = root.join(relative);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent dirs");
-    }
-    fs::write(path, content).expect("write fixture file");
-}
 
 #[test]
 fn discovers_source_config_and_doc_files_in_sorted_order() {

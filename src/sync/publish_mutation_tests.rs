@@ -5,15 +5,7 @@
 //! `publish_race_tests.rs` to keep both under the source-size gate.
 use super::*;
 use crate::store::open_read_write;
-use std::fs;
-
-fn write(root: &Path, relative: &str, content: &[u8]) {
-    let path = root.join(relative);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent dirs");
-    }
-    fs::write(path, content).expect("write fixture file");
-}
+use crate::sync::test_support::write;
 
 #[test]
 fn is_retryable_is_true_only_for_the_two_documented_race_hazards() {

@@ -21,6 +21,9 @@ mod query_value;
 mod report;
 mod structure;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 pub use context::ensure_synced;
 pub use finding::{FindingRequest, FindingResponse, finding};
 pub use health::{HealthRequest, HealthResponse, health};

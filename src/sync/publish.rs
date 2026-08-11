@@ -25,8 +25,6 @@ pub(super) use super::sample::sample_all_with_deadline;
 pub(super) use crate::model::ResourceLimits;
 #[cfg(test)]
 pub(super) use rusqlite::Connection;
-#[cfg(test)]
-use std::path::Path;
 
 #[derive(Debug, Error)]
 pub enum PublishError {

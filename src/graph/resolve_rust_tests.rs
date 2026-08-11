@@ -2,16 +2,12 @@
 use super::*;
 use crate::graph::reference::ImportReference;
 use crate::graph::resolver::ResolutionKind;
-use std::collections::HashSet;
+use crate::graph::test_support::paths;
 
 fn refer(text: &str) -> ImportReference {
     ImportReference {
         text: text.to_owned(),
     }
-}
-
-fn paths<'a>(list: &[&'a str]) -> HashSet<&'a str> {
-    list.iter().copied().collect()
 }
 
 #[test]

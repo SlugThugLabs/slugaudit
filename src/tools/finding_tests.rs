@@ -1,16 +1,9 @@
 use super::*;
 use crate::sync;
+use crate::tools::test_support::activated_project;
 use rmcp::handler::server::wrapper::Parameters;
 use rusqlite::Connection;
 use std::fs;
-
-fn activated_project(relative: &str, content: &[u8]) -> tempfile::TempDir {
-    let project = tempfile::tempdir().expect("project dir");
-    fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
-        .expect("activate project");
-    fs::write(project.path().join(relative), content).expect("write fixture file");
-    project
-}
 
 fn base_request(project: &tempfile::TempDir, file: &str) -> FindingRequest {
     FindingRequest {

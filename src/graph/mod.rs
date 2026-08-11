@@ -8,6 +8,9 @@ mod resolve;
 mod resolve_rust;
 pub(crate) mod resolver;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 use std::collections::HashSet;
 
 /// True if `resolve_imports` actually models `language`'s import syntax.

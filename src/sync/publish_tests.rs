@@ -1,29 +1,11 @@
 //! End-to-end publish scenarios: first sync, unchanged reuse, parser-version
 //! reanalysis, modify+delete, invalid UTF-8, real parsed evidence, cascade
 //! delete.
-// slugaudit-line-exception: approved-by=agent; reason=one end-to-end publish scenario per sync invariant, all sharing the write/stored_paths fixture helpers against a real SQLite database; splitting would force a cross-module test harness or duplicate the helpers in every file
+// slugaudit-line-exception: approved-by=agent; reason=one end-to-end publish scenario per sync invariant against a real SQLite database; the shared write/stored_paths fixture helpers live in sync::test_support
 use super::*;
 use crate::store::open_read_write;
+use crate::sync::test_support::{stored_paths, write};
 use std::fs;
-
-fn write(root: &Path, relative: &str, content: &[u8]) {
-    let path = root.join(relative);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent dirs");
-    }
-    fs::write(path, content).expect("write fixture file");
-}
-
-fn stored_paths(connection: &Connection) -> Vec<String> {
-    let mut statement = connection
-        .prepare("SELECT path FROM files ORDER BY path")
-        .expect("prepare");
-    statement
-        .query_map([], |row| row.get(0))
-        .expect("query")
-        .collect::<Result<_, _>>()
-        .expect("collect")
-}
 
 #[test]
 fn invalid_utf8_is_recorded_as_evidence_not_silently_swallowed() {

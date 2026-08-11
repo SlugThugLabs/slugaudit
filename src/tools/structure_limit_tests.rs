@@ -4,16 +4,8 @@
 //! so each file stays under the source-size cap.
 
 use super::*;
+use crate::tools::test_support::activated_project;
 use rmcp::handler::server::wrapper::Parameters;
-use std::fs;
-
-fn activated_project(relative: &str, content: &[u8]) -> tempfile::TempDir {
-    let project = tempfile::tempdir().expect("project dir");
-    fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
-        .expect("activate project");
-    fs::write(project.path().join(relative), content).expect("write fixture file");
-    project
-}
 
 fn ask(
     project: &tempfile::TempDir,

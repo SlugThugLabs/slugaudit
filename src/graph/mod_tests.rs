@@ -1,8 +1,5 @@
 use super::*;
-
-fn paths<'a>(list: &[&'a str]) -> HashSet<&'a str> {
-    list.iter().copied().collect()
-}
+use crate::graph::test_support::paths;
 
 #[test]
 fn every_source_produces_exactly_one_edge_in_order() {

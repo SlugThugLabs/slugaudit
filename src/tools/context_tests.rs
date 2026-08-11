@@ -1,4 +1,5 @@
 use super::*;
+use crate::tools::test_support::activated_project;
 use std::fs;
 
 #[test]
@@ -23,14 +24,6 @@ fn a_corrupt_derived_database_is_discarded_and_rebuilt_from_project_files() {
         .query_row("SELECT count(*) FROM files", [], |row| row.get(0))
         .expect("rebuilt file row");
     assert_eq!(count, 1);
-}
-
-fn activated_project(relative: &str, content: &[u8]) -> tempfile::TempDir {
-    let project = tempfile::tempdir().expect("project dir");
-    fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
-        .expect("activate project");
-    fs::write(project.path().join(relative), content).expect("write fixture file");
-    project
 }
 
 /// Deterministic sync for the freshness tests: a local manager with NO

@@ -5,15 +5,7 @@
 use super::*;
 use crate::store::open_read_write;
 use crate::sync::publish::publish;
-use std::fs;
-
-fn write(root: &Path, relative: &str, content: &[u8]) {
-    let path = root.join(relative);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent dirs");
-    }
-    fs::write(path, content).expect("write fixture file");
-}
+use crate::sync::test_support::write;
 
 fn setup_project() -> (tempfile::TempDir, tempfile::TempDir, Connection) {
     let project = tempfile::tempdir().expect("project dir");

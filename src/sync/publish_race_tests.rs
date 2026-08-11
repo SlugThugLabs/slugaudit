@@ -4,26 +4,7 @@
 //! `publish_tests.rs` to keep both files under the source-size gate.
 use super::*;
 use crate::store::open_read_write;
-use std::fs;
-
-fn write(root: &Path, relative: &str, content: &[u8]) {
-    let path = root.join(relative);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent dirs");
-    }
-    fs::write(path, content).expect("write fixture file");
-}
-
-fn stored_paths(connection: &Connection) -> Vec<String> {
-    let mut statement = connection
-        .prepare("SELECT path FROM files ORDER BY path")
-        .expect("prepare");
-    statement
-        .query_map([], |row| row.get(0))
-        .expect("query")
-        .collect::<Result<_, _>>()
-        .expect("collect")
-}
+use crate::sync::test_support::{stored_paths, write};
 
 // --- File-changed-during-sample (TOCTOU) coverage ---
 

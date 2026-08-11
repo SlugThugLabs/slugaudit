@@ -8,20 +8,11 @@ use crate::model::ResourceLimits;
 use crate::store::open_read_write;
 use crate::sync::discovery::{discover, discover_with_deadline};
 use crate::sync::sample::sample_all_with_deadline;
+use crate::sync::test_support::write;
 use crate::util::Deadline;
 use crate::watch::WatchState;
 use std::collections::HashSet;
-use std::fs;
-use std::path::Path;
 use std::time::Duration;
-
-fn write(root: &Path, relative: &str, content: &[u8]) {
-    let path = root.join(relative);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent dirs");
-    }
-    fs::write(path, content).expect("write fixture file");
-}
 
 fn tiny_budget() -> Deadline {
     // `Duration::ZERO` makes `elapsed >= budget` always true, so the abort

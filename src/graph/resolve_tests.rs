@@ -1,9 +1,5 @@
 use crate::graph::resolver::resolve_one;
-use std::collections::HashSet;
-
-fn paths<'a>(list: &[&'a str]) -> HashSet<&'a str> {
-    list.iter().copied().collect()
-}
+use crate::graph::test_support::paths;
 
 #[test]
 fn python_dot_import_resolves_to_package_init() {

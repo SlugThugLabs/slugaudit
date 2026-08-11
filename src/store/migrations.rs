@@ -18,21 +18,10 @@ impl MigrationError {
     #[must_use]
     pub fn is_corruption(&self) -> bool {
         match self {
-            Self::ReadVersion(error) | Self::Apply(error) => is_corruption(error),
+            Self::ReadVersion(error) | Self::Apply(error) => super::is_rusqlite_corruption(error),
             Self::UnsupportedVersion { .. } => false,
         }
     }
-}
-
-fn is_corruption(error: &rusqlite::Error) -> bool {
-    matches!(
-        error,
-        rusqlite::Error::SqliteFailure(failure, _)
-            if matches!(
-                failure.code,
-                rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase
-            )
-    )
 }
 
 /// Brings a freshly-opened database up to `CURRENT_SCHEMA_VERSION`.
