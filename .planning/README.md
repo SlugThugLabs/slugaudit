@@ -54,14 +54,24 @@ gates pass (fmt, clippy `-D warnings`, source-size gate, 329 tests, coverage
   hint rather than serving mismatched data.
 
 **What's not yet implemented:**
-- No real-MCP end-to-end workflow test yet (Task 12.2: activate →
-  initialize → report → query → structure → finding → modify → verify
-  stale). The fixture and its golden-manifest contract (Task 12.1) are
-  done — `tests/fixtures/multilang/` + `tests/fixture_contract.rs`.
 - No full-crate mutation-testing baseline (CI mutation is scoped to
-  revision/publish/hash/context and `continue-on-error`).
+  revision/publish/hash/context and `continue-on-error`; the release
+  checklist records a dedicated `cargo-mutants` run as pending).
 - Startup latency and peak memory have no measured budget yet (noted in
   `.planning/PERFORMANCE.md`); everything else in Task 9.2 has a baseline.
+
+The real-MCP end-to-end workflow (Task 12.2) is **done**:
+`tests/stdio_protocol.rs` drives the compiled binary over real stdio
+through the whole acceptance sequence — `initialize` → `report` → `query`
+(read, then a write attempt rejected at the connection level) →
+`structure` → `finding` (persisted `current`) → source modified → finding
+flips to `stale` with a second revision — plus restart behavior (a fresh
+server serves the same revision from the persisted database).
+
+`health` is genuinely read-only: calling it with a path never syncs,
+never registers a watch, and never writes — it reports watcher state (if
+registered) and database state (if the database exists) as they already
+are, and the response fields document the fix in the decision log.
 
 See `PACKAGING.md` for installation, MCP registration, activation, database
 location/permissions, and upgrade/removal documentation. See
@@ -228,9 +238,14 @@ resource limits must add focused tests before it is considered complete.
 ## Status
 
 The repository is functional and gate-clean. The performance baseline
-(`.planning/PERFORMANCE.md`, Task 9.2) and the Phase 12 acceptance fixture
+(`.planning/PERFORMANCE.md`, Task 9.2), the Phase 12 acceptance fixture
 with its versioned golden manifest and evidence contract
-(`tests/fixtures/multilang/`, `tests/fixture_contract.rs`) are recorded
-and passing; remaining work is the real-MCP end-to-end workflow test
-(Task 12.2) and the full release gate (Task 12.3) — see the top of this
-file.
+(`tests/fixtures/multilang/`, `tests/fixture_contract.rs`), and the
+real-MCP end-to-end workflow test (`tests/stdio_protocol.rs`, Task 12.2)
+are all recorded and passing. The release gate was executed and recorded
+on 2026-08-10 (`.planning/RELEASE_CHECKLIST.md`, Task 12.3): every gate
+green — fmt, check, clippy `-D warnings`, 332 tests, source limits,
+`cargo audit` (0 advisories), `cargo deny` (all ok), coverage 89.32%,
+release build sha256 recorded. Remaining: the scoped mutation baseline, a
+startup/memory budget, and the license decision (PolyForm-Noncommercial
+blocks commercial distribution) — see the top of this file.

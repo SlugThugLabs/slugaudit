@@ -211,6 +211,62 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
     assert_eq!(finding_result["status"], "current");
     assert!(finding_result["id"].as_i64().is_some_and(|id| id > 0));
 
+    // --- Workflow act 2: the finding must go stale the moment the source
+    // it was bound to changes, across a real sync on a live server. ---
+    std::fs::write(
+        project.path().join("lib.rs"),
+        b"pub fn a() { changed(); }\n",
+    )
+    .expect("modify source");
+    // The server's watcher delivers modify events asynchronously; poll the
+    // revision count instead of sleeping a fixed amount, so a slow CI
+    // machine can't turn a correct test into a flaky one. Each call that
+    // sees no pending event is a no-op sync; once the event lands, the
+    // reconcile publishes revision 2 (and invalidates the finding).
+    let mut revision_count: i64 = 1;
+    for _ in 0..10 {
+        let sync_call = format!(
+            r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"query","arguments":{{"path":"{project_path}","sql":"SELECT count(*) AS n FROM revisions"}}}}}}"#
+        );
+        server.send(&sync_call);
+        let sync_response: serde_json::Value =
+            serde_json::from_str(&server.recv_stdout_line()).expect("sync response is valid JSON");
+        assert_eq!(sync_response["id"], 7);
+        let sync_content = sync_response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("sync result has text content");
+        let sync_result: serde_json::Value =
+            serde_json::from_str(sync_content).expect("sync result text is JSON");
+        revision_count = sync_result["rows"][0]["n"]
+            .as_i64()
+            .expect("revision count is a number");
+        if revision_count == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    assert_eq!(
+        revision_count, 2,
+        "the modification must publish a second revision"
+    );
+
+    let stale_call = format!(
+        r#"{{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{{"name":"query","arguments":{{"path":"{project_path}","sql":"SELECT status FROM findings"}}}}}}"#
+    );
+    server.send(&stale_call);
+    let stale_response: serde_json::Value =
+        serde_json::from_str(&server.recv_stdout_line()).expect("stale response is valid JSON");
+    assert_eq!(stale_response["id"], 8);
+    let stale_content = stale_response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("stale result has text content");
+    let stale_result: serde_json::Value =
+        serde_json::from_str(stale_content).expect("stale result text is JSON");
+    assert_eq!(
+        stale_result["rows"][0]["status"], "stale",
+        "the finding must flip to stale once its source changed"
+    );
+
     assert!(
         server.has_stderr_output(),
         "startup diagnostics should reach stderr"
@@ -236,5 +292,54 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
     assert!(
         !stderr.contains("\"jsonrpc\""),
         "stderr must never carry JSON-RPC protocol content: {stderr}"
+    );
+}
+
+/// Restart behavior (release-gate item): after the server process exits, a
+/// fresh server must serve the project's last revision from the persisted
+/// database — the database is the source of truth across restarts, and
+/// freshness re-verification still converges on the same revision for an
+/// unchanged project.
+#[test]
+fn restart_serves_the_same_revision_from_disk() {
+    let project = tempfile::tempdir().expect("project dir");
+    std::fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
+        .expect("activate project");
+    std::fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write fixture file");
+    let project_path = project.path().to_string_lossy().replace('\\', "/");
+
+    let report_revision = |server: &mut ServerProcess| -> String {
+        server.send(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"0.0.1"}}}"#,
+        );
+        let _: serde_json::Value =
+            serde_json::from_str(&server.recv_stdout_line()).expect("initialize response");
+        server.send(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
+
+        let call = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"report","arguments":{{"path":"{project_path}"}}}}}}"#
+        );
+        server.send(&call);
+        let response: serde_json::Value =
+            serde_json::from_str(&server.recv_stdout_line()).expect("report response");
+        let content = response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("report text");
+        let report: serde_json::Value = serde_json::from_str(content).expect("report JSON");
+        report["revision_id"]
+            .as_str()
+            .expect("revision id")
+            .to_owned()
+    };
+
+    let mut first = ServerProcess::spawn();
+    let first_revision = report_revision(&mut first);
+    drop(first); // close stdin → graceful shutdown
+
+    let mut second = ServerProcess::spawn();
+    let second_revision = report_revision(&mut second);
+    assert_eq!(
+        second_revision, first_revision,
+        "a fresh server must serve the same revision from the persisted database"
     );
 }

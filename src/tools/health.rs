@@ -36,11 +36,12 @@ use super::ToolCounters;
 pub struct HealthRequest {
     /// Optional project root. When omitted, returns watcher state for
     /// every project currently registered with the server and skips the
-    /// per-database stats. When supplied, returns stats for that project
-    /// and runs `ensure_synced` so the snapshot is consistent with what
-    /// the next tool call would see (but a long first import is still
-    /// bounded — surfaced to consumers via the elapsed time in the
-    /// response, not by making this tool hang).
+    /// per-database stats. When supplied, returns stats for that project:
+    /// watcher state if the project is registered with the server's
+    /// watcher, database state if the project's database exists, and the
+    /// counters otherwise. Reading is strictly read-only — this tool
+    /// never syncs, never registers a watch, and never writes, so a
+    /// health check can never perturb the state it is reporting on.
     #[schemars(default)]
     pub path: Option<String>,
 }
@@ -112,14 +113,14 @@ pub enum HealthPhase {
 ///
 /// # Errors
 ///
-/// Returns an error only if `request.path` was provided but
-/// `ensure_synced` failed for a host-level reason (no active project for
-/// that path, an internal error in the sync manager). All other failure
-/// modes — DB locked, query failed, no current revision — are surfaced
-/// as zero/None fields so the caller still gets an actionable response.
+/// Returns an error only if `request.path` was provided but no project is
+/// enabled for it. All other failure modes — database missing or locked,
+/// query failed, no current revision, project not registered with the
+/// watcher — are surfaced as zero/None fields so the caller still gets an
+/// actionable response.
 pub fn health(
     request: &Parameters<HealthRequest>,
-    sink: &dyn crate::progress::ProgressSink,
+    _sink: &dyn crate::progress::ProgressSink,
 ) -> Result<Json<HealthResponse>, ErrorData> {
     let HealthRequest { path } = &request.0;
 
@@ -128,7 +129,7 @@ pub fn health(
     let last_sync = manager.last_sync_unix_seconds();
 
     let fields = match path.as_deref() {
-        Some(p) => compute_project_state(p, manager, sink)?,
+        Some(p) => compute_project_state(p, manager)?,
         None => compute_global_only_state(manager),
     };
 
@@ -149,9 +150,13 @@ pub fn health(
     }))
 }
 
-/// Computes every per-project field of the health response. Calls
-/// `ensure_synced` so the snapshot matches the database state any
-/// subsequent tool call would actually serve.
+/// Computes every per-project field of the health response **without any
+/// side effect**: it resolves the project root, reads the watcher state if
+/// the project is already registered, and reads the database read-only if
+/// it exists. It never calls `ensure_current`, so a health call can never
+/// trigger a publish, register a watch, or change watcher health — the
+/// snapshot is whatever the last real tool call left behind, which is
+/// exactly what an operator wants from a health check.
 /// Per-project fields of [`HealthResponse`], grouped so callers can
 /// destructure a single tuple-shaped return rather than threading
 /// nine outputs through the call site. The fields are intentionally
@@ -173,60 +178,68 @@ struct ProjectHealthFields {
 fn compute_project_state(
     path: &str,
     manager: &crate::sync::SourceSyncManager,
-    sink: &dyn crate::progress::ProgressSink,
 ) -> Result<ProjectHealthFields, ErrorData> {
-    let synced = manager.ensure_current(path, sink)?;
-    let state = manager
-        .watch_state_for(synced.root.as_path())
-        .ok_or_else(|| {
-            ErrorData::internal_error("watch state missing after successful ensure_current", None)
-        })?;
+    let root = crate::project::find_project_root(std::path::Path::new(path))
+        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+    let database_path = crate::project::database_path(&root);
+    // Read-only: `watch_state_for` never registers a watch and never
+    // changes watcher health (unlike `activate`).
+    let snapshot = manager
+        .watch_state_for(root.as_path())
+        .map(|state| state.snapshot());
 
-    let snapshot = state.snapshot();
-    let mut connection = store::open_read_only(&synced.database_path).map_err(|error| {
-        // Theoretically impossible here: ensure_current just opened it
-        // read-write. If read-only then fails (a TOCTOU mid-sync), we
-        // surface the error so the operator knows the database is in
-        // motion, rather than pretending health is fine.
-        tracing::warn!(
-            database_path = %synced.database_path.display(),
-            error = %error,
-            "health: re-opening read-only after ensure_current failed",
-        );
-        ErrorData::internal_error(format!("opening read-only for health: {error}"), None)
-    })?;
+    let (revision_id, parser_pack_version, file_count) = read_database_fields(&database_path);
 
+    let phase = match snapshot.as_ref() {
+        Some(snapshot) => derive_phase(
+            snapshot.health,
+            &revision_id,
+            snapshot.has_unreconciled_events(),
+        ),
+        // No watcher state: the project was never registered with this
+        // server's watcher (or the server just started). DB fields, if
+        // any, are still surfaced; the phase honestly says the server
+        // has nothing active for this project.
+        None => HealthPhase::NoActiveProject,
+    };
+
+    Ok(ProjectHealthFields {
+        phase,
+        watcher_health: snapshot.as_ref().map(|s| s.health),
+        pending_dirty: snapshot.as_ref().map(|s| s.dirty_paths.len()),
+        pending_deleted: snapshot.as_ref().map(|s| s.deleted_paths.len()),
+        watcher_sequence: snapshot.as_ref().map(|s| s.watcher_sequence),
+        last_verified_sequence: snapshot.as_ref().map(|s| s.last_verified_sequence),
+        revision_id,
+        parser_pack_version,
+        file_count,
+    })
+}
+
+/// Reads the DB-derived health fields read-only, degrading gracefully when
+/// the database doesn't exist yet (project enabled but never synced) or
+/// can't be opened — a health check must never fail on transient DB state.
+fn read_database_fields(database_path: &std::path::Path) -> (Option<String>, Option<String>, i64) {
+    if !database_path.exists() {
+        return (None, None, -1);
+    }
+    let Ok(mut connection) = store::open_read_only(database_path) else {
+        return (None, None, -1);
+    };
     let revision_id = current_revision_id(&mut connection);
     let parser_pack_version = current_parser_pack_version(&mut connection);
     let file_count = match count_files(&mut connection) {
         Ok(count) => count,
         Err(error) => {
             tracing::warn!(
-                database_path = %synced.database_path.display(),
+                database_path = %database_path.display(),
                 error = %error,
                 "health: file count query failed",
             );
             -1
         }
     };
-
-    let phase = derive_phase(
-        snapshot.health,
-        &revision_id,
-        snapshot.has_unreconciled_events(),
-    );
-
-    Ok(ProjectHealthFields {
-        phase,
-        watcher_health: Some(snapshot.health),
-        pending_dirty: Some(snapshot.dirty_paths.len()),
-        pending_deleted: Some(snapshot.deleted_paths.len()),
-        watcher_sequence: Some(snapshot.watcher_sequence),
-        last_verified_sequence: Some(snapshot.last_verified_sequence),
-        revision_id,
-        parser_pack_version,
-        file_count,
-    })
+    (revision_id, parser_pack_version, file_count)
 }
 
 /// Builds a per-project field set from the global state only — no

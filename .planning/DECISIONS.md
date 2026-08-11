@@ -274,3 +274,36 @@ Format: date — title; status; context; decision; rationale; consequences.
   registration is never touched; the missing-CLI error carries a guard
   that skips on machines where an agent CLI is actually installed.
 
+## 2026-08-10 — health tool made genuinely read-only; Task 12.2 completed; release gate run
+
+- **Status**: decided
+- **Context**: the audit flagged that `health`'s docs claimed it "never
+  cause[s] a sync, never emit[s] MCP progress", but supplying a `path` ran
+  `ensure_current` — which can publish a new revision on a modified
+  project. A health check that perturbs the state it reports on is
+  misleading. Separately, the real-MCP acceptance sequence (Task 12.2)
+  stopped short of the final act (modify → finding stale), and the release
+  gate (Task 12.3) had never been executed.
+- **Decision**: (1) `health` with a path is now strictly read-only:
+  `compute_project_state` resolves the project root, reads watcher state
+  via `watch_state_for` (never registering a watch or changing health),
+  and reads database fields read-only, degrading to None/-1 when the
+  database doesn't exist; it never calls `ensure_current`. Unregistered
+  projects report `NoActiveProject` while still surfacing DB fields.
+  (2) `tests/stdio_protocol.rs` extended with the modify → sync → finding
+  `stale` act and a restart test (fresh server serves the same revision).
+  (3) The release gate was executed and recorded in
+  `RELEASE_CHECKLIST.md` (2026-08-10): all gates green, coverage 89.32%,
+  release sha256 `cee25220cf8888e06e4b41c9de2d9f42252fafe66455b14b4b1371203966aa39`.
+- **Rationale**: observability must be side-effect-free; acceptance must
+  prove the full lifecycle including invalidation, and a release gate is
+  only meaningful if executed and recorded.
+- **Consequences**: two new regression tests pin the read-only guarantee
+  (`health_with_a_path_never_triggers_a_sync`, which would fail under the
+  old behavior, and `an_enabled_but_never_synced_project_degrades_gracefully`);
+  `health`'s `sink` parameter is now unused by the path branch (kept for
+  the tool-call contract). `cargo-mutants`, `cargo-nextest`, and
+  `cargo-geiger` are not installed locally — the checklist records the
+  equivalents run and marks those three items with reasons; a dedicated
+  mutation run is required before tagging a release.
+
