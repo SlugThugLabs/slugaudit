@@ -300,3 +300,33 @@ fn sync_with_barrier_cap_protects_against_runaway_event_producers() {
     // full verification instead of trying to drain the racing producer.
     assert_eq!(state.health(), crate::watch::WatcherHealth::Desynced);
 }
+
+/// The reconcile publish is CAS-guarded: when the expected baseline doesn't
+/// match the stored current revision, the whole reconcile must fail closed
+/// with a revision (StaleBaseline) error rather than clobber a newer
+/// revision with older disk state — the reconcile-path mirror of the
+/// publish-side race guarantee.
+#[test]
+fn reconcile_with_a_stale_expected_revision_fails_closed() {
+    let (project, _db_dir, mut connection, _revision) = setup_project();
+
+    // The dirty path genuinely changed on disk, but the expected baseline
+    // is stale — the commit must be rejected, not forced through.
+    write(project.path(), "a.rs", b"fn a_changed() {}");
+    let dirty = ["a.rs"].iter().map(|s| s.to_string()).collect();
+    let deleted = HashSet::new();
+
+    let error = reconcile_dirty_paths(
+        &mut connection,
+        project.path(),
+        dirty,
+        deleted,
+        Some("rev-stale"),
+    )
+    .expect_err("a mismatched expected revision must be rejected");
+
+    assert!(
+        matches!(error, ReconcileError::Revision(_)),
+        "expected a revision (CAS) error, got {error:?}"
+    );
+}

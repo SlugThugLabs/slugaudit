@@ -105,14 +105,16 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
-      # Threshold is real measured line coverage (89.12% as of 2026-08-10,
-      # via `cargo llvm-cov --all-targets --all-features --summary-only` run
-      # locally against this revision) minus a few points of margin so
-      # normal coverage noise doesn't flake the gate. Recalibrate this
-      # number deliberately as real coverage moves — it is not an
+      # Line coverage is gated by tools/check_coverage.sh, which reads the
+      # merged JSON line coverage (totals.lines.percent — the metric
+      # --fail-under-lines compares) and prints it, so the gated number is
+      # never ambiguous. The --summary-only text table prints region-
+      # weighted columns that have been misread as line coverage before;
+      # the script reads the JSON report instead. Recalibrate the threshold
+      # in the script deliberately as real coverage moves — it is not an
       # aspirational target picked in advance.
       - name: Coverage (cargo llvm-cov)
-        run: cargo llvm-cov --all-targets --all-features --fail-under-lines 89
+        run: bash tools/check_coverage.sh
 
       - name: Install mutation testing tooling
         uses: taiki-e/install-action@v2

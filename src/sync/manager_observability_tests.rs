@@ -165,3 +165,94 @@ fn a_failing_verification_publish_is_surfaced_as_an_error() {
         "a failed verification publish must surface as an error"
     );
 }
+
+/// A corrupt on-disk database must be discarded and rebuilt from scratch on
+/// the next sync rather than erroring forever — the project stays usable.
+/// Exercises `ensure_current`'s corruption-at-open branch (discard +
+/// `publish_from_scratch`).
+#[test]
+fn a_corrupt_database_is_discarded_and_rebuilt_on_the_next_sync() {
+    let manager = SourceSyncManager::with_watcher();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+    let _synced = sync_project(&manager, &project);
+
+    // Replace the database with bytes that are not a SQLite database at
+    // all, so the next open fails as corrupt.
+    let database = project.path().join(".planning/slugaudit/project.db");
+    fs::write(&database, b"this is not a sqlite database").expect("corrupt db");
+
+    // ensure_current must discard the corrupt database and rebuild from
+    // scratch instead of erroring — the project stays usable. (The rebuilt
+    // database's first revision id is `rev-1` again: ids are per-database
+    // rowids, so the revision id is not a uniqueness signal across
+    // incarnations.)
+    let _synced2 = sync_project(&manager, &project);
+    let connection = open_db(&project);
+    let content: Option<String> = connection
+        .query_row(
+            "SELECT content FROM files WHERE path = 'lib.rs'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read content from the rebuilt database");
+    assert!(
+        content.unwrap().contains("pub fn a()"),
+        "the rebuilt index must still serve the file's evidence"
+    );
+}
+
+/// An unopenable database (the db path is a directory) must surface as an
+/// error, never a panic, and never silently publish into nothing.
+#[test]
+fn an_unopenable_database_surfaces_as_an_error_not_a_panic() {
+    let manager = SourceSyncManager::new();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+
+    let database = project.path().join(".planning/slugaudit/project.db");
+    fs::create_dir_all(&database).expect("make the db path a directory");
+
+    let result = manager.ensure_current(
+        &project.path().to_string_lossy(),
+        &crate::progress::NoopProgressSink,
+    );
+    assert!(
+        result.is_err(),
+        "an unopenable database must error, not panic"
+    );
+}
+
+/// When the watcher is Healthy and incremental reconcile fails, the
+/// watcher must be marked `Desynced` (so the next call does a full
+/// verification) and the failure surfaced — never a silent serve of stale
+/// evidence. A path that turns into a directory between syncs makes the
+/// re-hash fail deterministically without watcher-timing sleeps.
+#[test]
+fn a_failed_incremental_reconcile_marks_the_watcher_desynced() {
+    let manager = SourceSyncManager::with_watcher();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+    sync_project(&manager, &project);
+
+    let file = project.path().join("lib.rs");
+    fs::remove_file(&file).expect("remove file");
+    fs::create_dir(&file).expect("replace lib.rs with a directory");
+
+    let state = manager.active_watch_state().expect("registered state");
+    state.mark_dirty("lib.rs".to_owned());
+
+    let result = manager.ensure_current(
+        &project.path().to_string_lossy(),
+        &crate::progress::NoopProgressSink,
+    );
+    assert!(
+        result.is_err(),
+        "a failed reconcile must surface as an error"
+    );
+    assert_eq!(
+        state.health(),
+        WatcherHealth::Desynced,
+        "the watcher must be marked untrusted so the next call re-verifies"
+    );
+}

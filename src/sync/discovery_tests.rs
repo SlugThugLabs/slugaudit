@@ -189,3 +189,28 @@ fn scratch_and_temp_files_are_excluded_from_discovery() {
         "only the real source file should be discovered, scratch/temp files must be excluded, got: {paths:?}"
     );
 }
+
+/// `sniff_kind` must report a missing path as `DiscoveryError::Read`, not
+/// panic — a path that vanishes between the walk and the sniff (or is
+/// unreadable) must not take down the whole sync.
+#[test]
+fn sniff_kind_reports_an_error_for_a_missing_file() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let error = sniff_kind(&directory.path().join("missing.rs"))
+        .expect_err("a missing file must be a reported error, not a panic");
+    assert!(matches!(error, DiscoveryError::Read { .. }));
+}
+
+/// Opening a directory succeeds on Unix but reading it fails with EISDIR —
+/// the read-error arm of `sniff_kind`, the same failure a file that
+/// becomes unreadable between walk and sniff would produce.
+#[cfg(unix)]
+#[test]
+fn sniff_kind_reports_an_error_for_an_unreadable_path() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let dir = directory.path().join("dir");
+    fs::create_dir(&dir).expect("create dir");
+
+    let error = sniff_kind(&dir).expect_err("reading a directory must error");
+    assert!(matches!(error, DiscoveryError::Read { .. }));
+}

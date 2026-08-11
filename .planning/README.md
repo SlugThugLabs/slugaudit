@@ -182,7 +182,9 @@ dependency tree.
 
 CI additionally runs `tests/stdio_protocol.rs` (the real subprocess/
 JSON-RPC handshake test) as its own named step, a coverage check
-(`cargo llvm-cov`, gated at 89% line coverage), and a mutation-testing step
+(`tools/check_coverage.sh` — reads the merged JSON line coverage and
+prints the gated number, so it can't be misread; threshold 89%), and a
+mutation-testing step
 scoped to the CAS/retry/hash/freshness correctness surface
 (`src/sync/revision.rs`, `src/sync/publish*.rs`, `src/sync/hash.rs`,
 `src/tools/context.rs`). The mutation step is `continue-on-error` because a

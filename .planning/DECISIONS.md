@@ -356,6 +356,39 @@ Format: date — title; status; context; decision; rationale; consequences.
   Full gates green: 337 lib tests (7 new timeout + 2 deadline unit),
   fmt, clippy `-D warnings`, source-limits PASS, no-duplicates PASS.
 
+## 2026-08-10 — Coverage gate made self-documenting; line coverage restored to 90.3%
+
+- **Status**: decided
+- **Context**: a due-diligence pass concluded the `--fail-under-lines`
+  gate was "enforcement-disconnected" (printed 87.7% but exit code 0 at a
+  89 threshold). Reading `cargo-llvm-cov` 0.8.7's source and the JSON
+  report showed the flag compares the merged JSON `totals.lines.percent`
+  (89.59% at the time), while the `--summary-only` text table prints
+  region-weighted columns — the printed number was simply being misread
+  as the gated one.
+- **Decision**: (1) gate through `tools/check_coverage.sh`, which runs
+  `cargo llvm-cov --all-targets --all-features --json`, extracts the
+  merged line percent, prints it ("line coverage: 90.31% … gate 89.0%"),
+  and fails below the threshold — the gated value is now unambiguous and
+  independent of the flag's exact semantics; CI's coverage step calls the
+  script. (2) Add tests for the uncovered timeout-path branches: corrupt
+  database auto-recovery (`discard_corrupt_database` + republish),
+  unopenable database error, Healthy+reconcile-failure → `Desynced`,
+  reconcile CAS `StaleBaseline` fail-closed, and `sniff_kind` read-error
+  handling (6 new tests; suite 337 → 343).
+- **Rationale**: a gate whose measured number can't be misread is the fix;
+  the tests cover the branches a real deployment can hit (corruption,
+  unopenable db, reconcile failure) rather than defensive lines with no
+  trigger.
+- **Consequences**: line coverage 89.59% → 90.31% (gate green with
+  margin). Remaining uncovered lines in the four sync files are defensive
+  by inspection: analyze's load/parse-failure branches (no grammar in the
+  pack fails to load — probed 30+ detected languages, all available),
+  discovery's mid-walk filesystem-race skips, manager's post-drain failure
+  mapping (no test seam after publish commits), reconcile's dead
+  `exclude_count == 0` fallback behind the empty-set early return, and the
+  unused public `activate` method.
+
 ## 2026-08-10 — License decision: PolyForm Noncommercial 1.0.0 applied
 
 - **Status**: decided
