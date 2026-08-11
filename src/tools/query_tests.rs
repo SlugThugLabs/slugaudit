@@ -133,7 +133,7 @@ fn results_are_capped_and_truncation_is_reported() {
 }
 
 #[test]
-fn an_inactive_project_is_a_typed_error_not_a_panic() {
+fn query_on_an_inactive_project_is_a_typed_error_not_a_panic() {
     let project = tempfile::tempdir().expect("project dir");
     let result = ask(&project, "SELECT 1");
     assert!(result.is_err());

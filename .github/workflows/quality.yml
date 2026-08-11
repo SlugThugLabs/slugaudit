@@ -15,6 +15,10 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          # Full history so the no-duplicates check can scan every commit
+          # subject (a shallow clone would only see the tip commit).
+          fetch-depth: 0
 
       - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -44,6 +48,13 @@ jobs:
 
       - name: Check source limits
         run: bash tools/check_source_limits.sh
+
+      # Fails when a commit subject is used more than once in reachable
+      # history (a repeated subject is the fingerprint of the same logical
+      # change being committed twice) or when two test functions share a
+      # name across files (usually a copy-pasted test).
+      - name: Check for duplicate commit subjects and test names
+        run: bash tools/check_no_duplicates.sh
 
       - name: Check compilation
         run: cargo check --all-targets --all-features --locked

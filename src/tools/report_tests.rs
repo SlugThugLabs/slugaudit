@@ -166,7 +166,7 @@ fn malformed_language_value_is_reported_instead_of_dropped() {
 }
 
 #[test]
-fn an_inactive_project_is_a_typed_error_not_a_panic() {
+fn report_on_an_inactive_project_is_a_typed_error_not_a_panic() {
     let project = tempfile::tempdir().expect("project dir");
     let result = report(
         &Parameters(ReportRequest {
