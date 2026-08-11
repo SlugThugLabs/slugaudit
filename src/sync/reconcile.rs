@@ -7,7 +7,7 @@
 //! new events arrive during reconciliation.
 // slugaudit-line-exception: approved-by=agent; reason=reconciliation is one atomic pipeline (snapshot+reconcile+manifest+publish); the barrier-cap test belongs next to the loop it covers
 
-use super::discovery::{DiscoveredFile, FileKind};
+use super::discovery::{DiscoveredFile, DiscoveryError};
 use super::hash;
 use super::revision;
 use super::sample;
@@ -19,6 +19,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ReconcileError {
+    #[error(transparent)]
+    Discovery(#[from] DiscoveryError),
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
     #[error(transparent)]
@@ -105,12 +107,15 @@ pub fn reconcile_dirty_paths(
             continue;
         }
 
-        // Hash differs or file is new — sample, parse, analyze, and add
-        // to the upsert set.
+        // Hash differs or file is new — re-sniff binary-ness exactly the
+        // way the initial import's discovery does, then sample, parse,
+        // analyze, and add to the upsert set. Hardcoding `Indexed` here
+        // would re-index a modified binary file as lossy UTF-8 text.
+        let kind = super::discovery::sniff_kind(&absolute_path)?;
         let discovered = DiscoveredFile {
             relative_path: path.clone(),
             absolute_path: absolute_path.clone(),
-            kind: FileKind::Indexed,
+            kind,
         };
         let sample = sample::sample_file(&discovered, &limits)?;
         let record = sample::to_file_record(sample, &limits);
@@ -304,3 +309,7 @@ fn query_current_parser_pack_version(connection: &Connection) -> Result<String, 
 #[cfg(test)]
 #[path = "reconcile_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "reconcile_binary_tests.rs"]
+mod binary_tests;

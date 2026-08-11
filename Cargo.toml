@@ -29,6 +29,7 @@ which = "7"
 [dev-dependencies]
 criterion = "0.5"
 proptest = "1"
+temp-env = "0.3.6"
 tempfile = "3"
 
 # Criterion benchmarks (Task 9.2). Each bench target is its own binary with

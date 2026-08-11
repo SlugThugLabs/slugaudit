@@ -106,3 +106,7 @@ mod tests;
 #[cfg(test)]
 #[path = "context_race_tests.rs"]
 mod race_tests;
+
+#[cfg(test)]
+#[path = "context_transaction_tests.rs"]
+mod transaction_tests;

@@ -14,6 +14,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static LAST_UNIX_TIME: AtomicI64 = AtomicI64::new(0);
 
+/// Serializes tests that mutate process-global environment variables
+/// (`SLUGTHUG_HOME`, `HOME`) so parallel test threads can't observe each
+/// other's mutations. Test-only; production code never touches it.
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+
 /// Acquires a mutex guard, recovering the inner value if the mutex was
 /// poisoned by a previous holder panicking. Without this recovery, a
 /// single panic inside any critical section guarded by a `Mutex` would

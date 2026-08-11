@@ -171,3 +171,7 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
     let binary = running_binary().map_err(ConnectError::BinaryPath)?;
     connect_one(agent, &prefer_slugthug_binary(&binary))
 }
+
+#[cfg(test)]
+#[path = "connect_tests.rs"]
+mod tests;

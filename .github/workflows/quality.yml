@@ -94,7 +94,7 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
-      # Threshold is real measured line coverage (91.88% as of 2026-08-02,
+      # Threshold is real measured line coverage (89.12% as of 2026-08-10,
       # via `cargo llvm-cov --all-targets --all-features --summary-only` run
       # locally against this revision) minus a few points of margin so
       # normal coverage noise doesn't flake the gate. Recalibrate this

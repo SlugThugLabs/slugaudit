@@ -229,3 +229,7 @@ fn truncate_text(text: &str) -> (String, bool) {
 #[cfg(test)]
 #[path = "structure_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "structure_limit_tests.rs"]
+mod limit_tests;

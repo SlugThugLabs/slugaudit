@@ -118,27 +118,5 @@ fn disable(root: &ProjectRoot) -> Result<Json<ProjectControlResponse>, ErrorData
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn on_action_parses() {
-        let json = r#"{"action":"on"}"#;
-        let req: ProjectControlRequest = serde_json::from_str(json).unwrap();
-        assert!(matches!(req.action, ProjectControlAction::On));
-    }
-
-    #[test]
-    fn off_action_parses() {
-        let json = r#"{"action":"off"}"#;
-        let req: ProjectControlRequest = serde_json::from_str(json).unwrap();
-        assert!(matches!(req.action, ProjectControlAction::Off));
-    }
-
-    #[test]
-    fn path_defaults_to_none() {
-        let json = r#"{"action":"on"}"#;
-        let req: ProjectControlRequest = serde_json::from_str(json).unwrap();
-        assert!(req.path.is_none());
-    }
-}
+#[path = "project_control_tests.rs"]
+mod tests;

@@ -67,6 +67,7 @@ Versions are the locked versions in `Cargo.lock` as of this writing.
 | `proptest` | 1.11.0 | Property tests for paths, spans, evidence limits, resolution round-trips |
 | `tempfile` | 3.27.0 | Fixture databases, temp project roots, watcher-scenario scratch dirs |
 | `criterion` | 0.5.1 | Benchmark harness for `benches/` (Task 9.2); `harness = false` bench targets only |
+| `temp-env` | 0.3.6 | Safe env-var scoping for `install`/`connect` tests (`set_var` is unsafe under edition 2024 + `forbid(unsafe_code)`); Apache-2.0/MIT |
 
 `criterion` is a dev-dependency only, so the release binary is unaffected.
 Benchmark builds are separate targets and are never part of the correctness

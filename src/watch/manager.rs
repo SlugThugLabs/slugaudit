@@ -255,6 +255,10 @@ fn is_excluded_path(relative: &str) -> bool {
 }
 
 #[cfg(test)]
+#[path = "manager_event_tests.rs"]
+mod event_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

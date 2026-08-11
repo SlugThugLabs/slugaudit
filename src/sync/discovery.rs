@@ -79,7 +79,13 @@ fn is_excluded(relative: &Path) -> bool {
         .any(|component| component.as_os_str() == EXCLUDED_COMPONENT)
 }
 
-fn sniff_kind(path: &Path) -> Result<FileKind, DiscoveryError> {
+/// Sniffs whether `path` is binary (a NUL byte in the first
+/// `BINARY_SNIFF_BYTES`) or indexable text. This is the single source of
+/// truth for binary-ness: the initial import calls it during discovery,
+/// and incremental reconcile re-calls it for dirty paths so a file whose
+/// binary-ness changed on disk is classified the same way it would be on a
+/// fresh import.
+pub(crate) fn sniff_kind(path: &Path) -> Result<FileKind, DiscoveryError> {
     use std::io::Read;
     let mut file = std::fs::File::open(path).map_err(|source| DiscoveryError::Read {
         path: path.to_path_buf(),

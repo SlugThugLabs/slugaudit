@@ -83,3 +83,7 @@ pub fn run_install() -> Result<(), InstallError> {
     );
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "install_tests.rs"]
+mod tests;

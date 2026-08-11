@@ -13,7 +13,7 @@ The core correctness mechanisms are in place and exercised by an end-to-end
 test suite: atomic revision publishes, concurrent-safe CAS writes,
 watcher-backed incremental sync, resource-bounded operations, and
 AI-reviewed findings that auto-invalidate on source change. All quality
-gates pass (fmt, clippy `-D warnings`, source-size gate, 281 tests, coverage
+gates pass (fmt, clippy `-D warnings`, source-size gate, 329 tests, coverage
 ≥ 89%).
 
 **What works:**

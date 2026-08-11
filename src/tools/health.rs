@@ -325,3 +325,7 @@ fn count_files(connection: &mut rusqlite::Connection) -> rusqlite::Result<i64> {
 #[cfg(test)]
 #[path = "health_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "health_state_tests.rs"]
+mod state_tests;

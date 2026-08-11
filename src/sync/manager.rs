@@ -394,3 +394,7 @@ impl SourceSyncManager {
 #[cfg(test)]
 #[path = "manager_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "manager_observability_tests.rs"]
+mod observability_tests;

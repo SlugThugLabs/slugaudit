@@ -8,7 +8,7 @@
 //! `watch::state::tests` because it verifies the recovery in the context
 //! where the helper is actually used.
 
-use crate::util::lock_or_recover;
+use crate::util::{at_least_timestamp, hex_encode, lock_or_recover, now_unix};
 use std::sync::{Arc, Mutex};
 
 /// A panic inside a critical section poisons the underlying Mutex; the
@@ -86,4 +86,29 @@ fn lock_or_recover_recovers_multiple_sequential_poisons() {
         );
         *guard += 1000;
     }
+}
+
+#[test]
+fn hex_encode_renders_lowercase_hex() {
+    assert_eq!(hex_encode(b""), "");
+    assert_eq!(hex_encode(b"\x00\xff\x10"), "00ff10");
+    assert_eq!(hex_encode(b"hello"), "68656c6c6f");
+}
+
+#[test]
+fn now_unix_is_nonzero_and_never_moves_backwards() {
+    let first = now_unix();
+    assert!(first > 0, "the epoch must be in the past");
+    let second = now_unix();
+    assert!(
+        second >= first,
+        "consecutive reads must never move backwards"
+    );
+}
+
+#[test]
+fn at_least_timestamp_never_drops_below_the_persisted_value() {
+    assert_eq!(at_least_timestamp(100, Some(200)), 200);
+    assert_eq!(at_least_timestamp(200, Some(100)), 200);
+    assert_eq!(at_least_timestamp(100, None), 100);
 }

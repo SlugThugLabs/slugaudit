@@ -236,3 +236,41 @@ Format: date — title; status; context; decision; rationale; consequences.
   ring's 0.52.6 (warn-level, platform-only, Windows targets never built
   here). Full gate validated on pinned 1.97.1: build, 281 tests passed,
   `cargo deny check` all-ok, clippy -D warnings clean.
+
+## 2026-08-10 — Incremental reconcile re-detects binary files; coverage gate restored
+
+- **Status**: decided
+- **Context**: a due-diligence audit (2026-08-10) found two gate/quality
+  problems. (1) `reconcile_dirty_paths` hardcoded `FileKind::Indexed` for
+  every dirty path, so a binary file modified on disk was re-indexed as
+  lossy UTF-8 text — the initial import's `discover()` sniffs binary-ness,
+  but the incremental watcher path did not. (2) Real measured line
+  coverage had dropped to 82.77% against the 89% gate because the newest
+  safety-critical modules (`project_control` 27.87%, `health` 45.83%,
+  `sync/manager` 60.62%) shipped with thin or no tests.
+- **Decision**: (1) `reconcile_dirty_paths` now calls
+  `discovery::sniff_kind` (the same NUL-byte detector the initial import
+  uses) for every dirty path, with a regression test
+  (`modified_binary_dirty_path_stays_binary_excluded`); `ReconcileError`
+  gains a `Discovery` variant for the read failure. (2) Added tool-level
+  tests across the low-coverage surface: `project_control` enable/disable
+  end-to-end, `health`'s database-backed half, `SourceSyncManager`
+  observability and publish-failure paths (via the `race_hook` seam),
+  `with_verified_*` missing/corrupt-database failure paths,
+  `WatchManager::handle_event` via constructed `notify` events,
+  `install`/`connect` (env-scoped with the new `temp-env` dev-dependency
+  and a shared test env lock), and `structure`'s empty-query / truncation /
+  no-content branches.
+- **Rationale**: binary classification must have one source of truth
+  shared by full and incremental sync; the coverage gate's own rationale
+  ("gate is measured-minus-margin, not aspirational") demands new code be
+  tested before it lands.
+- **Consequences**: measured line coverage is 89.12% (gate green again —
+  the `--fail-under-lines 89` check compares line, not region, coverage);
+  suite grew 279 → 329 tests.  `temp-env` is a dev-dependency only
+  (Apache-2.0/MIT, recorded in `DEPENDENCIES.md`). `connect`'s agent-CLI
+  invocation paths are tested with inert fake `claude`/`grok`/`codex`
+  scripts prepended to `PATH` under the env lock, so a real agent
+  registration is never touched; the missing-CLI error carries a guard
+  that skips on machines where an agent CLI is actually installed.
+
