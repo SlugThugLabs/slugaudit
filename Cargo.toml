@@ -8,6 +8,30 @@ license = "PolyForm-Noncommercial-1.0.0"
 name = "slugaudit-mcp"
 path = "src/main.rs"
 
+# Pure-Rust dev tooling: every gate that used to live in tools/*.sh
+# (a Python heredoc + bash wrapper) is now a first-class cargo bin. CI's
+# workflow calls these directly; locally the same `cargo run --bin <name>`
+# is the single entry point. No shell, no Python interpreter required.
+#
+# Two of the bins are directory-laid-out (`src/bin/<name>/main.rs`) so
+# the algorithm and tests fit under the project's 200-LoC source-size
+# cap without broad exclusions; the remaining two are single files.
+[[bin]]
+name = "check_source_limits"
+path = "src/bin/check_source_limits/main.rs"
+
+[[bin]]
+name = "check_no_duplicates"
+path = "src/bin/check_no_duplicates.rs"
+
+[[bin]]
+name = "check_coverage"
+path = "src/bin/check_coverage.rs"
+
+[[bin]]
+name = "check_performance"
+path = "src/bin/check_performance/main.rs"
+
 [dependencies]
 blake3 = "1"
 ignore = "0.4"

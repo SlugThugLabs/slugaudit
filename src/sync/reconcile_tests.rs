@@ -300,7 +300,6 @@ fn sync_with_barrier_cap_protects_against_runaway_event_producers() {
     // full verification instead of trying to drain the racing producer.
     assert_eq!(state.health(), crate::watch::WatcherHealth::Desynced);
 }
-
 /// The reconcile publish is CAS-guarded: when the expected baseline doesn't
 /// match the stored current revision, the whole reconcile must fail closed
 /// with a revision (StaleBaseline) error rather than clobber a newer

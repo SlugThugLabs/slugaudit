@@ -1,12 +1,12 @@
 # Packaging and installation
 
-SlugAudit is **Phase 0 foundation** software (see `README.md`). There is no
-published crate, no tagged release, and no distributed binary as of this
-writing. Everything in this document describes building and running the
-project from a source checkout today, plus the gaps that exist because a
-real release process doesn't exist yet. Nothing here is aspirational —
-where a capability doesn't exist, that's stated plainly instead of being
-described as if it worked.
+SlugAudit has not been released yet: there is no published crate, no
+tagged release, and no distributed binary as of this writing. Everything
+in this document describes building and running the project from a source
+checkout today, plus the gaps that exist because a real release process
+doesn't exist yet. Nothing here is aspirational — where a capability
+doesn't exist, that's stated plainly instead of being described as if
+it worked.
 
 ## 1. Prerequisites and supported platforms
 
@@ -226,15 +226,18 @@ $ cargo build --release --locked
     Finished `release` profile [optimized] target(s) in 52.97s
 ```
 
-producing a working `target/release/slugaudit-mcp` binary (12,057,072
-bytes). That binary was then driven with a real raw JSON-RPC-over-stdio
-script (no test harness, no mocked transport) against a scratch project
-activated the way section 4 describes:
+producing a working `target/release/slugaudit-mcp` binary. That binary
+was then driven through `tests/stdio_protocol.rs` — the project's
+real subprocess / JSON-RPC smoke test, written in Rust, that spawns
+the compiled binary, writes the raw `initialize` request to its stdin,
+and reads the response back on its stdout end-to-end (no test harness,
+no mocked transport) against a scratch project activated the way section
+4 describes:
 
 ```
 $ mkdir -p /scratch/smoke_project/.planning/slugaudit
 $ echo 'pub fn a() {}' > /scratch/smoke_project/lib.rs
-$ python3 smoke_test.py   # spawns the binary, writes/reads raw JSON-RPC lines
+$ cargo test --locked --test stdio_protocol
 RAW INITIALIZE RESPONSE:
 {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18", ...
  "serverInfo":{"name":"rmcp","version":"2.2.0"}, "instructions": "..." }}
@@ -247,7 +250,7 @@ RAW REPORT TOOL CALL RESPONSE:
  \"open_finding_count\":0,\"parser_failure_count\":0,
  \"revision_id\":\"rev-1\"}"}], "isError":false}}
 
-Exit code: 0
+test result: ok. 1 passed; 0 failed; ...
 ```
 
 The resulting database file was confirmed to have mode `600`

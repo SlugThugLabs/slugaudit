@@ -66,6 +66,17 @@ pub fn extract(language: &str, source: &str) -> Result<Vec<EvidenceItem>, PackEr
     // across tree-sitter grammars, so no per-language query code is needed.
     items.extend(extract_bindings(language, source));
 
+    // The pack's own import pass only covers a hardcoded handful of
+    // languages; when it found nothing, fall back to our generic import
+    // walker so languages like kotlin/swift/csharp/dart still get
+    // dependency edges. Gated on `imports.is_empty()` so pack-covered
+    // languages never double-report and never pay an extra parse.
+    if result.imports.is_empty() {
+        items.extend(super::generic_imports::extract_generic_imports(
+            language, source,
+        ));
+    }
+
     Ok(items)
 }
 

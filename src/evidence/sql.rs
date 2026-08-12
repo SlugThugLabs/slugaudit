@@ -71,6 +71,7 @@ fn origin_text(origin: &EvidenceOrigin) -> &'static str {
         EvidenceOrigin::RawTree => "RawTree",
         EvidenceOrigin::SourceContent => "SourceContent",
         EvidenceOrigin::DerivedRelationship => "DerivedRelationship",
+        EvidenceOrigin::GenericWalker => "GenericWalker",
     }
 }
 

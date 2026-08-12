@@ -194,6 +194,26 @@ fn python_assignments_surface_as_variable_symbols() {
 }
 
 #[test]
+fn pack_covered_languages_never_double_report_imports_via_the_generic_walker() {
+    // The generic import walker is gated on the pack finding zero imports
+    // for a file. A python file with imports must produce exactly the
+    // pack's Import items and no GenericWalker-origin duplicates.
+    let source = "import os\nfrom .sibling import helper\n";
+    let items = extract("python", source).expect("process python");
+    let import_items: Vec<&EvidenceItem> = items
+        .iter()
+        .filter(|item| item.kind == EvidenceKind::Import)
+        .collect();
+    assert!(!import_items.is_empty(), "the pack finds the imports");
+    assert!(
+        import_items
+            .iter()
+            .all(|item| item.origin != EvidenceOrigin::GenericWalker),
+        "pack-covered languages must not re-extract imports with the generic walker"
+    );
+}
+
+#[test]
 fn binding_extraction_gracefully_degrades_for_an_unsupported_language() {
     // `extract` itself errors on an unknown language, but the binding
     // walker is invoked only after `process` succeeds — so this guards

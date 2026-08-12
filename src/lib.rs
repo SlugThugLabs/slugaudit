@@ -12,6 +12,7 @@ pub mod cli;
 pub mod connect;
 pub mod evidence;
 pub mod graph;
+pub mod ignore_rules;
 pub mod install;
 pub mod model;
 pub mod parse;

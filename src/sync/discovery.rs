@@ -1,34 +1,12 @@
+use crate::ignore_rules::{indexable_walker, is_excluded_path};
 use crate::model::ResourceLimits;
 use crate::util::Deadline;
-use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-const ACTIVATION_RELATIVE_DIR: &str = ".planning/slugaudit";
-const EXCLUDED_COMPONENT: &str = ".git";
 /// Bytes sampled from the start of a file to decide binary vs. text, same
 /// heuristic class as git/ripgrep: a NUL byte in the sample means binary.
 const BINARY_SNIFF_BYTES: usize = 8_000;
-
-/// Scratch, temp, and editor-swap file suffixes/prefixes that are almost
-/// never legitimate project source. Their parse failures would otherwise
-/// pollute the project's evidence with noise from AI-generated session
-/// output and editor backups — things that exist transiently on disk but
-/// aren't source the project intends to maintain. Checked against the
-/// file name (last component) only, so a real file named `scratch.py` in
-/// a subdirectory is still excluded (vanishingly rare), while anyone who
-/// genuinely needs one can override via `.gitignore`.
-fn is_scratch_file(relative: &Path) -> bool {
-    let Some(file_name) = relative.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-    file_name.ends_with(".claude_output.txt")
-        || file_name.starts_with("scratch.")
-        || file_name.ends_with(".tmp")
-        || file_name.ends_with(".bak")
-        || file_name.ends_with(".swp")
-        || file_name.ends_with('~')
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileKind {
@@ -75,12 +53,11 @@ pub enum DiscoveryError {
 }
 
 fn is_excluded(relative: &Path) -> bool {
-    if relative.starts_with(ACTIVATION_RELATIVE_DIR) {
-        return true;
-    }
-    relative
-        .components()
-        .any(|component| component.as_os_str() == EXCLUDED_COMPONENT)
+    // The hardcoded exclusion set (SlugAudit's own data dir, VCS
+    // internals, scratch files) lives in `crate::ignore_rules` and is
+    // shared with the watcher and incremental reconcile, so all three
+    // paths agree on what is indexable.
+    is_excluded_path(&relative.to_string_lossy())
 }
 
 /// Sniffs whether `path` is binary (a NUL byte in the first
@@ -142,11 +119,7 @@ pub(crate) fn discover_with_deadline(
     // `standard_filters` sets several flags at once, including `hidden`; it
     // must run before the explicit `hidden(false)` override or it silently
     // wins and dotfiles/dotdirs (e.g. `.github/`) vanish from the walk.
-    let walker = WalkBuilder::new(root)
-        .standard_filters(true)
-        .follow_links(false)
-        .hidden(false)
-        .build();
+    let walker = indexable_walker(root);
 
     let mut discovered = Vec::new();
     let mut skipped = Vec::new();
@@ -181,9 +154,6 @@ pub(crate) fn discover_with_deadline(
             }
         };
         if is_excluded(relative_path) {
-            continue;
-        }
-        if is_scratch_file(relative_path) {
             continue;
         }
         let kind = match sniff_kind(&absolute_path) {

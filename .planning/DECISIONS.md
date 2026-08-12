@@ -473,6 +473,24 @@ Format: date — title; status; context; decision; rationale; consequences.
   different hardware must re-record the baseline or the gate will be red
   by construction.
 
+## 2026-08-11 — Codebase audit corrections applied to the plan (§22)
+
+- **Status**: decided
+- **Context**: a full-source audit of the implemented codebase (not of the
+  plan's prose) found 13 concrete defects and a stale plan header.
+- **Decision**: append `IMPLEMENTATION_PLAN.md` §22 with the corrections
+  and update the plan's status header. The blocking items are: C1 — the
+  resolver's `contains("from")` substring gate drops Python imports whose
+  module path contains `from` (correctness); C2 — up to three tree-sitter
+  parses per file (performance); C3 — Task 9.1 parallel parsing was never
+  built, and the 60 s sync deadline makes large-repo first imports the
+  most likely first production failure; C6 — CI runs the criterion benches
+  twice and the mutation gate can never fail.
+- **Consequences**: §22.1–22.14 become acceptance items; C6(a)/C8/C10 are
+  CI/tooling changes, C1/C2/C7/C9/C11 are code changes, C3/C12 are
+  budget/benchmark changes. Full details, file locations, and fix
+  prescriptions are in the plan section itself.
+
 ## 2026-08-10 — License decision: PolyForm Noncommercial 1.0.0 applied
 
 - **Status**: decided
@@ -495,3 +513,93 @@ Format: date — title; status; context; decision; rationale; consequences.
   commercial distribution requires executing a commercial license with
   the copyright holder first.
 
+
+## 2026-08-12 — Watcher scope and ignore rules aligned with discovery
+
+- **Status**: decided
+- **Context**: the audit flagged that the filesystem watcher watched every
+  directory under a project root (including `target/`, `node_modules/`,
+  `.git/`) while discovery only indexes the walker's file set, and that
+  incremental reconcile indexed gitignored files a fresh publish skips
+  (same tree, two different databases depending on which sync path ran).
+  Chosen scope: "full fix, also prune the watch."
+- **Decision**: one shared ignore source of truth
+  (`src/ignore_rules.rs`): the hardcoded exclusions (SlugAudit's own
+  data dir, VCS internals, scratch files) and a per-directory matcher
+  that mirrors the `ignore` walker's semantics — nested `.gitignore`
+  scoped to its own directory, `.ignore` overriding `.gitignore`
+  regardless of depth, and ignored parents pruning their subtrees.
+  `src/watch/scope.rs` enumerates the indexable directory set with the
+  same walker discovery uses; `WatchManager` watches only that set
+  (pruning on `.gitignore`/`.ignore` changes via `refresh_scope`, which
+  must run on tool threads because `notify`'s `unwatch` blocks on the
+  event loop), and drops events for ignored paths. Incremental reconcile
+  skips ignored dirty paths (deletions still processed, so newly-ignored
+  files converge out). A scope change marks the project
+  `NeedsVerification` so the next sync does a full publish — files may
+  have changed inside re-added directories while they were unwatched.
+- **Rationale**: discovery, the watcher, and reconcile must agree on the
+  indexable set by construction; a single walker config and shared
+  exclusions are the only way to guarantee that.
+- **Consequences**: watch-descriptor usage drops to the indexable
+  directory set (this repo ~3,000 dirs to a few hundred); incremental
+  and full-publish file sets can no longer drift; the known edge is that
+  creating a `.gitignore` inside a currently-pruned directory won't fire
+  an event, so the refresh waits for the next ignore-file change or full
+  verification.
+
+## 2026-08-12 — Dev tooling cut over to Rust bins; no shell scripts, no Python interpreter
+
+- **Status**: decided
+- **Context**: the dev pipeline ran four quality gates via
+  `bash tools/check_*.sh` wrappers around embedded `python3 - <<'PY'`
+  heredocs plus a `python3 smoke_test.py` reference in `PACKAGING.md`.
+  This violates the project's "no helper logic in another language"
+  rule on a toolchain level: a contributor with `cargo` but no `python3`
+  cannot run `tools/check_no_duplicates.sh`, the coverage gate, the
+  perf gate, or the source-limits gate locally; CI assumes a Python
+  interpreter in the image that is documented nowhere; reviewers
+  context-switch into Python to understand what a CI pass actually is.
+- **Decision**: every gate that lived in `tools/*.sh` is now a first-class
+  `cargo run --bin <name> --locked` bin at `src/bin/<name>.{rs,/}`.
+  - `src/bin/check_source_limits/{main,counter,tests}.rs` — directory
+    layout so the 280+ LoC state machine + counter + helpers + tests
+    fit under the 200-LoC source-size cap without broad exclusions.
+  - `src/bin/check_no_duplicates.rs` — single file (276 LoC, annotated
+    `slugaudit-line-exception: approved-by=agent; reason=the bin owns
+    two orthogonal gate inputs…`).
+  - `src/bin/check_coverage.rs` — single file.
+  - `src/bin/check_performance/{main,estimates,format,tests}.rs` —
+    directory layout (250 LoC `main.rs` carries the exception; the
+    comparator + threshold + record-mode argv parsing live in one place
+    because the bin's user-visible surface is a single CLI invocation).
+  - `tools/check_*.sh` are deleted (the directory is now empty).
+  - `.github/workflows/quality.yml` invokes each gate as
+    `cargo run --quiet --bin <name> --locked`; the printf-style stdout
+    stays byte-compatible (CI name mentions and prior log scrapers
+    keep working — verified by `diff` of full bin output against the
+    replaced shell script).
+  - `PACKAGING.md` drops the `python3 smoke_test.py` reference in favor
+    of `cargo test --test stdio_protocol` (the real Rust
+    subprocess/JSON-RPC smoke test).
+  - `.planning/README.md` and `ARCHITECTURE.md` reference
+    `cargo run --bin check_source_limits --locked` instead of the prior
+    shell script; CI's name tags for gate steps are unchanged.
+  - 32 unit tests live next to the algorithms they cover (token-aware
+    state machine, attribute parser, criterion-estimate parsing,
+    serde_json data merge).
+  - The vendor/ tree, audit-prompt.txt, and message-history.json remain
+    in the working tree untracked — out of scope for this decision and
+    parked from prior turns.
+- **Rationale**: the project's own principle — "build, test, benchmark,
+  packaging checks, smoke tests, maintenance utilities, and internal
+  tooling are all Rust" — is now literally true at the file level. No
+  language-needs-to-be-installed requirement beyond `cargo` + the
+  pinned toolchain. The prior `bash`/`python3` paths were an
+  accidental dev-tooling leak of an older scaffold.
+- **Consequences**: built and tested locally with the existing 1.97.1
+  toolchain; full gate is green (fmt, clippy `-D warnings`, source-limits,
+  no-duplicates, 421 tests including bin UTs, no regressions on the
+  386-test lib suite). The single substituted dependency is the same
+  `serde_json` already in `[dependencies]`; no new crates. CI's
+  `ubuntu-latest` image needs no Python interpreter.

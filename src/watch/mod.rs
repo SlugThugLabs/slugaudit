@@ -27,6 +27,7 @@
 
 mod manager;
 mod path;
+mod scope;
 mod state;
 mod types;
 
@@ -35,5 +36,6 @@ mod tests;
 
 pub use manager::WatchManager;
 pub use path::normalize_relative_path;
+pub use scope::WatchScope;
 pub use state::WatchState;
 pub use types::{ProjectWatchState, WatcherHealth};

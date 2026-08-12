@@ -13,8 +13,8 @@ use std::collections::HashSet;
 
 use super::js::extract_js_reference;
 use super::path_helpers::{
-    candidate_paths, external_or_unresolved, module_path_to_fs_path, resolve_relative_path,
-    starts_with_python_dot_prefix,
+    candidate_paths, external_or_unresolved, extract_quoted_string, module_path_to_fs_path,
+    resolve_relative_path, starts_with_python_dot_prefix,
 };
 use super::python::resolve_python_relative;
 use crate::graph::reference::ImportReference;
@@ -158,7 +158,8 @@ impl Default for GenericResolverConfig {
             // the box.
             extensions: vec![
                 "py", "js", "ts", "jsx", "tsx", "mjs", "cjs", "rb", "go", "rs", "java", "c", "cpp",
-                "cc", "h", "hpp", "hh",
+                "cc", "h", "hpp", "hh", "kt", "kts", "swift", "cs", "dart", "scala", "sc", "hs",
+                "lua", "php", "pl", "pm", "ex", "exs", "ml", "sol", "jl", "erl", "hrl",
             ],
             index_filename: None,
             // `.` is the module separator for Python, Ruby, Java, etc.
@@ -301,6 +302,87 @@ impl LanguageResolver for GenericResolver {
             return None;
         }
 
+        // Dart/Solidity-style quoted imports: `import '../util.dart';` or
+        // `import "./Ownable.sol";`. Only explicit relative paths are
+        // extracted — so Go's `import "fmt"` and bare-package imports
+        // stay `Unresolved` exactly as before. Also lifts JS/TS side-effect
+        // imports (`import './a.js';`) out of `Unresolved` into real
+        // relative resolution, which the Python branch below never reached.
+        if trimmed.starts_with("import")
+            && let Some(quoted) = extract_quoted_string(trimmed)
+        {
+            // Relative paths resolve against the importing file.
+            if quoted.starts_with("./") || quoted.starts_with("../") {
+                return Some(ImportReference { text: quoted });
+            }
+            // Dart `package:`/`dart:` URIs are external by definition.
+            if quoted.starts_with("package:") || quoted.starts_with("dart:") {
+                return Some(ImportReference { text: quoted });
+            }
+            // Quoted non-relative imports (Go's `import "fmt"`) stay
+            // unparsed so they remain Unresolved, not misresolved.
+            return None;
+        }
+
+        // C# `using System.IO;` / julia `using LinearAlgebra` — strip the
+        // keyword and trailing semicolon, skipping a `using static` marker.
+        if let Some(after_using) = trimmed.strip_prefix("using")
+            && after_using.chars().next().is_some_and(char::is_whitespace)
+        {
+            let mut tokens = after_using.split_whitespace();
+            let mut module = tokens.next()?.trim_end_matches(';');
+            if module == "static" {
+                module = tokens.next()?.trim_end_matches(';');
+            }
+            return Some(ImportReference {
+                text: module.to_owned(),
+            });
+        }
+
+        // Perl/PHP `use strict;` / `use Foo\Bar;` — must come after the
+        // `using` branch since "using…" starts with "use".
+        if let Some(after_use) = trimmed.strip_prefix("use")
+            && after_use.chars().next().is_some_and(char::is_whitespace)
+        {
+            let module = after_use.split_whitespace().next()?.trim_end_matches(';');
+            // Perl `use My::Module;` and PHP `use Foo\Bar\Baz;` namespace
+            // separators become module dots so the module-path resolver
+            // can find `My/Module.pm` / `Foo/Bar/Baz.php` when the file
+            // exists; bare names (`use strict;`) are untouched and stay
+            // External.
+            let module = module.replace("::", ".").replace('\\', ".");
+            return Some(ImportReference {
+                text: module.to_owned(),
+            });
+        }
+
+        // OCaml `open Printf` / `open Util`.
+        if let Some(after_open) = trimmed.strip_prefix("open")
+            && after_open.chars().next().is_some_and(char::is_whitespace)
+        {
+            let module = after_open.split_whitespace().next()?;
+            return Some(ImportReference {
+                text: module.to_owned(),
+            });
+        }
+
+        // C/C++ `#include "local.h"` / `#include <stdio.h>` — the path is
+        // a filesystem path relative to the including file, so it is
+        // prefixed with `./` to reach the relative-resolution branch.
+        if let Some(rest) = trimmed.strip_prefix("#include") {
+            let inner = rest.trim();
+            let path = inner
+                .strip_prefix('"')
+                .and_then(|r| r.strip_suffix('"'))
+                .or_else(|| inner.strip_prefix('<').and_then(|r| r.strip_suffix('>')));
+            if let Some(path) = path {
+                return Some(ImportReference {
+                    text: format!("./{}", path.trim()),
+                });
+            }
+            return None;
+        }
+
         // Python `import X` / `import X as Y` → `X`. Accepts any single
         // whitespace token (space or tab) between `import` and the module,
         // matching the same fix applied to the `from` branch above. Without
@@ -371,6 +453,12 @@ impl LanguageResolver for GenericResolver {
                 importing_relative_path,
                 known_paths,
             );
+        }
+
+        // Dart `package:` / `dart:` URIs are external by definition
+        // (pub.dev packages and the Dart built-in library).
+        if text.starts_with("package:") || text.starts_with("dart:") {
+            return external();
         }
 
         // Bare name with no separator — external package.

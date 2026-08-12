@@ -125,8 +125,11 @@ fn rust_use_paths() {
 fn an_unsupported_language_returns_none() {
     let resolver = get_resolver("go");
     assert_eq!(resolver.extract_reference("import \"fmt\""), None);
-    let resolver = get_resolver("c");
-    assert_eq!(resolver.extract_reference("#include <stdio.h>"), None);
+    // Call-based import languages (lua/ruby/r) have neither import-shaped
+    // nodes nor a keyword pattern in the generic resolver, so extraction
+    // fails honestly instead of guessing at a module name.
+    let resolver = get_resolver("lua");
+    assert_eq!(resolver.extract_reference("require(\"x\")"), None);
 }
 
 #[test]

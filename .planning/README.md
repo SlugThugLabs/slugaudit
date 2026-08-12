@@ -169,7 +169,7 @@ cargo fmt --all -- --check
 cargo check --locked --all-targets --all-features
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
-bash tools/check_source_limits.sh
+cargo run --quiet --bin check_source_limits --locked
 cargo deny check advisories bans sources licenses
 cargo audit
 cargo build --release --locked
@@ -181,10 +181,11 @@ not blocked; `cargo audit` reports zero known vulnerabilities across the
 dependency tree.
 
 CI additionally runs `tests/stdio_protocol.rs` (the real subprocess/
-JSON-RPC handshake test) as its own named step, a coverage check
-(`tools/check_coverage.sh` — reads the merged JSON line coverage and
-prints the gated number, so it can't be misread; threshold 89%), and a
-mutation-testing step
+JSON-RPC handshake test, written in Rust) as its own named step, a
+coverage check (`cargo run --bin check_coverage --locked` — invokes
+`cargo llvm-cov --json` under the hood, then reads the merged JSON line
+coverage and prints the gated number, so it can't be misread; threshold
+89%), and a mutation-testing step
 scoped to the CAS/retry/hash/freshness correctness surface
 (`src/sync/revision.rs`, `src/sync/publish*.rs`, `src/sync/hash.rs`,
 `src/tools/context.rs`). The mutation step is `continue-on-error` because a
@@ -229,6 +230,9 @@ source comment of the form below, with the reason written in the same comment:
 The exception is only valid through 300 code lines. A file above 300 lines is a
 hard failure and must be split or brought to the user for approval. Generated
 and vendored code is not placed under `src/`; no broad exclusion is permitted.
+The rule is enforced in CI and locally by `cargo run --bin check_source_limits
+-- locked` — the bin produces the same per-file line counts and the same
+PASS/FAIL verdict as the older shell script it replaces.
 
 ## CI and protocol boundary
 

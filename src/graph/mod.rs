@@ -13,11 +13,14 @@ pub(crate) mod test_support;
 
 use std::collections::HashSet;
 
-/// True if `resolve_imports` actually models `language`'s import syntax.
-/// Imports from any other language are recorded as `Unresolved` edges —
-/// the same verdict a genuinely broken import gets — so callers that need
-/// to tell "we don't parse this language" apart from "this import is
-/// really broken" (e.g. the `report` tool) should check this first.
+/// True if a language-specific resolver (not the generic fallback) is
+/// registered for `language`. The fallback additionally models relative
+/// paths, module paths, and the `import`/`from`/`using`/`use`/`open`/
+/// `#include`/quoted forms for every other language, so a `false` here
+/// does not mean imports are ignored. Callers that need to tell "this
+/// import's syntax isn't modeled" apart from "this import is genuinely
+/// broken" check the resolver per edge instead of this list (see the
+/// `report` tool).
 #[must_use]
 pub fn is_supported_language(language: &str) -> bool {
     resolver::is_supported_language(language)

@@ -72,6 +72,11 @@ pub enum EvidenceOrigin {
     RawTree,
     SourceContent,
     DerivedRelationship,
+    /// Evidence produced by SlugAudit's own generic tree-walk
+    /// (e.g. `evidence::generic_imports`), not by the language pack's
+    /// `process()`. Distinct from `PackStructure` so consumers can tell
+    /// "the pack found this" from "our generic walker found this".
+    GenericWalker,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -47,14 +47,14 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Check source limits
-        run: bash tools/check_source_limits.sh
+        run: cargo run --quiet --bin check_source_limits --locked
 
       # Fails when a commit subject is used more than once in reachable
       # history (a repeated subject is the fingerprint of the same logical
       # change being committed twice) or when two test functions share a
       # name across files (usually a copy-pasted test).
       - name: Check for duplicate commit subjects and test names
-        run: bash tools/check_no_duplicates.sh
+        run: cargo run --quiet --bin check_no_duplicates --locked
 
       - name: Check compilation
         run: cargo check --all-targets --all-features --locked
@@ -114,7 +114,7 @@ jobs:
       # in the script deliberately as real coverage moves — it is not an
       # aspirational target picked in advance.
       - name: Coverage (cargo llvm-cov)
-        run: bash tools/check_coverage.sh
+        run: cargo run --quiet --bin check_coverage --locked
 
       # Performance regression gate: runs the four criterion benches with a
       # reduced sample size (~3–5 min) and fails when any median regresses
@@ -126,7 +126,7 @@ jobs:
       # per the regression policy in .planning/PERFORMANCE.md. If this step
       # proves too slow for every push, move it to a nightly schedule.
       - name: Performance regression (criterion)
-        run: bash tools/check_performance.sh
+        run: cargo run --quiet --bin check_performance --locked
 
       - name: Install mutation testing tooling
         uses: taiki-e/install-action@v2

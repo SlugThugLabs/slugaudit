@@ -60,8 +60,8 @@ fn reports_real_counts_for_an_active_project() {
 /// directly rather than through the real parse/resolve pipeline — a real
 /// Go import requires the language pack's Go import extraction to behave a
 /// specific way, which isn't what this test is pinning down; the pipeline
-/// wiring itself (`graph::is_supported_language` reaching this exact
-/// query) is what matters here.
+/// wiring itself (the per-edge resolver check reaching this exact query)
+/// is what matters here.
 #[test]
 fn unsupported_language_unresolved_is_counted_separately_from_supported_language_unresolved() {
     use crate::store::open_read_write;
@@ -78,7 +78,7 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
         )
         .expect("insert revision");
 
-    for (path, language) in [("a.go", "go"), ("b.py", "python")] {
+    for (path, language) in [("a.go", "go"), ("b.py", "python"), ("c.kt", "kotlin")] {
         connection
             .execute(
                 "INSERT INTO files \
@@ -101,6 +101,11 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
             row.get(0)
         })
         .expect("python file id");
+    let kotlin_id: i64 = connection
+        .query_row("SELECT id FROM files WHERE path = 'c.kt'", [], |row| {
+            row.get(0)
+        })
+        .expect("kotlin file id");
 
     connection
         .execute(
@@ -116,13 +121,21 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
             [py_id],
         )
         .expect("insert python edge");
+    connection
+        .execute(
+            "INSERT INTO dependency_edges (from_file_id, raw_import_text, resolution_kind) \
+             VALUES (?1, 'import kotlin.math.max', 'Unresolved')",
+            [kotlin_id],
+        )
+        .expect("insert kotlin edge");
 
     let tx = connection.transaction().expect("begin transaction");
     let response = build_report(&tx, "r1".to_owned()).expect("build report");
 
     assert_eq!(
         response.unsupported_language_unresolved_count, 1,
-        "only the go edge is from an unsupported language"
+        "only the go edge is from import syntax the resolver can't parse; \
+         the kotlin edge (syntax parsed, no file match) must not count"
     );
     let total_unresolved: i64 = response
         .import_resolution
@@ -130,8 +143,8 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
         .find(|entry| entry.kind == "Unresolved")
         .map_or(0, |entry| entry.count);
     assert_eq!(
-        total_unresolved, 2,
-        "both edges must still count toward the general Unresolved bucket"
+        total_unresolved, 3,
+        "all three edges must still count toward the general Unresolved bucket"
     );
 }
 

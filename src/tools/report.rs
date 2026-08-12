@@ -75,13 +75,15 @@ pub struct ReportResponse {
     /// Total number of Diagnostic evidence items (e.g. linter or compiler
     /// diagnostics extracted from source files).
     pub diagnostic_count: i64,
-    /// Of the `Unresolved` count in `import_resolution`, how many are from
-    /// files whose language import resolution doesn't model at all (as
-    /// opposed to a genuinely broken/missing import in a supported
-    /// language). SlugAudit records both as `Unresolved` edges since it
-    /// can't tell them apart at resolution time, but they mean very
-    /// different things: a high count here means "we can't see this
-    /// language's imports yet," not "this project's imports are broken."
+    /// Of the `Unresolved` count in `import_resolution`, how many come from
+    /// import syntax the resolver couldn't parse at all — `extract_reference`
+    /// returned `None` on the raw text (e.g. Go's `import "fmt"`), as
+    /// opposed to an import whose syntax was parsed but matched no project
+    /// file (e.g. a stdlib module like `kotlin.math.max`). SlugAudit
+    /// records both as `Unresolved` edges since it can't tell them apart
+    /// at resolution time, but they mean very different things: a high
+    /// count here means "this project's import syntax isn't modeled yet,"
+    /// not "this project's imports are broken."
     pub unsupported_language_unresolved_count: i64,
 }
 
@@ -202,23 +204,31 @@ fn build_report(
         |row| row.get(0),
     )?;
 
-    // Of the Unresolved edges, how many come from a file whose language
-    // import resolution doesn't model at all. Computed in Rust rather than
-    // SQL so the language list has one source of truth
-    // (`graph::is_supported_language`), not a second copy embedded in a
-    // query string that could drift out of sync with it.
+    // Of the Unresolved edges, how many come from import syntax the
+    // resolver can't parse — i.e. `extract_reference` returns `None` on
+    // the raw text (e.g. Go's `import "fmt"`), as opposed to an import
+    // whose syntax was parsed but matched no project file (e.g. a stdlib
+    // module like `kotlin.math.max`). Computed per edge in Rust so the
+    // resolver itself is the single source of truth, not a language list
+    // that drifts out of sync with it: with the generic import walker,
+    // kotlin/swift/csharp/dart/julia/c imports are modeled even though no
+    // language-specific resolver exists for them.
     let mut unresolved_language_stmt = connection.prepare(
-        "SELECT f.language FROM dependency_edges de \
+        "SELECT f.language, de.raw_import_text FROM dependency_edges de \
          JOIN files f ON f.id = de.from_file_id \
          WHERE de.resolution_kind = 'Unresolved'",
     )?;
-    let unresolved_languages: Vec<Option<String>> = unresolved_language_stmt
-        .query_map([], |row| row.get::<_, Option<String>>(0))?
-        .collect::<Result<_, _>>()?;
-    let unsupported_language_unresolved_count = unresolved_languages
+    let unsupported_language_unresolved_count = unresolved_language_stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?
         .into_iter()
-        .flatten()
-        .filter(|language| !crate::graph::is_supported_language(language))
+        .filter_map(|(language, raw)| {
+            let language = language?;
+            let resolver = crate::graph::resolver::get_resolver(&language);
+            (!resolver.extract_reference(&raw).is_some()).then_some(())
+        })
         .count() as i64;
     drop(unresolved_language_stmt);
 

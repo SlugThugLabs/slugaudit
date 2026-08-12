@@ -38,4 +38,6 @@ pub(crate) mod test_support;
 #[cfg(test)]
 pub(super) use publish_cas::publish_with_limits;
 #[cfg(test)]
-pub(super) use reconcile::{reconcile_dirty_paths_with_deadline, sync_with_barrier_with_deadline};
+pub(super) use reconcile::{
+    ReconcileOptions, reconcile_dirty_paths_with_deadline, sync_with_barrier_with_deadline,
+};

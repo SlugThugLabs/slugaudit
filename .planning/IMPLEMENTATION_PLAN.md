@@ -1,6 +1,7 @@
 # SlugAudit Rust Rewrite — Execution Plan
 
-Status: planned, implementation not yet started beyond the scaffold
+Status: implemented through Phase 12 with release-gate execution recorded
+(2026-08-10); see §22 for the 2026-08-11 audit corrections.
 
 Project root: `/opt/slugaudit-mcp-rust`
 
@@ -1694,3 +1695,209 @@ behavior, latency budgets, and zero skipped critical tests. All limitations and
 exceptions are recorded in the decision log. The release also includes the
 project license, third-party attribution, pinned lockfile, compiler identity,
 build metadata, and a reproducible artifact checksum.
+
+## 22. Codebase audit corrections — 2026-08-11
+
+Status correction: the header line "Status: planned, implementation not yet
+started beyond the scaffold" is stale. The Rust implementation is
+functionally complete (73 commits, six MCP tools, watcher-backed sync,
+coverage-gated at 89%, perf-gated criterion baselines). The phase sections
+below describe the plan as executed plus the corrections from the
+2026-08-11 codebase audit.
+
+These corrections were identified by a full-source audit of the implemented
+codebase (not of this plan's prose). Each is a required change to the code or
+an acceptance gate; each closes a defect found during the audit. Order by
+severity; C1 and C2 are correctness/performance blockers.
+
+### 22.1 C1 — Fix `extract_reference` keyword-substring ordering (correctness)
+
+- **Where**: `src/graph/resolver/generic.rs::extract_reference`.
+- **Defect**: the `trimmed.contains("from")` gate (JS/TS branch) runs before
+the Python `import` branch and matches the substring anywhere in the text.
+Python modules whose path contains `from` — `import from_utils`,
+`import a.from_b`, `from from_utils import x` — fall into the JS extractor,
+find no quoted string, and return `None`; the import is dropped from the
+dependency graph with no error.
+- **Fix**: gate the JS branch on `trimmed.starts_with("import")` AND a
+whitespace-delimited `from` token, never a bare substring; reorder so
+keyword-prefix branches (`import`, `from`, `using`, `use`, `open`,
+`#include`) are matched by language tokenization, not text order. Add
+regression tests for module names containing `from`/`use`/`open` in every
+branch's language.
+
+### 22.2 C2 — One parse per file across extraction passes (performance)
+
+- **Where**: `src/evidence/normalize.rs::extract`, `extract_bindings`,
+`src/evidence/generic_imports.rs::extract_generic_imports`.
+- **Defect**: a single file is parsed up to three times — `process()`, the
+binding walker's own `get_parser`+`parse`, and (for the ~365 languages the
+pack doesn't extract imports for) the generic import walker's own parse.
+Triple parsing is the dominant cost of first import and directly compounds
+with the 60 s sync deadline.
+- **Fix**: parse once per file and share the `Tree` across the bindings and
+generic-imports passes; fold both walkers into one tree walk. Gate the
+generic import walker's parse on a cheap pre-scan only if a shared-tree
+refactor is infeasible.
+
+### 22.3 C3 — Parallelize parsing behind deterministic ordering (revive Task 9.1)
+
+- **Where**: `src/sync/sample.rs::sample_all_with_deadline`,
+`benches/sync.rs`.
+- **Defect**: Task 9.1 (parallel file parsing) was never implemented;
+sampling+analysis is fully serialized per file. With the 60 s
+`max_sync_wall_clock` default, a large monorepo first import can hit
+`TimeBudgetExceeded` on every tool call and become unusable (the most
+likely first production failure — see 22.12).
+- **Fix**: parallelize `analyze`/hashing across a bounded worker pool (e.g.
+`std::thread::scope` with a fixed worker count derived from CPU count),
+collect results, sort by `relative_path` before persistence for
+deterministic revisions, and keep the existing per-file deadline checks.
+Measure first-import wall clock for a 10k-file fixture against the 60 s
+budget and re-baseline `perf_baseline.json`.
+
+### 22.4 C4 — Extract the duplicated publish-and-drain path (maintainability)
+
+- **Where**: `src/sync/manager.rs::ensure_current`.
+- **Defect**: the `NeedsVerification | Desynced` arm and the `Unavailable`
+arm each call `publish::publish` with near-identical error mapping; the
+function also performs corruption recovery, project-row ensure, watcher
+registration, revision read, and stamping. Two publish blocks will drift.
+- **Fix**: extract one `publish_and_verify(connection, root, state, sink) ->
+Result<String, ErrorData>` used by both arms; keep `ensure_current` as a
+thin health-branch dispatcher.
+
+### 22.5 C5 — Justify or remove the process-global sync manager (architecture)
+
+- **Where**: `src/tools/context.rs::SYNC_MANAGER` (OnceLock singleton).
+- **Defect**: §2.4 forbids global mutable state; the singleton watcher is
+process-global, forces the single-active-project reporting model, and
+creates cross-test interference (requiring env-locks and a race hook).
+- **Fix**: either (a) inject a per-server `SourceSyncManager` into the tool
+handlers (composition root in `server.rs`), or (b) keep the singleton with
+a recorded exception in `DECISIONS.md` explaining the single-process MCP
+model and add a test that pins the "one active project" reporting
+semantics. Prefer (a).
+
+### 22.6 C6 — CI: decouple benches from the test step; make mutation gate fail-closed
+
+- **Where**: `.github/workflows/quality.yml`.
+- **Defect**: `cargo test --all-targets` executes the four criterion bench
+binaries (harness = false), so the "Run tests" step runs every bench and
+then `check_performance.sh` runs them again. The mutation step runs with
+`continue-on-error: true`, so it can never fail CI.
+- **Fix**: (a) run tests with `--lib --bins --tests` (exclude benches) and
+leave bench execution to the dedicated performance gate; (b) once the
+mutation-survivor baseline is established and triaged, flip
+`continue-on-error` to false and gate on the recorded survivor count.
+
+### 22.7 C7 — Validate generic node-kind matching against real grammars (correctness)
+
+- **Where**: `src/evidence/normalize.rs::is_variable_binding`,
+`is_field_declaration`, `src/evidence/generic_imports.rs::is_import_statement_kind`.
+- **Defect**: node kinds are matched by name (`"assignment"`,
+`kind.contains("field_declaration")`, a bare `"import"` entry) with no
+check that those names exist in the 371 grammars. `assignment` emits a
+Symbol for every Python assignment; `kind.contains(...)` can match
+unrelated kinds in an unforeseen grammar.
+- **Fix**: enumerate the exact node kinds for a fixed grammar matrix (rust,
+python, js/ts, go, c/cpp, swift, kotlin, csharp, dart, julia, php, perl,
+ocaml, elixir, ruby, java) and assert no false positives per language in
+`generic_imports_tests.rs`/`normalize_tests.rs`. Remove bare `"import"`
+and the `contains` matching unless a test proves a grammar needs it.
+
+### 22.8 C8 — Add the documentation/schema/test drift gate (revive plan-audit item 14)
+
+- **Where**: `tools/` (new `check_docs_drift.sh`), CI.
+- **Defect**: `ARCHITECTURE.md` references `src/sync/publish_edges.rs`
+(actual: `revision_edges.rs`), "30 `*_tests.rs` files" (actual: 41), and
+"`--test-threads=4` by default" (untrue); `IMPLEMENTATION_PLAN.md`
+headers and Phase 5/9 tasks describe behavior that was never built (FTS
+search, parallel parsing) and was never descoped in `DECISIONS.md`. The
+plan's own correction block required a drift check; it was never
+implemented.
+- **Fix**: add a CI script that fails on (a) `ARCHITECTURE.md` module-map
+references to nonexistent files, (b) stale `IMPLEMENTATION_PLAN.md`
+status headers, and (c) plan phases that list files with no
+implementation and no `DECISIONS.md` descope entry. Either implement FTS
+(Phase 5) or record the descope decision explicitly.
+
+### 22.9 C9 — Define the query pagination ordering contract (correctness)
+
+- **Where**: `src/tools/query.rs::execute_and_collect`.
+- **Defect**: `SELECT * FROM (<sql>) LIMIT 501 OFFSET n` without an `ORDER
+BY` gives unstable pages: concurrent publishes shift rows between pages,
+so `next_offset` paging can skip or duplicate rows.
+- **Fix**: document that results are ordered by the query's own row order
+and that paging is only stable while the revision does not change; return
+the revision id (already present) so the AI can detect paging across a
+revision boundary, and add a test asserting paging behavior across a
+revision change.
+
+### 22.10 C10 — Repo hygiene: vendor cruft and dependency policy hardening
+
+- **Where**: repo root `vendor/` (253 MB, 285 crates, untracked),
+`deny.toml`.
+- **Defect**: `cargo vendor` output including a `tarpaulin-report.html`
+inside `vendor/oorandom/` sits in the working tree; nothing references it
+(no `.cargo/config.toml`), and it is untracked so it can be accidentally
+committed. `deny.toml` has `multiple-versions = "warn"`, so version
+proliferation is visible but not a failure.
+- **Fix**: delete `vendor/` (or gitignore it with a comment explaining the
+offline-build workflow if one is intended), remove the stray coverage
+report, and set `multiple-versions = "deny"` with a documented exception
+list once the remaining duplicates (notify 8 vs 7-era windows-sys
+entries, ring 0.52.6) are triaged.
+
+### 22.11 C11 — Cache the per-edge unresolved classification at write time (performance)
+
+- **Where**: `src/tools/report.rs::build_report`.
+- **Defect**: `unsupported_language_unresolved_count` re-runs
+`extract_reference` on every Unresolved edge on every `report` call —
+O(edges) re-extraction of raw import text per call.
+- **Fix**: store the classifier verdict on `dependency_edges` at write time
+(in `revision_edges::resolve_and_store`), or compute the count in SQL
+triggered by the resolver registry; remove the per-call loop from
+`build_report`.
+
+### 22.12 C12 — Production-failure runbook and budgets (reliability)
+
+- **Where**: `.planning/PERFORMANCE.md`, `src/model/limits.rs`.
+- **Defect**: three real-world failure modes are unpriced: (a) Linux
+inotify watch limits (`fs.inotify.max_user_watches`) on large repos cause
+notify queue overflow → `Desynced` → every call full-publishes, which
+under the 60 s budget can hard-fail large repos; (b) a single
+pathological file's tree-sitter parse is not interruptible mid-parse (an
+accepted limitation, but it can consume the whole budget); (c) macOS
+`stat -f` / Windows `fsutil` detection failures fail closed into
+`NetworkFilesystemCheck`, which surfaces as an opaque error.
+- **Fix**: (a) document the inotify limit and add a `health`-visible
+metric for consecutive full publishes; (b) document the single-file parse
+ceiling and consider raising `max_sync_wall_clock` for first imports
+after C3 lands; (c) surface `NetworkFilesystemCheck` with the underlying
+command error and a non-admin fallback message. Record all three in the
+runbook section of `PERFORMANCE.md`.
+
+### 22.13 C13 — Logging/tracing coverage closure (observability)
+
+- **Where**: `src/server_runner.rs`, `src/sync/publish*.rs`.
+- **Defect**: per-call spans and publish/finding events exist, but there
+are no trace events for watcher event volume, per-phase sync durations on
+the incremental path, parser load/cache outcomes, or the corruption
+recovery path (only warn sites). `OBSERVABILITY.md`'s redaction rules are
+documented but not machine-checked.
+- **Fix**: add `debug!`/`trace!` events for watcher event counts per
+reconcile, per-phase durations, and parser load outcomes; add a test (in
+the style of `store/test_capture.rs`) that asserts a future tool call
+logging path cannot log SQL text, finding content, or source content.
+
+### 22.14 Acceptance gate updates
+
+1. `cargo test --all-targets` keeps passing; CI test step switches to
+`--lib --bins --tests` (C6).
+2. New regression tests: `from`-substring module names (C1), pagination
+across revision changes (C9), grammar-matrix binding extraction (C7).
+3. First-import 10k-file wall-clock benchmark recorded in
+`PERFORMANCE.md` and gated (C3).
+4. `multiple-versions = "deny"` with exceptions (C10).
+5. Drift check green (C8).

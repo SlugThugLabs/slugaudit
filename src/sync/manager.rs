@@ -9,11 +9,10 @@
 
 use super::manager_meta::{current_revision_id, ensure_project_row};
 use super::publish;
+use super::reconcile::ReconcileOptions;
 use super::revision;
-use crate::model::ResourceLimits;
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::store;
-use crate::util::Deadline;
 use crate::watch::{WatchManager, WatchState, WatcherHealth};
 use crate::{parse, project};
 use rmcp::ErrorData;
@@ -208,6 +207,12 @@ impl SourceSyncManager {
         })?;
 
         let state = self.watch_manager.watch(root.as_path());
+        // An ignore file may have changed since the last pass. Recompute
+        // the watch scope (pruning or re-adding directory watches) and the
+        // event-filtering rules now, before we decide what to reconcile —
+        // otherwise a gitignored path could be indexed incrementally even
+        // though a full publish would skip it.
+        self.watch_manager.refresh_scope(root.as_path());
         let health = state.health();
 
         let revision_id = match health {
@@ -217,19 +222,12 @@ impl SourceSyncManager {
                     root = %root.as_path().display(),
                     "watcher untrusted; running full verification",
                 );
-                let report =
-                    publish::publish(&mut connection, root.as_path(), parse::PACK_VERSION, sink)
-                        .map_err(|error| {
-                            tracing::warn!(
-                                root = %root.as_path().display(),
-                                error = %error,
-                                "full publish failed",
-                            );
-                            ErrorData::internal_error(
-                                format!("publishing a new revision: {error}"),
-                                None,
-                            )
-                        })?;
+                let report = Self::publish_full(
+                    &mut connection,
+                    root.as_path(),
+                    sink,
+                    "full publish failed",
+                )?;
                 // Drain any events that arrived during the full verification.
                 // `publish` walks the filesystem and parses files, which takes
                 // time — events can arrive while it runs. If we don't drain
@@ -302,19 +300,12 @@ impl SourceSyncManager {
                     root = %root.as_path().display(),
                     "watcher unavailable; running full publish",
                 );
-                let report =
-                    publish::publish(&mut connection, root.as_path(), parse::PACK_VERSION, sink)
-                        .map_err(|error| {
-                            tracing::warn!(
-                                root = %root.as_path().display(),
-                                error = %error,
-                                "publish on Unavailable path failed",
-                            );
-                            ErrorData::internal_error(
-                                format!("publishing a new revision: {error}"),
-                                None,
-                            )
-                        })?;
+                let report = Self::publish_full(
+                    &mut connection,
+                    root.as_path(),
+                    sink,
+                    "publish on Unavailable path failed",
+                )?;
                 report.revision_id
             }
         };
@@ -354,27 +345,51 @@ impl SourceSyncManager {
         state: &WatchState,
         connection: &mut Connection,
     ) -> Result<(), SyncError> {
+        // An ignore file may have changed since the last pass: recompute
+        // the watch scope and the event-filtering rules before deciding
+        // what to reconcile. A no-op when nothing changed.
+        self.watch_manager.refresh_scope(root);
         let expected_current = current_revision_id(connection)?;
-        let limits = ResourceLimits::default();
         // One deadline for the whole barrier operation — every iteration
         // and every per-path reconcile inside it — so a pathological
-        // event producer can't stall a tool call indefinitely.
-        let deadline = Deadline::after(limits.max_sync_wall_clock);
+        // event producer can't stall a tool call indefinitely. The
+        // project's ignore rules make the incremental path index exactly
+        // what a full publish would index.
+        let options = ReconcileOptions::for_sync(self.watch_manager.rules_for(root));
 
-        super::reconcile::sync_with_barrier_with_deadline(state, &deadline, |dirty, deleted| {
-            super::reconcile::reconcile_dirty_paths_with_deadline(
-                connection,
-                root,
-                dirty,
-                deleted,
-                expected_current.as_deref(),
-                &limits,
-                &deadline,
-            )?;
-            Ok(())
-        })?;
+        super::reconcile::sync_with_barrier_with_deadline(
+            state,
+            &options.deadline,
+            |dirty, deleted| {
+                super::reconcile::reconcile_dirty_paths_with_deadline(
+                    connection,
+                    root,
+                    dirty,
+                    deleted,
+                    expected_current.as_deref(),
+                    &options,
+                )?;
+                Ok(())
+            },
+        )?;
 
         Ok(())
+    }
+
+    /// Publishes a full revision from the current filesystem state,
+    /// mapping failures into `ErrorData` with the standard warn-and-error
+    /// shape. Shared by the verification and Unavailable branches so the
+    /// two near-identical publish blocks can't drift apart.
+    fn publish_full(
+        connection: &mut Connection,
+        root: &Path,
+        sink: &dyn ProgressSink,
+        warn_message: &str,
+    ) -> Result<publish::PublishReport, ErrorData> {
+        publish::publish(connection, root, parse::PACK_VERSION, sink).map_err(|error| {
+            tracing::warn!(root = %root.display(), error = %error, "{warn_message}");
+            ErrorData::internal_error(format!("publishing a new revision: {error}"), None)
+        })
     }
 
     fn publish_from_scratch(

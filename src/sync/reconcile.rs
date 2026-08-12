@@ -16,6 +16,7 @@ use crate::util::Deadline;
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -56,6 +57,9 @@ pub struct ReconcileReport {
     pub unchanged: usize,
     /// Files that were removed from the database.
     pub deleted: usize,
+    /// Dirty paths the project's ignore rules excluded — not indexed, the
+    /// same way a fresh publish would skip them.
+    pub ignored: usize,
 }
 
 /// Reconciles dirty and deleted paths against the database.
@@ -80,21 +84,45 @@ pub fn reconcile_dirty_paths(
     deleted: HashSet<String>,
     expected_revision: Option<&str>,
 ) -> Result<ReconcileReport, ReconcileError> {
-    let limits = ResourceLimits::default();
+    let options = ReconcileOptions::for_sync(None);
     reconcile_dirty_paths_with_deadline(
         connection,
         root,
         dirty,
         deleted,
         expected_revision,
-        &limits,
-        &Deadline::after(limits.max_sync_wall_clock),
+        &options,
     )
 }
 
-/// [`reconcile_dirty_paths`] under an explicit [`ResourceLimits`] and
-/// [`Deadline`], checked once per dirty path so a pathological set (a huge
-/// number of events, a hung filesystem) fails closed with
+/// The reconciliation context every dirty path is checked against,
+/// distinct from the working set (connection, root, dirty, deleted,
+/// expected revision): the resource budget, the shared deadline, and the
+/// project's ignore rules. Grouped so callers can't mix up budget and
+/// rule concerns and to keep the function signature readable.
+pub(crate) struct ReconcileOptions {
+    pub limits: ResourceLimits,
+    pub deadline: Deadline,
+    pub rules: Option<Arc<crate::ignore_rules::IgnoreRules>>,
+}
+
+impl ReconcileOptions {
+    /// Options for a production sync pass: the standard resource budget
+    /// and deadline, plus the project's current ignore rules.
+    pub fn for_sync(rules: Option<Arc<crate::ignore_rules::IgnoreRules>>) -> Self {
+        let limits = ResourceLimits::default();
+        let deadline = Deadline::after(limits.max_sync_wall_clock);
+        Self {
+            limits,
+            deadline,
+            rules,
+        }
+    }
+}
+
+/// [`reconcile_dirty_paths`] under explicit [`ReconcileOptions`], checked
+/// once per dirty path so a pathological set (a huge number of events, a
+/// hung filesystem) fails closed with
 /// [`ReconcileError::TimeBudgetExceeded`] instead of stalling the tool
 /// call forever. The deadline is created by the caller so the whole
 /// barrier-sync operation shares one budget across its iterations.
@@ -104,13 +132,18 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
     dirty: HashSet<String>,
     deleted: HashSet<String>,
     expected_revision: Option<&str>,
-    limits: &ResourceLimits,
-    deadline: &Deadline,
+    options: &ReconcileOptions,
 ) -> Result<ReconcileReport, ReconcileError> {
+    let ReconcileOptions {
+        limits,
+        deadline,
+        rules,
+    } = options;
     let mut upserts = Vec::new();
     let mut deletions = Vec::new();
     let mut reconciled = 0usize;
     let mut unchanged = 0usize;
+    let mut ignored = 0usize;
 
     // Query existing hashes for dirty paths so we can skip files whose
     // content hasn't changed since they were last indexed.
@@ -129,6 +162,18 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
         // deleted before we could reconcile it.
         if !absolute_path.exists() {
             deletions.push(path);
+            continue;
+        }
+        // Skip paths the project's ignore rules exclude. A gitignored
+        // build artifact must not be indexed incrementally when a fresh
+        // publish would skip it — this was the watcher/full-publish
+        // inconsistency. Deletions are still processed (above) so a file
+        // that became ignored — or was indexed before the rules existed —
+        // converges out of the database.
+        if let Some(rules) = rules
+            && rules.should_ignore(&path)
+        {
+            ignored += 1;
             continue;
         }
 
@@ -167,6 +212,7 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
             reconciled,
             unchanged,
             deleted: 0,
+            ignored,
         });
     }
 
@@ -186,6 +232,7 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
         reconciled,
         unchanged,
         deleted: deletions.len(),
+        ignored,
     })
 }
 
@@ -373,3 +420,7 @@ mod tests;
 #[cfg(test)]
 #[path = "reconcile_binary_tests.rs"]
 mod binary_tests;
+
+#[cfg(test)]
+#[path = "reconcile_ignore_tests.rs"]
+mod ignore_tests;

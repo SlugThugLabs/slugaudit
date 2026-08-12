@@ -85,3 +85,97 @@ fn an_unsupported_language_is_always_unresolved() {
     let result = resolve_one("go", "a.go", "./local", &known);
     assert_eq!(result.kind.as_sql_text(), "Unresolved");
 }
+
+#[test]
+fn kotlin_module_import_resolves_to_the_real_file() {
+    let known = paths(&["util/Helper.kt", "main.kt"]);
+    let result = resolve_one("kotlin", "main.kt", "import util.Helper", &known);
+    assert_eq!(result.kind.as_sql_text(), "Resolved");
+    assert_eq!(result.to_relative_path.as_deref(), Some("util/Helper.kt"));
+}
+
+#[test]
+fn kotlin_stdlib_import_is_not_faked_resolved() {
+    let known = paths(&["main.kt"]);
+    let result = resolve_one("kotlin", "main.kt", "import kotlin.math.max", &known);
+    // A dotted stdlib module can't be told apart from a project module
+    // without a file match — the same honest Unresolved verdict python
+    // gives `import os.path`. The point: never faked as Resolved.
+    assert_eq!(result.kind.as_sql_text(), "Unresolved");
+    assert_eq!(result.to_relative_path, None);
+}
+
+#[test]
+fn swift_framework_import_is_external() {
+    let known = paths(&["App.swift"]);
+    let result = resolve_one("swift", "App.swift", "import Foundation", &known);
+    assert_eq!(result.kind.as_sql_text(), "External");
+}
+
+#[test]
+fn csharp_using_directive_resolves_to_the_real_file() {
+    let known = paths(&["Core/Helper.cs", "Program.cs"]);
+    let result = resolve_one("csharp", "Program.cs", "using Core.Helper;", &known);
+    assert_eq!(result.kind.as_sql_text(), "Resolved");
+    assert_eq!(result.to_relative_path.as_deref(), Some("Core/Helper.cs"));
+}
+
+#[test]
+fn csharp_using_system_is_unresolved_not_faked() {
+    let known = paths(&["Program.cs"]);
+    let result = resolve_one("csharp", "Program.cs", "using System.IO;", &known);
+    assert_eq!(result.kind.as_sql_text(), "Unresolved");
+}
+
+#[test]
+fn dart_relative_import_resolves_to_the_real_file() {
+    let known = paths(&["util.dart", "app.dart"]);
+    let result = resolve_one("dart", "app.dart", "import '../util.dart';", &known);
+    assert_eq!(result.kind.as_sql_text(), "Resolved");
+    assert_eq!(result.to_relative_path.as_deref(), Some("util.dart"));
+}
+
+#[test]
+fn dart_package_import_is_external() {
+    let known = paths(&["app.dart"]);
+    let result = resolve_one("dart", "app.dart", "import 'package:foo/bar.dart';", &known);
+    assert_eq!(result.kind.as_sql_text(), "External");
+}
+
+#[test]
+fn c_quoted_include_resolves_to_the_real_header() {
+    let known = paths(&["local.h", "main.c"]);
+    let result = resolve_one("c", "main.c", "#include \"local.h\"", &known);
+    assert_eq!(result.kind.as_sql_text(), "Resolved");
+    assert_eq!(result.to_relative_path.as_deref(), Some("local.h"));
+}
+
+#[test]
+fn c_system_include_is_unresolved_not_faked() {
+    let known = paths(&["main.c"]);
+    let result = resolve_one("c", "main.c", "#include <stdio.h>", &known);
+    assert_eq!(result.kind.as_sql_text(), "Unresolved");
+}
+
+#[test]
+fn perl_use_is_external_for_bare_module() {
+    let known = paths(&["app.pl"]);
+    let result = resolve_one("perl", "app.pl", "use strict;", &known);
+    assert_eq!(result.kind.as_sql_text(), "External");
+}
+
+#[test]
+fn php_namespace_use_resolves_to_the_real_file() {
+    let known = paths(&["Foo/Bar/Baz.php", "app.php"]);
+    let result = resolve_one("php", "app.php", "use Foo\\Bar\\Baz;", &known);
+    assert_eq!(result.kind.as_sql_text(), "Resolved");
+    assert_eq!(result.to_relative_path.as_deref(), Some("Foo/Bar/Baz.php"));
+}
+
+#[test]
+fn perl_use_resolves_to_real_module_file() {
+    let known = paths(&["My/Module.pm", "app.pl"]);
+    let result = resolve_one("perl", "app.pl", "use My::Module;", &known);
+    assert_eq!(result.kind.as_sql_text(), "Resolved");
+    assert_eq!(result.to_relative_path.as_deref(), Some("My/Module.pm"));
+}

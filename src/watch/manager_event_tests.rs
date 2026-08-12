@@ -149,6 +149,84 @@ fn unwatch_removes_the_state() {
 }
 
 #[test]
+fn gitignored_paths_are_not_recorded() {
+    let project = temp_project();
+    std::fs::write(project.path().join(".gitignore"), "target/\n").expect("gitignore");
+    std::fs::create_dir_all(project.path().join("target")).expect("target dir");
+    std::fs::write(project.path().join("target/gen.rs"), "fn gen() {}\n").expect("target file");
+    std::fs::write(project.path().join("lib.rs"), "fn lib() {}\n").expect("lib file");
+    let manager = WatchManager::new();
+    let state = manager.watch(project.path());
+
+    manager.handle_event(event_with(
+        EventKind::Modify(ModifyKind::Any),
+        &project.path().join("target/gen.rs"),
+    ));
+    let snapshot = state.snapshot();
+    assert!(
+        !snapshot.dirty_paths.contains("target/gen.rs"),
+        "a gitignored path must not be marked dirty"
+    );
+
+    manager.handle_event(event_with(
+        EventKind::Modify(ModifyKind::Any),
+        &project.path().join("lib.rs"),
+    ));
+    assert!(
+        state.snapshot().dirty_paths.contains("lib.rs"),
+        "an indexable path is still marked dirty"
+    );
+}
+
+#[test]
+fn ignore_file_events_trigger_a_scope_refresh() {
+    let project = temp_project();
+    std::fs::create_dir_all(project.path().join("src")).expect("src dir");
+    std::fs::write(project.path().join("src/lib.rs"), "fn lib() {}\n").expect("lib file");
+    let manager = WatchManager::new();
+    let state = manager.watch(project.path());
+
+    // The file is indexable today.
+    manager.handle_event(event_with(
+        EventKind::Modify(ModifyKind::Any),
+        &project.path().join("src/lib.rs"),
+    ));
+    assert!(state.snapshot().dirty_paths.contains("src/lib.rs"));
+    // Drain the dirty set so we can observe fresh events.
+    state.snapshot_dirty();
+
+    // Simulate the steady state: the watcher is trusted and current.
+    state.set_health(WatcherHealth::Healthy);
+
+    // The project gains a .gitignore that excludes src/. The event for the
+    // .gitignore itself must flag the scope for refresh, and after
+    // `refresh_scope` runs (as the sync layer does before reconciling) the
+    // new rule must filter later events.
+    std::fs::write(project.path().join(".gitignore"), "src/\n").expect("gitignore");
+    manager.handle_event(event_with(
+        EventKind::Modify(ModifyKind::Any),
+        &project.path().join(".gitignore"),
+    ));
+    manager.refresh_scope(project.path());
+    assert_eq!(
+        state.health(),
+        WatcherHealth::NeedsVerification,
+        "a scope change must force full verification so newly-ignored \
+         files converge out of the database"
+    );
+
+    manager.handle_event(event_with(
+        EventKind::Modify(ModifyKind::Any),
+        &project.path().join("src/lib.rs"),
+    ));
+    let snapshot = state.snapshot();
+    assert!(
+        !snapshot.dirty_paths.contains("src/lib.rs"),
+        "the refreshed rules must filter new events"
+    );
+}
+
+#[test]
 fn deleted_project_roots_are_pruned_on_the_next_event() {
     let project = temp_project();
     let manager = WatchManager::new();

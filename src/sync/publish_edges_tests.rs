@@ -2,11 +2,13 @@
 //! through the real publish pipeline (discovery → sample → parse → the
 //! graph resolver → write), not just at the unit level inside
 //! `graph::resolve_imports` itself.
+// slugaudit-line-exception: approved-by=agent; reason=one end-to-end test per edge scenario (relative/crate/external/replace/cascade + the generic-walker multi-language mechanism test) sharing the Edge/edges() harness and `use super::*` access to the publish pipeline; splitting would fragment the scenario set from its shared harness
 use super::*;
 use crate::store::open_read_write;
 use crate::sync::test_support::write;
 use std::fs;
 
+#[derive(Debug)]
 struct Edge {
     from: String,
     to: Option<String>,
@@ -161,6 +163,64 @@ fn a_modified_file_gets_its_edges_replaced_not_duplicated() {
         "the stale edge to a.py must be gone, not accumulated alongside the new one"
     );
     assert_eq!(from_main[0].to.as_deref(), Some("pkg/b.py"));
+}
+
+#[test]
+fn generic_walker_languages_get_edges_through_the_full_pipeline() {
+    // Languages the pack's own import pass doesn't cover (swift, csharp,
+    // dart, c, julia) must still produce dependency edges via the generic
+    // import walker, resolved against real project files.
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "App.swift", b"import Foundation\n");
+    write(project.path(), "Program.cs", b"using Core.Helper;\n");
+    write(
+        project.path(),
+        "Core/Helper.cs",
+        b"namespace Core { class Helper {} }\n",
+    );
+    write(
+        project.path(),
+        "lib/main.dart",
+        b"import '../helper.dart';\nvoid main() {}\n",
+    );
+    write(project.path(), "helper.dart", b"int helper() => 1;\n");
+    write(project.path(), "main.c", b"#include \"local.h\"\n");
+    write(project.path(), "local.h", b"#define X 1\n");
+    write(project.path(), "main.jl", b"using .Helper\n");
+    write(project.path(), "Helper.jl", b"module Helper end\n");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+
+    publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("publish");
+
+    let all = edges(&connection);
+    let assert_edge = |from: &str, to: &str| {
+        assert!(
+            all.iter().any(|edge| edge.from == from
+                && edge.kind == "Resolved"
+                && edge.to.as_deref() == Some(to)),
+            "expected a Resolved edge {from} -> {to} among {all:?}"
+        );
+    };
+    assert_edge("lib/main.dart", "helper.dart");
+    assert_edge("main.c", "local.h");
+    assert_edge("Program.cs", "Core/Helper.cs");
+    assert_edge("main.jl", "Helper.jl");
+
+    // swift's module import is honestly External (no project file), not
+    // faked as resolved.
+    let swift_edge = all
+        .iter()
+        .find(|edge| edge.from == "App.swift")
+        .expect("an edge for App.swift");
+    assert_eq!(swift_edge.kind, "External");
+    assert_eq!(swift_edge.to, None);
 }
 
 #[test]

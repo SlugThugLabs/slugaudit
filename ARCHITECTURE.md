@@ -130,7 +130,7 @@ src/
 
 ## File-size authorization summary
 
-Every file under `src/` is governed by `tools/check_source_limits.sh`:
+Every file under `src/` is governed by `cargo run --bin check_source_limits --locked` (the bin that replaced the prior `tools/check_source_limits.sh` shell script):
 files at 0–199 code lines auto-pass the gate, 200–300 requires an
 in-source comment of the form
 
@@ -280,7 +280,8 @@ src/
 The 30 `*_tests.rs` files share this pattern; `cargo test --lib` runs
 all of them in parallel (`--test-threads=4` by default). Test files are
 subject to the same small-file rule as production; the
-`tools/check_source_limits.sh` script enforces both.
+`cargo run --bin check_source_limits` bin (formerly
+`tools/check_source_limits.sh`) enforces both.
 
 ## Where to start reading
 

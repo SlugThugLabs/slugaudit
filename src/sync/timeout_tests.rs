@@ -117,14 +117,18 @@ fn reconcile_times_out_when_the_budget_is_exhausted() {
 
     let dirty = ["a.rs"].iter().map(|s| s.to_string()).collect();
     let deleted = HashSet::new();
+    let options = ReconcileOptions {
+        limits,
+        deadline: tiny_budget(),
+        rules: None,
+    };
     let error = reconcile_dirty_paths_with_deadline(
         &mut connection,
         project.path(),
         dirty,
         deleted,
         None,
-        &limits,
-        &tiny_budget(),
+        &options,
     )
     .expect_err("a spent budget must abort reconcile");
     assert!(
