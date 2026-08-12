@@ -1,7 +1,8 @@
 use crate::progress::ProgressSink;
 use crate::sync;
 use rmcp::ErrorData;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+use uuid::Uuid;
 
 #[path = "context_transactions.rs"]
 mod context_transactions;
@@ -12,9 +13,6 @@ pub(crate) use context_transactions::{with_verified_read, with_verified_write};
 // delegates to it — both must agree on the type.
 pub use sync::SyncedProject;
 
-/// Global `SourceSyncManager` used by `ensure_synced`. Initialized lazily on
-/// the first call. The manager owns a filesystem watcher and uses it to
-/// avoid full publishes when the project is quiescent.
 static SYNC_MANAGER: OnceLock<sync::SourceSyncManager> = OnceLock::new();
 
 fn get_sync_manager() -> &'static sync::SourceSyncManager {
@@ -27,6 +25,36 @@ fn get_sync_manager() -> &'static sync::SourceSyncManager {
 /// ensure-current side effect of `ensure_synced`.
 pub(crate) fn sync_manager() -> &'static sync::SourceSyncManager {
     get_sync_manager()
+}
+
+/// UUID generated once per `slugaudit-mcp` process boot, stamped onto
+/// every `findings` row written by this process and used by
+/// `sync::manager_meta::purge_prior_session_findings` to delete findings
+/// left by a prior agent session at the next `ensure_current`. A
+/// `Mutex<Option<…>>` (not `OnceLock<…>`) so parallel-running tests can
+/// override the active value mid-suite; the production code path takes
+/// the lock once per call and holds it only long enough to read or
+/// initialize the inner `Option<Uuid>`.
+static SESSION_ID: Mutex<Option<Uuid>> = Mutex::new(None);
+
+/// Returns the current session UUID, allocating a fresh v4 on first
+/// call. After the first call the inner `Option` is `Some`, so every
+/// subsequent call is a single lock + clone and never regenerates.
+#[must_use]
+pub(crate) fn session_id() -> Uuid {
+    let mut guard = SESSION_ID.lock().expect("session id mutex poisoned");
+    if guard.is_none() {
+        *guard = Some(Uuid::new_v4());
+    }
+    guard.expect("just initialized")
+}
+
+/// Tests override the live session ID to simulate a fresh process boot
+/// without spawning a new binary. Production code never calls this.
+#[cfg(test)]
+pub(crate) fn override_session_id_for_test(id: Uuid) {
+    let mut guard = SESSION_ID.lock().expect("session id mutex poisoned");
+    *guard = Some(id);
 }
 
 /// Wraps a low-level store/rusqlite error with which operation failed and

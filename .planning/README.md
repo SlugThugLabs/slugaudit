@@ -36,9 +36,15 @@ gates pass (fmt, clippy `-D warnings`, source-size gate, 343 tests, coverage
 - **Atomic, hash-verified revisions** — every publish computes a BLAKE3
   manifest hash and swaps `revisions.is_current` in one transaction;
   concurrent publishers detect the mismatch via compare-and-swap and retry.
-- **Findings tied to file hashes** — a finding is stored with the file's
-  current `content_hash` and becomes `stale` the moment that hash changes;
-  SlugAudit never creates a finding itself.
+- **Findings tied to file hashes AND to the agent session that wrote them**
+  — a finding is stored with the file's current `content_hash` (becomes
+  `stale` the moment that hash changes) **and** with a `session_id` UUID
+  generated on every `slugaudit-mcp` boot. Every new session's first
+  `ensure_current` runs `purge_prior_session_findings` and deletes every
+  finding row whose session doesn't match the current process — a new
+  agent starts with a clean notes slate and does not silently inherit a
+  prior reasoning session's conclusions. SlugAudit never creates a
+  finding itself.
 - **Progress notifications** — `server_runner` emits MCP
   `/notifications/progress` at three wire points per tool call
   (`ensuring_current`, `publishing`, `completed`), plus per-file sampling

@@ -1,4 +1,4 @@
-use super::context::{ensure_synced, with_verified_write};
+use super::context::{ensure_synced, session_id, with_verified_write};
 use crate::util;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -101,8 +101,8 @@ fn insert_finding(
     tx.execute(
         "INSERT INTO findings (\
             path, source_hash, line_start, line_end, severity, category, title, description, \
-            created_at_unix, evidence_revision, status\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'current')",
+            created_at_unix, evidence_revision, status, session_id\
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'current', ?11)",
         params![
             request.file,
             source_hash,
@@ -114,6 +114,7 @@ fn insert_finding(
             request.description,
             created_at,
             revision_id,
+            session_id().to_string(),
         ],
     )
     .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -210,3 +211,7 @@ mod tests;
 #[cfg(test)]
 #[path = "finding_race_tests.rs"]
 mod race_tests;
+
+#[cfg(test)]
+#[path = "finding_session_tests.rs"]
+mod session_tests;

@@ -245,6 +245,16 @@ something else breaks loudly.
 8. **`#![forbid(unsafe_code)]` is enforced crate-wide.** The CI
    `cargo deny` and `clippy -D warnings` checks enforce this, so a
    reviewer doesn't have to verify it on every PR.
+9. **Findings are scoped to the agent session that wrote them.** Every
+   finding row carries the active `session_id` (a UUID generated once
+   per `slugaudit-mcp` boot). Every `ensure_current` runs
+   `purge_prior_session_findings` (`sync::manager_meta`) as the first
+   step inside `ensure_project_row`, deleting rows whose `session_id`
+   does not match the current process. A new agent (new chat, new
+   model, new reasoning context) starts with a clean finding set —
+   it does not silently inherit another session's audit conclusions.
+   The defense fires on both the `ensure_synced` read path and the
+   `publish_from_scratch` recover-from-corruption path.
 
 ## Layering rules
 
@@ -277,9 +287,12 @@ src/
 └── module_tests.rs        (same directory, sibling)
 ```
 
-The 30 `*_tests.rs` files share this pattern; `cargo test --lib` runs
-all of them in parallel (`--test-threads=4` by default). Test files are
-subject to the same small-file rule as production; the
+The 31 `*_tests.rs` files share this pattern; `cargo test --lib` runs
+all of them in parallel (`--test-threads=4` by default). Tool test
+modules occasionally split a focused scenario into a second sibling
+(e.g. `tools/finding_session_tests.rs`) so each file stays under the
+200-code-line soft cap. Test files are subject to the same small-file
+rule as production; the
 `cargo run --bin check_source_limits` bin (formerly
 `tools/check_source_limits.sh`) enforces both.
 

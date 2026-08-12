@@ -106,9 +106,16 @@ CREATE TABLE IF NOT EXISTS dependency_edges (
 CREATE INDEX IF NOT EXISTS idx_edges_from ON dependency_edges (from_file_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to ON dependency_edges (to_file_id);
 
--- Findings are AI-authored only and outlive any single revision: they are
--- invalidated by comparing source_hash against the current file, not by a
--- foreign key to a revision that may since have been replaced.
+-- Findings are AI-authored only. Schema-version 1.
+-- The session-scoped column is added by the v1→v2 migration
+-- (`store::migrations::apply_v1_to_v2`) instead of being declared here,
+-- so the v1-shape `CREATE TABLE IF NOT EXISTS findings` is byte-stable
+-- across whatever version of SlugAudit first touches a fresh database.
+-- Findings are still invalidated by source change on their target file
+-- (status flips current → stale when content_hash drifts); the
+-- `session_id` column added in v2 lets the
+-- `sync::manager_meta::purge_prior_session_findings` defense run on
+-- every fresh-process boot.
 CREATE TABLE IF NOT EXISTS findings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     path TEXT NOT NULL,

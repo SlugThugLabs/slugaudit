@@ -58,6 +58,7 @@ Versions are the locked versions in `Cargo.lock` as of this writing.
 | `tracing` / `tracing-subscriber` | 0.1.44 / 0.3.23 | Stderr-only structured logs and per-call spans | no |
 | `tree-sitter` | 0.26.11 | Parse-tree API used by the language pack | yes (tree-sitter C library) |
 | `tree-sitter-language-pack` | 1.13.7 (pinned `=1.13.7`) | The 306-parser language pack: detection, on-demand download/cache, generic `process()`, `get_parser()`, aliases, ABI handling | yes (bundled C grammars; build-time parser-sources download) |
+| `uuid` | 1.x | UUID v4 generation for `findings.session_id` cross-session scoping (the `v4` feature only; no serde / no namespaced UUIDs); Apache-2.0/MIT | no |
 | `which` | 7.0.3 | Locating external tooling (e.g. language-pack parser sources fetch helpers) | no |
 
 ### Dev dependencies

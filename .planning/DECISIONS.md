@@ -603,3 +603,61 @@ Format: date — title; status; context; decision; rationale; consequences.
   386-test lib suite). The single substituted dependency is the same
   `serde_json` already in `[dependencies]`; no new crates. CI's
   `ubuntu-latest` image needs no Python interpreter.
+
+## 2026-08-12 — Findings scoped to the agent session that wrote them
+
+- **Status**: decided
+- **Context**: cross-session audit poisoning is a real failure mode for
+  users who switch between agents (cheap model for a smell-test, expensive
+  model for serious audit, etc.) in the same project. A prior session's
+  `finding` row only auto-invalidates on `content_hash` drift, so any
+  reasoning conclusion a weaker/`broken` model persisted stayed visible
+  to a different agent — which was structurally tempted to treat
+  pre-existing finding rows as "already checked, skip". The tool's own
+  philosophy says the AI does the audit and the tool surfaces evidence;
+  making a long-lived DB act as a cross-agent audit ledger directly
+  contradicts that. Concretely rejected: "delete the DB on every
+  session end" (destroys the source-of-truth the durable
+  evidence/revisions/files tables also live in) and "auto-stale by
+  creation date" (gives a stale-as-of date without removing the row,
+  still leaks prior reasoning into the new agent's view).
+- **Decision**: every `findings` row carries a `session_id` column
+  (UUID v4 generated once per `slugaudit-mcp` boot via a `Mutex<…>`
+  in `tools::context`). On every `ensure_current`
+  (`SourceSyncManager::ensure_current` → `manager_meta::ensure_project_row`),
+  `purge_prior_session_findings` runs as the first step and `DELETE`s
+  every row whose `session_id !=` current. Findings are honest about
+  being session-local because the table literally carries the
+  session-stamp and the cleanup physically removes the prior session's
+  rows; source-change invalidation via `is_stale` is unchanged. Schema
+  bumped to v2; `apply_v1_to_v2` is idempotent (the column already
+  exists path skips the ALTER); `uuid 1` is the only new dependency
+  (Apache-2.0/MIT, pin chosen to match `rmcp`/`rusqlite`'s existing
+  uuid usage). `tools/finding/tests.rs` and the new sibling
+  `tools/finding/session_tests.rs` exercise the contract; migrations
+  test covers the upgrade path with a back-filled empty-string default
+  on existing rows.
+- **Rationale**: a different agent (different chat, different model,
+  different chain of thought) starts with the prior session's audit
+  conclusions wiped — no longer silently inherits them. The split
+  matches the tool philosophy: `files`/`evidence`/`edges`/`revisions`
+  are truths about source and outlive sessions; `findings` are
+  conclusions from a specific reasoning session and don't. The DB
+  lifetime is unchanged for the durable half; the unstable half (notes)
+  gets the right lifetime for its semantics. `project_control
+  action=off` remains the deliberate full-DB wipe (rare, human-driven);
+  the session cleanup is the per-agent-session equivalent.
+- **Consequences**: prior-session findings are gone the moment a new
+  agent's first tool call hits `ensure_synced`. The `report` and
+  `query` tools continue to read `findings` unmodified — defaults are
+  the right answer because the table no longer contains prior-session
+  rows. Findings a user/AI explicitly wants to carry across sessions
+  must be exported through other tooling (the AI's transcript, the
+  user's notes); this is consistent with "the AI does the audit, the
+  tool surfaces evidence" — the tool does not promise persistence of
+  reasoning output. Test suite grew by 6 (3 in
+  `manager_meta_tests.rs` covering the purge + warm-cache idempotency
+  + cross-session isolation; 2 in
+  `tools/finding/session_tests.rs` covering the user-visible contract;
+  1 migration test covering v0→v1→v2 with empty-string back-fill).
+
