@@ -290,15 +290,32 @@ impl LanguageResolver for GenericResolver {
 
         // JS/TS `import ... from 'path'` — extracted via the dedicated
         // language helper so the quote-gating lives next to its matchers.
-        // Crucially: when `from` is present without a quoted string, the
-        // statement is unparseable and we return `None` here rather than
-        // letting execution fall through to the Python `import` branch
-        // below (which would happily extract `x` from `import x from broken`
-        // as a "bare module name" and then mark it External).
-        if trimmed.contains("from") {
-            if let Some(reference) = extract_js_reference(trimmed) {
-                return Some(reference);
-            }
+        // Token-gate on the literal `from` keyword, not a substring match:
+        // a Python (and several other languages') bare-module import whose
+        // name happens to contain `from` — `import from_util`,
+        // `import foo_bar.from_baz`, etc. — is legal, must reach the
+        // generic `import X` branch below, and the prior substring gate
+        // was shadowing it (silently returning `None` instead of the
+        // module path). The token check uses whitespace boundaries, which
+        // is the same `split_whitespace().any(…)` shape the bare-name
+        // candidate check below uses — consistent with how we treat
+        // "does this look like a keyword or a token?" elsewhere.
+        //
+        // When `from` IS a real keyword but the statement has no quoted
+        // path (`import x from broken`), extraction returns `None` and
+        // we deliberately drop here; falling through would let the
+        // generic `import X` branch lift the impossible `x` out as a
+        // bare module name and call it External, which is worse than
+        // honest `None` (it would mislabel unresolved syntax as a
+        // third-party import).
+        if trimmed.split_whitespace().any(|token| token == "from")
+            && let Some(reference) = extract_js_reference(trimmed)
+        {
+            return Some(reference);
+        }
+        // If `from` was a real keyword but nothing was quoted, drop —
+        // continuing would silently mislabel the next token as External.
+        if trimmed.split_whitespace().any(|token| token == "from") {
             return None;
         }
 

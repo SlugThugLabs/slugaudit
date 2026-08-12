@@ -64,39 +64,55 @@ pub fn extract(language: &str, source: &str) -> Result<Vec<EvidenceItem>, PackEr
     // vs `filePath`) that probably refer to the same thing. We walk the
     // tree ourselves with generic node-type patterns that are consistent
     // across tree-sitter grammars, so no per-language query code is needed.
-    items.extend(extract_bindings(language, source));
-
+    //
     // The pack's own import pass only covers a hardcoded handful of
     // languages; when it found nothing, fall back to our generic import
     // walker so languages like kotlin/swift/csharp/dart still get
     // dependency edges. Gated on `imports.is_empty()` so pack-covered
     // languages never double-report and never pay an extra parse.
-    if result.imports.is_empty() {
-        items.extend(super::generic_imports::extract_generic_imports(
-            language, source,
-        ));
-    }
+    //
+    // Both walkers now share a single parse via `extract_extra_walkers`
+    // rather than each calling `get_parser().parse` independently. The
+    // prior shape triple-parsed every file (`process` internally +
+    // `extract_bindings` + `extract_generic_imports`); the second parse
+    // was redundant because both walkers want the same `Tree`. The
+    // pack's `process` parse is unavoidable — `tree-sitter-language-pack`
+    // exposes no `process_with_tree(source, tree)` overload — but the
+    // two extra ones collapse to one.
+    items.extend(extract_extra_walkers(
+        language,
+        source,
+        result.imports.is_empty(),
+    ));
 
     Ok(items)
 }
 
-/// Generic variable/field extractor. Walks the tree-sitter tree for node
-/// types that name individual bindings — `let`/`const`/`var` declarations,
-/// struct/class fields, and function parameters — and emits each as a
-/// `Symbol` evidence item. The node-type names (`let_declaration`,
-/// `field_declaration`, `parameter`, etc.) are consistent across
-/// tree-sitter language grammars, so this works for any language the pack
-/// supports without per-language query strings.
-fn extract_bindings(language: &str, source: &str) -> Vec<EvidenceItem> {
+/// Parses `source` once and runs both the variable-binding walker and
+/// (when `pack_imports_was_empty`) the generic import walker on the
+/// same `Tree`. Returns an empty `Vec` when `language` has no parser
+/// or the source doesn't parse — same contract as the two individual
+/// extractors this replaces, so callers see the same emptiness on the
+/// same failure modes.
+fn extract_extra_walkers(
+    language: &str,
+    source: &str,
+    pack_imports_was_empty: bool,
+) -> Vec<EvidenceItem> {
     let Ok(mut parser) = get_parser(language) else {
         return Vec::new();
     };
     let Some(tree) = parser.parse(source) else {
         return Vec::new();
     };
+    let root = tree.root_node();
+
     let mut items = Vec::new();
     let mut counter = 0usize;
-    walk_bindings(&tree.root_node(), source, &mut items, &mut counter);
+    walk_bindings(&root, source, &mut items, &mut counter);
+    if pack_imports_was_empty {
+        super::generic_imports::walk_imports(&root, source, &mut items, &mut counter);
+    }
     items
 }
 

@@ -76,6 +76,7 @@ fn finding_carries_the_current_session_id() {
     let response = finding(
         &Parameters(base_request(&project, "tagged.rs")),
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     )
     .expect("finding succeeds");
 
@@ -123,6 +124,7 @@ fn a_new_session_drops_prior_session_findings_but_keeps_its_own() {
     let prior_response = finding(
         &Parameters(base_request(&project, "cross.rs")),
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     )
     .expect("first-session finding succeeds");
 
@@ -153,6 +155,7 @@ fn a_new_session_drops_prior_session_findings_but_keeps_its_own() {
             path: project.path().to_string_lossy().into_owned(),
         }),
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     )
     .expect("report under new session wipes and reports");
 
@@ -165,6 +168,7 @@ fn a_new_session_drops_prior_session_findings_but_keeps_its_own() {
     let next_response = finding(
         &Parameters(base_request(&project, "cross.rs")),
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     )
     .expect("second-session finding succeeds");
 
@@ -216,6 +220,7 @@ fn a_resync_after_a_session_change_drops_prior_session_findings() {
     finding(
         &Parameters(base_request(&project, "resync.rs")),
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     )
     .expect("first-session finding lands");
 
@@ -243,8 +248,11 @@ fn a_resync_after_a_session_change_drops_prior_session_findings() {
     // A direct `sync::publish` would NOT exercise this path because
     // it operates on an already-cleaned connection that was opened
     // under a prior session.
-    crate::tools::context::ensure_synced_no_progress(&project.path().to_string_lossy())
-        .expect("resync under new session");
+    crate::tools::context::ensure_synced_no_progress(
+        &project.path().to_string_lossy(),
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .expect("resync under new session");
 
     assert_eq!(
         count_findings(&db_path),

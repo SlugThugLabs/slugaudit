@@ -26,6 +26,10 @@ uncommitted until the batch lands. Toolchain `1.97.1-x86_64-unknown-linux-gnu`.
       `slugaudit-line-exception` (run `tools/check_source_limits.sh`).
 - [x] No source-limit, unsafe, or gate policy was weakened to make a change
       pass.
+- [x] No vendored crate source (`vendor/`), build output (`target/`), or
+      per-project runtime database (`/path/.planning/slugaudit/project.db*`)
+      is staged or ever present in the working tree. See §7 for the rule
+      and rationale.
 
 ## 1. Complete release gate
 
@@ -211,3 +215,45 @@ Record in the release notes or an attached artifact manifest:
       checkout is not present on this machine and is not a build
       dependency (verified in Cargo.toml/DEPENDENCIES.md); this build has
       no runtime dependency on it.**
+
+## 7. Repository hygiene — never commit these
+
+The following paths are intentionally gitignored. They must never appear
+in `git status` short-form as `??` (untracked), `M` (modified), or `A`
+(staged) on a release branch. If any of them show up, the release fails
+at §0's pre-flight step until the entry is removed from the working
+tree and the `.gitignore` rule is verified.
+
+| Path                | Why it is gitignored                                                    |
+|---------------------|--------------------------------------------------------------------------|
+| `/target`           | Cargo build output. Reproducible from `Cargo.lock`; checksums from      |
+|                     | the release artifact (see §5) are what get recorded, not the directory. |
+| `/vendor`           | `cargo vendor` output — full vendored crate source for offline builds.  |
+|                     | The same crates are already pinned in `Cargo.lock`, so committing the   |
+|                     | directory duplicates ~250 MB of source that `cargo` can refetch from    |
+|                     | crates.io at any time. The lockfile is the source of truth for         |
+|                     | reproducible builds, not the vendored directory.                       |
+| `/<any-path>/.planning/slugaudit/` | Per-project runtime database (one directory per |
+|                     | machine-local root the tool has indexed). Binary, machine-local, and   |
+|                     | excluded from discovery by `src/sync/discovery.rs` itself; version-     |
+|                     | controlling it would leak cross-developer state and break the          |
+|                     | session-scoped findings model.                                         |
+
+### Rule for `/vendor` specifically
+
+- The path is in the root `.gitignore` (rule: `/vendor`) — do not delete
+  that line. A pull request that touches the gitignore for `/vendor`
+  requires a maintainer's review and a decision-log entry explaining why.
+- If a contributor runs `cargo vendor` locally to work offline, the
+  resulting `vendor/` directory is only ever a build-side aid. After
+  they finish, they must `rm -rf vendor/` (or rely on git ignore) so it
+  never lands in a commit. The release gate (§0) verifies this with
+  `git status --short | grep -F '?? vendor'` exiting non-zero.
+- Reproducible builds are governed by `Cargo.lock`, not `vendor/`. If a
+  release cuts an artifact, its checksum is the recorded artifact (see
+  §5), not the contents of `vendor/`. The vendor directory, when it
+  exists on a developer's machine, must NEVER be zipped or copied into
+  the release artifact either.
+- CI does not need `vendor/` to build: no `.cargo/config.toml` registers
+  a `[source]` replacement pointing at `vendor/`. Builds fetch from
+  crates.io directly. Vendoring is purely a local convenience.

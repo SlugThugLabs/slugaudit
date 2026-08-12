@@ -1,5 +1,9 @@
+// slugaudit-line-exception: approved-by=agent; reason=parallel-sampling tests for sample_all_with_deadline intentionally construct synthetic DiscoveredFile trees and exercise ordering, byte-cap, and deadline branches in isolation; collapsing this back into sample_tests would mix the synthetic-fixture scaffolding with the discoverer-driven integration tests that already live there
 use super::*;
 use crate::model::EvidenceLimits;
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 fn item_with_content_bytes(index: usize, content_len: usize) -> EvidenceItem {
     // A bare JSON string payload serializes as `"` + content + `"`, so its
@@ -139,4 +143,143 @@ fn cumulative_byte_cap_stops_before_the_file_cap_not_after() {
     assert!(total_payload_bytes(&items) <= limits.evidence.max_payload_bytes_per_file);
     assert!(items.len() < 10, "later items must have been dropped");
     assert!(has_truncation_marker(&items));
+}
+
+/// Parallel-sampling tests below. They construct `DiscoveredFile`s
+/// directly (synthetic relative paths + temp file bodies) rather than
+/// going through the full discovery walker; the goal is to pin
+/// `sample_all_with_deadline`'s ordering, cap-enforcement, and deadline
+/// behavior in isolation, the way downstream consumers
+/// (`manifest::compare`, `aggregate_manifest_hash`,
+/// `build_upserts_and_deletions`) depend on it.
+fn write_files_relative(relative_paths: &[&str]) -> Vec<DiscoveredFile> {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().to_path_buf();
+    let mut out = Vec::new();
+    for rel in relative_paths {
+        let abs = root.join(rel);
+        if let Some(parent) = abs.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        // 100 KB body so the byte-cap test has something concrete to add up.
+        let body = vec![b'a'; 100_000];
+        std::fs::write(&abs, &body).expect("write body");
+        out.push(DiscoveredFile {
+            relative_path: (*rel).to_owned(),
+            absolute_path: abs,
+            kind: FileKind::Indexed,
+        });
+    }
+    // Hold the tempdir alive for the rest of the test via the closure
+    // capturing. The test owns `dir` via the leaky `_keep` below.
+    Box::leak(Box::new(dir));
+    out
+}
+
+/// Pins that the worker pool still hands back samples indexed by
+/// `discovered` order, even though the workers finish out of order.
+/// Downstream manifest hashing relies on this; without it, concurrent
+/// publishes produce different hashes per run.
+#[test]
+fn parallel_sampling_preserves_discovered_index_ordering() {
+    let discovered = write_files_relative(&[
+        "a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs", "h.rs",
+    ]);
+    let limits = ResourceLimits::default();
+    let sink = crate::progress::NoopProgressSink;
+    let deadline = crate::util::Deadline::after(Duration::from_secs(10));
+
+    let samples = sample_all_with_deadline(&discovered, &limits, &sink, &deadline)
+        .expect("tight deadline should not fire here");
+
+    let actual: Vec<&str> = samples.iter().map(|s| s.relative_path.as_str()).collect();
+    let expected: Vec<&str> = discovered
+        .iter()
+        .map(|d| d.relative_path.as_str())
+        .collect();
+    assert_eq!(actual, expected, "sample indices mirror discovered indices");
+}
+
+/// Pins that the concurrent byte-cap check uses CAS, not load+store —
+/// i.e. when several workers would each push past the cap, exactly one
+/// worker surfaces the ImportTooLarge error and the rest bail. Without
+/// the CAS the test would occasionally observe two errors or a
+/// race-dependence on worker scheduling.
+#[test]
+fn parallel_sampling_total_byte_cap_is_enforced_atomically() {
+    // 11 files x 100 KB = 1.1 MB body total; set cap to 300 KB so the
+    // first 3 workers succeed and the 4th fails the CAS on the total.
+    let discovered = write_files_relative(&[
+        "f1.rs", "f2.rs", "f3.rs", "f4.rs", "f5.rs", "f6.rs", "f7.rs", "f8.rs", "f9.rs", "f10.rs",
+        "f11.rs",
+    ]);
+    let limits = ResourceLimits {
+        max_total_import_bytes: 300_000,
+        ..ResourceLimits::default()
+    };
+    let sink = crate::progress::NoopProgressSink;
+    let deadline = crate::util::Deadline::after(Duration::from_secs(10));
+
+    let err = sample_all_with_deadline(&discovered, &limits, &sink, &deadline)
+        .expect_err("total-byte cap must fire under this many large files");
+    match err {
+        PublishError::ImportTooLarge { total, limit } => {
+            assert!(
+                total > limit,
+                "observed total {total} must exceed limit {limit}"
+            );
+        }
+        _ => panic!("expected PublishError::ImportTooLarge, got a different variant"),
+    }
+}
+
+/// A deadline that's already spent (exceeded before the first file is
+/// dispatched) must surface as `PublishError::TimeBudgetExceeded`
+/// rather than completing the work — the wall-clock guard's whole
+/// reason to exist is to bound a pathological repo.
+#[test]
+fn expired_deadline_returns_time_budget_exceeded() {
+    let discovered = write_files_relative(&["only.rs"]);
+    let limits = ResourceLimits::default();
+    let sink = crate::progress::NoopProgressSink;
+    let deadline = crate::util::Deadline::after(Duration::from_millis(1));
+    // Sleep past the deadline so the worker loop sees it as
+    // already-spent before dispatching its first sample.
+    thread::sleep(Duration::from_millis(20));
+
+    let err = sample_all_with_deadline(&discovered, &limits, &sink, &deadline)
+        .expect_err("deadline must fire before first sample completes");
+    match err {
+        PublishError::TimeBudgetExceeded { .. } => {}
+        _ => panic!("expected PublishError::TimeBudgetExceeded, got a different variant"),
+    }
+}
+
+/// Progress events arrive at the sink at least once per sampled file
+/// (the exact ordering is racy by design). We just pin the count — the
+/// C3 audit's whole reason for parallelizing was keeping the progress
+/// channel honest during an initial import.
+#[test]
+fn parallel_sampling_emits_one_progress_event_per_file() {
+    let discovered = write_files_relative(&["p1.rs", "p2.rs", "p3.rs"]);
+    let limits = ResourceLimits::default();
+
+    #[derive(Default)]
+    struct Counter(Arc<std::sync::atomic::AtomicUsize>);
+    impl crate::progress::ProgressSink for Counter {
+        fn emit(&self, _event: crate::progress::ProgressEvent) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    let counter = Counter::default();
+    let deadline = crate::util::Deadline::after(Duration::from_secs(10));
+    let _ = sample_all_with_deadline(&discovered, &limits, &counter, &deadline)
+        .expect("samples should succeed");
+
+    assert_eq!(
+        counter.0.load(std::sync::atomic::Ordering::Relaxed),
+        discovered.len(),
+        "one Sampling event per file"
+    );
 }

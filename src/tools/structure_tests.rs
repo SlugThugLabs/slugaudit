@@ -22,6 +22,7 @@ fn ask(
             query: query.to_owned(),
         }),
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     )
     .map(|Json(response)| response)
 }
@@ -122,6 +123,7 @@ fn matches_are_capped_and_truncation_is_reported() {
         }),
         &limits,
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     )
     .map(|Json(response)| response)
     .expect("query succeeds even though it must truncate");
@@ -153,6 +155,7 @@ fn a_pathological_query_is_aborted_by_the_execution_time_budget() {
         }),
         &limits,
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     )
     .map(|Json(response)| response);
     let error = result.expect_err("runaway query is aborted, not run to completion");

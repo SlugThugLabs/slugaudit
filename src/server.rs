@@ -11,6 +11,7 @@
 use crate::server_runner::{
     MAX_CONCURRENT_BLOCKING_OPS, build_inner_sink, progress_target, run_blocking,
 };
+use crate::sync;
 use crate::tools;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -37,14 +38,37 @@ const INSTRUCTIONS: &str = "SlugAudit does not audit. It is not an auditor and n
 pub struct SlugAuditServer {
     tool_router: ToolRouter<Self>,
     blocking_ops: Arc<Semaphore>,
+    /// Per-server `SourceSyncManager`. Replaces the `static
+    /// SYNC_MANAGER: OnceLock<…>` global that previously sat in
+    /// `tools::context`; each server now owns its own watcher state,
+    /// ignore rules, and `last_sync_unix_seconds` counter, so two
+    /// servers in the same process would track independent projects.
+    /// `Clone` is the cheap clone of `SourceSyncManager` itself — the
+    /// inner `WatchManager` is shared across `Clone`s of the server.
+    manager: sync::SourceSyncManager,
 }
 
 impl SlugAuditServer {
+    /// Constructs a server with a real `notify` watcher (when supported
+    /// on the host platform). Production entry point; tests that don't
+    /// need watcher-based incremental reconcile should use
+    /// [`SlugAuditServer::with_manager`] with a `SourceSyncManager::default()`
+    /// so the watcher is bypassed and the tests can't leak `notify`
+    /// handles between cases.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_manager(sync::SourceSyncManager::with_watcher())
+    }
+
+    /// Constructs a server with an explicit `SourceSyncManager`. The
+    /// composition root for tests and for any caller that wants to
+    /// inject a mock / custom manager.
+    #[must_use]
+    pub fn with_manager(manager: sync::SourceSyncManager) -> Self {
         Self {
             tool_router: Self::tool_router(),
             blocking_ops: Arc::new(Semaphore::new(MAX_CONCURRENT_BLOCKING_OPS)),
+            manager,
         }
     }
 }
@@ -68,10 +92,11 @@ impl SlugAuditServer {
     ) -> Result<Json<tools::ReportResponse>, ErrorData> {
         let progress = progress_target(meta, &peer);
         let inner_sink = build_inner_sink(progress.clone());
+        let manager = self.manager.clone();
         run_blocking(
             Arc::clone(&self.blocking_ops),
             "report",
-            move || tools::report(&request, inner_sink.as_ref()),
+            move || tools::report(&request, inner_sink.as_ref(), &manager),
             progress,
         )
         .await
@@ -88,10 +113,11 @@ impl SlugAuditServer {
     ) -> Result<Json<tools::QueryResponse>, ErrorData> {
         let progress = progress_target(meta, &peer);
         let inner_sink = build_inner_sink(progress.clone());
+        let manager = self.manager.clone();
         run_blocking(
             Arc::clone(&self.blocking_ops),
             "query",
-            move || tools::query(&request, inner_sink.as_ref()),
+            move || tools::query(&request, inner_sink.as_ref(), &manager),
             progress,
         )
         .await
@@ -108,10 +134,11 @@ impl SlugAuditServer {
     ) -> Result<Json<tools::StructureResponse>, ErrorData> {
         let progress = progress_target(meta, &peer);
         let inner_sink = build_inner_sink(progress.clone());
+        let manager = self.manager.clone();
         run_blocking(
             Arc::clone(&self.blocking_ops),
             "structure",
-            move || tools::structure(&request, inner_sink.as_ref()),
+            move || tools::structure(&request, inner_sink.as_ref(), &manager),
             progress,
         )
         .await
@@ -134,10 +161,11 @@ impl SlugAuditServer {
     ) -> Result<Json<tools::FindingResponse>, ErrorData> {
         let progress = progress_target(meta, &peer);
         let inner_sink = build_inner_sink(progress.clone());
+        let manager = self.manager.clone();
         run_blocking(
             Arc::clone(&self.blocking_ops),
             "finding",
-            move || tools::finding(&request, inner_sink.as_ref()),
+            move || tools::finding(&request, inner_sink.as_ref(), &manager),
             progress,
         )
         .await
@@ -182,10 +210,11 @@ impl SlugAuditServer {
     ) -> Result<Json<tools::HealthResponse>, ErrorData> {
         let progress = progress_target(meta, &peer);
         let inner_sink = build_inner_sink(progress.clone());
+        let manager = self.manager.clone();
         run_blocking(
             Arc::clone(&self.blocking_ops),
             "health",
-            move || tools::health(&request, inner_sink.as_ref()),
+            move || tools::health(&request, inner_sink.as_ref(), &manager),
             progress,
         )
         .await

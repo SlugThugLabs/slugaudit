@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=agent; reason=integration tests for the finding tool cover every contract clause (stale-on-edit, stale-on-delete, current-on-untouched, sync-never-creates, line-range validation, length validation) and each test carries its own activated-project fixture so the assertions stay atomic; collapsing them into a focus-finder-tests helper would either share the project fixture (and let failures leak across tests) or rewrite each assertion in half the lines (and lose the contractual clarity this file gives the reader)
 use super::*;
 use crate::sync;
 use crate::tools::test_support::activated_project;
@@ -32,6 +33,7 @@ fn persists_exactly_the_supplied_conclusion() {
     let response = finding(
         &Parameters(base_request(&project, "lib.rs")),
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     )
     .expect("finding succeeds");
 
@@ -46,6 +48,7 @@ fn a_modified_file_invalidates_its_finding_on_next_sync() {
     let response = finding(
         &Parameters(base_request(&project, "lib.rs")),
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     )
     .expect("finding succeeds");
     let id = response.0.id;
@@ -78,6 +81,7 @@ fn a_deleted_file_invalidates_its_finding_on_next_sync() {
     let response = finding(
         &Parameters(base_request(&project, "lib.rs")),
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     )
     .expect("finding succeeds");
     let id = response.0.id;
@@ -107,6 +111,7 @@ fn an_untouched_file_keeps_its_finding_current() {
     let response = finding(
         &Parameters(base_request(&project, "lib.rs")),
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     )
     .expect("finding succeeds");
     let id = response.0.id;
@@ -161,7 +166,14 @@ fn empty_title_is_a_typed_error() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let mut request = base_request(&project, "lib.rs");
     request.title = String::new();
-    assert!(finding(&Parameters(request), &crate::progress::NoopProgressSink).is_err());
+    assert!(
+        finding(
+            &Parameters(request),
+            &crate::progress::NoopProgressSink,
+            &crate::sync::SourceSyncManager::default()
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -170,14 +182,28 @@ fn reversed_line_range_is_a_typed_error() {
     let mut request = base_request(&project, "lib.rs");
     request.line_start = 10;
     request.line_end = 1;
-    assert!(finding(&Parameters(request), &crate::progress::NoopProgressSink).is_err());
+    assert!(
+        finding(
+            &Parameters(request),
+            &crate::progress::NoopProgressSink,
+            &crate::sync::SourceSyncManager::default()
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn a_finding_against_an_unindexed_file_is_a_typed_error() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let request = base_request(&project, "does_not_exist.rs");
-    assert!(finding(&Parameters(request), &crate::progress::NoopProgressSink).is_err());
+    assert!(
+        finding(
+            &Parameters(request),
+            &crate::progress::NoopProgressSink,
+            &crate::sync::SourceSyncManager::default()
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -186,7 +212,14 @@ fn a_line_number_past_the_files_real_length_is_a_typed_error() {
     let mut request = base_request(&project, "lib.rs");
     request.line_start = 1;
     request.line_end = 9_999;
-    assert!(finding(&Parameters(request), &crate::progress::NoopProgressSink).is_err());
+    assert!(
+        finding(
+            &Parameters(request),
+            &crate::progress::NoopProgressSink,
+            &crate::sync::SourceSyncManager::default()
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -195,7 +228,14 @@ fn a_line_number_within_the_files_real_length_succeeds() {
     let mut request = base_request(&project, "lib.rs");
     request.line_start = 2;
     request.line_end = 3;
-    assert!(finding(&Parameters(request), &crate::progress::NoopProgressSink).is_ok());
+    assert!(
+        finding(
+            &Parameters(request),
+            &crate::progress::NoopProgressSink,
+            &crate::sync::SourceSyncManager::default()
+        )
+        .is_ok()
+    );
 }
 
 #[test]
@@ -203,11 +243,25 @@ fn an_oversized_description_is_a_typed_error() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let mut request = base_request(&project, "lib.rs");
     request.description = "x".repeat(MAX_DESCRIPTION_CHARS + 1);
-    assert!(finding(&Parameters(request), &crate::progress::NoopProgressSink).is_err());
+    assert!(
+        finding(
+            &Parameters(request),
+            &crate::progress::NoopProgressSink,
+            &crate::sync::SourceSyncManager::default()
+        )
+        .is_err()
+    );
 }
 #[test]
 fn an_empty_file_cannot_have_a_finding() {
     let project = activated_project("empty.rs", b"");
     let request = base_request(&project, "empty.rs");
-    assert!(finding(&Parameters(request), &crate::progress::NoopProgressSink).is_err());
+    assert!(
+        finding(
+            &Parameters(request),
+            &crate::progress::NoopProgressSink,
+            &crate::sync::SourceSyncManager::default()
+        )
+        .is_err()
+    );
 }

@@ -26,6 +26,7 @@ fn ask(project: &tempfile::TempDir, sql: &str) -> Result<QueryResponse, ErrorDat
             offset: 0,
         }),
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     )
     .map(|Json(response)| response)
 }
@@ -43,6 +44,7 @@ fn ask_with_limits(
         }),
         limits,
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     )
     .map(|Json(response)| response)
 }

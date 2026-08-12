@@ -1,5 +1,6 @@
 use super::context::{ensure_synced, with_verified_read};
 use crate::progress::ProgressSink;
+use crate::sync;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rusqlite::Transaction;
@@ -94,8 +95,9 @@ pub struct ReportResponse {
 pub fn report(
     request: &Parameters<ReportRequest>,
     sink: &dyn ProgressSink,
+    manager: &sync::SourceSyncManager,
 ) -> Result<Json<ReportResponse>, ErrorData> {
-    let synced = ensure_synced(&request.0.path, sink)?;
+    let synced = ensure_synced(&request.0.path, sink, manager)?;
     let revision_id = synced.revision_id.clone();
     let response = with_verified_read(&synced, |tx| {
         build_report(tx, revision_id.clone())

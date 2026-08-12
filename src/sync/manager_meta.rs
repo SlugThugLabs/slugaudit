@@ -7,6 +7,7 @@
 //! agent's findings, and the revision lookup that always succeeds or
 //! always returns `None`, respectively.
 
+use super::publish;
 use crate::tools::context::session_id;
 use rmcp::ErrorData;
 use rusqlite::{Connection, OptionalExtension};
@@ -160,6 +161,21 @@ pub(crate) fn ensure_project_row(
         ));
     }
     Ok(())
+}
+
+/// Single source of truth for "publish returned `Err` -> log a `warn!`
+/// line and return an `ErrorData::internal_error`". Used by every
+/// `ensure_current` branch that calls `publish` so a wire-shape change
+/// lands in one place rather than three. `warn_message` ties the log
+/// line back to the calling branch; the returned `ErrorData` always
+/// surfaces the publish error verbatim.
+pub(crate) fn map_publish_error(
+    root: &Path,
+    error: publish::PublishError,
+    warn_message: &str,
+) -> ErrorData {
+    tracing::warn!(root = %root.display(), error = %error, "{warn_message}");
+    ErrorData::internal_error(format!("publishing a new revision: {error}"), None)
 }
 
 #[cfg(test)]

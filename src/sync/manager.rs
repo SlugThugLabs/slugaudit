@@ -7,7 +7,7 @@
 //! incremental reconcile (trusted watcher with pending events).
 // slugaudit-line-exception: approved-by=agent; reason=ensure_current's three-branch match is the sync orchestrator's hot path; trace sites and stamp_last_sync belong next to the code paths they cover
 
-use super::manager_meta::{current_revision_id, ensure_project_row};
+use super::manager_meta::{current_revision_id, ensure_project_row, map_publish_error};
 use super::publish;
 use super::reconcile::ReconcileOptions;
 use super::revision;
@@ -386,10 +386,8 @@ impl SourceSyncManager {
         sink: &dyn ProgressSink,
         warn_message: &str,
     ) -> Result<publish::PublishReport, ErrorData> {
-        publish::publish(connection, root, parse::PACK_VERSION, sink).map_err(|error| {
-            tracing::warn!(root = %root.display(), error = %error, "{warn_message}");
-            ErrorData::internal_error(format!("publishing a new revision: {error}"), None)
-        })
+        publish::publish(connection, root, parse::PACK_VERSION, sink)
+            .map_err(|error| map_publish_error(root, error, warn_message))
     }
 
     fn publish_from_scratch(
@@ -404,7 +402,7 @@ impl SourceSyncManager {
         ensure_project_row(&mut connection, root.as_path())?;
         let report = publish::publish(&mut connection, root.as_path(), parse::PACK_VERSION, sink)
             .map_err(|error| {
-            ErrorData::internal_error(format!("publishing a replacement revision: {error}"), None)
+            map_publish_error(root.as_path(), error, "republishing after corruption")
         })?;
         drop(connection);
         Ok(SyncedProject {

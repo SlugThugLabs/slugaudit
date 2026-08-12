@@ -661,3 +661,68 @@ Format: date — title; status; context; decision; rationale; consequences.
   `tools/finding/session_tests.rs` covering the user-visible contract;
   1 migration test covering v0→v1→v2 with empty-string back-fill).
 
+## 2026-08-12 — /vendor rule: gitignored + documented as never-committed
+
+- **Status**: decided (closes the item parked by the 2026-08-12
+  "Dev tooling cut over to Rust bins" entry — "the vendor/ tree…
+  remain[s] in the working tree untracked — out of scope for this
+  decision and parked from prior turns")
+- **Context**: the 253 MB `vendor/` directory produced by `cargo vendor`
+  sat in the working tree untracked. With nothing in `.gitignore` and
+  nothing in the release checklist, a future contributor running
+  `cargo vendor` for an offline build and then committing the working
+  tree would have shipped hundreds of MB of duplicated crate source.
+  The contribute-vs-get-flagged collision is exactly the failure mode
+  `.gitignore` rules exist to prevent — but `/target` and
+  `/.planning/slugaudit/` were ruled, and `/vendor` was not.
+- **Decision**: three-layer rule matching the existing
+  `/target` / `/.planning/slugaudit/` pattern.
+  - Layer 1 — policy: add `/vendor` to the root `.gitignore` with a
+    comment explaining the rationale. The line is now an explicit,
+    commented, single-source-of-truth rule.
+  - Layer 2 — pre-flight: add a §0 checkbox in
+    `.planning/RELEASE_CHECKLIST.md` declaring that
+    `git status --short` must not list `vendor/` (or `target/`, or a
+    per-project `.planning/slugaudit/`). The pre-flight gate fails any
+    release where it appears.
+  - Layer 3 — contributor documentation: a new §7 "Repository
+    hygiene — never commit these" section in `RELEASE_CHECKLIST.md`
+    with a 3-row rule table (`/target`, `/vendor`,
+    `/<any-path>/.planning/slugaudit/`) and a dedicated "Rule for
+    `/vendor` specifically" subsection spelling out (a) the
+    `.gitignore` rule is canonical and a PR touching it requires
+    review + a decision-log entry, (b) contributors running
+    `cargo vendor` locally must `rm -rf vendor/` (or rely on the
+    gitignore) so it never lands in a commit, (c) reproducible builds
+    are governed by `Cargo.lock`, not `vendor/`; release artifacts are
+    recorded by checksum (see §5), and the vendored directory must
+    never be zipped into a release artifact either, (d) CI does not
+    need `vendor/` — there is no `.cargo/config.toml` registering a
+    `[source]` replacement pointing at it; builds fetch from crates.io
+    directly. Vendoring is purely a local developer convenience.
+  - Cleanup: `rm -rf vendor/` on this machine; `git status --short`
+    now reports zero lines for `vendor/`.
+- **Rationale**: the project's reproducibility layer is `Cargo.lock` +
+  the pinned toolchain (`rust-toolchain.toml`), not the contents of a
+  vendored directory. Vendoring exists only to let one developer work
+  offline; committing it duplicates that source control already knows
+  how to fetch. The same discipline that excluded `/.planning/slugaudit/`
+  eight days ago (per the "Runtime databases removed from git tracking"
+  entry) applies — both are derived data, not artifacts. Documenting
+  the rule in three places (gitignore, pre-flight gate, contributor
+  doc) means a future contributor can't slip it in by accident: any
+  one of the three layers catches it. The exact verification command
+  (`git status --short | grep -F '?? vendor'` exiting non-zero) is
+  what makes the gate testable.
+- **Consequences**: 253 MB of disk space freed; `git status --short`
+  no longer lists `vendor/` so a future `git add -A` will not pick it
+  up. CI gains no compile-time cost (no `.cargo/config.toml` change,
+  no `vendor/` ever created in CI). The rule is reusable for any
+  future throw-away build artifact that someone might be tempted to
+  vendor (e.g. `node_modules`, `.m2/`); the `§7` table's column-1
+  lists paths and column-2 lists the rationale, so the next entry
+  can land in either column without re-deriving the rule from this
+  decision. The "Open items tracked in this log" sidebar is left
+  unchanged — `vendor/` was a parked note rather than a tracked
+  open item.
+

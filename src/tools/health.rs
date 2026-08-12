@@ -20,8 +20,8 @@
 //!    clock milliseconds across every tool call since process start.
 // slugaudit-line-exception: approved-by=agent; reason=health is the schema-defining tool; Request+Response+phase+derivation live together so the schema isn't split from its only consumer
 
-use super::context::sync_manager;
 use crate::store;
+use crate::sync;
 use crate::watch;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -121,10 +121,10 @@ pub enum HealthPhase {
 pub fn health(
     request: &Parameters<HealthRequest>,
     _sink: &dyn crate::progress::ProgressSink,
+    manager: &sync::SourceSyncManager,
 ) -> Result<Json<HealthResponse>, ErrorData> {
     let HealthRequest { path } = &request.0;
 
-    let manager = sync_manager();
     let counters = ToolCounters::snapshot();
     let last_sync = manager.last_sync_unix_seconds();
 

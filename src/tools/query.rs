@@ -1,6 +1,7 @@
 use super::context::{ensure_synced, with_verified_read};
 use super::query_value::row_to_json;
 use crate::model::ResourceLimits;
+use crate::sync;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rusqlite::Transaction;
@@ -63,8 +64,9 @@ struct QueryResponseView<'a> {
 pub fn query(
     request: &Parameters<QueryRequest>,
     sink: &dyn crate::progress::ProgressSink,
+    manager: &sync::SourceSyncManager,
 ) -> Result<Json<QueryResponse>, ErrorData> {
-    query_with_limits(request, &ResourceLimits::default(), sink)
+    query_with_limits(request, &ResourceLimits::default(), sink, manager)
 }
 
 /// Test-only seam: production code always goes through [`query`] with
@@ -76,6 +78,7 @@ fn query_with_limits(
     request: &Parameters<QueryRequest>,
     limits: &ResourceLimits,
     sink: &dyn crate::progress::ProgressSink,
+    manager: &sync::SourceSyncManager,
 ) -> Result<Json<QueryResponse>, ErrorData> {
     let QueryRequest { path, sql, offset } = &request.0;
     let trimmed = sql.trim().trim_end_matches(';');
@@ -89,7 +92,7 @@ fn query_with_limits(
         ));
     }
 
-    let synced = ensure_synced(path, sink)?;
+    let synced = ensure_synced(path, sink, manager)?;
     let revision_id = synced.revision_id.clone();
     let (mut rows, mut truncated) =
         with_verified_read(&synced, |tx| run_query(tx, trimmed, *offset, limits))?;

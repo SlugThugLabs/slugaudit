@@ -1,4 +1,5 @@
 use super::context::{ensure_synced, session_id, with_verified_write};
+use crate::sync;
 use crate::util;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -74,11 +75,12 @@ pub struct FindingResponse {
 pub fn finding(
     request: &Parameters<FindingRequest>,
     sink: &dyn crate::progress::ProgressSink,
+    manager: &sync::SourceSyncManager,
 ) -> Result<Json<FindingResponse>, ErrorData> {
     let request = &request.0;
     validate_text_fields(request)?;
 
-    let synced = ensure_synced(&request.path, sink)?;
+    let synced = ensure_synced(&request.path, sink, manager)?;
     let revision_id = synced.revision_id.clone();
     let response = with_verified_write(&synced, |tx| insert_finding(tx, request, &revision_id))?;
     Ok(Json(response))

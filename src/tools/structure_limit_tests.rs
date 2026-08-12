@@ -19,6 +19,7 @@ fn ask(
             query: query.to_owned(),
         }),
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     )
     .map(|Json(response)| response)
 }

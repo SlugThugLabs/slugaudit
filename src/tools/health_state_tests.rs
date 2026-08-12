@@ -178,20 +178,23 @@ fn health_with_a_path_never_triggers_a_sync() {
 #[test]
 fn health_with_an_active_project_path_reports_db_fields() {
     let (project, path) = activated_temp_project();
-    // Deliberate coupling to the process-global manager: this is the real
-    // production entry point (`health` with a path goes through the same
-    // `ensure_synced`). The registered temp project leaves a watch entry
-    // in the global manager until its (deleted) root is pruned by a later
-    // event; every other test that reads the global manager is path-keyed,
-    // so this coupling is safe today — assert only path-independent fields
-    // here so it stays that way.
-    crate::tools::context::ensure_synced(&path, &crate::progress::NoopProgressSink)
-        .expect("register with the process manager");
+    // Production path: `ensure_synced` (via `SlugAuditServer`) and `health`
+    // (same server.rs instance) share the same `SourceSyncManager`, so the
+    // last-sync timestamp the first one stamps is visible to the second.
+    // In test, all of `ensure_synced_no_progress`, `health`, and the watch
+    // state they read from must use the *same* instance — bind once and
+    // pass by reference, matching the production `SlugAuditServer::clone()`
+    // shape that derives a new manager reference from the same `Arc`s-holding
+    // internals.
+    let manager = crate::sync::SourceSyncManager::with_watcher();
+    crate::tools::context::ensure_synced_no_progress(&path, &manager)
+        .expect("ensure_current succeeds via the test manager");
 
     let request = crate::tools::HealthRequest { path: Some(path) };
     let response = crate::tools::health::health(
         &rmcp::handler::server::wrapper::Parameters(request),
         &crate::progress::NoopProgressSink,
+        &manager,
     )
     .expect("health with a path succeeds");
 

@@ -1,5 +1,6 @@
 use super::context::{ensure_synced, with_verified_read};
 use crate::model::{ResourceLimits, char_column, saturating_u32};
+use crate::sync;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use schemars::JsonSchema;
@@ -62,8 +63,9 @@ pub struct StructureResponse {
 pub fn structure(
     request: &Parameters<StructureRequest>,
     sink: &dyn crate::progress::ProgressSink,
+    manager: &sync::SourceSyncManager,
 ) -> Result<Json<StructureResponse>, ErrorData> {
-    structure_with_limits(request, &ResourceLimits::default(), sink)
+    structure_with_limits(request, &ResourceLimits::default(), sink, manager)
 }
 
 /// Test-only seam: production code always goes through [`structure`] with
@@ -74,6 +76,7 @@ fn structure_with_limits(
     request: &Parameters<StructureRequest>,
     limits: &ResourceLimits,
     sink: &dyn crate::progress::ProgressSink,
+    manager: &sync::SourceSyncManager,
 ) -> Result<Json<StructureResponse>, ErrorData> {
     let StructureRequest { path, file, query } = &request.0;
     if query.trim().is_empty() {
@@ -92,7 +95,7 @@ fn structure_with_limits(
         ));
     }
 
-    let synced = ensure_synced(path, sink)?;
+    let synced = ensure_synced(path, sink, manager)?;
     let revision_id = synced.revision_id.clone();
     let (content, language) = with_verified_read(&synced, |tx| fetch_source(tx, file))?;
 

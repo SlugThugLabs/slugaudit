@@ -1,7 +1,7 @@
 use crate::progress::ProgressSink;
 use crate::sync;
 use rmcp::ErrorData;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 use uuid::Uuid;
 
 #[path = "context_transactions.rs"]
@@ -12,20 +12,6 @@ pub(crate) use context_transactions::{with_verified_read, with_verified_write};
 // `SourceSyncManager::ensure_current` returns it, and `ensure_synced`
 // delegates to it — both must agree on the type.
 pub use sync::SyncedProject;
-
-static SYNC_MANAGER: OnceLock<sync::SourceSyncManager> = OnceLock::new();
-
-fn get_sync_manager() -> &'static sync::SourceSyncManager {
-    SYNC_MANAGER.get_or_init(sync::SourceSyncManager::with_watcher)
-}
-
-/// Returns the process-wide `SourceSyncManager`. Same instance every
-/// call; `tools::health` uses this to read counters and iterate the
-/// watcher's per-project `WatchState`s without going through the
-/// ensure-current side effect of `ensure_synced`.
-pub(crate) fn sync_manager() -> &'static sync::SourceSyncManager {
-    get_sync_manager()
-}
 
 /// UUID generated once per `slugaudit-mcp` process boot, stamped onto
 /// every `findings` row written by this process and used by
@@ -79,6 +65,13 @@ pub(super) fn internal_error(context: &str, error: impl std::fmt::Display) -> Er
 /// and returns a handle to its current revision. A concurrent publish is
 /// caught by the revision check in `with_verified_read` / `with_verified_write`.
 ///
+/// `manager` is the per-server `SourceSyncManager` instance owned by the
+/// calling `SlugAuditServer` — passing it explicitly (rather than
+/// reaching for a process global) means two servers in the same process
+/// would each manage their own watchers, their own last-sync stamps, and
+/// their own ignore rule sets. `sync::SourceSyncManager::default()` is
+/// fine in tests when the watcher's full mode is not needed.
+///
 /// `sink` carries progress events from the sync layer (per-file sampling
 /// during publish, plus `Started`/`Completed` markers for the overall
 /// `ensuring_current` phase) to the MCP-aware server, which turns the
@@ -90,8 +83,12 @@ pub(super) fn internal_error(context: &str, error: impl std::fmt::Display) -> Er
 ///
 /// Returns an error if `path` isn't inside an active project, or if sync
 /// itself fails.
-pub fn ensure_synced(path: &str, sink: &dyn ProgressSink) -> Result<SyncedProject, ErrorData> {
-    get_sync_manager().ensure_current(path, sink)
+pub fn ensure_synced(
+    path: &str,
+    sink: &dyn ProgressSink,
+    manager: &sync::SourceSyncManager,
+) -> Result<SyncedProject, ErrorData> {
+    manager.ensure_current(path, sink)
 }
 
 /// Backwards-compatible shim that calls [`ensure_synced`] with a no-op
@@ -101,8 +98,11 @@ pub fn ensure_synced(path: &str, sink: &dyn ProgressSink) -> Result<SyncedProjec
 /// sink and commit to the wire-point contract documented in
 /// `ARCHITECTURE.md`.
 #[cfg(test)]
-pub(crate) fn ensure_synced_no_progress(path: &str) -> Result<SyncedProject, ErrorData> {
-    ensure_synced(path, &crate::progress::NoopProgressSink)
+pub(crate) fn ensure_synced_no_progress(
+    path: &str,
+    manager: &sync::SourceSyncManager,
+) -> Result<SyncedProject, ErrorData> {
+    ensure_synced(path, &crate::progress::NoopProgressSink, manager)
 }
 
 fn verify_revision_matches(

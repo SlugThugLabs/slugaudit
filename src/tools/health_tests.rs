@@ -135,8 +135,12 @@ fn health_no_path_response_carries_counter_consistency() {
     let snap_before = ToolCounters::snapshot();
     // Call the function via the full module path so the compiler can't
     // confuse it with the module-name collision.
-    let resp = crate::tools::health::health(&req(None), &crate::progress::NoopProgressSink)
-        .expect("health should not fail on shape");
+    let resp = crate::tools::health::health(
+        &req(None),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .expect("health should not fail on shape");
     let inner = resp.0;
     let snap_after = ToolCounters::snapshot();
     assert!(
@@ -158,6 +162,7 @@ fn health_with_an_unrelated_path_returns_an_error() {
     let resp = crate::tools::health::health(
         &req(Some("/definitely/not/a/real/project/that/exists")),
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     );
     assert!(
         resp.is_err(),

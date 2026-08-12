@@ -33,7 +33,11 @@ fn base_request(project: &tempfile::TempDir, file: &str) -> FindingRequest {
 }
 
 fn finding_count(project: &tempfile::TempDir) -> i64 {
-    let fresh = ensure_synced_no_progress(&project.path().to_string_lossy()).expect("re-sync");
+    let fresh = ensure_synced_no_progress(
+        &project.path().to_string_lossy(),
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .expect("re-sync");
     with_verified_read(&fresh, |tx| {
         tx.query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))
@@ -51,8 +55,11 @@ fn finding_count(project: &tempfile::TempDir) -> i64 {
 #[test]
 fn a_publish_landing_between_revision_capture_and_the_write_is_detected_not_corrupted() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let synced =
-        ensure_synced_no_progress(&project.path().to_string_lossy()).expect("initial sync");
+    let synced = ensure_synced_no_progress(
+        &project.path().to_string_lossy(),
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .expect("initial sync");
     let original_revision_id = synced.revision_id.clone();
     let revision_for_insert = synced.revision_id.clone();
     let database_path = synced.database_path.clone();
@@ -121,8 +128,11 @@ fn a_publish_landing_between_revision_capture_and_the_write_is_detected_not_corr
 #[test]
 fn a_finding_write_racing_a_real_publish_never_corrupts_state_whichever_wins() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let synced =
-        ensure_synced_no_progress(&project.path().to_string_lossy()).expect("initial sync");
+    let synced = ensure_synced_no_progress(
+        &project.path().to_string_lossy(),
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .expect("initial sync");
     let revision_id = synced.revision_id.clone();
     let database_path = synced.database_path.clone();
     let request = base_request(&project, "lib.rs");

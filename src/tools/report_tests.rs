@@ -21,6 +21,7 @@ fn reports_real_counts_for_an_active_project() {
             path: project.path().to_string_lossy().into_owned(),
         }),
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     )
     .expect("report succeeds");
 
@@ -186,6 +187,7 @@ fn report_on_an_inactive_project_is_a_typed_error_not_a_panic() {
             path: project.path().to_string_lossy().into_owned(),
         }),
         &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
     );
     assert!(result.is_err());
 }

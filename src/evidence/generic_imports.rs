@@ -56,8 +56,14 @@ fn is_import_statement_kind(kind: &str) -> bool {
 }
 
 /// Runs the generic import walker. Returns empty when the language has no
-/// parser or the source doesn't parse — callers treat that as \"no imports
-/// found\", not an error, matching `extract_bindings`'s contract.
+/// parser or the source doesn't parse — callers treat that as \\"no imports
+/// found\\", not an error, matching `extract_bindings`'s contract.
+///
+/// Production code uses [`super::normalize::extract_extra_walkers`] (which
+/// shares a tree with the binding walker); this standalone wrapper exists
+/// for tests that want to assert the walker output for a single language
+/// without going through the full evidence pipeline.
+#[allow(dead_code)]
 pub(super) fn extract_generic_imports(language: &str, source: &str) -> Vec<EvidenceItem> {
     let Ok(mut parser) = get_parser(language) else {
         return Vec::new();
@@ -75,7 +81,17 @@ pub(super) fn extract_generic_imports(language: &str, source: &str) -> Vec<Evide
 /// node, slicing the raw statement text from `source` via byte range.
 /// Child nodes of a matched statement are still visited (a `using` block
 /// may contain nested directives), but only whole-statement kinds emit.
-fn walk_imports(node: &Node, source: &str, items: &mut Vec<EvidenceItem>, counter: &mut usize) {
+///
+/// `pub(super)` so `normalize.rs::extract_extra_walkers` can run this
+/// walker on the same already-parsed tree it uses for the
+/// variable-binding walker — saving the redundant second parse that
+/// the C2 audit flagged.
+pub(super) fn walk_imports(
+    node: &Node,
+    source: &str,
+    items: &mut Vec<EvidenceItem>,
+    counter: &mut usize,
+) {
     let kind = node.kind();
     if is_import_statement_kind(&kind) {
         // Trim: some grammars (e.g. c/cpp `preproc_include`) include the

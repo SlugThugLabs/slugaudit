@@ -31,6 +31,10 @@ mod registry;
 #[path = "proptest.rs"]
 mod proptest;
 
+#[cfg(test)]
+#[path = "gate_tests.rs"]
+mod gate_tests;
+
 // Re-exports that comprise the resolver's public API surface. These
 // are used by callers of this module, not directly inside `mod.rs`,
 // so the unused-import lint would otherwise flag every name here.

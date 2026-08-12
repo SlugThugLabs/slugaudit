@@ -1,5 +1,10 @@
 /target
 
+# Vendored crate source (created by `cargo vendor` for offline builds).
+# Never version: the same content ships in the lockfile and would balloon
+# the repo by hundreds of MB.
+/vendor
+
 # Per-project SlugAudit runtime database (created when the repo is activated).
 # Never version: it is binary, machine-local, and excluded from discovery by
 # src/sync/discovery.rs itself.

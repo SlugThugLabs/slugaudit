@@ -34,8 +34,11 @@ fn clone_synced(synced: &SyncedProject) -> SyncedProject {
 #[test]
 fn a_read_in_progress_never_observes_a_concurrent_publishs_change() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let synced =
-        ensure_synced_no_progress(&project.path().to_string_lossy()).expect("initial sync");
+    let synced = ensure_synced_no_progress(
+        &project.path().to_string_lossy(),
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .expect("initial sync");
     let reader_synced = clone_synced(&synced);
 
     let (tx_paused, rx_paused) = mpsc::channel::<()>();
@@ -123,7 +126,11 @@ fn a_read_in_progress_never_observes_a_concurrent_publishs_change() {
     // A brand new, independently-synced read does see the new state — this
     // is what confirms the publish really did land, not merely that nothing
     // happened.
-    let fresh = ensure_synced_no_progress(&project.path().to_string_lossy()).expect("re-sync");
+    let fresh = ensure_synced_no_progress(
+        &project.path().to_string_lossy(),
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .expect("re-sync");
     let fresh_count: i64 = with_verified_read(&fresh, |tx| {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))
