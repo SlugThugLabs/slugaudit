@@ -146,7 +146,7 @@ jobs:
       # full-crate cargo-mutants run is far too slow to run on every CI
       # push. This step now FAILS CLOSED: the 2026-08-12 full-crate
       # baseline recorded zero surviving mutants on this exact surface
-      # (19 caught, 0 missed, 1 unviable; see .planning/DECISIONS.md), so
+      # (17 caught, 0 missed, 3 unviable; see .planning/DECISIONS.md), so
       # a survivor here is a real regression, not an un-triaged baseline.
       - name: Mutation testing (revision, publish, hash, context)
         run: |

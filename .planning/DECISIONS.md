@@ -897,9 +897,9 @@ Format: date — title; status; context; decision; rationale; consequences.
   per-branch behavior — reviewed and accepted as not-meaningful-behavior
   survivors (amendment 21.9's documented-review path). The
   **scoped CAS/hash/freshness surface has zero surviving mutants**
-  (19 caught, 0 missed, 1 unviable on `revision.rs`/`publish*.rs`/
-  `hash.rs`/`context.rs`), so the CI mutation step may now fail closed
-  on that surface (C6 flip, same day).
+  (17 caught, 0 missed, 3 unviable on `revision.rs`/`publish*.rs`/
+  `hash.rs`/`context.rs`, re-measured 2026-08-17), so the CI mutation
+  step may now fail closed on that surface (C6 flip, same day).
 - **Consequences**: `RELEASE_CHECKLIST` §2 item marked done with the
   recorded run; the CI mutation step's `continue-on-error: true` is
   removed in the same batch (see C6 entry below). The full-crate

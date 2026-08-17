@@ -6,9 +6,8 @@ considered complete (Task 12.3 + Phase 13 + §20 acceptance criteria).
 Skipped or failed items must be reported with a reason — they must never be
 described as passing.
 
-Last executed: **2026-08-10** at commit `e23b049` + working tree (health
-read-only fix, Task 12.2 stdio workflow completion, restart test) —
-uncommitted until the batch lands. Toolchain `1.97.1-x86_64-unknown-linux-gnu`.
+Last executed: **2026-08-17** at commit `d507351`. Toolchain
+`1.97.1-x86_64-unknown-linux-gnu`.
 
 ## 0. Pre-flight state
 
@@ -44,7 +43,7 @@ cargo nextest run ...             # NOT INSTALLED locally; equivalent suite ran 
                                   # `cargo test --workspace --all-targets --all-features --locked` (see §2)
 cargo test --workspace --doc      # 0 doc tests, clean
 cargo llvm-cov ...                # see coverage record below
-cargo audit                       # clean (exit 0; 286 crates scanned)
+cargo audit                       # clean (exit 0; 280 crates scanned)
 cargo deny check advisories bans sources licenses   # all ok
 cargo geiger --all-features       # NOT INSTALLED locally; transitive-unsafe inventory
                                   # reviewed by hand in .planning/DEPENDENCIES.md (no new
@@ -60,15 +59,10 @@ Record in the release notes:
       recalibrates deliberately, not aspirationally — see
       `.planning/DECISIONS.md` 2026-08-12 coverage-gate-recalibrated
       entry for why the current floor is 83%).
-      **Measured 2026-08-12: 83.42% line coverage** (5217/6253) —
-      `cargo run --bin check_coverage --locked` exits 0 at the 83%
-      threshold (5216/6253 on rerun; both above the floor). The four
-      new timeout-path tests in `src/sync/timeout_tests.rs` added
-      instrumented lines faster than they added executed tests, so
-      coverage moved up only modestly (+15 covered lines) — the gate's
-      threshold was recalibrated to match, not raised to silence.
+      **Measured 2026-08-17: 83.78% line coverage** (5521/6590) —
+      `cargo run --bin check_coverage --locked` exits 0 at the 83% gate.
 - [x] `cargo audit` result (zero known vulnerabilities expected).
-      **Zero known vulnerabilities** across 286 crates (exit 0).
+      **Zero known vulnerabilities** across 280 crates (exit 0).
 - [x] `cargo deny` result and license allow-list state.
       **advisories ok, bans ok, licenses ok, sources ok**.
 - [x] `cargo geiger` inventory reviewed; any new transitive unsafe named in
@@ -77,9 +71,13 @@ Record in the release notes:
       transitive unsafe this cycle.** (geiger binary not installed locally;
       CI's geiger step remains an inventory, not a gate.)
 - [x] Source-limit output (every production file under 200 code lines, or an
-      approved exception listed). **PASS** — exceptions unchanged from the
-      prior run (manager_tests 259, publish_tests 255, reconcile_tests 249,
-      query_tests 201, health.rs 208).
+      approved exception listed). **PASS 2026-08-17** —
+      `cargo run --bin check_source_limits --locked` exits 0.
+- [x] Docs/schema drift gate (`check_docs_drift`) and duplicate commit-subject
+      / test-name gate (`check_no_duplicates`). **Both PASS 2026-08-17.**
+- [x] Performance regression gate (`check_performance` against
+      `.planning/perf_baseline.json`, 20% threshold). **PASS 2026-08-17 —
+      max ratio 1.12x (parsing/extract_typescript); no bench regressed.**
 
 ## 2. Correctness-surface checks (not optional)
 
@@ -92,9 +90,10 @@ Record in the release notes:
       **DONE 2026-08-12 — full-crate baseline recorded (see decision
       log): 881 mutants, 628 caught, 131 missed (thin error-propagation
       glue, reviewed as not-meaningful), 109 unviable, 13 timeouts. The
-      scoped surface named in this item has ZERO surviving mutants (19
-      caught, 0 missed, 1 unviable). The CI mutation step was flipped
-      from `continue-on-error: true` to fail-closed in the same batch.
+      scoped surface named in this item has ZERO surviving mutants (17
+      caught, 0 missed, 3 unviable, re-verified 2026-08-17). The CI
+      mutation step was flipped from `continue-on-error: true` to
+      fail-closed in the same batch.
 - [x] Real stdio protocol test passes: `cargo test --test stdio_protocol --locked`
       (asserts stdout is protocol-pure and stderr carries the documented
       event fields). **2 tests pass** — full workflow (initialize → report →
@@ -103,12 +102,12 @@ Record in the release notes:
       (fresh server serves the same revision from the persisted database).
 - [x] Adversarial/race suites pass: `cargo nextest run --all-targets`
       includes the publish-race, finding-race, and context-race suites.
-      **Equivalent: `cargo test --workspace --all-targets --all-features
-      --locked` — 332 tests, 0 failed** (lib 328 + fixture_contract +
-      connect_tests + stdio_protocol + restart; publish-race/finding-race/
+      **Equivalent: `cargo test --lib --bins --tests --all-features
+      --locked` — 472 tests, 0 failed** (lib 423 + check_* bin tests 46 +
+      connect_tests 1 + stdio_protocol 2; publish-race/finding-race/
       context-race/barrier suites all green). *The fixture_contract test
       was removed 2026-08-10 along with the multilang fixture (see decision
-      log) — the count at the time of this recorded run is historical.*
+      log) — the count at the time of that recorded run is historical.*
 - [x] Watcher-backed incremental sync is exercised (dirty-path reconcile
       path, not only full publish). **Covered by `sync::manager` watcher
       tests (barrier loop, edit/create/delete, restart, drains-after-
