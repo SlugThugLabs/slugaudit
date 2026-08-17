@@ -55,8 +55,14 @@ fn prefer_slugthug_binary_keeps_current_when_not_installed() {
 /// otherwise rather than risk touching a real agent registration. Proves
 /// the missing-CLI error is a typed `ConnectError`, not a panic or a
 /// silent no-op.
+///
+/// Holds `TEST_ENV_LOCK` like the fake-CLI tests: without it, a concurrent
+/// test that prepends a fake `claude` to `PATH` mid-flight makes
+/// `run_connect` succeed against the fake instead of reporting
+/// `AgentMissing`, turning this into a nondeterministic race.
 #[test]
 fn connect_reports_a_missing_agent_cli_as_a_typed_error() {
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
     if ["claude", "grok", "codex"]
         .iter()
         .any(|cli| which::which(cli).is_ok())

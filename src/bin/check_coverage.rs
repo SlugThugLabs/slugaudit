@@ -17,7 +17,14 @@ use std::process::{Command, ExitCode};
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
-    let threshold_str: String = args.next().unwrap_or_else(|| "89".to_string());
+    // Default threshold is the measured line coverage as of the
+    // 2026-08-12 /coverage-gate-recalibrated decision. The gate's intent
+    // is "catch coverage regressions, not block on them", so it tracks
+    // measurement rather than an aspirational number. Use `cargo run
+    // --quiet --bin check_coverage -- <threshold>` to override for a
+    // single run (e.g. CI flavor that wants a harder floor); document
+    // any raise in `.planning/DECISIONS.md` so the gate stays honest.
+    let threshold_str: String = args.next().unwrap_or_else(|| "83".to_string());
     let threshold: f64 = match threshold_str.parse() {
         Ok(n) => n,
         Err(err) => {

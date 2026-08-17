@@ -7,7 +7,7 @@ mod netfs;
 
 #[cfg(test)]
 #[path = "test_capture.rs"]
-mod test_capture;
+pub(crate) mod test_capture;
 
 /// True when a `rusqlite` error reports a corrupt or non-database file.
 /// `StoreError::is_corruption` and `MigrationError::is_corruption` both

@@ -12,7 +12,7 @@
 //! the progress adapter is its only MCP-aware dependency.
 
 use crate::progress::{NoopProgressSink, ProgressEvent, ProgressSink};
-use rmcp::model::{Meta, ProgressNotificationParam, ProgressToken};
+use rmcp::model::{ProgressNotificationParam, ProgressToken, RequestMetaObject};
 use rmcp::{ErrorData, Peer, RoleServer};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -61,20 +61,10 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
     let blocking_span = span.clone();
 
     // Notify the consumer that the call has been received and is either
-    // queued (waiting for a blocking permit) or about to start. The
-    // wire point documented in `ARCHITECTURE.md`'s data-flow diagram
-    // is `mcp://progress: ensuring_current`, so the message names that
-    // phase explicitly. Sending this before the semaphore acquire is
-    // what makes a queued call visible instead of silent.
-    if let Some((ref peer, ref token)) = progress {
-        let _ = peer
-            .notify_progress(
-                ProgressNotificationParam::new(token.clone(), 0.0)
-                    .with_total(1.0)
-                    .with_message(format!("{tool_name} ensuring_current")),
-            )
-            .await;
-    }
+    // queued (waiting for a blocking permit) or about to start. Sending
+    // this before the semaphore acquire is what makes a queued call
+    // visible instead of silent.
+    notify_progress(&progress, 0.0, format!("{tool_name} ensuring_current")).await;
 
     let result = async {
         tracing::info!("tool call started");
@@ -91,21 +81,9 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
 
         // Now that we hold a permit, the call is actively running on a
-        // blocking thread. The mid-call wire point in ARCHITECTURE.md's
-        // data-flow diagram is `mcp://progress: publishing {i}/{total}`,
-        // so the mid-call message names that phase even before per-file
-        // events arrive from the inner sink. Subsequent per-file
-        // emissions from the tool-specific progress sink overwrite this
-        // with the actual i/N ratio.
-        if let Some((ref peer, ref token)) = progress {
-            let _ = peer
-                .notify_progress(
-                    ProgressNotificationParam::new(token.clone(), 0.5)
-                        .with_total(1.0)
-                        .with_message(format!("{tool_name} publishing")),
-                )
-                .await;
-        }
+        // blocking thread; per-file emissions from the tool-specific
+        // progress sink overwrite this with the actual i/N ratio.
+        notify_progress(&progress, 0.5, format!("{tool_name} publishing")).await;
 
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
@@ -122,15 +100,7 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
     // about to be returned. Progress reaches 1.0 whether the work succeeded
     // or failed — "completed" describes the operation's lifecycle, not its
     // outcome.
-    if let Some((ref peer, ref token)) = progress {
-        let _ = peer
-            .notify_progress(
-                ProgressNotificationParam::new(token.clone(), 1.0)
-                    .with_total(1.0)
-                    .with_message(format!("{tool_name} completed")),
-            )
-            .await;
-    }
+    notify_progress(&progress, 1.0, format!("{tool_name} completed")).await;
 
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let succeeded = result.is_ok();
@@ -161,12 +131,34 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
     result
 }
 
+/// Sends one MCP `/notifications/progress` notification when the caller
+/// requested progress, and nothing otherwise. Best-effort: send failures
+/// are silently ignored so a broken progress channel can never turn a
+/// successful tool call into an error. Shared by [`run_blocking`]'s three
+/// lifecycle notifications and [`McpProgressSink`], so the notification
+/// shape and the silent-drop contract live in one place.
+async fn notify_progress(
+    progress: &Option<(Peer<RoleServer>, ProgressToken)>,
+    fraction: f64,
+    message: String,
+) {
+    if let Some((peer, token)) = progress {
+        let _ = peer
+            .notify_progress(
+                ProgressNotificationParam::new(token.clone(), fraction)
+                    .with_total(1.0)
+                    .with_message(message),
+            )
+            .await;
+    }
+}
+
 /// Extracts the caller's progress token from the MCP request metadata, if
 /// it asked for progress notifications. Returns `None` when the caller did
 /// not request progress, in which case the sync layer gets a
 /// [`NoopProgressSink`] and emits nothing.
 pub(crate) fn progress_target(
-    meta: Meta,
+    meta: RequestMetaObject,
     peer: &Peer<RoleServer>,
 ) -> Option<(Peer<RoleServer>, ProgressToken)> {
     meta.get_progress_token().map(|token| (peer.clone(), token))
@@ -218,13 +210,7 @@ impl ProgressSink for McpProgressSink {
         // `run_blocking`'s "broken progress channel can never turn a
         // successful tool call into an error" stance.
         tokio::task::spawn(async move {
-            let _ = peer
-                .notify_progress(
-                    ProgressNotificationParam::new(token, fraction)
-                        .with_total(1.0)
-                        .with_message(message),
-                )
-                .await;
+            notify_progress(&Some((peer, token)), fraction, message).await;
         });
     }
 }

@@ -44,12 +44,22 @@ fn is_load_failure(error: &PackError) -> bool {
 /// gets `Unavailable`/`NotAttempted`, never a false "parsed successfully".
 pub fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult {
     let Some(content) = content else {
+        tracing::trace!(path = relative_path, "no content; parser not invoked");
         return ParseResult::unavailable(None, false);
     };
     let Some(language) = crate::parse::detect_language(relative_path) else {
+        tracing::trace!(
+            path = relative_path,
+            "no language detected; parser not invoked"
+        );
         return ParseResult::unavailable(None, false);
     };
     if !crate::parse::language_available(&language) {
+        tracing::debug!(
+            path = relative_path,
+            language = %language,
+            "detected language has no parser loaded in the pack; recording Unavailable",
+        );
         return ParseResult::unavailable(Some(language), true);
     }
     match crate::evidence::extract(&language, content) {
@@ -65,6 +75,13 @@ pub fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult {
             } else {
                 ParseOutcome::Succeeded
             };
+            tracing::debug!(
+                path = relative_path,
+                language = %language,
+                diagnostic_count,
+                outcome = ?outcome,
+                "parser load + extraction succeeded",
+            );
             ParseResult {
                 language: Some(language),
                 language_detected: true,
@@ -76,30 +93,46 @@ pub fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult {
                 evidence: items,
             }
         }
-        Err(error) if is_load_failure(&error) => ParseResult {
-            language: Some(language),
-            language_detected: true,
-            run: ParserRun {
-                availability: ParserAvailability::LoadFailed {
-                    reason: error.to_string(),
+        Err(error) if is_load_failure(&error) => {
+            tracing::warn!(
+                path = relative_path,
+                language = %language,
+                error = %error,
+                "parser failed to load; recording LoadFailed",
+            );
+            ParseResult {
+                language: Some(language),
+                language_detected: true,
+                run: ParserRun {
+                    availability: ParserAvailability::LoadFailed {
+                        reason: error.to_string(),
+                    },
+                    outcome: ParseOutcome::NotAttempted,
+                    completeness: ExtractionCompleteness::Unavailable,
                 },
-                outcome: ParseOutcome::NotAttempted,
-                completeness: ExtractionCompleteness::Unavailable,
-            },
-            evidence: Vec::new(),
-        },
-        Err(error) => ParseResult {
-            language: Some(language),
-            language_detected: true,
-            run: ParserRun {
-                availability: ParserAvailability::Available,
-                outcome: ParseOutcome::Failed {
-                    reason: error.to_string(),
+                evidence: Vec::new(),
+            }
+        }
+        Err(error) => {
+            tracing::debug!(
+                path = relative_path,
+                language = %language,
+                error = %error,
+                "parser ran but extraction failed; recording Failed",
+            );
+            ParseResult {
+                language: Some(language),
+                language_detected: true,
+                run: ParserRun {
+                    availability: ParserAvailability::Available,
+                    outcome: ParseOutcome::Failed {
+                        reason: error.to_string(),
+                    },
+                    completeness: ExtractionCompleteness::Unavailable,
                 },
-                completeness: ExtractionCompleteness::Unavailable,
-            },
-            evidence: Vec::new(),
-        },
+                evidence: Vec::new(),
+            }
+        }
     }
 }
 

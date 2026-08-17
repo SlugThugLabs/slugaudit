@@ -79,7 +79,6 @@ src/
 │   ├── publish_attempt.rs    first-try wrapper
 │   ├── publish_cas.rs        compare-and-swap retry primitive
 │   ├── publish_diff.rs       before/after diff for diagnostics
-│   ├── publish_edges.rs      dependency-edge construction
 │   ├── publish_log.rs        retry counter + warn! on each retry
 │   ├── revalidate.rs         re-sample previously-upserted files
 │   ├── manifest.rs           manifest hash computation
@@ -287,7 +286,7 @@ src/
 └── module_tests.rs        (same directory, sibling)
 ```
 
-The 31 `*_tests.rs` files share this pattern; `cargo test --lib` runs
+The 51 `*_tests.rs` files share this pattern; `cargo test --lib` runs
 all of them in parallel (`--test-threads=4` by default). Tool test
 modules occasionally split a focused scenario into a second sibling
 (e.g. `tools/finding_session_tests.rs`) so each file stays under the

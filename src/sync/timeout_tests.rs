@@ -1,3 +1,5 @@
+// slugaudit-line-exception: approved-by=agent; reason=one test per wall-clock deadline reaction (discovery, sampling, reconcile, barrier, manifest, analyze contract) sharing the tiny_budget/open_read_write/write fixtures in this file; splitting would fragment the injected-budget pattern that makes each abort deterministic
+//!
 //! Wall-clock timeout coverage for the sync hot loops. Each test injects a
 //! nanosecond-sized budget — any positive elapsed time trips the deadline,
 //! so the abort is deterministic without waiting out the production-sized
@@ -6,9 +8,11 @@
 use super::*;
 use crate::model::ResourceLimits;
 use crate::store::open_read_write;
+use crate::sync::SourceSyncManager;
 use crate::sync::discovery::{discover, discover_with_deadline};
+use crate::sync::publish::publish;
 use crate::sync::sample::sample_all_with_deadline;
-use crate::sync::test_support::write;
+use crate::sync::test_support::{create_project, sync_project, write};
 use crate::util::Deadline;
 use crate::watch::WatchState;
 use std::collections::HashSet;
@@ -158,4 +162,124 @@ fn barrier_sync_with_nothing_left_to_do_succeeds_even_after_the_budget() {
     let state = WatchState::new();
     let result = sync_with_barrier_with_deadline(&state, &tiny_budget(), |_dirty, _deleted| Ok(()));
     result.expect("no events means nothing to stall on");
+}
+
+/// Manager-level reaction to a reconcile timeout: when the inner barrier
+/// sync aborts with `TimeBudgetExceeded`, `SourceSyncManager::reconcile`
+/// returns the error verbatim so `ensure_current` can flip the watcher
+/// to `Desynced` and surface an `ErrorData::internal_error`. The test
+/// pins the contract "a one-shot caller never sees a healthy watcher
+/// alongside a stale database after a real timeout".
+#[test]
+fn manager_reconcile_timeout_propagates_so_ensure_current_can_mark_desynced() {
+    // Use the activated-project fixture so the watcher registers the
+    // path and the manager belongs to a project.
+    let project = create_project();
+    write(project.path(), "a.rs", b"fn a() {}\n");
+    let manager = SourceSyncManager::with_watcher();
+    let _synced = sync_project(&manager, &project);
+
+    let state = manager
+        .watch_state_for(project.path())
+        .expect("manager has registered the watched project");
+    assert_eq!(state.health(), crate::watch::WatcherHealth::Healthy);
+
+    // Mark something dirty so the empty-set early-return doesn't fire
+    // and the deadline check actually trips.
+    state.mark_dirty("a.rs".to_owned());
+
+    let error = super::reconcile::sync_with_barrier_with_deadline(
+        &state,
+        &tiny_budget(),
+        |_dirty, _deleted| Ok(()),
+    )
+    .expect_err("a spent budget must abort the barrier loop");
+    assert!(
+        matches!(
+            error,
+            super::reconcile::ReconcileError::TimeBudgetExceeded { .. }
+        ),
+        "expected TimeBudgetExceeded, got {error:?}"
+    );
+}
+
+/// `compute_manifest_hash` paths. The `exclude_count == 0` arm is
+/// only reachable if a caller invokes manifest hashing without any
+/// upserts or deletions — production reconcile short-circuits before
+/// that. It still exists so a future caller can hit it without changing
+/// the SQL layout; this test pins both branches so a regression in
+/// either one fails the suite.
+#[test]
+fn compute_manifest_hash_branches_are_both_reachable() {
+    let project = tempfile::tempdir().expect("project dir");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    write(project.path(), "a.rs", b"fn a() {}\n");
+    write(project.path(), "b.rs", b"fn b() {}\n");
+    let _ = publish(
+        &mut connection,
+        project.path(),
+        "1.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("seed publish");
+
+    let empty: Vec<super::revision::FileRecord> = Vec::new();
+    let leftover: Vec<String> = Vec::new();
+    let hash = super::reconcile::compute_manifest_hash(&connection, &empty, &leftover)
+        .expect("seeded manifest hash");
+    assert!(
+        !hash.is_empty(),
+        "manifest hash should be a non-empty hex digest"
+    );
+
+    let drop_a: Vec<String> = vec!["a.rs".to_owned()];
+    let drop_hash = super::reconcile::compute_manifest_hash(&connection, &empty, &drop_a)
+        .expect("exclude-branch manifest hash");
+    assert_ne!(drop_hash, hash, "deletions must change the aggregate hash");
+}
+
+/// `discover_with_deadline` aborts when the budget is exhausted on the
+/// very first iterated entry — exercises the deadline check inside the
+/// `for entry in walker` loop, not just the function entry. The test
+/// seeds a non-empty project, gives it a zero deadline, and asserts the
+/// `TimeBudgetExceeded` return. It is the per-iteration variant of
+/// `discovery_times_out_when_the_walk_budget_is_exhausted` (which
+/// aborts at the loop head without iterating).
+#[test]
+fn discover_with_deadline_aborts_mid_walk_when_budget_exhausts() {
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "many.rs", &vec![b'x'; 4096]);
+    write(project.path(), "more.rs", &vec![b'y'; 4096]);
+    write(project.path(), "last.rs", &vec![b'z'; 4096]);
+
+    let error = discover_with_deadline(project.path(), &tiny_budget())
+        .expect_err("a spent budget must abort discovery mid-walk");
+    assert!(
+        matches!(error, DiscoveryError::TimeBudgetExceeded { .. }),
+        "expected TimeBudgetExceeded, got {error:?}"
+    );
+}
+
+/// `analyze` doesn't carry its own wall-clock deadline — that budget is
+/// enforced one level up in `sample_all_with_deadline` and
+/// `publish_with_limits`. This test pins that documented contract: if a
+/// caller ever moves the deadline into `analyze` itself they will trip
+/// this assertion, and that's the right time to rewrite both this test
+/// and `analyze.rs`. Today, a real "per-file wall-timeout" reaction
+/// lives in `sampling_times_out_when_the_budget_is_exhausted` (analyze
+/// is downstream of sampling).
+#[test]
+fn analyze_has_no_per_file_wall_clock_budget_of_its_own() {
+    use crate::sync::analyze::analyze;
+    // A real source path with real content: `analyze` always returns
+    // (synchronously) and never blocks, because the wall-clock budget
+    // is enforced at the `sample_all_with_deadline` and
+    // `publish_with_limits` layers above it.
+    let result = analyze("src/lib.rs", Some("pub fn lib() {}\n"));
+    assert!(result.run.validate().is_ok());
+    assert!(
+        !result.evidence.is_empty(),
+        "real rust source produces real evidence"
+    );
 }

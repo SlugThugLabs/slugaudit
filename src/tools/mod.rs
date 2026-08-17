@@ -24,6 +24,10 @@ mod structure;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+#[cfg(test)]
+#[path = "redaction_tests.rs"]
+mod redaction_tests;
+
 pub use context::ensure_synced;
 pub use finding::{FindingRequest, FindingResponse, finding};
 pub use health::{HealthRequest, HealthResponse, health};

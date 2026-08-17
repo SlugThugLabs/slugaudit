@@ -45,7 +45,8 @@ pub fn collect_new_benches() -> std::io::Result<BTreeMap<String, u64>> {
         let median = value
             .get("median")
             .and_then(|m| m.get("point_estimate"))
-            .and_then(serde_json::Value::as_u64);
+            .and_then(serde_json::Value::as_f64)
+            .map(|points| points as u64);
         if let Some(median) = median {
             out.insert(key, median);
         }

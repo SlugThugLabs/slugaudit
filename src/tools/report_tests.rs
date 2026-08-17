@@ -55,14 +55,12 @@ fn reports_real_counts_for_an_active_project() {
 }
 
 /// `unsupported_language_unresolved_count` must count only the `Unresolved`
-/// edges coming from a file whose language `graph::resolve` doesn't model
-/// at all (here: `go`), not `Unresolved` edges from a supported language
-/// with a genuinely broken import (here: `python`). Builds the DB rows
-/// directly rather than through the real parse/resolve pipeline — a real
-/// Go import requires the language pack's Go import extraction to behave a
-/// specific way, which isn't what this test is pinning down; the pipeline
-/// wiring itself (the per-edge resolver check reaching this exact query)
-/// is what matters here.
+/// edges coming from import syntax the resolver can't parse at all (here:
+/// `go`'s `import "fmt"`), not `Unresolved` edges from a modeled language
+/// with a genuinely broken import (here: `python`). Since C11 the verdict
+/// is cached on the edge at write time (`syntax_unmodeled`), so this test
+/// pins the *SQL count* over that cached column — the write-time
+/// computation itself is covered by the publish_edges pipeline tests.
 #[test]
 fn unsupported_language_unresolved_is_counted_separately_from_supported_language_unresolved() {
     use crate::store::open_read_write;
@@ -108,24 +106,29 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
         })
         .expect("kotlin file id");
 
+    // syntax_unmodeled mirrors what `revision_edges::resolve_and_store`
+    // would cache at write time for each raw import text: Go's quoted
+    // `import "fmt"` yields no reference (1), while the modeled python
+    // and kotlin forms yield a reference that just doesn't match a file
+    // (0).
     connection
         .execute(
-            "INSERT INTO dependency_edges (from_file_id, raw_import_text, resolution_kind) \
-             VALUES (?1, 'import \"fmt\"', 'Unresolved')",
+            "INSERT INTO dependency_edges (from_file_id, raw_import_text, resolution_kind, syntax_unmodeled) \
+             VALUES (?1, 'import \"fmt\"', 'Unresolved', 1)",
             [go_id],
         )
         .expect("insert go edge");
     connection
         .execute(
-            "INSERT INTO dependency_edges (from_file_id, raw_import_text, resolution_kind) \
-             VALUES (?1, 'import missing_module', 'Unresolved')",
+            "INSERT INTO dependency_edges (from_file_id, raw_import_text, resolution_kind, syntax_unmodeled) \
+             VALUES (?1, 'import missing_module', 'Unresolved', 0)",
             [py_id],
         )
         .expect("insert python edge");
     connection
         .execute(
-            "INSERT INTO dependency_edges (from_file_id, raw_import_text, resolution_kind) \
-             VALUES (?1, 'import kotlin.math.max', 'Unresolved')",
+            "INSERT INTO dependency_edges (from_file_id, raw_import_text, resolution_kind, syntax_unmodeled) \
+             VALUES (?1, 'import kotlin.math.max', 'Unresolved', 0)",
             [kotlin_id],
         )
         .expect("insert kotlin edge");

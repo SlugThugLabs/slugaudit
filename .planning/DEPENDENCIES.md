@@ -52,7 +52,7 @@ Versions are the locked versions in `Cargo.lock` as of this writing.
 | `rusqlite` | 0.37.0 | SQLite access with `bundled` SQLite and `hooks` features | yes (bundled SQLite C library) |
 | `schemars` | 1.2.2 | JSON-schema derivation for MCP tool input schemas | no |
 | `serde` / `serde_json` | 1.0.229 / 1.0.151 | Typed request/response serialization and JSON-RPC payloads | no |
-| `sha2` | 0.10.9 | Secondary hashing where a second digest is useful | no (Rust) |
+| `sha2` | — (removed 2026-08-12) | Was a direct dependency for secondary hashing; the codebase hashes exclusively with BLAKE3 and nothing imported it, so C10b removed it (see `DECISIONS.md`) | no (Rust) |
 | `thiserror` | 2.0.19 | Typed error enums across module boundaries | no |
 | `tokio` | 1.53.1 | Async runtime: stdio transport, watcher tasks, spawn_blocking tool calls | yes (epoll/kqueue/io_uring) |
 | `tracing` / `tracing-subscriber` | 0.1.44 / 0.3.23 | Stderr-only structured logs and per-call spans | no |

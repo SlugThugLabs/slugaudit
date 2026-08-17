@@ -84,6 +84,14 @@ pub struct HealthResponse {
     pub tool_call_error_count: u64,
     /// Sum of every tool call's work duration, in milliseconds.
     pub tool_call_total_ms: u64,
+    /// How many consecutive full publishes (untrusted-watcher or
+    /// Unavailable-path verifications) have run since the last successful
+    /// incremental reconcile. A value that persists at 1+ across calls
+    /// means the watcher is not being trusted — e.g. Linux inotify
+    /// `fs.inotify.max_user_watches` overflow forcing `Desynced` — so
+    /// every tool call full-publishes. See the production-failure runbook
+    /// in `.planning/PERFORMANCE.md`.
+    pub consecutive_full_publishes: u64,
 }
 
 /// Coarse-grained operational phase. Derived from existing state rather
@@ -147,6 +155,7 @@ pub fn health(
         tool_call_count: counters.call_count,
         tool_call_error_count: counters.error_count,
         tool_call_total_ms: counters.total_ms,
+        consecutive_full_publishes: manager.consecutive_full_publishes(),
     }))
 }
 

@@ -209,6 +209,45 @@ fn a_pathological_query_is_aborted_by_the_step_budget() {
     );
 }
 
+/// C9: paging contract — `next_offset` is only valid while the revision
+/// id does not change. A source edit between pages changes the revision,
+/// and the response's `revision_id` lets the AI detect that boundary
+/// (rows may shift order across a publish, so blindly continuing to page
+/// could skip or duplicate rows).
+#[test]
+fn paging_across_a_revision_change_is_detectable_via_revision_id() {
+    let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
+
+    // Generate more than MAX_ROWS rows so paging is real (offset + next).
+    let sql = "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL \
+               SELECT x + 1 FROM cnt WHERE x < 900) SELECT x FROM cnt";
+    let page_one = ask(&project, sql).expect("page one succeeds");
+    assert!(page_one.truncated);
+    assert_eq!(page_one.rows.len(), MAX_ROWS);
+    let next_offset = page_one.next_offset.expect("truncated query has next");
+    assert_eq!(next_offset, MAX_ROWS);
+
+    let page_two = ask(&project, sql).expect("page two succeeds");
+    assert_eq!(
+        page_two.revision_id, page_one.revision_id,
+        "no source change: same revision, so paging stays valid"
+    );
+
+    // A source edit lands a new revision. The next page reports the new
+    // revision id, which is exactly the boundary signal the contract
+    // promises — the AI restarts paging rather than trusting next_offset.
+    fs::write(
+        project.path().join("lib.rs"),
+        b"pub fn a() {}\npub fn b() {}\n",
+    )
+    .expect("modify fixture");
+    let page_three = ask(&project, sql).expect("page three succeeds");
+    assert_ne!(
+        page_three.revision_id, page_one.revision_id,
+        "a source change must produce a new revision, invalidating old offsets"
+    );
+}
+
 #[test]
 fn a_pathological_query_is_aborted_by_the_wall_clock_budget() {
     let project = activated_project(&[]);

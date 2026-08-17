@@ -286,6 +286,12 @@ pub(crate) fn sync_with_barrier_with_deadline(
     let mut iterations: u32 = 0;
     loop {
         let (seq, dirty, deleted) = state.snapshot_dirty();
+        tracing::trace!(
+            iteration = iterations,
+            dirty_count = dirty.len(),
+            deleted_count = deleted.len(),
+            "barrier sync iteration"
+        );
 
         if dirty.is_empty() && deleted.is_empty() {
             // Nothing left to reconcile is a success even if the budget is
@@ -353,7 +359,7 @@ fn query_existing_hashes(
 /// Avoids reading rows that will be replaced or removed: upserted paths are
 /// overwritten in-memory, and deleted paths are excluded at the SQL level so
 /// we don't pay to read rows we'll immediately discard.
-fn compute_manifest_hash(
+pub(crate) fn compute_manifest_hash(
     connection: &Connection,
     upserts: &[revision::FileRecord],
     deletions: &[String],

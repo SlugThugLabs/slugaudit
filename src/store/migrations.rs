@@ -1,7 +1,8 @@
+// slugaudit-line-exception: approved-by=agent; reason=one migration per schema version plus their version-pinning tests form a single forward-only sequence where each step depends on the ones before it; splitting by migration would scatter the ordering invariant (and the exact-version pin) across files
 use rusqlite::Connection;
 use thiserror::Error;
 
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 const SCHEMA_DDL: &str = include_str!("schema.sql");
 
 #[derive(Debug, Error)]
@@ -33,8 +34,15 @@ type Migration = (i64, fn(&Connection) -> Result<(), rusqlite::Error>);
 /// Forward-only schema migrations, applied in order. v0→v1 is the
 /// original schema application; v1→v2 adds the
 /// `findings.session_id` column and the `idx_findings_session` index
-/// that the session-scoped cleanup relies on.
-const MIGRATIONS: &[Migration] = &[(1, apply_v0_to_v1), (2, apply_v1_to_v2)];
+/// that the session-scoped cleanup relies on; v2→v3 adds
+/// `dependency_edges.syntax_unmodeled` (the C11 write-time import-
+/// syntax classifier verdict, so `report` counts it in SQL instead of
+/// re-extracting every edge on every call).
+const MIGRATIONS: &[Migration] = &[
+    (1, apply_v0_to_v1),
+    (2, apply_v1_to_v2),
+    (3, apply_v2_to_v3),
+];
 
 fn apply_v0_to_v1(connection: &Connection) -> Result<(), rusqlite::Error> {
     // Fresh database — `CREATE … IF NOT EXISTS` is idempotent against
@@ -68,6 +76,27 @@ fn apply_v1_to_v2(connection: &Connection) -> Result<(), rusqlite::Error> {
     }
     connection
         .execute_batch("CREATE INDEX IF NOT EXISTS idx_findings_session ON findings (session_id);")
+}
+
+fn apply_v2_to_v3(connection: &Connection) -> Result<(), rusqlite::Error> {
+    // Idempotent against re-application (a test path that rewinds
+    // `user_version`). Existing Unresolved edges default to 0 — the
+    // honest "not classified yet" value — and are back-filled the next
+    // time their file is published (which re-runs
+    // `revision_edges::resolve_and_store` and stores the verdict).
+    let column_present: i64 = connection.query_row(
+        "SELECT count(*) FROM pragma_table_info('dependency_edges') \
+         WHERE name = 'syntax_unmodeled'",
+        [],
+        |row| row.get(0),
+    )?;
+    if column_present == 0 {
+        connection.execute(
+            "ALTER TABLE dependency_edges ADD COLUMN syntax_unmodeled INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 /// Brings a freshly-opened database up to `CURRENT_SCHEMA_VERSION`.
@@ -227,6 +256,46 @@ mod tests {
             )
             .expect("legacy session_id");
         assert_eq!(legacy_session, "");
+    }
+
+    #[test]
+    fn v2_database_upgrades_to_v3_with_syntax_unmodeled_column() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("project.db");
+        let mut connection = open_read_write(&path).expect("open database");
+        // Force the schema back to v2 so the v2→v3 migration runs.
+        connection
+            .pragma_update(None, "user_version", 2_i64)
+            .expect("rewind version");
+        ensure_current_schema(&mut connection).expect("apply v2→v3");
+
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("read post-migration version");
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
+
+        let column_present: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('dependency_edges') \
+                 WHERE name = 'syntax_unmodeled'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("inspect dependency_edges columns");
+        assert_eq!(
+            column_present, 1,
+            "syntax_unmodeled column must exist after v2→v3"
+        );
+
+        // Existing edges default to 0 (unclassified), the honest value.
+        let default: i64 = connection
+            .query_row(
+                "SELECT syntax_unmodeled FROM dependency_edges LIMIT 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(default, 0);
     }
 
     #[test]

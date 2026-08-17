@@ -7,18 +7,19 @@
 //! incremental reconcile (trusted watcher with pending events).
 // slugaudit-line-exception: approved-by=agent; reason=ensure_current's three-branch match is the sync orchestrator's hot path; trace sites and stamp_last_sync belong next to the code paths they cover
 
-use super::manager_meta::{current_revision_id, ensure_project_row, map_publish_error};
-use super::publish;
+use super::manager_meta::{
+    current_revision_id, ensure_project_row, publish_from_scratch, publish_full,
+};
 use super::reconcile::ReconcileOptions;
 use super::revision;
 use crate::progress::{ProgressEvent, ProgressSink};
+use crate::project;
 use crate::store;
 use crate::watch::{WatchManager, WatchState, WatcherHealth};
-use crate::{parse, project};
 use rmcp::ErrorData;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
@@ -64,6 +65,16 @@ pub struct SourceSyncManager {
     /// timestamp is consistent with what the database sees as the most
     /// recent revision.
     last_sync_unix_seconds: std::sync::Arc<AtomicI64>,
+    /// How many consecutive full publishes (untrusted-watcher or
+    /// Unavailable-path verifications) have run since the last successful
+    /// *incremental* reconcile. Every full publish increments it; a
+    /// successful incremental reconcile resets it to zero. Exposed through
+    /// the `health` MCP tool: a value that climbs on a repo where the
+    /// watcher keeps dropping into `Desynced` (e.g. Linux inotify
+    /// `fs.inotify.max_user_watches` overflow) is the earliest signal that
+    /// every tool call is paying a full-publish cost — see the
+    /// production-failure runbook in `.planning/PERFORMANCE.md`.
+    consecutive_full_publishes: std::sync::Arc<AtomicU64>,
 }
 
 impl SourceSyncManager {
@@ -79,6 +90,7 @@ impl SourceSyncManager {
         Self {
             watch_manager: WatchManager::with_watcher(),
             last_sync_unix_seconds: std::sync::Arc::new(AtomicI64::new(0)),
+            consecutive_full_publishes: std::sync::Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -86,6 +98,29 @@ impl SourceSyncManager {
     /// `ensure_current`. Zero before the first sync.
     pub fn last_sync_unix_seconds(&self) -> i64 {
         self.last_sync_unix_seconds.load(Ordering::Relaxed)
+    }
+
+    /// Number of consecutive full publishes since the last successful
+    /// incremental reconcile. Exposed through the `health` MCP tool; a
+    /// non-zero value that persists across calls means the watcher is not
+    /// being trusted (or is unavailable) and every tool call full-verifies.
+    pub fn consecutive_full_publishes(&self) -> u64 {
+        self.consecutive_full_publishes.load(Ordering::Relaxed)
+    }
+
+    /// Records a full publish (untrusted watcher or Unavailable path).
+    /// Called after the publish's database write succeeds, so the counter
+    /// only reflects publishes that actually landed.
+    fn record_full_publish(&self) {
+        self.consecutive_full_publishes
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Resets the consecutive-full-publish counter after a successful
+    /// incremental reconcile proves the watcher is trusted and events are
+    /// being drained incrementally.
+    fn record_incremental_reconcile(&self) {
+        self.consecutive_full_publishes.store(0, Ordering::Relaxed);
     }
 
     /// Returns the most recently synced project's `WatchState`, or `None`
@@ -175,7 +210,8 @@ impl SourceSyncManager {
                         None,
                     )
                 })?;
-                let synced = self.publish_from_scratch(&root, database_path, sink)?;
+                let synced = publish_from_scratch(&root, database_path, sink)?;
+                self.record_full_publish();
                 self.stamp_last_sync();
                 sink.emit(ProgressEvent::Completed {
                     phase: "ensuring_current",
@@ -222,12 +258,8 @@ impl SourceSyncManager {
                     root = %root.as_path().display(),
                     "watcher untrusted; running full verification",
                 );
-                let report = Self::publish_full(
-                    &mut connection,
-                    root.as_path(),
-                    sink,
-                    "full publish failed",
-                )?;
+                let report =
+                    publish_full(&mut connection, root.as_path(), sink, "full publish failed")?;
                 // Drain any events that arrived during the full verification.
                 // `publish` walks the filesystem and parses files, which takes
                 // time — events can arrive while it runs. If we don't drain
@@ -246,30 +278,34 @@ impl SourceSyncManager {
                         )
                     })?;
                 state.set_health(WatcherHealth::Healthy);
+                self.record_full_publish();
                 report.revision_id
             }
             WatcherHealth::Healthy => {
-                if state.has_unreconciled_events()
-                    && let Err(error) = self.reconcile(root.as_path(), &state, &mut connection)
-                {
-                    // `snapshot_dirty` cleared the dirty sets, but
-                    // reconciliation failed — the events are lost. Mark
-                    // the watcher untrusted so the next call does a full
-                    // verification rather than silently serving stale
-                    // evidence.
-                    tracing::warn!(
-                        root = %root.as_path().display(),
-                        error = %error,
-                        "incremental reconcile failed; marking watcher Desynced so next call re-verifies",
-                    );
-                    state.set_health(WatcherHealth::Desynced);
-                    sink.emit(ProgressEvent::Completed {
-                        phase: "ensuring_current",
-                    });
-                    return Err(ErrorData::internal_error(
-                        format!("reconciling watcher events: {error}"),
-                        None,
-                    ));
+                if state.has_unreconciled_events() {
+                    match self.reconcile(root.as_path(), &state, &mut connection) {
+                        Ok(()) => self.record_incremental_reconcile(),
+                        Err(error) => {
+                            // `snapshot_dirty` cleared the dirty sets, but
+                            // reconciliation failed — the events are lost. Mark
+                            // the watcher untrusted so the next call does a full
+                            // verification rather than silently serving stale
+                            // evidence.
+                            tracing::warn!(
+                                root = %root.as_path().display(),
+                                error = %error,
+                                "incremental reconcile failed; marking watcher Desynced so next call re-verifies",
+                            );
+                            state.set_health(WatcherHealth::Desynced);
+                            sink.emit(ProgressEvent::Completed {
+                                phase: "ensuring_current",
+                            });
+                            return Err(ErrorData::internal_error(
+                                format!("reconciling watcher events: {error}"),
+                                None,
+                            ));
+                        }
+                    }
                 }
                 current_revision_id(&connection)
                     .map_err(|error| {
@@ -300,12 +336,13 @@ impl SourceSyncManager {
                     root = %root.as_path().display(),
                     "watcher unavailable; running full publish",
                 );
-                let report = Self::publish_full(
+                let report = publish_full(
                     &mut connection,
                     root.as_path(),
                     sink,
                     "publish on Unavailable path failed",
                 )?;
+                self.record_full_publish();
                 report.revision_id
             }
         };
@@ -356,6 +393,7 @@ impl SourceSyncManager {
         // project's ignore rules make the incremental path index exactly
         // what a full publish would index.
         let options = ReconcileOptions::for_sync(self.watch_manager.rules_for(root));
+        let started = std::time::Instant::now();
 
         super::reconcile::sync_with_barrier_with_deadline(
             state,
@@ -373,43 +411,12 @@ impl SourceSyncManager {
             },
         )?;
 
+        tracing::debug!(
+            root = %root.display(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "incremental reconcile phase complete",
+        );
         Ok(())
-    }
-
-    /// Publishes a full revision from the current filesystem state,
-    /// mapping failures into `ErrorData` with the standard warn-and-error
-    /// shape. Shared by the verification and Unavailable branches so the
-    /// two near-identical publish blocks can't drift apart.
-    fn publish_full(
-        connection: &mut Connection,
-        root: &Path,
-        sink: &dyn ProgressSink,
-        warn_message: &str,
-    ) -> Result<publish::PublishReport, ErrorData> {
-        publish::publish(connection, root, parse::PACK_VERSION, sink)
-            .map_err(|error| map_publish_error(root, error, warn_message))
-    }
-
-    fn publish_from_scratch(
-        &self,
-        root: &project::ProjectRoot,
-        database_path: PathBuf,
-        sink: &dyn ProgressSink,
-    ) -> Result<SyncedProject, ErrorData> {
-        let mut connection = store::open_read_write(&database_path).map_err(|error| {
-            ErrorData::internal_error(format!("recreating the project database: {error}"), None)
-        })?;
-        ensure_project_row(&mut connection, root.as_path())?;
-        let report = publish::publish(&mut connection, root.as_path(), parse::PACK_VERSION, sink)
-            .map_err(|error| {
-            map_publish_error(root.as_path(), error, "republishing after corruption")
-        })?;
-        drop(connection);
-        Ok(SyncedProject {
-            database_path,
-            revision_id: report.revision_id,
-            root: root.as_path().to_path_buf(),
-        })
     }
 }
 

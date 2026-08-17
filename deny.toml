@@ -25,9 +25,39 @@ allow = [
 exceptions = []
 
 [bans]
-multiple-versions = "warn"
+multiple-versions = "deny"
 wildcards = "deny"
 highlight = "all"
+# Each entry below is a semver-incompatible transitive split that cannot
+# be unified without changing an upstream crate's own requirements. They
+# are documented here so the list is a reviewed decision, not an accident:
+# - `syn` 2 (tracing-attributes → tracing; zerocopy-derive → zerocopy/ahash)
+#   vs 3 (darling → rmcp-macros, serde_derive, schemars, thiserror, tokio,
+#   futures-macro): most derive crates have moved to syn 3, but
+#   tracing-attributes and zerocopy-derive still pin syn 2 (upstream has not
+#   moved them).
+# - `hashbrown` 0.15 (hashlink → rusqlite) vs 0.17 (indexmap → serde_json):
+#   two independent `0.x` majors pinned by different crates.
+# - `getrandom` 0.2 (const-random → ahash → language-pack) vs 0.3/0.4
+#   (rand_core → proptest): three `0.x` majors, two disjoint subtrees.
+# - `windows-sys`/`windows-targets`/`windows_*`: ring pulls 0.52, fd-lock
+#   0.59, notify 0.60 — three generations of the windows bindings that
+#   never unify. Each `windows_*` target crate follows its parent.
+skip = [
+    "syn",
+    "hashbrown",
+    "getrandom",
+    "windows-sys",
+    "windows-targets",
+    "windows_aarch64_gnullvm",
+    "windows_aarch64_msvc",
+    "windows_i686_gnu",
+    "windows_i686_gnullvm",
+    "windows_i686_msvc",
+    "windows_x86_64_gnu",
+    "windows_x86_64_gnullvm",
+    "windows_x86_64_msvc",
+]
 
 [sources]
 unknown-registry = "deny"

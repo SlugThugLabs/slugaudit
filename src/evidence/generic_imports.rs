@@ -34,6 +34,14 @@ use tree_sitter_language_pack::{Node, get_parser};
 /// pack finding zero imports, and a go file with zero pack imports has no
 /// `import_declaration` nodes either. If a future language needs
 /// child-level import nodes, this list is the single place to extend.
+///
+/// Exact match only (C7). The bare `"import"` kind is kept because
+/// Haskell's grammar names its import statement `import` (verified by the
+/// `haskell_import_is_captured` matrix test — C7's "prove a grammar needs
+/// it" carve-out); the matrix's no-imports test guarantees a non-import
+/// `import`-kind node doesn't appear in ordinary function/expression
+/// source. Every other kind is verified by the grammar-matrix tests —
+/// add a kind only with a regression test proving a real grammar needs it.
 fn is_import_statement_kind(kind: &str) -> bool {
     matches!(
         kind,
@@ -82,6 +90,14 @@ pub(super) fn extract_generic_imports(language: &str, source: &str) -> Vec<Evide
 /// Child nodes of a matched statement are still visited (a `using` block
 /// may contain nested directives), but only whole-statement kinds emit.
 ///
+/// A matched node whose **parent** is also an import-shaped node is
+/// skipped: some grammars nest the real import inside a wrapper that is
+/// itself import-shaped (dart: `import_or_export → library_import →
+/// `import_specification`; haskell: `imports → import`). Emitting at
+/// both levels would double-report the same statement (a C7
+/// grammar-matrix finding). The outermost matched node owns the emit;
+/// nested matches are containers, not statements.
+///
 /// `pub(super)` so `normalize.rs::extract_extra_walkers` can run this
 /// walker on the same already-parsed tree it uses for the
 /// variable-binding walker — saving the redundant second parse that
@@ -93,7 +109,8 @@ pub(super) fn walk_imports(
     counter: &mut usize,
 ) {
     let kind = node.kind();
-    if is_import_statement_kind(&kind) {
+    let is_import = is_import_statement_kind(&kind);
+    if is_import {
         // Trim: some grammars (e.g. c/cpp `preproc_include`) include the
         // trailing newline in the statement node's byte range.
         let text = source[node.start_byte()..node.end_byte()].trim();
@@ -113,7 +130,38 @@ pub(super) fn walk_imports(
         });
     }
     for child in named_children(node) {
-        walk_imports(&child, source, items, counter);
+        if is_import && is_import_statement_kind(&child.kind()) {
+            // Nested import-shaped container: walk past it for further
+            // nesting, but don't re-emit the same statement. Guarded by
+            // the explicit `child.kind()` check so a non-import child
+            // (e.g. a string literal) is never skipped.
+            walk_imports_past(&child, source, items, counter);
+        } else {
+            walk_imports(&child, source, items, counter);
+        }
+    }
+}
+
+/// Walks `node`'s subtree without emitting for `node` itself or any
+/// immediate import-shaped descendant at the first level (handled by the
+/// caller's parent guard), but still recursing into grandchildren — a
+/// `using` block may contain nested directives that are genuine
+/// statements. Keeps the parent-suppression rule from skipping an
+/// unrelated import under a wrapper.
+fn walk_imports_past(
+    node: &Node,
+    source: &str,
+    items: &mut Vec<EvidenceItem>,
+    counter: &mut usize,
+) {
+    for child in named_children(node) {
+        if is_import_statement_kind(&child.kind()) {
+            // Another level of nesting under the suppressed parent — skip
+            // this immediate match too, but keep descending.
+            walk_imports_past(&child, source, items, counter);
+        } else {
+            walk_imports(&child, source, items, counter);
+        }
     }
 }
 

@@ -30,7 +30,14 @@ pub enum StoreError {
          SlugAudit after relocating it."
     )]
     NetworkFilesystem,
-    #[error("could not verify whether the database is on a network filesystem: {0}")]
+    #[error(
+        "could not verify whether the database is on a network filesystem \
+         (inspection failed: {0}); refusing to open rather than risk SQLite \
+         corruption on a network mount — move the project to a local \
+         filesystem, or check that the platform's filesystem inspection \
+         command (stat/fsutil/mountinfo) is available; this is not a \
+         permissions problem an individual user can work around"
+    )]
     NetworkFilesystemCheck(#[source] std::io::Error),
 }
 

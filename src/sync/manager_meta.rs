@@ -7,11 +7,15 @@
 //! agent's findings, and the revision lookup that always succeeds or
 //! always returns `None`, respectively.
 
+use super::SyncedProject;
 use super::publish;
+use crate::parse;
+use crate::project;
+use crate::store;
 use crate::tools::context::session_id;
 use rmcp::ErrorData;
 use rusqlite::{Connection, OptionalExtension};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(test)]
 use uuid::Uuid;
 
@@ -176,6 +180,45 @@ pub(crate) fn map_publish_error(
 ) -> ErrorData {
     tracing::warn!(root = %root.display(), error = %error, "{warn_message}");
     ErrorData::internal_error(format!("publishing a new revision: {error}"), None)
+}
+
+/// Publishes a full revision from the current filesystem state, mapping
+/// failures into `ErrorData` with the standard warn-and-error shape.
+/// Shared by the verification and Unavailable branches of
+/// `ensure_current` so the two near-identical publish blocks can't drift
+/// apart.
+pub(crate) fn publish_full(
+    connection: &mut Connection,
+    root: &Path,
+    sink: &dyn crate::progress::ProgressSink,
+    warn_message: &str,
+) -> Result<publish::PublishReport, ErrorData> {
+    publish::publish(connection, root, parse::PACK_VERSION, sink)
+        .map_err(|error| map_publish_error(root, error, warn_message))
+}
+
+/// Rebuilds a project's database from scratch after the previous one was
+/// discarded as corrupt. Kept here (not in `manager.rs`) so the sync
+/// orchestrator stays under the small-file rule cap.
+pub(crate) fn publish_from_scratch(
+    root: &project::ProjectRoot,
+    database_path: PathBuf,
+    sink: &dyn crate::progress::ProgressSink,
+) -> Result<SyncedProject, ErrorData> {
+    let mut connection = store::open_read_write(&database_path).map_err(|error| {
+        ErrorData::internal_error(format!("recreating the project database: {error}"), None)
+    })?;
+    ensure_project_row(&mut connection, root.as_path())?;
+    let report = publish::publish(&mut connection, root.as_path(), parse::PACK_VERSION, sink)
+        .map_err(|error| {
+            map_publish_error(root.as_path(), error, "republishing after corruption")
+        })?;
+    drop(connection);
+    Ok(SyncedProject {
+        database_path,
+        revision_id: report.revision_id,
+        root: root.as_path().to_path_buf(),
+    })
 }
 
 #[cfg(test)]

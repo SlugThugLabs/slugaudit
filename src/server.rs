@@ -8,6 +8,7 @@
 //! stays a readable, declarative registry instead of a 280-line file
 //! mixing schemas with worker-pool plumbing.
 
+use crate::progress::ProgressSink;
 use crate::server_runner::{
     MAX_CONCURRENT_BLOCKING_OPS, build_inner_sink, progress_target, run_blocking,
 };
@@ -15,7 +16,7 @@ use crate::sync;
 use crate::tools;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rmcp::model::{Meta, ProtocolVersion, ServerCapabilities, ServerInfo};
+use rmcp::model::{ProtocolVersion, RequestMetaObject, ServerCapabilities, ServerInfo};
 use rmcp::{ErrorData, Peer, RoleServer, ServerHandler, tool, tool_handler, tool_router};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -71,6 +72,32 @@ impl SlugAuditServer {
             manager,
         }
     }
+
+    /// Shared tool-call plumbing: derive the caller's progress target,
+    /// build the inner progress sink, clone the manager, and run the
+    /// tool's blocking work under the semaphore. Each `#[tool]` handler
+    /// stays declarative — it only names the tool and its work closure,
+    /// so the six handlers don't each repeat this prologue (DRY).
+    async fn dispatch<T: Send + 'static>(
+        &self,
+        meta: RequestMetaObject,
+        peer: Peer<RoleServer>,
+        tool_name: &'static str,
+        work: impl FnOnce(Arc<dyn ProgressSink>, sync::SourceSyncManager) -> Result<T, ErrorData>
+        + Send
+        + 'static,
+    ) -> Result<T, ErrorData> {
+        let progress = progress_target(meta, &peer);
+        let inner_sink = build_inner_sink(progress.clone());
+        let manager = self.manager.clone();
+        run_blocking(
+            Arc::clone(&self.blocking_ops),
+            tool_name,
+            move || work(inner_sink, manager),
+            progress,
+        )
+        .await
+    }
 }
 
 impl Default for SlugAuditServer {
@@ -86,19 +113,13 @@ impl SlugAuditServer {
     )]
     async fn report(
         &self,
-        meta: Meta,
+        meta: RequestMetaObject,
         peer: Peer<RoleServer>,
         request: Parameters<tools::ReportRequest>,
     ) -> Result<Json<tools::ReportResponse>, ErrorData> {
-        let progress = progress_target(meta, &peer);
-        let inner_sink = build_inner_sink(progress.clone());
-        let manager = self.manager.clone();
-        run_blocking(
-            Arc::clone(&self.blocking_ops),
-            "report",
-            move || tools::report(&request, inner_sink.as_ref(), &manager),
-            progress,
-        )
+        self.dispatch(meta, peer, "report", move |sink, manager| {
+            tools::report(&request, sink.as_ref(), &manager)
+        })
         .await
     }
 
@@ -107,19 +128,13 @@ impl SlugAuditServer {
     )]
     async fn query(
         &self,
-        meta: Meta,
+        meta: RequestMetaObject,
         peer: Peer<RoleServer>,
         request: Parameters<tools::QueryRequest>,
     ) -> Result<Json<tools::QueryResponse>, ErrorData> {
-        let progress = progress_target(meta, &peer);
-        let inner_sink = build_inner_sink(progress.clone());
-        let manager = self.manager.clone();
-        run_blocking(
-            Arc::clone(&self.blocking_ops),
-            "query",
-            move || tools::query(&request, inner_sink.as_ref(), &manager),
-            progress,
-        )
+        self.dispatch(meta, peer, "query", move |sink, manager| {
+            tools::query(&request, sink.as_ref(), &manager)
+        })
         .await
     }
 
@@ -128,19 +143,13 @@ impl SlugAuditServer {
     )]
     async fn structure(
         &self,
-        meta: Meta,
+        meta: RequestMetaObject,
         peer: Peer<RoleServer>,
         request: Parameters<tools::StructureRequest>,
     ) -> Result<Json<tools::StructureResponse>, ErrorData> {
-        let progress = progress_target(meta, &peer);
-        let inner_sink = build_inner_sink(progress.clone());
-        let manager = self.manager.clone();
-        run_blocking(
-            Arc::clone(&self.blocking_ops),
-            "structure",
-            move || tools::structure(&request, inner_sink.as_ref(), &manager),
-            progress,
-        )
+        self.dispatch(meta, peer, "structure", move |sink, manager| {
+            tools::structure(&request, sink.as_ref(), &manager)
+        })
         .await
     }
 
@@ -155,19 +164,13 @@ impl SlugAuditServer {
     )]
     async fn finding(
         &self,
-        meta: Meta,
+        meta: RequestMetaObject,
         peer: Peer<RoleServer>,
         request: Parameters<tools::FindingRequest>,
     ) -> Result<Json<tools::FindingResponse>, ErrorData> {
-        let progress = progress_target(meta, &peer);
-        let inner_sink = build_inner_sink(progress.clone());
-        let manager = self.manager.clone();
-        run_blocking(
-            Arc::clone(&self.blocking_ops),
-            "finding",
-            move || tools::finding(&request, inner_sink.as_ref(), &manager),
-            progress,
-        )
+        self.dispatch(meta, peer, "finding", move |sink, manager| {
+            tools::finding(&request, sink.as_ref(), &manager)
+        })
         .await
     }
 
@@ -179,18 +182,13 @@ impl SlugAuditServer {
     )]
     async fn project_control(
         &self,
-        meta: Meta,
+        meta: RequestMetaObject,
         peer: Peer<RoleServer>,
         request: Parameters<tools::ProjectControlRequest>,
     ) -> Result<Json<tools::ProjectControlResponse>, ErrorData> {
-        let progress = progress_target(meta, &peer);
-        let inner_sink = build_inner_sink(progress.clone());
-        run_blocking(
-            Arc::clone(&self.blocking_ops),
-            "project_control",
-            move || tools::project_control(&request, inner_sink.as_ref()),
-            progress,
-        )
+        self.dispatch(meta, peer, "project_control", move |sink, _manager| {
+            tools::project_control(&request, sink.as_ref())
+        })
         .await
     }
 
@@ -204,19 +202,13 @@ impl SlugAuditServer {
     )]
     async fn health(
         &self,
-        meta: Meta,
+        meta: RequestMetaObject,
         peer: Peer<RoleServer>,
         request: Parameters<tools::HealthRequest>,
     ) -> Result<Json<tools::HealthResponse>, ErrorData> {
-        let progress = progress_target(meta, &peer);
-        let inner_sink = build_inner_sink(progress.clone());
-        let manager = self.manager.clone();
-        run_blocking(
-            Arc::clone(&self.blocking_ops),
-            "health",
-            move || tools::health(&request, inner_sink.as_ref(), &manager),
-            progress,
-        )
+        self.dispatch(meta, peer, "health", move |sink, manager| {
+            tools::health(&request, sink.as_ref(), &manager)
+        })
         .await
     }
 }

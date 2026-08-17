@@ -235,6 +235,32 @@ fn an_insecure_permissions_rejection_emits_a_warning_for_auditing() {
     );
 }
 
+/// C12: when the network-filesystem check itself fails (inspection
+/// command unavailable, mountinfo unreadable, unsupported platform), the
+/// error must surface the underlying cause AND a non-admin fallback
+/// message — an operator must be able to tell "the check failed" from
+/// "this is on NFS" and must not read it as a permissions problem.
+#[test]
+fn network_filesystem_check_error_surfaces_the_underlying_command_error() {
+    let error = StoreError::NetworkFilesystemCheck(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "stat: no such file or directory",
+    ));
+    let message = error.to_string();
+    assert!(
+        message.contains("stat: no such file or directory"),
+        "the underlying inspection error must be visible: {message}"
+    );
+    assert!(
+        message.contains("not a permissions problem"),
+        "the message must say this is not an admin-fixable-permissions issue: {message}"
+    );
+    assert!(
+        !error.is_corruption(),
+        "a check failure is not database corruption and must not trigger a discard"
+    );
+}
+
 /// A successful local-filesystem open must NOT emit any of the
 /// rejection warnings. Paired regression test for the warning tests:
 /// if any of the rejection paths were silently tripping on the

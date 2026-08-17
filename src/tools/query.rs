@@ -26,6 +26,8 @@ pub struct QueryRequest {
     /// text: there is no keyword blocklist or table allowlist.
     pub sql: String,
     /// Number of matching rows to skip when paging through a result.
+    /// Combined with the response's `next_offset`, and valid only while
+    /// the revision id stays the same across pages (see [`QueryResponse`]).
     #[serde(default)]
     pub offset: usize,
 }
@@ -34,12 +36,23 @@ pub struct QueryRequest {
 /// names as keys. This is the general-purpose tool — search, symbol/
 /// import/diagnostic lookup, dependency traversal, and source retrieval
 /// all reach through it as ordinary `SELECT`s against the schema.
+///
+/// **Paging contract**: rows are returned in the query's own row order —
+/// no `ORDER BY` is added, so pagination is stable only while the
+/// underlying revision does not change. When a concurrent publish lands
+/// between pages, row order can shift and `next_offset` paging may skip
+/// or duplicate rows; the AI detects that boundary by comparing the
+/// `revision_id` on each page and should restart paging (or accept the
+/// new revision's ordering) when it changes.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct QueryResponse {
+    /// Revision id the page was read from. Compare across pages to detect
+    /// a revision change that invalidates `next_offset` paging.
     pub revision_id: String,
     pub rows: Vec<serde_json::Value>,
     pub truncated: bool,
-    /// Use this as the next request's `offset` when present.
+    /// Use this as the next request's `offset` when present. Only valid
+    /// while `revision_id` is unchanged (see the paging contract above).
     pub next_offset: Option<usize>,
 }
 

@@ -9,3 +9,7 @@
 # Never version: it is binary, machine-local, and excluded from discovery by
 # src/sync/discovery.rs itself.
 /.planning/slugaudit/
+
+# Mutation-testing output (created by `cargo-mutants mutants` without an
+# explicit --output). Never version: it is a per-run artifact.
+/mutants.out/

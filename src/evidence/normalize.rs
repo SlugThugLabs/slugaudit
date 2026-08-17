@@ -134,8 +134,27 @@ fn is_variable_binding(kind: &str) -> bool {
     )
 }
 
+/// Exact node kinds for a *field* declaration, verified against a fixed
+/// grammar matrix (C7): rust/go/c/cpp/csharp/ocaml/java use
+/// `field_declaration`; swift/kotlin use `property_declaration`;
+/// javascript uses `field_definition`; typescript uses
+/// `public_field_definition` and (for interface members) `property_signature`.
+///
+/// Exact match only — never `contains`: a substring test on
+/// `field_declaration` also matches the *container* node
+/// `field_declaration_list` (and could match unrelated kinds in an
+/// unforeseen grammar), which would emit a duplicate Field symbol for the
+/// same member. `field_identifier` (the name child) is deliberately not a
+/// declaration and is not listed.
 fn is_field_declaration(kind: &str) -> bool {
-    kind.contains("field_declaration") || kind.contains("property_declaration")
+    matches!(
+        kind,
+        "field_declaration"
+            | "property_declaration"
+            | "field_definition"
+            | "public_field_definition"
+            | "property_signature"
+    )
 }
 
 fn walk_bindings(
@@ -192,19 +211,65 @@ fn walk_bindings(
 /// them rather than hard-coding one. The pack exposes no `utf8_text`
 /// helper, so the text is sliced directly from `source` using the child's
 /// byte range.
+///
+/// When no direct child is an identifier, falls back to a bounded
+/// recursive search of the declaration node's subtree (C7 grammar-matrix
+/// finding): swift/kotlin nest the name under `pattern` /
+/// `variable_declaration` wrappers, so `property_declaration`'s direct
+/// children are not identifiers. The search returns the *first*
+/// identifier-kind descendant — for the probed grammars (rust, go, c,
+/// cpp, csharp, java, ocaml, swift, kotlin, js/ts) the member name
+/// precedes the type, so this yields the name, not the type.
 fn identifier_name(node: &tree_sitter_language_pack::Node, source: &str) -> Option<String> {
     for child in named_children(node) {
         if is_identifier_kind(&child.kind()) {
             return Some(source[child.start_byte()..child.end_byte()].to_owned());
         }
     }
+    first_identifier_descendant(node, source, 0)
+}
+
+/// Depth-first search for the first identifier-kind descendant. `depth`
+/// bounds the descent so a pathological grammar can't turn a single
+/// declaration into an unbounded traversal — two levels of wrapper
+/// (e.g. `property_declaration → pattern → simple_identifier`) is the
+/// deepest any probed grammar nests a member name.
+fn first_identifier_descendant(
+    node: &tree_sitter_language_pack::Node,
+    source: &str,
+    depth: u8,
+) -> Option<String> {
+    if depth >= 3 {
+        return None;
+    }
+    for child in named_children(node) {
+        if is_identifier_kind(&child.kind()) {
+            return Some(source[child.start_byte()..child.end_byte()].to_owned());
+        }
+    }
+    for child in named_children(node) {
+        if let Some(name) = first_identifier_descendant(&child, source, depth + 1) {
+            return Some(name);
+        }
+    }
     None
 }
 
+/// Node kinds that name a *binding or member*. Deliberately excludes
+/// `type_identifier`/`type_name`: in Java (and other grammars) a
+/// `field_declaration` lists the type before the name, so treating the
+/// type node as a name candidate would emit the type as the member name
+/// (a C7 grammar-matrix finding). Type-name nodes are never the *name* of
+/// a binding this walker targets.
 fn is_identifier_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "identifier" | "field_identifier" | "type_identifier" | "shorthand_property_identifier"
+        "identifier"
+            | "field_identifier"
+            | "field_name"
+            | "shorthand_property_identifier"
+            | "property_identifier"
+            | "simple_identifier"
     )
 }
 
@@ -265,3 +330,7 @@ pub(super) fn severity_text(severity: &DiagnosticSeverity) -> &'static str {
 #[cfg(test)]
 #[path = "normalize_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "normalize_grammar_tests.rs"]
+mod grammar_tests;

@@ -56,14 +56,21 @@ jobs:
       - name: Check for duplicate commit subjects and test names
         run: cargo run --quiet --bin check_no_duplicates --locked
 
+      - name: Check docs/schema drift (module map, test counts, task descope)
+        run: cargo run --quiet --bin check_docs_drift --locked
+
       - name: Check compilation
         run: cargo check --all-targets --all-features --locked
 
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
+      # --lib --bins --tests excludes the criterion bench binaries
+      # (harness = false), so benches execute exactly once per push — in
+      # the dedicated performance gate below — instead of once here and
+      # again there (C6).
       - name: Run tests
-        run: cargo test --all-targets --all-features --locked
+        run: cargo test --lib --bins --tests --all-features --locked
 
       # tests/stdio_protocol.rs spawns the compiled binary and speaks real
       # JSON-RPC/MCP over its stdio pipes — the only test in the suite that
@@ -137,13 +144,11 @@ jobs:
       # publishing, CAS/hash comparison, and the freshness-verification
       # entry point tool handlers share — rather than the whole crate; a
       # full-crate cargo-mutants run is far too slow to run on every CI
-      # push. continue-on-error: true because a mutation-survivor baseline
-      # for this surface hasn't been fully established yet (survivors are
-      # being triaged in a separate, ongoing workstream); this step's job
-      # right now is to make survivor-count regressions visible over time,
-      # not to hard-block merges before that baseline exists.
+      # push. This step now FAILS CLOSED: the 2026-08-12 full-crate
+      # baseline recorded zero surviving mutants on this exact surface
+      # (19 caught, 0 missed, 1 unviable; see .planning/DECISIONS.md), so
+      # a survivor here is a real regression, not an un-triaged baseline.
       - name: Mutation testing (revision, publish, hash, context)
-        continue-on-error: true
         run: |
           cargo mutants \
             --file src/sync/revision.rs \

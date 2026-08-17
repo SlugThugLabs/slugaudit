@@ -13,9 +13,9 @@ path = "src/main.rs"
 # workflow calls these directly; locally the same `cargo run --bin <name>`
 # is the single entry point. No shell, no Python interpreter required.
 #
-# Two of the bins are directory-laid-out (`src/bin/<name>/main.rs`) so
+# Three of the bins are directory-laid-out (`src/bin/<name>/main.rs`) so
 # the algorithm and tests fit under the project's 200-LoC source-size
-# cap without broad exclusions; the remaining two are single files.
+# cap without broad exclusions; the remaining one is a single file.
 [[bin]]
 name = "check_source_limits"
 path = "src/bin/check_source_limits/main.rs"
@@ -29,6 +29,10 @@ name = "check_coverage"
 path = "src/bin/check_coverage.rs"
 
 [[bin]]
+name = "check_docs_drift"
+path = "src/bin/check_docs_drift/main.rs"
+
+[[bin]]
 name = "check_performance"
 path = "src/bin/check_performance/main.rs"
 
@@ -36,12 +40,11 @@ path = "src/bin/check_performance/main.rs"
 blake3 = "1"
 ignore = "0.4"
 notify = "8"
-rmcp = { version = "2.2", default-features = false, features = ["server", "macros", "transport-io"] }
+rmcp = { version = "3", default-features = false, features = ["server", "macros", "transport-io"] }
 rusqlite = { version = "0.37", features = ["bundled", "hooks"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "sync", "time"] }
 tree-sitter = "0.26"
@@ -79,4 +82,22 @@ harness = false
 [[bench]]
 name = "sync"
 path = "benches/sync.rs"
+harness = false
+
+# Startup latency (process spawn → first MCP `initialize` response);
+# see Task 9.2's last < 1 s target. Black-box bench that spawns the
+# compiled `slugaudit-mcp` binary so the measured number is the real
+# cold-invoke figure a CI process pays.
+[[bench]]
+name = "startup"
+path = "benches/startup.rs"
+harness = false
+
+# Peak-memory in the steady-state sync pipeline (Task 9.2 last < 512 MB
+# target). Reads `/proc/self/status` VmHWM on Linux; reports
+# "unmeasured" on other OSes so the absence is unambiguous rather than
+# silently dropped.
+[[bench]]
+name = "memory"
+path = "benches/memory.rs"
 harness = false

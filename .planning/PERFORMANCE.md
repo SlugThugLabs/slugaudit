@@ -148,7 +148,7 @@ proxy; budgets scale with fixture size.
 
 | Operation | Budget |
 |---|---|
-| Startup (process → ready for first tool call) | < 1 s (not yet benchmarked) |
+| Startup (process → ready for first tool call) | < 1 s (measured 2.07 ms — process spawn → MCP `initialize` response over stdio, 2026-08-12) |
 | Cold parser load | < 5 s (measured 220 µs with prebuilt grammar) |
 | First sync, 200 files | < 30 s (measured 161 ms) |
 | Unchanged sync, 200 files | < 2 s (measured 5.1 ms worst-case walk) |
@@ -156,7 +156,7 @@ proxy; budgets scale with fixture size.
 | Search query (any) | < 500 ms (measured ≤ 254 µs) |
 | Evidence retrieval (symbol lookup) | < 500 ms (measured 254 µs) |
 | Dependency traversal (CTE) | < 500 ms (measured 16 µs) |
-| Memory, 200-file fixture | < 512 MB peak (not yet benchmarked) |
+| Memory, 200-file fixture | < 512 MB peak (measured 27.5 MB / 27 564 KiB `VmHWM` after one full sync on the 200-file fixture, 2026-08-12) |
 
 ## Regression policy
 
@@ -168,6 +168,65 @@ proxy; budgets scale with fixture size.
 - Failures of the budgets above block release; benign noise within the
   thresholds does not. Sync/parse/benchmark runs are excluded from the
   correctness gates by construction (separate build targets).
+
+## Production-failure runbook (C12)
+
+Three real-world failure modes are priced here so an operator knows what
+`health` is telling them and what to do about it.
+
+### 1. Linux inotify watch limits (`fs.inotify.max_user_watches`)
+
+Large repos can exceed the kernel's per-user watch limit. `notify`
+reports the overflow as a watcher error, `WatchManager` marks every
+project `Desynced`, and every subsequent tool call falls into the
+untrusted-watcher full-publish path. Under the 60 s `max_sync_wall_clock`
+budget a genuinely huge first re-import can hit `TimeBudgetExceeded` on
+every call — the repo becomes effectively unindexed until the limit is
+raised.
+
+- **Signal**: `health` shows `watcher_health: Desynced` and a
+  `consecutive_full_publishes` value that climbs instead of resetting to
+  0 (the counter only resets on a successful incremental reconcile).
+- **Check**: `sysctl fs.inotify.max_user_watches`;
+  `grep -c . /proc/sys/fs/inotify/max_user_watches`.
+- **Remediation**: raise the limit (`sysctl fs.inotify.max_user_watches=524288`,
+  persist in `/etc/sysctl.d/`), or reduce the watch scope via
+  `.gitignore`/`.ignore` rules. The next tool call re-verifies
+  (NeedsVerification) and the counter resets once reconciliation is
+  incremental again.
+
+### 2. A single pathological file's parse is not interruptible mid-parse
+
+Tree-sitter parsing of one file cannot be cancelled mid-parse. A
+pathologically large or deeply-nested file can consume a large share of
+the 60 s sync budget in one `analyze` call. This is an accepted
+limitation; the per-file wall-clock budgets and the overall sync deadline
+bound the damage, and the health tool's `file_count` vs actual repo size
+shows when a repo is stuck mid-import.
+
+- **Signal**: first sync takes most of the 60 s budget and
+  `revision_id` stays empty (`health.phase: Importing`) on a repo that
+  is not actually huge.
+- **Remediation**: find the offending file (its parse is the slow step)
+  and exclude it (`gitignore`/`.ignore`), or raise `max_sync_wall_clock`
+  in `src/model/limits.rs` for the first import. A larger
+  `max_sync_wall_clock` is the right lever for a legitimately large
+  first import now that C3 parallelizes parsing behind the deadline.
+
+### 3. Network-filesystem detection failure fails closed
+
+On platforms where the filesystem-inspection command is unavailable or
+fails, `reject_network_filesystem` returns
+`StoreError::NetworkFilesystemCheck`, which surfaces as an opaque open
+error. Since C12 the error message includes the underlying command
+failure and an explicit "this is not a permissions problem" note, and it
+is deliberately NOT classified as corruption (no database discard).
+
+- **Signal**: open fails with `could not verify whether the database is
+  on a network filesystem (inspection failed: …)`.
+- **Remediation**: run the project on a local filesystem, or make the
+  inspection command (`stat -f` on macOS, `fsutil` on Windows,
+  `/proc/self/mountinfo` on Linux) available.
 
 ## CI regression gate
 

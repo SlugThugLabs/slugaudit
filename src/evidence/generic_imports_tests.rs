@@ -118,6 +118,84 @@ fn unknown_language_returns_nothing_without_error() {
     assert!(extract_generic_imports("not-a-real-language", "import x\n").is_empty());
 }
 
+/// C7: the exact import-kind list must not fire on ordinary non-import
+/// constructs in any matrix language. A source with no import statement
+/// must produce zero Import items from the generic walker — this guards
+/// against a future kind being added that collides with, say, a function
+/// or expression node in an unforeseen grammar.
+#[test]
+fn c7_no_imports_source_produces_no_import_items_in_any_matrix_language() {
+    for (language, source) in [
+        ("rust", "fn f() { let x = 1; x }\n"),
+        ("python", "def f():\n    return 1\n"),
+        ("javascript", "function f() { return 1; }\n"),
+        ("typescript", "function f(): number { return 1; }\n"),
+        ("go", "func f() int { return 1 }\n"),
+        ("c", "int f(void) { return 1; }\n"),
+        ("cpp", "int f() { return 1; }\n"),
+        ("swift", "func f() -> Int { return 1 }\n"),
+        ("kotlin", "fun f(): Int = 1\n"),
+        ("csharp", "int F() { return 1; }\n"),
+        ("dart", "int f() => 1;\n"),
+        ("julia", "f() = 1\n"),
+        ("php", "<?php function f() { return 1; }\n"),
+        ("perl", "sub f { return 1 }\n"),
+        ("ocaml", "let f () = 1\n"),
+        ("elixir", "defmodule M do\n  def f do\n    1\n  end\nend\n"),
+        ("ruby", "def f\n  1\nend\n"),
+        ("java", "int f() { return 1; }\n"),
+    ] {
+        let items = extract_generic_imports(language, source);
+        assert_eq!(
+            import_sources(&items),
+            Vec::<&str>::new(),
+            "{language}: a function with no imports must produce no Import items"
+        );
+    }
+}
+
+/// C7: the matrix languages' real import statements must still be
+/// captured — exact matching must not have dropped coverage for a
+/// language whose kind was previously matched by substring.
+#[test]
+fn c7_matrix_languages_still_capture_their_real_imports() {
+    for (language, source, expected) in [
+        ("swift", "import Foundation\n", vec!["import Foundation"]),
+        (
+            "kotlin",
+            "import kotlin.math.max\n",
+            vec!["import kotlin.math.max"],
+        ),
+        ("csharp", "using System.IO;\n", vec!["using System.IO;"]),
+        (
+            "dart",
+            "import 'dart:async';\n",
+            vec!["import 'dart:async';"],
+        ),
+        (
+            "julia",
+            "using LinearAlgebra\n",
+            vec!["using LinearAlgebra"],
+        ),
+        ("c", "#include <stdio.h>\n", vec!["#include <stdio.h>"]),
+        ("cpp", "#include <vector>\n", vec!["#include <vector>"]),
+        ("haskell", "import Data.List\n", vec!["import Data.List"]),
+        ("perl", "use strict;\n", vec!["use strict;"]),
+        (
+            "php",
+            "<?php\nuse Foo\\Bar\\Baz;\n",
+            vec!["use Foo\\Bar\\Baz;"],
+        ),
+    ] {
+        let items = extract_generic_imports(language, source);
+        assert_eq!(
+            import_sources(&items),
+            expected,
+            "{language}: the real import statement must still be captured"
+        );
+    }
+}
+
 #[test]
 fn spans_are_present_and_payloads_are_pack_shaped() {
     let items = extract_generic_imports("swift", "import Foundation\n");

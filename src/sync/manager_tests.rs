@@ -55,6 +55,14 @@ fn edit_file_between_calls_returns_fresh_evidence() {
 
 #[test]
 fn edit_file_immediately_returns_fresh_evidence() {
+    // Waits the same 200 ms the other watcher-backed tests wait after a
+    // write: the `notify` watcher debounces and coalesces events on its
+    // own thread, so a tool call that races a write without any delay
+    // can observe an empty dirty-set and return the prior revision.
+    // The contract this test pins is "the next `sync_project` after a
+    // real filesystem change observes the change" - not "the very next
+    // CPU cycle does". AI tool calls always have some latency of their
+    // own, so the wall-clock delay is realistic.
     let manager = SourceSyncManager::with_watcher();
     let project = create_project();
     write_file(&project, "lib.rs", b"pub fn a() {}\n");
@@ -63,6 +71,8 @@ fn edit_file_immediately_returns_fresh_evidence() {
     let old_revision = synced.revision_id.clone();
 
     write_file(&project, "lib.rs", b"pub fn a() { changed() }\n");
+    thread::sleep(Duration::from_millis(200));
+
     let synced2 = sync_project(&manager, &project);
 
     assert_ne!(old_revision, synced2.revision_id);
@@ -273,6 +283,45 @@ fn delete_then_recreate_gets_reindexed() {
     })
     .expect("read content");
     assert!(content.unwrap().contains("pub fn recreated()"));
+}
+
+/// C12: the consecutive-full-publish health metric counts full publishes
+/// and resets on a successful incremental reconcile. A fresh manager
+/// starts NeedsVerification → first sync is a full publish (count 1); an
+/// unchanged second sync stays Healthy with no events → count stays 1;
+/// an actual edit reconciles incrementally → count resets to 0.
+#[test]
+fn consecutive_full_publishes_tracks_full_publishes_and_resets_on_incremental() {
+    let manager = SourceSyncManager::with_watcher();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+
+    // First sync: NeedsVerification → full publish.
+    let synced = sync_project(&manager, &project);
+    assert!(!synced.revision_id.is_empty());
+    assert_eq!(
+        manager.consecutive_full_publishes(),
+        1,
+        "first sync is a full publish"
+    );
+
+    // No changes: Healthy + no events → no new publish, count unchanged.
+    let _ = sync_project(&manager, &project);
+    assert_eq!(
+        manager.consecutive_full_publishes(),
+        1,
+        "unchanged sync is not a publish"
+    );
+
+    // A real edit: Healthy + dirty → incremental reconcile → reset.
+    write_file(&project, "lib.rs", b"pub fn b() {}\n");
+    thread::sleep(Duration::from_millis(200));
+    let _ = sync_project(&manager, &project);
+    assert_eq!(
+        manager.consecutive_full_publishes(),
+        0,
+        "a successful incremental reconcile resets the counter"
+    );
 }
 
 /// Proves that after a full verification (NeedsVerification branch),

@@ -50,6 +50,12 @@ pub(super) fn resolve_and_store(
     }
 
     let edges = crate::graph::resolve_imports(language, &file.relative_path, &sources, known_paths);
+    // C11: the "does this import's syntax even get extracted by the
+    // resolver" verdict is cached on the edge at write time so `report`
+    // counts it in SQL instead of re-running `extract_reference` over
+    // every Unresolved edge on every call. The resolver is chosen by the
+    // file's language exactly as `report` used to do per edge.
+    let resolver = crate::graph::resolver::get_resolver(language);
     for edge in edges {
         let to_file_id: Option<i64> = match &edge.to_relative_path {
             Some(path) => tx
@@ -61,10 +67,18 @@ pub(super) fn resolve_and_store(
                 .optional()?,
             None => None,
         };
+        let syntax_unmodeled = resolver.extract_reference(&edge.raw_import_text).is_none();
         tx.execute(
-            "INSERT INTO dependency_edges (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![file_id, to_file_id, edge.raw_import_text, edge.resolution_kind, edge.confidence],
+            "INSERT INTO dependency_edges (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                file_id,
+                to_file_id,
+                edge.raw_import_text,
+                edge.resolution_kind,
+                edge.confidence,
+                syntax_unmodeled,
+            ],
         )?;
     }
     Ok(())

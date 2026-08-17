@@ -240,7 +240,7 @@ $ echo 'pub fn a() {}' > /scratch/smoke_project/lib.rs
 $ cargo test --locked --test stdio_protocol
 RAW INITIALIZE RESPONSE:
 {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18", ...
- "serverInfo":{"name":"rmcp","version":"2.2.0"}, "instructions": "..." }}
+ "serverInfo":{"name":"rmcp","version":"3.1.2"}, "instructions": "..." }}
 
 RAW REPORT TOOL CALL RESPONSE:
 {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text",

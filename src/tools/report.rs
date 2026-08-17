@@ -210,29 +210,18 @@ fn build_report(
     // resolver can't parse — i.e. `extract_reference` returns `None` on
     // the raw text (e.g. Go's `import "fmt"`), as opposed to an import
     // whose syntax was parsed but matched no project file (e.g. a stdlib
-    // module like `kotlin.math.max`). Computed per edge in Rust so the
-    // resolver itself is the single source of truth, not a language list
-    // that drifts out of sync with it: with the generic import walker,
-    // kotlin/swift/csharp/dart/julia/c imports are modeled even though no
-    // language-specific resolver exists for them.
-    let mut unresolved_language_stmt = connection.prepare(
-        "SELECT f.language, de.raw_import_text FROM dependency_edges de \
-         JOIN files f ON f.id = de.from_file_id \
-         WHERE de.resolution_kind = 'Unresolved'",
+    // module like `kotlin.math.max`). The verdict is cached on each edge
+    // at write time (`revision_edges::resolve_and_store` sets
+    // `syntax_unmodeled`), so this is a plain SQL count — never a
+    // per-edge re-extraction per report call (C11). The resolver is
+    // still the single source of truth for the verdict; the write path
+    // computes it once per edge when the revision is published.
+    let unsupported_language_unresolved_count: i64 = connection.query_row(
+        "SELECT count(*) FROM dependency_edges \
+         WHERE resolution_kind = 'Unresolved' AND syntax_unmodeled = 1",
+        [],
+        |row| row.get(0),
     )?;
-    let unsupported_language_unresolved_count = unresolved_language_stmt
-        .query_map([], |row| {
-            Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .filter_map(|(language, raw)| {
-            let language = language?;
-            let resolver = crate::graph::resolver::get_resolver(&language);
-            (!resolver.extract_reference(&raw).is_some()).then_some(())
-        })
-        .count() as i64;
-    drop(unresolved_language_stmt);
 
     // Counts and the revision id only — never row content — attached to
     // whatever span `run_blocking` (src/server.rs) currently has entered.
