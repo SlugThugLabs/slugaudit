@@ -13,6 +13,8 @@ pub enum Command {
     Serve,
     Connect { agent: Option<ConnectAgent> },
     Install,
+    Menu,
+    Version,
     Help,
 }
 
@@ -98,8 +100,13 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
             Ok(Command::Connect { agent })
         }
         "install" => Ok(Command::Install),
+        "menu" => Ok(Command::Menu),
+        // `version` in all three common spellings so a released binary can
+        // be verified against its checksum/tag — `--version` currently
+        // errors as an unknown command without this.
+        "version" | "--version" | "-V" => Ok(Command::Version),
         other => Err(format!(
-            "unknown command {other:?}; expected one of: serve, connect, install, help"
+            "unknown command {other:?}; expected one of: serve, connect, install, menu, version, help"
         )),
     }
 }
@@ -117,6 +124,10 @@ USAGE:
     slugaudit-mcp install            Copy this binary to ~/.slugthug/bin/ so
                                       it's on a stable path shared with future
                                       slug-branded products.
+    slugaudit-mcp menu               Interactive setup menu: install the binary,
+                                      connect to an AI agent, get instructions
+                                      for any other MCP client, or run the server.
+    slugaudit-mcp version            Print the version and exit (also --version, -V)
     slugaudit-mcp help               Show this message
 ";
 

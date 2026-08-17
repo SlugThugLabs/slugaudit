@@ -31,6 +31,10 @@ cargo build --release
 
 # Connect your AI agent (Claude Code, Grok, or Codex)
 ./target/release/slugaudit-mcp connect
+
+# Or run the interactive setup menu — install, connect, instructions for
+# any other MCP-capable client, or start the server directly
+./target/release/slugaudit-mcp menu
 ```
 
 Projects are enabled from inside the AI session: call `project_control`

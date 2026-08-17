@@ -226,7 +226,7 @@ fn compute_manifest_hash_branches_are_both_reachable() {
 
     let empty: Vec<super::revision::FileRecord> = Vec::new();
     let leftover: Vec<String> = Vec::new();
-    let hash = super::reconcile::compute_manifest_hash(&connection, &empty, &leftover)
+    let hash = super::manifest::compute_manifest_hash(&connection, &empty, &leftover)
         .expect("seeded manifest hash");
     assert!(
         !hash.is_empty(),
@@ -234,7 +234,7 @@ fn compute_manifest_hash_branches_are_both_reachable() {
     );
 
     let drop_a: Vec<String> = vec!["a.rs".to_owned()];
-    let drop_hash = super::reconcile::compute_manifest_hash(&connection, &empty, &drop_a)
+    let drop_hash = super::manifest::compute_manifest_hash(&connection, &empty, &drop_a)
         .expect("exclude-branch manifest hash");
     assert_ne!(drop_hash, hash, "deletions must change the aggregate hash");
 }

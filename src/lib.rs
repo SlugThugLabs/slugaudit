@@ -14,6 +14,7 @@ pub mod evidence;
 pub mod graph;
 pub mod ignore_rules;
 pub mod install;
+pub mod menu;
 pub mod model;
 pub mod parse;
 pub mod progress;

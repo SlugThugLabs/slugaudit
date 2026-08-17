@@ -33,8 +33,9 @@ pub fn run_connect(agent: ConnectAgent) -> Result<(), ConnectError> {
 /// If the user has run `install` and `~/.slugthug/bin/slugaudit-mcp`
 /// exists, return that path so `connect` registers the stable location
 /// rather than a one-off build artifact. Otherwise returns `current`
-/// unchanged.
-fn prefer_slugthug_binary(current: &Path) -> PathBuf {
+/// unchanged. `pub(crate)` so the interactive setup menu (`src/menu.rs`)
+/// can print the same preferred path in its manual-instructions step.
+pub(crate) fn prefer_slugthug_binary(current: &Path) -> PathBuf {
     let Some(home) = slugthug_home() else {
         return current.to_path_buf();
     };

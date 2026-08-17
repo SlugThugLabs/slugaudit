@@ -1,5 +1,6 @@
 use crate::progress::ProgressSink;
 use crate::sync;
+use crate::util::lock_or_recover;
 use rmcp::ErrorData;
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -28,7 +29,7 @@ static SESSION_ID: Mutex<Option<Uuid>> = Mutex::new(None);
 /// subsequent call is a single lock + clone and never regenerates.
 #[must_use]
 pub(crate) fn session_id() -> Uuid {
-    let mut guard = SESSION_ID.lock().expect("session id mutex poisoned");
+    let mut guard = lock_or_recover(&SESSION_ID);
     if guard.is_none() {
         *guard = Some(Uuid::new_v4());
     }
@@ -39,7 +40,7 @@ pub(crate) fn session_id() -> Uuid {
 /// without spawning a new binary. Production code never calls this.
 #[cfg(test)]
 pub(crate) fn override_session_id_for_test(id: Uuid) {
-    let mut guard = SESSION_ID.lock().expect("session id mutex poisoned");
+    let mut guard = lock_or_recover(&SESSION_ID);
     *guard = Some(id);
 }
 

@@ -17,12 +17,18 @@ allow = [
     "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
-    "PolyForm-Noncommercial-1.0.0",
     "MPL-2.0",
     "Unicode-3.0",
     "Zlib",
 ]
 exceptions = []
+# The root crate's license is a non-SPDX PolyForm Noncommercial 1.0.0 plus
+# the SlugAudit tool-use additional permission (see LICENSE), expressed only
+# via `license-file` — cargo-deny cannot evaluate it against the allow list
+# above. The crate is never published (`publish = false` in Cargo.toml), so
+# this skips its license-expression check exactly as cargo-deny intends; the
+# tracked LICENSE file remains the authoritative text.
+private = { ignore = true }
 
 [bans]
 multiple-versions = "deny"

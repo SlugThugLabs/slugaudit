@@ -2,6 +2,12 @@
 name = "slugaudit-mcp-rust"
 version = "0.1.0"
 edition = "2024"
+# Never published: the license is a non-SPDX PolyForm Noncommercial 1.0.0
+# plus the SlugAudit tool-use additional permission, carried in LICENSE via
+# `license-file` (cargo's recommended form for non-standard licenses).
+# `publish = false` also lets cargo-deny's [licenses] private.ignore exempt
+# the root crate from license-expression checks it cannot evaluate.
+publish = false
 license-file = "LICENSE"
 
 [[bin]]

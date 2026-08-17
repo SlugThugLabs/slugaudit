@@ -1,4 +1,14 @@
+//! Manifest comparison and aggregate-hash computation: what changed
+//! between a stored revision and current disk state ([`compare`]), and the
+//! single deterministic hash over a file set
+//! ([`compute_manifest_hash`]) that makes a no-op publish detectable
+//! without diffing every file.
+
+use rusqlite::Connection;
 use std::collections::BTreeMap;
+
+use super::hash;
+use super::revision;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeStatus {
@@ -47,6 +57,59 @@ pub fn compare<'a>(
     }
     changes.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     changes
+}
+
+/// Computes the aggregate manifest hash from a post-update file set:
+/// existing DB state, updated with upserts, minus deletions.
+///
+/// Avoids reading rows that will be replaced or removed: upserted paths are
+/// overwritten in-memory, and deleted paths are excluded at the SQL level so
+/// we don't pay to read rows we'll immediately discard.
+pub(crate) fn compute_manifest_hash(
+    connection: &Connection,
+    upserts: &[revision::FileRecord],
+    deletions: &[String],
+) -> Result<String, rusqlite::Error> {
+    let current_refs: BTreeMap<String, String> = {
+        let exclude_count = upserts.len() + deletions.len();
+        if exclude_count == 0 {
+            let rows: Vec<(String, String)> = connection
+                .prepare("SELECT path, content_hash FROM files")?
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows.into_iter().collect()
+        } else {
+            let placeholders = vec!["?"; exclude_count].join(", ");
+            let sql =
+                format!("SELECT path, content_hash FROM files WHERE path NOT IN ({placeholders})");
+            let params: Vec<&dyn rusqlite::ToSql> = upserts
+                .iter()
+                .map(|r| &r.relative_path as &dyn rusqlite::ToSql)
+                .chain(deletions.iter().map(|p| p as &dyn rusqlite::ToSql))
+                .collect();
+            let rows: Vec<(String, String)> = connection
+                .prepare(&sql)?
+                .query_map(params.as_slice(), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows.into_iter().collect()
+        }
+    };
+
+    let mut current_refs = current_refs;
+    for record in upserts {
+        current_refs.insert(
+            record.relative_path.clone(),
+            record.identity.content_hash.clone(),
+        );
+    }
+
+    Ok(hash::aggregate_manifest_hash(
+        current_refs.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+    ))
 }
 
 #[cfg(test)]

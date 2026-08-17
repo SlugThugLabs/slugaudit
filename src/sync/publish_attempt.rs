@@ -77,7 +77,18 @@ pub(super) fn try_publish(
             );
         }
     }
-    let samples = sample_all_with_deadline(&discovered, limits, sink, deadline)?;
+    let (samples, sampling_skips) = sample_all_with_deadline(&discovered, limits, sink, deadline)?;
+    if !sampling_skips.is_empty() {
+        for file in &sampling_skips {
+            tracing::warn!(
+                path = %file.absolute_path.display(),
+                reason = %file.reason,
+                "skipping oversized file during sampling"
+            );
+        }
+    }
+    let mut skipped = skipped;
+    skipped.extend(sampling_skips);
     race_hook::fire(root);
     let diff = diff_against_stored(connection, &samples, discovered.len(), deadline)?;
 

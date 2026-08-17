@@ -49,7 +49,12 @@ it worked.
 There are no releases yet: `git tag -l` returns nothing in this
 repository, and `Cargo.toml`'s `version = "0.1.0"` has never been
 published to crates.io or anywhere else. **The only way to install
-SlugAudit today is building it from source.**
+SlugAudit today is building it from source.** A release pipeline now
+exists (`.github/workflows/release.yml`): pushing a `v*` tag builds a
+Linux x86_64 `slugaudit-mcp` binary, attaches it plus a `SHA256SUMS`
+file to the corresponding GitHub Release, and the resulting binary can
+be taken through `slugaudit-mcp menu` for install/connect. No release
+has been cut through it yet.
 
 ```bash
 git clone <this repository>
@@ -280,12 +285,13 @@ is:
 
 ## 8. Checksums and provenance for release artifacts
 
-There are no release artifacts to check: no tags exist, `Cargo.toml`'s
-version has never been published, and CI (`.github/workflows/quality.yml`)
-has no release job that produces or uploads binaries. This is a known gap,
-not an oversight to route around: **when a first real release is cut**, it
-should ship SHA-256 checksums for each build artifact, and ideally either
-a reproducible build process or SLSA provenance attestation. None of that
-exists yet because there is nothing to attest to — building that tooling
-now, ahead of an actual release process, would be solving a problem this
-project doesn't have yet.
+There are no release artifacts to check yet: no tags exist and
+`Cargo.toml`'s version has never been published. The release workflow
+(`.github/workflows/release.yml`) now builds a Linux x86_64 binary on a
+`v*` tag push and attaches it with a `SHA256SUMS` file to the GitHub
+Release, so **the first real release will ship SHA-256 checksums by
+construction**. What still doesn't exist is any actual release — and
+neither a reproducible build nor SLSA provenance attestation is wired
+up yet. Those can be added when the first release is cut and there is
+something to attest to; the current pipeline covers the download-and-
+verify story that matters for users.

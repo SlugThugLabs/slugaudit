@@ -1,6 +1,7 @@
 // slugaudit-line-exception: approved-by=agent; reason=parallel-sampling tests for sample_all_with_deadline intentionally construct synthetic DiscoveredFile trees and exercise ordering, byte-cap, and deadline branches in isolation; collapsing this back into sample_tests would mix the synthetic-fixture scaffolding with the discoverer-driven integration tests that already live there
 use super::*;
 use crate::model::EvidenceLimits;
+use crate::sync::publish::PublishError;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -189,7 +190,7 @@ fn parallel_sampling_preserves_discovered_index_ordering() {
     let sink = crate::progress::NoopProgressSink;
     let deadline = crate::util::Deadline::after(Duration::from_secs(10));
 
-    let samples = sample_all_with_deadline(&discovered, &limits, &sink, &deadline)
+    let (samples, _skipped) = sample_all_with_deadline(&discovered, &limits, &sink, &deadline)
         .expect("tight deadline should not fire here");
 
     let actual: Vec<&str> = samples.iter().map(|s| s.relative_path.as_str()).collect();
@@ -231,6 +232,53 @@ fn parallel_sampling_total_byte_cap_is_enforced_atomically() {
         }
         _ => panic!("expected PublishError::ImportTooLarge, got a different variant"),
     }
+}
+
+/// An oversized file (over `limits.max_file_bytes`) must be skipped with a
+/// recorded reason — not fatal to the rest of the batch — and the surviving
+/// samples must stay in discovered order.
+#[test]
+fn oversized_files_are_skipped_and_returned_not_fatal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let big = dir.path().join("big.rs");
+    let small = dir.path().join("small.rs");
+    std::fs::write(&big, vec![b'x'; 100_000]).expect("write big file");
+    std::fs::write(&small, b"fn small() {}").expect("write small file");
+    let discovered = vec![
+        DiscoveredFile {
+            relative_path: "big.rs".to_owned(),
+            absolute_path: big,
+            kind: FileKind::Indexed,
+        },
+        DiscoveredFile {
+            relative_path: "small.rs".to_owned(),
+            absolute_path: small,
+            kind: FileKind::Indexed,
+        },
+    ];
+    let limits = ResourceLimits {
+        max_file_bytes: 50_000,
+        ..ResourceLimits::default()
+    };
+    let sink = crate::progress::NoopProgressSink;
+    let deadline = crate::util::Deadline::after(Duration::from_secs(10));
+
+    let (samples, skipped) = sample_all_with_deadline(&discovered, &limits, &sink, &deadline)
+        .expect("an oversized file must be skipped, not fatal");
+
+    assert_eq!(samples.len(), 1, "only the in-cap file is sampled");
+    assert_eq!(samples[0].relative_path, "small.rs");
+    assert_eq!(
+        skipped.len(),
+        1,
+        "the oversized file is reported as skipped"
+    );
+    assert_eq!(skipped[0].absolute_path, discovered[0].absolute_path);
+    assert!(
+        skipped[0].reason.contains("exceeding"),
+        "skip reason names the ceiling: {}",
+        skipped[0].reason
+    );
 }
 
 /// A deadline that's already spent (exceeded before the first file is

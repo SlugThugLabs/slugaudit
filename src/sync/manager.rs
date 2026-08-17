@@ -394,12 +394,15 @@ impl SourceSyncManager {
         // what a full publish would index.
         let options = ReconcileOptions::for_sync(self.watch_manager.rules_for(root));
         let started = std::time::Instant::now();
+        // Accumulated across every barrier iteration so the log line below
+        // reports the total skip count, not just the last pass's.
+        let mut skipped_total = 0usize;
 
         super::reconcile::sync_with_barrier_with_deadline(
             state,
             &options.deadline,
             |dirty, deleted| {
-                super::reconcile::reconcile_dirty_paths_with_deadline(
+                let report = super::reconcile::reconcile_dirty_paths_with_deadline(
                     connection,
                     root,
                     dirty,
@@ -407,6 +410,7 @@ impl SourceSyncManager {
                     expected_current.as_deref(),
                     &options,
                 )?;
+                skipped_total += report.skipped;
                 Ok(())
             },
         )?;
@@ -414,6 +418,7 @@ impl SourceSyncManager {
         tracing::debug!(
             root = %root.display(),
             elapsed_ms = started.elapsed().as_millis(),
+            skipped = skipped_total,
             "incremental reconcile phase complete",
         );
         Ok(())

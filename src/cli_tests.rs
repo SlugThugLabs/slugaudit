@@ -118,3 +118,36 @@ fn install_ignores_any_extra_arguments() {
         Command::Install
     );
 }
+
+#[test]
+fn menu_parses_as_its_own_command() {
+    assert_eq!(
+        parse_args(vec!["menu".to_owned()].into_iter()).unwrap(),
+        Command::Menu
+    );
+}
+
+#[test]
+fn menu_ignores_any_extra_arguments() {
+    assert_eq!(
+        parse_args(vec!["menu".to_owned(), "--wat".to_owned()].into_iter()).unwrap(),
+        Command::Menu
+    );
+}
+
+#[test]
+fn unrecognized_input_lists_menu_among_the_known_commands() {
+    let err = parse_args(vec!["bogus".to_owned()].into_iter()).unwrap_err();
+    assert!(err.contains("menu"), "the error should name menu: {err}");
+}
+
+#[test]
+fn version_parses_in_all_three_spellings() {
+    for arg in ["version", "--version", "-V"] {
+        assert_eq!(
+            parse_args(vec![arg.to_owned()].into_iter()).unwrap(),
+            Command::Version,
+            "{arg} should parse as Version"
+        );
+    }
+}

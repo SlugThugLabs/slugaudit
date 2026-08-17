@@ -53,6 +53,7 @@ src/
 ├── cli.rs                    Command enum + parse_args + USAGE string
 ├── connect.rs                register the running binary with a target agent
 ├── install.rs                copy the binary to a stable ~/.slugthug/bin path
+├── menu.rs                   interactive setup CLI (install/connect/other-client/run server)
 ├── util.rs                   cross-module helpers (lock_or_recover, hex_encode, …)
 
 ├── tools/                    MCP tool handlers — thin orchestration:
@@ -75,6 +76,7 @@ src/
 │   ├── discovery.rs          filesystem walk with extension/limit filters
 │   ├── hash.rs               BLAKE3 content hashing
 │   ├── sample.rs             read-file-with-budgets
+│   ├── sample_batch.rs       parallel batch sampling loop + per-file skips
 │   ├── publish.rs            drive a single publish attempt
 │   ├── publish_attempt.rs    first-try wrapper
 │   ├── publish_cas.rs        compare-and-swap retry primitive

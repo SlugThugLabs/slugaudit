@@ -18,7 +18,8 @@ fn a_file_changed_after_sampling_is_detected_and_rejected() {
     // A far-future deadline so these tests exercise the race logic, not the
     // wall-clock budget.
     let deadline = crate::util::Deadline::after(std::time::Duration::from_secs(60));
-    let samples = sample_all_with_deadline(&discovered, &limits, &sink, &deadline).expect("sample");
+    let (samples, _skipped) =
+        sample_all_with_deadline(&discovered, &limits, &sink, &deadline).expect("sample");
     // `parser_version_changed: true` forces every sampled file into
     // `upserts` regardless of the (deliberately empty) diff — otherwise an
     // empty `changes` list would make `upserts` empty too, and revalidation
@@ -45,7 +46,8 @@ fn an_unchanged_file_passes_revalidation() {
     let limits = ResourceLimits::default();
     let sink = crate::progress::NoopProgressSink;
     let deadline = crate::util::Deadline::after(std::time::Duration::from_secs(60));
-    let samples = sample_all_with_deadline(&discovered, &limits, &sink, &deadline).expect("sample");
+    let (samples, _skipped) =
+        sample_all_with_deadline(&discovered, &limits, &sink, &deadline).expect("sample");
     let (upserts, _deletions) =
         build_upserts_and_deletions(samples, &[], true, &limits, &deadline).expect("build upserts");
 

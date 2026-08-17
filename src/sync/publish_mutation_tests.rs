@@ -197,3 +197,46 @@ fn one_bad_file_does_not_block_publishing_the_rest_of_the_project() {
         "the bad file must be recorded as skipped, not silently dropped or fatal"
     );
 }
+
+/// The per-file ceiling mirror of the non-UTF8-name test above: one
+/// oversized file must not fail the whole publish. Everything else is
+/// still discovered, sampled, and committed, with the oversized file
+/// recorded in `PublishReport::skipped` (reason naming the ceiling)
+/// instead of aborting the publish outright.
+#[test]
+fn one_oversized_file_does_not_block_publishing_the_rest_of_the_project() {
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "good.rs", b"fn good() {}\n");
+    std::fs::write(project.path().join("huge.rs"), vec![b'x'; 100_000])
+        .expect("write oversized file");
+
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    let limits = ResourceLimits {
+        max_file_bytes: 50_000,
+        ..ResourceLimits::default()
+    };
+    let report = crate::sync::publish_with_limits(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+        &limits,
+    )
+    .expect("publish must succeed despite one oversized file");
+
+    assert_eq!(
+        report.added, 1,
+        "the good file must still be indexed, not blocked by the oversized file"
+    );
+    assert_eq!(
+        report.skipped.len(),
+        1,
+        "the oversized file must be recorded as skipped, not silently dropped or fatal"
+    );
+    assert!(
+        report.skipped[0].reason.contains("ceiling"),
+        "skip reason names the ceiling: {}",
+        report.skipped[0].reason
+    );
+}

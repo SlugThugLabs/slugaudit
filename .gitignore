@@ -11,5 +11,8 @@
 /.planning/slugaudit/
 
 # Mutation-testing output (created by `cargo-mutants mutants` without an
-# explicit --output). Never version: it is a per-run artifact.
+# explicit --output). Never version: it is a per-run artifact. cargo-mutants
+# renames a pre-existing run's directory to `mutants.out.old` on re-run, so
+# both names are ignored.
 /mutants.out/
+/mutants.out.old/

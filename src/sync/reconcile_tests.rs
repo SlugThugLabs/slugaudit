@@ -329,3 +329,43 @@ fn reconcile_with_a_stale_expected_revision_fails_closed() {
         "expected a revision (CAS) error, got {error:?}"
     );
 }
+
+/// A dirty path over the per-file import ceiling must be skipped with a
+/// reported count — never fatal to the rest of the reconcile — while other
+/// dirty paths are still re-indexed, mirroring the full-publish path's
+/// per-file skip behavior.
+#[test]
+fn oversized_dirty_paths_are_skipped_while_other_files_reconcile() {
+    let (project, _db_dir, mut connection, revision) = setup_project();
+    write(project.path(), "big.rs", &vec![b'x'; 100_000]);
+    write(project.path(), "small.rs", b"fn small() {}");
+
+    let dirty = ["big.rs", "small.rs"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let deleted = HashSet::new();
+    let options = ReconcileOptions {
+        limits: ResourceLimits {
+            max_file_bytes: 50_000,
+            ..ResourceLimits::default()
+        },
+        deadline: Deadline::after(std::time::Duration::from_secs(60)),
+        rules: None,
+    };
+
+    let report = reconcile_dirty_paths_with_deadline(
+        &mut connection,
+        project.path(),
+        dirty,
+        deleted,
+        Some(&revision),
+        &options,
+    )
+    .expect("an oversized dirty path must be skipped, not fatal");
+
+    assert_eq!(report.reconciled, 1, "small.rs is still re-indexed");
+    assert_eq!(report.unchanged, 0);
+    assert_eq!(report.deleted, 0);
+    assert_eq!(report.skipped, 1, "big.rs is reported as skipped");
+}

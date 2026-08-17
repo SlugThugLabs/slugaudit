@@ -1000,3 +1000,217 @@ Format: date — title; status; context; decision; rationale; consequences.
   the sha2-era crates. `DEPENDENCIES.md` no longer lists sha2 as a direct
   dependency.
 
+## 2026-08-17 — Full release-gate audit executed; scoped mutation baseline re-measured
+
+- **Status**: complete
+- **Context**: after the C6-C10b batch landed (commit `d507351`), the
+  full release gate was run once from scratch so the project carries a
+  current, dated audit. Prior recorded executions were 2026-08-10 (at
+  the pre-C1-C5 tree) and the 2026-08-12 batch's individual gate runs;
+  no single run had yet covered the post-C10b tree end to end.
+- **Run**: all thirteen gates, mirroring `.github/workflows/quality.yml`,
+  on toolchain `1.97.1-x86_64-unknown-linux-gnu` at commit `d507351`.
+  Results: `cargo fmt --all -- --check` clean; `check_source_limits` PASS;
+  `check_no_duplicates` PASS; `check_docs_drift` PASS; `cargo check
+  --all-targets --all-features --locked` clean; `cargo clippy --all-targets
+  --all-features --locked -- -D warnings` clean; `cargo test --lib --bins
+  --tests --all-features --locked` — 472 tests, 0 failed (lib 423 +
+  check_* bin tests 46 + connect_tests 1 + stdio_protocol 2);
+  `cargo build --release --locked` clean; `cargo deny check advisories
+  bans sources licenses` all ok; `cargo audit` zero vulnerabilities across
+  280 crates; `check_coverage` 83.78% line coverage (5521/6590) above the
+  83% gate; `check_performance` no bench regressed more than 20% (max
+  ratio 1.12x); scoped `cargo mutants` 20 mutants, 17 caught, 3
+  unviable, 0 missed.
+- **Decision**: record the run as the current audit baseline in
+  `.planning/RELEASE_CHECKLIST.md` (header "Last executed 2026-08-17 at
+  commit `d507351`", plus coverage, audit, test count, and the new
+  drift/no-duplicates/performance gate results) and correct the scoped
+  mutation baseline note across `DECISIONS.md`, `RELEASE_CHECKLIST.md`,
+  and the CI workflow comment (commit `4908060`).
+- **Rationale**: the scoped mutation re-run reported 17 caught / 3
+  unviable where the 2026-08-12 baseline recorded 19 caught / 1
+  unviable — the same 20 mutants and still zero missed, but cargo-mutants
+  classified two more as unviable under this toolchain. The gate's
+  contract is zero surviving (missed) mutants, which holds, so this is a
+  reclassification, not a regression; the recorded numbers are updated to
+  the re-measured split so the docs and the gate stay honest about what
+  was last observed.
+- **Consequences**: the checklist and decision log now carry a dated,
+  all-green 2026-08-17 audit; the stale "19 caught / 1 unviable"
+  scoped-mutation note is corrected in three places. No code changed in
+  this entry — it records measurements, not behavior.
+
+## 2026-08-17 — cargo-deny root-crate license warning fixed via `publish = false` + `private.ignore`
+
+- **Status**: complete
+- **Context**: the remote `f2090a3` change moved `Cargo.toml` from
+  `license = "PolyForm-Noncommercial-1.0.0"` to
+  `license-file = "LICENSE"` (cargo's recommended form for the
+  non-standard PolyForm Noncommercial 1.0.0 + SlugAudit tool-use
+  additional permission license). After that, `cargo deny check` began
+  emitting `warning[no-license-field]` for the root crate: cargo-deny can
+  only evaluate a manifest `license` expression against its allow list,
+  and it cannot text-match the PolyForm license file to any SPDX id. The
+  gate still exited 0 (`licenses ok`), but the diagnostic was noise on
+  every run.
+- **Decision**: declare the root crate unpublished (`publish = false` in
+  `Cargo.toml` — matching the documented reality in `PACKAGING.md` that
+  the package has never been and will not be published to crates.io) and
+  add `private = { ignore = true }` under `[licenses]` in `deny.toml`,
+  which is cargo-deny's documented mechanism for skipping license
+  checks on unpublished workspace members. The now-dead
+  `PolyForm-Noncommercial-1.0.0` entry was removed from the allow list
+  (nothing can ever match it with only `license-file` set); the tracked
+  `LICENSE` file remains the authoritative license text.
+- **Rationale**: restoring `license = "PolyForm-Noncommercial-1.0.0"`
+  alongside `license-file` was tried first and made cargo warn that only
+  one field is necessary — and cargo explicitly recommends `license-file`
+  for non-standard licenses, so the fix belongs on the cargo-deny side,
+  not the manifest side. `private.ignore` exists for exactly this
+  unpublished-root-crate case.
+- **Consequences**: `cargo deny check advisories bans sources licenses`
+  is silent again (`licenses ok`, exit 0) and `cargo check` emits zero
+  warnings. `cargo publish` is now explicitly disallowed, which aligns
+  `Cargo.toml` metadata with the documented distribution story.
+
+## 2026-08-17 — Oversized-file per-file skips; sample-batch split; session-mutex and health-open cleanups
+
+- **Status**: complete
+- **Context**: the 2026-08-17 code audit flagged four items: (1) a
+  single file over the 8 MiB `max_file_bytes` ceiling failed the *entire*
+  project publish — `sample_file`'s `TooLarge` error propagated through
+  `sample_all_with_deadline` and `reconcile_dirty_paths_with_deadline`,
+  so one generated bundle (minified JS, SQL dump, vendored artifact)
+  made every tool call on the project error out; (2) the only two
+  `Mutex` sites in the crate that did not use `lock_or_recover`
+  (`tools::context::session_id` and its test override) would panic the
+  next caller if a panic ever poisoned the lock, breaking the
+  invariant documented in `ARCHITECTURE.md` §3; (3) `health`'s
+  `read_database_fields` collapsed "database unreadable" and "never
+  synced" into the same `-1`/`None` payload with no log line; (4) the
+  `tree-sitter-language-pack` build downloads a ~450 MB parser-sources
+  tarball from a GitHub release at build time (and grammars can be
+  fetched at runtime on cache miss) with no artifact checksum pinning.
+- **Decision**: (1) treat `TooLarge` as a per-file skip, not a
+  whole-publish failure, in both sync paths: `sample_all_with_deadline`
+  now returns `(Vec<Sample>, Vec<SkippedFile>)` and threads skipped
+  files through its worker-pool channel into the caller's
+  `PublishReport::skipped` (with the ceiling reason, sorted by path);
+  `reconcile_dirty_paths_with_deadline` counts oversize skips into a new
+  `ReconcileReport::skipped` field and the manager's reconcile debug log
+  reports the total across barrier iterations. The project-wide
+  `max_total_import_bytes` ceiling stays fatal — that cap bounds the
+  whole import and cannot be meaningfully skipped past. (2) route the
+  `session_id` mutex through `crate::util::lock_or_recover`, matching
+  every other lock in the crate. (3) log the `open_read_only` failure in
+  `health::read_database_fields` with path + error, keeping the
+  degrade-to-empty contract. (4) record the parser-pack supply-chain
+  exposure in this entry: no in-repo code change can pin the transitive
+  build-script's downloaded artifact; the mitigation is the exact
+  `=1.14.3` pin plus the `parse::tests::pack_version_matches_the_cargo_toml_pin`
+  drift test, and the exposure is now a tracked, named risk rather than
+  an undocumented one. Because `sample.rs` outgrew the 300-code-line
+  hard limit once the skip handling landed (295 → 312), the batch loop
+  and `record_error` moved to a new sibling `src/sync/sample_batch.rs`
+  (140 code lines, auto-passes), re-exported from `sample.rs` (173 code
+  lines, auto-passes) so all existing import paths
+  (`crate::sync::sample::sample_all_with_deadline`) keep resolving;
+  `ARCHITECTURE.md`'s module map gained the new file.
+- **Rationale**: skip-not-fail matches the codebase's existing per-file
+  philosophy — discovery already records unreadable/non-UTF8 files in
+  `PublishReport::skipped` and continues — and availability wins over a
+  whole-project tripwire: the skip reason lands in `PublishReport::skipped`
+  (deterministic, sorted) and the server logs; the MCP `report` tool
+  derives its counts from the database, so skipped files are visible to
+  the AI only as absent-from-the-index plus the log line, exactly like
+  discovery's existing skips. The
+  reconcile path checks the size at `sample_file` (which stats before
+  reading), so an oversized dirty file is never fully read into memory;
+  it is hashed first (the pre-existing order, unchanged), then skipped at
+  sample time. The split follows the established sibling-module pattern
+  (`publish_cas`/`publish_attempt`/`publish_diff`/`publish_log`) and the
+  module-map gate is one-directional (referenced files must exist; new
+  files need no map entry).
+- **Consequences**: one oversized file no longer bricks a project — it is
+  reported as a skip. The contract changed from fail-loud to
+  publish-everything-else-and-report; anyone relying on the hard failure
+  as a tripwire must watch `PublishReport::skipped` / the reconcile skip
+  count instead. `sample.rs` and `sample_batch.rs` both auto-pass the
+  source-size gate. The same reflection the gate forces ("does this file
+  have to be this big?") was applied to `reconcile.rs`, which had landed
+  at exactly 300 code lines: its `compute_manifest_hash` (~45 lines of
+  SQL + `BTreeMap` + aggregate-hash logic) is a *manifest* concern and
+  moved to `src/sync/manifest.rs` (now 160 code lines, auto-passes),
+  dropping `reconcile.rs` to 256 code lines with real headroom — a
+  concern extraction, not line-shaving. Full gate suite re-run after the
+  batch: fmt, clippy `-D warnings`, 476 tests (was 472; +3 new
+  oversize tests, +1 health-open test), `check_source_limits`,
+  `check_no_duplicates`, `check_docs_drift` all PASS; line coverage
+  83.86% (5553/6622) above the 83% gate.
+
+## 2026-08-17 — Interactive setup menu (`slugaudit-mcp menu`)
+
+- **Status**: complete
+- **Context**: onboarding required learning three separate CLI commands
+  (`install`, `connect`, `serve`) plus per-agent `mcp add` details; and
+  users of MCP clients other than the three built-ins (Claude Code, Grok,
+  Codex) had no guided path at all — nothing told them SlugAudit is a
+  standard stdio MCP server they can add by name + command.
+- **Decision**: add `slugaudit-mcp menu`, an interactive setup menu that
+  drives the existing non-interactive commands: (1) install the binary,
+  (2) connect to a built-in agent (delegating to the existing interactive
+  connect flow), (3) print "add SlugAudit to any other MCP client"
+  instructions including a standard `.mcp.json` server entry, (4) start
+  `serve` in the foreground (with a confirm, since it blocks), (5) exit.
+  The no-argument invocation stays `serve` — the agent-spawned server
+  depends on it, so a menu can never be the default. The menu is a thin
+  driver over `install`/`connect` and owns no setup logic of its own;
+  `connect::prefer_slugthug_binary` was made `pub(crate)` so the menu
+  prints the same preferred stable path. New `src/menu.rs` (auto-passes
+  the source-size gate; tests inline so the `*_tests.rs` count claim in
+  ARCHITECTURE.md stays at 51).
+- **Rationale**: a single discoverable entry point for humans, while
+  keeping every non-interactive command unchanged for scripts and the
+  agent-spawned server. Rather than build per-agent integrations for the
+  long tail of MCP clients now, option (3) prints the exact server
+  definition and points users at their client's own docs — the
+  un-blocking property without the maintenance burden of a registry that
+  would go stale.
+- **Consequences**: `menu` joins `serve`/`connect`/`install`/`help` in
+  `cli.rs` and the USAGE text; `ARCHITECTURE.md`'s module map and the
+  README quick start mention it. No behavior of the existing commands
+  changed.
+## 2026-08-17 — Release pipeline + `--version` flag
+
+- **Status**: complete
+- **Context**: the only way to install SlugAudit was building from source;
+  `PACKAGING.md` documented no release process, no tags, and no CI job
+  that produces binaries, while committing to SHA-256 checksums "when a
+  first real release is cut." Meanwhile the binary had no way to report
+  its own version (`--version` errored as an unknown command), which a
+  downloadable artifact needs for verification against its tag/checksum.
+- **Decision**: add `.github/workflows/release.yml` — a hand-rolled
+  workflow (same style as quality.yml: pinned 1.97.1 toolchain,
+  Swatinem/rust-cache for the ~450 MB parser-sources tarball,
+  `--locked`) that triggers on a `v*` tag push (or manual dispatch with
+  a tag input), builds the Linux x86_64 `slugaudit-mcp` binary, stages
+  it as `slugaudit-mcp-x86_64-unknown-linux-gnu`, writes a `SHA256SUMS`,
+  and uploads both to the GitHub Release. Linux x86_64 only, matching
+  the sole platform CI verifies; macOS/Windows runners get added only
+  once those platforms gain CI coverage. Separately, add `Command::Version`
+  to cli.rs (`version` / `--version` / `-V`), printing
+  `CARGO_PKG_VERSION` from main.
+- **Rationale**: a first release should ship the platform that is actually
+  tested (PACKAGING.md §1 is explicit that macOS/Windows are unverified);
+  the checksums commitment from PACKAGING.md §8 is satisfied by
+  construction rather than as an afterthought. Hand-rolled over cargo-dist
+  keeps the pipeline dependency-free and consistent with the repo's
+  existing workflows; cargo-dist can be adopted later if installers or
+  multi-platform matrices justify it.
+- **Consequences**: pushing `v0.1.0` now produces a downloadable binary +
+  checksums; the README/PACKAGING docs still describe building from
+  source until the first real tag. `menu`/`install`/`connect` already
+  work on a downloaded binary, so the artifact needs no special
+  handling. `--version` joins the USAGE text; no behavior of existing
+  commands changed.

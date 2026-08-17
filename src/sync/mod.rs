@@ -19,6 +19,7 @@ mod revalidate;
 mod revision;
 mod revision_edges;
 mod sample;
+mod sample_batch;
 
 pub use discovery::{DiscoveredFile, DiscoveryError, FileKind, SkippedFile, discover};
 pub use hash::{HashError, aggregate_manifest_hash, hash_bytes, hash_file};

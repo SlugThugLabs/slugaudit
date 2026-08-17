@@ -228,12 +228,25 @@ fn compute_project_state(
 /// Reads the DB-derived health fields read-only, degrading gracefully when
 /// the database doesn't exist yet (project enabled but never synced) or
 /// can't be opened — a health check must never fail on transient DB state.
+/// The open failure is logged (unlike the never-synced case, which is an
+/// expected, silent `-1`/`None`), so an operator investigating a health
+/// payload full of empty fields can distinguish "not synced yet" from
+/// "the database is unreadable" (permissions, corruption, symlink, NFS).
 fn read_database_fields(database_path: &std::path::Path) -> (Option<String>, Option<String>, i64) {
     if !database_path.exists() {
         return (None, None, -1);
     }
-    let Ok(mut connection) = store::open_read_only(database_path) else {
-        return (None, None, -1);
+    let mut connection = match store::open_read_only(database_path) {
+        Ok(connection) => connection,
+        Err(error) => {
+            tracing::warn!(
+                database_path = %database_path.display(),
+                error = %error,
+                "health: failed to open the project database read-only; \
+                 reporting empty database fields",
+            );
+            return (None, None, -1);
+        }
     };
     let revision_id = current_revision_id(&mut connection);
     let parser_pack_version = current_parser_pack_version(&mut connection);

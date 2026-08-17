@@ -1,0 +1,72 @@
+name: Release
+
+# Cuts a distributable binary. Quality gates (fmt, clippy, tests, audit,
+# coverage, perf, mutation) run on every push/PR in quality.yml — this
+# workflow only builds the release artifact and attaches it to the
+# GitHub Release, so it stays lean and fast.
+#
+# Triggered by pushing a tag like `v0.1.0` (the normal path), or manually
+# with a tag name via the workflow_dispatch UI. `Cargo.toml`'s version
+# must be bumped to match the tag before cutting a release.
+#
+# Scope: Linux x86_64 only — the platform CI actually verifies
+# (PACKAGING.md §1). macOS/Windows runners can be added to the matrix
+# once those platforms get CI coverage; until then shipping binaries for
+# them would be shipping unverified artifacts.
+#
+# Release hygiene: every artifact ships with a SHA256SUMS file so a
+# consumer can verify what they downloaded (the checksums commitment in
+# PACKAGING.md §8). The ~450 MB tree-sitter parser-sources tarball is
+# downloaded by the build script on cache miss, hence the same
+# Swatinem/rust-cache strategy quality.yml uses.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to attach the binaries to (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  # Needed to attach the binary + checksums to the GitHub Release.
+  contents: write
+
+jobs:
+  build-linux-x86_64:
+    name: Build Linux x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        # --locked: the release must match the checked-in Cargo.lock, or
+        # the build fails instead of silently resolving differently.
+        run: cargo build --release --locked
+
+      - name: Stage artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/release/slugaudit-mcp dist/slugaudit-mcp-x86_64-unknown-linux-gnu
+          chmod +x dist/slugaudit-mcp-x86_64-unknown-linux-gnu
+          (cd dist && sha256sum slugaudit-mcp-x86_64-unknown-linux-gnu > SHA256SUMS)
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # On a tag push, use the pushed tag; on a manual run, use the
+          # operator-supplied tag input.
+          tag_name: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag }}
+          files: dist/*

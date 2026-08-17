@@ -4,6 +4,7 @@ use rmcp::{ServiceExt, transport::stdio};
 use slugaudit_mcp_rust::cli::{self, Command};
 use slugaudit_mcp_rust::connect;
 use slugaudit_mcp_rust::install;
+use slugaudit_mcp_rust::menu;
 use slugaudit_mcp_rust::server::SlugAuditServer;
 use tracing_subscriber::EnvFilter;
 
@@ -22,6 +23,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Command::Help => {
                 print!("{}", cli::USAGE);
                 return Ok(());
+            }
+            Command::Version => {
+                // `CARGO_PKG_VERSION` is compile-time (0.1.0); the binary
+                // prints it so a user can verify a download against its
+                // release tag and checksum.
+                println!("slugaudit-mcp {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            Command::Menu => {
+                // The menu drives install/connect itself; only when the
+                // user picks "run the server now" does it return `true`
+                // and fall through to serve below.
+                if !menu::run_menu()? {
+                    return Ok(());
+                }
             }
             Command::Serve => {}
         },

@@ -5,7 +5,7 @@
 //! with stored hashes, and re-indexing only files that actually changed.
 //! The barrier synchronization loop ensures no events are lost even if
 //! new events arrive during reconciliation.
-// slugaudit-line-exception: approved-by=agent; reason=reconciliation is one atomic pipeline (snapshot+reconcile+manifest+publish); the barrier-cap test belongs next to the loop it covers
+// slugaudit-line-exception: approved-by=agent; reason=the per-path reconcile loop, its barrier sync, and the report types are one atomic pipeline; manifest-hash computation lives in manifest.rs and the barrier-cap test belongs next to the loop it covers
 
 use super::discovery::{DiscoveredFile, DiscoveryError};
 use super::hash;
@@ -14,7 +14,7 @@ use super::sample;
 use crate::model::ResourceLimits;
 use crate::util::Deadline;
 use rusqlite::{Connection, OptionalExtension};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use thiserror::Error;
@@ -60,6 +60,11 @@ pub struct ReconcileReport {
     /// Dirty paths the project's ignore rules excluded — not indexed, the
     /// same way a fresh publish would skip them.
     pub ignored: usize,
+    /// Dirty paths skipped because they exceed `limits.max_file_bytes` —
+    /// recorded so the report stays honest about what was not indexed and
+    /// why, mirroring the full-publish path's per-file skips (the file
+    /// cannot be indexed at all, and it must not fail the whole reconcile).
+    pub skipped: usize,
 }
 
 /// Reconciles dirty and deleted paths against the database.
@@ -144,6 +149,7 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
     let mut reconciled = 0usize;
     let mut unchanged = 0usize;
     let mut ignored = 0usize;
+    let mut skipped = 0usize;
 
     // Query existing hashes for dirty paths so we can skip files whose
     // content hasn't changed since they were last indexed.
@@ -196,7 +202,18 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
             absolute_path: absolute_path.clone(),
             kind,
         };
-        let sample = sample::sample_file(&discovered, limits)?;
+        let sample = match sample::sample_file(&discovered, limits) {
+            Ok(sample) => sample,
+            // Per-file import ceiling: the file cannot be indexed at all.
+            // Skip it the same way a full publish now skips oversized
+            // files (sample_batch.rs) and report the count — never fail
+            // the whole reconcile over one file.
+            Err(sample::SampleError::TooLarge { .. }) => {
+                skipped += 1;
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
         let record = sample::to_file_record(sample, limits);
         upserts.push(record);
         reconciled += 1;
@@ -213,10 +230,11 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
             unchanged,
             deleted: 0,
             ignored,
+            skipped,
         });
     }
 
-    let manifest_hash = compute_manifest_hash(connection, &upserts, &deletions)?;
+    let manifest_hash = super::manifest::compute_manifest_hash(connection, &upserts, &deletions)?;
     let parser_pack_version = query_current_parser_pack_version(connection)?;
 
     let _revision_id = revision::publish_revision(
@@ -233,6 +251,7 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
         unchanged,
         deleted: deletions.len(),
         ignored,
+        skipped,
     })
 }
 
@@ -351,59 +370,6 @@ fn query_existing_hashes(
         result.insert(path, hash);
     }
     Ok(result)
-}
-
-/// Computes the aggregate manifest hash from the post-reconciliation file
-/// set: existing DB state, updated with upserts, minus deletions.
-///
-/// Avoids reading rows that will be replaced or removed: upserted paths are
-/// overwritten in-memory, and deleted paths are excluded at the SQL level so
-/// we don't pay to read rows we'll immediately discard.
-pub(crate) fn compute_manifest_hash(
-    connection: &Connection,
-    upserts: &[revision::FileRecord],
-    deletions: &[String],
-) -> Result<String, rusqlite::Error> {
-    let current_refs: BTreeMap<String, String> = {
-        let exclude_count = upserts.len() + deletions.len();
-        if exclude_count == 0 {
-            let rows: Vec<(String, String)> = connection
-                .prepare("SELECT path, content_hash FROM files")?
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            rows.into_iter().collect()
-        } else {
-            let placeholders = vec!["?"; exclude_count].join(", ");
-            let sql =
-                format!("SELECT path, content_hash FROM files WHERE path NOT IN ({placeholders})");
-            let params: Vec<&dyn rusqlite::ToSql> = upserts
-                .iter()
-                .map(|r| &r.relative_path as &dyn rusqlite::ToSql)
-                .chain(deletions.iter().map(|p| p as &dyn rusqlite::ToSql))
-                .collect();
-            let rows: Vec<(String, String)> = connection
-                .prepare(&sql)?
-                .query_map(params.as_slice(), |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            rows.into_iter().collect()
-        }
-    };
-
-    let mut current_refs = current_refs;
-    for record in upserts {
-        current_refs.insert(
-            record.relative_path.clone(),
-            record.identity.content_hash.clone(),
-        );
-    }
-
-    Ok(hash::aggregate_manifest_hash(
-        current_refs.iter().map(|(k, v)| (k.as_str(), v.as_str())),
-    ))
 }
 
 /// Reads the parser pack version of the current revision, falling back to
