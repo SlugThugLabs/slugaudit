@@ -4,6 +4,25 @@ PolyForm Noncommercial License 1.0.0
 
 Required Notice: Copyright SlugThugLabs (https://github.com/SlugThugLabs/slugaudit)
 
+
+SlugAudit Tool-Use Additional Permission
+
+Notwithstanding the Noncommercial Purposes limitation in the license below,
+SlugThugLabs grants you permission to run, reproduce, and modify SlugAudit
+internally as a development tool to analyze, audit, develop, test, or maintain
+any other software or project, including commercial products and services.
+
+This additional permission does not permit you to distribute, sublicense, sell,
+resell, embed, bundle, incorporate, or make SlugAudit or a modified version of
+SlugAudit available as part of a commercial product or service. Those uses
+require a separate written commercial license from SlugThugLabs.
+
+For clarity, software analyzed, developed, tested, or maintained using
+SlugAudit, and output produced by SlugAudit, are not subject to this license
+merely because SlugAudit was used with them.
+
+Commercial integration licensing: admin@slugthuglabs.dev
+
 Acceptance
 
 In order to get any license under these terms, you must agree to them as

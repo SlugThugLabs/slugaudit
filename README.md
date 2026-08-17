@@ -58,13 +58,28 @@ creates the activation marker and runs the first import immediately.
 
 ## License
 
-Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+SlugAudit is licensed under the
+[PolyForm Noncommercial License 1.0.0 with a SlugAudit tool-use additional permission](LICENSE).
 
-Free for noncommercial purposes — research, personal study, hobby and
-amateur projects, and use by charitable, educational, research, or
-government organizations.
+> **Use SlugAudit to build anything you want—even paid software. If
+> SlugAudit itself becomes part of what you sell or distribute, contact us.**
 
-**Commercial use requires a separate license.** Contact the copyright
-holder (SlugThugLabs) for terms before any commercial distribution or use.
+You may use SlugAudit internally as a development tool to analyze, audit,
+develop, test, or maintain any project, including proprietary and commercial
+software. The software you work on and SlugAudit's output do not become subject
+to SlugAudit's license merely because you used the tool.
 
-This is not an OSI-approved open-source license.
+Incorporating, embedding, bundling, distributing, reselling, or offering
+SlugAudit itself as part of a commercial product or service requires a separate
+written commercial license.
+
+Independent developers and small teams are welcome. We may grant no-cost
+commercial integration permission when the project provides clear credit to
+SlugAudit and Slug Thug Labs. Contact us before shipping so we can understand
+what you're building.
+
+**Commercial integration licensing:** admin@slugthuglabs.dev
+
+See [COMMERCIAL.md](COMMERCIAL.md) for practical examples and contact details.
+
+This is a source-available license, not an OSI-approved open-source license.
