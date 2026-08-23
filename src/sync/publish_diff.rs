@@ -30,6 +30,7 @@ pub(super) fn diff_against_stored(
 ) -> Result<Diff, PublishError> {
     if let Some(elapsed) = deadline.exceeded() {
         return Err(PublishError::TimeBudgetExceeded {
+            path: String::new(),
             elapsed_ms: elapsed.as_millis(),
         });
     }
@@ -113,6 +114,7 @@ pub(super) fn build_upserts_and_deletions(
             // the deadline check rather than after it.
             if let Some(elapsed) = deadline.exceeded() {
                 return Err(PublishError::TimeBudgetExceeded {
+                    path: format!(" while processing {}", sample.relative_path),
                     elapsed_ms: elapsed.as_millis(),
                 });
             }

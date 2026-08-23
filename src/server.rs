@@ -16,7 +16,7 @@ use crate::sync;
 use crate::tools;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rmcp::model::{ProtocolVersion, RequestMetaObject, ServerCapabilities, ServerInfo};
+use rmcp::model::{Implementation, ProtocolVersion, RequestMetaObject, ServerCapabilities, ServerInfo};
 use rmcp::{ErrorData, Peer, RoleServer, ServerHandler, tool, tool_handler, tool_router};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -219,5 +219,9 @@ impl ServerHandler for SlugAuditServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::LATEST)
             .with_instructions(INSTRUCTIONS)
+            // Without this, rmcp fills `serverInfo` from its own build
+            // environment and every MCP client shows the connected server
+            // as "rmcp" (the library's name/version) instead of SlugAudit.
+            .with_server_info(Implementation::new("slugaudit", env!("CARGO_PKG_VERSION")))
     }
 }

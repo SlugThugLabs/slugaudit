@@ -105,6 +105,57 @@ fn an_attached_database_attempt_fails() {
     assert!(result.is_err());
 }
 
+/// Multi-statement SQL can't be expressed by the subquery wrapper, but a
+/// raw SQLite "near \";\": syntax error" is confusing — the caller should
+/// be told plainly that only one statement is allowed. The separator
+/// scanner must not misfire on `;` inside string literals, quoted
+/// identifiers, or comments.
+#[test]
+fn multi_statement_sql_gets_a_friendly_typed_error() {
+    let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
+    let error = ask(&project, "SELECT 1; SELECT 2")
+        .expect_err("multi-statement sql is rejected with a typed error");
+    assert!(
+        error.message.contains("more than one statement"),
+        "unexpected message: {}",
+        error.message
+    );
+
+    // A semicolon inside a string literal is one statement and must work.
+    let response = ask(&project, "SELECT ';' AS x").expect("string semicolon is fine");
+    assert_eq!(response.rows[0]["x"], ";");
+
+    // A semicolon inside a quoted identifier is one statement.
+    let response = ask(&project, "SELECT 1 AS \"a;b\"").expect("quoted identifier is fine");
+    assert_eq!(response.rows[0]["a;b"], 1);
+
+    // A semicolon inside a comment is one statement.
+    let response = ask(&project, "SELECT 1 -- ; trailing")
+        .expect("comment semicolon is fine");
+    assert_eq!(response.rows[0].as_object().unwrap().len(), 1);
+
+    // A single trailing semicolon is stripped, not treated as a separator.
+    ask(&project, "SELECT 1;").expect("trailing semicolon is fine");
+
+    // Escaped quotes must not confuse the scanner ('' inside a string).
+    ask(&project, "SELECT 'it''s; fine' AS x").expect("escaped quote is fine");
+
+    // A semicolon inside a block comment is one statement.
+    let response = ask(&project, "SELECT 1 /* ; */ AS x").expect("block comment is fine");
+    assert_eq!(response.rows[0]["x"], 1);
+
+    // A semicolon inside backtick/bracket identifiers is one statement.
+    let response = ask(&project, "SELECT 1 AS `a;b`").expect("backtick identifier is fine");
+    assert_eq!(response.rows[0]["a;b"], 1);
+    let response = ask(&project, "SELECT 1 AS [a;b]").expect("bracket identifier is fine");
+    assert_eq!(response.rows[0]["a;b"], 1);
+
+    // A separator after a closed block comment is still detected.
+    let error = ask(&project, "SELECT 1 /* c */; SELECT 2")
+        .expect_err("semicolon after a block comment is a real separator");
+    assert!(error.message.contains("more than one statement"));
+}
+
 #[test]
 fn empty_sql_is_a_typed_error() {
     let project = activated_project(&[]);

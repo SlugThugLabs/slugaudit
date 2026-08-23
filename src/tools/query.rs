@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=agent; reason=one tool contract owns request/response types, the execution/budget path, and the single-statement separator scanner; splitting would fragment the query tool's validation order (empty → size → statement count → freshness → budget) that the tests assert against
 use super::context::{ensure_synced, with_verified_read};
 use super::query_value::row_to_json;
 use crate::model::ResourceLimits;
@@ -101,6 +102,15 @@ fn query_with_limits(
     if sql.len() > limits.max_query_sql_bytes {
         return Err(ErrorData::invalid_params(
             format!("sql exceeds {} bytes", limits.max_query_sql_bytes),
+            None,
+        ));
+    }
+    if let Some(position) = first_statement_separator(trimmed) {
+        return Err(ErrorData::invalid_params(
+            format!(
+                "sql contains more than one statement (separator at byte {position}); \
+                 only a single read-only statement is supported"
+            ),
             None,
         ));
     }
@@ -222,6 +232,87 @@ fn describe_error(error: &rusqlite::Error, abort_reason: &Arc<AtomicU8>) -> Erro
         _ => error.to_string(),
     };
     ErrorData::invalid_params(message, None)
+}
+
+/// Returns the byte offset of the first top-level `;` in `sql`, or `None`.
+/// "Top-level" means outside single-quoted strings, double-quoted
+/// identifiers, backtick/bracket identifiers, and line/block comments — so
+/// `SELECT ';'` and `SELECT 1 -- ;` are not mistaken for multiple
+/// statements. Used only to produce a friendlier error than SQLite's raw
+/// `near ";": syntax error` when a caller sends multiple statements (which
+/// the subquery wrapper cannot express). This is a UX hint, not a security
+/// boundary — the read-only connection and the wrapper remain the
+/// correctness guards.
+fn first_statement_separator(sql: &str) -> Option<usize> {
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_backtick = false;
+    let mut in_bracket = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'-' && bytes.get(i + 1) == Some(&b'-') {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        if in_single {
+            if b == b'\'' {
+                if bytes.get(i + 1) == Some(&b'\'') {
+                    i += 1;
+                } else {
+                    in_single = false;
+                }
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if b == b'"' {
+                if bytes.get(i + 1) == Some(&b'"') {
+                    i += 1;
+                } else {
+                    in_double = false;
+                }
+            }
+            i += 1;
+            continue;
+        }
+        if in_backtick {
+            if b == b'`' {
+                in_backtick = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_bracket {
+            if b == b']' {
+                in_bracket = false;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' => in_single = true,
+            b'"' => in_double = true,
+            b'`' => in_backtick = true,
+            b'[' => in_bracket = true,
+            b';' => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Enforces the full serialized `QueryResponse` size, framing included, by

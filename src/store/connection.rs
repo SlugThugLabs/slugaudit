@@ -112,6 +112,36 @@ fn open_flags(read_write: bool) -> OpenFlags {
     flags
 }
 
+/// Enforces the "this connection can only ever touch the one database it
+/// was opened on" invariant at the engine level, independent of how the
+/// caller shapes its SQL. `SQLITE_OPEN_READ_ONLY` blocks *writes* but not
+/// *other reads*: `ATTACH DATABASE '<any file>'` opens a second database
+/// inside the same connection, so a read-only connection can silently read
+/// any SQLite file the user can. The `query` tool's subquery wrapping and
+/// per-call connections currently hide this at the tool layer, but the
+/// documented boundary is "correctness comes from the connection itself"
+/// (ARCHITECTURE.md invariant #1) — this authorizer makes that claim true
+/// at the layer it is made, so ATTACH stays blocked even if the tool
+/// surface changes.
+///
+/// Installed on both open paths so no connection — read-only *or*
+/// read-write — can ever reach a second database file.
+fn guard_against_attach(connection: &Connection) {
+    use rusqlite::hooks::{AuthAction, Authorization};
+    // rusqlite 0.37's `authorizer` stores the hook and returns `()`; the
+    // callback fires during statement preparation, so a denied ATTACH
+    // fails at prepare time and surfaces as an ordinary statement error.
+    connection.authorizer(Some(|context: rusqlite::hooks::AuthContext<'_>| {
+        match context.action {
+            AuthAction::Attach { .. } | AuthAction::Detach { .. } => Authorization::Deny,
+            // Everything else (SELECTs, joins, CTEs, window functions,
+            // JSON functions, the server's own DML/PRAGMA) passes through
+            // untouched.
+            _ => Authorization::Allow,
+        }
+    }));
+}
+
 /// If `path` doesn't exist yet, creates it with owner-only permissions set
 /// atomically at creation time (`O_CREAT | O_EXCL` plus the mode, in one
 /// syscall) so there is never a window where the file exists with a wider,
@@ -198,6 +228,7 @@ pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
     let mut connection =
         Connection::open_with_flags(path, open_flags(true)).map_err(StoreError::Open)?;
     configure(&connection)?;
+    guard_against_attach(&connection);
     super::migrations::ensure_current_schema(&mut connection)?;
     Ok(connection)
 }
@@ -222,6 +253,7 @@ pub fn open_read_only(path: &Path) -> Result<Connection, StoreError> {
     connection
         .busy_timeout(BUSY_TIMEOUT)
         .map_err(StoreError::Configure)?;
+    guard_against_attach(&connection);
     Ok(connection)
 }
 

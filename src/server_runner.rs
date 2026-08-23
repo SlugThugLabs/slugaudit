@@ -180,12 +180,63 @@ pub(crate) fn progress_target(
 pub(crate) struct McpProgressSink {
     peer: Peer<RoleServer>,
     token: ProgressToken,
+    /// Throttle for per-file `Sampling` notifications: at most one goes
+    /// out per window, so a 60 k-file import doesn't spawn 60 k tasks and
+    /// flood the MCP host with notifications the consumer can't use faster
+    /// than ~10/s anyway. `Started`/`Completed` always send.
+    sampling_throttle: std::sync::Mutex<Throttle>,
+}
+
+/// Coalesces events that arrive less than `window` apart: the first event
+/// passes, the rest are dropped until the window elapses. Pure and
+/// clock-injected so it is unit-testable without an MCP peer.
+#[derive(Debug, Clone, Copy)]
+struct Throttle {
+    window: std::time::Duration,
+    last: Option<std::time::Instant>,
+}
+
+impl Throttle {
+    fn new(window: std::time::Duration) -> Self {
+        Self { window, last: None }
+    }
+
+    fn should_emit(&mut self, now: std::time::Instant) -> bool {
+        let Some(last) = self.last else {
+            self.last = Some(now);
+            return true;
+        };
+        if now.duration_since(last) < self.window {
+            false
+        } else {
+            self.last = Some(now);
+            true
+        }
+    }
+}
+
+impl McpProgressSink {
+    fn spawn_notify(&self, fraction: f64, message: String) {
+        let peer = self.peer.clone();
+        let token = self.token.clone();
+        // Per-event spawn is intentional: the future body is tiny (just
+        // `notify_progress(...).await`), the throttled volume is small, and
+        // avoiding a channel means the drain logic doesn't need its own
+        // observable state. Errors here are silently dropped, matching
+        // `run_blocking`'s "broken progress channel can never turn a
+        // successful tool call into an error" stance.
+        tokio::task::spawn(async move {
+            notify_progress(&Some((peer, token)), fraction, message).await;
+        });
+    }
 }
 
 impl ProgressSink for McpProgressSink {
     fn emit(&self, event: ProgressEvent) {
-        let (fraction, message) = match event {
-            ProgressEvent::Started { phase } => (0.0, format!("{phase}: started")),
+        match event {
+            ProgressEvent::Started { phase } => {
+                self.spawn_notify(0.0, format!("{phase}: started"));
+            }
             ProgressEvent::Sampling {
                 phase,
                 current,
@@ -196,22 +247,20 @@ impl ProgressSink for McpProgressSink {
                 } else {
                     0.0
                 };
-                (fraction, format!("{phase}: {current}/{total}"))
+                // The last Sampling of a burst is allowed to be dropped:
+                // `Completed` (1.0) always sends, so a consumer never
+                // stalls at a stale intermediate percentage.
+                let mut throttle = crate::util::lock_or_recover(&self.sampling_throttle);
+                if !throttle.should_emit(std::time::Instant::now()) {
+                    return;
+                }
+                drop(throttle);
+                self.spawn_notify(fraction, format!("{phase}: {current}/{total}"));
             }
-            ProgressEvent::Completed { phase } => (1.0, format!("{phase}: completed")),
-        };
-
-        let peer = self.peer.clone();
-        let token = self.token.clone();
-        // Per-event spawn is intentional: the future body is tiny (just
-        // `notify_progress(...).await`), the per-call volume is small, and
-        // avoiding a channel means the drain logic doesn't need its own
-        // observable state. Errors here are silently dropped, matching
-        // `run_blocking`'s "broken progress channel can never turn a
-        // successful tool call into an error" stance.
-        tokio::task::spawn(async move {
-            notify_progress(&Some((peer, token)), fraction, message).await;
-        });
+            ProgressEvent::Completed { phase } => {
+                self.spawn_notify(1.0, format!("{phase}: completed"));
+            }
+        }
     }
 }
 
@@ -224,7 +273,13 @@ pub(crate) fn build_inner_sink(
     progress: Option<(Peer<RoleServer>, ProgressToken)>,
 ) -> Arc<dyn ProgressSink> {
     match progress {
-        Some((peer, token)) => Arc::new(McpProgressSink { peer, token }),
+        Some((peer, token)) => Arc::new(McpProgressSink {
+            peer,
+            token,
+            // 100 ms ≈ 10 notifications/second — enough to show a live
+            // i/N ratio without flooding the host on a huge import.
+            sampling_throttle: std::sync::Mutex::new(Throttle::new(std::time::Duration::from_millis(100))),
+        }),
         None => Arc::new(NoopProgressSink),
     }
 }

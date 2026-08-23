@@ -12,7 +12,8 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-use super::generic::{GenericResolver, GenericResolverConfig, LanguageResolver, Resolution};
+use super::generic::{GenericResolver, GenericResolverConfig, LanguageResolver};
+use super::types::Resolution;
 use crate::graph::resolve_rust::RustResolver;
 
 /// Registry of language-specific resolvers. Language-specific resolvers
@@ -91,7 +92,7 @@ pub fn resolve_one(
     let resolver = get_resolver(language);
 
     let Some(reference) = resolver.extract_reference(raw) else {
-        return super::generic::unresolved();
+        return super::types::unresolved();
     };
 
     resolver.resolve(&reference, importing_relative_path, known_paths)

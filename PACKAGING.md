@@ -30,10 +30,13 @@ it worked.
     `#[cfg(not(unix))] ... Ok(())` no-op — the file is still created and
     the server still works, but its permissions are left at whatever the
     operating system default is, with no attempt to tighten them. In other
-    words: **Windows is expected to build and run, but gets a strictly
-    weaker file-permission guarantee on the project database than Linux or
-    macOS, and this has not been verified by CI or manually in this
-    project.** Symlink rejection for the database path
+    words: **Windows is not yet a supported target.** It is expected to
+    build and run, but it gets a strictly weaker file-permission guarantee
+    on the project database than Linux or macOS, it has not been verified
+    by CI or manually in this project, and the `install`/`connect`
+    commands currently assume a Unix-style `HOME` (they do not consult
+    `USERPROFILE`). Treat any Windows behavior as unverified until a
+    Windows CI job exists. Symlink rejection for the database path
     (`SQLITE_OPEN_NOFOLLOW` plus a `symlink_metadata` pre-check) and for
     the `.planning/slugaudit` activation directory are plain `std::fs`
     calls with no `cfg(unix)` gate, so those protections apply on every
@@ -81,10 +84,12 @@ confirmed directly in `src/main.rs`, which calls
 `SlugAuditServer::new().serve(stdio())` from `rmcp::transport::stdio`.
 There is no HTTP/SSE transport, no socket, and no other way to talk to it.
 
-The binary has four commands, parsed in `src/cli.rs`: `serve` (the MCP
+The binary has six commands, parsed in `src/cli.rs`: `serve` (the MCP
 server; also the default when no argument is given), `connect [AGENT]`
 (register this binary as the `slugaudit` MCP server in Claude Code, Grok,
-or Codex), `install` (copy the binary to `~/.slugthug/bin/`), and `help`.
+or Codex), `install` (copy the binary to `~/.slugthug/bin/`), `menu`
+(interactive setup: install/connect/other-client instructions/run the
+server), `version` (also `--version`/`-V`), and `help`.
 There is no project-facing CLI configuration: every behavior of the
 server (which project it's operating on, etc.) is driven entirely by the
 path arguments passed inside individual MCP tool calls, not by
@@ -174,7 +179,7 @@ Permissions, from `src/store/connection.rs`:
 ## 6. Upgrades, schema compatibility, rollback, and removal
 
 Schema versioning lives in `src/store/migrations.rs`: the current schema
-is version `1` (`CURRENT_SCHEMA_VERSION`), tracked via SQLite's own
+is version `3` (`CURRENT_SCHEMA_VERSION`), tracked via SQLite's own
 `PRAGMA user_version`. Migrations are **forward-only**:
 
 - Opening a database at the current version is a no-op.
@@ -190,10 +195,11 @@ is version `1` (`CURRENT_SCHEMA_VERSION`), tracked via SQLite's own
 **There is no downgrade or rollback path.** If a database has been opened
 by a newer SlugAudit build that migrated it to a schema version an older
 build doesn't know about, that older build cannot open it again — this is
-enforced by the check above, not just undocumented behavior. There is
-currently only one schema version, so this hasn't been exercised in
-practice yet, but the mechanism is real and will matter starting with the
-first schema change.
+enforced by the check above, not just undocumented behavior. There are
+currently three schema versions (v1→v2 adds `findings.session_id`;
+v2→v3 adds `dependency_edges.syntax_unmodeled`), so the forward-only
+migration path has already been exercised in practice against real
+pre-migration databases.
 
 **Removal**: delete the activation directory entirely —
 

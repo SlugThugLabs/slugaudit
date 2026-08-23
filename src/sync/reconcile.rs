@@ -43,8 +43,12 @@ pub enum ReconcileError {
          and the next call will do a full verification"
     )]
     BarrierCapExceeded { iterations: u32 },
-    #[error("reconcile exceeded its wall-clock time budget after {elapsed_ms} ms")]
-    TimeBudgetExceeded { elapsed_ms: u128 },
+    /// `path` is a pre-formatted note naming the file being processed when
+    /// the budget tripped (e.g. `" while processing src/gen/big.rs"`), or
+    /// empty when the tripping site has no single file in hand (the
+    /// barrier loop). Kept pre-formatted so the error reads cleanly.
+    #[error("reconcile exceeded its wall-clock time budget after {elapsed_ms} ms{path}")]
+    TimeBudgetExceeded { path: String, elapsed_ms: u128 },
 }
 
 /// Report of a reconciliation pass.
@@ -158,6 +162,7 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
     for path in dirty {
         if let Some(elapsed) = deadline.exceeded() {
             return Err(ReconcileError::TimeBudgetExceeded {
+                path: format!(" while processing {path}"),
                 elapsed_ms: elapsed.as_millis(),
             });
         }
@@ -319,6 +324,7 @@ pub(crate) fn sync_with_barrier_with_deadline(
         }
         if let Some(elapsed) = deadline.exceeded() {
             return Err(ReconcileError::TimeBudgetExceeded {
+                path: String::new(),
                 elapsed_ms: elapsed.as_millis(),
             });
         }

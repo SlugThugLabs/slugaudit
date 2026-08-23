@@ -51,8 +51,13 @@ pub enum PublishError {
     ChangedDuringSample { path: String },
     #[error("invalid parser pack version {0:?}; expected a non-empty numeric dotted version")]
     InvalidParserPackVersion(String),
-    #[error("publish exceeded its wall-clock time budget after {elapsed_ms} ms")]
-    TimeBudgetExceeded { elapsed_ms: u128 },
+    /// `path` is a pre-formatted note naming the file being processed when
+    /// the budget tripped (e.g. `" while processing src/gen/big.rs"`), or
+    /// empty when the tripping site has no single file in hand (e.g. the
+    /// diff phase). Kept pre-formatted so the error reads cleanly without
+    /// a custom Display impl.
+    #[error("publish exceeded its wall-clock time budget after {elapsed_ms} ms{path}")]
+    TimeBudgetExceeded { path: String, elapsed_ms: u128 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

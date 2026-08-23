@@ -1,6 +1,34 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// The sampling throttle must pass the first event, drop everything inside
+/// the window, and pass again once the window elapses — the exact
+/// behavior that keeps a 60 k-file import from spawning 60 k notification
+/// tasks.
+#[test]
+fn throttle_passes_first_event_and_coalesces_within_the_window() {
+    let mut throttle = Throttle::new(std::time::Duration::from_millis(100));
+    let t0 = std::time::Instant::now();
+
+    assert!(throttle.should_emit(t0), "first event always passes");
+    assert!(
+        !throttle.should_emit(t0 + std::time::Duration::from_millis(1)),
+        "event 1 ms in is inside the window and must be dropped"
+    );
+    assert!(
+        !throttle.should_emit(t0 + std::time::Duration::from_millis(50)),
+        "event 50 ms in is still inside the window"
+    );
+    assert!(
+        throttle.should_emit(t0 + std::time::Duration::from_millis(101)),
+        "event after the window elapses passes and resets the clock"
+    );
+    assert!(
+        !throttle.should_emit(t0 + std::time::Duration::from_millis(102)),
+        "a fresh window starts at the passed event"
+    );
+}
+
 #[tokio::test]
 async fn run_blocking_propagates_a_successful_result() {
     let semaphore = Arc::new(Semaphore::new(4));

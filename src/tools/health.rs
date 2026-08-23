@@ -288,7 +288,24 @@ fn compute_global_only_state(manager: &crate::sync::SourceSyncManager) -> Projec
     // entry; reduce it to the reported fields. Future multi-project
     // support would either aggregate or pick "most recently touched"
     // and document the choice — never silently combine.
-    let snapshot = snapshots.into_iter().next().expect("non-empty");
+    //
+    // `is_empty()` was checked above, so `None` here is unreachable by
+    // construction — but matching instead of `expect` keeps the "no
+    // panic in production code" invariant literal rather than relying
+    // on the guard staying in place.
+    let Some(snapshot) = snapshots.into_iter().next() else {
+        return ProjectHealthFields {
+            phase: HealthPhase::NoActiveProject,
+            watcher_health: None,
+            pending_dirty: None,
+            pending_deleted: None,
+            watcher_sequence: None,
+            last_verified_sequence: None,
+            revision_id: None,
+            parser_pack_version: None,
+            file_count: -1,
+        };
+    };
     let phase = derive_phase(snapshot.health, &None, snapshot.has_unreconciled_events());
     ProjectHealthFields {
         phase,

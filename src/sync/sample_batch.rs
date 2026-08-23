@@ -105,18 +105,23 @@ pub(super) fn sample_all_with_deadline(
                     if error_flag.load(Ordering::Acquire) {
                         return;
                     }
+                    let idx = next_index.fetch_add(1, Ordering::AcqRel);
+                    if idx >= total {
+                        return;
+                    }
+                    // The deadline is checked after claiming the index so
+                    // the budget-exceeded error can name the file that was
+                    // next in line — the same "once per file" semantics as
+                    // before, just with a nameable victim.
                     if let Some(elapsed) = deadline.exceeded() {
                         error_flag.store(true, Ordering::Release);
                         record_error(
                             error_slot,
                             PublishError::TimeBudgetExceeded {
+                                path: format!(" while processing {}", discovered[idx].relative_path),
                                 elapsed_ms: elapsed.as_millis(),
                             },
                         );
-                        return;
-                    }
-                    let idx = next_index.fetch_add(1, Ordering::AcqRel);
-                    if idx >= total {
                         return;
                     }
                     match sample_file(&discovered[idx], limits) {

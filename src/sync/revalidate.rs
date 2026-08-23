@@ -35,6 +35,7 @@ pub(super) fn revalidate_unchanged_since_sample(
     for upsert in upserts {
         if let Some(elapsed) = deadline.exceeded() {
             return Err(PublishError::TimeBudgetExceeded {
+                path: format!(" while processing {}", upsert.relative_path),
                 elapsed_ms: elapsed.as_millis(),
             });
         }

@@ -7,6 +7,38 @@ fn activate(root: &std::path::Path) {
 }
 
 #[test]
+fn reports_credential_pattern_file_count() {
+    let project = tempfile::tempdir().expect("project dir");
+    activate(project.path());
+    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
+    fs::write(project.path().join(".env"), b"API_KEY=secret\n").expect("write .env");
+    fs::create_dir_all(project.path().join("keys")).expect("keys dir");
+    fs::write(
+        project.path().join("keys").join("cred.pem"),
+        b"-----BEGIN PRIVATE KEY-----\n",
+    )
+    .expect("write pem");
+    // Ordinary source must never match the credential patterns.
+    fs::write(project.path().join("pem_util.rs"), b"pub fn parse() {}\n")
+        .expect("write ordinary source");
+
+    let response = report(
+        &Parameters(ReportRequest {
+            path: project.path().to_string_lossy().into_owned(),
+        }),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .expect("report succeeds");
+
+    assert_eq!(response.0.file_count, 4);
+    assert_eq!(
+        response.0.credential_pattern_file_count, 2,
+        ".env and keys/cred.pem match credential patterns; pem_util.rs and lib.rs must not"
+    );
+}
+
+#[test]
 fn reports_real_counts_for_an_active_project() {
     let project = tempfile::tempdir().expect("project dir");
     activate(project.path());

@@ -13,7 +13,8 @@
 
 use std::collections::HashSet;
 
-use super::generic::{GenericResolverConfig, Resolution, external, pick, unresolved};
+use super::generic::GenericResolverConfig;
+use super::types::{Resolution, external, pick, unresolved};
 
 /// Extracts a single-quoted or double-quoted string literal from `text`.
 /// Used by JS/TS-style `import ... from 'path'` extraction.

@@ -86,6 +86,13 @@ pub struct ReportResponse {
     /// count here means "this project's import syntax isn't modeled yet,"
     /// not "this project's imports are broken."
     pub unsupported_language_unresolved_count: i64,
+    /// How many indexed files match common credential-file patterns
+    /// (`.env`, `*.pem`, `*.key`, `id_rsa*`, etc. — the same list the
+    /// SQL below matches). SlugAudit indexes these like any other file;
+    /// this count just makes the AI aware it is handling credential-
+    /// looking content and can treat it carefully (or ask the user to
+    /// gitignore it) instead of silently reading secrets.
+    pub credential_pattern_file_count: i64,
 }
 
 /// # Errors
@@ -223,6 +230,24 @@ fn build_report(
         |row| row.get(0),
     )?;
 
+    // Credential-pattern files are indexed like any other file (see the
+    // field doc); this count exists so the AI knows it is looking at
+    // credential-shaped content. `lower(path)` keeps the match robust to
+    // case, and the patterns are deliberately narrow — ordinary source
+    // files never match them.
+    let credential_pattern_file_count: i64 = connection.query_row(
+        "SELECT count(*) FROM files WHERE lower(path) LIKE '%.env' \
+            OR lower(path) LIKE '%.env.%' \
+            OR lower(path) LIKE '%.pem' \
+            OR lower(path) LIKE '%.key' \
+            OR lower(path) LIKE '%.p12' \
+            OR lower(path) LIKE '%.pfx' \
+            OR lower(path) LIKE '%/id_rsa%' \
+            OR lower(path) LIKE '%/id_ed25519%'",
+        [],
+        |row| row.get(0),
+    )?;
+
     // Counts and the revision id only — never row content — attached to
     // whatever span `run_blocking` (src/server.rs) currently has entered.
     tracing::info!(
@@ -244,6 +269,7 @@ fn build_report(
         import_resolution,
         diagnostic_count,
         unsupported_language_unresolved_count,
+        credential_pattern_file_count,
     })
 }
 

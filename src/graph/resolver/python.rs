@@ -12,7 +12,8 @@
 
 use std::collections::HashSet;
 
-use super::generic::{GenericResolverConfig, Resolution, ResolutionKind, unresolved};
+use super::generic::GenericResolverConfig;
+use super::types::{Resolution, ResolutionKind, unresolved};
 use super::path_helpers::candidate_paths;
 
 /// Resolves a Python-style relative import — leading dots tell how many

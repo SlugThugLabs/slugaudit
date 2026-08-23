@@ -268,9 +268,9 @@ Cross-crate callers go through the following path:
 - `sync::revision::publish_revision` is the single write path for every
   table. Nothing writes to `files`, `findings`, or `edges` directly.
 - `tools::context::ensure_synced` is the single point where a project
-  gets brought current. Every state-bearing tool calls it; reporting
-  tools (`report`) bypass it for read-only freshness on the
-  already-current revision.
+  gets brought current. Every state-bearing tool calls it — `report`
+  included: its snapshot is always built from a freshly ensured
+  revision, never from a stale one.
 - `tools::core::ToolCounters` is the single source for "how many tool
   calls have we served". Avoid adding a parallel counter outside this
   module — keep one definition.

@@ -3,9 +3,12 @@
 //! Split into submodules so each file stays under the small-file-rule
 //! cap. The split files are:
 //!
-//! - [`generic`] — `Resolution` / `ResolutionKind` / `LanguageResolver`
-//!   trait / `GenericResolver` struct. Caller-facing types and the
-//!   dispatcher logic.
+//! - [`types`] — the outcome data model (`Resolution` / `ResolutionKind` /
+//!   `pick` / `unresolved` / `external`), usable and testable on its own.
+//! - [`extract`] — the raw import-statement parser
+//!   (`GenericResolver::extract_reference` as a free function).
+//! - [`generic`] — the `LanguageResolver` trait, `GenericResolverConfig`,
+//!   and the `GenericResolver` struct (dispatcher + resolution step).
 //! - [`python`] — Python-style relative imports (`from . import ...`)
 //!   and the `__init__.py` index-file handling.
 //! - [`js`] — JS/TS-style `import ... from 'path'` reference extraction.
@@ -21,11 +24,13 @@
 //! `crate::graph::resolver::Resolution` etc. without caring which
 //! submodule defines them.
 
+mod extract;
 mod generic;
 mod js;
 mod path_helpers;
 mod python;
 mod registry;
+mod types;
 
 #[cfg(test)]
 #[path = "proptest.rs"]
@@ -39,9 +44,8 @@ mod gate_tests;
 // are used by callers of this module, not directly inside `mod.rs`,
 // so the unused-import lint would otherwise flag every name here.
 #[allow(unused_imports)]
-pub use generic::{
-    GenericResolver, GenericResolverConfig, LanguageResolver, Resolution, ResolutionKind, external,
-    pick, unresolved,
-};
+pub use generic::{GenericResolver, GenericResolverConfig, LanguageResolver};
+#[allow(unused_imports)]
+pub use types::{Resolution, ResolutionKind, external, pick, unresolved};
 #[allow(unused_imports)]
 pub use registry::{get_resolver, is_supported_language, resolve_one};

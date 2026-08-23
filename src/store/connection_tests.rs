@@ -34,6 +34,67 @@ fn read_only_open_fails_against_a_missing_database() {
     assert!(matches!(result, Err(StoreError::Open(_))));
 }
 
+/// The documented safety boundary for the `query` tool is "correctness
+/// comes from the connection itself" (ARCHITECTURE.md invariant #1) —
+/// and `SQLITE_OPEN_READ_ONLY` alone does NOT provide it: a read-only
+/// flag blocks *writes* but not *other reads*, because
+/// `ATTACH DATABASE '<file>'` opens a second database inside the same
+/// connection. The `guard_against_attach` authorizer is what makes the
+/// "project's own database" claim true at the connection layer,
+/// independent of the query tool's subquery wrapping (which currently
+/// hides the gap at the tool layer). This test exercises the connection
+/// directly — no wrapper — so it pins the real invariant, not the
+/// accident.
+#[test]
+fn neither_connection_can_attach_a_foreign_database() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let project_path = directory.path().join("project.db");
+    let foreign_path = directory.path().join("foreign.db");
+    open_read_write(&project_path).expect("create project database");
+
+    // A foreign SQLite file with data the query tool must never reach.
+    let foreign = rusqlite::Connection::open(&foreign_path).expect("create foreign db");
+    foreign
+        .execute_batch(
+            "CREATE TABLE secrets (v TEXT); \
+             INSERT INTO secrets VALUES ('top-secret-value');",
+        )
+        .expect("seed foreign db");
+    drop(foreign);
+
+    for (label, connection) in [
+        ("read-only", open_read_only(&project_path).expect("open read-only")),
+        ("read-write", open_read_write(&project_path).expect("open read-write")),
+    ] {
+        let attach = connection.execute_batch(&format!(
+            "ATTACH DATABASE '{}' AS other",
+            foreign_path.display()
+        ));
+        assert!(
+            attach.is_err(),
+            "{label} connection must deny ATTACH of a foreign database file"
+        );
+
+        // The attached alias must never become usable.
+        let attached_read: rusqlite::Result<String> = connection.query_row(
+            "SELECT v FROM other.secrets",
+            [],
+            |row| row.get(0),
+        );
+        assert!(
+            attached_read.is_err(),
+            "{label} connection must not reach data through an attached alias"
+        );
+
+        // Positive control: normal reads on the guarded connection are
+        // unaffected — the guard must not over-block.
+        let count: i64 = connection
+            .query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get(0))
+            .expect("{label} connection still serves ordinary reads");
+        assert!(count > 0, "{label} connection should see its own schema");
+    }
+}
+
 /// A corrupted/non-SQLite file at the database path must fail closed
 /// with a typed error, not panic and not silently treat garbage bytes
 /// as an empty database (SQLite validates lazily on first real access,
