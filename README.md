@@ -11,7 +11,7 @@ file-gathering.
 
 ## What you get
 
-Six MCP tools, exposed over stdio:
+Seven MCP tools, exposed over stdio:
 
 | Tool | What it does |
 |------|-------------|
@@ -19,6 +19,7 @@ Six MCP tools, exposed over stdio:
 | `report` | Automatic snapshot of the current revision: file counts, languages, what changed since last import. |
 | `structure` | Tree-sitter structural pattern matching across 300+ languages. |
 | `finding` | The one write tool — records an audit finding against the evidence, bound to the file's current hash. |
+| `finding_read` | Session-gated finding query — returns only the current agent session's findings (never another session's conclusions). |
 | `project_control` | Enable/disable a project — `action = "on"` creates the marker and runs the first import; `action = "off"` purges the project database. |
 | `health` | Operational snapshot: watcher health, unreconciled counts, tool-call counters, last-sync timestamp. Read-only — never syncs. |
 

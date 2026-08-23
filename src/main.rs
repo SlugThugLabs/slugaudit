@@ -25,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             Command::Version => {
-                // `CARGO_PKG_VERSION` is compile-time (0.1.0); the binary
+                // `CARGO_PKG_VERSION` is compile-time; the binary
                 // prints it so a user can verify a download against its
                 // release tag and checksum.
                 println!("slugaudit-mcp {}", env!("CARGO_PKG_VERSION"));

@@ -5,7 +5,7 @@ name: Release
 # workflow only builds the release artifact and attaches it to the
 # GitHub Release, so it stays lean and fast.
 #
-# Triggered by pushing a tag like `v0.1.0` (the normal path), or manually
+# Triggered by pushing a tag like `v1.0.0` (the normal path), or manually
 # with a tag name via the workflow_dispatch UI. `Cargo.toml`'s version
 # must be bumped to match the tag before cutting a release.
 #
@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to attach the binaries to (e.g. v0.1.0)"
+        description: "Tag to attach the binaries to (e.g. v1.0.0)"
         required: true
 
 permissions:

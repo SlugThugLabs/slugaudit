@@ -1214,3 +1214,74 @@ Format: date — title; status; context; decision; rationale; consequences.
   work on a downloaded binary, so the artifact needs no special
   handling. `--version` joins the USAGE text; no behavior of existing
   commands changed.
+
+## 2026-08-23 — SQLite chosen as the sole data store
+
+- **Status**: decided
+- **Context**: the original architecture explored PostgreSQL as the indexing
+  database, matching common server-side MCP patterns. During implementation
+  it became clear the deployment model made SQLite the correct choice.
+- **Decision**: SQLite (`rusqlite` with `bundled` feature) is the only data
+  store. There is no PostgreSQL driver, no connection-string abstraction,
+  and no multi-engine support. Every enabled project gets its own
+  `project.db` inside `.planning/slugaudit/`.
+- **Rationale**: five factors converged on SQLite:
+  1. **Zero-config deploy.** The binary is a single file. The AI agent
+     spawns it as a child process over stdio. SQLite needs no server, no
+     port, no credentials, and no `CREATE DATABASE` step — the first write
+     creates the file.
+  2. **Process-level isolation is the right boundary.** Each agent session
+     gets its own `slugaudit-mcp` process. Multiple processes accessing the
+     same project open the same `project.db` independently. SQLite's WAL
+     mode handles concurrent readers naturally, and the CAS publish retry
+     loop (`src/sync/publish_cas.rs`) resolves concurrent-writer conflicts.
+  3. **The database is disposable derived data.** Every row in `files`,
+     `evidence`, `dependency_edges`, and `revisions` is computed from source.
+     The database is a cache — delete it and it's rebuilt. A heavyweight
+     client-server database with connection pooling, authentication, and
+     replication adds complexity with no benefit for a cache.
+  4. **Session-scoped findings fit the model.** The only non-derived data
+     (`findings`) is scoped to the agent session that wrote it and purged on
+     next boot. There is no long-lived user data that needs a durable server.
+  5. **The AI already has filesystem access.** If the agent can `cat` a
+     source file, it can `sqlite3` the project database. PostgreSQL's
+     authentication layer would add no security beyond what the OS process
+     model already provides.
+- **Consequences**: the `Cargo.toml` dependency list has no PostgreSQL driver;
+  `serverInfo` reports `slugaudit` not `sqlite-proxy`; every tool call opens
+  its own SQLite connection (read-only or read-write depending on the tool),
+  which is correct for a per-process, session-scoped model. If a
+  multi-tenant, network-accessible transport is added in the future, SQLite
+  per-project databases remain the right choice — one `project.db` per
+  project, opened on demand, no shared server state.
+
+## 2026-08-23 — First release tagged v1.0.0; comprehensive audit passed
+
+- **Status**: decided
+- **Context**: the codebase passed a comprehensive commercial production
+  audit (principal-engineer review covering architecture, code quality,
+  reliability, security, performance, maintainability, testability, UX,
+  UI integration, platform compatibility, production readiness, and
+  technical debt) with an overall score of 8.5/10 (Grade: A). Three
+  improvements were identified and implemented before tagging:
+  runtime resource-limit configuration via `SLUGAUDIT_*` env vars,
+  a session-gated `finding_read` MCP tool, and macOS in the CI matrix.
+- **Decision**: tag v1.0.0. This is the first public release. The version
+  reflects production readiness for the intended use case (local-per-user,
+  session-scoped codebase evidence server for AI coding agents), not a
+  claim of completeness for hypothetical future features. `Cargo.toml`
+  version is bumped from 0.1.0 to 1.0.0; `CARGO_PKG_VERSION` flows
+  through `--version`, `serverInfo`, and the release pipeline.
+- **Rationale**: the audit confirmed the architecture is correct, the
+  reliability surface has zero findings, the security model matches the
+  deployment model, and the documentation explains every design choice
+  that looks like an omission to an unfamiliar auditor. Delaying 1.0.0
+  for aspirational features (Windows CI, FTS5 search, per-language
+  resolver split) would misrepresent the software's real readiness — those
+  are scope decisions, not gaps.
+- **Consequences**: pushing `v1.0.0` triggers the release workflow
+  (`.github/workflows/release.yml`), producing a Linux x86_64 binary +
+  `SHA256SUMS` attached to the GitHub Release. The `Cargo.lock` version
+  tracks 1.0.0. Future versions follow semver: 1.x.y for
+  backward-compatible changes, 2.0.0 for breaking tool-contract or
+  schema changes.

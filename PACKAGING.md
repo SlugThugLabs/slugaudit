@@ -20,9 +20,10 @@ it worked.
   SlugAudit's own code; it has no effect on how the binary is installed or
   run, and doesn't constrain end users in any way.
 - **Operating system support, precisely**:
-  - CI (`.github/workflows/quality.yml`) only builds and tests on
-    `ubuntu-latest`. Linux is the only platform this project currently
-    verifies in an automated way.
+  - CI (`.github/workflows/quality.yml`) builds and tests on both
+    `ubuntu-latest` and `macos-latest` with `fail-fast: false`.
+    Linux and macOS are the two platforms this project verifies in
+    an automated way.
   - The codebase has no Linux-only APIs outside one narrow spot:
     `src/store/connection.rs` sets owner-only (`0600`) permissions on a
     newly created SQLite database file using a Unix-only syscall path
@@ -42,7 +43,7 @@ it worked.
     calls with no `cfg(unix)` gate, so those protections apply on every
     platform Rust's standard library supports symlink detection on,
     including Windows.
-  - macOs is not explicitly tested in CI either, but nothing in the
+  - macOS is tested alongside Linux in CI. Nothing in the
     codebase is Linux-specific beyond what's described above, so macOS is
     expected to behave the same as Linux (both are Unix for the purposes
     of `#[cfg(unix)]`).
@@ -50,7 +51,7 @@ it worked.
 ## 2. Building and installing
 
 There are no releases yet: `git tag -l` returns nothing in this
-repository, and `Cargo.toml`'s `version = "0.1.0"` has never been
+repository, and `Cargo.toml`'s `version` has never been
 published to crates.io or anywhere else. **The only way to install
 SlugAudit today is building it from source.** A release pipeline now
 exists (`.github/workflows/release.yml`): pushing a `v*` tag builds a
@@ -251,7 +252,7 @@ $ echo 'pub fn a() {}' > /scratch/smoke_project/lib.rs
 $ cargo test --locked --test stdio_protocol
 RAW INITIALIZE RESPONSE:
 {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18", ...
- "serverInfo":{"name":"rmcp","version":"3.1.2"}, "instructions": "..." }}
+ "serverInfo":{"name":"slugaudit","version":"1.0.0"}, "instructions": "..." }}
 
 RAW REPORT TOOL CALL RESPONSE:
 {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text",
