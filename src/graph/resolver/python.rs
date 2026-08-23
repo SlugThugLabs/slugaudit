@@ -13,8 +13,8 @@
 use std::collections::HashSet;
 
 use super::generic::GenericResolverConfig;
-use super::types::{Resolution, ResolutionKind, unresolved};
 use super::path_helpers::candidate_paths;
+use super::types::{Resolution, ResolutionKind, unresolved};
 
 /// Resolves a Python-style relative import — leading dots tell how many
 /// packages to walk up, the rest of the text is a dot-separated module

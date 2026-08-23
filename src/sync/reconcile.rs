@@ -12,6 +12,7 @@ use super::hash;
 use super::revision;
 use super::sample;
 use crate::model::ResourceLimits;
+use crate::model::process_limits;
 use crate::util::Deadline;
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
@@ -119,7 +120,7 @@ impl ReconcileOptions {
     /// Options for a production sync pass: the standard resource budget
     /// and deadline, plus the project's current ignore rules.
     pub fn for_sync(rules: Option<Arc<crate::ignore_rules::IgnoreRules>>) -> Self {
-        let limits = ResourceLimits::default();
+        let limits = *process_limits();
         let deadline = Deadline::after(limits.max_sync_wall_clock);
         Self {
             limits,
@@ -289,7 +290,7 @@ pub fn sync_with_barrier(
 ) -> Result<(), ReconcileError> {
     sync_with_barrier_with_deadline(
         state,
-        &Deadline::after(ResourceLimits::default().max_sync_wall_clock),
+        &Deadline::after(process_limits().max_sync_wall_clock),
         reconcile_fn,
     )
 }

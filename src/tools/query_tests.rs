@@ -130,8 +130,7 @@ fn multi_statement_sql_gets_a_friendly_typed_error() {
     assert_eq!(response.rows[0]["a;b"], 1);
 
     // A semicolon inside a comment is one statement.
-    let response = ask(&project, "SELECT 1 -- ; trailing")
-        .expect("comment semicolon is fine");
+    let response = ask(&project, "SELECT 1 -- ; trailing").expect("comment semicolon is fine");
     assert_eq!(response.rows[0].as_object().unwrap().len(), 1);
 
     // A single trailing semicolon is stripped, not treated as a separator.
@@ -153,6 +152,43 @@ fn multi_statement_sql_gets_a_friendly_typed_error() {
     // A separator after a closed block comment is still detected.
     let error = ask(&project, "SELECT 1 /* c */; SELECT 2")
         .expect_err("semicolon after a block comment is a real separator");
+    assert!(error.message.contains("more than one statement"));
+}
+
+/// The separator scanner walks bytes (`sql.as_bytes()`), which is correct
+/// for UTF-8 by construction: no multibyte character's encoding ever
+/// contains an ASCII byte (leading bytes are ≥ 0xC0, continuation bytes are
+/// 0x80–0xBF), so the ASCII delimiters the scanner looks for (`;`, `'`,
+/// `"`, `-`, `/`, `*`, backtick, bracket) can never appear inside a
+/// multibyte character. This test pins that property end-to-end: a
+/// multibyte string literal containing a semicolon, a multibyte quoted
+/// identifier, and a semicolon inside a multibyte line comment must all be
+/// treated as one statement.
+#[test]
+fn multibyte_content_never_confuses_the_statement_separator_scanner() {
+    let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
+
+    // A multibyte string literal with a semicolon inside is one statement.
+    let response = ask(&project, "SELECT '日本語;です' AS x").expect("multibyte string is fine");
+    assert_eq!(response.rows[0]["x"], "日本語;です");
+
+    // A multibyte quoted identifier with a semicolon is one statement.
+    let response = ask(&project, "SELECT 1 AS \"値;列\"").expect("multibyte quoted id is fine");
+    assert_eq!(response.rows[0]["値;列"], 1);
+
+    // A semicolon inside a multibyte line comment is one statement.
+    let response =
+        ask(&project, "SELECT 1 -- コメント ; コメント").expect("multibyte comment is fine");
+    assert_eq!(response.rows[0].as_object().unwrap().len(), 1);
+
+    // A semicolon inside a multibyte block comment is one statement.
+    let response = ask(&project, "SELECT 1 /* コメント ; コメント */ AS x")
+        .expect("multibyte block comment is fine");
+    assert_eq!(response.rows[0]["x"], 1);
+
+    // A real separator still counts even when multibyte text precedes it.
+    let error = ask(&project, "SELECT '終わり'; SELECT 2")
+        .expect_err("a separator after multibyte content is still a separator");
     assert!(error.message.contains("more than one statement"));
 }
 

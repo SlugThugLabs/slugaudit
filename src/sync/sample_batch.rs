@@ -118,7 +118,10 @@ pub(super) fn sample_all_with_deadline(
                         record_error(
                             error_slot,
                             PublishError::TimeBudgetExceeded {
-                                path: format!(" while processing {}", discovered[idx].relative_path),
+                                path: format!(
+                                    " while processing {}",
+                                    discovered[idx].relative_path
+                                ),
                                 elapsed_ms: elapsed.as_millis(),
                             },
                         );

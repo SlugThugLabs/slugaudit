@@ -10,8 +10,12 @@ permissions:
 
 jobs:
   quality:
-    name: Rust 1.97.1 quality gates
-    runs-on: ubuntu-latest
+    name: Rust 1.97.1 quality gates (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -126,13 +130,12 @@ jobs:
       # Performance regression gate: runs the four criterion benches with a
       # reduced sample size (~3–5 min) and fails when any median regresses
       # more than the threshold (default 20%) against the committed
-      # baseline (.planning/perf_baseline.json). Baselines are machine-
-      # class specific — if the runner hardware differs from the machine
-      # that recorded the baseline, re-record it deliberately
-      # (`bash tools/check_performance.sh --record`) and commit the result,
-      # per the regression policy in .planning/PERFORMANCE.md. If this step
-      # proves too slow for every push, move it to a nightly schedule.
+      # baseline (.planning/perf_baseline.json). The baseline is recorded
+      # on Linux — this step is Linux-only. macOS performance is tracked
+      # separately; re-record a macOS baseline before enabling this step
+      # on macOS.
       - name: Performance regression (criterion)
+        if: runner.os == 'Linux'
         run: cargo run --quiet --bin check_performance --locked
 
       - name: Install mutation testing tooling
@@ -148,7 +151,10 @@ jobs:
       # baseline recorded zero surviving mutants on this exact surface
       # (17 caught, 0 missed, 3 unviable; see .planning/DECISIONS.md), so
       # a survivor here is a real regression, not an un-triaged baseline.
+      # Linux-only: cargo-mutants has platform-specific behavior and the
+      # baseline was recorded on Linux.
       - name: Mutation testing (revision, publish, hash, context)
+        if: runner.os == 'Linux'
         run: |
           cargo mutants \
             --file src/sync/revision.rs \

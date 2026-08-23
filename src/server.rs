@@ -16,7 +16,9 @@ use crate::sync;
 use crate::tools;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rmcp::model::{Implementation, ProtocolVersion, RequestMetaObject, ServerCapabilities, ServerInfo};
+use rmcp::model::{
+    Implementation, ProtocolVersion, RequestMetaObject, ServerCapabilities, ServerInfo,
+};
 use rmcp::{ErrorData, Peer, RoleServer, ServerHandler, tool, tool_handler, tool_router};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -29,11 +31,13 @@ const INSTRUCTIONS: &str = "SlugAudit does not audit. It is not an auditor and n
     Use `report` for an automatic snapshot of what evidence exists, `query` for arbitrary \
     read-only SQL against the project's own database (search, symbol/import/diagnostic lookup, \
     dependency traversal via recursive CTEs over dependency_edges, and source retrieval all reach \
-    through it), `structure` for Tree-sitter structural pattern matching, and `finding` to persist \
-    a conclusion you have actually reviewed. Use `project_control` with `action` = `\"on\"` to \
-    enable a project (creates the activation directory and runs the first import) or `\"off\"` to \
-    disable it. Never claim SlugAudit identified, rated, or recommended anything — it cannot; \
-    evidence is not judgment.";
+    through it), `structure` for Tree-sitter structural pattern matching, `finding` to persist \
+    a conclusion you have actually reviewed, and `finding_read` to retrieve findings scoped to \
+    the current agent session (safer than querying the findings table directly, which returns \
+    every session's rows). Use `project_control` with `action` = `\"on\"` to enable a project \
+    (creates the activation directory and runs the first import) or `\"off\"` to disable it. \
+    Never claim SlugAudit identified, rated, or recommended anything — it cannot; evidence is \
+    not judgment.";
 
 #[derive(Clone)]
 pub struct SlugAuditServer {
@@ -170,6 +174,25 @@ impl SlugAuditServer {
     ) -> Result<Json<tools::FindingResponse>, ErrorData> {
         self.dispatch(meta, peer, "finding", move |sink, manager| {
             tools::finding(&request, sink.as_ref(), &manager)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Retrieve findings scoped to the current agent session — only returns \
+         findings written by this session, never another session's conclusions. Safer than \
+         querying the findings table directly through `query`, which returns every session's \
+         rows. Supply `path` (any path in the active project) to select the database, and \
+         optionally `file` to filter to a specific file."
+    )]
+    async fn finding_read(
+        &self,
+        meta: RequestMetaObject,
+        peer: Peer<RoleServer>,
+        request: Parameters<tools::FindingReadRequest>,
+    ) -> Result<Json<tools::FindingReadResponse>, ErrorData> {
+        self.dispatch(meta, peer, "finding_read", move |sink, manager| {
+            tools::finding_read(&request, sink.as_ref(), &manager)
         })
         .await
     }

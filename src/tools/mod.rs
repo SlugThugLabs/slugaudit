@@ -14,6 +14,7 @@
 
 pub(crate) mod context;
 mod finding;
+mod finding_read;
 mod health;
 mod project_control;
 mod query;
@@ -30,6 +31,7 @@ mod redaction_tests;
 
 pub use context::ensure_synced;
 pub use finding::{FindingRequest, FindingResponse, finding};
+pub use finding_read::{FindingReadEntry, FindingReadRequest, FindingReadResponse, finding_read};
 pub use health::{HealthRequest, HealthResponse, health};
 pub use project_control::{ProjectControlRequest, ProjectControlResponse, project_control};
 pub use query::{QueryRequest, QueryResponse, query};

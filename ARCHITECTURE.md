@@ -16,7 +16,7 @@ stateless across projects: enabling a project on a sibling is a
 brand-new SQLite handle; cross-project questions go through the orchestrating
 agent, not through SlugAudit.
 
-The server exposes six tools:
+The server exposes seven tools:
 
 - **`report`** — read-only snapshot of the indexed revision:
   file/language counts, parser failures, evidence-kind counts.
@@ -28,6 +28,10 @@ The server exposes six tools:
 - **`finding`** — the single write tool. Persists AI-authored findings
   bound to a file's current `content_hash`, auto-invalidating on file
   change.
+- **`finding_read`** — returns findings scoped to the current agent
+  session. Unlike raw `query` against the `findings` table (which
+  returns every session's rows), `finding_read` gates on the current
+  `session_id` — a new agent sees only its own conclusions.
 - **`project_control`** — enable/disable a project (creates or removes
   the activation directory and runs the initial import).
 - **`health`** — operational snapshot: watcher health, unreconciled
@@ -65,6 +69,7 @@ src/
 │   ├── query_value.rs        SQLite row → JSON conversion + size cap
 │   ├── structure.rs          tree-sitter pattern match
 │   ├── finding.rs            the single write tool
+│   ├── finding_read.rs       session-gated finding query
 │   ├── project_control.rs    enable/disable
 │   └── health.rs             operational snapshot (Phase 2.1)
 
@@ -415,6 +420,29 @@ Adding a timeout to the acquire would be defense-in-depth against
 a scenario (all 8 blocking workers stuck in uninterruptible kernel
 syscalls simultaneously) that the kernel's own I/O timeouts already
 handle. It is harmless to add, but its absence is not a defect.
+
+### Runtime resource-limit configuration
+
+Every field in `ResourceLimits` can be overridden at startup via
+an environment variable. The pattern is `SLUGAUDIT_<FIELD>` where
+`<FIELD>` is the SCREAMING_SNAKE_CASE name of the field:
+
+- `SLUGAUDIT_MAX_FILE_BYTES` — per-file size cap (default 8 MiB)
+- `SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES` — total import byte cap (256 MiB)
+- `SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES` — query response JSON size cap
+- `SLUGAUDIT_MAX_QUERY_SQL_BYTES` — max SQL text length
+- `SLUGAUDIT_MAX_QUERY_VM_STEPS` — SQLite VM-step budget
+- `SLUGAUDIT_MAX_QUERY_WALL_CLOCK_SECS` — query wall-clock budget (seconds)
+- `SLUGAUDIT_MAX_QUERY_VALUE_BYTES` — per-column value cap
+- `SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES` — tree-sitter query text length
+- `SLUGAUDIT_MAX_STRUCTURE_MATCHES` — max structure matches returned
+- `SLUGAUDIT_MAX_STRUCTURE_EXECUTION_TIME_SECS` — structure time budget
+- `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS` — sync time budget (seconds)
+
+Unset or unparseable vars are silently ignored — the compile-time
+default applies. Duration fields accept whole seconds. The limits are
+cached in a `OnceLock` on first use via `model::process_limits()` and
+never change for the lifetime of the process.
 
 ## Watcher health model
 

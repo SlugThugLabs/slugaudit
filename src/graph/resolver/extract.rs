@@ -19,13 +19,20 @@ use crate::graph::reference::ImportReference;
 /// Returns the remainder after the keyword, or `None`.
 fn strip_keyword<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
     let after = text.strip_prefix(keyword)?;
-    after.chars().next().is_some_and(char::is_whitespace).then_some(after)
+    after
+        .chars()
+        .next()
+        .is_some_and(char::is_whitespace)
+        .then_some(after)
 }
 
 /// Extracts the module/reference text from one raw import statement, or
 /// `None` when the text matches no modeled import syntax — callers treat
 /// that the same as an unparseable import, not an error.
-pub(super) fn extract_reference(config: &GenericResolverConfig, raw: &str) -> Option<ImportReference> {
+pub(super) fn extract_reference(
+    config: &GenericResolverConfig,
+    raw: &str,
+) -> Option<ImportReference> {
     let trimmed = raw.trim();
 
     // Bare `.` is a Python-style relative import (current package).

@@ -1,7 +1,7 @@
 // slugaudit-line-exception: approved-by=agent; reason=one tool contract owns request/response types, the execution/budget path, and the single-statement separator scanner; splitting would fragment the query tool's validation order (empty → size → statement count → freshness → budget) that the tests assert against
 use super::context::{ensure_synced, with_verified_read};
 use super::query_value::row_to_json;
-use crate::model::ResourceLimits;
+use crate::model::{ResourceLimits, process_limits};
 use crate::sync;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -80,11 +80,11 @@ pub fn query(
     sink: &dyn crate::progress::ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<QueryResponse>, ErrorData> {
-    query_with_limits(request, &ResourceLimits::default(), sink, manager)
+    query_with_limits(request, process_limits(), sink, manager)
 }
 
 /// Test-only seam: production code always goes through [`query`] with
-/// [`ResourceLimits::default`]; tests inject tighter limits to exercise
+/// [`process_limits`]; tests inject tighter limits to exercise
 /// truncation and budget paths without waiting out production-sized caps.
 /// Private (not `pub`), but visible to the `tests` submodule below like any
 /// other item in this module.

@@ -278,7 +278,9 @@ pub(crate) fn build_inner_sink(
             token,
             // 100 ms ≈ 10 notifications/second — enough to show a live
             // i/N ratio without flooding the host on a huge import.
-            sampling_throttle: std::sync::Mutex::new(Throttle::new(std::time::Duration::from_millis(100))),
+            sampling_throttle: std::sync::Mutex::new(Throttle::new(
+                std::time::Duration::from_millis(100),
+            )),
         }),
         None => Arc::new(NoopProgressSink),
     }

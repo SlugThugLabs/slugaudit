@@ -7,7 +7,7 @@ mod source;
 mod span;
 
 pub use evidence::{EvidenceItem, EvidenceKind, SpanAvailability};
-pub use limits::{EvidenceLimits, ResourceLimits};
+pub use limits::{EvidenceLimits, ResourceLimits, process_limits};
 pub use parser::{
     EvidenceOrigin, ExtractionCompleteness, ParseOutcome, ParserAvailability, ParserRun,
 };

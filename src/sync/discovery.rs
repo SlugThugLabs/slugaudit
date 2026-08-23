@@ -1,5 +1,5 @@
 use crate::ignore_rules::{indexable_walker, is_excluded_path};
-use crate::model::ResourceLimits;
+use crate::model::process_limits;
 use crate::util::Deadline;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -100,10 +100,7 @@ pub(crate) fn sniff_kind(path: &Path) -> Result<FileKind, DiscoveryError> {
 /// Returns an error only if the walk itself fails outright (e.g. the
 /// project root isn't readable at all).
 pub fn discover(root: &Path) -> Result<(Vec<DiscoveredFile>, Vec<SkippedFile>), DiscoveryError> {
-    discover_with_deadline(
-        root,
-        &Deadline::after(ResourceLimits::default().max_sync_wall_clock),
-    )
+    discover_with_deadline(root, &Deadline::after(process_limits().max_sync_wall_clock))
 }
 
 /// [`discover`] under an explicit wall-clock [`Deadline`], checked once per

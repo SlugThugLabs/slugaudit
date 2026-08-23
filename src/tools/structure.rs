@@ -1,5 +1,5 @@
 use super::context::{ensure_synced, with_verified_read};
-use crate::model::{ResourceLimits, char_column, saturating_u32};
+use crate::model::{ResourceLimits, char_column, process_limits, saturating_u32};
 use crate::sync;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -65,11 +65,11 @@ pub fn structure(
     sink: &dyn crate::progress::ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<StructureResponse>, ErrorData> {
-    structure_with_limits(request, &ResourceLimits::default(), sink, manager)
+    structure_with_limits(request, process_limits(), sink, manager)
 }
 
 /// Test-only seam: production code always goes through [`structure`] with
-/// [`ResourceLimits::default`]; tests inject a tighter
+/// [`process_limits`]; tests inject a tighter
 /// `max_structure_execution_time` to exercise the abort path without
 /// waiting out the production-sized budget.
 fn structure_with_limits(

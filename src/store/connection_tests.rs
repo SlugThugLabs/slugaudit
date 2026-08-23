@@ -63,8 +63,14 @@ fn neither_connection_can_attach_a_foreign_database() {
     drop(foreign);
 
     for (label, connection) in [
-        ("read-only", open_read_only(&project_path).expect("open read-only")),
-        ("read-write", open_read_write(&project_path).expect("open read-write")),
+        (
+            "read-only",
+            open_read_only(&project_path).expect("open read-only"),
+        ),
+        (
+            "read-write",
+            open_read_write(&project_path).expect("open read-write"),
+        ),
     ] {
         let attach = connection.execute_batch(&format!(
             "ATTACH DATABASE '{}' AS other",
@@ -76,11 +82,8 @@ fn neither_connection_can_attach_a_foreign_database() {
         );
 
         // The attached alias must never become usable.
-        let attached_read: rusqlite::Result<String> = connection.query_row(
-            "SELECT v FROM other.secrets",
-            [],
-            |row| row.get(0),
-        );
+        let attached_read: rusqlite::Result<String> =
+            connection.query_row("SELECT v FROM other.secrets", [], |row| row.get(0));
         assert!(
             attached_read.is_err(),
             "{label} connection must not reach data through an attached alias"

@@ -46,6 +46,6 @@ mod gate_tests;
 #[allow(unused_imports)]
 pub use generic::{GenericResolver, GenericResolverConfig, LanguageResolver};
 #[allow(unused_imports)]
-pub use types::{Resolution, ResolutionKind, external, pick, unresolved};
-#[allow(unused_imports)]
 pub use registry::{get_resolver, is_supported_language, resolve_one};
+#[allow(unused_imports)]
+pub use types::{Resolution, ResolutionKind, external, pick, unresolved};
