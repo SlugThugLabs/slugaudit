@@ -256,6 +256,205 @@ something else breaks loudly.
    it does not silently inherit another session's audit conclusions.
    The defense fires on both the `ensure_synced` read path and the
    `publish_from_scratch` recover-from-corruption path.
+10. **The database is disposable derived data.** Every row in `files`,
+    `evidence`, `dependency_edges`, and `revisions` is computed from
+    the project's source files. The database can be deleted and
+    rebuilt with no data loss: `rm -rf .planning/slugaudit` followed
+    by any tool call. This is not a compromise — it is the correct
+    architecture for a cache whose input is always available and
+    whose output is always reproducible. The `findings` table is
+    session-scoped (invariant #9) and auto-invalidates on source
+    change, so it follows the same philosophy: conclusions are
+    ephemeral, evidence is reproducible.
+
+## Security and trust model
+
+SlugAudit does not implement authentication or authorization — and
+that is correct for its deployment model. Here is why every layer
+of the trust boundary is already handled by the environment, not by
+code the server reimplements.
+
+### Process-level isolation (the transport boundary)
+
+The server speaks MCP over **stdio only** (`rmcp::transport::stdio`).
+It is spawned as a child process by the AI agent. Only the parent
+process that launched it can send it MCP requests. There is no
+network listener, no HTTP/SSE transport, no socket, and no
+multi-client multiplexing. An attacker who wants to send a malicious
+MCP request must already have code execution on the same machine and
+a handle to the same process — at which point they can `cat` any
+file the user can read, including the project database directly via
+`sqlite3`.
+
+### The activation marker is an opt-in signal, not an authorization gate
+
+Every tool call resolves a project root by walking up from the
+given `path` looking for `.planning/slugaudit/`. If the marker
+doesn't exist, the call fails with `NotActive`. But this marker's
+purpose is **discoverability and scope** — "which project am I
+operating on?" — not authorization. The AI agent already has
+filesystem access as the user that launched it. If the agent wanted
+to read files from an unindexed project, it could `cat` them
+directly. SlugAudit makes queries fast; it does not grant access the
+agent didn't already have.
+
+A future network-accessible transport (SSE, WebSocket) would need
+its own authentication layer. The current stdio transport needs
+none because the process boundary is the auth boundary.
+
+### The database is disposable derived data
+
+Every byte in `project.db` — files, content hashes, evidence,
+dependency edges — is computed from the project's source files. The
+database is a cache. If it is corrupt, it is discarded and rebuilt
+(`store::discard_corrupt_database`). If it is deleted, it is
+re-created on the next tool call. The only non-derived data is
+the `findings` table (AI-authored conclusions), and those are
+session-scoped (purged on fresh boot) and auto-invalidated on
+source change.
+
+This means entire categories of production concerns do not apply:
+
+- **Rollback:** `rm -rf .planning/slugaudit`. There is no primary
+  data to preserve.
+- **Backups:** the source tree is the backup. Re-index it.
+- **Connection-close errors:** a failed WAL checkpoint on drop is a
+  non-issue — the next open recovers or discards.
+- **Schema downgrades:** unsupported — delete the database and
+  let the new binary rebuild it.
+
+## Process lifecycle
+
+SlugAudit is a **session-scoped child process**. It lives exactly as
+long as the AI agent session that spawned it. When the agent
+disconnects (session ends, model switch, user closes the agent),
+it closes the server's stdin. The server receives EOF on
+`waiting().await` and the process exits.
+
+### Why there is no graceful shutdown
+
+A graceful-shutdown handler (SIGTERM → stop accepting new calls →
+drain in-flight → exit) is needed for a persistent daemon that
+serves multiple clients and must not drop work. SlugAudit is not a
+daemon. It is a child process with exactly one caller. When the
+caller disconnects:
+
+- stdin closes → the server exits.
+- In-flight tool calls are abandoned, but the caller is gone —
+  there is nobody to return results to.
+- The database is disposable — a mid-publish kill leaves the
+  database in a state that SQLite's WAL recovers or the
+  corruption path discards on the next open.
+- The OS cleans up the process.
+
+No work is dropped that had a recipient. No primary data is lost.
+A signal handler that drains in-flight calls would add complexity
+for a scenario that cannot occur in this deployment model.
+
+## Disposable-data philosophy
+
+SlugAudit's database is **derived, not primary**. The design
+deliberately trades durability for simplicity in every data path:
+
+| Concern | Traditional approach | SlugAudit approach |
+|---|---|---|
+| Database corruption | Backup + restore | Discard + republish from source |
+| Schema change | Migration + rollback plan | Forward-only migration; delete DB to go back |
+| Connection errors | Retry + alert | Reopen; if corrupt, discard + rebuild |
+| Data loss | Replication + snapshots | Source files are the canonical copy |
+| Upgrade/downgrade | Compatibility matrix | Newer schema → reject. Older schema → migrate. No downgrade path. |
+
+This is not a compromise — it is the correct architecture for a
+tool whose input (source files) is always available and whose
+output (cached evidence) is always reproducible. The integrity
+check is simple: at any time, delete the database and run one tool
+call. If the evidence comes back identical, the system is correct.
+
+The `findings` table is the exception: AI-authored conclusions
+persist within a session. Those are scoped to the process that
+wrote them and purged on the next boot (invariant #9), so even
+findings do not require durability across process lifetimes.
+
+## Concurrency and deadline model
+
+### The semaphore gates blocking-pool permits, not work duration
+
+Tool calls are dispatched through `server_runner::run_blocking`,
+which acquires a permit from an `Arc<Semaphore>` of 8 permits
+before moving work onto Tokio's blocking thread pool (invariant #5).
+The acquire is an **async yield** — it parks the calling task on a
+Tokio worker thread and yields to other tasks. It does not block a
+thread. A caller waiting for a permit is waiting in the async
+runtime, not consuming a blocking-pool thread.
+
+### Why the semaphore does not need its own timeout
+
+A naive audit flags `semaphore.acquire_owned().await` with no
+`.timeout()` as a hang risk. In practice:
+
+- **Every blocking work closure has its own deadline.** Sync
+  operations check `Deadline::exceeded()` at each cooperative
+  point (per discovered file, per dirty path, per barrier
+  iteration). `query` has a 5-second wall-clock budget enforced
+  through SQLite's progress handler (which fires during statement
+  execution, not between statements). `structure` has a 5-second
+  budget enforced through Tree-sitter's native progress callback.
+- **The per-operation deadlines bound permit hold time.** A permit
+  cannot be held indefinitely because the work it guards will
+  finish or fail under its own budget.
+- **The single-client model means the pool is rarely contended.**
+  An MCP agent makes one tool call at a time (request-response).
+  Multiple concurrent permits are headroom, not a load-bearing
+  concurrency mechanism.
+- **The acquire is async, not blocking.** If no permit is
+  available, the calling task yields. The async runtime schedules
+  other work. The semaphore is a fairness mechanism, not a
+  bottleneck.
+
+Adding a timeout to the acquire would be defense-in-depth against
+a scenario (all 8 blocking workers stuck in uninterruptible kernel
+syscalls simultaneously) that the kernel's own I/O timeouts already
+handle. It is harmless to add, but its absence is not a defect.
+
+## Watcher health model
+
+The filesystem watcher (`src/watch/manager.rs`) runs on `notify`'s
+internal event loop. Its callback is deliberately non-blocking:
+`try_lock()` to acquire the manager's state, then quick `HashSet`
+inserts. If the lock is held by the sync layer, the event is
+silently dropped — the sync layer will re-verify on the next
+`ensure_current`, so a dropped event is harmless.
+
+### What the error callback catches
+
+The watcher's `Err` arm (line ~116 of `manager.rs`) transitions
+every project to `WatcherHealth::Desynced` when `notify` reports
+a queue overflow, watch removal, or other integrity problem. The
+next `ensure_current` sees `Desynced` and does a full publish.
+This catches every watcher failure `notify` can report.
+
+### Why there is no separate health heartbeat
+
+A true watcher heartbeat would need a **separate watchdog thread**
+— a thread whose only job is to check that the notify event loop
+is still delivering events. The notify callback cannot heartbeat
+itself (if the loop is dead, the heartbeat never fires). A
+watchdog thread adds complexity for a failure mode that:
+
+- `notify`'s own error callback already covers (inotify queue
+  overflow, watch removal).
+- Is self-correcting: if the watcher silently stops, the user or
+  AI agent notices stale evidence and restarts the server, which
+  triggers `NeedsVerification` → full publish.
+- Is a `notify` crate bug, not a SlugAudit bug — and the
+  session-scoped process lifetime means the watcher is re-created
+  on every agent session anyway.
+
+The `health` MCP tool exposes `watcher_health` and
+`consecutive_full_publishes` — an operator monitoring those fields
+can see that the watcher is being trusted (incremental reconcile)
+vs. falling back to full publishes (distrust). This is the
+observability surface that matters.
 
 ## Layering rules
 
@@ -302,8 +501,11 @@ rule as production; the
 Joining the project? Read in this order:
 
 1. **`.planning/PHASE-00.md`** — where the codebase came from and why.
-2. **`OBSERVABILITY.md`** — what telemetry exists and where it goes.
-3. **This file (ARCHITECTURE.md)** — overall structure.
+2. **This file (ARCHITECTURE.md)** — overall structure. Pay particular
+   attention to the Security and trust model, Disposable-data philosophy,
+   and Key invariants sections — they explain design choices that look
+   like omissions to an auditor unfamiliar with the deployment model.
+3. **`OBSERVABILITY.md`** — what telemetry exists and where it goes.
 4. **`src/main.rs`** + **`src/server.rs`** + **`src/server_runner.rs`** —
    the "what actually happens when a tool call arrives" story: tool
    contracts in `server.rs`, semaphore-bounded dispatch + progress in

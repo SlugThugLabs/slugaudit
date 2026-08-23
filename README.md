@@ -59,6 +59,14 @@ creates the activation marker and runs the first import immediately.
   any in-flight import before executing — never answers from partial state.
 - **Resource-bounded.** File size, query steps, wall clock, and response
   size are all capped. `#![forbid(unsafe_code)]` at the crate root.
+- **Disposable database.** The index is derived from source files and
+  reproducible on demand. If the database is corrupt, it is discarded
+  and rebuilt. If you want to start fresh, delete
+  `.planning/slugaudit/` — the next tool call rebuilds everything.
+- **Session-scoped findings.** AI-authored findings are bound to the
+  agent session that wrote them. A new agent session starts with a
+  clean finding set — it never silently inherits another session's
+  audit conclusions.
 
 ## License
 

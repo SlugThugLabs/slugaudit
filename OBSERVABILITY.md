@@ -91,3 +91,29 @@ identifiers, not content), and error messages from typed error variants
   `QueryCursorOptions::progress_callback`, checked periodically by the C
   core during matching itself, so a pathological pattern is aborted
   mid-query rather than only after it would have returned.
+
+- **Watcher health**: the `health` MCP tool surfaces `watcher_health`,
+  `pending_dirty`, `pending_deleted`, and `consecutive_full_publishes`.
+  An operator monitoring these can distinguish a trusted watcher
+  (incremental reconcile with low pending counts) from a distrusted one
+  (`Desynced` or climbing `consecutive_full_publishes`). The watcher's
+  error callback (`src/watch/manager.rs`) transitions every project to
+  `Desynced` on `notify`-reported failures (queue overflow, watch
+  removal). There is no separate heartbeat thread — the session-scoped
+  process lifetime means the watcher is re-created on every agent
+  session, and `notify`'s own error reporting covers the failure modes
+  that can occur within a session. See
+  `ARCHITECTURE.md#watcher-health-model` for the full rationale.
+
+- **Per-operation deadlines**: every potentially unbounded operation
+  carries a wall-clock deadline (`src/util.rs::Deadline`), checked
+  cooperatively at each hot-loop boundary (per discovered file, per
+  dirty path, per barrier iteration). Sync operations share one
+  deadline across CAS retries and barrier iterations. `query` and
+  `structure` enforce their own budgets through SQLite's progress
+  handler and Tree-sitter's progress callback respectively. A
+  pathological repo cannot stall a tool call: the deadline fails
+  closed with a typed `TimeBudgetExceeded` error. The deadlines are
+  compile-time constants in `ResourceLimits::default()` — see
+  `.planning/DECISIONS.md` (2026-08-10, "Wall-clock timeouts on
+  publish/reconcile") for the implementation history.
