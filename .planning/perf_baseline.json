@@ -1,25 +1,69 @@
 {
-  "machine": "AMD Ryzen 9 5900X (6 cores visible), Linux 6.17.13-3-pve, rustc 1.97.1 — see .planning/PERFORMANCE.md",
-  "measured": "2026-08-10",
+  "machine": "AMD Ryzen 9 5900X (24 cores visible), Linux 7.0.14-8-pve LXC, rustc 1.97.1",
+  "measured": "2026-08-25",
   "threshold_percent": 20,
   "benches": {
-    "discovery/walk_small": { "median_ns": 718000 },
-    "discovery/walk_large": { "median_ns": 1930000 },
-    "discovery/walk_and_hash_small": { "median_ns": 1090000 },
-    "discovery/walk_and_hash_large": { "median_ns": 3620000 },
-    "parsing/extract_rust": { "median_ns": 1330000 },
-    "parsing/extract_python": { "median_ns": 763000 },
-    "parsing/extract_javascript": { "median_ns": 522000 },
-    "parsing/extract_typescript": { "median_ns": 567000 },
-    "search/substring_like_small": { "median_ns": 12500, "budget_ns": 500000000 },
-    "search/substring_like_large": { "median_ns": 40400, "budget_ns": 500000000 },
-    "search/symbol_lookup_large": { "median_ns": 254000, "budget_ns": 500000000 },
-    "search/dependency_traversal_large": { "median_ns": 16400, "budget_ns": 500000000 },
-    "sync_40/first_sync": { "median_ns": 45100000 },
-    "sync_40/unchanged_sync": { "median_ns": 1990000 },
-    "sync_40/changed_file_sync": { "median_ns": 9300000, "budget_ns": 1000000000 },
-    "sync_200/first_sync": { "median_ns": 160700000, "budget_ns": 30000000000 },
-    "sync_200/unchanged_sync": { "median_ns": 5070000, "budget_ns": 2000000000 },
-    "sync_200/changed_file_sync": { "median_ns": 10200000, "budget_ns": 1000000000 }
+    "discovery/walk_small": {
+      "median_ns": 665630
+    },
+    "discovery/walk_large": {
+      "median_ns": 1840000
+    },
+    "discovery/walk_and_hash_small": {
+      "median_ns": 1060000
+    },
+    "discovery/walk_and_hash_large": {
+      "median_ns": 3440000
+    },
+    "parsing/extract_rust": {
+      "median_ns": 1420000
+    },
+    "parsing/extract_python": {
+      "median_ns": 815330
+    },
+    "parsing/extract_javascript": {
+      "median_ns": 564880
+    },
+    "parsing/extract_typescript": {
+      "median_ns": 611510
+    },
+    "search/substring_like_small": {
+      "median_ns": 12663,
+      "budget_ns": 500000000
+    },
+    "search/substring_like_large": {
+      "median_ns": 40736,
+      "budget_ns": 500000000
+    },
+    "search/symbol_lookup_large": {
+      "median_ns": 259180,
+      "budget_ns": 500000000
+    },
+    "search/dependency_traversal_large": {
+      "median_ns": 17419,
+      "budget_ns": 500000000
+    },
+    "sync_40/first_sync": {
+      "median_ns": 52636000
+    },
+    "sync_40/unchanged_sync": {
+      "median_ns": 1841800
+    },
+    "sync_40/changed_file_sync": {
+      "median_ns": 11062000,
+      "budget_ns": 1000000000
+    },
+    "sync_200/first_sync": {
+      "median_ns": 172240000,
+      "budget_ns": 30000000000
+    },
+    "sync_200/unchanged_sync": {
+      "median_ns": 3664500,
+      "budget_ns": 2000000000
+    },
+    "sync_200/changed_file_sync": {
+      "median_ns": 12614000,
+      "budget_ns": 1000000000
+    }
   }
 }
