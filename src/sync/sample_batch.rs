@@ -20,7 +20,7 @@ use super::publish::PublishError;
 use super::sample::{Sample, SampleError, sample_file};
 use crate::model::ResourceLimits;
 use crate::progress::{ProgressEvent, ProgressSink};
-use crate::util::{lock_or_recover, Deadline};
+use crate::util::{Deadline, lock_or_recover};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread;

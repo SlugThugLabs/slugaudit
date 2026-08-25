@@ -1,4 +1,6 @@
-//! SQLite schema, connection management, and (later) typed repositories.
+//! SQLite schema and connection management. Connections are deliberately
+//! raw: `tools::context` owns the query contracts over them, so a typed
+//! repository layer would add indirection without a second consumer.
 //! The store never reads project files; sync/tools own that.
 
 mod connection;

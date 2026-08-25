@@ -608,13 +608,14 @@ present but untested in CI. This is a known gap — see `AUDIT.md`
 for the current assessment. Either add `windows-latest` to the
 matrix or document Windows as best-effort.
 
-### Q: Why is `record_error` using raw `.lock().unwrap_or_else()` instead of `lock_or_recover`?
+### Q: Why does `record_error` lock through `lock_or_recover` instead of a raw mutex unwrap?
 
-**Answer:** It should use `lock_or_recover`. The rest of the
-codebase uses that helper, which also logs at `error` on recovery.
-`record_error` in `src/sync/sample_batch.rs:247` is a one-line
-consistency fix waiting to be applied. A poisoned mutex in the
-sample worker pool would be silently recovered without a log entry.
+**Answer:** Consistency. The rest of the codebase uses the
+`lock_or_recover` helper, which also logs at `error` on recovery, so
+a poisoned mutex in the sample worker pool is recovered loudly
+instead of silently. (`src/sync/sample_batch.rs` — an early version
+of this FAQ documented a raw `.lock().unwrap_or_else()` that has
+since been replaced.)
 
 ## Layering rules
 
@@ -647,7 +648,7 @@ src/
 └── module_tests.rs        (same directory, sibling)
 ```
 
-The `*_tests.rs` files share this pattern; `cargo test --lib` runs
+The 52 `*_tests.rs` files share this pattern; `cargo test --lib` runs
 all of them in parallel (`--test-threads=4` by default). Tool test
 modules occasionally split a focused scenario into a second sibling
 (e.g. `tools/finding_session_tests.rs`). Test files get a 500-code-line

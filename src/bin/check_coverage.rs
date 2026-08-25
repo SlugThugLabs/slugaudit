@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Line coverage gate.
 //!
 //! Replaces `tools/check_coverage.sh`. Reads the merged JSON line

@@ -1,6 +1,6 @@
 # SlugAudit
 
-SlugAudit is an MCP server that gives an AI (Claude, Grok, Codex, or any MCP
+SlugAudit is an MCP server that gives an AI (Bob, Claude, Grok, Codex, or any MCP
 client) pre-parsed, searchable, 100%-in-sync evidence about a codebase —
 symbols, imports, dependency edges, source spans — so the AI queries a
 SQLite database instead of reading hundreds of flat files one at a time.
@@ -41,8 +41,8 @@ cargo build --release
 ```
 
 The `menu` walks you through everything: installing the binary to a
-stable path, connecting to a supported AI agent (Claude Code, Grok, or
-Codex), getting config snippets for other MCP clients, or starting the
+stable path, connecting to a supported AI agent (Bob, Claude Code, Grok,
+or Codex), getting config snippets for other MCP clients, or starting the
 server directly for testing.
 
 Once connected, enable a project from inside the AI session: call
@@ -63,7 +63,7 @@ USAGE:
     slugaudit-mcp help               Show this message (also --help, -h)
 
 The `menu` walks you through installation, connecting to an AI agent
-(Claude Code, Grok, Codex), getting config for other MCP clients,
+(Bob, Claude Code, Grok, Codex), getting config for other MCP clients,
 or starting the server for testing.
 ```
 

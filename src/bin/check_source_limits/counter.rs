@@ -272,19 +272,19 @@ pub(crate) enum Verdict {
 /// hard-fail. Production files keep the 0–199 auto-pass / 200–300
 /// approved-exception / >300 hard-fail rule, and an exception never
 /// rescues a file past [`PRODUCTION_CEILING`].
-pub(crate) fn verdict(
-    code_lines: usize,
-    exception: Option<String>,
-    test_file: bool,
-) -> Verdict {
+pub(crate) fn verdict(code_lines: usize, exception: Option<String>, test_file: bool) -> Verdict {
     if test_file {
         if code_lines > TEST_FILE_CEILING {
-            return Verdict::FailHard { ceiling: TEST_FILE_CEILING };
+            return Verdict::FailHard {
+                ceiling: TEST_FILE_CEILING,
+            };
         }
         return Verdict::Pass;
     }
     if code_lines > PRODUCTION_CEILING {
-        return Verdict::FailHard { ceiling: PRODUCTION_CEILING };
+        return Verdict::FailHard {
+            ceiling: PRODUCTION_CEILING,
+        };
     }
     if code_lines >= PRODUCTION_EXCEPTION_FLOOR {
         return match exception {

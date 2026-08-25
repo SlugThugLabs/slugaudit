@@ -25,7 +25,7 @@
 1. **No MCP wire-protocol integration test** — tests exercise tools through direct Rust calls, bypassing the rmcp JSON-RPC transport, MCP framing, and progress notification pipeline. The existing `stdio_protocol.rs` test verifies stdout/stderr separation but doesn't exercise tool dispatch end-to-end.
 2. **No Windows CI** — GitHub Actions runs Linux + macOS only. The `fsutil` NFS check, `SQLITE_OPEN_NOFOLLOW` no-op on Windows, and backslash path handling are untested in CI.
 3. **Session-scoped findings are purged on any fresh boot** — by design (disposable derived data is the architectural invariant), but users who expect cross-session persistence will be surprised.
-4. **`record_error` uses raw mutex unlock instead of `lock_or_recover`** — minor inconsistency in `sample_batch.rs:247`. The rest of the codebase uses the `lock_or_recover` helper that also logs at `error` on recovery.
+4. **`record_error` uses `lock_or_recover`** — a raw `slot.lock().unwrap_or_else(...)` in `sample_batch.rs` was flagged as an inconsistency; the one-line fix has since been applied, and the helper now logs at `error` on recovery like everywhere else.
 
 ### Highest risk areas
 
@@ -76,9 +76,9 @@ The codebase is clean. The ten worst offenders from a typical Rust codebase simp
 - No hidden side effects — the only mutation path is `finding` (explicit write tool) and `project_control` (enable/disable). Everything else is read-only.
 - No global state — `OnceLock` for config, `AtomicU64` for counters, `Mutex` with poison recovery for shared state. Every mutation point is visible in `grep`.
 - No copy/paste implementations — each tool is purpose-built.
-- No inconsistent patterns — `lock_or_recover` is used everywhere except `record_error` (see findings below).
+- No inconsistent patterns — `lock_or_recover` is used everywhere, including `record_error` (see findings below).
 
-**Only code smell**: `record_error` in `src/sync/sample_batch.rs:247` uses `slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner())` instead of the project-wide `lock_or_recover` helper, which would also log at `error` on recovery. A poisoned mutex in the sample worker pool would be invisible. One-line fix.
+**Resolved**: `record_error` in `src/sync/sample_batch.rs` previously used `slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner())` instead of the project-wide `lock_or_recover` helper. It now uses `lock_or_recover`, which logs at `error` on recovery so a poisoned mutex in the sample worker pool is never invisible.
 
 ---
 
@@ -305,7 +305,7 @@ All seven MCP tools go through `dispatch()` → `ensure_synced()` → `with_veri
 | No Windows CI | **Medium** | Windows-specific code paths untested in CI |
 | No graceful shutdown | **Low** (by design) | stdin EOF → process exits. WAL recovery handles mid-publish kills. Correct for stdio, would need SIGTERM handling for a daemon. |
 | No HTTP health endpoint | **Low** (by design) | Only the MCP `health` tool. Not needed for stdio — would be needed for SSE/HTTP transport. |
-| `record_error` uses raw mutex | **Low** | One-line fix to use `lock_or_recover` |
+| `record_error` raw mutex | **Low** | Resolved — uses `lock_or_recover` |
 
 ---
 
@@ -315,7 +315,7 @@ All seven MCP tools go through `dispatch()` → `ensure_synced()` → `with_veri
 |---|---|---|---|---|---|
 | 1 | No MCP wire-protocol integration test | High | rmcp regression breaks all tools, undetected | 1-2 days | **Critical** |
 | 2 | No Windows CI | Medium | Windows regressions undetected | 1 day | **Medium** |
-| 3 | `record_error` raw mutex | Low | Silent mutex poisoning in sample workers | 5 minutes | **Low** |
+| 3 | `record_error` raw mutex | Low | Resolved — uses `lock_or_recover` | — | **Low** |
 | 4 | `reconcile_dirty_paths_with_deadline` monolithic | Low | Maintenance friction | 2 hours | **Low** |
 | 5 | `first_statement_separator` custom tokenizer | Low | Fragile if SQL surface expands | Deferred | **Future** |
 
@@ -347,7 +347,7 @@ All seven MCP tools go through `dispatch()` → `ensure_synced()` → `with_veri
 
 1. **MCP wire-protocol integration test** — spawn binary, send JSON-RPC requests over stdio, assert tool responses and progress notifications.
 2. **Windows CI** — add Windows to the GitHub Actions matrix, or document Windows as "best-effort, not CI-tested."
-3. **`record_error` → `lock_or_recover`** — one-line consistency fix.
+3. **`record_error` → `lock_or_recover`** — resolved; the one-line consistency fix is applied.
 
 ### What will fail first in production?
 
@@ -362,7 +362,7 @@ The watcher will silently stop delivering events (inotify queue overflow), and t
 
 1. Add an MCP wire-protocol integration test
 2. Add Windows CI (or document Windows as best-effort)
-3. Fix `record_error` to use `lock_or_recover`
+3. ~~Fix `record_error` to use `lock_or_recover`~~ — done
 
 ### What should be deferred?
 
@@ -405,7 +405,7 @@ The watcher will silently stop delivering events (inotify queue overflow), and t
 - **Windows CI** — add `windows-latest` to the GitHub Actions matrix.
 
 ### 3. Low Priority
-- **`record_error` → `lock_or_recover`** — one-line consistency fix.
+- **`record_error` → `lock_or_recover`** — resolved (applied).
 - **Document session-scoped findings at runtime** — a note in the `finding_read` description that findings are scoped to the current agent session and do not persist across restarts.
 
 ### 4. Deferred (until SSE/HTTP transport)

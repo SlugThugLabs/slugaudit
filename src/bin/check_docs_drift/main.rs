@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Docs-drift gate.
 //!
 //! Replaces the never-built `tools/check_docs_drift.sh` from plan C8. Fails

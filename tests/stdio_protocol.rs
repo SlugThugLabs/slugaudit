@@ -71,10 +71,7 @@ impl ServerProcess {
     /// so they cannot be the requested response, and this function drains
     /// them instead of silently dropping them between `recv_stdout_line`
     /// calls.
-    fn recv_response(
-        &self,
-        expected_id: u64,
-    ) -> (serde_json::Value, Vec<serde_json::Value>) {
+    fn recv_response(&self, expected_id: u64) -> (serde_json::Value, Vec<serde_json::Value>) {
         let mut notifications = Vec::new();
         loop {
             let line = self.recv_stdout_line();
@@ -428,7 +425,9 @@ fn progress_notifications_flow_over_stdio() {
     }
 
     // The last notification must signal completion at 1.0.
-    let last = notifications.last().expect("at least one progress notification");
+    let last = notifications
+        .last()
+        .expect("at least one progress notification");
     assert_eq!(
         last["params"]["progress"], 1.0,
         "final progress notification must report completion at 1.0: {last}"

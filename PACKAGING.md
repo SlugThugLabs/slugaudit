@@ -15,10 +15,11 @@ it worked.
   have `rustup` installed, running any `cargo`/`rustc` command inside the
   repository automatically fetches and uses `1.97.1` — no manual toolchain
   selection is required. Edition `2024` is required by `Cargo.toml`.
-- **`#![forbid(unsafe_code)]`**: enforced at the crate root of
-  `src/main.rs`/`src/lib.rs`. This is a source-level guarantee about
-  SlugAudit's own code; it has no effect on how the binary is installed or
-  run, and doesn't constrain end users in any way.
+- **`#![forbid(unsafe_code)]`**: enforced at the crate root of every
+  crate — `src/main.rs`, `src/lib.rs`, and all five `src/bin/*` tools.
+  This is a source-level guarantee about SlugAudit's own code; it has no
+  effect on how the binary is installed or run, and doesn't constrain end
+  users in any way.
 - **Operating system support, precisely**:
   - CI (`.github/workflows/quality.yml`) builds and tests on both
     `ubuntu-latest` and `macos-latest` with `fail-fast: false`.
@@ -87,8 +88,8 @@ There is no HTTP/SSE transport, no socket, and no other way to talk to it.
 
 The binary has six commands, parsed in `src/cli.rs`: `serve` (the MCP
 server; also the default when no argument is given), `connect [AGENT]`
-(register this binary as the `slugaudit` MCP server in Claude Code, Grok,
-or Codex), `install` (copy the binary to `~/.slugthug/bin/`), `menu`
+(register this binary as the `slugaudit` MCP server in Bob, Claude Code,
+Grok, or Codex), `install` (copy the binary to `~/.slugthug/bin/`), `menu`
 (interactive setup: install/connect/other-client instructions/run the
 server), `version` (also `--version`/`-V`), and `help`.
 There is no project-facing CLI configuration: every behavior of the

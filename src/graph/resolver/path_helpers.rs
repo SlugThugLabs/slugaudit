@@ -109,8 +109,8 @@ pub(crate) fn starts_with_python_dot_prefix(text: &str) -> bool {
 /// Reads `bare_names_are_external` from `config` so a resolver that
 /// treats bare names as project-local (Python relative imports) ends
 /// up unresolved, while one that treats bare names as packages
-/// (JS/TS) ends up external.
-#[allow(dead_code)]
+/// (JS/TS) ends up external. Called from the generic resolver's
+/// catch-all arm when no candidate path resolves.
 pub(crate) fn external_or_unresolved(config: &GenericResolverConfig) -> Resolution {
     if config.bare_names_are_external {
         external()

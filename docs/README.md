@@ -1,8 +1,8 @@
 # Connecting SlugAudit to your AI agent
 
 SlugAudit is an MCP server — it exposes its tools (`query`, `report`,
-`structure`, `finding`, `project_control`, `health`) to any AI agent that
-speaks the Model Context Protocol. Once connected, the agent can query
+`structure`, `finding`, `finding_read`, `project_control`, `health`) to
+any AI agent that speaks the Model Context Protocol. Once connected, the agent can query
 codebase evidence directly instead of reading hundreds of files one at a
 time.
 
@@ -20,6 +20,7 @@ cargo install --path .
 slugaudit-mcp connect
 
 # Or connect a specific agent directly:
+slugaudit-mcp connect bob
 slugaudit-mcp connect claude
 slugaudit-mcp connect grok
 slugaudit-mcp connect codex
@@ -63,13 +64,14 @@ See the agent-specific guides for what to do next.
 
 ## Agent-specific guides
 
+- [Bob](bob.md)
 - [Claude Code](claude-code.md)
 - [Grok](grok.md)
 - [Codex](codex.md)
 
 ## Manual connection (no `connect` command)
 
-If you prefer to wire it up by hand, or your agent isn't one of the three
+If you prefer to wire it up by hand, or your agent isn't one of the four
 above, register the binary as a stdio MCP server named `slugaudit`:
 
 ```
@@ -82,9 +84,9 @@ enabled project.
 
 ## Troubleshooting
 
-**`unknown agent "..."`** — `connect` accepts `claude`, `grok`, or
-`codex` (case-insensitive; `claude-code` and `claude_code` also map to
-Claude Code).
+**`unknown agent "..."`** — `connect` accepts `bob`, `claude`, `grok`,
+or `codex` (case-insensitive; `claude-code` and `claude_code` also map
+to Claude Code).
 
 **`<agent> CLI not found on PATH`** — the agent's CLI must be installed
 and on `PATH` before `connect` can register with it. Install Claude Code

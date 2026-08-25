@@ -167,7 +167,11 @@ fn multi_statement_sql_gets_a_friendly_typed_error() {
             .expect_err("a comment marker inside a literal must not hide the real separator");
         assert!(error.message.contains("more than one statement"));
     }
-    for sql in ["SELECT '--x' AS x", "SELECT '/*' AS x", "SELECT 1 AS \"a--b\""] {
+    for sql in [
+        "SELECT '--x' AS x",
+        "SELECT '/*' AS x",
+        "SELECT 1 AS \"a--b\"",
+    ] {
         ask(&project, sql).expect("a single statement with a comment marker in a literal works");
     }
 }
@@ -178,18 +182,45 @@ fn multi_statement_sql_gets_a_friendly_typed_error() {
 /// by `multi_statement_sql_gets_a_friendly_typed_error`.)
 #[test]
 fn separator_scanner_ignores_comment_markers_inside_literals() {
-    assert_eq!(first_statement_separator("SELECT '--' AS x; SELECT 2"), Some(16));
-    assert_eq!(first_statement_separator("SELECT '--x'; SELECT 2"), Some(12));
-    assert_eq!(first_statement_separator("SELECT '/*' AS x; SELECT 2"), Some(16));
-    assert_eq!(first_statement_separator("SELECT 'a' || '/*'; SELECT 2"), Some(18));
-    assert_eq!(first_statement_separator("SELECT 1 AS \"a--b\"; SELECT 2"), Some(18));
-    assert_eq!(first_statement_separator("SELECT 1 AS `a--b`; SELECT 2"), Some(18));
-    assert_eq!(first_statement_separator("SELECT 1 AS [a--b]; SELECT 2"), Some(18));
-    assert_eq!(first_statement_separator("SELECT ';--' AS x; SELECT 2"), Some(17));
+    assert_eq!(
+        first_statement_separator("SELECT '--' AS x; SELECT 2"),
+        Some(16)
+    );
+    assert_eq!(
+        first_statement_separator("SELECT '--x'; SELECT 2"),
+        Some(12)
+    );
+    assert_eq!(
+        first_statement_separator("SELECT '/*' AS x; SELECT 2"),
+        Some(16)
+    );
+    assert_eq!(
+        first_statement_separator("SELECT 'a' || '/*'; SELECT 2"),
+        Some(18)
+    );
+    assert_eq!(
+        first_statement_separator("SELECT 1 AS \"a--b\"; SELECT 2"),
+        Some(18)
+    );
+    assert_eq!(
+        first_statement_separator("SELECT 1 AS `a--b`; SELECT 2"),
+        Some(18)
+    );
+    assert_eq!(
+        first_statement_separator("SELECT 1 AS [a--b]; SELECT 2"),
+        Some(18)
+    );
+    assert_eq!(
+        first_statement_separator("SELECT ';--' AS x; SELECT 2"),
+        Some(17)
+    );
     assert_eq!(first_statement_separator("SELECT '--' AS x"), None);
     assert_eq!(first_statement_separator("SELECT 1 AS \"a--b\""), None);
     assert_eq!(first_statement_separator("SELECT 1 -- ;\nSELECT 2"), None);
-    assert_eq!(first_statement_separator("SELECT 1 /* ; */; SELECT 2"), Some(16));
+    assert_eq!(
+        first_statement_separator("SELECT 1 /* ; */; SELECT 2"),
+        Some(16)
+    );
 }
 
 /// The separator scanner walks bytes (`sql.as_bytes()`), which is correct

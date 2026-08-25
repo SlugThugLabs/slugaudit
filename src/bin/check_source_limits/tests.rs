@@ -1,7 +1,7 @@
 //! Unit tests for `check_source_limits`.
 
 use super::counter::{
-    code_lines, exception_reason, verdict, PRODUCTION_CEILING, TEST_FILE_CEILING, Verdict,
+    PRODUCTION_CEILING, TEST_FILE_CEILING, Verdict, code_lines, exception_reason, verdict,
 };
 
 #[test]
@@ -123,7 +123,9 @@ fn test_files_auto_pass_up_to_the_500_ceiling() {
 fn test_files_over_500_hard_fail_even_with_an_exception() {
     assert_eq!(
         verdict(501, Some("reason".into()), true),
-        Verdict::FailHard { ceiling: TEST_FILE_CEILING }
+        Verdict::FailHard {
+            ceiling: TEST_FILE_CEILING
+        }
     );
 }
 
@@ -139,7 +141,9 @@ fn production_files_need_an_exception_from_200_to_300() {
     assert_eq!(verdict(300, None, false), Verdict::FailNeedsException);
     assert_eq!(
         verdict(250, Some("contract".into()), false),
-        Verdict::PassWithException { reason: "contract".into() }
+        Verdict::PassWithException {
+            reason: "contract".into()
+        }
     );
 }
 
@@ -147,6 +151,8 @@ fn production_files_need_an_exception_from_200_to_300() {
 fn production_files_over_300_hard_fail_even_with_an_exception() {
     assert_eq!(
         verdict(301, Some("reason".into()), false),
-        Verdict::FailHard { ceiling: PRODUCTION_CEILING }
+        Verdict::FailHard {
+            ceiling: PRODUCTION_CEILING
+        }
     );
 }

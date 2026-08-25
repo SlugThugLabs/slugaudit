@@ -1,7 +1,7 @@
 //! The `slugaudit-mcp-rust` binary's command-line surface: `serve` (the
 //! MCP server, the default with no arguments). `connect` registers the
 //! running binary as a stdio MCP server named `slugaudit` in a supported AI
-//! agent (Claude Code, Grok, or Codex). `install` copies the binary to a
+//! agent (Bob, Claude Code, Grok, or Codex). `install` copies the binary to a
 //! stable path so it survives rebuilds.
 #![allow(clippy::print_stdout)]
 
@@ -128,7 +128,7 @@ USAGE:
     slugaudit-mcp help               Show this message (also --help, -h)
 
 The `menu` walks you through installation, connecting to an AI agent
-(Claude Code, Grok, Codex), getting config for other MCP clients,
+(Bob, Claude Code, Grok, Codex), getting config for other MCP clients,
 or starting the server for testing.
 ";
 

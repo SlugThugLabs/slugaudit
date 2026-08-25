@@ -37,8 +37,8 @@ indexes it. Have the agent call the `project_control` tool with
 `action = "on"` (optionally with a project path). This creates the
 activation marker and SQLite database under `.planning/slugaudit/` inside
 the project and runs the first import. After that, Grok can query the
-project's evidence through all six SlugAudit tools (`query`, `report`,
-`structure`, `finding`, `project_control`, `health`).
+project's evidence through all seven SlugAudit tools (`query`, `report`,
+`structure`, `finding`, `finding_read`, `project_control`, `health`).
 
 ## Re-running `connect`
 

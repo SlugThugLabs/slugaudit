@@ -93,7 +93,7 @@ fn connect_step() {
 }
 
 /// Prints instructions for adding SlugAudit to an MCP client that isn't
-/// one of the three built-ins. SlugAudit is a standard stdio MCP server,
+/// one of the four built-ins. SlugAudit is a standard stdio MCP server,
 /// so any MCP-capable client can add it by name + command — the client's
 /// own docs describe where its MCP config lives; we supply the entry.
 fn other_client_step() {

@@ -1,4 +1,6 @@
 //! Production Rust code-line limit checker.
+#![forbid(unsafe_code)]
+
 //!
 //! Replaces `tools/check_source_limits.sh`. Counts the number of lines
 //! containing Rust tokens *outside* comments, strings, char literals,

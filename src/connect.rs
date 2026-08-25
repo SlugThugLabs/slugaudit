@@ -1,5 +1,5 @@
 //! Registering this binary as the `slugaudit` MCP server in an AI agent
-//! (Claude Code, Grok, Codex). Each agent is driven through its own CLI
+//! (Bob, Claude Code, Grok, Codex). Each agent is driven through its own CLI
 //! rather than by editing its config files directly, so the agent owns its
 //! own config format and we never corrupt it.
 #![allow(clippy::print_stdout)]

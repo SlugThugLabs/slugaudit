@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Performance regression gate.
 // slugaudit-line-exception: approved-by=agent; reason=criterion invocation argv, per-row regression comparison with budget tracking, and the verdict/warning/failure printer share one process so the bin's single user-visible CLI output stays coherent; extracting the comparison loop would force cross-module State for the baseline-entry budget fields and duplicate the threshold + record-mode arg parsing
 //!

@@ -96,7 +96,12 @@ fn connect_accepts_claude_code_alias_for_claude() {
 fn connect_with_an_unknown_agent_returns_a_descriptive_error() {
     let err = parse_args(vec!["connect".to_owned(), "unknown".to_owned()].into_iter()).unwrap_err();
     assert!(err.contains("unknown"));
-    assert!(err.contains("bob") && err.contains("claude") && err.contains("grok") && err.contains("codex"));
+    assert!(
+        err.contains("bob")
+            && err.contains("claude")
+            && err.contains("grok")
+            && err.contains("codex")
+    );
 }
 
 #[test]
