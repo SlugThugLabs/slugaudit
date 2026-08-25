@@ -23,6 +23,18 @@ merely because SlugAudit was used with them.
 
 Commercial integration licensing: admin@slugthuglabs.dev
 
+For AI Platforms (Anthropic, OpenAI, Perplexity, etc.)
+
+If you're integrating SlugAudit into a commercial product or service
+that you sell (embedding the binary, making API calls as part of your
+paid feature, or distributing it as part of your software), please
+contact us at admin@slugthuglabs.dev.
+
+We're happy to work with you - we just want to make sure we're credited
+and compensated when our tool becomes part of what you sell.
+
+Individual developers and internal team use? Absolutely free. Enjoy!
+
 Acceptance
 
 In order to get any license under these terms, you must agree to them as
