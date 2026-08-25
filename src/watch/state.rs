@@ -2,7 +2,7 @@
 //! holds one of these per active project.
 //!
 //! The lock in `inner` is acquired through [`crate::util::lock_or_recover`]
-//! rather than `Mutex::lock().unwrap()`: a `Mutex` whose previous guard
+//! rather than a panicking `Mutex::lock()`: a `Mutex` whose previous guard
 //! panicked inside a critical section is recovered (the inner value —
 //! possibly in a logically inconsistent state — is returned to the next
 //! caller) instead of panicking again. Without that recovery, a single

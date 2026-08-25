@@ -17,7 +17,6 @@
 //! `.planning/slugaudit/` activation marker every real project has.
 
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 
 /// Small fixture size: 40 files (fast, used for cross-checks).
@@ -25,13 +24,11 @@ pub const SMALL: usize = 40;
 /// Large fixture size: 200 files (the primary baseline workload).
 pub const LARGE: usize = 200;
 
-/// Counts describing the generated tree, so benchmarks can address
-/// per-language files (e.g. the changed-file sync bench picks a Rust file
-/// to touch) without re-deriving the layout rules.
+/// Counts describing the generated tree, so benchmarks can report on the
+/// fixture without re-deriving the layout rules.
 pub struct FixtureStats {
     pub file_count: usize,
     pub total_bytes: u64,
-    pub rust_count: usize,
 }
 
 /// Deterministic content generator (splitmix64) — no external RNG, no
@@ -161,20 +158,7 @@ pub fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
     FixtureStats {
         file_count,
         total_bytes,
-        rust_count,
     }
-}
-
-/// Appends a distinct line to Rust file `mod_{k}.rs`, changing its content
-/// hash so the next sync re-parses exactly that one file. `n` must be
-/// monotonically increasing across iterations to guarantee distinct bytes.
-pub fn touch_rust_file(root: &Path, k: usize, n: usize) {
-    let path = root.join("src/rust").join(format!("mod_{k}.rs"));
-    let mut file = fs::OpenOptions::new()
-        .append(true)
-        .open(path)
-        .expect("open rust fixture file");
-    writeln!(file, "// touched {n}").expect("append to fixture file");
 }
 
 fn rust_source(k: usize, neighbor: usize, offset: u64) -> String {

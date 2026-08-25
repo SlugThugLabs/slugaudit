@@ -32,7 +32,7 @@ fn edit_file_between_calls_returns_fresh_evidence() {
     })
     .expect("read content");
     assert!(content_a.is_some());
-    assert!(content_a.unwrap().contains("42"));
+    assert!(content_a.expect("read file back").contains("42"));
 
     write_file(&project, "lib.rs", b"pub fn value() -> i32 { 99 }\n");
     thread::sleep(Duration::from_millis(200));
@@ -50,7 +50,7 @@ fn edit_file_between_calls_returns_fresh_evidence() {
     })
     .expect("read content");
     assert!(content_b.is_some());
-    assert!(content_b.unwrap().contains("99"));
+    assert!(content_b.expect("read file back").contains("99"));
 }
 
 #[test]
@@ -219,7 +219,7 @@ fn barrier_loop_catches_events_during_reconciliation() {
         .map_err(db_error)
     })
     .expect("read content");
-    assert!(content.unwrap().contains("pub fn c()"));
+    assert!(content.expect("read file back").contains("pub fn c()"));
 }
 
 /// Proves M9 fix: when the watcher is Unavailable, health must never be
@@ -252,7 +252,7 @@ fn unavailable_watcher_always_does_full_verification() {
         .map_err(db_error)
     })
     .expect("read content");
-    assert!(content.unwrap().contains("pub fn b()"));
+    assert!(content.expect("read file back").contains("pub fn b()"));
 }
 
 /// Proves delete-then-recreate is handled correctly: the file should be
@@ -282,7 +282,7 @@ fn delete_then_recreate_gets_reindexed() {
         .map_err(db_error)
     })
     .expect("read content");
-    assert!(content.unwrap().contains("pub fn recreated()"));
+    assert!(content.expect("read file back").contains("pub fn recreated()"));
 }
 
 /// C12: the consecutive-full-publish health metric counts full publishes
@@ -362,5 +362,5 @@ fn drains_events_after_full_verification() {
         .map_err(db_error)
     })
     .expect("read content");
-    assert!(content.unwrap().contains("pub fn changed()"));
+    assert!(content.expect("read file back").contains("pub fn changed()"));
 }

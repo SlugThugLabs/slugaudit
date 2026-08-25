@@ -158,7 +158,7 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
         "Connect SlugAudit to an AI agent (registers this binary as the `slugaudit` MCP server):\n"
     );
     for (i, agent) in ConnectAgent::all().iter().enumerate() {
-        println!("  {i}) {}  ({})", agent.display_name(), agent.cli_name());
+        println!("  {i}) {:<14} ({})", agent.display_name(), agent.cli_name());
     }
     println!();
     print!("Choose an agent [0-{}]: ", ConnectAgent::all().len() - 1);

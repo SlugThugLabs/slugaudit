@@ -157,8 +157,9 @@ pub fn code_lines(source: &str) -> usize {
                     index += 1;
                     continue;
                 }
-                if byte == b'r' && is_raw_string_start(&source[index..]).is_some() {
-                    let n = is_raw_string_start(&source[index..]).unwrap();
+                if byte == b'r'
+                    && let Some(n) = is_raw_string_start(&source[index..])
+                {
                     state = State::RawString;
                     raw_hashes = n;
                     has_code = true;

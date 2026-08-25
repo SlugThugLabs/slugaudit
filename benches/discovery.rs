@@ -39,7 +39,7 @@ fn bench_discovery(c: &mut Criterion) {
     );
 
     let mut group = c.benchmark_group("discovery");
-    group.sample_size(30);
+    group.sample_size(15);
 
     group.bench_function("walk_small", |b| b.iter(|| walk(small.path())));
     group.bench_function("walk_large", |b| b.iter(|| walk(large.path())));

@@ -6,22 +6,11 @@
 use super::*;
 use crate::tools::context::override_session_id_for_test;
 use crate::tools::test_support::activated_project;
+use crate::util::SESSION_TEST_LOCK;
 use rmcp::handler::server::wrapper::Parameters;
 use rusqlite::Connection;
 use std::fs;
-use std::sync::Mutex;
 use uuid::Uuid;
-
-/// Single global lock held by every test in this module. The
-/// production `SESSION_ID` is a process-wide `Mutex<Option<Uuid>>`;
-/// parallel-running tests that depend on a specific session
-/// identity would race over that global. Taking this test-only
-/// lock serializes every session-flipping test in this module and
-/// in `manager_meta_tests.rs` so a sibling test's
-/// `override_session_id_for_test` cannot slip between this test's
-/// two session flips. Pure read-only assertions and writes that do
-/// not override the session do not need the lock.
-static SESSION_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn base_request(project: &tempfile::TempDir, file: &str) -> FindingRequest {
     FindingRequest {

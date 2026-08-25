@@ -52,7 +52,7 @@ fn reproduces_the_5_326_990_byte_cumulative_overflow() {
     assert_eq!(
         items
             .iter()
-            .map(|item| serde_json::to_vec(&item.payload).unwrap().len())
+            .map(|item| serde_json::to_vec(&item.payload).expect("payload serializes").len())
             .sum::<usize>(),
         5_326_990,
         "fixture must reproduce the exact reported overflow size"

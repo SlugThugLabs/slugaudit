@@ -6,8 +6,24 @@
 //! prove the MCP server registration was written correctly — right name,
 //! right binary path, right transport.
 //!
-//! Requires the relevant agent CLI (`claude`, `grok`, `codex`) to be on
-//! PATH. If none are present the whole module is skipped.
+//! ⚠️ **This test mutates the real agent's config on the machine it runs
+//! on.** With an agent CLI on PATH, `connect <agent>` adds a `slugaudit`
+//! entry to that agent's live config (`~/.claude.json`, `~/.bob/…`,
+//! etc.); the test backs up and restores that config, and its `install`
+//! step drops a real binary into `~/.slugthug/bin/` which is *not*
+//! cleaned up (see below). Run this only on a disposable machine or when
+//! you're prepared to un-register the server afterwards with
+//! `claude mcp remove slugaudit`, `bob mcp remove slugaudit`, etc. CI is
+//! safe only because no agent CLIs are installed there.
+//!
+//! The `install` step intentionally leaves `~/.slugthug/bin/slugaudit-mcp`
+//! behind (the real `connect` flow depends on it). If you ran this test
+//! on a development box, remove that binary and re-run
+//! `claude mcp remove slugaudit` / `bob mcp remove slugaudit` afterwards
+//! to leave the machine exactly as you found it.
+//!
+//! Requires the relevant agent CLI (`bob`, `claude`, `grok`, `codex`) to be
+//! on PATH. If none are present the whole module is skipped.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,6 +44,31 @@ struct Agent {
 }
 
 impl Agent {
+    fn bob() -> Self {
+        Agent {
+            cli: "bob",
+            connect_arg: "bob",
+            is_registered: |binary| {
+                let Ok(raw) = fs::read_to_string(home().join(".bob/mcp_settings.json")) else {
+                    return false;
+                };
+                let Ok(json): Result<serde_json::Value, _> = serde_json::from_str(&raw) else {
+                    return false;
+                };
+                let Some(server) = json.get("mcpServers").and_then(|s| s.get("slugaudit")) else {
+                    return false;
+                };
+                server.get("command").and_then(|c| c.as_str())
+                    == Some(&binary.display().to_string())
+            },
+            remove: || {
+                Command::new("bob")
+                    .args(["mcp", "remove", "slugaudit", "--scope", "global"])
+                    .output()
+            },
+        }
+    }
+
     fn claude() -> Self {
         Agent {
             cli: "claude",
@@ -135,6 +176,9 @@ fn restore(path: &Path, backup: Option<&PathBuf>) {
 
 fn agents() -> Vec<Agent> {
     let mut out = Vec::new();
+    if which::which("bob").is_ok() {
+        out.push(Agent::bob());
+    }
     if which::which("claude").is_ok() {
         out.push(Agent::claude());
     }
@@ -153,7 +197,7 @@ fn connect_writes_the_correct_registration_for_each_installed_agent() {
     if agents.is_empty() {
         // No agent CLI installed in this environment — nothing to verify.
         // This is expected in CI and on machines without these tools.
-        eprintln!("skipping connect integration test: none of claude/grok/codex on PATH");
+        eprintln!("skipping connect integration test: none of bob/claude/grok/codex on PATH");
         return;
     }
 
@@ -191,6 +235,7 @@ fn connect_writes_the_correct_registration_for_each_installed_agent() {
 
     for agent in agents {
         let config_path = match agent.connect_arg {
+            "bob" => home().join(".bob/mcp_settings.json"),
             "claude" => home().join(".claude.json"),
             "grok" => home().join(".grok/config.toml"),
             "codex" => home().join(".codex/config.toml"),

@@ -197,7 +197,7 @@ fn a_corrupt_database_is_discarded_and_rebuilt_on_the_next_sync() {
         )
         .expect("read content from the rebuilt database");
     assert!(
-        content.unwrap().contains("pub fn a()"),
+        content.expect("read file back").contains("pub fn a()"),
         "the rebuilt index must still serve the file's evidence"
     );
 }

@@ -25,7 +25,7 @@ fn slugthug_home_prefers_slugthug_home_over_home() {
             ("SLUGTHUG_HOME", Some(temp.path().as_os_str())),
             ("HOME", Some(std::ffi::OsStr::new("/somewhere/else"))),
         ],
-        || assert_eq!(slugthug_home().unwrap(), temp.path()),
+        || assert_eq!(slugthug_home().expect("home resolves"), temp.path()),
     );
 }
 
@@ -39,7 +39,7 @@ fn slugthug_home_falls_back_to_home_slugthug() {
         ],
         || {
             assert_eq!(
-                slugthug_home().unwrap(),
+                slugthug_home().expect("home resolves"),
                 PathBuf::from("/somewhere/else/.slugthug")
             );
         },
@@ -91,5 +91,88 @@ fn installed_binary_is_executable() {
         mode & 0o111,
         0o111,
         "the installed binary must be executable"
+    );
+}
+
+#[test]
+fn path_config_maps_bash_shell_to_bashrc_export() {
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("temp dir");
+    temp_env::with_vars(
+        [
+            ("HOME", Some(temp.path().as_os_str())),
+            ("SHELL", Some(std::ffi::OsStr::new("/bin/bash"))),
+        ],
+        || {
+            let (config, line) = path_config(Path::new("/x/slugthug/bin"))
+                .expect("path config");
+            assert_eq!(config, temp.path().join(".bashrc"));
+            assert_eq!(line, "export PATH=\"/x/slugthug/bin:$PATH\"");
+        },
+    );
+}
+
+#[test]
+fn path_config_maps_fish_shell_to_config_fish() {
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("temp dir");
+    temp_env::with_vars(
+        [
+            ("HOME", Some(temp.path().as_os_str())),
+            ("SHELL", Some(std::ffi::OsStr::new("/usr/bin/fish"))),
+        ],
+        || {
+            let (config, line) = path_config(Path::new("/x/slugthug/bin"))
+                .expect("path config");
+            assert_eq!(config, temp.path().join(".config/fish/config.fish"));
+            assert_eq!(line, "fish_add_path /x/slugthug/bin");
+        },
+    );
+}
+
+#[test]
+fn path_config_defaults_to_bashrc_without_shell() {
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("temp dir");
+    temp_env::with_vars(
+        [
+            ("HOME", Some(temp.path().as_os_str())),
+            ("SHELL", None::<&std::ffi::OsStr>),
+        ],
+        || {
+            let (config, line) = path_config(Path::new("/x/slugthug/bin"))
+                .expect("path config");
+            assert_eq!(config, temp.path().join(".bashrc"));
+            assert!(line.contains("/x/slugthug/bin"));
+        },
+    );
+}
+
+#[test]
+fn add_to_path_is_idempotent() {
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("temp dir");
+    let bin_dir = temp.path().join("bin");
+    temp_env::with_vars(
+        [
+            ("HOME", Some(temp.path().as_os_str())),
+            ("SHELL", Some(std::ffi::OsStr::new("/bin/bash"))),
+        ],
+        || {
+            add_to_path(&bin_dir).expect("first add");
+            let config = temp.path().join(".bashrc");
+            let contents = std::fs::read_to_string(&config).expect("read config");
+            assert!(
+                contents.contains("export PATH=\""),
+                "the export line should have been appended"
+            );
+
+            add_to_path(&bin_dir).expect("second add");
+            let again = std::fs::read_to_string(&config).expect("read config");
+            assert_eq!(
+                contents, again,
+                "adding twice must not duplicate the export line"
+            );
+        },
     );
 }

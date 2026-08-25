@@ -114,7 +114,7 @@ proptest! {
             "extract_reference unexpectedly returned None for raw={:?}",
             raw
         );
-        let reference = extracted.unwrap();
+        let reference = extracted.expect("extract_reference returned None");
         // Equality on `&str` (via `as_str()`) so the macro doesn't move
         // `reference.text` or `expected_module` into its debug-format.
         // The `&str` form compares correctly and would still surface a

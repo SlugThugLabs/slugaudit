@@ -8,17 +8,98 @@
 //! defaulting to `util`. This file should not become a dumping ground.
 
 use std::fmt::Write as _;
+use std::io::IsTerminal;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static LAST_UNIX_TIME: AtomicI64 = AtomicI64::new(0);
 
+/// Minimal ANSI styling for the human-facing CLI surface (`menu`, `help`).
+///
+/// Detects once, at construction, whether stdout is a real terminal. When
+/// it is not (piped to a file, captured by a test harness, or fed into a
+/// CI log), every style method returns its input unchanged, so no escape
+/// sequences ever leak into redirected output or downstream tools. When
+/// stdout IS a terminal, the methods wrap the text in the named ANSI
+/// SGR code and reset afterwards.
+///
+/// `help`, `menu`, and `connect` are the only paths that build with these
+/// — the stdio MCP server (`serve`) must never touch stdout for humans,
+/// and the server's diagnostics on stderr already disable ANSI
+/// unconditionally in `main`. This helper is deliberately the single
+/// place ANSI codes are produced.
+pub(crate) struct Style {
+    enabled: bool,
+}
+
+impl Style {
+    /// A `Style` that colors only if stdout is a terminal at call time.
+    pub(crate) fn stdout() -> Self {
+        Self {
+            enabled: std::io::stdout().is_terminal(),
+        }
+    }
+
+    /// A `Style` that never colors. Test-only: enables assertions that a
+    /// rendering produces the exact plain text regardless of the
+    /// destination terminal.
+    #[cfg(test)]
+    pub(crate) const fn plain() -> Self {
+        Self { enabled: false }
+    }
+
+    pub(crate) fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    fn wrap(&self, code: &str, text: &str) -> String {
+        if !self.enabled {
+            return text.to_owned();
+        }
+        format!("\x1b[{code}m{text}\x1b[0m")
+    }
+
+    pub(crate) fn bold(&self, text: &str) -> String {
+        self.wrap("1", text)
+    }
+
+    pub(crate) fn dim(&self, text: &str) -> String {
+        self.wrap("2", text)
+    }
+
+    pub(crate) fn cyan(&self, text: &str) -> String {
+        self.wrap("36", text)
+    }
+
+    pub(crate) fn green(&self, text: &str) -> String {
+        self.wrap("32", text)
+    }
+
+    pub(crate) fn yellow(&self, text: &str) -> String {
+        self.wrap("33", text)
+    }
+}
+
 /// Serializes tests that mutate process-global environment variables
 /// (`SLUGTHUG_HOME`, `HOME`) so parallel test threads can't observe each
 /// other's mutations. Test-only; production code never touches it.
 #[cfg(test)]
 pub(crate) static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// Serializes tests that depend on the process-global `SESSION_ID`
+/// (see `tools::context::SESSION_ID`). Two kinds of tests race over that
+/// global: session-flipping tests that call `override_session_id_for_test`
+/// to simulate a fresh process boot, and read/write tests that query or
+/// store `findings` rows scoped by `session_id()`. A flip between a
+/// sibling test's write and read would make the read come back empty or
+/// spuriously purge the sibling's rows. Module-private duplicate locks
+/// (each module serializes only its own tests) cannot stop one module from
+/// racing another, so this single shared lock is held by every test that
+/// either overrides the session or relies on it staying stable. Test-only;
+/// production code never touches it.
+#[cfg(test)]
+pub(crate) static SESSION_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 /// Acquires a mutex guard, recovering the inner value if the mutex was
 /// poisoned by a previous holder panicking. Without this recovery, a

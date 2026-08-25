@@ -68,7 +68,7 @@ fn bench_search(c: &mut Criterion) {
     let large_connection = store::open_read_only(&large.path).expect("open read-only");
 
     let mut group = c.benchmark_group("search");
-    group.sample_size(20);
+    group.sample_size(15);
 
     group.bench_function("substring_like_small", |b| {
         b.iter(|| run_count(&small_connection, SUBSTRING_SQL));

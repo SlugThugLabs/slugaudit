@@ -13,6 +13,7 @@
 
 use crate::connect;
 use crate::install;
+use crate::util::Style;
 use std::io::{BufRead as _, Write as _};
 use std::path::Path;
 
@@ -25,7 +26,8 @@ use std::path::Path;
 /// Returns an error only if reading menu input fails.
 pub fn run_menu() -> Result<bool, Box<dyn std::error::Error>> {
     loop {
-        print!("{MENU}");
+        let style = Style::stdout();
+        print!("{}", render_menu(&style));
         std::io::stdout().flush()?;
         let choice = read_choice()?;
         match choice {
@@ -48,22 +50,92 @@ pub fn run_menu() -> Result<bool, Box<dyn std::error::Error>> {
 }
 
 const MENU: &str = "\
-SlugAudit setup
+┌─────────────────────────────────────────────┐
+│            SlugAudit setup                  │
+└─────────────────────────────────────────────┘
 
-  1) Install the binary (~/.slugthug/bin)
+  ── Setup ───────────────────────────────────
+
+  1) Install the binary  (~/.slugthug/bin)
      A stable path for agents and MCP clients to launch.
+
   2) Connect to an AI agent
-     Register this binary as the `slugaudit` MCP server in Bob,
-     Claude Code, Grok, or Codex.
+     Register this binary as the `slugaudit` MCP server in
+     Bob, Claude Code, Grok, or Codex.
+
   3) Add SlugAudit to another MCP client
-     Prints instructions + a config snippet for any other tool that
-     supports MCP servers (Cursor, VS Code, Cline, Zed, ...).
+     Print instructions + a config snippet for any other
+     tool that supports MCP servers (Cursor, VS Code,
+     Cline, Zed, ...).
+
+  ── Advanced ─────────────────────────────────
+
   4) Run the MCP server now
-     Advanced: starts `serve` in this terminal and blocks until Ctrl-C.
-     Normally your AI agent starts the server for you.
+     Advanced: starts `serve` in this terminal and blocks
+     until Ctrl-C. Normally your AI agent starts it for you.
+
+  ── Exit ─────────────────────────────────────
+
   5) Exit
 
 Choose an option [1-5]: ";
+
+/// Renders the menu, applying color only when stdout is a real terminal.
+/// When stdout is piped or captured (`Style::plain`), the returned string
+/// is byte-for-byte the plain `MENU` text, so redirects, CI logs, and the
+/// test harness never see escape sequences. When it is a terminal, the
+/// title bar, section rules, and prompt are highlighted so the layout the
+/// human sees reads faster without changing any content or alignment.
+fn render_menu(style: &Style) -> String {
+    if !style.enabled() {
+        return MENU.to_owned();
+    }
+    // The trailing dash runs differ per rule line, so we locate the `── Label ─`
+    // prefix by its position and re-use the existing leading `──`s. Each
+    // recognized line keeps its own indentation and dash count.
+    let mut out = String::with_capacity(MENU.len() + 96);
+
+    for line in MENU.lines() {
+        let trimmed = line.trim();
+        if let Some(label) = section_label(trimmed) {
+            // Rebuild `── Label ─` in green with the label bold, then dim
+            // the remaining dashes (everything after the label's closing `─`).
+            let prefix_len = line.find(label).unwrap_or(0);
+            let before = &line[..prefix_len];
+            let after = &line[prefix_len + label.len()..];
+            out.push_str(before);
+            out.push_str(&style.green(&style.bold(label)));
+            out.push_str(&style.dim(after));
+        } else if trimmed.starts_with('┌') || trimmed.starts_with('└') {
+            out.push_str(&style.dim(line));
+        } else if trimmed.contains("SlugAudit setup") {
+            out.push_str(&line.replace(
+                "SlugAudit setup",
+                &style.bold(&style.cyan("SlugAudit setup")),
+            ));
+        } else if trimmed.starts_with("Choose an option") {
+            out.push_str(&style.bold(&style.yellow(line)));
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+
+    out
+}
+
+/// Returns the bare section label ("Setup", "Advanced", "Exit") when a
+/// line is a `── Label ─……` rule. `trimmed` has leading/trailing
+/// whitespace removed. The label sits between a leading `── ` and the
+/// ` ─` before the dash run.
+fn section_label(trimmed: &str) -> Option<&str> {
+    let rest = trimmed.strip_prefix("── ")?;
+    let (label, _after) = rest.split_once(" ─")?;
+    if label.is_empty() || !label.chars().all(|c| c.is_alphanumeric() || c == ' ') {
+        return None;
+    }
+    Some(label)
+}
 
 /// Reads one menu choice from stdin. Unparseable input maps to `0` so the
 /// caller's `_` arm reports it as invalid rather than panicking.
@@ -158,6 +230,26 @@ fn confirm_serve() -> Result<bool, Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_style_renders_the_byte_exact_plain_menu() {
+        let plain = render_menu(&Style::plain());
+        assert_eq!(plain, MENU, "plain rendering must match the menu const exactly");
+        assert!(
+            !plain.contains('\x1b'),
+            "plain rendering must never contain ESC escape bytes"
+        );
+    }
+
+    #[test]
+    fn section_label_extracts_the_rule_label_and_nothing_else() {
+        assert_eq!(section_label("── Setup ──"), Some("Setup"));
+        assert_eq!(section_label("── Advanced ──"), Some("Advanced"));
+        assert_eq!(section_label("── Exit ────"), Some("Exit"));
+        assert_eq!(section_label("not a rule"), None);
+        assert_eq!(section_label("──"), None);
+        assert!(section_label("── Setup ──").is_some());
+    }
 
     #[test]
     fn other_agent_instructions_name_the_server_and_command() {

@@ -27,7 +27,7 @@ fn load_baseline_parses_object() {
         "slugaudit-check-perf-baseline-{}.json",
         std::process::id()
     ));
-    std::fs::write(&tmp, raw).unwrap();
+    std::fs::write(&tmp, raw).expect("baseline file writes");
     let map = load_baseline(&tmp).expect("parse");
     assert_eq!(map["sync/first"].median_ns, 100);
     assert_eq!(map["sync/first"].budget_ns, Some(200));
@@ -45,7 +45,7 @@ fn load_baseline_rejects_missing_benches() {
         "slugaudit-check-perf-baseline-bad-{}.json",
         std::process::id()
     ));
-    std::fs::write(&tmp, raw).unwrap();
+    std::fs::write(&tmp, raw).expect("baseline file writes");
     let err = load_baseline(&tmp).unwrap_err();
     assert!(err.contains("missing 'benches' object"), "{err}");
     let _ = std::fs::remove_file(&tmp);

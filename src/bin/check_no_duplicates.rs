@@ -314,7 +314,7 @@ mod tests {
         // a tiny tempdir.
         let tmp = tempfile_or_panic_path();
         let dir = tmp.join("src");
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&dir).expect("temp src dir creates");
         let p = dir.join("a_tests.rs");
         std::fs::write(
             &p,
@@ -323,7 +323,7 @@ mod tests {
              #[allow(unused)]\n\
              fn my_test() {}\n",
         )
-        .unwrap();
+        .expect("fixture file writes");
         let map = test_names_by_file(&[p]);
         assert!(map.contains_key("my_test"), "missing key in {map:?}");
     }
@@ -335,7 +335,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(&p).unwrap();
+        std::fs::create_dir_all(&p).expect("temp dir creates");
         p
     }
 }

@@ -3,26 +3,25 @@
 use super::{current_revision_id, ensure_project_row, purge_prior_session_findings_with};
 use crate::store;
 use crate::tools::context::override_session_id_for_test;
+use crate::util::SESSION_TEST_LOCK;
 use std::path::Path;
-use std::sync::Mutex;
 use tempfile::TempDir;
 use uuid::Uuid;
 
-/// Mirrors `tools::finding::session_tests::SESSION_TEST_LOCK` so the
-/// two test modules serialize against the production `SESSION_ID`
-/// global. Held by every test in this module that drives
-/// `override_session_id_for_test`, and by the explicit-uuid tests
-/// that go through `ensure_project_row`'s production cleanup path
-/// (which calls `purge_prior_session_findings` and therefore reads
-/// the global session once).
-static SESSION_TEST_LOCK: Mutex<()> = Mutex::new(());
-
+/// `SESSION_TEST_LOCK` is shared across every test module that depends
+/// on the process-global `SESSION_ID` (see `util.rs`). Held by every
+/// test in this module that drives `override_session_id_for_test`, and
+/// by the session-lock-dependent tests that go through
+/// `ensure_project_row`'s production cleanup path (which calls
+/// `purge_prior_session_findings` and therefore reads the global/// session once).
 fn open_temp_db() -> (TempDir, rusqlite::Connection) {
     let dir = tempfile::tempdir().expect("temp dir");
     let db_path = dir.path().join("project.db");
     let connection = store::open_read_write(&db_path).expect("open db");
     (dir, connection)
 }
+
+
 
 #[test]
 fn current_revision_id_returns_none_when_no_revision_has_been_published() {

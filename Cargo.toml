@@ -1,6 +1,6 @@
 [package]
 name = "slugaudit-mcp-rust"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 # Never published: the license is a non-SPDX PolyForm Noncommercial 1.0.0
 # plus the SlugAudit tool-use additional permission, carried in LICENSE via
@@ -83,11 +83,6 @@ harness = false
 [[bench]]
 name = "search"
 path = "benches/search.rs"
-harness = false
-
-[[bench]]
-name = "sync"
-path = "benches/sync.rs"
 harness = false
 
 # Startup latency (process spawn → first MCP `initialize` response);

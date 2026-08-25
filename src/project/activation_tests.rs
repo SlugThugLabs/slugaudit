@@ -11,7 +11,7 @@ fn resolve_project_returns_root_and_database_path_together() {
     let directory = tempfile::tempdir().expect("temp dir");
     create_activation(directory.path());
     let (root, db) = resolve_project(directory.path()).expect("active project");
-    assert_eq!(root.as_path(), directory.path().canonicalize().unwrap());
+    assert_eq!(root.as_path(), directory.path().canonicalize().expect("tempdir canonicalizes"));
     assert_eq!(db, database_path(&root));
 }
 
@@ -27,7 +27,7 @@ fn finds_an_active_project_at_its_own_root() {
     let directory = tempfile::tempdir().expect("temp dir");
     create_activation(directory.path());
     let root = find_project_root(directory.path()).expect("active project");
-    assert_eq!(root.as_path(), directory.path().canonicalize().unwrap());
+    assert_eq!(root.as_path(), directory.path().canonicalize().expect("tempdir canonicalizes"));
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn finds_an_active_project_from_a_nested_file() {
     fs::write(&file, b"fn main() {}").expect("write fixture file");
 
     let root = find_project_root(&file).expect("active project");
-    assert_eq!(root.as_path(), directory.path().canonicalize().unwrap());
+    assert_eq!(root.as_path(), directory.path().canonicalize().expect("tempdir canonicalizes"));
 }
 
 #[test]

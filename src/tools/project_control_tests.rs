@@ -36,21 +36,21 @@ fn activation_dir(project: &tempfile::TempDir) -> std::path::PathBuf {
 #[test]
 fn on_action_parses() {
     let json = r#"{"action":"on"}"#;
-    let req: ProjectControlRequest = serde_json::from_str(json).unwrap();
+    let req: ProjectControlRequest = serde_json::from_str(json).expect("request deserializes");
     assert!(matches!(req.action, ProjectControlAction::On));
 }
 
 #[test]
 fn off_action_parses() {
     let json = r#"{"action":"off"}"#;
-    let req: ProjectControlRequest = serde_json::from_str(json).unwrap();
+    let req: ProjectControlRequest = serde_json::from_str(json).expect("request deserializes");
     assert!(matches!(req.action, ProjectControlAction::Off));
 }
 
 #[test]
 fn path_defaults_to_none() {
     let json = r#"{"action":"on"}"#;
-    let req: ProjectControlRequest = serde_json::from_str(json).unwrap();
+    let req: ProjectControlRequest = serde_json::from_str(json).expect("request deserializes");
     assert!(req.path.is_none());
 }
 
@@ -64,7 +64,7 @@ fn on_action_enables_the_project_and_runs_the_initial_import() {
     assert_eq!(inner.status, "enabled");
     assert_eq!(
         inner.path,
-        project.path().canonicalize().unwrap().to_string_lossy(),
+        project.path().canonicalize().expect("tempdir canonicalizes").to_string_lossy(),
         "the response reports the canonical project root"
     );
     let import = inner.import.expect("import report present");

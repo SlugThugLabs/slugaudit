@@ -42,7 +42,7 @@ mod tests {
     fn resolves_an_existing_directory() {
         let directory = tempfile::tempdir().expect("temp dir");
         let root = ProjectRoot::resolve(directory.path()).expect("valid root");
-        assert_eq!(root.as_path(), directory.path().canonicalize().unwrap());
+        assert_eq!(root.as_path(), directory.path().canonicalize().expect("tempdir canonicalizes"));
     }
 
     #[test]

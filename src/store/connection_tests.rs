@@ -211,7 +211,11 @@ fn a_db_path_replaced_by_a_symlink_after_a_successful_open_is_rejected_on_the_ne
     // A real, legitimate first open succeeds and migrates the schema.
     let connection = open_read_write(&path).expect("first open on a real file succeeds");
     drop(connection);
-    assert!(!path.symlink_metadata().unwrap().file_type().is_symlink());
+    assert!(!path
+        .symlink_metadata()
+        .expect("symlink metadata readable")
+        .file_type()
+        .is_symlink());
 
     // The path is now replaced by a symlink pointing elsewhere, as a
     // TOCTOU attacker (or a racing process) might.

@@ -29,7 +29,7 @@ mod tests {
             directory
                 .path()
                 .canonicalize()
-                .unwrap()
+                .expect("tempdir canonicalizes")
                 .join(".planning")
                 .join("slugaudit")
                 .join("project.db")

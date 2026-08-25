@@ -1,8 +1,12 @@
 //! Tests for `connect`: per-agent scope arguments and the stable-binary
-//! preference. Anything that would invoke a real agent CLI (`claude`,
-//! `grok`, `codex`) is deliberately NOT exercised — on a machine where the
-//! agent is installed, such a test would touch the user's real
+//! preference. Anything that would invoke a real agent CLI (`bob`,
+//! `claude`, `grok`, `codex`) is deliberately NOT exercised — on a machine
+//! where the agent is installed, such a test would touch the user's real
 //! registration.
+//!
+//! The real end-to-end path IS exercised by the integration test in
+//! `tests/connect_tests.rs`, which does touch a real agent's config when
+//! that agent's CLI is on PATH (backing it up and restoring it).
 
 use super::*;
 use crate::util::TEST_ENV_LOCK;
@@ -65,7 +69,7 @@ fn prefer_slugthug_binary_keeps_current_when_not_installed() {
 #[test]
 fn connect_reports_a_missing_agent_cli_as_a_typed_error() {
     let _guard = TEST_ENV_LOCK.lock().expect("env lock");
-    if ["claude", "grok", "codex"]
+    if ["bob", "claude", "grok", "codex"]
         .iter()
         .any(|cli| which::which(cli).is_ok())
     {

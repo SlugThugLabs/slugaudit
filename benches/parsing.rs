@@ -63,6 +63,7 @@ fn bench_parsing(c: &mut Criterion) {
     }
 
     let mut group = c.benchmark_group("parsing");
+    group.sample_size(15);
     bench_extract(&mut group, "extract_rust", "rust", common::RUST_SAMPLE);
     bench_extract(
         &mut group,

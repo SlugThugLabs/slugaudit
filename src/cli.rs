@@ -5,6 +5,7 @@
 //! stable path so it survives rebuilds.
 #![allow(clippy::print_stdout)]
 
+use crate::util::Style;
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -127,10 +128,61 @@ USAGE:
     slugaudit-mcp version            Print version (also --version, -V)
     slugaudit-mcp help               Show this message (also --help, -h)
 
-The `menu` walks you through installation, connecting to an AI agent
-(Bob, Claude Code, Grok, Codex), getting config for other MCP clients,
-or starting the server for testing.
+COMMANDS:
+    (no command)  Start the MCP server. This is the default and the way
+                  your AI agent launches SlugAudit; it speaks JSON-RPC
+                  over stdio and blocks until the host closes the pipe.
+    menu          Interactive setup: install the binary, connect to an AI
+                  agent (Bob, Claude Code, Grok, Codex), get a config
+                  snippet for any other MCP client, or run the server
+                  for testing. Recommended for first-time setup.
+    connect       Register this binary as the `slugaudit` MCP server in
+                  an AI agent. With an agent name (`bob`, `claude`,
+                  `grok`, `codex`) it connects directly; without one it
+                  shows an interactive agent picker.
+    install       Copy the binary to ~/.slugthug/bin/slugaudit-mcp so
+                  agents and MCP clients can launch a stable path that
+                  survives rebuilds.
+    version       Print the version. Also --version, -V.
+    help          Show this message. Also --help, -h.
+
+OPTIONS:
+    -h, --help      Show this message.
+    -V, --version   Print the version.
+
+EXAMPLES:
+    slugaudit-mcp menu               Set everything up interactively
+    slugaudit-mcp install            Install to ~/.slugthug/bin/
+    slugaudit-mcp connect bob        Register with Bob
+    slugaudit-mcp                    Run the server for your AI agent
 ";
+
+/// The help text, with ANSI color applied only when stdout is a real
+/// terminal. Mirrors the `USAGE` const byte-for-byte when stdout is piped
+/// or captured (CI, files, the test harness), so redirected help never
+/// contains escape sequences. On a terminal, the tagline is bold and the
+/// four section headings (`USAGE:`, `COMMANDS:`, …) are highlighted so
+/// the reference reads faster; the command/example bodies stay plain.
+pub fn usage() -> String {
+    let style = Style::stdout();
+    if !style.enabled() {
+        return USAGE.to_owned();
+    }
+    let headings = ["USAGE:", "COMMANDS:", "OPTIONS:", "EXAMPLES:"];
+    let mut out = String::with_capacity(USAGE.len() + 64);
+    for (i, line) in USAGE.lines().enumerate() {
+        let trimmed = line.trim_end();
+        if i == 0 {
+            out.push_str(&style.bold(trimmed));
+        } else if headings.contains(&trimmed) {
+            out.push_str(&style.bold(&style.cyan(trimmed)));
+        } else {
+            out.push_str(trimmed);
+        }
+        out.push('\n');
+    }
+    out
+}
 
 /// Errors from `connect`. Split out from `CliError` because connect has its
 /// own failure surface (agent CLI missing, registration command failed)

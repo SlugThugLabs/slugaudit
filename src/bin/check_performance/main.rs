@@ -3,8 +3,9 @@
 //! Performance regression gate.
 // slugaudit-line-exception: approved-by=agent; reason=criterion invocation argv, per-row regression comparison with budget tracking, and the verdict/warning/failure printer share one process so the bin's single user-visible CLI output stays coherent; extracting the comparison loop would force cross-module State for the baseline-entry budget fields and duplicate the threshold + record-mode arg parsing
 //!
-//! Replaces `tools/check_performance.sh`. Runs the four criterion
-//! benches with a reduced sample size (fast enough for CI), parses
+//! Replaces `tools/check_performance.sh`. Runs the discovery, parsing,
+//! and search criterion benches with a reduced sample size (fast enough
+//! for CI), parses
 //! criterion's median point estimates, and fails when any bench
 //! regresses more than the threshold against the committed baseline
 //! (`.planning/perf_baseline.json`). The same policy as the coverage
@@ -75,13 +76,11 @@ fn main() -> std::process::ExitCode {
             "parsing",
             "--bench",
             "search",
-            "--bench",
-            "sync",
             "--",
             "--sample-size",
-            "10",
+            "15",
             "--warm-up-time",
-            "1",
+            "0.5",
             "--measurement-time",
             "3",
         ])

@@ -6,36 +6,36 @@ fn python_relative_and_absolute_forms() {
     assert_eq!(
         resolver
             .extract_reference("from . import foo")
-            .unwrap()
+            .expect("reference should extract")
             .text,
         "."
     );
     assert_eq!(
         resolver
             .extract_reference("from .bar import baz")
-            .unwrap()
+            .expect("reference should extract")
             .text,
         ".bar"
     );
     assert_eq!(
         resolver
             .extract_reference("from ..pkg.mod import qux")
-            .unwrap()
+            .expect("reference should extract")
             .text,
         "..pkg.mod"
     );
-    assert_eq!(resolver.extract_reference("import os").unwrap().text, "os");
+    assert_eq!(resolver.extract_reference("import os").expect("reference should extract").text, "os");
     assert_eq!(
         resolver
             .extract_reference("import numpy as np")
-            .unwrap()
+            .expect("reference should extract")
             .text,
         "numpy"
     );
     assert_eq!(
         resolver
             .extract_reference("from collections import OrderedDict")
-            .unwrap()
+            .expect("reference should extract")
             .text,
         "collections"
     );
@@ -47,35 +47,35 @@ fn javascript_and_typescript_quoted_paths() {
     assert_eq!(
         resolver
             .extract_reference("import x from './utils';")
-            .unwrap()
+            .expect("reference should extract")
             .text,
         "./utils"
     );
     assert_eq!(
         resolver
             .extract_reference("import { y } from '../lib/helper';")
-            .unwrap()
+            .expect("reference should extract")
             .text,
         "../lib/helper"
     );
     assert_eq!(
         resolver
             .extract_reference("import React from 'react';")
-            .unwrap()
+            .expect("reference should extract")
             .text,
         "react"
     );
     assert_eq!(
         resolver
             .extract_reference("import type { Y } from '../types';")
-            .unwrap()
+            .expect("reference should extract")
             .text,
         "../types"
     );
     assert_eq!(
         resolver
             .extract_reference(r#"import z from "lodash";"#)
-            .unwrap()
+            .expect("reference should extract")
             .text,
         "lodash"
     );
@@ -87,35 +87,35 @@ fn rust_use_paths() {
     assert_eq!(
         resolver
             .extract_reference("use crate::baz::qux;")
-            .unwrap()
+            .expect("reference should extract")
             .text,
         "crate::baz::qux"
     );
     assert_eq!(
         resolver
             .extract_reference("use std::collections::HashMap;")
-            .unwrap()
+            .expect("reference should extract")
             .text,
         "std::collections::HashMap"
     );
     assert_eq!(
         resolver
             .extract_reference("use super::thing;")
-            .unwrap()
+            .expect("reference should extract")
             .text,
         "super::thing"
     );
     assert_eq!(
         resolver
             .extract_reference("use self::inner as renamed;")
-            .unwrap()
+            .expect("reference should extract")
             .text,
         "self::inner"
     );
     assert_eq!(
         resolver
             .extract_reference("pub use crate::foo::Bar;")
-            .unwrap()
+            .expect("reference should extract")
             .text,
         "crate::foo::Bar"
     );

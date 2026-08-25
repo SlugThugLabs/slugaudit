@@ -127,13 +127,15 @@ jobs:
       - name: Coverage (cargo llvm-cov)
         run: cargo run --quiet --bin check_coverage --locked
 
-      # Performance regression gate: runs the four criterion benches with a
-      # reduced sample size (~3–5 min) and fails when any median regresses
-      # more than the threshold (default 20%) against the committed
-      # baseline (.planning/perf_baseline.json). The baseline is recorded
-      # on Linux — this step is Linux-only. macOS performance is tracked
-      # separately; re-record a macOS baseline before enabling this step
-      # on macOS.
+      # Performance regression gate: runs the discovery/parsing/search
+      # criterion benches with a reduced sample profile (~1 min, dominated
+      # by the bench compile) and fails when any median regresses more than
+      # the threshold (default 20%) against the committed baseline
+      # (.planning/perf_baseline.json). The sync benches are deliberately
+      # not gated — sync correctness is covered by functional tests. The
+      # baseline is recorded on Linux — this step is Linux-only. macOS
+      # performance is tracked separately; re-record a macOS baseline
+      # before enabling this step on macOS.
       - name: Performance regression (criterion)
         if: runner.os == 'Linux'
         run: cargo run --quiet --bin check_performance --locked

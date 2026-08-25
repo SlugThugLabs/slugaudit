@@ -230,7 +230,10 @@ fn sync_with_barrier_calls_reconcile_for_dirty_events() {
     result.expect("barrier sync should succeed");
     assert_eq!(call_count, 1, "reconcile_fn should be called exactly once");
     assert!(
-        received_paths.as_ref().unwrap().contains("src/lib.rs"),
+        received_paths
+            .as_ref()
+            .expect("paths received")
+            .contains("src/lib.rs"),
         "reconcile_fn should receive the dirty path"
     );
 }
