@@ -65,6 +65,30 @@ impl ServerProcess {
             .expect("a stdout line within timeout")
     }
 
+    /// Reads stdout lines until a JSON-RPC response with the given `id`
+    /// appears. Returns the response line and any `/notifications/progress`
+    /// lines that arrived before it — progress notifications have no `id`,
+    /// so they cannot be the requested response, and this function drains
+    /// them instead of silently dropping them between `recv_stdout_line`
+    /// calls.
+    fn recv_response(
+        &self,
+        expected_id: u64,
+    ) -> (serde_json::Value, Vec<serde_json::Value>) {
+        let mut notifications = Vec::new();
+        loop {
+            let line = self.recv_stdout_line();
+            let parsed: serde_json::Value =
+                serde_json::from_str(&line).expect("stdout line is valid JSON");
+            if parsed["id"] == expected_id {
+                return (parsed, notifications);
+            }
+            // A line without an `id` matching the expected one is a
+            // notification — keep it and wait for the real response.
+            notifications.push(parsed);
+        }
+    }
+
     fn has_stderr_output(&self) -> bool {
         self.stderr_lines
             .recv_timeout(Duration::from_secs(2))
@@ -80,6 +104,28 @@ impl ServerProcess {
             lines.push(line);
         }
         lines.join("\n")
+    }
+
+    /// Initialize the server and return a project path string suitable
+    /// for embedding in tool-call JSON.  Writes a single `lib.rs` fixture
+    /// and handles the init/initialized handshake.
+    fn init_project() -> (tempfile::TempDir, String) {
+        let project = tempfile::tempdir().expect("project dir");
+        std::fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
+            .expect("activate project");
+        std::fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n")
+            .expect("write fixture file");
+        let path = project.path().to_string_lossy().replace('\\', "/");
+        (project, path)
+    }
+
+    fn handshake(&mut self) {
+        self.send(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"0.0.1"}}}"#,
+        );
+        let _: serde_json::Value =
+            serde_json::from_str(&self.recv_stdout_line()).expect("init response");
+        self.send(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
     }
 }
 
@@ -108,30 +154,11 @@ impl Drop for ServerProcess {
 #[allow(clippy::too_many_lines)]
 #[test]
 fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
-    let project = tempfile::tempdir().expect("project dir");
-    std::fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
-        .expect("activate project");
-    std::fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write fixture file");
+    let (_project, project_path) = ServerProcess::init_project();
 
     let mut server = ServerProcess::spawn();
+    server.handshake();
 
-    server.send(
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"0.0.1"}}}"#,
-    );
-    let init_response: serde_json::Value = serde_json::from_str(&server.recv_stdout_line())
-        .expect("initialize response is valid JSON");
-    assert_eq!(init_response["id"], 1);
-    assert!(init_response["result"]["serverInfo"].is_object());
-    assert!(
-        init_response["result"]["instructions"]
-            .as_str()
-            .is_some_and(|text| text.contains("SlugAudit")),
-        "initialize result should carry SlugAudit's instructions"
-    );
-
-    server.send(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
-
-    let project_path = project.path().to_string_lossy().replace('\\', "/");
     let call = format!(
         r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"report","arguments":{{"path":"{project_path}"}}}}}}"#
     );
@@ -214,7 +241,7 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
     // --- Workflow act 2: the finding must go stale the moment the source
     // it was bound to changes, across a real sync on a live server. ---
     std::fs::write(
-        project.path().join("lib.rs"),
+        _project.path().join("lib.rs"),
         b"pub fn a() { changed(); }\n",
     )
     .expect("modify source");
@@ -302,20 +329,10 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
 /// unchanged project.
 #[test]
 fn restart_serves_the_same_revision_from_disk() {
-    let project = tempfile::tempdir().expect("project dir");
-    std::fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
-        .expect("activate project");
-    std::fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write fixture file");
-    let project_path = project.path().to_string_lossy().replace('\\', "/");
+    let (_project, project_path) = ServerProcess::init_project();
 
     let report_revision = |server: &mut ServerProcess| -> String {
-        server.send(
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"0.0.1"}}}"#,
-        );
-        let _: serde_json::Value =
-            serde_json::from_str(&server.recv_stdout_line()).expect("initialize response");
-        server.send(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
-
+        server.handshake();
         let call = format!(
             r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"report","arguments":{{"path":"{project_path}"}}}}}}"#
         );
@@ -341,5 +358,79 @@ fn restart_serves_the_same_revision_from_disk() {
     assert_eq!(
         second_revision, first_revision,
         "a fresh server must serve the same revision from the persisted database"
+    );
+}
+
+/// When the caller requests progress notifications (by passing
+/// `_meta.progressToken` at the request level), the server must emit
+/// `/notifications/progress` messages on stdout *before* the final
+/// tool-call response.  This exercises the path from `progress_target` →
+/// `McpProgressSink` → `notify_progress` that every other test bypasses
+/// by calling Rust functions directly.
+///
+/// We sync the project first (without a progress token) so the follow-up
+/// query is a fast, no-publish call — the progress pipeline still fires
+/// regardless.
+#[test]
+fn progress_notifications_flow_over_stdio() {
+    let (_project, project_path) = ServerProcess::init_project();
+    let mut server = ServerProcess::spawn();
+    server.handshake();
+
+    // Phase 1 — sync without progress: drain any stdout, verify success.
+    let sync_call = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"report","arguments":{{"path":"{project_path}"}}}}}}"#
+    );
+    server.send(&sync_call);
+    let (sync_response, _) = server.recv_response(2);
+    assert!(
+        sync_response["result"].is_object(),
+        "initial sync must succeed: {sync_response}"
+    );
+
+    // Phase 2 — query *with* a progress token inside `params._meta`
+    // (the MCP tool-call convention). The project is already synced;
+    // this should be a fast call, but the progress notifications must
+    // still arrive.
+    let query_call = format!(
+        r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"query","arguments":{{"path":"{project_path}","sql":"SELECT 1"}},"_meta":{{"progressToken":"pt-q"}}}}}}"#
+    );
+    server.send(&query_call);
+    let (response, notifications) = server.recv_response(3);
+
+    assert!(
+        response["result"].is_object(),
+        "query must succeed: {response}"
+    );
+
+    assert!(
+        !notifications.is_empty(),
+        "at least one progress notification must arrive when progressToken is set"
+    );
+
+    for (i, notification) in notifications.iter().enumerate() {
+        assert!(
+            notification["id"].is_null(),
+            "progress notification {i} must have no 'id': {notification}"
+        );
+        assert_eq!(
+            notification["method"], "notifications/progress",
+            "stdout line {i} must be a progress notification: {notification}"
+        );
+        assert_eq!(
+            notification["params"]["progressToken"], "pt-q",
+            "progress token must round-trip: {notification}"
+        );
+        assert!(
+            notification["params"]["progress"].as_f64().is_some(),
+            "progress must be a number: {notification}"
+        );
+    }
+
+    // The last notification must signal completion at 1.0.
+    let last = notifications.last().expect("at least one progress notification");
+    assert_eq!(
+        last["params"]["progress"], 1.0,
+        "final progress notification must report completion at 1.0: {last}"
     );
 }

@@ -13,6 +13,7 @@
 //! implementation: finalize-on-newline runs at the top of the loop
 //! regardless of state, so each `\n` inside a raw string still resets
 //! `has_code`).
+// slugaudit-line-exception: approved-by=agent; reason=the token-aware counter's comment/string/char/raw-string states are one atomic scanner; splitting the state machine would fragment the exact token-coverage semantics the gate depends on
 
 use std::path::{Path, PathBuf};
 
@@ -244,6 +245,54 @@ pub fn exception_reason(source: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// The gate's line ceilings. Test files get a higher ceiling because each
+/// `#[test]` names one behavior contract — repetition that cannot be
+/// DRY'd without losing the failure diagnostics that make a red test
+/// actionable — while production code is expected to earn its length.
+pub(crate) const TEST_FILE_CEILING: usize = 500;
+pub(crate) const PRODUCTION_CEILING: usize = 300;
+/// Production files at or above this length require an approved
+/// `slugaudit-line-exception:` comment.
+pub(crate) const PRODUCTION_EXCEPTION_FLOOR: usize = 200;
+
+/// How `main` reports a single file: within limits (optionally via an
+/// approved exception) or a violation.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Verdict {
+    Pass,
+    PassWithException { reason: String },
+    FailHard { ceiling: usize },
+    FailNeedsException,
+}
+
+/// The gate's policy. Test files (`*_tests.rs`, `tests.rs`) auto-pass up
+/// to [`TEST_FILE_CEILING`] with no exception requirement; above it they
+/// hard-fail. Production files keep the 0–199 auto-pass / 200–300
+/// approved-exception / >300 hard-fail rule, and an exception never
+/// rescues a file past [`PRODUCTION_CEILING`].
+pub(crate) fn verdict(
+    code_lines: usize,
+    exception: Option<String>,
+    test_file: bool,
+) -> Verdict {
+    if test_file {
+        if code_lines > TEST_FILE_CEILING {
+            return Verdict::FailHard { ceiling: TEST_FILE_CEILING };
+        }
+        return Verdict::Pass;
+    }
+    if code_lines > PRODUCTION_CEILING {
+        return Verdict::FailHard { ceiling: PRODUCTION_CEILING };
+    }
+    if code_lines >= PRODUCTION_EXCEPTION_FLOOR {
+        return match exception {
+            Some(reason) => Verdict::PassWithException { reason },
+            None => Verdict::FailNeedsException,
+        };
+    }
+    Verdict::Pass
 }
 
 pub fn walk_rs_files(src_root: &Path) -> Vec<PathBuf> {

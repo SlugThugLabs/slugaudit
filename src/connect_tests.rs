@@ -10,9 +10,11 @@ use std::path::PathBuf;
 
 #[test]
 fn scope_args_match_the_documented_agent_scopes() {
+    assert_eq!(scope_add_args(ConnectAgent::Bob), &["--scope", "global"]);
     assert_eq!(scope_add_args(ConnectAgent::Claude), &["-s", "user"]);
     assert_eq!(scope_add_args(ConnectAgent::Grok), &["--scope", "user"]);
     assert!(scope_add_args(ConnectAgent::Codex).is_empty());
+    assert_eq!(scope_remove_args(ConnectAgent::Bob), &["--scope", "global"]);
     assert_eq!(scope_remove_args(ConnectAgent::Claude), &["-s", "user"]);
     assert_eq!(scope_remove_args(ConnectAgent::Grok), &["--scope", "user"]);
     assert!(scope_remove_args(ConnectAgent::Codex).is_empty());

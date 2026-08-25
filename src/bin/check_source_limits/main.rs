@@ -2,12 +2,15 @@
 //!
 //! Replaces `tools/check_source_limits.sh`. Counts the number of lines
 //! containing Rust tokens *outside* comments, strings, char literals,
-//! and raw-string literals per file under `src/`. Files at 0–199 such
-//! lines auto-pass; 200–300 requires a `slugaudit-line-exception:`
-//! justification comment with `approved-by=agent; reason=...`; ≥300 is
-//! a hard failure. Output format is intentionally identical to the
-//! prior shell script so existing log scrapers and CI greps keep
-//! working.
+//! and raw-string literals per file under `src/`. Production files at
+//! 0–199 lines auto-pass; 200–300 requires a `slugaudit-line-exception:`
+//! justification comment with `approved-by=agent; reason=...`; ≥300 is a
+//! hard failure. Test files (`*_tests.rs`, `tests.rs`) enumerate one
+//! named behavior per `#[test]` — repetition that cannot be DRY'd without
+//! losing failure diagnostics — so they auto-pass up to 500 lines; >500
+//! is a hard failure with no exception path. Output format is
+//! intentionally identical to the prior shell script so existing log
+//! scrapers and CI greps keep working.
 //!
 //! Pure-Rust replacement: no Python interpreter, no shell. The state
 //! machine lives in the sibling [`counter`] module and the unit tests
@@ -19,8 +22,19 @@ mod counter;
 #[path = "tests.rs"]
 mod tests;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+/// A file is a test file when its name follows this repo's test-module
+/// convention (`query_tests.rs`, `manager_tests.rs`, …) or is the
+/// `tests.rs` shorthand used by the checker's own test module. Test
+/// modules are `#[path]`-included siblings, so the name is a reliable
+/// classifier.
+fn is_test_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with("_tests.rs") || name == "tests.rs")
+}
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -68,20 +82,21 @@ fn main() -> ExitCode {
             .unwrap_or(path)
             .display()
             .to_string();
-        match (n, counter::exception_reason(&source)) {
-            (n, _) if n > 300 => {
-                failures.push(format!("{rel}: {n} code lines (>300; hard failure)"));
+        match counter::verdict(n, counter::exception_reason(&source), is_test_file(path)) {
+            counter::Verdict::Pass => {
+                println!("source-limit: {rel}: {n} code lines; pass");
             }
-            (n, None) if n >= 200 => {
-                failures.push(format!(
-                    "{rel}: {n} code lines (200-300 requires an exception)"
-                ));
-            }
-            (n, Some(reason)) if n >= 200 => {
+            counter::Verdict::PassWithException { reason } => {
                 println!("source-limit: {rel}: {n} lines; exception: {reason}");
             }
-            (n, _) => {
-                println!("source-limit: {rel}: {n} code lines; pass");
+            counter::Verdict::FailHard { ceiling } => {
+                failures.push(format!("{rel}: {n} code lines (>{ceiling}; hard failure)"));
+            }
+            counter::Verdict::FailNeedsException => {
+                failures.push(format!(
+                    "{rel}: {n} code lines (>= {} requires an approved exception)",
+                    counter::PRODUCTION_EXCEPTION_FLOOR
+                ));
             }
         }
     }

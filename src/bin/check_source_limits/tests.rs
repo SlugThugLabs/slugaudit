@@ -1,6 +1,8 @@
 //! Unit tests for `check_source_limits`.
 
-use super::counter::{code_lines, exception_reason};
+use super::counter::{
+    code_lines, exception_reason, verdict, PRODUCTION_CEILING, TEST_FILE_CEILING, Verdict,
+};
 
 #[test]
 fn empty_string_is_zero() {
@@ -106,4 +108,45 @@ fn exception_reason_absent_returns_none() {
 fn exception_wrong_approver_returns_none() {
     let src = "// slugaudit-line-exception: approved-by=human; reason=foo\nfn x() {}\n";
     assert_eq!(exception_reason(src), None);
+}
+
+// --- line-limit policy (verdict) ---
+
+#[test]
+fn test_files_auto_pass_up_to_the_500_ceiling() {
+    assert_eq!(verdict(0, None, true), Verdict::Pass);
+    assert_eq!(verdict(300, Some("reason".into()), true), Verdict::Pass);
+    assert_eq!(verdict(500, None, true), Verdict::Pass);
+}
+
+#[test]
+fn test_files_over_500_hard_fail_even_with_an_exception() {
+    assert_eq!(
+        verdict(501, Some("reason".into()), true),
+        Verdict::FailHard { ceiling: TEST_FILE_CEILING }
+    );
+}
+
+#[test]
+fn production_files_below_the_exception_floor_auto_pass() {
+    assert_eq!(verdict(0, None, false), Verdict::Pass);
+    assert_eq!(verdict(199, None, false), Verdict::Pass);
+}
+
+#[test]
+fn production_files_need_an_exception_from_200_to_300() {
+    assert_eq!(verdict(200, None, false), Verdict::FailNeedsException);
+    assert_eq!(verdict(300, None, false), Verdict::FailNeedsException);
+    assert_eq!(
+        verdict(250, Some("contract".into()), false),
+        Verdict::PassWithException { reason: "contract".into() }
+    );
+}
+
+#[test]
+fn production_files_over_300_hard_fail_even_with_an_exception() {
+    assert_eq!(
+        verdict(301, Some("reason".into()), false),
+        Verdict::FailHard { ceiling: PRODUCTION_CEILING }
+    );
 }

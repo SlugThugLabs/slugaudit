@@ -28,16 +28,23 @@ const INSTRUCTIONS: &str = "SlugAudit does not audit. It is not an auditor and n
     recommendations. Every judgment in your response — what is buggy, how severe, what to fix — \
     is entirely yours. SlugAudit's only job is to supply searchable, trustworthy evidence about a \
     codebase: parsed structure, symbols, imports, diagnostics, and prior AI-authored findings. \
-    Use `report` for an automatic snapshot of what evidence exists, `query` for arbitrary \
-    read-only SQL against the project's own database (search, symbol/import/diagnostic lookup, \
-    dependency traversal via recursive CTEs over dependency_edges, and source retrieval all reach \
-    through it), `structure` for Tree-sitter structural pattern matching, `finding` to persist \
+    \
+    WORKFLOW: Always query first, then read files only for what the queries surface. \
+    Use `report` for a quick snapshot (file count, languages, evidence kinds, open findings). \
+    Then use `query` to locate exactly which files and lines matter before reading anything. \
+    \
+    QUERY SCHEMA: Key tables are `files` (every source file with path, language, content), \
+    `evidence` (Symbol, Import, Comment, Structure extracted from each file — payload is JSON, \
+    use json_extract), and `dependency_edges` (import resolution: Resolved/Unresolved/External). \
+    Schema discovery: SELECT name FROM sqlite_master WHERE type='table'. \
+    Example: SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id \
+    WHERE e.kind = 'Symbol' AND json_extract(e.payload, '$.name') = 'configure'. \
+    \
+    Use `structure` for Tree-sitter structural pattern matching, `finding` to persist \
     a conclusion you have actually reviewed, and `finding_read` to retrieve findings scoped to \
-    the current agent session (safer than querying the findings table directly, which returns \
-    every session's rows). Use `project_control` with `action` = `\"on\"` to enable a project \
-    (creates the activation directory and runs the first import) or `\"off\"` to disable it. \
-    Never claim SlugAudit identified, rated, or recommended anything — it cannot; evidence is \
-    not judgment.";
+    the current agent session. Use `project_control` with `action` = `\"on\"` to enable a \
+    project or `\"off\"` to disable it. Never claim SlugAudit identified, rated, or \
+    recommended anything — it cannot; evidence is not judgment.";
 
 #[derive(Clone)]
 pub struct SlugAuditServer {
@@ -113,7 +120,7 @@ impl Default for SlugAuditServer {
 #[tool_router]
 impl SlugAuditServer {
     #[tool(
-        description = "Automatic project snapshot: file/language counts, parser failures, evidence-kind counts, open findings. No score, no risk leads."
+        description = "Automatic project snapshot: file/language counts, parser failures, evidence-kind counts, open findings. Use this first to understand the project's shape, then query for specifics. No score, no risk leads."
     )]
     async fn report(
         &self,
@@ -128,7 +135,7 @@ impl SlugAuditServer {
     }
 
     #[tool(
-        description = "Arbitrary read-only SQL against the project's own database. Search, symbol/import/diagnostic lookup, and source retrieval all reach through this one tool. Only writes are rejected, by the connection itself."
+        description = "Query the indexed codebase with read-only SQL. Key tables: files (every source file with path, language, content), evidence (Symbol, Import, Comment, Structure extracted from each file — use json_extract on the payload column), dependency_edges (import resolution graph with Resolved/Unresolved/External status). Always query first to find which files and lines matter, then read only those. Example: SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND json_extract(e.payload, '$.name') = 'configure'. Schema discovery: SELECT name FROM sqlite_master WHERE type='table'."
     )]
     async fn query(
         &self,

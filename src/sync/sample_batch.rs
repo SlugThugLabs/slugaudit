@@ -20,7 +20,7 @@ use super::publish::PublishError;
 use super::sample::{Sample, SampleError, sample_file};
 use crate::model::ResourceLimits;
 use crate::progress::{ProgressEvent, ProgressSink};
-use crate::util::Deadline;
+use crate::util::{lock_or_recover, Deadline};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
@@ -241,11 +241,11 @@ pub(super) fn sample_all_with_deadline(
 /// Records the first error from a parallel sampling run. Concurrent
 /// workers race to call this; only the first winner's error reaches
 /// callers because subsequent callers short-circuit on
-/// `Option::is_some()`. `into_inner().ok()` removes the `PoisonError`
-/// (no panic inside the mutex — sampled errors flow through
-/// `record_error`, not panics).
+/// `Option::is_some()`. Locks through `lock_or_recover` (the project-
+/// wide helper) so a poisoned mutex is recovered with an `error!` log
+/// instead of silently unwrapped.
 fn record_error(slot: &Mutex<Option<PublishError>>, error: PublishError) {
-    let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = lock_or_recover(slot);
     if guard.is_none() {
         *guard = Some(error);
     }

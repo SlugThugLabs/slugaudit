@@ -1,0 +1,46 @@
+{
+  "identifier": "slugthuglabs-slugaudit-mcp",
+  "name": "SlugAudit MCP",
+  "description": "Pre-parsed, searchable, always-in-sync evidence about a codebase \u2014 symbols, imports, dependency edges, source spans \u2014 so the AI queries a SQLite database instead of reading hundreds of flat files.",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "query",
+      "description": "Arbitrary read-only SQL against the project's SQLite index. Joins, CTEs, the lot. Row-capped for safety."
+    },
+    {
+      "name": "report",
+      "description": "Automatic snapshot of the current revision: file counts, languages, what changed since last import."
+    },
+    {
+      "name": "structure",
+      "description": "Tree-sitter structural pattern matching across 300+ languages."
+    },
+    {
+      "name": "finding",
+      "description": "Records an audit finding against the evidence, bound to the file's current hash."
+    },
+    {
+      "name": "finding_read",
+      "description": "Session-gated finding query \u2014 returns only the current agent session's findings."
+    },
+    {
+      "name": "project_control",
+      "description": "Enable or disable a project \u2014 creates the activation marker and runs the first import, or purges the project database."
+    },
+    {
+      "name": "health",
+      "description": "Operational snapshot: watcher health, unreconciled counts, tool-call counters, last-sync timestamp."
+    }
+  ],
+  "homepage": "https://slugthuglabs.dev",
+  "category": "developer",
+  "tags": [
+    "code-audit",
+    "code-review",
+    "mcp",
+    "rust",
+    "sqlite",
+    "tree-sitter"
+  ]
+}

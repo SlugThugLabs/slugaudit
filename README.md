@@ -13,6 +13,13 @@ file-gathering.
 
 Seven MCP tools, exposed over stdio:
 
+> **Every tool call syncs first.** The server automatically brings the
+> project database current before answering — incrementally through the
+> filesystem watcher when it's healthy, or via a full disk republish when
+> it isn't. You never have to ask for a refresh or worry about stale
+> evidence; the sync gate runs unconditionally on every state-bearing
+> call.
+
 | Tool | What it does |
 |------|-------------|
 | `query` | Arbitrary read-only SQL against the project's SQLite index. Joins, CTEs, the lot. Row-capped for safety. |
@@ -26,26 +33,42 @@ Seven MCP tools, exposed over stdio:
 ## Quick start
 
 ```bash
-# Build and install
+# Build
 cargo build --release
-./target/release/slugaudit-mcp install      # copies to ~/.slugthug/bin/
 
-# Connect your AI agent (Claude Code, Grok, or Codex)
-./target/release/slugaudit-mcp connect
-
-# Or run the interactive setup menu — install, connect, instructions for
-# any other MCP-capable client, or start the server directly
+# Run the interactive setup menu
 ./target/release/slugaudit-mcp menu
 ```
 
-Projects are enabled from inside the AI session: call `project_control`
-with `action = "on"` (optionally with a project path), and SlugAudit
-creates the activation marker and runs the first import immediately.
+The `menu` walks you through everything: installing the binary to a
+stable path, connecting to a supported AI agent (Claude Code, Grok, or
+Codex), getting config snippets for other MCP clients, or starting the
+server directly for testing.
+
+Once connected, enable a project from inside the AI session: call
+`project_control` with `action = "on"` (optionally with a project path),
+and SlugAudit creates the activation marker and runs the first import
+immediately.
+
+## CLI reference
+
+```
+slugaudit-mcp — searchable, trustworthy codebase evidence over MCP
+
+USAGE:
+    slugaudit-mcp                    Run the MCP server (stdio transport)
+    slugaudit-mcp menu               Interactive setup menu (recommended entry point)
+    slugaudit-mcp install            Copy binary to ~/.slugthug/bin/
+    slugaudit-mcp version            Print version (also --version, -V)
+    slugaudit-mcp help               Show this message (also --help, -h)
+
+The `menu` walks you through installation, connecting to an AI agent
+(Claude Code, Grok, Codex), getting config for other MCP clients,
+or starting the server for testing.
+```
 
 ## Documentation
 
-- **[Connecting to your AI agent](docs/README.md)** — `connect` command,
-  per-agent guides (Claude Code, Grok, Codex), troubleshooting.
 - **[Architecture & build docs](.planning/README.md)** — design decisions,
   implementation plan, how to build from source.
 
@@ -56,8 +79,14 @@ creates the activation marker and runs the first import immediately.
   reasoning.
 - **Per-project SQLite.** Each enabled project gets its own
   `.planning/slugaudit/project.db`. Zero config by default.
-- **Always in sync.** Every tool call re-verifies freshness and waits on
-  any in-flight import before executing — never answers from partial state.
+- **Always in sync.** Before any tool answers, the server runs an automatic
+  sync pass against the project. If the filesystem watcher stayed healthy,
+  it incrementally reconciles whatever changed since the last call (fast).
+  If the watcher fell behind or the server just started, it does a full
+  publish from disk (correct). Either way you get evidence from the file
+  system as it is right now — never a stale view and never partial state
+  from a half-finished publish. See [ARCHITECTURE.md](ARCHITECTURE.md) for
+  the watcher health state machine.
 - **Resource-bounded.** File size, query steps, wall clock, and response
   size are all capped. `#![forbid(unsafe_code)]` at the crate root.
 - **Disposable database.** The index is derived from source files and

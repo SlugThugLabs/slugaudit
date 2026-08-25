@@ -121,6 +121,8 @@ fn add_server(agent: ConnectAgent, cli: &str, binary: &Path) -> Result<(), Conne
 /// Extra args for the `mcp remove` invocation, per agent.
 fn scope_remove_args(agent: ConnectAgent) -> &'static [&'static str] {
     match agent {
+        // Bob uses `--scope global` for both add and remove.
+        ConnectAgent::Bob => &["--scope", "global"],
         // Claude: `mcp remove` requires an explicit scope; `user` matches
         // where `add` writes by default below.
         ConnectAgent::Claude => &["-s", "user"],
@@ -133,6 +135,8 @@ fn scope_remove_args(agent: ConnectAgent) -> &'static [&'static str] {
 /// Extra args for the `mcp add` invocation, per agent.
 fn scope_add_args(agent: ConnectAgent) -> &'static [&'static str] {
     match agent {
+        // Bob uses `--scope global` to register across all projects.
+        ConnectAgent::Bob => &["--scope", "global"],
         // Claude defaults to `local` (project-scoped) but SlugAudit is a
         // global tool — one registration covers every project — so we pin
         // `user` explicitly.

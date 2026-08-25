@@ -19,6 +19,7 @@ fn unrecognized_input_returns_a_descriptive_error_rather_than_silently_serving()
     assert!(err.contains("unknown command"));
     assert!(err.contains("foobar"));
     assert!(err.contains("serve") && err.contains("connect") && err.contains("install"));
+    assert!(err.contains("menu"));
 }
 
 #[test]
@@ -55,6 +56,7 @@ fn connect_with_no_agent_picks_interactive() {
 #[test]
 fn connect_accepts_each_supported_agent_by_cli_name() {
     for (name, expected) in [
+        ("bob", ConnectAgent::Bob),
         ("claude", ConnectAgent::Claude),
         ("grok", ConnectAgent::Grok),
         ("codex", ConnectAgent::Codex),
@@ -94,7 +96,7 @@ fn connect_accepts_claude_code_alias_for_claude() {
 fn connect_with_an_unknown_agent_returns_a_descriptive_error() {
     let err = parse_args(vec!["connect".to_owned(), "unknown".to_owned()].into_iter()).unwrap_err();
     assert!(err.contains("unknown"));
-    assert!(err.contains("claude") && err.contains("grok") && err.contains("codex"));
+    assert!(err.contains("bob") && err.contains("claude") && err.contains("grok") && err.contains("codex"));
 }
 
 #[test]

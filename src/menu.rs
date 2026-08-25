@@ -53,8 +53,8 @@ SlugAudit setup
   1) Install the binary (~/.slugthug/bin)
      A stable path for agents and MCP clients to launch.
   2) Connect to an AI agent
-     Register this binary as the `slugaudit` MCP server in Claude Code,
-     Grok, or Codex.
+     Register this binary as the `slugaudit` MCP server in Bob,
+     Claude Code, Grok, or Codex.
   3) Add SlugAudit to another MCP client
      Prints instructions + a config snippet for any other tool that
      supports MCP servers (Cursor, VS Code, Cline, Zed, ...).

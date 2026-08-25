@@ -24,6 +24,7 @@ pub enum Command {
 /// `ConnectAgent::all()` — the interactive menu picks them up automatically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectAgent {
+    Bob,
     Claude,
     Grok,
     Codex,
@@ -32,6 +33,7 @@ pub enum ConnectAgent {
 impl ConnectAgent {
     pub fn all() -> &'static [ConnectAgent] {
         &[
+            ConnectAgent::Bob,
             ConnectAgent::Claude,
             ConnectAgent::Grok,
             ConnectAgent::Codex,
@@ -40,6 +42,7 @@ impl ConnectAgent {
 
     pub(crate) fn cli_name(self) -> &'static str {
         match self {
+            ConnectAgent::Bob => "bob",
             ConnectAgent::Claude => "claude",
             ConnectAgent::Grok => "grok",
             ConnectAgent::Codex => "codex",
@@ -48,6 +51,7 @@ impl ConnectAgent {
 
     pub(crate) fn display_name(self) -> &'static str {
         match self {
+            ConnectAgent::Bob => "Bob",
             ConnectAgent::Claude => "Claude Code",
             ConnectAgent::Grok => "Grok",
             ConnectAgent::Codex => "Codex",
@@ -60,11 +64,12 @@ impl std::str::FromStr for ConnectAgent {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
+            "bob" => Ok(ConnectAgent::Bob),
             "claude" | "claude-code" | "claude_code" => Ok(ConnectAgent::Claude),
             "grok" => Ok(ConnectAgent::Grok),
             "codex" => Ok(ConnectAgent::Codex),
             other => Err(format!(
-                "unknown agent {other:?}; expected one of: claude, grok, codex"
+                "unknown agent {other:?}; expected one of: bob, claude, grok, codex"
             )),
         }
     }
@@ -105,6 +110,7 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
         // be verified against its checksum/tag — `--version` currently
         // errors as an unknown command without this.
         "version" | "--version" | "-V" => Ok(Command::Version),
+        "--help" | "-h" => Ok(Command::Help),
         other => Err(format!(
             "unknown command {other:?}; expected one of: serve, connect, install, menu, version, help"
         )),
@@ -116,19 +122,14 @@ slugaudit-mcp — searchable, trustworthy codebase evidence over MCP
 
 USAGE:
     slugaudit-mcp                    Run the MCP server (stdio transport)
-    slugaudit-mcp serve              Same as running with no arguments
-    slugaudit-mcp connect [AGENT]    Register this binary as the `slugaudit`
-                                      MCP server in an AI agent. AGENT is one
-                                      of: claude, grok, codex. Omit to pick
-                                      from an interactive menu.
-    slugaudit-mcp install            Copy this binary to ~/.slugthug/bin/ so
-                                      it's on a stable path shared with future
-                                      slug-branded products.
-    slugaudit-mcp menu               Interactive setup menu: install the binary,
-                                      connect to an AI agent, get instructions
-                                      for any other MCP client, or run the server.
-    slugaudit-mcp version            Print the version and exit (also --version, -V)
-    slugaudit-mcp help               Show this message
+    slugaudit-mcp menu               Interactive setup menu (recommended entry point)
+    slugaudit-mcp install            Copy binary to ~/.slugthug/bin/
+    slugaudit-mcp version            Print version (also --version, -V)
+    slugaudit-mcp help               Show this message (also --help, -h)
+
+The `menu` walks you through installation, connecting to an AI agent
+(Claude Code, Grok, Codex), getting config for other MCP clients,
+or starting the server for testing.
 ";
 
 /// Errors from `connect`. Split out from `CliError` because connect has its

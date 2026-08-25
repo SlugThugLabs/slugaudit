@@ -238,11 +238,12 @@ fn describe_error(error: &rusqlite::Error, abort_reason: &Arc<AtomicU8>) -> Erro
 /// "Top-level" means outside single-quoted strings, double-quoted
 /// identifiers, backtick/bracket identifiers, and line/block comments — so
 /// `SELECT ';'` and `SELECT 1 -- ;` are not mistaken for multiple
-/// statements. Used only to produce a friendlier error than SQLite's raw
-/// `near ";": syntax error` when a caller sends multiple statements (which
-/// the subquery wrapper cannot express). This is a UX hint, not a security
-/// boundary — the read-only connection and the wrapper remain the
-/// correctness guards.
+/// statements, and neither are `SELECT '--' AS x; SELECT 2` (comment
+/// markers inside a literal are ordinary characters). Used only to produce
+/// a friendlier error than SQLite's raw `near ";": syntax error` when a
+/// caller sends multiple statements (which the subquery wrapper cannot
+/// express). This is a UX hint, not a security boundary — the read-only
+/// connection and the wrapper remain the correctness guards.
 fn first_statement_separator(sql: &str) -> Option<usize> {
     let bytes = sql.as_bytes();
     let mut i = 0;
@@ -252,20 +253,10 @@ fn first_statement_separator(sql: &str) -> Option<usize> {
     let mut in_bracket = false;
     while i < bytes.len() {
         let b = bytes[i];
-        if b == b'-' && bytes.get(i + 1) == Some(&b'-') {
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-        if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
-            i += 2;
-            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                i += 1;
-            }
-            i = (i + 2).min(bytes.len());
-            continue;
-        }
+        // String/identifier state first: `--` and `/*` inside a literal or
+        // quoted identifier are ordinary characters, not comment starts.
+        // Checking comments first (the old order) let `SELECT '--x'; SELECT 2`
+        // skip to end-of-line from inside the string and hide the real `;`.
         if in_single {
             if b == b'\'' {
                 if bytes.get(i + 1) == Some(&b'\'') {
@@ -300,6 +291,22 @@ fn first_statement_separator(sql: &str) -> Option<usize> {
                 in_bracket = false;
             }
             i += 1;
+            continue;
+        }
+        // Only outside strings/identifiers do `--` and `/*` introduce
+        // comments.
+        if b == b'-' && bytes.get(i + 1) == Some(&b'-') {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
             continue;
         }
         match b {
