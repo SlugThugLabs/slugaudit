@@ -7,6 +7,22 @@ fn create_activation(root: &Path) {
 }
 
 #[test]
+fn resolve_project_returns_root_and_database_path_together() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    create_activation(directory.path());
+    let (root, db) = resolve_project(directory.path()).expect("active project");
+    assert_eq!(root.as_path(), directory.path().canonicalize().unwrap());
+    assert_eq!(db, database_path(&root));
+}
+
+#[test]
+fn resolve_project_fails_when_no_project_is_active() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let error = resolve_project(directory.path()).expect_err("no activation marker");
+    assert!(matches!(error, ActivationError::NotActive));
+}
+
+#[test]
 fn finds_an_active_project_at_its_own_root() {
     let directory = tempfile::tempdir().expect("temp dir");
     create_activation(directory.path());

@@ -80,6 +80,27 @@ pub fn find_project_root(start: &Path) -> Result<ProjectRoot, ActivationError> {
     Err(ActivationError::NotActive)
 }
 
+/// The standard prologue for every state-bearing entry point: resolve
+/// `start` to an active project root and its database path in one step.
+/// Keeping the find-root → database-path sequence here means the callers
+/// that need both (sync's `ensure_current`, the `health` tool) can't
+/// drift in ordering or error handling.
+///
+/// `project_control` deliberately does **not** use this: enabling a
+/// project must work *before* the activation marker exists, so it
+/// resolves the root with [`ProjectRoot::resolve`] and only then creates
+/// the marker.
+///
+/// # Errors
+///
+/// Returns an error if `start` can't be resolved or no ancestor is an
+/// active project (see [`find_project_root`]).
+pub fn resolve_project(start: &Path) -> Result<(ProjectRoot, PathBuf), ActivationError> {
+    let root = find_project_root(start)?;
+    let database_path = database_path(&root);
+    Ok((root, database_path))
+}
+
 /// Creates `.planning/slugaudit` under `root` — the one action that turns
 /// SlugAudit "on" for a project. Idempotent: succeeds silently if already
 /// enabled. Refuses to create through a symlinked `.planning` or

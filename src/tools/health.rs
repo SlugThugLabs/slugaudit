@@ -188,9 +188,8 @@ fn compute_project_state(
     path: &str,
     manager: &crate::sync::SourceSyncManager,
 ) -> Result<ProjectHealthFields, ErrorData> {
-    let root = crate::project::find_project_root(std::path::Path::new(path))
+    let (root, database_path) = crate::project::resolve_project(std::path::Path::new(path))
         .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-    let database_path = crate::project::database_path(&root);
     // Read-only: `watch_state_for` never registers a watch and never
     // changes watcher health (unlike `activate`).
     let snapshot = manager

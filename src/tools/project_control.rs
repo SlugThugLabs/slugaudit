@@ -71,6 +71,9 @@ pub fn project_control(
     let inner = &request.0;
     let path_str = inner.path.as_deref().unwrap_or(".").to_string();
     let path = std::path::PathBuf::from(&path_str);
+    // `ProjectRoot::resolve`, not `project::resolve_project`: enabling a
+    // project must work *before* the activation marker exists, so there
+    // is no active project to find yet.
     let root = ProjectRoot::resolve(&path).map_err(|e| err(format!("resolve: {e}")))?;
 
     match inner.action {

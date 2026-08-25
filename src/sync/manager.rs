@@ -190,9 +190,8 @@ impl SourceSyncManager {
         sink.emit(ProgressEvent::Started {
             phase: "ensuring_current",
         });
-        let root = project::find_project_root(Path::new(path))
+        let (root, database_path) = project::resolve_project(Path::new(path))
             .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-        let database_path = project::database_path(&root);
 
         let mut connection = match store::open_read_write(&database_path) {
             Ok(connection) => connection,
