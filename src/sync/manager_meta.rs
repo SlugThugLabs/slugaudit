@@ -217,7 +217,6 @@ pub(crate) fn publish_from_scratch(
     Ok(SyncedProject {
         database_path,
         revision_id: report.revision_id,
-        root: root.as_path().to_path_buf(),
     })
 }
 

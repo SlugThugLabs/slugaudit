@@ -30,8 +30,6 @@ use thiserror::Error;
 pub struct SyncedProject {
     pub database_path: PathBuf,
     pub revision_id: String,
-    #[allow(dead_code)]
-    pub root: PathBuf,
 }
 
 /// Errors produced by incremental reconciliation.
@@ -361,7 +359,6 @@ impl SourceSyncManager {
         Ok(SyncedProject {
             database_path,
             revision_id,
-            root: root.as_path().to_path_buf(),
         })
     }
 

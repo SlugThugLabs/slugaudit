@@ -5,7 +5,7 @@
 //! and loads (or rejects) `.planning/perf_baseline.json` for comparison.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const CRITERION_DIR: &str = "target/criterion";
 
@@ -105,8 +105,3 @@ pub fn load_baseline(path: &Path) -> Result<BTreeMap<String, BaselineEntry>, Str
     }
     Ok(map)
 }
-
-// Stub to silence the unused-import warning for `PathBuf` when the
-// baseline entry struct only appears behind pinned JSON paths.
-#[allow(dead_code)]
-fn _stub_pathbuf(_: PathBuf) {}

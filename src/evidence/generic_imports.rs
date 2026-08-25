@@ -22,7 +22,9 @@
 
 use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, Position, Span, SpanAvailability};
 use serde_json::json;
-use tree_sitter_language_pack::{Node, get_parser};
+use tree_sitter_language_pack::Node;
+#[cfg(test)]
+use tree_sitter_language_pack::get_parser;
 
 /// Node kinds that denote a whole import statement. These names are shared
 /// across tree-sitter grammars — `import_declaration` in swift and scala,
@@ -70,8 +72,9 @@ fn is_import_statement_kind(kind: &str) -> bool {
 /// Production code uses [`super::normalize::extract_extra_walkers`] (which
 /// shares a tree with the binding walker); this standalone wrapper exists
 /// for tests that want to assert the walker output for a single language
-/// without going through the full evidence pipeline.
-#[allow(dead_code)]
+/// without going through the full evidence pipeline, so it is compiled
+/// only under `cfg(test)` — production never links it.
+#[cfg(test)]
 pub(super) fn extract_generic_imports(language: &str, source: &str) -> Vec<EvidenceItem> {
     let Ok(mut parser) = get_parser(language) else {
         return Vec::new();

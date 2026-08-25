@@ -11,7 +11,6 @@ fn missing_handle() -> SyncedProject {
     SyncedProject {
         database_path: PathBuf::from("/definitely/missing/slugaudit-project.db"),
         revision_id: "rev-1".to_owned(),
-        root: PathBuf::from("/definitely/missing"),
     }
 }
 
@@ -43,7 +42,6 @@ fn verified_read_fails_cleanly_on_a_corrupt_database() {
     let handle = SyncedProject {
         database_path: database_path.clone(),
         revision_id: "rev-1".to_owned(),
-        root: directory.path().to_path_buf(),
     };
 
     let result = with_verified_read(&handle, |_tx| Ok(()));
