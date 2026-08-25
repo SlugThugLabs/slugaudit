@@ -5,7 +5,10 @@
 //! indexed when they are not.
 
 use super::*;
+use crate::model::ResourceLimits;
 use crate::sync::test_support::{setup_project, write};
+use crate::util::Deadline;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 #[test]

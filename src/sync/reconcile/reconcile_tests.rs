@@ -1,8 +1,10 @@
 //! Tests for `reconcile`'s dirty-path reconciliation and barrier loop.
-// slugaudit-line-exception: approved-by=agent; reason=one test per reconcile outcome (unchanged/modified/new/deleted/mixed/race/cap) sharing setup_project from sync/test_support and `use super::*` access to MAX_BARRIER_LOOPS + ReconcileError; splitting would fragment the scenario set from the constants it asserts against
 use super::*;
+use crate::model::ResourceLimits;
 use crate::sync::test_support::{setup_project, write};
+use crate::util::Deadline;
 use crate::watch::WatchState;
+use std::collections::HashSet;
 use std::fs;
 
 #[test]

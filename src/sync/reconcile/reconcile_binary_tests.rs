@@ -5,6 +5,7 @@
 use super::*;
 use crate::sync::publish::publish;
 use crate::sync::test_support::{setup_project, write};
+use std::collections::HashSet;
 
 /// A binary file that changes on disk must stay classified as binary —
 /// `content` stays NULL and `file_kind` stays 'binary', matching what a

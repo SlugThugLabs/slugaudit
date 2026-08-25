@@ -77,7 +77,14 @@ src/
 │   ├── mod.rs                public exports
 │   ├── manager.rs            SourceSyncManager: ensure_current, reconcile, health accessors
 │   ├── manager_meta.rs       current_revision_id + ensure_project_row helpers
-│   ├── reconcile.rs          dirty/deleted reconciliation + barrier cap
+│   ├── reconcile/             dirty/deleted reconciliation — split into 6 files (mod.rs + error/report/options/pipeline/barrier/queries)
+│   │   ├── mod.rs             re-exports + MAX_BARRIER_LOOPS
+│   │   ├── error.rs           ReconcileError
+│   │   ├── report.rs          ReconcileReport
+│   │   ├── options.rs         ReconcileOptions (budget + ignore rules)
+│   │   ├── pipeline.rs        per-path dirty-file loop
+│   │   ├── barrier.rs         event-barrier sync loop
+│   │   └── queries.rs         SQL helpers (existing hashes, parser pack version)
 │   ├── discovery.rs          filesystem walk with extension/limit filters
 │   ├── hash.rs               BLAKE3 content hashing
 │   ├── sample.rs             read-file-with-budgets
@@ -146,9 +153,9 @@ and ≥300 hard-fails the gate (CI red). Test files (`*_tests.rs`, `tests.rs`) e
 
 | Stage | Scope decision | Count |
 |---|---|---|
-| 0–199 LoC (any file) | `source-size:auto` | 133 |
+| 0–199 LoC (any file) | `source-size:auto` | 139 |
 | test files 200–500 LoC | `source-size:test-auto` | 9 |
-| production 200–300 LoC, annotated | `source-size:approved-exception` | 11 |
+| production 200–300 LoC, annotated | `source-size:approved-exception` | 10 |
 | production 200–300 LoC, **NOT** annotated | `source-size:violation` | 0 |
 | >300 production / >500 test LoC | `source-size:hard-fail` | 0 |
 
@@ -168,7 +175,6 @@ test-file rule above.
 | `src/graph/resolve_rust.rs` | 210 | one resolution pipeline per Rust import form (workspace anchoring, super/self walk, item-vs-module shortening) with mutually recursive helpers on the same `known_paths` contract |
 | `src/store/migrations.rs` | 243 | one migration per schema version plus version-pinning tests form a single forward-only sequence; splitting would scatter the ordering invariant (and the exact-version pin) |
 | `src/sync/manager.rs` | 291 | `ensure_current`'s three-branch match is the sync orchestrator's hot path; trace sites + `stamp_last_sync` belong next to the code paths they cover |
-| `src/sync/reconcile.rs` | 259 | the per-path reconcile loop, its barrier sync, and the report types are one atomic pipeline; manifest hashing lives in `manifest.rs` |
 | `src/tools/health.rs` | 236 | health is the schema-defining tool; Request + Response + phase + derivation live together so the schema isn't split from its only consumer |
 | `src/tools/query.rs` | 261 | one tool contract owns request/response types, the execution/budget path, and the separator scanner; splitting would fragment the validation order (empty → size → statement count → freshness → budget) the tests assert against |
 | `src/watch/manager.rs` | 287 | one file owns the notify watcher lifecycle, per-project watch states, scope/rule maintenance, and the event filter; splitting would fragment the manager's lock discipline and the unwatch rule |
