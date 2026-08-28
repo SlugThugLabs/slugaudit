@@ -1,6 +1,7 @@
 name: Release
 
-# Cuts a distributable binary. Quality gates (fmt, clippy, tests, audit,
+# Cuts the distributable end-user `slugaudit-mcp` binary. The check_* binaries
+# are development/CI tools and are not distributed to users. Quality gates (fmt, clippy, tests, audit,
 # coverage, perf, mutation) run on every push/PR in quality.yml — this
 # workflow only builds the release artifact and attaches it to the
 # GitHub Release, so it stays lean and fast.
@@ -53,7 +54,7 @@ jobs:
       - name: Build release binary
         # --locked: the release must match the checked-in Cargo.lock, or
         # the build fails instead of silently resolving differently.
-        run: cargo build --release --locked
+        run: cargo build --release --locked --bin slugaudit-mcp
 
       - name: Stage artifacts
         run: |

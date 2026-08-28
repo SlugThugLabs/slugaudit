@@ -64,7 +64,11 @@ fn on_action_enables_the_project_and_runs_the_initial_import() {
     assert_eq!(inner.status, "enabled");
     assert_eq!(
         inner.path,
-        project.path().canonicalize().expect("tempdir canonicalizes").to_string_lossy(),
+        project
+            .path()
+            .canonicalize()
+            .expect("tempdir canonicalizes")
+            .to_string_lossy(),
         "the response reports the canonical project root"
     );
     let import = inner.import.expect("import report present");

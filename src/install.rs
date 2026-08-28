@@ -84,9 +84,9 @@ pub fn run_install() -> Result<(), InstallError> {
     // `install` is human-facing; `connect` follows naturally after PATH has
     // it, so offer to add the dir rather than forcing the user to type an
     // export by hand. No-op when stdin isn't a terminal or already on PATH.
-    if !on_path(&bin_dir) && interactive_prompt(
-        &format!("Add {} to your PATH? [y/N] ", bin_dir.display()),
-    ) {
+    if !on_path(&bin_dir)
+        && interactive_prompt(&format!("Add {} to your PATH? [y/N] ", bin_dir.display()))
+    {
         match add_to_path(&bin_dir) {
             Ok(()) => {}
             Err(error) => {
@@ -154,7 +154,9 @@ fn add_to_path(bin_dir: &Path) -> Result<(), InstallError> {
 /// Returns the shell config file to edit and the exact `PATH` line to
 /// append for the current `$SHELL`. Pure so it can be unit-tested.
 fn path_config(bin_dir: &Path) -> Result<(PathBuf, String), InstallError> {
-    let home = std::env::var_os("HOME").map(PathBuf::from).ok_or(InstallError::NoHome)?;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or(InstallError::NoHome)?;
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_owned());
     let name = Path::new(&shell)
         .file_name()

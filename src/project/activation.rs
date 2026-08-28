@@ -5,6 +5,9 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+// Runtime customer-project state, not repository-development state.
+// SlugAudit owns only <project-root>/.planning/slugaudit/; the rest of a
+// user's .planning directory remains ordinary project data.
 const PLANNING_DIR: &str = ".planning";
 const ACTIVATION_DIR: &str = "slugaudit";
 
@@ -27,7 +30,9 @@ pub enum ActivationError {
     DatabaseBusy(#[source] rusqlite::Error),
 }
 
-/// The `.planning/slugaudit` directory under a resolved project root.
+/// The SlugAudit-owned runtime directory under a resolved user project:
+/// `<project-root>/.planning/slugaudit/`. The surrounding `.planning`
+/// directory remains user project data.
 #[must_use]
 pub fn activation_dir(root: &ProjectRoot) -> PathBuf {
     root.as_path().join(PLANNING_DIR).join(ACTIVATION_DIR)

@@ -104,8 +104,7 @@ fn path_config_maps_bash_shell_to_bashrc_export() {
             ("SHELL", Some(std::ffi::OsStr::new("/bin/bash"))),
         ],
         || {
-            let (config, line) = path_config(Path::new("/x/slugthug/bin"))
-                .expect("path config");
+            let (config, line) = path_config(Path::new("/x/slugthug/bin")).expect("path config");
             assert_eq!(config, temp.path().join(".bashrc"));
             assert_eq!(line, "export PATH=\"/x/slugthug/bin:$PATH\"");
         },
@@ -122,8 +121,7 @@ fn path_config_maps_fish_shell_to_config_fish() {
             ("SHELL", Some(std::ffi::OsStr::new("/usr/bin/fish"))),
         ],
         || {
-            let (config, line) = path_config(Path::new("/x/slugthug/bin"))
-                .expect("path config");
+            let (config, line) = path_config(Path::new("/x/slugthug/bin")).expect("path config");
             assert_eq!(config, temp.path().join(".config/fish/config.fish"));
             assert_eq!(line, "fish_add_path /x/slugthug/bin");
         },
@@ -140,8 +138,7 @@ fn path_config_defaults_to_bashrc_without_shell() {
             ("SHELL", None::<&std::ffi::OsStr>),
         ],
         || {
-            let (config, line) = path_config(Path::new("/x/slugthug/bin"))
-                .expect("path config");
+            let (config, line) = path_config(Path::new("/x/slugthug/bin")).expect("path config");
             assert_eq!(config, temp.path().join(".bashrc"));
             assert!(line.contains("/x/slugthug/bin"));
         },

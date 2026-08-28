@@ -169,7 +169,10 @@ fn style_uses_the_documented_sgr_codes() {
     ];
     for (output, prefix) in expectations {
         if style.enabled() {
-            assert!(output.starts_with(prefix), "expected {prefix:?}, got {output:?}");
+            assert!(
+                output.starts_with(prefix),
+                "expected {prefix:?}, got {output:?}"
+            );
         } else {
             assert_eq!(output, "x");
         }

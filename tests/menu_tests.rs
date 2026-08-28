@@ -82,13 +82,19 @@ fn run_menu(input: &str, extra_env: Option<(&str, &str)>) -> (ExitStatus, String
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("menu did not exit within {MENU_TIMEOUT:?}; a choice branch is blocking or looping on EOF");
+            panic!(
+                "menu did not exit within {MENU_TIMEOUT:?}; a choice branch is blocking or looping on EOF"
+            );
         }
         std::thread::sleep(Duration::from_millis(25));
     };
 
-    let stdout = out_rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
-    let stderr = err_rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
+    let stdout = out_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap_or_default();
+    let stderr = err_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap_or_default();
     (status, stdout, stderr)
 }
 
@@ -101,7 +107,10 @@ fn menu_renders_and_exits_cleanly_on_the_quit_option() {
         status.success(),
         "choosing 5 (Exit) must exit 0; stderr: {stderr}"
     );
-    assert!(stdout.contains("SlugAudit setup"), "menu must render its title");
+    assert!(
+        stdout.contains("SlugAudit setup"),
+        "menu must render its title"
+    );
     assert!(
         stdout.contains("Choose an option"),
         "menu must show the prompt"

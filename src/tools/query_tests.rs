@@ -131,7 +131,13 @@ fn multi_statement_sql_gets_a_friendly_typed_error() {
 
     // A semicolon inside a comment is one statement.
     let response = ask(&project, "SELECT 1 -- ; trailing").expect("comment semicolon is fine");
-    assert_eq!(response.rows[0].as_object().expect("row is an object").len(), 1);
+    assert_eq!(
+        response.rows[0]
+            .as_object()
+            .expect("row is an object")
+            .len(),
+        1
+    );
 
     // A single trailing semicolon is stripped, not treated as a separator.
     ask(&project, "SELECT 1;").expect("trailing semicolon is fine");
@@ -247,7 +253,13 @@ fn multibyte_content_never_confuses_the_statement_separator_scanner() {
     // A semicolon inside a multibyte line comment is one statement.
     let response =
         ask(&project, "SELECT 1 -- コメント ; コメント").expect("multibyte comment is fine");
-    assert_eq!(response.rows[0].as_object().expect("row is an object").len(), 1);
+    assert_eq!(
+        response.rows[0]
+            .as_object()
+            .expect("row is an object")
+            .len(),
+        1
+    );
 
     // A semicolon inside a multibyte block comment is one statement.
     let response = ask(&project, "SELECT 1 /* コメント ; コメント */ AS x")

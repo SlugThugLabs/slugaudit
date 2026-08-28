@@ -1,5 +1,13 @@
 # SlugAudit Architecture
 
+> **Product boundary:** SlugAudit is shipped to users as the single
+> `slugaudit-mcp` binary. It runs inside a user's project through an
+> MCP-compatible agent and stores disposable derived data in
+> `<project-root>/.planning/slugaudit/project.db`. In this repository,
+> `.planning/` contains SlugAudit's development documentation; in a customer
+> project, `.planning/` is customer-owned project data. SlugAudit owns only the
+> `slugaudit/` child directory and excludes it from discovery.
+>
 This document is the single high-level source of truth for how SlugAudit
 fits together. It is the first thing a senior engineer should read when
 joining — `.planning/PHASE-*.md` files document specific work,
@@ -43,6 +51,18 @@ state-bearing tools synchronize the relevant project before serving —
 if the watcher reports untrusted state (restart, integrity violation)
 the next tool call does a full publish instead of trusting the
 dirty-set.
+
+## Repository versus runtime scope
+
+The `.planning/` directory at this repository root contains development
+material for SlugAudit. It is not shipped as part of the end-user binary.
+When the binary runs in a customer project, however, that project's
+`.planning/` directory is customer data and may be indexed. Only
+`<project-root>/.planning/slugaudit/` is application-owned runtime state; its
+`project.db` is disposable derived data.
+
+See the repository-level [DEVELOPMENT_SCOPE.md](../DEVELOPMENT_SCOPE.md) for
+the complete scope policy.
 
 ## Module map
 

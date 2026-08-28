@@ -2,7 +2,10 @@ use super::*;
 
 #[test]
 fn no_arguments_means_serve() {
-    assert_eq!(parse_args(std::iter::empty()).expect("valid arguments parse"), Command::Serve);
+    assert_eq!(
+        parse_args(std::iter::empty()).expect("valid arguments parse"),
+        Command::Serve
+    );
 }
 
 #[test]
@@ -23,7 +26,6 @@ fn usage_with_a_plain_style_is_byte_identical_to_the_usage_const() {
         assert_eq!(styled, USAGE, "non-terminal help must match USAGE exactly");
     }
 }
-
 
 #[test]
 fn explicit_serve() {
@@ -82,7 +84,8 @@ fn connect_accepts_each_supported_agent_by_cli_name() {
         ("codex", ConnectAgent::Codex),
     ] {
         assert_eq!(
-            parse_args(vec!["connect".to_owned(), name.to_owned()].into_iter()).expect("valid arguments parse"),
+            parse_args(vec!["connect".to_owned(), name.to_owned()].into_iter())
+                .expect("valid arguments parse"),
             Command::Connect {
                 agent: Some(expected)
             }
@@ -93,7 +96,8 @@ fn connect_accepts_each_supported_agent_by_cli_name() {
 #[test]
 fn connect_agent_names_are_case_insensitive() {
     assert_eq!(
-        parse_args(vec!["connect".to_owned(), "CLAUDE".to_owned()].into_iter()).expect("valid arguments parse"),
+        parse_args(vec!["connect".to_owned(), "CLAUDE".to_owned()].into_iter())
+            .expect("valid arguments parse"),
         Command::Connect {
             agent: Some(ConnectAgent::Claude)
         }
@@ -104,7 +108,8 @@ fn connect_agent_names_are_case_insensitive() {
 fn connect_accepts_claude_code_alias_for_claude() {
     for alias in ["claude-code", "claude_code"] {
         assert_eq!(
-            parse_args(vec!["connect".to_owned(), alias.to_owned()].into_iter()).expect("valid arguments parse"),
+            parse_args(vec!["connect".to_owned(), alias.to_owned()].into_iter())
+                .expect("valid arguments parse"),
             Command::Connect {
                 agent: Some(ConnectAgent::Claude)
             }
@@ -141,7 +146,8 @@ fn install_parses_as_its_own_command() {
 #[test]
 fn install_ignores_any_extra_arguments() {
     assert_eq!(
-        parse_args(vec!["install".to_owned(), "--something".to_owned()].into_iter()).expect("valid arguments parse"),
+        parse_args(vec!["install".to_owned(), "--something".to_owned()].into_iter())
+            .expect("valid arguments parse"),
         Command::Install
     );
 }
@@ -157,7 +163,8 @@ fn menu_parses_as_its_own_command() {
 #[test]
 fn menu_ignores_any_extra_arguments() {
     assert_eq!(
-        parse_args(vec!["menu".to_owned(), "--wat".to_owned()].into_iter()).expect("valid arguments parse"),
+        parse_args(vec!["menu".to_owned(), "--wat".to_owned()].into_iter())
+            .expect("valid arguments parse"),
         Command::Menu
     );
 }

@@ -4,12 +4,16 @@
 //! MCP-capable client, or start the server directly. Exposed as
 //! `slugaudit-mcp menu`.
 //!
+//! Product boundary: this is setup UX for the shipped `slugaudit-mcp`
+//! binary; the `check_*` binaries are development-only.
+//!
 //! This is a human-facing CLI (never the serve path), so stdout is fine —
 //! same exception as connect.rs/install.rs. The menu is deliberately a
 //! thin driver over the existing `install`/`connect` entry points and
 //! owns no setup logic of its own, so the non-interactive commands stay
 //! the single source of truth for what each step does.
 #![allow(clippy::print_stdout)]
+// slugaudit-line-exception: approved-by=agent; reason=the interactive setup menu keeps rendering, choice dispatch, and its four setup branches together so the user-facing flow remains one cohesive CLI contract
 
 use crate::connect;
 use crate::install;
@@ -234,7 +238,10 @@ mod tests {
     #[test]
     fn plain_style_renders_the_byte_exact_plain_menu() {
         let plain = render_menu(&Style::plain());
-        assert_eq!(plain, MENU, "plain rendering must match the menu const exactly");
+        assert_eq!(
+            plain, MENU,
+            "plain rendering must match the menu const exactly"
+        );
         assert!(
             !plain.contains('\x1b'),
             "plain rendering must never contain ESC escape bytes"

@@ -7,11 +7,32 @@ per-project SQLite database and exposes seven tools to any AI agent that
 speaks the Model Protocol. It does **not** audit — it supplies evidence, and
 the calling AI performs all judgment.
 
+## Product boundary
+
+The end-user product is the single `slugaudit-mcp` binary. Users install and
+configure it with their AI agent, and the binary operates on the user's own
+projects.
+
+For each enabled user project, SlugAudit owns only this derived-data directory:
+
+```text
+<user-project>/.planning/slugaudit/project.db
+```
+
+The surrounding `.planning/` directory belongs to the user's project workflow.
+Its other files are ordinary user project data and may be indexed normally.
+SlugAudit excludes its own `.planning/slugaudit/` directory from discovery.
+
+This repository also contains development-only material used to build and
+validate SlugAudit: repository planning documents, tests, benchmarks, CI
+workflows, and the `check_*` quality-gate binaries. Those files are not part
+of the end-user product or shipped runtime binary.
+
 ## Quick start
 
 ```bash
-# Build
-cargo build --release
+# Build the end-user product binary
+cargo build --release --locked --bin slugaudit-mcp
 
 # Connect your agent (run once)
 ./target/release/slugaudit-mcp connect
@@ -60,6 +81,12 @@ That's it. The agent can now query codebase evidence.
 The database is disposable derived data — delete it and any tool call
 rebuilds it from source.
 
+## Repository scope
+
+See [DEVELOPMENT_SCOPE.md](DEVELOPMENT_SCOPE.md) for the distinction between
+this repository's development materials and the runtime behavior of SlugAudit
+inside a user's project.
+
 ## Documentation
 
 - **[Connection guides](docs/)** — agent-specific setup for Bob, Claude Code,
@@ -78,6 +105,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --lib --bins --tests --all-features
 cargo run --quiet --bin check_source_limits --locked
+cargo run --quiet --bin check_docs_drift --locked
 cargo run --quiet --bin check_no_duplicates --locked
 ```
 

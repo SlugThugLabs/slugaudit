@@ -282,7 +282,11 @@ fn delete_then_recreate_gets_reindexed() {
         .map_err(db_error)
     })
     .expect("read content");
-    assert!(content.expect("read file back").contains("pub fn recreated()"));
+    assert!(
+        content
+            .expect("read file back")
+            .contains("pub fn recreated()")
+    );
 }
 
 /// C12: the consecutive-full-publish health metric counts full publishes
@@ -362,5 +366,9 @@ fn drains_events_after_full_verification() {
         .map_err(db_error)
     })
     .expect("read content");
-    assert!(content.expect("read file back").contains("pub fn changed()"));
+    assert!(
+        content
+            .expect("read file back")
+            .contains("pub fn changed()")
+    );
 }

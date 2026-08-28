@@ -24,7 +24,13 @@ fn python_relative_and_absolute_forms() {
             .text,
         "..pkg.mod"
     );
-    assert_eq!(resolver.extract_reference("import os").expect("reference should extract").text, "os");
+    assert_eq!(
+        resolver
+            .extract_reference("import os")
+            .expect("reference should extract")
+            .text,
+        "os"
+    );
     assert_eq!(
         resolver
             .extract_reference("import numpy as np")

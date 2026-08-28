@@ -21,8 +21,6 @@ fn open_temp_db() -> (TempDir, rusqlite::Connection) {
     (dir, connection)
 }
 
-
-
 #[test]
 fn current_revision_id_returns_none_when_no_revision_has_been_published() {
     let (_dir, connection) = open_temp_db();

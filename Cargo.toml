@@ -9,6 +9,13 @@ edition = "2024"
 # the root crate from license-expression checks it cannot evaluate.
 publish = false
 license-file = "LICENSE"
+default-run = "slugaudit-mcp"
+
+# Product boundary:
+# - `slugaudit-mcp` is the only end-user executable.
+# - The `check_*` binaries are development/CI-only quality tools.
+# - Customer projects receive the MCP server binary, which owns only its
+#   runtime `.planning/slugaudit/` derived-data directory.
 
 [[bin]]
 name = "slugaudit-mcp"

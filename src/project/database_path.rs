@@ -4,9 +4,12 @@ use std::path::PathBuf;
 
 const DATABASE_FILENAME: &str = "project.db";
 
-/// The one location a project's SQLite database is ever allowed to live:
-/// inside its own activation directory. Never accepts a caller-supplied
-/// path — there is no argument to override it with.
+/// Returns the SlugAudit-owned runtime database inside a user project:
+/// `<project-root>/.planning/slugaudit/project.db`.
+///
+/// The surrounding `.planning` directory belongs to the user project;
+/// SlugAudit owns only the `slugaudit` child directory. This function never
+/// accepts a caller-supplied database path.
 #[must_use]
 pub fn database_path(root: &ProjectRoot) -> PathBuf {
     activation_dir(root).join(DATABASE_FILENAME)

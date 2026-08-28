@@ -18,7 +18,9 @@ use rmcp::handler::server::wrapper::Parameters;
 /// for the whole write→sync→read cycle keeps the session stable and
 /// keeps the purge from ever targeting these rows.
 fn with_stable_session<T>(f: impl FnOnce() -> T) -> T {
-    let _guard = SESSION_TEST_LOCK.lock().expect("session test lock poisoned");
+    let _guard = SESSION_TEST_LOCK
+        .lock()
+        .expect("session test lock poisoned");
     f()
 }
 
@@ -113,7 +115,8 @@ fn file_filter_returns_only_that_file() {
         let manager = sync::SourceSyncManager::default();
 
         // Index b.rs so the finding tool can reference it.
-        ensure_synced_no_progress(&project.path().to_string_lossy(), &manager).expect("initial sync");
+        ensure_synced_no_progress(&project.path().to_string_lossy(), &manager)
+            .expect("initial sync");
 
         write_finding(&project, "a.rs", "a finding", &manager);
         write_finding(&project, "b.rs", "b finding", &manager);
@@ -151,7 +154,8 @@ fn stale_findings_are_returned_with_stale_status() {
         .expect("before");
         assert_eq!(before.0.findings[0].status, "current");
 
-        std::fs::write(project.path().join("lib.rs"), b"fn main() { changed(); }\n").expect("modify");
+        std::fs::write(project.path().join("lib.rs"), b"fn main() { changed(); }\n")
+            .expect("modify");
         ensure_synced_no_progress(&project.path().to_string_lossy(), &manager).expect("re-sync");
 
         let after = finding_read(
