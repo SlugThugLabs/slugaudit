@@ -104,12 +104,36 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
             continue;
         }
 
+        // Stat BEFORE hashing: the stored stat fingerprint must never be
+        // newer than the content it describes. A file modified between its
+        // hash-read and a post-read stat would store the *new* mtime against
+        // the *old* content hash, and the next sweep would skip it as
+        // unchanged — serving stale evidence. A pre-read stat can only err
+        // stale (one extra nomination next sweep), never fresh.
+        let pre_read_stat = std::fs::metadata(&absolute_path).ok().map(|metadata| {
+            (
+                crate::util::mtime_unix_seconds(&metadata),
+                i64::try_from(metadata.len()).unwrap_or(i64::MAX),
+            )
+        });
+
         let identity = hash::hash_file(&path, &absolute_path)?;
 
         if let Some(existing_hash) = existing_hashes.get(&path)
             && existing_hash == &identity.content_hash
         {
             unchanged += 1;
+            // Content is unchanged; only the stat fingerprint drifted
+            // (editor no-op save, touch, git checkout). Refresh it so the
+            // sweep stops re-nominating this path on every call. Safe
+            // outside the publish transaction: the fingerprint describes
+            // content that is already committed and unchanged.
+            if let Some((mtime, byte_len)) = pre_read_stat {
+                connection.execute(
+                    "UPDATE files SET modified_unix_seconds = ?1, byte_len = ?2 WHERE path = ?3",
+                    rusqlite::params![mtime, byte_len, path],
+                )?;
+            }
             continue;
         }
 

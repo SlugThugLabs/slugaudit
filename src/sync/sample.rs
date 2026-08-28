@@ -6,6 +6,7 @@ use super::revision::FileRecord;
 use crate::model::{
     EvidenceItem, EvidenceKind, EvidenceOrigin, ResourceLimits, SourceIdentity, SpanAvailability,
 };
+use crate::util;
 use serde_json::json;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -47,6 +48,10 @@ pub struct Sample {
     utf8_lossy: bool,
     pub identity: SourceIdentity,
     pub byte_len: u64,
+    /// File mtime in unix seconds, captured from the same stat that
+    /// enforced the size ceiling. Persisted so the sync sweep can detect
+    /// changes with one stat instead of a full read+hash.
+    pub modified_unix_seconds: Option<i64>,
 }
 
 /// # Errors
@@ -97,6 +102,7 @@ pub fn sample_file(file: &DiscoveredFile, limits: &ResourceLimits) -> Result<Sam
         identity: hash::hash_bytes(&file.relative_path, &bytes),
         content,
         utf8_lossy,
+        modified_unix_seconds: util::mtime_unix_seconds(&metadata),
     })
 }
 
@@ -129,6 +135,7 @@ pub fn to_file_record(sample: Sample, limits: &ResourceLimits) -> FileRecord {
         content: sample.content,
         identity: sample.identity,
         byte_len: sample.byte_len,
+        modified_unix_seconds: sample.modified_unix_seconds,
         language: parsed.language,
         language_detected: parsed.language_detected,
         run: parsed.run,

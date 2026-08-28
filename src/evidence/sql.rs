@@ -61,6 +61,7 @@ fn kind_text(kind: &EvidenceKind) -> &'static str {
         EvidenceKind::Chunk => "Chunk",
         EvidenceKind::RawNode => "RawNode",
         EvidenceKind::Metric => "Metric",
+        EvidenceKind::Call => "Call",
     }
 }
 
@@ -72,6 +73,7 @@ fn origin_text(origin: &EvidenceOrigin) -> &'static str {
         EvidenceOrigin::SourceContent => "SourceContent",
         EvidenceOrigin::DerivedRelationship => "DerivedRelationship",
         EvidenceOrigin::GenericWalker => "GenericWalker",
+        EvidenceOrigin::RustCallWalker => "RustCallWalker",
     }
 }
 

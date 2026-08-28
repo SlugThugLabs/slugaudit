@@ -22,6 +22,7 @@ pub enum EvidenceKind {
     Chunk,
     RawNode,
     Metric,
+    Call,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

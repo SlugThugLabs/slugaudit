@@ -1,8 +1,7 @@
 //! Unit tests for `check_source_limits`.
 
-use super::counter::{
-    PRODUCTION_CEILING, TEST_FILE_CEILING, Verdict, code_lines, exception_reason, verdict,
-};
+use super::approval::reason as exception_reason;
+use super::counter::{PRODUCTION_CEILING, TEST_FILE_CEILING, Verdict, code_lines, verdict};
 
 #[test]
 fn empty_string_is_zero() {
@@ -108,6 +107,16 @@ fn exception_reason_absent_returns_none() {
 fn exception_wrong_approver_returns_none() {
     let src = "// slugaudit-line-exception: approved-by=human; reason=foo\nfn x() {}\n";
     assert_eq!(exception_reason(src), None);
+}
+
+#[test]
+fn dated_human_exception_is_parsed() {
+    let src =
+        "// slugaudit-line-exception: approved-by=human-user; date=2026-08-28; reason=approved\n";
+    assert_eq!(
+        exception_reason(src).as_deref(),
+        Some("[human-approved 2026-08-28] approved")
+    );
 }
 
 // --- line-limit policy (verdict) ---

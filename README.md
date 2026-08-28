@@ -69,7 +69,7 @@ That's it. The agent can now query codebase evidence.
 1. **Discovery** — walks the project tree, respects `.gitignore`/`.ignore`,
    skips VCS internals and SlugAudit's own data directory.
 2. **Sampling** — reads each file, hashes it (BLAKE3), detects language,
-   runs tree-sitter extraction (symbols, imports, comments, diagnostics).
+   runs tree-sitter extraction (symbols, imports, Rust call sites, comments, diagnostics).
 3. **Publishing** — writes everything into `.planning/slugaudit/project.db`
    in one atomic transaction with compare-and-swap concurrency control.
 4. **Watching** — a filesystem watcher tracks changes. Incremental reconcile

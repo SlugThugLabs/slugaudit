@@ -17,10 +17,6 @@
 
 use std::path::{Path, PathBuf};
 
-const EXCEPTION_NEEDLE: &str = "slugaudit-line-exception:";
-const APPROVED_MARKER: &str = "approved-by=agent;";
-const REASON_MARKER: &str = "reason=";
-
 pub fn code_lines(source: &str) -> usize {
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -224,36 +220,15 @@ fn is_raw_string_start(s: &str) -> Option<usize> {
     }
 }
 
-/// Parses a `slugaudit-line-exception: approved-by=agent; reason=…`
-/// comment from any line of `source`. Hand-written instead of regex so
-/// the bin stays dependency-free.
-pub fn exception_reason(source: &str) -> Option<String> {
-    for line in source.lines() {
-        let Some(start) = line.find(EXCEPTION_NEEDLE) else {
-            continue;
-        };
-        let after_needle = line[start + EXCEPTION_NEEDLE.len()..].trim_start();
-        if !after_needle.starts_with(APPROVED_MARKER) {
-            continue;
-        }
-        let after_approved = after_needle[APPROVED_MARKER.len()..].trim_start();
-        if !after_approved.starts_with(REASON_MARKER) {
-            continue;
-        }
-        let reason = after_approved[REASON_MARKER.len()..].trim();
-        if !reason.is_empty() {
-            return Some(reason.to_string());
-        }
-    }
-    None
-}
-
 /// The gate's line ceilings. Test files get a higher ceiling because each
 /// `#[test]` names one behavior contract — repetition that cannot be
 /// DRY'd without losing the failure diagnostics that make a red test
 /// actionable — while production code is expected to earn its length.
 pub(crate) const TEST_FILE_CEILING: usize = 500;
 pub(crate) const PRODUCTION_CEILING: usize = 300;
+/// A dated human approval may extend the soft ceiling by this bounded
+/// amount; even explicit approval cannot rescue a genuinely oversized file.
+pub(crate) const HUMAN_APPROVED_CEILING: usize = 350;
 /// Production files at or above this length require an approved
 /// `slugaudit-line-exception:` comment.
 pub(crate) const PRODUCTION_EXCEPTION_FLOOR: usize = 200;
@@ -283,6 +258,12 @@ pub(crate) fn verdict(code_lines: usize, exception: Option<String>, test_file: b
         return Verdict::Pass;
     }
     if code_lines > PRODUCTION_CEILING {
+        if let Some(reason) = exception
+            && code_lines <= HUMAN_APPROVED_CEILING
+            && reason.starts_with("[human-approved ")
+        {
+            return Verdict::PassWithException { reason };
+        }
         return Verdict::FailHard {
             ceiling: PRODUCTION_CEILING,
         };

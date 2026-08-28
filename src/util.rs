@@ -163,6 +163,16 @@ pub(crate) fn at_least_timestamp(observed: i64, persisted: Option<i64>) -> i64 {
     observed.max(persisted.unwrap_or(0))
 }
 
+/// Unix-epoch seconds for a file's mtime, or `None` when the platform
+/// cannot report one (or reports a pre-epoch time). Stored alongside the
+/// content hash so the sync sweep can skip unchanged files with one stat
+/// instead of a full read+hash.
+pub(crate) fn mtime_unix_seconds(metadata: &std::fs::Metadata) -> Option<i64> {
+    let modified = metadata.modified().ok()?;
+    let elapsed = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    i64::try_from(elapsed.as_secs()).ok()
+}
+
 /// A cooperative wall-clock deadline for one sync operation.
 ///
 /// Created once at the entry of an operation that may iterate many times

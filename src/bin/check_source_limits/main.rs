@@ -18,6 +18,7 @@
 //! machine lives in the sibling [`counter`] module and the unit tests
 //! in the sibling [`tests`] module.
 
+mod approval;
 mod counter;
 
 #[cfg(test)]
@@ -84,7 +85,7 @@ fn main() -> ExitCode {
             .unwrap_or(path)
             .display()
             .to_string();
-        match counter::verdict(n, counter::exception_reason(&source), is_test_file(path)) {
+        match counter::verdict(n, approval::reason(&source), is_test_file(path)) {
             counter::Verdict::Pass => {
                 println!("source-limit: {rel}: {n} code lines; pass");
             }

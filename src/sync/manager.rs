@@ -5,7 +5,7 @@
 //! `ensure_current` call it inspects the watcher health and the unreconciled
 //! event set, then either does a full publish (untrusted watcher) or an
 //! incremental reconcile (trusted watcher with pending events).
-// slugaudit-line-exception: approved-by=agent; reason=ensure_current's three-branch match is the sync orchestrator's hot path; trace sites and stamp_last_sync belong next to the code paths they cover
+// slugaudit-line-exception: approved-by=human-user; date=2026-08-28; reason=the synchronization state machine is cohesive; full verification, incremental reconciliation, watcher-independent stat sweep, health transitions, and completion signaling must remain coordinated
 
 use super::manager_meta::{
     current_revision_id, ensure_project_row, publish_from_scratch, publish_full,
@@ -303,7 +303,18 @@ impl SourceSyncManager {
                             ));
                         }
                     }
-                }
+                } // Stat sweep: the watcher-independent freshness backstop — a
+                // change the watcher dropped or never saw is still found and
+                // reconciled before this call serves evidence. Failure marks
+                // the watcher Desynced so the next call re-verifies.
+                super::sweep_reconcile::sweep_and_reconcile(
+                    root.as_path(),
+                    self.watch_manager.rules_for(root.as_path()),
+                    &mut connection,
+                    &state,
+                    sink,
+                )?;
+
                 current_revision_id(&connection)
                     .map_err(|error| {
                         tracing::warn!(

@@ -158,6 +158,8 @@ src/
 ├── parse/                    tree-sitter parser registration
 ├── model/                    ResourceLimits + evidence/span types
 ├── evidence/                 evidence kind/category enums + normalize helpers
+│   ├── calls.rs              Rust call-site evidence walker
+│   └── calls_template.rs.txt template for future language call providers
 └── cli_tests.rs etc.         inline #[path] test modules per source file
 ```
 
@@ -516,6 +518,19 @@ Every question below is something a commercial audit or architecture
 review will ask. If a new question comes up during review, add it here
 with the answer so the next auditor finds it immediately.
 
+### Q: What does Rust call evidence guarantee?
+
+**Answer:** Rust call evidence is syntax evidence produced from the Rust
+Tree-sitter grammar. It records call spans, callee text, a simple callee name,
+and the enclosing function when available. It does not claim exact runtime
+resolution for trait dispatch, generics, function pointers, closures, macros,
+or generated code. Agents should use the `Call` evidence rows to locate
+likely call sites, then inspect the stored source before drawing conclusions.
+
+The implementation lives in `src/evidence/calls.rs`; future language support
+should follow `src/evidence/calls_template.rs.txt` and preserve explicit
+uncertainty rather than inventing targets.
+
 ### Q: Why is there no separate watcher heartbeat?
 
 **Answer:** `ensure_synced` runs before every state-bearing tool call
@@ -674,7 +689,7 @@ src/
 └── module_tests.rs        (same directory, sibling)
 ```
 
-The 52 `*_tests.rs` files share this pattern; `cargo test --lib` runs
+The 54 `*_tests.rs` files share this pattern; `cargo test --lib` runs
 all of them in parallel (`--test-threads=4` by default). Tool test
 modules occasionally split a focused scenario into a second sibling
 (e.g. `tools/finding_session_tests.rs`). Test files get a 500-code-line

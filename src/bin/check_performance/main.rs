@@ -8,16 +8,18 @@
 //! for CI), parses
 //! criterion's median point estimates, and fails when any bench
 //! regresses more than the threshold against the committed baseline
-//! (`.planning/perf_baseline.json`). The same policy as the coverage
-//! gate: the gated numbers are printed explicitly, so there is never a
-//! silent failure.
+//! (`.planning/archive/perf_baseline.json` — the planning-record archive
+//! is where the committed baseline lives since commit 231e8c8, even
+//! though the gate consumes it as live state). The same policy as the
+//! coverage gate: the gated numbers are printed explicitly, so there is
+//! never a silent failure.
 //!
 //! Pure-Rust replacement: no Python interpreter, no shell. `cargo
 //! bench` is invoked through `std::process::Command`; estimate JSONs
 //! are parsed with `serde_json` (already a dependency).
 //!
 //! Usage: `cargo run --bin check_performance --locked [--record] [threshold-percent]`
-//!   --record: regenerate `.planning/perf_baseline.json` from this run.
+//!   --record: regenerate `.planning/archive/perf_baseline.json` from this run.
 //!   threshold: regression threshold percent (default 20).
 
 mod estimates;
@@ -27,7 +29,7 @@ mod format;
 #[path = "tests.rs"]
 mod tests;
 
-const BASELINE_PATH: &str = ".planning/perf_baseline.json";
+const BASELINE_PATH: &str = ".planning/archive/perf_baseline.json";
 const CRITERION_DIR: &str = "target/criterion";
 const DEFAULT_THRESHOLD_PCT: f64 = 20.0;
 

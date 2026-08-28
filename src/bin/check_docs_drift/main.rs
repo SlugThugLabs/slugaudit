@@ -81,19 +81,30 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Reads a project file, exiting with code 2 on a read failure: a gate that
-/// cannot read the document it must verify cannot produce a verdict.
+/// Reads a project document by logical path (no directory prefix).
+/// Resolved against three locations in order: the project root,
+/// `.planning/`, then `.planning/archive/` — the planning record moved
+/// under `archive/` (commit 231e8c8) and the gate verifies the archived
+/// record stays coherent. Customer-project `.planning/` is unrelated
+/// runtime data and is never inspected by this development-only gate.
+/// A missing document exits with code 2: a gate that cannot read what it
+/// must verify cannot produce a verdict.
 fn read(root: &Path, relative: &str) -> String {
-    // Repository planning documents live under `.planning/`, while the
-    // checker modules refer to their logical paths without repeating that
-    // repository-level prefix. Customer-project `.planning/` is unrelated
-    // runtime data and is never inspected by this development-only gate.
-    let path = if root.join(relative).exists() {
-        root.join(relative)
-    } else {
-        root.join(".planning").join(relative)
+    let candidates = [
+        root.join(relative),
+        root.join(".planning").join(relative),
+        root.join(".planning").join("archive").join(relative),
+    ];
+    let Some(path) = candidates.iter().find(|path| path.exists()) else {
+        let tried = candidates
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!("docs-drift: cannot find {relative}; tried: {tried}");
+        std::process::exit(2);
     };
-    fs::read_to_string(&path).unwrap_or_else(|err| {
+    fs::read_to_string(path).unwrap_or_else(|err| {
         eprintln!("docs-drift: cannot read {}: {err}", path.display());
         std::process::exit(2);
     })

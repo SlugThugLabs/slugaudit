@@ -77,6 +77,7 @@ pub enum EvidenceOrigin {
     /// `process()`. Distinct from `PackStructure` so consumers can tell
     /// "the pack found this" from "our generic walker found this".
     GenericWalker,
+    RustCallWalker,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

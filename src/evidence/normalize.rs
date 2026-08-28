@@ -84,6 +84,9 @@ pub fn extract(language: &str, source: &str) -> Result<Vec<EvidenceItem>, PackEr
         source,
         result.imports.is_empty(),
     ));
+    if language == "rust" {
+        items.extend(super::calls::extract_rust(source));
+    }
 
     Ok(items)
 }

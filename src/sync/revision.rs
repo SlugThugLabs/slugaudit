@@ -13,6 +13,10 @@ pub struct FileRecord {
     pub content: Option<String>,
     pub identity: SourceIdentity,
     pub byte_len: u64,
+    /// File mtime in unix seconds at sample time. The sync sweep's
+    /// cheap-change signal: a stored mtime + byte_len that still match one
+    /// stat on disk proves the file is unchanged without reading it.
+    pub modified_unix_seconds: Option<i64>,
     pub language: Option<String>,
     pub language_detected: bool,
     pub run: ParserRun,
@@ -148,15 +152,16 @@ fn upsert_file(
     tx.execute(
         "INSERT INTO files (\
             path, file_kind, content, content_hash, hash_algorithm, byte_len, \
-            language, language_detected, parser_availability, parse_outcome, \
-            parse_error_reason, extraction_completeness, last_revision_id\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
+            modified_unix_seconds, language, language_detected, parser_availability, \
+            parse_outcome, parse_error_reason, extraction_completeness, last_revision_id\
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
          ON CONFLICT(path) DO UPDATE SET \
             file_kind = excluded.file_kind, \
             content = excluded.content, \
             content_hash = excluded.content_hash, \
             hash_algorithm = excluded.hash_algorithm, \
             byte_len = excluded.byte_len, \
+            modified_unix_seconds = excluded.modified_unix_seconds, \
             language = excluded.language, \
             language_detected = excluded.language_detected, \
             parser_availability = excluded.parser_availability, \
@@ -171,6 +176,7 @@ fn upsert_file(
             file.identity.content_hash,
             file.identity.hash_algorithm,
             file.byte_len,
+            file.modified_unix_seconds,
             file.language,
             file.language_detected,
             file.run.availability.as_sql_text(),

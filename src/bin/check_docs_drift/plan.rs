@@ -8,7 +8,7 @@ use super::read;
 /// §22 audit-corrections section; a header reverted to a pre-audit state is
 /// caught here.
 pub(super) fn check_plan_status_header(root: &Path, failures: &mut Vec<String>) {
-    let plan = read(root, ".planning/IMPLEMENTATION_PLAN.md");
+    let plan = read(root, "IMPLEMENTATION_PLAN.md");
     let lines: Vec<&str> = plan.lines().collect();
     let Some(idx) = lines
         .iter()
@@ -40,8 +40,8 @@ pub(super) fn check_plan_status_header(root: &Path, failures: &mut Vec<String>) 
 /// "plan phases that list files with no implementation and no
 /// `DECISIONS.md` descope entry."
 pub(super) fn check_plan_task_descope(root: &Path, failures: &mut Vec<String>) {
-    let plan = read(root, ".planning/IMPLEMENTATION_PLAN.md");
-    let decisions = read(root, ".planning/DECISIONS.md");
+    let plan = read(root, "IMPLEMENTATION_PLAN.md");
+    let decisions = read(root, "DECISIONS.md");
     let lines: Vec<&str> = plan.lines().collect();
 
     // Split into `### Task X.Y` sections.
