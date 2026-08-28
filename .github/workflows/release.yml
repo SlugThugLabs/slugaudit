@@ -11,7 +11,7 @@ name: Release
 # must be bumped to match the tag before cutting a release.
 #
 # Scope: Linux x86_64 only — the platform CI actually verifies
-# (PACKAGING.md §1). macOS/Windows runners can be added to the matrix
+# (PACKAGING.md §1). Additional runners can be added when new platforms are supported
 # once those platforms get CI coverage; until then shipping binaries for
 # them would be shipping unverified artifacts.
 #

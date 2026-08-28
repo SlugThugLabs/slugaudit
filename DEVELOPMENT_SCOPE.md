@@ -45,6 +45,8 @@ The following are development-only:
 
 Only `slugaudit-mcp` is the end-user executable. The `check_*` binaries are
 quality and CI tools and are not required by an AI agent using the product.
+The supported runtime targets are Linux and macOS; unsupported operating
+systems fail closed before opening the SQLite database.
 
 ## Audit rule
 

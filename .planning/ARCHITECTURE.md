@@ -158,8 +158,7 @@ src/
 ├── parse/                    tree-sitter parser registration
 ├── model/                    ResourceLimits + evidence/span types
 ├── evidence/                 evidence kind/category enums + normalize helpers
-│   ├── calls.rs              Rust call-site evidence walker
-│   └── calls_template.rs.txt template for future language call providers
+│   └── calls.rs              Rust call-site evidence walker
 └── cli_tests.rs etc.         inline #[path] test modules per source file
 ```
 
@@ -527,9 +526,8 @@ resolution for trait dispatch, generics, function pointers, closures, macros,
 or generated code. Agents should use the `Call` evidence rows to locate
 likely call sites, then inspect the stored source before drawing conclusions.
 
-The implementation lives in `src/evidence/calls.rs`; future language support
-should follow `src/evidence/calls_template.rs.txt` and preserve explicit
-uncertainty rather than inventing targets.
+The implementation lives in `src/evidence/calls.rs`. Additional language
+support must preserve explicit uncertainty rather than inventing targets.
 
 ### Q: Why is there no separate watcher heartbeat?
 
@@ -640,14 +638,12 @@ best-effort guarantee with more complexity.
 
 Full rationale: comments in `src/server_runner.rs::McpProgressSink`.
 
-### Q: Why no Windows CI?
+### Q: Which operating systems are supported?
 
-**Answer:** The GitHub Actions matrix covers Linux + macOS.
-Windows-specific code paths (`fsutil` NFS detection,
-`SQLITE_OPEN_NOFOLLOW` no-op, backslash path normalization) are
-present but untested in CI. This is a known gap — see `AUDIT.md`
-for the current assessment. Either add `windows-latest` to the
-matrix or document Windows as best-effort.
+**Answer:** SlugAudit supports Linux and macOS. The CI matrix and
+filesystem-safety implementation cover those targets. Other operating
+systems are rejected by the filesystem guard rather than running with
+unknown SQLite safety properties.
 
 ### Q: Why does `record_error` lock through `lock_or_recover` instead of a raw mutex unwrap?
 

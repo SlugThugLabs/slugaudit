@@ -98,7 +98,7 @@ inside a user's project.
 
 ## Development
 
-Requires Rust 1.97.1+ (edition 2024). Run the same gates CI uses:
+Requires Rust 1.97.1+ (edition 2024) on Linux or macOS. Run the same gates CI uses:
 
 ```bash
 cargo fmt --all -- --check

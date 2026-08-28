@@ -7,7 +7,7 @@
 //! failures. The busy timeout compounds it by making a fundamental
 //! incompatibility look like transient contention.
 
-// slugaudit-line-exception: approved-by=agent; reason=platform-specific mount inspection (linux mountinfo parse + macOS `stat -f` + Windows `fsutil`) is one cohesive filesystem-detection contract; further splitting would fragment the platform guard matrix across files
+// slugaudit-line-exception: approved-by=agent; reason=platform-specific mount inspection (Linux mountinfo parse + macOS `stat -f`) is one cohesive Unix-like filesystem-detection contract; further splitting would fragment the supported-platform guard matrix across files
 
 use super::connection::StoreError;
 use std::path::Path;
@@ -22,8 +22,9 @@ use std::path::Path;
 /// transient contention rather than a fundamental incompatibility.
 ///
 /// On Linux, the filesystem type is determined from `/proc/self/mountinfo`.
-/// macOS and Windows use their native filesystem inspection commands. Other
-/// platforms fail closed rather than silently accepting an unknown mount.
+/// macOS uses its native filesystem inspection command. Other platforms are
+/// unsupported by the product and fail closed rather than silently accepting
+/// an unknown mount.
 /// Emits the operational warning that a network-filesystem rejection
 /// happened. Split out so tests can verify the warning site fires
 /// without standing up a real NFS mount — the verdict determination
@@ -62,8 +63,9 @@ pub(super) fn log_rejected_network_filesystem(path: &Path) {
 /// transient contention rather than a fundamental incompatibility.
 ///
 /// On Linux, the filesystem type is determined from `/proc/self/mountinfo`.
-/// macOS and Windows use their native filesystem inspection commands. Other
-/// platforms fail closed rather than silently accepting an unknown mount.
+/// macOS uses its native filesystem inspection command. Other platforms are
+/// unsupported by the product and fail closed rather than silently accepting
+/// an unknown mount.
 pub(super) fn reject_network_filesystem(path: &Path) -> Result<(), StoreError> {
     if is_on_network_filesystem(path)? {
         log_rejected_network_filesystem(path);
@@ -132,31 +134,13 @@ fn is_on_network_filesystem(path: &Path) -> Result<bool, StoreError> {
         .output()
         .map_err(StoreError::NetworkFilesystemCheck)?;
 
-    #[cfg(target_os = "windows")]
-    let output = {
-        let volume = path
-            .components()
-            .next()
-            .and_then(|component| match component {
-                std::path::Component::Prefix(prefix) => Some(prefix.as_os_str()),
-                _ => None,
-            })
-            .ok_or_else(|| {
-                StoreError::NetworkFilesystemCheck(std::io::Error::other(
-                    "database path has no Windows volume prefix",
-                ))
-            })?;
-        std::process::Command::new("fsutil")
-            .args(["fsinfo", "volumeinfo"])
-            .arg(volume)
-            .output()
-            .map_err(StoreError::NetworkFilesystemCheck)?
-    };
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    return Err(StoreError::NetworkFilesystemCheck(std::io::Error::other(
-        "filesystem inspection is not implemented on this platform",
-    )));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        return Err(StoreError::NetworkFilesystemCheck(std::io::Error::other(
+            "this target is unsupported; SlugAudit supports Linux and macOS",
+        )));
+    }
 
     if !output.status.success() {
         return Err(StoreError::NetworkFilesystemCheck(std::io::Error::other(
@@ -292,9 +276,14 @@ missing dash separator / rw ext4
     }
 
     /// A local-filesystem open must never emit the network-filesystem
-    /// warning. This is a paired regression test for the previous one:
-    /// any test that exercises a successful local `open_read_write`
-    /// indirectly verifies the warn site didn't drop a false positive.
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[test]
+    fn unsupported_targets_fail_closed() {
+        let error = is_on_network_filesystem(Path::new("project.db"))
+            .expect_err("unsupported targets must fail closed");
+        assert!(matches!(error, StoreError::NetworkFilesystemCheck(_)));
+    }
+
     #[test]
     fn a_local_filesystem_open_does_not_emit_the_network_filesystem_warning() {
         let directory = tempfile::tempdir().expect("temp dir");
