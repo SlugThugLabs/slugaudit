@@ -1,5 +1,10 @@
 # Connecting SlugAudit to Bob
 
+SlugAudit is an MCP server for AI coding agents. It indexes your codebase
+once and exposes the facts to Bob as queryable tools — Bob reads only the
+files and lines that matter, instead of re-reading the repository to find
+where everything is. SlugAudit gathers facts; **Bob does the analysis**.
+
 ## One-line setup
 
 ```bash

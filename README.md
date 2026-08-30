@@ -2,14 +2,40 @@
 
 ### Stop making the AI read the same repository file after file.
 
-SlugAudit is the fact-gathering layer for AI coding agents. It indexes a
-codebase once, tracks changes, and gives the agent compact answers about
-files, symbols, calls, imports, structure, and diagnostics. The agent spends
-its context on understanding problems instead of repeatedly rediscovering
-where everything is.
+## What this is
 
-SlugAudit does not replace the AI's reasoning. It handles the repetitive,
-mundane collection of facts; the AI decides what those facts mean.
+**SlugAudit is an MCP server for AI coding agents.** It indexes a codebase
+once, keeps that index current, and exposes it to the agent as a set of
+queryable tools. The agent uses those tools to answer questions about the
+codebase — where things are defined, how they're called, what changed —
+without re-reading the whole repository first.
+
+## Who it's for
+
+- **AI coding agents** (Claude Code, Codex, Grok, Bob, and any other MCP
+  client) — they're the ones who use the tools. That's who the product is
+  built for.
+- **Humans** — you install it once and ask your agent to work. You never
+  interact with SlugAudit directly beyond that setup; it's invisible during
+  normal use.
+
+## What it's not
+
+- **Not a standalone audit tool.** There is no command that prints an audit
+  report. The released binary is an MCP server; an AI agent starts it and
+  calls its tools.
+- **Not an auditor.** SlugAudit does not judge code, assign scores, or find
+  bugs. It supplies facts; **the AI does the judging**. If you ask your
+  agent "audit this repo," the agent reads SlugAudit's evidence and does the
+  analysis — that division of labor is the whole point.
+
+## How it works in one paragraph
+
+You ask your agent to audit the codebase. The agent calls SlugAudit's tools
+to learn what's in the repo — files, symbols, calls, imports, structure —
+reads only the specific files and lines that matter, and spends its context
+on the actual audit instead of on rediscovering where everything is.
+SlugAudit gathers facts; the AI does the thinking.
 
 ## See it in action
 

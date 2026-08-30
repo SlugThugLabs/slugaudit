@@ -1,12 +1,21 @@
 # Connecting SlugAudit to your AI agent
 
-SlugAudit is an MCP server built to save an AI's context and time. It gathers
-repository facts once—files, symbols, calls, imports, structure, diagnostics,
-and changes—so the agent does not have to read and reread file after file.
+**What this is:** an MCP server for AI coding agents. It indexes a codebase
+once and exposes the facts to your agent as queryable tools.
 
-The division of labor is deliberate: SlugAudit gathers facts; the AI does the
-actual analysis. It decides what is important, what is a real issue, and what
-to do about it.
+**Who it's for:** your AI agent — that's who uses it. You (the human) install
+and connect it once; after that it's invisible.
+
+**What it's for:** saving your agent's context and time. SlugAudit gathers
+repository facts — files, symbols, calls, imports, structure, diagnostics,
+and changes — so the agent does not have to read and reread file after file
+while auditing.
+
+**What it is not:** a standalone audit tool, and not an auditor. There is no
+command that prints an audit report, and SlugAudit doesn't judge code or
+find bugs. It supplies evidence; **your AI does the analysis** — that
+division of labor is deliberate. Ask your agent to audit the repo and it
+will use SlugAudit's tools to do it.
 
 After the one-time connection, SlugAudit should be invisible during normal
 work. The agent starts it and uses it when useful; the user does not manage

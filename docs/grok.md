@@ -1,5 +1,10 @@
 # Connecting SlugAudit to Grok
 
+SlugAudit is an MCP server for AI coding agents. It indexes your codebase
+once and exposes the facts to Grok as queryable tools — Grok reads only the
+files and lines that matter, instead of re-reading the repository to find
+where everything is. SlugAudit gathers facts; **Grok does the analysis**.
+
 ## One-line setup
 
 ```bash

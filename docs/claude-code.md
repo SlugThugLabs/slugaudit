@@ -1,5 +1,11 @@
 # Connecting SlugAudit to Claude Code
 
+SlugAudit is an MCP server for AI coding agents. It indexes your codebase
+once and exposes the facts to Claude Code as queryable tools — Claude reads
+only the files and lines that matter, instead of re-reading the repository
+to find where everything is. SlugAudit gathers facts; **Claude Code does the
+analysis**.
+
 ## One-line setup
 
 ```bash
