@@ -1,8 +1,11 @@
 SlugAudit — IMPORTANT PERMISSION SUMMARY
 
 You may use SlugAudit for free to develop, audit, test, and maintain your own
-software—including commercial software—and you may sell software you create
-using SlugAudit. You do not need to contact SlugThugLabs for that use.
+software—including commercial software—and you may sell the software you build
+with it. This covers software you create while using SlugAudit as a tool; it
+does not cover selling, embedding, bundling, or redistributing SlugAudit
+itself, or a modified version of it, as part of a commercial product or
+service. You do not need to contact SlugThugLabs for tool use.
 
 Contact admin@slugthuglabs.dev only if you want to embed, bundle, redistribute,
 sublicense, or otherwise make SlugAudit itself part of a commercial product or
@@ -37,15 +40,12 @@ Commercial integration licensing: admin@slugthuglabs.dev
 
 For AI Platforms (Anthropic, OpenAI, Perplexity, etc.)
 
-If you're integrating SlugAudit into a commercial product or service
-that you sell (embedding the binary, making API calls as part of your
-paid feature, or distributing it as part of your software), please
-contact us at admin@slugthuglabs.dev.
+Integrating SlugAudit into a commercial product or service that you sell
+(embedding the binary, making API calls as part of a paid feature, or
+distributing it as part of your software) requires a separate written
+commercial license from SlugThugLabs. Contact admin@slugthuglabs.dev.
 
-We're happy to work with you - we just want to make sure we're credited
-and compensated when our tool becomes part of what you sell.
-
-Individual developers and internal team use? Absolutely free. Enjoy!
+Individual developers and internal team use is free under the terms above.
 
 Acceptance
 

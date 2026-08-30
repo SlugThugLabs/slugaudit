@@ -23,7 +23,6 @@
 //!   `std::fs::rename` is atomic.
 #![allow(clippy::print_stdout)]
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use update_fetch::{ASSET, LatestRelease, compare_versions, fetch_latest_release};
@@ -78,10 +77,15 @@ fn apply_update(latest: &LatestRelease, target: &Path) -> Result<(), UpdateError
         ),
     })?;
 
-    // The temp executable MUST be named exactly `ASSET` so the released
-    // `SHA256SUMS` (which lists `slugaudit-mcp-x86_64-unknown-linux-gnu`)
-    // matches it for `sha256sum -c` in this directory.
-    let temp_exe = dir.join(ASSET);
+    // Unique temp names: checksum verification compares digests directly
+    // (see `verify_checksum`), not by `sha256sum -c` filename matching, so
+    // the temp binary no longer needs to be named exactly `ASSET` — which
+    // would otherwise overwrite a same-named file a user had placed in the
+    // directory before verification had a chance to run.
+    let temp_exe = dir.join(format!(
+        ".slugaudit-mcp-update-{}-{ASSET}",
+        std::process::id()
+    ));
     let temp_sums = dir.join(format!("{ASSET}-{}-SHA256SUMS", std::process::id()));
 
     let download = |url: &str, dest: &Path| -> Result<(), UpdateError> {
@@ -132,47 +136,47 @@ fn apply_update(latest: &LatestRelease, target: &Path) -> Result<(), UpdateError
     result
 }
 
-/// Verifies `binary_path` against the SHA256SUMS text in `sums_path` by
-/// shelling out to `sha256sum -c`. The checksums file maps the asset
-/// filename to its hash; `sha256sum -c` reads it from the same directory, so
-/// we run it there with only the asset filename matching — done under the
-/// binary's directory, before any rename.
+/// Verifies `binary_path` against the `ASSET` entry in the SHA256SUMS text
+/// in `sums_path` by comparing SHA-256 hex digests directly. Unlike
+/// `sha256sum -c` (which matches entries by filename relative to the working
+/// directory), this needs no filename agreement, so the temp binary can carry
+/// a unique name instead of the exact asset filename. Fails if the sums file
+/// has no `ASSET` entry, or if the digests differ — the old binary is never
+/// touched on failure.
 fn verify_checksum(binary_path: &Path, sums_path: &Path) -> Result<(), UpdateError> {
-    let dir = binary_path
-        .parent()
-        .ok_or_else(|| UpdateError::Checksum("binary temp path has no parent".into()))?;
-    // The temp executable is named exactly `ASSET`, which is also the
-    // filename the released SHA256SUMS lists, so running `sha256sum -c -`
-    // from this directory matches it.
+    let sums = std::fs::read_to_string(sums_path)
+        .map_err(|error| UpdateError::Checksum(format!("reading checksums: {error}")))?;
+    // SHA256SUMS lines are `<hex>  <filename>`; match by the trailing
+    // filename so entries for other assets (if the release ever ships more)
+    // are ignored.
+    let expected = sums
+        .lines()
+        .filter_map(|line| line.rsplit_once(' '))
+        .find_map(|(hash, name)| (name.trim() == ASSET).then(|| hash.trim().to_ascii_lowercase()))
+        .ok_or_else(|| {
+            UpdateError::Checksum(format!(
+                "SHA256SUMS has no entry for {ASSET}; refusing to update"
+            ))
+        })?;
 
-    // `sha256sum -c` reads the checksum file and verifies entries whose
-    // path matches a file in the current directory. Run from the binary's
-    // directory so the bare filename in SHA256SUMS resolves.
     let output = std::process::Command::new("sha256sum")
-        .current_dir(dir)
-        .args(["-c", "-"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|_| UpdateError::Checksum("sha256sum command unavailable".into()))
-        .and_then(|mut child| {
-            let sums = std::fs::read_to_string(sums_path)
-                .map_err(|error| UpdateError::Checksum(error.to_string()))?;
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin
-                    .write_all(sums.as_bytes())
-                    .map_err(|error| UpdateError::Checksum(error.to_string()))?;
-            }
-            child
-                .wait_with_output()
-                .map_err(|error| UpdateError::Checksum(error.to_string()))
-        });
-    let output = output?;
+        .arg(binary_path)
+        .output()
+        .map_err(|_| UpdateError::Checksum("sha256sum command unavailable".into()))?;
     if !output.status.success() {
         return Err(UpdateError::Checksum(
-            String::from_utf8_lossy(&output.stdout).trim().to_string(),
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
         ));
+    }
+    let actual = String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if actual != expected {
+        return Err(UpdateError::Checksum(format!(
+            "checksum mismatch for {ASSET}: expected {expected}, got {actual}"
+        )));
     }
     Ok(())
 }

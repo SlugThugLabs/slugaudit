@@ -110,7 +110,17 @@ fn is_mountpoint_network_filesystem(mountinfo: &str, path_str: &str) -> bool {
         // Skip: mount ID, parent ID, major:minor, root
         let mount_point = fields.nth(4).unwrap_or("");
 
-        if path_str.starts_with(mount_point) && mount_point.len() > best_mount_len {
+        // Path-boundary match: the path must be the mount point itself or
+        // fall under it as a child (`/mnt/nfs/x`), not merely share a
+        // string prefix (`/mnt/nfs2/x` is a *different* mount). A bare
+        // `starts_with` would falsely reject a local path whose name
+        // begins with a network mount point — and per this module's own
+        // invariant, blocking a legitimate local open is strictly worse
+        // than missing an NFS mount.
+        let under_mount = path_str
+            .strip_prefix(mount_point)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+        if under_mount && mount_point.len() > best_mount_len {
             best_mount_len = mount_point.len();
             best_fs_type = Some(fs_type);
         }
@@ -217,6 +227,32 @@ mod tests {
                 fs_type
             );
         }
+    }
+
+    /// A path that merely *begins with* a network mount point string but
+    /// is not actually under it — `/home/user2` vs an NFS mount at
+    /// `/home/user` — must not be rejected as a network filesystem. A
+    /// bare `starts_with` prefix check would false-positive here, and
+    /// blocking a legitimate local open is strictly worse than missing
+    /// an NFS mount.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mountinfo_parser_respects_path_boundaries_not_string_prefixes() {
+        let mountinfo = "\
+1 0 0:1 / /home/user rw - nfs server:/export rw
+";
+        // `/home/user2` is a sibling directory with its own (presumably
+        // local) mount — it must not match the `/home/user` NFS mount.
+        assert!(!is_mountpoint_network_filesystem(
+            mountinfo,
+            "/home/user2/project/lib.rs"
+        ));
+        // The mount point itself and real children under it still match.
+        assert!(is_mountpoint_network_filesystem(
+            mountinfo,
+            "/home/user/project/lib.rs"
+        ));
+        assert!(is_mountpoint_network_filesystem(mountinfo, "/home/user"));
     }
 
     /// A mountinfo line with optional fields (the `shared:NN` tokens and

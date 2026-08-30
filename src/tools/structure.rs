@@ -1,3 +1,5 @@
+// slugaudit-line-exception: approved-by=agent; reason=the structure tool's query handling (input validation, fetch_source, the capture-budgeted execution with its progress-callback abort, and node-to-match conversion) is one cohesive concern; splitting the capture execution away from its only consumer would fragment the contract that bare no-capture queries are rejected with guidance
+
 use super::context::{ensure_synced, with_verified_read};
 use crate::model::{ResourceLimits, char_column, process_limits, saturating_u32};
 use crate::sync;
@@ -36,14 +38,8 @@ pub struct StructureMatch {
     pub end_column: u32,
     pub text: String,
     pub text_truncated: bool,
-    /// True if `text` and/or `capture_name` above could not actually be
-    /// extracted for this match (non-UTF8-boundary node span, or a capture
-    /// index outside the compiled query's capture table) and were replaced
-    /// with an empty string as a fallback. Should never be true in
-    /// practice — both would indicate a tree-sitter/query invariant
-    /// violation, not legitimately empty data — but callers should not
-    /// treat `text: ""` as "this node has no text" without checking this
-    /// flag first.
+    /// True when `text`/`capture_name` couldn't be extracted (non-UTF8 node
+    /// span or out-of-range capture index) and were replaced with "".
     pub extraction_failed: bool,
 }
 
@@ -142,15 +138,21 @@ fn fetch_source(
     Ok((content, language))
 }
 
-/// Runs the compiled query under a native Tree-sitter execution-time budget:
-/// `QueryCursorOptions::progress_callback` fires periodically *during*
-/// matching (checked roughly every 100 internal operations by the C core),
-/// so a pathological pattern is aborted mid-query rather than only after it
-/// returns, unlike a wall-clock check wrapped around the whole call.
+/// Runs the compiled query under a native Tree-sitter execution-time budget
+/// (aborting pathological patterns mid-query via `QueryCursorOptions::
+/// progress_callback`).
+///
+/// This tool reports *captures*, not raw matches: the tree-sitter API only
+/// exposes a matched node when bound to a `@name` capture. A bare pattern
+/// like `(function_definition)` compiles and matches but has zero captures,
+/// so it would silently return empty — the footgun that once made an agent
+/// believe `structure` couldn't parse Python. Queries declaring no captures
+/// are therefore rejected with an actionable add-a-capture message.
 ///
 /// # Errors
 ///
-/// Returns an error if `limits.max_structure_execution_time` is exceeded.
+/// Returns an error if the query declares no captures, or if the execution
+/// time budget is exceeded.
 fn run_query(
     compiled_query: &Query,
     tree: &tree_sitter::Tree,
@@ -158,6 +160,16 @@ fn run_query(
     limits: &ResourceLimits,
 ) -> Result<(Vec<StructureMatch>, bool), ErrorData> {
     let capture_names = compiled_query.capture_names();
+    if capture_names.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "structure query declares no @capture, so it can never return any node; add "
+                .to_owned()
+                + "one, e.g. `(function_item name: (identifier) @name)` for Rust or "
+                + "`(function_definition) @node` for Python/JS",
+            None,
+        ));
+    }
+
     let mut cursor = QueryCursor::new();
     let deadline = Instant::now() + limits.max_structure_execution_time;
     let mut timed_out = false;
@@ -170,41 +182,25 @@ fn run_query(
         }
     };
     let options = QueryCursorOptions::new().progress_callback(&mut check_deadline);
+
+    let mut matches = Vec::new();
     let mut captures = cursor.captures_with_options(
         compiled_query,
         tree.root_node(),
         content.as_bytes(),
         options,
     );
-
-    let mut matches = Vec::new();
     while matches.len() < limits.max_structure_matches
         && let Some((query_match, capture_index)) = captures.next()
     {
         let capture = query_match.captures[*capture_index];
         let node = capture.node;
-        let (node_text, text_extraction_failed) = match node.utf8_text(content.as_bytes()) {
-            Ok(text) => (text, false),
-            Err(_) => ("", true),
-        };
-        let (text, text_truncated) = truncate_text(node_text);
-        let (capture_name, capture_name_missing) = match capture_names.get(capture.index as usize) {
-            Some(name) => ((*name).to_owned(), false),
-            None => (String::new(), true),
-        };
-        matches.push(StructureMatch {
-            capture_name,
-            node_kind: node.kind().to_owned(),
-            start_byte: node.start_byte() as u64,
-            end_byte: node.end_byte() as u64,
-            start_line: saturating_u32(node.start_position().row),
-            start_column: char_column(content, node.start_byte()),
-            end_line: saturating_u32(node.end_position().row),
-            end_column: char_column(content, node.end_byte()),
-            text,
-            text_truncated,
-            extraction_failed: text_extraction_failed || capture_name_missing,
-        });
+        matches.push(node_to_match(
+            node,
+            content,
+            capture_names,
+            capture.index as usize,
+        ));
     }
     let truncated = matches.len() >= limits.max_structure_matches && captures.next().is_some();
     drop(captures);
@@ -216,6 +212,38 @@ fn run_query(
         ));
     }
     Ok((matches, truncated))
+}
+
+/// Converts a single Tree-sitter node (bound to a capture) into a
+/// [`StructureMatch`], looking up the capture's name by its index.
+fn node_to_match(
+    node: tree_sitter::Node<'_>,
+    content: &str,
+    capture_names: &[&str],
+    capture_ix: usize,
+) -> StructureMatch {
+    let (node_text, text_extraction_failed) = match node.utf8_text(content.as_bytes()) {
+        Ok(text) => (text, false),
+        Err(_) => ("", true),
+    };
+    let (text, text_truncated) = truncate_text(node_text);
+    let (capture_name, capture_name_missing) = match capture_names.get(capture_ix) {
+        Some(name) => ((*name).to_owned(), false),
+        None => (String::new(), true),
+    };
+    StructureMatch {
+        capture_name,
+        node_kind: node.kind().to_owned(),
+        start_byte: node.start_byte() as u64,
+        end_byte: node.end_byte() as u64,
+        start_line: saturating_u32(node.start_position().row),
+        start_column: char_column(content, node.start_byte()),
+        end_line: saturating_u32(node.end_position().row),
+        end_column: char_column(content, node.end_byte()),
+        text,
+        text_truncated,
+        extraction_failed: text_extraction_failed || capture_name_missing,
+    }
 }
 
 fn truncate_text(text: &str) -> (String, bool) {

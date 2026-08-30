@@ -150,7 +150,7 @@ impl SlugAuditServer {
     }
 
     #[tool(
-        description = "Tree-sitter structural pattern matching against one file, for patterns normalized evidence and query can't easily express (e.g. an S-expression query for a specific AST shape)."
+        description = "Tree-sitter structural pattern matching against one file, for patterns normalized evidence and query can't easily express (e.g. an S-expression query for a specific AST shape). The `query` must name at least one capture with `@name` — a bare node pattern like `(function_definition)` returns an error, not results. Examples: Python `(function_definition name: (identifier) @name)`, Rust `(function_item name: (identifier) @name)`, or whole-node `(class_definition) @cls`."
     )]
     async fn structure(
         &self,

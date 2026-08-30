@@ -44,6 +44,41 @@ fn matches_a_real_structural_pattern() {
     assert!(!response.truncated);
 }
 
+/// Regression: a bare node pattern with no `@capture` compiles and matches in
+/// tree-sitter but yields zero captures, so the tool would silently return an
+/// empty list — the exact footgun that made an agent believe `structure`
+/// couldn't parse Python. It must be rejected with an actionable message
+/// telling the agent to add a capture, not silently return `[]`.
+#[test]
+fn a_query_with_no_capture_is_rejected_with_guidance_not_empty() {
+    let project = activated_project("server.py", b"def a():\n    pass\ndef b():\n    pass\n");
+    let result = ask(&project, "server.py", "(function_definition)");
+    let error = result.expect_err("a captureless query must error, not return empty");
+    assert!(
+        error.message.contains("no @capture") && error.message.contains("@name"),
+        "the error must guide the agent to add a capture, got: {}",
+        error.message
+    );
+}
+
+/// Mirrors the live repro: a Python function query with a `@name` capture
+/// returns the function definitions (proving Python parsing works once a
+/// capture is present).
+#[test]
+fn python_function_definition_with_a_capture_returns_the_functions() {
+    let project = activated_project("server.py", b"def a():\n    pass\ndef b():\n    pass\n");
+    let response = ask(
+        &project,
+        "server.py",
+        "(function_definition name: (identifier) @name)",
+    )
+    .expect("query with a capture succeeds");
+    assert_eq!(response.language, "python");
+    let names: Vec<&str> = response.matches.iter().map(|m| m.text.as_str()).collect();
+    assert_eq!(names, vec!["a", "b"]);
+    assert!(response.matches.iter().all(|m| m.capture_name == "name"));
+}
+
 #[test]
 fn an_invalid_query_is_a_typed_error_not_a_panic() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
