@@ -685,7 +685,7 @@ src/
 └── module_tests.rs        (same directory, sibling)
 ```
 
-The 54 `*_tests.rs` files share this pattern; `cargo test --lib` runs
+The 56 `*_tests.rs` files share this pattern; `cargo test --lib` runs
 all of them in parallel (`--test-threads=4` by default). Tool test
 modules occasionally split a focused scenario into a second sibling
 (e.g. `tools/finding_session_tests.rs`). Test files get a 500-code-line

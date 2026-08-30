@@ -176,6 +176,23 @@ fn unrecognized_input_lists_menu_among_the_known_commands() {
 }
 
 #[test]
+fn update_parses_as_its_own_command() {
+    assert_eq!(
+        parse_args(vec!["update".to_owned()].into_iter()).expect("valid arguments parse"),
+        Command::Update
+    );
+}
+
+#[test]
+fn unrecognized_input_lists_update_among_the_known_commands() {
+    let err = parse_args(vec!["bogus".to_owned()].into_iter()).unwrap_err();
+    assert!(
+        err.contains("update"),
+        "the error should name update: {err}"
+    );
+}
+
+#[test]
 fn version_parses_in_all_three_spellings() {
     for arg in ["version", "--version", "-V"] {
         assert_eq!(

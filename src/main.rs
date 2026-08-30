@@ -6,6 +6,7 @@ use slugaudit_mcp_rust::connect;
 use slugaudit_mcp_rust::install;
 use slugaudit_mcp_rust::menu;
 use slugaudit_mcp_rust::server::SlugAuditServer;
+use slugaudit_mcp_rust::update;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -20,6 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             Command::Install => return Ok(install::run_install()?),
+            Command::Update => return Ok(update::run_update()?),
             Command::Help => {
                 print!("{}", cli::usage());
                 return Ok(());

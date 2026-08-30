@@ -15,6 +15,7 @@ pub enum Command {
     Connect { agent: Option<ConnectAgent> },
     Install,
     Menu,
+    Update,
     Version,
     Help,
 }
@@ -107,13 +108,14 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
         }
         "install" => Ok(Command::Install),
         "menu" => Ok(Command::Menu),
+        "update" => Ok(Command::Update),
         // `version` in all three common spellings so a released binary can
         // be verified against its checksum/tag — `--version` currently
         // errors as an unknown command without this.
         "version" | "--version" | "-V" => Ok(Command::Version),
         "--help" | "-h" => Ok(Command::Help),
         other => Err(format!(
-            "unknown command {other:?}; expected one of: serve, connect, install, menu, version, help"
+            "unknown command {other:?}; expected one of: serve, connect, install, update, menu, version, help"
         )),
     }
 }
@@ -125,6 +127,7 @@ USAGE:
     slugaudit-mcp                    Run the MCP server (stdio transport)
     slugaudit-mcp menu               Interactive setup menu (recommended entry point)
     slugaudit-mcp install            Copy binary to ~/.slugthug/bin/
+    slugaudit-mcp update             Fetch the latest release and replace this binary
     slugaudit-mcp version            Print version (also --version, -V)
     slugaudit-mcp help               Show this message (also --help, -h)
 
@@ -143,6 +146,10 @@ COMMANDS:
     install       Copy the binary to ~/.slugthug/bin/slugaudit-mcp so
                   agents and MCP clients can launch a stable path that
                   survives rebuilds.
+    update        Check the latest GitHub release and, if newer than the
+                  running binary, download it and atomically replace this
+                  binary in place. Uses curl; verifies the sha256 checksum
+                  before touching the current executable.
     version       Print the version. Also --version, -V.
     help          Show this message. Also --help, -h.
 
@@ -154,6 +161,7 @@ EXAMPLES:
     slugaudit-mcp menu               Set everything up interactively
     slugaudit-mcp install            Install to ~/.slugthug/bin/
     slugaudit-mcp connect bob        Register with Bob
+    slugaudit-mcp update             Update to the latest release
     slugaudit-mcp                    Run the server for your AI agent
 ";
 

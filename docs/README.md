@@ -33,6 +33,19 @@ slugaudit-mcp connect codex
 agents. With an agent name it registers this binary as the `slugaudit`
 MCP server in that agent's config immediately.
 
+## Updating an installed copy
+
+SlugAudit is a single binary, so upgrading is just replacing it at the same
+path. For a binary that's already installed, run:
+
+```bash
+slugaudit-mcp update
+```
+
+`update` fetches the latest GitHub release (via `curl`), verifies its
+SHA-256 checksum, and atomically replaces the installed binary in place
+(no `curl`? download the release from GitHub and re-run `install`).
+
 ## What `connect` does
 
 `connect` writes a single entry into your agent's MCP configuration:

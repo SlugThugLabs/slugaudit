@@ -159,6 +159,21 @@ and `query`/`structure` to locate the exact files and lines it needs before
 reading source. The result is less repetitive file reading and more context
 available for actual reasoning.
 
+### 5. Update to a new release
+
+SlugAudit is a single binary, and upgrades are just replacing that binary at
+the same path. To update an already-installed copy to the latest release:
+
+```bash
+~/.slugthug/bin/slugaudit-mcp update
+```
+
+`update` fetches the latest GitHub release (via `curl`), verifies its SHA-256
+checksum, and atomically replaces the binary in place. It targets the same
+stable path `connect` registered, so your agent configs keep working with no
+re-connecting. Restart any running AI session to launch the new binary. If
+no newer release exists, it reports that you're already up to date.
+
 ### Building from source
 
 If you cloned this repository instead of downloading a release:

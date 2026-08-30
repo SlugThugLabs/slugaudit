@@ -24,5 +24,6 @@ mod server_runner;
 pub mod store;
 pub mod sync;
 pub mod tools;
+pub mod update;
 pub mod util;
 pub mod watch;
