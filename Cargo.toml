@@ -1,6 +1,6 @@
 [package]
 name = "slugaudit-mcp-rust"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2024"
 # Never published: the license is a non-SPDX PolyForm Noncommercial 1.0.0
 # plus the SlugAudit tool-use additional permission, carried in LICENSE via

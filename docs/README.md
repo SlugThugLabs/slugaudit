@@ -1,14 +1,17 @@
 # Connecting SlugAudit to your AI agent
 
-SlugAudit is an MCP server — it exposes its tools (`query`, `report`,
-`structure`, `finding`, `finding_read`, `project_control`, `health`) to
-any AI agent that speaks the Model Context Protocol. Once connected, the agent can query
-codebase evidence directly instead of reading hundreds of files one at a
-time.
+SlugAudit is an MCP server built to save an AI's context and time. It gathers
+repository facts once—files, symbols, calls, imports, structure, diagnostics,
+and changes—so the agent does not have to read and reread file after file.
 
-SlugAudit does not audit. It performs no risk detection, assigns no
-severity, and draws no conclusions — it supplies evidence, and the calling
-AI performs all judgment.
+The division of labor is deliberate: SlugAudit gathers facts; the AI does the
+actual analysis. It decides what is important, what is a real issue, and what
+to do about it.
+
+After the one-time connection, SlugAudit should be invisible during normal
+work. The agent starts it and uses it when useful; the user does not manage
+the index or database.
+
 
 ## Quick start
 
@@ -51,14 +54,15 @@ current binary).
 
 ## After connecting
 
-Connecting the MCP server only makes SlugAudit's tools *available* to the
-agent. To actually index a project, enable it from inside the AI session
-by calling the `project_control` tool with `action = "on"` (optionally
-with a project path). That creates the activation marker under
-`.planning/slugaudit/` and runs the first import immediately. From then
-on, every AI tool call independently verifies freshness before executing
-— if the project has a pending import, the call waits for it rather than
-answering from partial state.
+Start a fresh AI session and work normally. The agent should use
+`project_control` internally when it first needs to index the current project;
+that is not a step the user should have to perform. The first indexing pass
+creates the disposable `.planning/slugaudit/` data, and later calls keep it
+fresh as files change.
+
+The intended workflow is simple: SlugAudit narrows the search and returns
+compact facts; the AI reads only the relevant source and spends its context
+on reasoning instead of repository housekeeping.
 
 See the agent-specific guides for what to do next.
 
@@ -84,6 +88,10 @@ enabled project.
 
 ## Troubleshooting
 
+> **Licensing:** SlugAudit is free to use—including for your own commercial
+> software. See the [license summary](../README.md#license) and complete
+> [LICENSE](../LICENSE).
+
 **`unknown agent "..."`** — `connect` accepts `bob`, `claude`, `grok`,
 or `codex` (case-insensitive; `claude-code` and `claude_code` also map
 to Claude Code).
@@ -93,10 +101,15 @@ and on `PATH` before `connect` can register with it. Install Claude Code
 (`npm install -g @anthropic-ai/claude-code`), Grok, or Codex first.
 
 **Agent doesn't see the `query`/`report`/`structure`/`finding` tools** —
-the project probably isn't enabled yet. Have the agent call
-`project_control` with `action = "on"` and a project path, and wait for
-the import to finish before asking it to use SlugAudit on that project.
+restart the AI session after connecting the server.
 
-**"project not enabled" / empty results** — same cause. Enable the
-project first via `project_control`; the agent can't query evidence that
-doesn't exist yet.
+**"project not enabled" / empty results** — this is an agent-integration
+issue: the agent needs to call `project_control` internally once for the
+current project. Users should not need to manage the SQLite data manually.
+
+**I moved or copied the project and it seems stuck on the old path** -
+SlugAudit's index is disposable derived data tied to a project root. When a
+repo is moved, copied, or re-extracted from an archive (e.g. unzipping a
+GitHub zip to a new directory), the stored index is recognized as stale and
+rebuilt from the current source automatically. You should not need to delete
+the `.planning/slugaudit/` directory or re-enable the project by hand.

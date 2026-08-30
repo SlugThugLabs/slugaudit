@@ -1,15 +1,65 @@
 # SlugAudit
 
-Searchable, trustworthy codebase evidence for AI agents.
+### Stop making the AI read the same repository file after file.
 
-SlugAudit is an MCP server that indexes your project's source files into a
-per-project SQLite database and exposes seven tools to any AI agent that
-speaks the Model Protocol. It does **not** audit — it supplies evidence, and
-the calling AI performs all judgment.
+SlugAudit is the fact-gathering layer for AI coding agents. It indexes a
+codebase once, tracks changes, and gives the agent compact answers about
+files, symbols, calls, imports, structure, and diagnostics. The agent spends
+its context on understanding problems instead of repeatedly rediscovering
+where everything is.
+
+SlugAudit does not replace the AI's reasoning. It handles the repetitive,
+mundane collection of facts; the AI decides what those facts mean.
+
+## See it in action
+
+You ask an agent: *"Where is login rate-limited, and is it applied
+everywhere it should be?"*
+
+```
+[agent calls report]      → 214 files · 4 touch auth
+[agent calls query]       → find every fn authenticate( and its call sites
+[agent calls structure]   → match the AST shape that guards each request
+```
+
+The agent reads only the handful of files/line ranges that matter, instead
+of re-reading the repository to rediscover where everything is. Its context
+goes to reasoning, not housekeeping.
+
+## Why SlugAudit
+
+- **Saves AI context.** Discovery happens once and stays current, so agents
+  stop re-listing files and re-tracing imports every session.
+- **Keeps findings trustworthy.** Conclusions are tied to the source version
+  they came from and invalidate automatically when those lines change.
+- **Does not box you in.** It plays well with existing tools and exposes
+  everything through read-only SQL, so you keep full control.
+- **Free for your work.** Use it to build and sell your own software,
+  including commercial projects.
+
+## The point
+
+During a large audit, an AI can burn most of its context on work like:
+
+- listing and categorizing files over and over;
+- finding every definition and use of a symbol;
+- tracing imports between files;
+- rereading unchanged source to recover context; and
+- checking whether its previous understanding is stale.
+
+SlugAudit does that discovery work once and keeps it current. After setup,
+it should be invisible: the AI calls its MCP tools when useful, while the
+user continues working normally.
+
+The useful division of labor is simple:
+
+- **SlugAudit gathers facts:** indexes, extracts, synchronizes, and searches.
+- **The AI does the audit:** interprets evidence, finds real issues, judges
+  severity, and recommends changes.
 
 ## Product boundary
 
-The end-user product is the single `slugaudit-mcp` binary. Users install and
+The single end-user product is the `slugaudit-mcp` binary. Users install and
 configure it with their AI agent, and the binary operates on the user's own
 projects.
 
@@ -28,29 +78,108 @@ validate SlugAudit: repository planning documents, tests, benchmarks, CI
 workflows, and the `check_*` quality-gate binaries. Those files are not part
 of the end-user product or shipped runtime binary.
 
-## Quick start
+## Quick start (downloaded binary)
+
+The release asset is an **MCP server**, not a standalone command that prints
+an audit report. Your AI agent starts it automatically over stdio and uses its
+tools as a background repository index. You install and connect it once;
+normal use should not require a separate SlugAudit workflow.
+
+### 1. Download and verify it
+
+From the GitHub release, download `slugaudit-mcp-x86_64-unknown-linux-gnu`
+and `SHA256SUMS`. The published binary is currently for 64-bit Linux.
 
 ```bash
-# Build the end-user product binary
+chmod +x slugaudit-mcp-x86_64-unknown-linux-gnu
+sha256sum -c SHA256SUMS
+```
+
+The checksum command must report `OK`. If it does not, download the files
+again and do not run the binary.
+
+### 2. Install it at a stable path
+
+Run the binary's setup menu:
+
+```bash
+./slugaudit-mcp-x86_64-unknown-linux-gnu menu
+```
+
+Choose **1) Install the binary**. This copies it to:
+
+```text
+~/.slugthug/bin/slugaudit-mcp
+```
+
+The stable path means your agent will continue to launch SlugAudit after you
+move or delete the downloaded release file. You can check the installation:
+
+```bash
+~/.slugthug/bin/slugaudit-mcp version
+```
+
+### 3. Connect it to your AI agent
+
+From the menu, choose **2) Connect to an AI agent**, or run the command
+explicitly:
+
+```bash
+~/.slugthug/bin/slugaudit-mcp connect claude  # Claude Code
+~/.slugthug/bin/slugaudit-mcp connect codex
+~/.slugthug/bin/slugaudit-mcp connect bob
+~/.slugthug/bin/slugaudit-mcp connect grok
+```
+
+To select interactively, omit the agent name:
+
+```bash
+~/.slugthug/bin/slugaudit-mcp connect
+```
+
+`connect` registers a global `slugaudit` stdio server using the agent's own
+CLI. Verify it with the corresponding command, for example:
+
+```bash
+claude mcp list
+# or: codex mcp list, bob mcp list, grok mcp list --scope user
+```
+
+Restart an already-running AI session so it reloads its MCP servers.
+
+### 4. Use your AI agent normally
+
+After the connection is registered, start a fresh AI session and work
+normally. SlugAudit's project-control operation is an internal MCP operation:
+the agent should enable the current project when it first needs the index.
+You should not need to manage the database, run imports, or repeat setup.
+
+Once indexed, the agent can use `report` for a compact repository snapshot
+and `query`/`structure` to locate the exact files and lines it needs before
+reading source. The result is less repetitive file reading and more context
+available for actual reasoning.
+
+### Building from source
+
+If you cloned this repository instead of downloading a release:
+
+```bash
 cargo build --release --locked --bin slugaudit-mcp
-
-# Connect your agent (run once)
-./target/release/slugaudit-mcp connect
-
-# Or connect a specific agent directly
-./target/release/slugaudit-mcp connect claude
-./target/release/slugaudit-mcp connect bob
-./target/release/slugaudit-mcp connect grok
-./target/release/slugaudit-mcp connect codex
+./target/release/slugaudit-mcp menu
 ```
 
-Inside your AI session, enable a project:
+For setup details and manual configuration for other MCP clients, see the
+[connection guides](docs/).
 
-```
-project_control  action="on"  path="/path/to/your/project"
-```
+## What the AI gets
 
-That's it. The agent can now query codebase evidence.
+| Need | SlugAudit supplies |
+|------|--------------------|
+| Understand the repository quickly | File/language counts and a compact report |
+| Find code without scanning every file | Symbols, calls, imports, and structural matches |
+| Trace relationships | Resolved, external, and unresolved dependency edges |
+| Stay current while editing | Hashes, incremental synchronization, and freshness checks |
+| Avoid repeating conclusions | Findings tied to the source version that produced them |
 
 ## Tools
 
@@ -61,7 +190,7 @@ That's it. The agent can now query codebase evidence.
 | `structure` | Tree-sitter structural pattern matching (300+ languages) |
 | `finding` | Persist an AI-reviewed conclusion (auto-invalidates on file change) |
 | `finding_read` | Retrieve findings scoped to the current agent session |
-| `project_control` | Enable or disable a project |
+| `project_control` | Internal project activation/control; normally used by the agent |
 | `health` | Watcher health, sync status, tool-call counters |
 
 ## How it works
@@ -113,5 +242,16 @@ cargo run --quiet --bin check_no_duplicates --locked
 
 ## License
 
-PolyForm Noncommercial 1.0.0 — noncommercial use is free; commercial use
-requires a separate license from SlugThugLabs. See [LICENSE](LICENSE).
+SlugAudit is **free to use** — including for your own commercial software.
+Use it to develop, audit, test, and maintain whatever you build, and you may
+sell the software you create with it. Software you make using SlugAudit (and
+the results it produces) does not become subject to SlugAudit's license just
+because the tool was used.
+The only thing you need to contact us about (`admin@slugthuglabs.dev`) is
+distributing **SlugAudit itself** — for example embedding, bundling,
+redistributing, sublicensing, or selling the tool as part of another product
+or service. That includes a company wanting to make SlugAudit a branded part
+of something they sell — we'd love to talk. Internal team and dev use is
+always free.
+
+See the complete [LICENSE](LICENSE) for the binding terms.

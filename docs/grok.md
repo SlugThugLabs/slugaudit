@@ -30,15 +30,13 @@ grok mcp add slugaudit --scope project -- $(which slugaudit-mcp)
 For nearly all users, the user-scope default from `connect grok` is what
 you want.
 
-## Enable a project
+## Normal use
 
-Connecting the MCP server makes the tools available; enabling a project
-indexes it. Have the agent call the `project_control` tool with
-`action = "on"` (optionally with a project path). This creates the
-activation marker and SQLite database under `.planning/slugaudit/` inside
-the project and runs the first import. After that, Grok can query the
-project's evidence through all seven SlugAudit tools (`query`, `report`,
-`structure`, `finding`, `finding_read`, `project_control`, `health`).
+Start a fresh Grok session after connecting and work normally. Grok should
+call `project_control` internally when it first needs the index, then use
+`report`, `query`, and `structure` to narrow the source it reads. SlugAudit
+handles the repetitive repository fact-gathering so Grok can spend more
+context on actual analysis.
 
 ## Re-running `connect`
 
@@ -57,6 +55,6 @@ grok mcp add slugaudit --scope user -- $(which slugaudit-mcp)
 - **`grok` not found** — install the Grok CLI first.
 - **Tools don't appear after `connect`** — restart Grok, or run `/mcps`
   and press `r` to refresh the MCP server list.
-- **"project not enabled"** — have the agent call `project_control` with
-  `action = "on"` for the project.
+- **"project not enabled"** — Grok needs to call `project_control` once for
+  the project. This is an integration issue, not normal user setup.
 - **Diagnose connection issues:** `grok mcp doctor slugaudit`

@@ -103,7 +103,7 @@ fn a_stale_synced_handle_fails_loudly_instead_of_returning_mismatched_data() {
 }
 
 #[test]
-fn a_database_copied_from_a_different_project_root_fails_closed() {
+fn a_database_copied_from_a_different_project_root_is_rebuilt_not_served() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let path = project.path().to_string_lossy().into_owned();
     ensure_synced_no_progress(&path, &crate::sync::SourceSyncManager::default())
@@ -125,12 +125,27 @@ fn a_database_copied_from_a_different_project_root_fails_closed() {
     .expect("simulate a copied database from another project");
     drop(raw);
 
-    let result = ensure_synced_no_progress(&path, &crate::sync::SourceSyncManager::default());
-    assert!(
-        result.is_err(),
-        "a database whose stored root_path doesn't match this project's canonical root \
-         must never be silently accepted"
+    // The stale database must never be silently served; instead it is
+    // discarded and rebuilt from this project's source, so the call succeeds
+    // and the rebuilt index reflects THIS project's files, not the foreign
+    // database's evidence.
+    let rebuilt = ensure_synced_no_progress(&path, &crate::sync::SourceSyncManager::default())
+        .expect("a stale root must be rebuilt, not served or rejected");
+    assert!(!rebuilt.revision_id.is_empty());
+    let connection = crate::store::open_read_only(&rebuilt.database_path).expect("rebuilt db");
+    let stored_root: String = connection
+        .query_row("SELECT root_path FROM project WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .expect("read stored root");
+    assert_ne!(
+        stored_root, "/some/other/project/root",
+        "the rebuilt database must be bound to this project, not the foreign root"
     );
+    let count: i64 = connection
+        .query_row("SELECT count(*) FROM files", [], |row| row.get(0))
+        .expect("rebuilt file row");
+    assert_eq!(count, 1, "rebuilt from this project's source");
 }
 
 /// Same protection as the read side, proven end to end: `with_verified_write`

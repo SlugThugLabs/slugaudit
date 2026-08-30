@@ -83,6 +83,58 @@ pub(crate) fn current_revision_id(
         .optional()
 }
 
+/// Errors from verifying a project's metadata row.
+#[derive(Debug)]
+pub(crate) enum ProjectMetaError {
+    /// The database at this path was built by a newer/incompatible
+    /// SlugAudit (contract/schema version no longer supported). The
+    /// derived data is stale, so the caller should discard and rebuild it
+    /// from source rather than failing the tool call.
+    IncompatibleVersion {
+        contract_version: i64,
+        schema_version: i64,
+    },
+    /// The database at this path was previously published for a different
+    /// project root — the repo was moved, copied, or re-extracted from an
+    /// archive. The derived database is stale, so the caller should discard
+    /// and rebuild it from source rather than failing the tool call.
+    RootMismatch { stored_root: String },
+    /// Any other metadata failure, surfaced to the tool call as-is.
+    Other(ErrorData),
+}
+
+impl From<ProjectMetaError> for ErrorData {
+    fn from(value: ProjectMetaError) -> Self {
+        match value {
+            ProjectMetaError::Other(error) => error,
+            // A standalone surface for stale-database variants, used where
+            // the caller chose not to auto-recover. The recovery path in
+            // `SourceSyncManager::ensure_current` never produces these, so
+            // they only show up in direct callers.
+            ProjectMetaError::RootMismatch { stored_root } => ErrorData::invalid_params(
+                format!(
+                    "database at this location was built for a different project root \
+                     ({stored_root}); discard the .planning/slugaudit directory (or \
+                     re-enable the project) so it is rebuilt from source"
+                ),
+                None,
+            ),
+            ProjectMetaError::IncompatibleVersion {
+                contract_version,
+                schema_version,
+            } => ErrorData::invalid_params(
+                format!(
+                    "database at this location was built by an unsupported SlugAudit \
+                     contract/schema version ({contract_version}/{schema_version}); discard \
+                     the .planning/slugaudit directory (or re-enable the project) so it is \
+                     rebuilt from source"
+                ),
+                None,
+            ),
+        }
+    }
+}
+
 /// Creates the project's singleton metadata row on first sync if it
 /// doesn't already exist, then verifies the stored `root_path` still
 /// matches the canonical root this process resolved on later syncs.
@@ -99,13 +151,14 @@ pub(crate) fn current_revision_id(
 /// The `INSERT OR IGNORE` is safe across concurrent first syncs because
 /// the row is keyed on `id = 1`, a fixed constant. The subsequent
 /// `SELECT` is the actual verification, comparing the stored root
-/// against the canonical one — a mismatch is reported as `invalid_params`
-/// rather than `internal_error` since the user can recover by disabling
-/// and re-enabling.
+/// against the canonical one. A mismatch returns
+/// [`ProjectMetaError::RootMismatch`] so the caller can recover by
+/// discarding the disposable database and re-publishing — see
+/// `SourceSyncManager::ensure_current`.
 pub(crate) fn ensure_project_row(
     connection: &mut Connection,
     root: &Path,
-) -> Result<(), ErrorData> {
+) -> Result<(), ProjectMetaError> {
     const CONTRACT_VERSION: i64 = 1;
     const SCHEMA_VERSION: i64 = 1;
 
@@ -114,7 +167,7 @@ pub(crate) fn ensure_project_row(
     // project metadata row. A failure here aborts the whole
     // session-start, matching the rest of `ensure_project_row`'s
     // all-or-nothing semantics.
-    purge_prior_session_findings(connection)?;
+    purge_prior_session_findings(connection).map_err(ProjectMetaError::Other)?;
 
     let root_path = root.to_string_lossy();
     let created_at = std::time::SystemTime::now()
@@ -136,7 +189,10 @@ pub(crate) fn ensure_project_row(
             ],
         )
         .map_err(|error| {
-            ErrorData::internal_error(format!("recording project metadata: {error}"), None)
+            ProjectMetaError::Other(ErrorData::internal_error(
+                format!("recording project metadata: {error}"),
+                None,
+            ))
         })?;
 
     let (stored_root_path, contract_version, schema_version): (String, i64, i64) = connection
@@ -146,23 +202,22 @@ pub(crate) fn ensure_project_row(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(|error| {
-            ErrorData::internal_error(format!("reading project metadata: {error}"), None)
+            ProjectMetaError::Other(ErrorData::internal_error(
+                format!("reading project metadata: {error}"),
+                None,
+            ))
         })?;
 
     if contract_version != CONTRACT_VERSION || schema_version != SCHEMA_VERSION {
-        return Err(ErrorData::internal_error(
-            format!("unsupported contract/schema version ({contract_version}/{schema_version})"),
-            None,
-        ));
+        return Err(ProjectMetaError::IncompatibleVersion {
+            contract_version,
+            schema_version,
+        });
     }
     if stored_root_path != root_path {
-        return Err(ErrorData::invalid_params(
-            format!(
-                "database at this location belongs to a different project root \
-                 (expected {root_path}, found {stored_root_path})"
-            ),
-            None,
-        ));
+        return Err(ProjectMetaError::RootMismatch {
+            stored_root: stored_root_path,
+        });
     }
     Ok(())
 }

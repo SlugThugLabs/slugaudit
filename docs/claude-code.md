@@ -16,8 +16,15 @@ claude mcp list
 
 ## What you get
 
-Once connected *and* a project is enabled (see below), Claude Code gains
-seven tools:
+SlugAudit is Claude Code's repository fact-gathering layer. It handles the
+repetitive discovery work—finding files, symbols, calls, imports, structure,
+and changes—so Claude can spend more context on analysis instead of reading
+the same source repeatedly. After connection, this should be invisible in
+normal use.
+
+Once connected, Claude Code gains seven tools. It enables the current
+project internally when it first needs the index; you should not need to run
+project setup yourself:
 
 | Tool | What it does |
 |------|-------------|
@@ -32,18 +39,17 @@ seven tools:
 SlugAudit itself never audits — it supplies evidence, and the AI does all
 the judging.
 
-## Enable a project
+## Normal use
 
-Connecting the MCP server makes the tools *available*. To actually index a
-codebase, have the agent call the `project_control` tool with
-`action = "on"` (optionally with a project path). This creates the
-activation marker and SQLite database under `.planning/slugaudit/` inside
-the project and runs the first import immediately. After that, Claude
-Code can query it.
+Start a fresh Claude Code session after connecting and work normally. Claude
+should call `project_control` internally on first use, then use `report`,
+`query`, and `structure` to locate the relevant source before reading it.
+The goal is not another workflow for you to operate; it is less repetitive
+repository reading for Claude.
 
-You only enable once per project. Subsequent Claude Code sessions pick it
-up automatically — every tool call re-verifies freshness and waits on any
-in-flight import before executing.
+
+Subsequent sessions reuse the disposable index and re-verify freshness,
+updating only what changed.
 
 ## Re-running `connect`
 
@@ -73,8 +79,8 @@ claude mcp add slugaudit -s local -- $(which slugaudit-mcp)
 - **Tools don't appear in a session** — restart Claude Code after running
   `connect`. Already-running sessions won't see a newly registered MCP
   server.
-- **"project not enabled"** — have the agent call `project_control` with
-  `action = "on"` for the project you're working in.
+- **"project not enabled"** — Claude needs to call `project_control` once
+  for the project. This is an integration issue, not normal user setup.
 - **`/mcps` shows slugaudit as disconnected** — the binary path in your
   config may be stale (you moved or uninstalled it). Re-run
   `slugaudit-mcp connect claude` to refresh.

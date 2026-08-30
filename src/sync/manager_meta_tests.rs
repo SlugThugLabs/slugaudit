@@ -38,17 +38,58 @@ fn ensure_project_row_succeeds_on_a_fresh_database() {
 }
 
 #[test]
-fn ensure_project_row_detects_a_mismatched_root_via_invalid_params() {
+fn ensure_project_row_labels_a_mismatched_root_for_recovery() {
     let (_dir, mut connection) = open_temp_db();
     let first_root = Path::new("/tmp/first-root");
     ensure_project_row(&mut connection, first_root).expect("first ensure");
     let second_root = Path::new("/tmp/different-root");
     let err = ensure_project_row(&mut connection, second_root).expect_err("must error");
-    // The implementation uses invalid_params for a root-mismatch since
-    // the caller can recover by disabling and re-enabling.
+    // A stale database from a moved/copied repo must be reported as a
+    // RootMismatch so the sync path can auto-recover by discarding and
+    // rebuilding the disposable database.
     assert!(
-        err.message.contains("different project root")
-            || err.message.contains("belongs to a different"),
+        matches!(err, super::ProjectMetaError::RootMismatch { .. }),
+        "got: {err:?}",
+    );
+}
+
+#[test]
+fn root_mismatch_converts_to_an_actionable_message() {
+    let err: rmcp::ErrorData = super::ProjectMetaError::RootMismatch {
+        stored_root: "/old/path".into(),
+    }
+    .into();
+    assert!(
+        err.message.contains("built for a different project root")
+            && err.message.contains("/old/path"),
+        "got: {err:?}",
+    );
+}
+
+#[test]
+fn incompatible_version_is_a_stale_database_labelled_for_recovery() {
+    let (_dir, mut connection) = open_temp_db();
+    let root = Path::new("/tmp/example-project");
+    ensure_project_row(&mut connection, root).expect("first ensure");
+    connection
+        .execute(
+            "UPDATE project SET contract_version = 99, schema_version = 99 WHERE id = 1",
+            [],
+        )
+        .expect("stamp an unsupported version");
+    let err = ensure_project_row(&mut connection, root).expect_err("must error");
+    assert!(
+        matches!(err, super::ProjectMetaError::IncompatibleVersion { .. }),
+        "got: {err:?}",
+    );
+
+    let err: rmcp::ErrorData = super::ProjectMetaError::IncompatibleVersion {
+        contract_version: 99,
+        schema_version: 99,
+    }
+    .into();
+    assert!(
+        err.message.contains("unsupported SlugAudit") && err.message.contains("99/99"),
         "got: {err:?}",
     );
 }

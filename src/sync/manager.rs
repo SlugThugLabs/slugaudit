@@ -8,7 +8,7 @@
 // slugaudit-line-exception: approved-by=human-user; date=2026-08-28; reason=the synchronization state machine is cohesive; full verification, incremental reconciliation, watcher-independent stat sweep, health transitions, and completion signaling must remain coordinated
 
 use super::manager_meta::{
-    current_revision_id, ensure_project_row, publish_from_scratch, publish_full,
+    ProjectMetaError, current_revision_id, ensure_project_row, publish_from_scratch, publish_full,
 };
 use super::reconcile::ReconcileOptions;
 use super::revision;
@@ -231,13 +231,53 @@ impl SourceSyncManager {
             }
         };
 
-        ensure_project_row(&mut connection, root.as_path()).inspect_err(|error| {
-            tracing::warn!(
-                database_path = %database_path.display(),
-                error = %error.message,
-                "failed to record project metadata",
-            );
-        })?;
+        if let Err(metadata_error) = ensure_project_row(&mut connection, root.as_path()) {
+            // Default recovery for a stale/incompatible derived database: any
+            // evidence whose stored root or schema/contract version no longer
+            // matches this build is disposable, so discard it and rebuild from
+            // the current source rather than blocking the tool call. This
+            // covers a repo that was moved, copied, or re-extracted from an
+            // archive (root mismatch) and a database written by a newer or
+            // differently-versioned SlugAudit (contract/schema mismatch).
+            // Genuine safety rejections (symlink, network filesystem,
+            // permission) and internal errors still surface as errors.
+            let stale_reason = match &metadata_error {
+                ProjectMetaError::RootMismatch { stored_root } => {
+                    Some(format!("different project root ({stored_root})"))
+                }
+                ProjectMetaError::IncompatibleVersion {
+                    contract_version,
+                    schema_version,
+                } => Some(format!(
+                    "unsupported contract/schema version ({contract_version}/{schema_version})"
+                )),
+                ProjectMetaError::Other(_) => None,
+            };
+            if let Some(reason) = stale_reason {
+                tracing::warn!(
+                    database_path = %database_path.display(),
+                    reason = %reason,
+                    "project database is stale; discarding and rebuilding from source",
+                );
+                // Drop the open handle before removing the file (SQLite
+                // keeps the file open in WAL mode).
+                drop(connection);
+                store::discard_corrupt_database(&database_path).map_err(|discard| {
+                    ErrorData::internal_error(
+                        format!("discarding the stale project database: {discard}"),
+                        None,
+                    )
+                })?;
+                let synced = publish_from_scratch(&root, database_path, sink)?;
+                self.record_full_publish();
+                self.stamp_last_sync();
+                sink.emit(ProgressEvent::Completed {
+                    phase: "ensuring_current",
+                });
+                return Ok(synced);
+            }
+            return Err(ErrorData::from(metadata_error));
+        }
 
         let state = self.watch_manager.watch(root.as_path());
         // An ignore file may have changed since the last pass. Recompute

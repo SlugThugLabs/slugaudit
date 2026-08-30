@@ -202,6 +202,116 @@ fn a_corrupt_database_is_discarded_and_rebuilt_on_the_next_sync() {
     );
 }
 
+/// A database carried into a *different* project root (repo moved, copied,
+/// or re-extracted from an archive) must be auto-discarded and rebuilt from
+/// the current source rather than blocking the tool call with a
+/// per-project-root error. This is the papercut the Hermes integration run
+/// surfaced: unzipping a GitHub repo brings `.planning/slugaudit/project.db`
+/// along, and its stored root no longer matches the new extraction path.
+#[test]
+fn a_stale_project_root_is_discarded_and_rebuilt_on_the_next_sync() {
+    let manager = SourceSyncManager::with_watcher();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+    let _synced = sync_project(&manager, &project);
+
+    // Simulate a move/copy: rewrite the stored root so it no longer matches
+    // the canonical root resolve_project produces. (The real trigger is the
+    // project being accessed from a new location; here we just corrupt the
+    // metadata row to say it was built somewhere else.)
+    let database = project.path().join(".planning/slugaudit/project.db");
+    let stale_root = format!("{}-moved", project.path().canonicalize().unwrap().display());
+    {
+        let conn = crate::store::open_read_write(&database).expect("open db");
+        conn.execute(
+            "UPDATE project SET root_path = ?1 WHERE id = 1",
+            [stale_root.clone()],
+        )
+        .expect("rewrite stored root");
+    }
+
+    // ensure_current must discard the stale db and rebuild from the current
+    // source instead of erroring — the project stays usable.
+    // Must auto-recover, not error — sync_project unwraps, so this proves
+    // the stale root mismatch was recovered rather than surfaced.
+    let synced2 = sync_project(&manager, &project);
+
+    let connection = open_db(&project);
+    let stored: String = connection
+        .query_row("SELECT root_path FROM project WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .expect("read stored root");
+    assert!(
+        !stored.contains("-moved"),
+        "the stale root must have been replaced, got: {stored}"
+    );
+    let content: Option<String> = connection
+        .query_row(
+            "SELECT content FROM files WHERE path = 'lib.rs'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read content from the rebuilt database");
+    assert!(
+        content.expect("read file back").contains("pub fn a()"),
+        "the rebuilt index must still serve the file's evidence"
+    );
+    // A stale root mismatch is recovered by discarding and re-publishing, so a
+    // brand-new revision is published rather than an incremental one.
+    assert_eq!(synced2.revision_id, "rev-1");
+}
+
+/// A database written by a newer/incompatible SlugAudit (unsupported
+/// contract/schema version) must be treated like any other stale derived
+/// data: discard and rebuild from the current source, not hard-fail.
+#[test]
+fn an_incompatible_version_database_is_discarded_and_rebuilt() {
+    let manager = SourceSyncManager::with_watcher();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+    let _synced = sync_project(&manager, &project);
+
+    // Simulate a DB built by a different SlugAudit version.
+    let database = project.path().join(".planning/slugaudit/project.db");
+    {
+        let conn = crate::store::open_read_write(&database).expect("open db");
+        conn.execute(
+            "UPDATE project SET contract_version = 999, schema_version = 999 WHERE id = 1",
+            [],
+        )
+        .expect("rewrite stored version");
+    }
+
+    // Must auto-recover (discard + rebuild), not error.
+    let synced2 = sync_project(&manager, &project);
+    let connection = open_db(&project);
+    let (contract_version, schema_version): (i64, i64) = connection
+        .query_row(
+            "SELECT contract_version, schema_version FROM project WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read rebuilt version");
+    assert_eq!(
+        contract_version, 1,
+        "rebuilt to the current contract version"
+    );
+    assert_eq!(schema_version, 1, "rebuilt to the current schema version");
+    let content: Option<String> = connection
+        .query_row(
+            "SELECT content FROM files WHERE path = 'lib.rs'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read content from the rebuilt database");
+    assert!(
+        content.expect("read file back").contains("pub fn a()"),
+        "the rebuilt index must still serve the file's evidence"
+    );
+    assert_eq!(synced2.revision_id, "rev-1");
+}
+
 /// An unopenable database (the db path is a directory) must surface as an
 /// error, never a panic, and never silently publish into nothing.
 #[test]

@@ -208,7 +208,10 @@ impl SlugAuditServer {
         description = "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable \
          a project (creates the activation directory and runs the initial import), or `\"off\"` to \
          disable it (removes the activation directory and purges its database). Supply `path` to \
-         target a specific project root; defaults to the current directory."
+         target a specific project root; defaults to the current directory. If the project was \
+         moved, copied, or re-extracted elsewhere (e.g. unzipped fresh from an archive), a stale \
+         `.planning/slugaudit/project.db` is discarded and rebuilt from source automatically — the \
+         agent does not need to delete it or re-enable manually."
     )]
     async fn project_control(
         &self,
