@@ -1,23 +1,20 @@
 //! Incremental source synchronization manager for SlugAudit.
 //!
 //! `SourceSyncManager` owns a `WatchManager` and uses it to avoid full
-//! publishes when the filesystem hasn't changed meaningfully. On each
-//! `ensure_current` call it inspects the watcher health and the unreconciled
-//! event set, then either does a full publish (untrusted watcher) or an
-//! incremental reconcile (trusted watcher with pending events).
-// slugaudit-line-exception: approved-by=human-user; date=2026-08-28; reason=the synchronization state machine is cohesive; full verification, incremental reconciliation, watcher-independent stat sweep, health transitions, and completion signaling must remain coordinated
+//! publishes when the filesystem hasn't changed meaningfully. The manager
+//! state, public accessors, and related types live here. The synchronization
+//! workflow is split between the private `orchestration` and `health` child
+//! modules, which can access this manager's private state without widening
+//! the API or splitting the watcher state machine across unrelated modules.
 
-use super::manager_meta::{
-    ProjectMetaError, current_revision_id, ensure_project_row, publish_from_scratch, publish_full,
-};
-use super::reconcile::ReconcileOptions;
+#[path = "manager_health.rs"]
+mod health;
+#[path = "manager_orchestration.rs"]
+mod orchestration;
+
+use super::reconcile;
 use super::revision;
-use crate::progress::{ProgressEvent, ProgressSink};
-use crate::project;
-use crate::store;
-use crate::watch::{WatchManager, WatchState, WatcherHealth};
-use rmcp::ErrorData;
-use rusqlite::Connection;
+use crate::watch::{WatchManager, WatchState};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -40,7 +37,7 @@ pub enum SyncError {
     #[error("revision error: {0}")]
     Revision(#[from] revision::RevisionError),
     #[error("reconcile error: {0}")]
-    Reconcile(#[from] super::reconcile::ReconcileError),
+    Reconcile(#[from] reconcile::ReconcileError),
     #[error("IO error reading {path}: {source}")]
     Read {
         path: PathBuf,
@@ -167,308 +164,6 @@ impl SourceSyncManager {
                 i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
             });
         self.last_sync_unix_seconds.store(now, Ordering::Relaxed);
-    }
-
-    /// Ensures the project containing `path` is fully synchronized and
-    /// returns a handle to its current revision. Uses the filesystem
-    /// watcher to avoid full publishes when possible:
-    ///
-    /// - `NeedsVerification` / `Desynced`: full publish, then health → Healthy.
-    /// - `Healthy` with unreconciled events: incremental reconcile.
-    /// - `Healthy` without unreconciled events: returns the current revision.
-    /// - `Unavailable`: full publish.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `path` isn't inside an active project, or if
-    /// sync itself fails.
-    pub fn ensure_current(
-        &self,
-        path: &str,
-        sink: &dyn ProgressSink,
-    ) -> Result<SyncedProject, ErrorData> {
-        sink.emit(ProgressEvent::Started {
-            phase: "ensuring_current",
-        });
-        let (root, database_path) = project::resolve_project(Path::new(path))
-            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-
-        let mut connection = match store::open_read_write(&database_path) {
-            Ok(connection) => connection,
-            Err(error) if error.is_corruption() => {
-                tracing::warn!(
-                    database_path = %database_path.display(),
-                    error = %error,
-                    "database is corrupt; discarding and re-publishing from scratch",
-                );
-                store::discard_corrupt_database(&database_path).map_err(|error| {
-                    ErrorData::internal_error(
-                        format!("discarding the corrupt project database: {error}"),
-                        None,
-                    )
-                })?;
-                let synced = publish_from_scratch(&root, database_path, sink)?;
-                self.record_full_publish();
-                self.stamp_last_sync();
-                sink.emit(ProgressEvent::Completed {
-                    phase: "ensuring_current",
-                });
-                return Ok(synced);
-            }
-            Err(error) => {
-                tracing::warn!(
-                    database_path = %database_path.display(),
-                    error = %error,
-                    "failed to open project database for sync",
-                );
-                sink.emit(ProgressEvent::Completed {
-                    phase: "ensuring_current",
-                });
-                return Err(ErrorData::internal_error(
-                    format!("opening the project database for sync: {error}"),
-                    None,
-                ));
-            }
-        };
-
-        if let Err(metadata_error) = ensure_project_row(&mut connection, root.as_path()) {
-            // Default recovery for a stale/incompatible derived database: any
-            // evidence whose stored root or schema/contract version no longer
-            // matches this build is disposable, so discard it and rebuild from
-            // the current source rather than blocking the tool call. This
-            // covers a repo that was moved, copied, or re-extracted from an
-            // archive (root mismatch) and a database written by a newer or
-            // differently-versioned SlugAudit (contract/schema mismatch).
-            // Genuine safety rejections (symlink, network filesystem,
-            // permission) and internal errors still surface as errors.
-            let stale_reason = match &metadata_error {
-                ProjectMetaError::RootMismatch { stored_root } => {
-                    Some(format!("different project root ({stored_root})"))
-                }
-                ProjectMetaError::IncompatibleVersion {
-                    contract_version,
-                    schema_version,
-                } => Some(format!(
-                    "unsupported contract/schema version ({contract_version}/{schema_version})"
-                )),
-                ProjectMetaError::Other(_) => None,
-            };
-            if let Some(reason) = stale_reason {
-                tracing::warn!(
-                    database_path = %database_path.display(),
-                    reason = %reason,
-                    "project database is stale; discarding and rebuilding from source",
-                );
-                // Drop the open handle before removing the file (SQLite
-                // keeps the file open in WAL mode).
-                drop(connection);
-                store::discard_corrupt_database(&database_path).map_err(|discard| {
-                    ErrorData::internal_error(
-                        format!("discarding the stale project database: {discard}"),
-                        None,
-                    )
-                })?;
-                let synced = publish_from_scratch(&root, database_path, sink)?;
-                self.record_full_publish();
-                self.stamp_last_sync();
-                sink.emit(ProgressEvent::Completed {
-                    phase: "ensuring_current",
-                });
-                return Ok(synced);
-            }
-            return Err(ErrorData::from(metadata_error));
-        }
-
-        let state = self.watch_manager.watch(root.as_path());
-        // An ignore file may have changed since the last pass. Recompute
-        // the watch scope (pruning or re-adding directory watches) and the
-        // event-filtering rules now, before we decide what to reconcile —
-        // otherwise a gitignored path could be indexed incrementally even
-        // though a full publish would skip it.
-        self.watch_manager.refresh_scope(root.as_path());
-        let health = state.health();
-
-        let revision_id = match health {
-            WatcherHealth::NeedsVerification | WatcherHealth::Desynced => {
-                tracing::info!(
-                    ?health,
-                    root = %root.as_path().display(),
-                    "watcher untrusted; running full verification",
-                );
-                let report =
-                    publish_full(&mut connection, root.as_path(), sink, "full publish failed")?;
-                // Drain any events that arrived during the full verification.
-                // `publish` walks the filesystem and parses files, which takes
-                // time — events can arrive while it runs. If we don't drain
-                // them here, they'd wait until the next MCP call to be
-                // reconciled, leaving the database stale in the interim.
-                self.reconcile(root.as_path(), &state, &mut connection)
-                    .map_err(|error| {
-                        tracing::warn!(
-                            root = %root.as_path().display(),
-                            error = %error,
-                            "post-verification drain failed; events remain unreconciled",
-                        );
-                        ErrorData::internal_error(
-                            format!("draining events after verification: {error}"),
-                            None,
-                        )
-                    })?;
-                state.set_health(WatcherHealth::Healthy);
-                self.record_full_publish();
-                report.revision_id
-            }
-            WatcherHealth::Healthy => {
-                if state.has_unreconciled_events() {
-                    match self.reconcile(root.as_path(), &state, &mut connection) {
-                        Ok(()) => self.record_incremental_reconcile(),
-                        Err(error) => {
-                            // `snapshot_dirty` cleared the dirty sets, but
-                            // reconciliation failed — the events are lost. Mark
-                            // the watcher untrusted so the next call does a full
-                            // verification rather than silently serving stale
-                            // evidence.
-                            tracing::warn!(
-                                root = %root.as_path().display(),
-                                error = %error,
-                                "incremental reconcile failed; marking watcher Desynced so next call re-verifies",
-                            );
-                            state.set_health(WatcherHealth::Desynced);
-                            sink.emit(ProgressEvent::Completed {
-                                phase: "ensuring_current",
-                            });
-                            return Err(ErrorData::internal_error(
-                                format!("reconciling watcher events: {error}"),
-                                None,
-                            ));
-                        }
-                    }
-                } // Stat sweep: the watcher-independent freshness backstop — a
-                // change the watcher dropped or never saw is still found and
-                // reconciled before this call serves evidence. Failure marks
-                // the watcher Desynced so the next call re-verifies.
-                super::sweep_reconcile::sweep_and_reconcile(
-                    root.as_path(),
-                    self.watch_manager.rules_for(root.as_path()),
-                    &mut connection,
-                    &state,
-                    sink,
-                )?;
-
-                current_revision_id(&connection)
-                    .map_err(|error| {
-                        tracing::warn!(
-                            database_path = %database_path.display(),
-                            error = %error,
-                            "failed to read the current revision",
-                        );
-                        ErrorData::internal_error(
-                            format!("reading the current revision: {error}"),
-                            None,
-                        )
-                    })?
-                    .ok_or_else(|| {
-                        tracing::warn!(
-                            database_path = %database_path.display(),
-                            "no current revision found after sync",
-                        );
-                        ErrorData::internal_error(
-                            "no current revision found after sync — this is unexpected; \
-                         try disabling and re-enabling the project",
-                            None,
-                        )
-                    })?
-            }
-            WatcherHealth::Unavailable => {
-                tracing::info!(
-                    root = %root.as_path().display(),
-                    "watcher unavailable; running full publish",
-                );
-                let report = publish_full(
-                    &mut connection,
-                    root.as_path(),
-                    sink,
-                    "publish on Unavailable path failed",
-                )?;
-                self.record_full_publish();
-                report.revision_id
-            }
-        };
-
-        drop(connection);
-        self.stamp_last_sync();
-        tracing::debug!(
-            revision_id = %revision_id,
-            root = %root.as_path().display(),
-            "ensure_current completed",
-        );
-
-        sink.emit(ProgressEvent::Completed {
-            phase: "ensuring_current",
-        });
-        Ok(SyncedProject {
-            database_path,
-            revision_id,
-        })
-    }
-
-    /// Reconciles unreconciled watcher events against the database using
-    /// barrier synchronization: reconciles dirty/deleted paths, then checks
-    /// if new events arrived during reconciliation and loops until the
-    /// watcher sequence stabilizes. Only acknowledges events after the
-    /// reconciliation succeeds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if reading a dirty file, querying the database, or
-    /// committing the revision fails. On failure, the watcher health should
-    /// be set to `NeedsVerification` or `Desynced` so the next call re-verifies.
-    pub fn reconcile(
-        &self,
-        root: &Path,
-        state: &WatchState,
-        connection: &mut Connection,
-    ) -> Result<(), SyncError> {
-        // An ignore file may have changed since the last pass: recompute
-        // the watch scope and the event-filtering rules before deciding
-        // what to reconcile. A no-op when nothing changed.
-        self.watch_manager.refresh_scope(root);
-        let expected_current = current_revision_id(connection)?;
-        // One deadline for the whole barrier operation — every iteration
-        // and every per-path reconcile inside it — so a pathological
-        // event producer can't stall a tool call indefinitely. The
-        // project's ignore rules make the incremental path index exactly
-        // what a full publish would index.
-        let options = ReconcileOptions::for_sync(self.watch_manager.rules_for(root));
-        let started = std::time::Instant::now();
-        // Accumulated across every barrier iteration so the log line below
-        // reports the total skip count, not just the last pass's.
-        let mut skipped_total = 0usize;
-
-        super::reconcile::sync_with_barrier_with_deadline(
-            state,
-            &options.deadline,
-            |dirty, deleted| {
-                let report = super::reconcile::reconcile_dirty_paths_with_deadline(
-                    connection,
-                    root,
-                    dirty,
-                    deleted,
-                    expected_current.as_deref(),
-                    &options,
-                )?;
-                skipped_total += report.skipped;
-                Ok(())
-            },
-        )?;
-
-        tracing::debug!(
-            root = %root.display(),
-            elapsed_ms = started.elapsed().as_millis(),
-            skipped = skipped_total,
-            "incremental reconcile phase complete",
-        );
-        Ok(())
     }
 }
 

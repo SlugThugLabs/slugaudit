@@ -95,7 +95,9 @@ src/
 
 ├── sync/                     Indexing + watcher-aware reconciliation
 │   ├── mod.rs                public exports
-│   ├── manager.rs            SourceSyncManager: ensure_current, reconcile, health accessors
+│   ├── manager.rs                 SourceSyncManager state, public accessors, and related types
+│   ├── manager_orchestration.rs   project resolution, database recovery, ensure_current entry point
+│   ├── manager_health.rs           watcher-health dispatch and incremental barrier reconciliation
 │   ├── manager_meta.rs       current_revision_id + ensure_project_row helpers
 │   ├── reconcile/             dirty/deleted reconciliation — split into 6 files (mod.rs + error/report/options/pipeline/barrier/queries)
 │   │   ├── mod.rs             re-exports + MAX_BARRIER_LOOPS
@@ -162,6 +164,27 @@ src/
 └── cli_tests.rs etc.         inline #[path] test modules per source file
 ```
 
+### Manager split decision
+
+The former `src/sync/manager.rs` combined three distinct responsibilities in
+one 511-line file: manager state and observability, project/database recovery,
+and watcher-health reconciliation. It is now split along those responsibility
+boundaries:
+
+- `manager.rs` owns `SourceSyncManager`, `SyncedProject`, `SyncError`,
+  constructors, counters, watcher registration, and public observability.
+- `manager_orchestration.rs` owns the outer `ensure_current` workflow,
+  including project resolution, database recovery, and the shared rebuild tail.
+- `manager_health.rs` owns the watcher-health state machine and incremental
+  barrier reconciliation, because those paths share health transitions,
+  counters, progress signaling, and freshness invariants.
+
+The two implementation modules are private children of `manager.rs`, rather
+than sibling public modules. That preserves private-field access, keeps the
+existing `sync::SourceSyncManager` API unchanged, and avoids weakening
+encapsulation with `pub(crate)` state fields. This is a structural split only:
+the synchronization behavior and its tests are unchanged.
+
 ## File-size authorization summary
 
 Every file under `src/` is governed by `cargo run --bin check_source_limits --locked` (the bin that replaced the prior `tools/check_source_limits.sh` shell script). Production files at 0–199 code lines auto-pass the gate; 200–300 requires an in-source comment of the form
@@ -174,9 +197,9 @@ and ≥300 hard-fails the gate (CI red). Test files (`*_tests.rs`, `tests.rs`) e
 
 | Stage | Scope decision | Count |
 |---|---|---|
-| 0–199 LoC (any file) | `source-size:auto` | 139 |
+| 0–199 LoC (any file) | `source-size:auto` | 142 |
 | test files 200–500 LoC | `source-size:test-auto` | 9 |
-| production 200–300 LoC, annotated | `source-size:approved-exception` | 10 |
+| production 200–300 LoC, annotated | `source-size:approved-exception` | 9 |
 | production 200–300 LoC, **NOT** annotated | `source-size:violation` | 0 |
 | >300 production / >500 test LoC | `source-size:hard-fail` | 0 |
 
@@ -195,7 +218,6 @@ test-file rule above.
 | `src/evidence/normalize.rs` | 224 | one match arm per Tree-sitter evidence kind; splitting by kind would hide the exhaustiveness this file exists to guarantee |
 | `src/graph/resolve_rust.rs` | 210 | one resolution pipeline per Rust import form (workspace anchoring, super/self walk, item-vs-module shortening) with mutually recursive helpers on the same `known_paths` contract |
 | `src/store/migrations.rs` | 243 | one migration per schema version plus version-pinning tests form a single forward-only sequence; splitting would scatter the ordering invariant (and the exact-version pin) |
-| `src/sync/manager.rs` | 291 | `ensure_current`'s three-branch match is the sync orchestrator's hot path; trace sites + `stamp_last_sync` belong next to the code paths they cover |
 | `src/tools/health.rs` | 236 | health is the schema-defining tool; Request + Response + phase + derivation live together so the schema isn't split from its only consumer |
 | `src/tools/query.rs` | 261 | one tool contract owns request/response types, the execution/budget path, and the separator scanner; splitting would fragment the validation order (empty → size → statement count → freshness → budget) the tests assert against |
 | `src/watch/manager.rs` | 287 | one file owns the notify watcher lifecycle, per-project watch states, scope/rule maintenance, and the event filter; splitting would fragment the manager's lock discipline and the unwatch rule |
@@ -712,7 +734,7 @@ Joining the project? Read in this order:
    the "what actually happens when a tool call arrives" story: tool
    contracts in `server.rs`, semaphore-bounded dispatch + progress in
    `server_runner.rs`.
-6. **`src/sync/manager.rs`** — the synchronization state machine.
+6. **`src/sync/manager.rs`** plus its private `manager_orchestration.rs` and `manager_health.rs` children — the synchronization state machine, recovery boundary, and watcher-health boundary.
 7. **`src/graph/resolver/`** — how imports become dependency edges.
 
 If something in the codebase disagrees with this document, **fix one or
