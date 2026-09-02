@@ -72,6 +72,7 @@ pub(crate) fn indexable_walker(root: &Path) -> ignore::Walk {
         .standard_filters(true)
         .follow_links(false)
         .hidden(false)
+        .require_git(false)
         .build()
 }
 
