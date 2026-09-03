@@ -43,7 +43,7 @@ The server exposes seven tools:
 - **`project_control`** — enable/disable a project (creates or removes
   the activation directory and runs the initial import).
 - **`health`** — operational snapshot: watcher health, unreconciled
-  counts, cumulative tool-call counters, last-sync timestamp.
+  counts, cumulative tool-call counters, last-sync timestamp and duration.
 
 Of these, only `finding` and `project_control` mutate state; the rest
 are read-only views into the most recent revision's evidence. All
@@ -590,17 +590,16 @@ Full rationale: "Watcher health model" section above.
 
 **Answer:** Guaranteed 100% freshness is the foundational trust contract of SlugAudit. When an AI agent calls `query`, `report`, or `structure`, the database must be an exact, mathematically fresh mirror of the files on disk at that exact millisecond. If a tool call were served from a throttled cache (e.g. 10 or 30 seconds stale), any recent edits, git branch switches, or dropped inotify events would cause the agent to read stale code, hallucinate, doubt its tools, and enter paranoid validation loops. The synchronous sweep provides watcher-independent healing on every read so there is zero chance of the index drifting out of sync.
 
-### Q: Why is logging human-readable text instead of structured JSON?
+### Q: How is logging formatted (human-readable text vs structured JSON)?
 
 **Answer:** SlugAudit speaks MCP over stdio. Stdout is the JSON-RPC
-transport. Stderr is piped to the MCP host's own log viewer — a
-human. ANSI is disabled because the host's log viewer isn't a
-terminal. When/if SSE/HTTP transport is added, flipping to JSON
-output is a one-liner (`tracing_subscriber::fmt().json()` behind an
-env var). Until then, human-readable stderr is the correct format
-for the single-human-consumer deployment model.
+transport. Stderr is piped to the MCP host's log viewer — by default,
+human-readable text with ANSI color disabled (since the host's log viewer
+is not a terminal). For enterprise/CI environments with automated log
+aggregators (e.g. Datadog, Loki, CloudWatch), setting `SLUGAUDIT_LOG_FORMAT=json`
+switches stderr output to single-line JSON format.
 
-Full rationale: `OBSERVABILITY.md` and `src/main.rs`.
+Full rationale: `src/main.rs`.
 
 ### Q: Why no graceful shutdown / SIGTERM handler?
 
@@ -632,12 +631,12 @@ Per-call open is simpler and correct.
 
 ### Q: Why no structured metrics / Prometheus endpoint?
 
-**Answer:** The `health` MCP tool returns `AtomicU64` counters
+**Answer:** The `health` MCP tool returns atomic counters
 (tool calls, errors, cumulative latency, consecutive full publishes,
-watcher health, pending event counts). For the stdio deployment
-model, pulling these via an MCP call is the right interface — the
-same transport that calls tools can query health. A Prometheus
-endpoint belongs with SSE/HTTP transport.
+sync duration in milliseconds, watcher health, pending event counts).
+For the stdio deployment model, pulling these via an MCP call is the
+right interface — the same transport that calls tools can query health.
+A Prometheus endpoint belongs with SSE/HTTP transport.
 
 ### Q: Why are findings session-scoped and purged on restart?
 

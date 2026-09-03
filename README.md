@@ -288,6 +288,16 @@ cargo run --quiet --bin check_no_duplicates --locked
 
 `#![forbid(unsafe_code)]` is enforced crate-wide. Zero unsafe in `src/`.
 
+### Structured Logging
+
+Diagnostics log to `stderr` with ANSI colors disabled by default. For automated log aggregators (e.g. Datadog, Grafana Loki, CloudWatch), set:
+
+```bash
+export SLUGAUDIT_LOG_FORMAT=json
+```
+
+All `stderr` events will be formatted as single-line JSON while `stdout` remains strictly JSON-RPC.
+
 ## License
 
 SlugAudit is **free to use** — including for your own commercial software.
