@@ -356,6 +356,16 @@ A future network-accessible transport (SSE, WebSocket) would need
 its own authentication layer. The current stdio transport needs
 none because the process boundary is the auth boundary.
 
+### Credential audit & prompt-leakage redaction
+
+SlugAudit is designed specifically to assist with auditing codebases. To alert
+the AI agent and auditor to accidental credential exposure without leaking
+secrets, `report` inspects file paths and surfaces a
+`credential_pattern_file_count` (`.env*`, `*.pem`, `*.key`, `id_rsa*`). To
+prevent secret values from leaking into logs or host stderr, all query
+parameters, finding text, and source contents are strictly redacted from log
+emissions (`src/tools/redaction_tests.rs`).
+
 ### The database is disposable derived data
 
 Every byte in `project.db` — files, content hashes, evidence,
@@ -575,6 +585,10 @@ harmless — the next `ensure_synced` will see unreconciled events or
 do a full publish. Dropping is the recovery path, not a bug.
 
 Full rationale: "Watcher health model" section above.
+
+### Q: Why do state-bearing tool calls run `sweep_and_reconcile` on every call instead of caching or throttling?
+
+**Answer:** Guaranteed 100% freshness is the foundational trust contract of SlugAudit. When an AI agent calls `query`, `report`, or `structure`, the database must be an exact, mathematically fresh mirror of the files on disk at that exact millisecond. If a tool call were served from a throttled cache (e.g. 10 or 30 seconds stale), any recent edits, git branch switches, or dropped inotify events would cause the agent to read stale code, hallucinate, doubt its tools, and enter paranoid validation loops. The synchronous sweep provides watcher-independent healing on every read so there is zero chance of the index drifting out of sync.
 
 ### Q: Why is logging human-readable text instead of structured JSON?
 

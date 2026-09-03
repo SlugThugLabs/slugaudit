@@ -219,8 +219,8 @@ impl SlugAuditServer {
         peer: Peer<RoleServer>,
         request: Parameters<tools::ProjectControlRequest>,
     ) -> Result<Json<tools::ProjectControlResponse>, ErrorData> {
-        self.dispatch(meta, peer, "project_control", move |sink, _manager| {
-            tools::project_control(&request, sink.as_ref())
+        self.dispatch(meta, peer, "project_control", move |sink, manager| {
+            tools::project_control(&request, sink.as_ref(), Some(&manager))
         })
         .await
     }

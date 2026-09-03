@@ -145,7 +145,10 @@ fn section_label(trimmed: &str) -> Option<&str> {
 /// caller's `_` arm reports it as invalid rather than panicking.
 fn read_choice() -> Result<usize, Box<dyn std::error::Error>> {
     let mut line = String::new();
-    std::io::stdin().lock().read_line(&mut line)?;
+    let bytes_read = std::io::stdin().lock().read_line(&mut line)?;
+    if bytes_read == 0 {
+        return Ok(5);
+    }
     Ok(line.trim().parse().unwrap_or(0))
 }
 
@@ -246,6 +249,13 @@ mod tests {
             !plain.contains('\x1b'),
             "plain rendering must never contain ESC escape bytes"
         );
+    }
+
+    #[test]
+    fn colored_style_renders_ansi_escapes() {
+        let colored = render_menu(&Style::colored());
+        assert!(colored.contains('\x1b'));
+        assert!(colored.contains("SlugAudit setup"));
     }
 
     #[test]

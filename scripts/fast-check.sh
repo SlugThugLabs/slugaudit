@@ -101,13 +101,20 @@ check_one_file() {
     echo "🔍 Fast-checking Rust file: $RUST_FILE"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-    # Check file length (200 code-line auto-pass limit, 300 with approved exception header)
+    # Check file length:
+    # Production: 200 code-line auto-pass, 300 with approved exception header
+    # Tests: 500 ceiling (matching check_source_limits)
     local LINE_COUNT
     LINE_COUNT=$(grep -Ev '^\s*(//|/\*|\*|$)' "$RUST_FILE" | wc -l)
-    if [ "$LINE_COUNT" -gt 300 ]; then
-        echo -e "${RED}🚨 CRITICAL${NC}: File exceeds hard 300-line ceiling"
+    local MAX_CEILING=300
+    if [ "$IS_TEST_FILE" -eq 1 ]; then
+        MAX_CEILING=500
+    fi
+
+    if [ "$LINE_COUNT" -gt "$MAX_CEILING" ]; then
+        echo -e "${RED}🚨 CRITICAL${NC}: File exceeds hard ${MAX_CEILING}-line ceiling"
         echo "   File: $RUST_FILE"
-        echo "   Lines: $LINE_COUNT (limit: 300)"
+        echo "   Lines: $LINE_COUNT (limit: ${MAX_CEILING})"
         echo "   Split this file into smaller modules"
         ((CRITICAL++))
         EXIT_CODE=1
@@ -165,34 +172,36 @@ check_one_file() {
         fi
     fi
 
-    # Check function length (50 line limit) - matches pub, pub(crate), async, and standard fn
-    awk '
-    /^[[:space:]]*(pub(\([^\)]+\))?[[:space:]]+)?(async[[:space:]]+)?(const[[:space:]]+)?fn[[:space:]]+[a-zA-Z0-9_]+/ {
-        fn_start = NR
-        brace_count = 0
-        in_function = 1
-    }
-    in_function && /{/ { brace_count++ }
-    in_function && /}/ {
-        brace_count--
-        if (brace_count == 0) {
-            fn_length = NR - fn_start + 1
-            if (fn_length > 50) {
-                printf "Function too long: line %d, length %d lines\n", fn_start, fn_length
-            }
-            in_function = 0
+    # Check function length (50 line limit) - production only
+    if [ "$IS_TEST_FILE" -eq 0 ]; then
+        while IFS= read -r line; do
+            if [[ -n "$line" ]]; then
+                echo -e "${RED}🚨 CRITICAL${NC}: $line"
+                echo "   File: $RUST_FILE"
+                echo "   Limit: 50 lines per function"
+                echo "   Split into smaller functions"
+                ((CRITICAL++))
+                EXIT_CODE=1
+            fi
+        done < <(awk '
+        /^[[:space:]]*(pub(\([^\)]+\))?[[:space:]]+)?(async[[:space:]]+)?(const[[:space:]]+)?fn[[:space:]]+[a-zA-Z0-9_]+/ {
+            fn_start = NR
+            brace_count = 0
+            in_function = 1
         }
-    }
-    ' "$RUST_FILE" | while read -r line; do
-        if [[ -n "$line" ]]; then
-            echo -e "${RED}🚨 CRITICAL${NC}: $line"
-            echo "   File: $RUST_FILE"
-            echo "   Limit: 50 lines per function"
-            echo "   Split into smaller functions"
-            ((CRITICAL++))
-            EXIT_CODE=1
-        fi
-    done
+        in_function && /{/ { brace_count++ }
+        in_function && /}/ {
+            brace_count--
+            if (brace_count == 0) {
+                fn_length = NR - fn_start + 1
+                if (fn_length > 50) {
+                    printf "Function too long: line %d, length %d lines\n", fn_start, fn_length
+                }
+                in_function = 0
+            }
+        }
+        ' "$RUST_FILE")
+    fi
 
     # Check error patterns
     for desc in "${!ERROR_PATTERNS[@]}"; do

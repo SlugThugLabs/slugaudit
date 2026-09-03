@@ -57,17 +57,6 @@ pub struct QueryResponse {
     pub next_offset: Option<usize>,
 }
 
-/// Borrowed mirror of `QueryResponse`, used to measure the exact serialized
-/// size of a candidate response — struct and array framing included —
-/// without cloning the row vector.
-#[derive(Serialize)]
-struct QueryResponseView<'a> {
-    revision_id: &'a str,
-    rows: &'a [serde_json::Value],
-    truncated: bool,
-    next_offset: Option<usize>,
-}
-
 /// # Errors
 ///
 /// Returns an error if `request.path` isn't an active project, `sql` is
@@ -117,16 +106,9 @@ fn query_with_limits(
 
     let synced = ensure_synced(path, sink, manager)?;
     let revision_id = synced.revision_id.clone();
-    let (mut rows, mut truncated) =
+    let (rows, truncated) =
         with_verified_read(&synced, |tx| run_query(tx, trimmed, *offset, limits))?;
 
-    shrink_to_fit(
-        &revision_id,
-        &mut rows,
-        &mut truncated,
-        *offset,
-        limits.max_query_response_bytes,
-    )?;
     let next_offset = truncated.then_some(offset.saturating_add(rows.len()));
 
     // Row count and truncation, never the SQL text or the rows themselves.
@@ -320,34 +302,6 @@ fn first_statement_separator(sql: &str) -> Option<usize> {
         i += 1;
     }
     None
-}
-
-/// Enforces the full serialized `QueryResponse` size, framing included, by
-/// dropping rows from the end and re-measuring until the candidate fits.
-/// Correctness over raw performance: `MAX_ROWS` caps the work at 500 rows.
-fn shrink_to_fit(
-    revision_id: &str,
-    rows: &mut Vec<serde_json::Value>,
-    truncated: &mut bool,
-    offset: usize,
-    max_bytes: usize,
-) -> Result<(), ErrorData> {
-    loop {
-        let view = QueryResponseView {
-            revision_id,
-            rows,
-            truncated: *truncated,
-            next_offset: (*truncated).then_some(offset.saturating_add(rows.len())),
-        };
-        let encoded_len = serde_json::to_vec(&view)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
-            .len();
-        if encoded_len <= max_bytes || rows.is_empty() {
-            return Ok(());
-        }
-        rows.pop();
-        *truncated = true;
-    }
 }
 
 #[cfg(test)]

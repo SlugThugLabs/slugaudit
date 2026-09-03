@@ -219,11 +219,7 @@ pub(super) fn sample_all_with_deadline(
         }
     }
 
-    if let Some(err) = error_slot
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .take()
-    {
+    if let Some(err) = crate::util::lock_or_recover(&error_slot).take() {
         return Err(err);
     }
 

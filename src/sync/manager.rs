@@ -143,6 +143,11 @@ impl SourceSyncManager {
         self.watch_manager.watch(root)
     }
 
+    /// Stop watching `root` and unregisters its state.
+    pub fn unwatch(&self, root: &Path) {
+        self.watch_manager.unwatch(root);
+    }
+
     /// Returns the `WatchState` for a previously-watched project root,
     /// or `None` if the project has not been watched yet.
     ///

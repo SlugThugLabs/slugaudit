@@ -49,6 +49,11 @@ impl Style {
         Self { enabled: false }
     }
 
+    #[cfg(test)]
+    pub(crate) const fn colored() -> Self {
+        Self { enabled: true }
+    }
+
     pub(crate) fn enabled(&self) -> bool {
         self.enabled
     }

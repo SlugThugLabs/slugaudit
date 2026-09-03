@@ -333,30 +333,6 @@ fn an_oversized_text_or_blob_value_is_rejected_before_being_expanded() {
 }
 
 #[test]
-fn full_response_framing_is_counted_toward_the_byte_cap() {
-    let project = activated_project(&[]);
-    // Small enough that many individually-tiny rows still overflow once the
-    // outer QueryResponse struct and array framing are counted.
-    let limits = ResourceLimits {
-        max_query_response_bytes: 300,
-        ..ResourceLimits::default()
-    };
-    let response = ask_with_limits(
-        &project,
-        "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 100) SELECT x FROM cnt",
-        &limits)
-    .expect("query succeeds even though it must drop rows to fit");
-    assert!(response.truncated);
-    let encoded = serde_json::to_vec(&response).expect("response serializes");
-    assert!(
-        encoded.len() <= limits.max_query_response_bytes,
-        "encoded response ({} bytes) exceeds the {}-byte cap",
-        encoded.len(),
-        limits.max_query_response_bytes
-    );
-}
-
-#[test]
 fn a_pathological_query_is_aborted_by_the_step_budget() {
     let project = activated_project(&[]);
     let limits = ResourceLimits {

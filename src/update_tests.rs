@@ -120,3 +120,87 @@ fn target_binary_prefers_the_installed_stable_path() {
         assert_eq!(target, stable);
     });
 }
+
+#[test]
+fn verify_checksum_fails_on_missing_sums_file() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let binary = dir.path().join("fake_bin");
+    std::fs::write(&binary, b"content").expect("write binary");
+    let missing_sums = dir.path().join("nonexistent_SHA256SUMS");
+    let err = verify_checksum(&binary, &missing_sums).unwrap_err();
+    assert!(err.to_string().contains("reading checksums"));
+}
+
+#[test]
+fn verify_checksum_fails_when_asset_entry_missing() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let binary = dir.path().join("fake_bin");
+    std::fs::write(&binary, b"content").expect("write binary");
+    let sums_file = dir.path().join("SHA256SUMS");
+    std::fs::write(&sums_file, "1234567890abcdef  other-asset.tar.gz\n").expect("write sums");
+    let err = verify_checksum(&binary, &sums_file).unwrap_err();
+    assert!(err.to_string().contains("has no entry for"));
+}
+
+#[test]
+fn verify_checksum_fails_when_binary_file_missing() {
+    if which::which("sha256sum").is_err() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("temp dir");
+    let missing_binary = dir.path().join("missing_bin");
+    let sums_file = dir.path().join("SHA256SUMS");
+    std::fs::write(&sums_file, format!("abc  {ASSET}\n")).expect("write sums");
+    let err = verify_checksum(&missing_binary, &sums_file).unwrap_err();
+    assert!(err.to_string().contains("checksum verification failed"));
+}
+
+#[test]
+fn update_error_display_covers_all_variants() {
+    assert!(
+        UpdateError::CurlMissing
+            .to_string()
+            .contains("curl is required")
+    );
+    assert!(
+        UpdateError::Target(std::io::Error::other("fail"))
+            .to_string()
+            .contains("could not determine")
+    );
+    assert!(
+        UpdateError::Network("conn reset".into())
+            .to_string()
+            .contains("network request failed")
+    );
+    assert!(
+        UpdateError::Json("bad json".into())
+            .to_string()
+            .contains("JSON decodable")
+    );
+    assert!(UpdateError::NoTag.to_string().contains("tag name"));
+    assert!(
+        UpdateError::Checksum("bad hash".into())
+            .to_string()
+            .contains("checksum verification failed")
+    );
+    assert!(
+        UpdateError::Io(std::io::Error::other("io"))
+            .to_string()
+            .contains("filesystem")
+    );
+    assert!(
+        UpdateError::Stage {
+            action: "create",
+            path: PathBuf::from("/test"),
+            source: std::io::Error::other("perm"),
+        }
+        .to_string()
+        .contains("could not create /test")
+    );
+}
+
+#[test]
+fn io_from_string_helper_creates_error() {
+    let err = io_from_string("network err".into());
+    assert_eq!(err.to_string(), "network err");
+}

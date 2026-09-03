@@ -57,7 +57,7 @@ fn path_defaults_to_none() {
 #[test]
 fn on_action_enables_the_project_and_runs_the_initial_import() {
     let (project, path) = temp_project_with_source();
-    let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink)
+    let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
         .expect("enable succeeds");
 
     let inner = response.0;
@@ -91,8 +91,9 @@ fn on_action_enables_the_project_and_runs_the_initial_import() {
 #[test]
 fn on_action_is_idempotent_when_already_enabled() {
     let (project, path) = temp_project_with_source();
-    project_control(&on_request(&path), &crate::progress::NoopProgressSink).expect("first enable");
-    let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink)
+    project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
+        .expect("first enable");
+    let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
         .expect("second enable");
     assert_eq!(response.0.status, "enabled");
     assert!(
@@ -104,11 +105,15 @@ fn on_action_is_idempotent_when_already_enabled() {
 #[test]
 fn off_action_disables_the_project_and_purges_the_database() {
     let (project, path) = temp_project_with_source();
-    project_control(&on_request(&path), &crate::progress::NoopProgressSink).expect("enable");
+    project_control(&on_request(&path), &crate::progress::NoopProgressSink, None).expect("enable");
     assert!(activation_dir(&project).is_dir());
 
-    let response = project_control(&off_request(&path), &crate::progress::NoopProgressSink)
-        .expect("disable succeeds");
+    let response = project_control(
+        &off_request(&path),
+        &crate::progress::NoopProgressSink,
+        None,
+    )
+    .expect("disable succeeds");
     assert_eq!(response.0.status, "disabled");
     assert!(response.0.import.is_none());
     assert!(
@@ -118,10 +123,40 @@ fn off_action_disables_the_project_and_purges_the_database() {
 }
 
 #[test]
+fn off_action_unwatches_project_in_sync_manager() {
+    let (project, path) = temp_project_with_source();
+    let manager = sync::SourceSyncManager::new();
+    manager.activate(project.path());
+    assert!(manager.active_watch_state().is_some());
+
+    project_control(
+        &on_request(&path),
+        &crate::progress::NoopProgressSink,
+        Some(&manager),
+    )
+    .expect("enable");
+    project_control(
+        &off_request(&path),
+        &crate::progress::NoopProgressSink,
+        Some(&manager),
+    )
+    .expect("disable");
+
+    assert!(
+        manager.active_watch_state().is_none(),
+        "disabling project must unregister watcher"
+    );
+}
+
+#[test]
 fn off_action_when_already_disabled_is_a_noop() {
     let (project, path) = temp_project_with_source();
-    let response = project_control(&off_request(&path), &crate::progress::NoopProgressSink)
-        .expect("noop disable");
+    let response = project_control(
+        &off_request(&path),
+        &crate::progress::NoopProgressSink,
+        None,
+    )
+    .expect("noop disable");
     assert_eq!(response.0.status, "already_disabled");
     assert!(response.0.import.is_none());
     assert!(!activation_dir(&project).exists());
@@ -130,7 +165,11 @@ fn off_action_when_already_disabled_is_a_noop() {
 #[test]
 fn on_action_with_a_nonexistent_path_returns_an_error() {
     let missing = "/definitely/not/a/real/path/for/slugaudit-tests";
-    let result = project_control(&on_request(missing), &crate::progress::NoopProgressSink);
+    let result = project_control(
+        &on_request(missing),
+        &crate::progress::NoopProgressSink,
+        None,
+    );
     assert!(
         result.is_err(),
         "enable on a nonexistent path must surface an error, not silently create state"

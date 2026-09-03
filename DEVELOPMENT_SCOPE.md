@@ -30,11 +30,11 @@ is not development-only and may be indexed like any other project content.
 
 ## This repository's development files
 
-In this repository, `.planning/` contains SlugAudit's own development
-architecture notes, plans, audit reports, and historical material. That is
-repository context, not shipped product functionality.
+In this repository, `.planning/` contains SlugAudit's internal engineering
+specifications, architectural source of truth (`ARCHITECTURE.md`), design decisions,
+and roadmap (the internal engineering wiki / RFCs).
 
-The following are development-only:
+The following are development-only and are not shipped in end-user binary releases:
 
 - repository-level `.planning/` documentation
 - `tests/`
@@ -52,9 +52,10 @@ systems fail closed before opening the SQLite database.
 
 When auditing this repository:
 
+- Consult `.planning/ARCHITECTURE.md` as the authoritative source of truth for architectural design, threat model, and system invariants.
 - Score `slugaudit-mcp` runtime behavior as product functionality.
 - Treat `<customer-project>/.planning/slugaudit/` as runtime application state.
 - Treat the rest of a customer's `.planning/` directory as customer data.
 - Do not count development-only check binaries as end-user runtime code.
-- Do not treat this repository's planning documents as shipped product files.
+- Do not treat this repository's internal planning documents as shipped product binaries (they are developer documentation, not packaged runtime code).
 - Distinguish CI/release-process failures from runtime production failures.

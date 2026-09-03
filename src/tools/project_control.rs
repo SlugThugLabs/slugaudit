@@ -67,6 +67,7 @@ fn err(msg: impl Into<String>) -> ErrorData {
 pub fn project_control(
     request: &Parameters<ProjectControlRequest>,
     sink: &dyn crate::progress::ProgressSink,
+    manager: Option<&sync::SourceSyncManager>,
 ) -> Result<Json<ProjectControlResponse>, ErrorData> {
     let inner = &request.0;
     let path_str = inner.path.as_deref().unwrap_or(".").to_string();
@@ -78,7 +79,7 @@ pub fn project_control(
 
     match inner.action {
         ProjectControlAction::On => enable(&root, sink),
-        ProjectControlAction::Off => disable(&root),
+        ProjectControlAction::Off => disable(&root, manager),
     }
 }
 
@@ -103,7 +104,10 @@ fn enable(
     }))
 }
 
-fn disable(root: &ProjectRoot) -> Result<Json<ProjectControlResponse>, ErrorData> {
+fn disable(
+    root: &ProjectRoot,
+    manager: Option<&sync::SourceSyncManager>,
+) -> Result<Json<ProjectControlResponse>, ErrorData> {
     let activation = project::activation_dir(root);
     if !activation.exists() {
         return Ok(Json(ProjectControlResponse {
@@ -111,6 +115,9 @@ fn disable(root: &ProjectRoot) -> Result<Json<ProjectControlResponse>, ErrorData
             path: root.as_path().to_string_lossy().to_string(),
             import: None,
         }));
+    }
+    if let Some(m) = manager {
+        m.unwatch(root.as_path());
     }
     project::disable(root).map_err(|e| err(format!("disable: {e}")))?;
     Ok(Json(ProjectControlResponse {

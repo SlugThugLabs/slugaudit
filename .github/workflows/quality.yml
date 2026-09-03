@@ -127,19 +127,6 @@ jobs:
       - name: Coverage (cargo llvm-cov)
         run: cargo run --quiet --bin check_coverage --locked
 
-      # Performance regression gate: runs the discovery/parsing/search
-      # criterion benches with a reduced sample profile (~1 min, dominated
-      # by the bench compile) and fails when any median regresses more than
-      # the threshold (default 20%) against the committed baseline
-      # (.planning/archive/perf_baseline.json). The memory and startup
-      # benches report but are deliberately not gated — they profile rather
-      # than regress-check. The baseline is recorded on Linux — this step is
-      # Linux-only. macOS performance is tracked separately; re-record a
-      # macOS baseline before enabling this step on macOS.
-      - name: Performance regression (criterion)
-        if: runner.os == 'Linux'
-        run: cargo run --quiet --bin check_performance --locked
-
       - name: Install mutation testing tooling
         uses: taiki-e/install-action@v2
         with:

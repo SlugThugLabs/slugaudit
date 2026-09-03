@@ -1,7 +1,6 @@
 //! Stable binary installation and executable-path discovery.
 #![allow(clippy::print_stdout)]
 
-use std::io::{BufRead as _, Write as _};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -116,19 +115,27 @@ fn on_path(dir: &Path) -> bool {
 /// Reads a single `y`/`n` answer from stdin, defaulting to no. Non-
 /// interactive (piped) stdin returns `false` immediately.
 fn interactive_prompt(msg: &str) -> bool {
-    use std::io::IsTerminal;
-    if !std::io::stdin().is_terminal() {
-        return false;
+    #[cfg(test)]
+    {
+        let _ = msg;
+        false
     }
-    print!("{msg}");
-    if std::io::stdout().flush().is_err() {
-        return false;
+    #[cfg(not(test))]
+    {
+        use std::io::{BufRead as _, IsTerminal as _, Write as _};
+        if !std::io::stdin().is_terminal() {
+            return false;
+        }
+        print!("{msg}");
+        if std::io::stdout().flush().is_err() {
+            return false;
+        }
+        let mut line = String::new();
+        if std::io::stdin().lock().read_line(&mut line).is_err() {
+            return false;
+        }
+        matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
     }
-    let mut line = String::new();
-    if std::io::stdin().lock().read_line(&mut line).is_err() {
-        return false;
-    }
-    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 /// Appends an `export PATH="<dir>:$PATH"` line to the user's shell config
