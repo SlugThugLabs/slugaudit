@@ -57,13 +57,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // disabled unconditionally: the MCP host that spawns this process
     // pipes stderr for its own logging, not a terminal, and color escape
     // codes would corrupt any log aggregation/parsing on the other end.
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    // Setting `SLUGAUDIT_LOG_FORMAT=json` switches stderr output to
+    // single-line JSON format for automated log aggregators (e.g. Datadog).
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let is_json = std::env::var("SLUGAUDIT_LOG_FORMAT")
+        .map(|v| v.eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
+    if is_json {
+        tracing_subscriber::fmt()
+            .json()
+            .with_writer(std::io::stderr)
+            .with_env_filter(env_filter)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .with_env_filter(env_filter)
+            .init();
+    }
     SlugAuditServer::new()
         .serve(stdio())
         .await?

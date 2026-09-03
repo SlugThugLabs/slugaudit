@@ -68,6 +68,9 @@ pub struct HealthResponse {
     /// Unix-epoch seconds of the most recent successful `ensure_current`
     /// across the entire server's lifetime. Zero before the first sync.
     pub last_sync_unix_seconds: i64,
+    /// Duration of the most recent successful `ensure_current`, in
+    /// milliseconds. Zero before the first sync.
+    pub last_sync_duration_ms: u64,
     /// `revision_id` of the active project's current revision. `None`
     /// if no project is active or the database hasn't been published to.
     pub revision_id: Option<String>,
@@ -135,6 +138,7 @@ pub fn health(
 
     let counters = ToolCounters::snapshot();
     let last_sync = manager.last_sync_unix_seconds();
+    let last_sync_duration_ms = manager.last_sync_duration_ms();
 
     let fields = match path.as_deref() {
         Some(p) => compute_project_state(p, manager)?,
@@ -149,6 +153,7 @@ pub fn health(
         watcher_sequence: fields.watcher_sequence,
         last_verified_sequence: fields.last_verified_sequence,
         last_sync_unix_seconds: last_sync,
+        last_sync_duration_ms,
         revision_id: fields.revision_id,
         parser_pack_version: fields.parser_pack_version,
         file_count: fields.file_count,

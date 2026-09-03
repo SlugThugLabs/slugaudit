@@ -32,27 +32,55 @@ impl SourceSyncManager {
         path: &str,
         sink: &dyn ProgressSink,
     ) -> Result<SyncedProject, ErrorData> {
+        let start = std::time::Instant::now();
         sink.emit(ProgressEvent::Started {
             phase: "ensuring_current",
         });
         let (root, database_path) = project::resolve_project(Path::new(path))
             .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
 
-        let mut connection = match store::open_read_write(&database_path) {
-            Ok(connection) => connection,
+        let connection = match self.open_or_rebuild(&root, &database_path, start, sink)? {
+            Ok(conn) => conn,
+            Err(synced) => return Ok(synced),
+        };
+
+        let mut connection = match self.verify_metadata_or_rebuild(
+            &root,
+            &database_path,
+            connection,
+            start,
+            sink,
+        )? {
+            Ok(conn) => conn,
+            Err(synced) => return Ok(synced),
+        };
+
+        self.reconcile_and_finish(&root, database_path, &mut connection, start, sink)
+    }
+
+    fn open_or_rebuild(
+        &self,
+        root: &project::ProjectRoot,
+        database_path: &Path,
+        start: std::time::Instant,
+        sink: &dyn ProgressSink,
+    ) -> Result<Result<rusqlite::Connection, SyncedProject>, ErrorData> {
+        match store::open_read_write(database_path) {
+            Ok(connection) => Ok(Ok(connection)),
             Err(error) if error.is_corruption() => {
                 tracing::warn!(
                     database_path = %database_path.display(),
                     error = %error,
                     "database is corrupt; discarding and re-publishing from scratch",
                 );
-                store::discard_corrupt_database(&database_path).map_err(|error| {
+                store::discard_corrupt_database(database_path).map_err(|err| {
                     ErrorData::internal_error(
-                        format!("discarding the corrupt project database: {error}"),
+                        format!("discarding the corrupt project database: {err}"),
                         None,
                     )
                 })?;
-                return self.rebuild_and_finish(&root, database_path, sink);
+                self.rebuild_and_finish(root, database_path.to_path_buf(), start, sink)
+                    .map(Err)
             }
             Err(error) => {
                 tracing::warn!(
@@ -63,23 +91,23 @@ impl SourceSyncManager {
                 sink.emit(ProgressEvent::Completed {
                     phase: "ensuring_current",
                 });
-                return Err(ErrorData::internal_error(
+                Err(ErrorData::internal_error(
                     format!("opening the project database for sync: {error}"),
                     None,
-                ));
+                ))
             }
-        };
+        }
+    }
 
+    fn verify_metadata_or_rebuild(
+        &self,
+        root: &project::ProjectRoot,
+        database_path: &Path,
+        mut connection: rusqlite::Connection,
+        start: std::time::Instant,
+        sink: &dyn ProgressSink,
+    ) -> Result<Result<rusqlite::Connection, SyncedProject>, ErrorData> {
         if let Err(metadata_error) = ensure_project_row(&mut connection, root.as_path()) {
-            // Default recovery for a stale/incompatible derived database: any
-            // evidence whose stored root or schema/contract version no longer
-            // matches this build is disposable, so discard it and rebuild from
-            // the current source rather than blocking the tool call. This
-            // covers a repo that was moved, copied, or re-extracted from an
-            // archive (root mismatch) and a database written by a newer or
-            // differently-versioned SlugAudit (contract/schema mismatch).
-            // Genuine safety rejections (symlink, network filesystem,
-            // permission) and internal errors still surface as errors.
             let stale_reason = match &metadata_error {
                 ProjectMetaError::RootMismatch { stored_root } => {
                     Some(format!("different project root ({stored_root})"))
@@ -98,32 +126,36 @@ impl SourceSyncManager {
                     reason = %reason,
                     "project database is stale; discarding and rebuilding from source",
                 );
-                // Drop the open handle before removing the file (SQLite
-                // keeps the file open in WAL mode).
                 drop(connection);
-                store::discard_corrupt_database(&database_path).map_err(|discard| {
+                store::discard_corrupt_database(database_path).map_err(|discard| {
                     ErrorData::internal_error(
                         format!("discarding the stale project database: {discard}"),
                         None,
                     )
                 })?;
-                return self.rebuild_and_finish(&root, database_path, sink);
+                return self
+                    .rebuild_and_finish(root, database_path.to_path_buf(), start, sink)
+                    .map(Err);
             }
             return Err(ErrorData::from(metadata_error));
         }
+        Ok(Ok(connection))
+    }
 
+    fn reconcile_and_finish(
+        &self,
+        root: &project::ProjectRoot,
+        database_path: PathBuf,
+        connection: &mut rusqlite::Connection,
+        start: std::time::Instant,
+        sink: &dyn ProgressSink,
+    ) -> Result<SyncedProject, ErrorData> {
         let state = self.watch_manager.watch(root.as_path());
-        // An ignore file may have changed since the last pass. Recompute
-        // the watch scope (pruning or re-adding directory watches) and the
-        // event-filtering rules now, before we decide what to reconcile —
-        // otherwise a gitignored path could be indexed incrementally even
-        // though a full publish would skip it.
         self.watch_manager.refresh_scope(root.as_path());
-        let revision_id =
-            self.sync_by_health(&root, &state, &mut connection, &database_path, sink)?;
+        let revision_id = self.sync_by_health(root, &state, connection, &database_path, sink)?;
 
-        drop(connection);
-        self.stamp_last_sync();
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.stamp_last_sync(duration_ms);
         tracing::debug!(
             revision_id = %revision_id,
             root = %root.as_path().display(),
@@ -147,11 +179,13 @@ impl SourceSyncManager {
         &self,
         root: &project::ProjectRoot,
         database_path: PathBuf,
+        start: std::time::Instant,
         sink: &dyn ProgressSink,
     ) -> Result<SyncedProject, ErrorData> {
         let synced = publish_from_scratch(root, database_path, sink)?;
         self.record_full_publish();
-        self.stamp_last_sync();
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.stamp_last_sync(duration_ms);
         sink.emit(ProgressEvent::Completed {
             phase: "ensuring_current",
         });

@@ -18,6 +18,7 @@ fn open_db(project: &tempfile::TempDir) -> rusqlite::Connection {
 fn last_sync_timestamp_is_zero_before_first_sync_and_stamped_after() {
     let manager = SourceSyncManager::new();
     assert_eq!(manager.last_sync_unix_seconds(), 0, "nothing synced yet");
+    assert_eq!(manager.last_sync_duration_ms(), 0, "nothing synced yet");
 
     let project = create_project();
     write_file(&project, "lib.rs", b"pub fn a() {}\n");

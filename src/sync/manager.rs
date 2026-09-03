@@ -60,6 +60,8 @@ pub struct SourceSyncManager {
     /// timestamp is consistent with what the database sees as the most
     /// recent revision.
     last_sync_unix_seconds: std::sync::Arc<AtomicI64>,
+    /// Duration of the most recent successful sync, in milliseconds.
+    last_sync_duration_ms: std::sync::Arc<AtomicU64>,
     /// How many consecutive full publishes (untrusted-watcher or
     /// Unavailable-path verifications) have run since the last successful
     /// *incremental* reconcile. Every full publish increments it; a
@@ -85,6 +87,7 @@ impl SourceSyncManager {
         Self {
             watch_manager: WatchManager::with_watcher(),
             last_sync_unix_seconds: std::sync::Arc::new(AtomicI64::new(0)),
+            last_sync_duration_ms: std::sync::Arc::new(AtomicU64::new(0)),
             consecutive_full_publishes: std::sync::Arc::new(AtomicU64::new(0)),
         }
     }
@@ -93,6 +96,12 @@ impl SourceSyncManager {
     /// `ensure_current`. Zero before the first sync.
     pub fn last_sync_unix_seconds(&self) -> i64 {
         self.last_sync_unix_seconds.load(Ordering::Relaxed)
+    }
+
+    /// Returns the duration in milliseconds of the most recent successful
+    /// `ensure_current`. Zero before the first sync.
+    pub fn last_sync_duration_ms(&self) -> u64 {
+        self.last_sync_duration_ms.load(Ordering::Relaxed)
     }
 
     /// Number of consecutive full publishes since the last successful
@@ -162,13 +171,15 @@ impl SourceSyncManager {
         self.watch_manager.get(&canonical)
     }
 
-    fn stamp_last_sync(&self) {
+    fn stamp_last_sync(&self, duration_ms: u64) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| {
                 i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
             });
         self.last_sync_unix_seconds.store(now, Ordering::Relaxed);
+        self.last_sync_duration_ms
+            .store(duration_ms, Ordering::Relaxed);
     }
 }
 
