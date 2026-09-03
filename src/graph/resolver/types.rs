@@ -9,7 +9,7 @@ use std::collections::HashSet;
 
 /// The outcome of resolving an import reference.
 #[derive(Debug, Clone)]
-pub struct Resolution {
+pub(crate) struct Resolution {
     pub kind: ResolutionKind,
     pub confidence: Option<&'static str>,
     pub to_relative_path: Option<String>,
@@ -18,14 +18,14 @@ pub struct Resolution {
 /// Whether an import was resolved to a real file, identified as external,
 /// or left unresolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResolutionKind {
+pub(crate) enum ResolutionKind {
     Resolved,
     Unresolved,
     External,
 }
 
 impl ResolutionKind {
-    pub fn as_sql_text(self) -> &'static str {
+    pub(crate) fn as_sql_text(self) -> &'static str {
         match self {
             Self::Resolved => "Resolved",
             Self::Unresolved => "Unresolved",
@@ -36,7 +36,7 @@ impl ResolutionKind {
 
 /// Returns a resolution indicating the reference could not be resolved to
 /// a project file.
-pub fn unresolved() -> Resolution {
+pub(crate) fn unresolved() -> Resolution {
     Resolution {
         kind: ResolutionKind::Unresolved,
         confidence: None,
@@ -47,7 +47,7 @@ pub fn unresolved() -> Resolution {
 /// Returns a resolution indicating the reference is syntactically
 /// identified as outside the project (standard library, third-party crate,
 /// bare package name).
-pub fn external() -> Resolution {
+pub(crate) fn external() -> Resolution {
     Resolution {
         kind: ResolutionKind::External,
         confidence: None,
@@ -59,7 +59,7 @@ pub fn external() -> Resolution {
 /// satisfy the reference: exactly one real match is `"High"` confidence,
 /// more than one is `"Low"` (genuinely ambiguous — we still report the
 /// first as a best guess rather than discarding the information).
-pub fn pick(candidates: &[String], known_paths: &HashSet<&str>) -> Resolution {
+pub(crate) fn pick(candidates: &[String], known_paths: &HashSet<&str>) -> Resolution {
     let matches: Vec<&String> = candidates
         .iter()
         .filter(|candidate| known_paths.contains(candidate.as_str()))

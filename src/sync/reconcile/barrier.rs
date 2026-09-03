@@ -5,6 +5,7 @@
 //! marking the watcher `Desynced` instead of draining forever.
 
 use super::{MAX_BARRIER_LOOPS, ReconcileError};
+#[cfg(test)]
 use crate::model::process_limits;
 use crate::util::Deadline;
 use crate::watch::WatchState;
@@ -26,7 +27,8 @@ use std::collections::HashSet;
 /// If `reconcile_fn` fails, the error propagates and the dirty sets remain
 /// unacknowledged — the caller is responsible for marking the watcher
 /// untrusted so the next call re-verifies.
-pub fn sync_with_barrier(
+#[cfg(test)]
+pub(crate) fn sync_with_barrier(
     state: &WatchState,
     reconcile_fn: impl FnMut(HashSet<String>, HashSet<String>) -> Result<(), ReconcileError>,
 ) -> Result<(), ReconcileError> {

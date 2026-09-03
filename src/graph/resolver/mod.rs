@@ -43,9 +43,6 @@ mod gate_tests;
 // Re-exports that comprise the resolver's public API surface. These
 // are used by callers of this module, not directly inside `mod.rs`,
 // so the unused-import lint would otherwise flag every name here.
-#[allow(unused_imports)]
-pub use generic::{GenericResolver, GenericResolverConfig, LanguageResolver};
-#[allow(unused_imports)]
-pub use registry::{get_resolver, is_supported_language, resolve_one};
-#[allow(unused_imports)]
-pub use types::{Resolution, ResolutionKind, external, pick, unresolved};
+pub(crate) use generic::LanguageResolver;
+pub(crate) use registry::{get_resolver, is_supported_language, resolve_one};
+pub(crate) use types::{Resolution, ResolutionKind, external, pick, unresolved};

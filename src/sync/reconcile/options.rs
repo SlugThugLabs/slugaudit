@@ -23,7 +23,7 @@ pub(crate) struct ReconcileOptions {
 impl ReconcileOptions {
     /// Options for a production sync pass: the standard resource budget
     /// and deadline, plus the project's current ignore rules.
-    pub fn for_sync(rules: Option<Arc<IgnoreRules>>) -> Self {
+    pub(crate) fn for_sync(rules: Option<Arc<IgnoreRules>>) -> Self {
         let limits = *process_limits();
         let deadline = Deadline::after(limits.max_sync_wall_clock);
         Self {

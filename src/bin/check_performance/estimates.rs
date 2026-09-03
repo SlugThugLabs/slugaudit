@@ -9,7 +9,7 @@ use std::path::Path;
 
 const CRITERION_DIR: &str = "target/criterion";
 
-pub fn collect_new_benches() -> std::io::Result<BTreeMap<String, u64>> {
+pub(crate) fn collect_new_benches() -> std::io::Result<BTreeMap<String, u64>> {
     let dir = Path::new(CRITERION_DIR);
     if !dir.is_dir() {
         return Err(std::io::Error::new(
@@ -75,12 +75,12 @@ fn walk(dir: &Path, on_estimates: &mut dyn FnMut(&Path)) {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct BaselineEntry {
+pub(crate) struct BaselineEntry {
     pub median_ns: u64,
     pub budget_ns: Option<u64>,
 }
 
-pub fn load_baseline(path: &Path) -> Result<BTreeMap<String, BaselineEntry>, String> {
+pub(crate) fn load_baseline(path: &Path) -> Result<BTreeMap<String, BaselineEntry>, String> {
     let raw = std::fs::read_to_string(path)
         .map_err(|err| format!("could not read baseline {}: {err}", path.display()))?;
     let value: serde_json::Value = serde_json::from_str(&raw)

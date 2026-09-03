@@ -68,13 +68,13 @@ fn registry() -> &'static ResolverRegistry {
 
 /// Returns the resolver for `language`. Falls back to the generic
 /// resolver if no specific resolver supports the language.
-pub fn get_resolver(language: &str) -> &'static dyn LanguageResolver {
+pub(crate) fn get_resolver(language: &str) -> &'static dyn LanguageResolver {
     registry().get(language)
 }
 
 /// Returns true if a language-specific resolver (not the generic
 /// fallback) supports `language`.
-pub fn is_supported_language(language: &str) -> bool {
+pub(crate) fn is_supported_language(language: &str) -> bool {
     registry()
         .specific_resolvers
         .iter()
@@ -83,7 +83,7 @@ pub fn is_supported_language(language: &str) -> bool {
 
 /// Resolves a single raw import source. Returns a `Resolution` — never
 /// panics or returns an error.
-pub fn resolve_one(
+pub(crate) fn resolve_one(
     language: &str,
     importing_relative_path: &str,
     raw: &str,

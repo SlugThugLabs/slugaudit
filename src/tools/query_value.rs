@@ -7,7 +7,7 @@ use rusqlite::Row;
 use rusqlite::types::{Type as SqlType, Value as SqlValue};
 
 pub(super) fn row_to_json(
-    row: &Row,
+    row: &Row<'_>,
     column_names: &[String],
     value_cap: usize,
 ) -> rusqlite::Result<serde_json::Value> {

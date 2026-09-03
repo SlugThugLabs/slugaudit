@@ -186,7 +186,7 @@ struct ProjectHealthFields {
 
 fn compute_project_state(
     path: &str,
-    manager: &crate::sync::SourceSyncManager,
+    manager: &sync::SourceSyncManager,
 ) -> Result<ProjectHealthFields, ErrorData> {
     let (root, database_path) = crate::project::resolve_project(std::path::Path::new(path))
         .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
@@ -268,7 +268,7 @@ fn read_database_fields(database_path: &std::path::Path) -> (Option<String>, Opt
 /// `path`. Snapshot shape matches `compute_project_state`; the
 /// revision/parser-pack/file-count slots are `None` / `-1` because
 /// we never opened the database in this codepath.
-fn compute_global_only_state(manager: &crate::sync::SourceSyncManager) -> ProjectHealthFields {
+fn compute_global_only_state(manager: &sync::SourceSyncManager) -> ProjectHealthFields {
     let snapshots = manager.watch_states_snapshot();
     if snapshots.is_empty() {
         return ProjectHealthFields {

@@ -28,7 +28,6 @@ pub use hash::{HashError, aggregate_manifest_hash, hash_bytes, hash_file};
 pub use manager::{SourceSyncManager, SyncedProject};
 pub use manifest::{ChangeStatus, FileChange, compare};
 pub use publish::{PublishError, PublishReport, publish};
-pub use reconcile::{ReconcileError, ReconcileReport, reconcile_dirty_paths, sync_with_barrier};
 pub use revision::{FileRecord, RevisionError};
 
 #[cfg(test)]

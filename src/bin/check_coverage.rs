@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::print_stdout)]
 
 //! Line coverage gate.
 //!

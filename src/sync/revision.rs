@@ -48,7 +48,7 @@ pub enum RevisionError {
 /// (cascading evidence and dependency edges via foreign keys), and flips
 /// `is_current` only as the transaction's last statements. Nothing here is
 /// visible to another connection until `commit` succeeds.
-pub fn publish_revision(
+pub(super) fn publish_revision(
     connection: &mut Connection,
     expected_current: Option<&str>,
     manifest_hash: &str,
@@ -219,11 +219,8 @@ fn invalidate_stale_findings(
              WHERE files.path = findings.path AND files.content_hash = findings.source_hash \
          )"
     );
-    let params: Vec<&dyn rusqlite::ToSql> = touched_paths
-        .iter()
-        .map(|path| path as &dyn rusqlite::ToSql)
-        .collect();
-    tx.execute(&sql, params.as_slice())?;
+    let params = rusqlite::params_from_iter(touched_paths.iter());
+    tx.execute(&sql, params)?;
     Ok(())
 }
 

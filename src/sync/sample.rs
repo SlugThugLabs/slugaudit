@@ -38,7 +38,7 @@ pub enum SampleError {
 /// takes to classify it (binary vs. text, and whether reading it as text
 /// required lossy UTF-8 conversion).
 #[derive(Debug)]
-pub struct Sample {
+pub(super) struct Sample {
     pub relative_path: String,
     pub is_binary: bool,
     pub content: Option<String>,
@@ -58,7 +58,10 @@ pub struct Sample {
 ///
 /// Returns an error if `file.absolute_path` can't be read, or if its size
 /// exceeds `limits.max_file_bytes`.
-pub fn sample_file(file: &DiscoveredFile, limits: &ResourceLimits) -> Result<Sample, SampleError> {
+pub(super) fn sample_file(
+    file: &DiscoveredFile,
+    limits: &ResourceLimits,
+) -> Result<Sample, SampleError> {
     let metadata = std::fs::metadata(&file.absolute_path).map_err(|source| SampleError::Read {
         path: file.absolute_path.clone(),
         source,
@@ -123,7 +126,7 @@ fn utf8_lossy_evidence() -> EvidenceItem {
 /// storable `FileRecord`, appending an encoding diagnostic when the
 /// content required lossy UTF-8 conversion and capping evidence to
 /// `limits.evidence`.
-pub fn to_file_record(sample: Sample, limits: &ResourceLimits) -> FileRecord {
+pub(super) fn to_file_record(sample: Sample, limits: &ResourceLimits) -> FileRecord {
     let mut parsed = analyze(&sample.relative_path, sample.content.as_deref());
     if sample.utf8_lossy {
         parsed.evidence.push(utf8_lossy_evidence());

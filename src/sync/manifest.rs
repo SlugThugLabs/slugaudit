@@ -84,14 +84,15 @@ pub(crate) fn compute_manifest_hash(
             let placeholders = vec!["?"; exclude_count].join(", ");
             let sql =
                 format!("SELECT path, content_hash FROM files WHERE path NOT IN ({placeholders})");
-            let params: Vec<&dyn rusqlite::ToSql> = upserts
-                .iter()
-                .map(|r| &r.relative_path as &dyn rusqlite::ToSql)
-                .chain(deletions.iter().map(|p| p as &dyn rusqlite::ToSql))
-                .collect();
+            let params = rusqlite::params_from_iter(
+                upserts
+                    .iter()
+                    .map(|r| &r.relative_path)
+                    .chain(deletions.iter()),
+            );
             let rows: Vec<(String, String)> = connection
                 .prepare(&sql)?
-                .query_map(params.as_slice(), |row| {
+                .query_map(params, |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;

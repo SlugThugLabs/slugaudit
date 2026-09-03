@@ -61,7 +61,7 @@ impl ConnectAgent {
     }
 }
 
-impl std::str::FromStr for ConnectAgent {
+impl FromStr for ConnectAgent {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {

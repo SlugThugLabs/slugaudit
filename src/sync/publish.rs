@@ -69,7 +69,7 @@ pub struct PublishReport {
     pub unchanged: usize,
     /// Files the discovery walk found but could not include (unreadable,
     /// non-UTF8 path, etc.), with why. Never fails the publish by itself.
-    pub skipped: Vec<super::discovery::SkippedFile>,
+    pub skipped: Vec<discovery::SkippedFile>,
 }
 
 #[cfg(test)]

@@ -27,15 +27,17 @@ mod report;
 /// `Desynced` and the next sync call falls back to a full verification.
 /// Declared here (rather than in [`barrier`]) so tests attached to this
 /// module can name it without reaching into a private submodule.
-pub const MAX_BARRIER_LOOPS: u32 = 16;
+pub(crate) const MAX_BARRIER_LOOPS: u32 = 16;
 
-pub use barrier::sync_with_barrier;
+#[cfg(test)]
+pub(crate) use barrier::sync_with_barrier;
 pub(crate) use barrier::sync_with_barrier_with_deadline;
-pub use error::ReconcileError;
+pub(crate) use error::ReconcileError;
 pub(crate) use options::ReconcileOptions;
-pub use pipeline::reconcile_dirty_paths;
+#[cfg(test)]
+pub(crate) use pipeline::reconcile_dirty_paths;
 pub(crate) use pipeline::reconcile_dirty_paths_with_deadline;
-pub use report::ReconcileReport;
+pub(crate) use report::ReconcileReport;
 
 #[cfg(test)]
 #[path = "reconcile_tests.rs"]

@@ -31,7 +31,7 @@ use std::path::Path;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum SweepError {
+pub(super) enum SweepError {
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
     #[error("stat sweep exceeded its wall-clock time budget after {elapsed_ms} ms")]

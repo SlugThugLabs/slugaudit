@@ -73,6 +73,21 @@ proptest = "1"
 temp-env = "0.3.6"
 tempfile = "3"
 
+[lints.rust]
+unreachable_pub = "deny"
+trivial_casts = "deny"
+trivial_numeric_casts = "deny"
+elided_lifetimes_in_paths = "deny"
+
+[lints.clippy]
+print_stdout = "deny"
+clone_on_ref_ptr = "deny"
+todo = "deny"
+unimplemented = "deny"
+exit = "deny"
+cargo = { level = "deny", priority = -1 }
+multiple_crate_versions = "allow"
+
 # Criterion benchmarks (Task 9.2). Each bench target is its own binary with
 # `harness = false` so criterion provides main(); `cargo test --all-targets`
 # compiles them but never runs them, keeping correctness gates separate

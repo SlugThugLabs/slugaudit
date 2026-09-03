@@ -23,7 +23,7 @@ use crate::graph::resolver::types::{Resolution, external};
 /// Most languages are handled by the built-in `GenericResolver`. Implement
 /// this trait only for languages with unusual import semantics that the
 /// generic resolver can't handle (e.g. Rust's `crate::`/`super::`/`self::`).
-pub trait LanguageResolver: Send + Sync {
+pub(crate) trait LanguageResolver: Send + Sync {
     /// Returns true if this resolver handles the given language name.
     fn supports(&self, language: &str) -> bool;
 
@@ -53,7 +53,7 @@ pub trait LanguageResolver: Send + Sync {
 /// unusual import semantics (Rust, etc.) implement `LanguageResolver`
 /// directly instead of using this config.
 #[derive(Debug, Clone)]
-pub struct GenericResolverConfig {
+pub(crate) struct GenericResolverConfig {
     /// File extensions to try when resolving a module path.
     /// E.g. `["py"]` for Python, `["js", "ts", "jsx", "tsx"]` for JS/TS.
     pub extensions: Vec<&'static str>,
@@ -116,20 +116,20 @@ impl Default for GenericResolverConfig {
 /// with a custom config or `Default`). When `languages` is non-empty,
 /// `supports` only returns true for those languages; when empty, it
 /// returns true for any language (fallback mode).
-pub struct GenericResolver {
+pub(crate) struct GenericResolver {
     config: GenericResolverConfig,
     languages: Vec<&'static str>,
 }
 
 impl GenericResolver {
-    pub fn new(config: GenericResolverConfig) -> Self {
+    pub(crate) fn new(config: GenericResolverConfig) -> Self {
         Self {
             config,
             languages: Vec::new(),
         }
     }
 
-    pub fn python() -> Self {
+    pub(crate) fn python() -> Self {
         Self {
             config: GenericResolverConfig {
                 extensions: vec!["py"],
@@ -149,7 +149,7 @@ impl GenericResolver {
         }
     }
 
-    pub fn js() -> Self {
+    pub(crate) fn js() -> Self {
         Self {
             config: GenericResolverConfig {
                 extensions: vec!["js", "ts", "jsx", "tsx", "mjs", "cjs"],

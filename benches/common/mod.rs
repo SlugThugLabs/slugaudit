@@ -20,13 +20,13 @@ use std::fs;
 use std::path::Path;
 
 /// Small fixture size: 40 files (fast, used for cross-checks).
-pub const SMALL: usize = 40;
+pub(crate) const SMALL: usize = 40;
 /// Large fixture size: 200 files (the primary baseline workload).
-pub const LARGE: usize = 200;
+pub(crate) const LARGE: usize = 200;
 
 /// Counts describing the generated tree, so benchmarks can report on the
 /// fixture without re-deriving the layout rules.
-pub struct FixtureStats {
+pub(crate) struct FixtureStats {
     pub file_count: usize,
     pub total_bytes: u64,
 }
@@ -62,7 +62,7 @@ fn sibling(k: usize, count: usize) -> usize {
 /// 5=JavaScript, 6=TypeScript, 7=JSON config. With `file_count` divisible
 /// by 10 the per-language counts are exact.
 #[must_use]
-pub fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
+pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
     let mut mix = Mix(0xC0FF_EE00_DEAD_BEEF);
     let mut total_bytes = 0_u64;
 
@@ -310,7 +310,7 @@ export function use_neighbor(): number {{
 // each with the constructs that make parsing non-trivial (generics,
 // decorators, arrow functions, interfaces, docstrings, match arms).
 
-pub const RUST_SAMPLE: &str = r#"
+pub(crate) const RUST_SAMPLE: &str = r#"
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -363,7 +363,7 @@ pub fn shared_helper(value: u64) -> u64 {
 }
 "#;
 
-pub const PYTHON_SAMPLE: &str = r#"
+pub(crate) const PYTHON_SAMPLE: &str = r#"
 """Module-level docstring for the sample."""
 import os
 from dataclasses import dataclass, field
@@ -400,7 +400,7 @@ def classify(value: int) -> str:
     return "positive"
 "#;
 
-pub const JS_SAMPLE: &str = r#"
+pub(crate) const JS_SAMPLE: &str = r#"
 import { readFile } from 'fs/promises';
 
 export class Widget {
@@ -431,7 +431,7 @@ export function classify(value) {
 }
 "#;
 
-pub const TS_SAMPLE: &str = r#"
+pub(crate) const TS_SAMPLE: &str = r#"
 import { readFile } from 'fs/promises';
 
 export interface Widget {

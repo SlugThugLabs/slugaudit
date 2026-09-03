@@ -1,6 +1,6 @@
 //! Time formatting for the performance gate.
 
-pub fn fmt_ns(ns: u64) -> String {
+pub(crate) fn fmt_ns(ns: u64) -> String {
     if ns >= 1_000_000_000 {
         format!("{:.2} s", ns as f64 / 1e9)
     } else if ns >= 1_000_000 {

@@ -12,7 +12,7 @@ pub(crate) use context_transactions::{with_verified_read, with_verified_write};
 // Re-export `SyncedProject` from `sync` so there is exactly one definition.
 // `SourceSyncManager::ensure_current` returns it, and `ensure_synced`
 // delegates to it — both must agree on the type.
-pub use sync::SyncedProject;
+pub(crate) use sync::SyncedProject;
 
 /// UUID generated once per `slugaudit-mcp` process boot, stamped onto
 /// every `findings` row written by this process and used by
@@ -30,10 +30,7 @@ static SESSION_ID: Mutex<Option<Uuid>> = Mutex::new(None);
 #[must_use]
 pub(crate) fn session_id() -> Uuid {
     let mut guard = lock_or_recover(&SESSION_ID);
-    if guard.is_none() {
-        *guard = Some(Uuid::new_v4());
-    }
-    guard.expect("just initialized")
+    *guard.get_or_insert_with(Uuid::new_v4)
 }
 
 /// Tests override the live session ID to simulate a fresh process boot

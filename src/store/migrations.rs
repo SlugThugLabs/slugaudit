@@ -105,7 +105,7 @@ fn apply_v2_to_v3(connection: &Connection) -> Result<(), rusqlite::Error> {
 /// Stepping forward happens in one transaction so SQLite's WAL + DDL
 /// guarantees apply — either every migration lands and version bumps
 /// or none of them do.
-pub fn ensure_current_schema(connection: &mut Connection) -> Result<(), MigrationError> {
+pub(super) fn ensure_current_schema(connection: &mut Connection) -> Result<(), MigrationError> {
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(MigrationError::ReadVersion)?;

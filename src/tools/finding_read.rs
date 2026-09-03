@@ -88,16 +88,13 @@ fn read_session_findings(
     }
     sql.push_str(" ORDER BY id");
 
-    let params_refs: Vec<&dyn rusqlite::ToSql> = query_params
-        .iter()
-        .map(|s| s as &dyn rusqlite::ToSql)
-        .collect();
+    let params = rusqlite::params_from_iter(query_params.iter());
 
     let mut statement = tx
         .prepare(&sql)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
     let rows = statement
-        .query_map(params_refs.as_slice(), |row| {
+        .query_map(params, |row| {
             Ok(FindingReadEntry {
                 id: row.get(0)?,
                 path: row.get(1)?,

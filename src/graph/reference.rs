@@ -5,7 +5,7 @@
 /// module path (e.g. `"./utils"`, `"crate::foo::bar"`, `".bar"`)
 /// extracted from the import statement by a `LanguageResolver`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ImportReference {
+pub(crate) struct ImportReference {
     pub text: String,
 }
 

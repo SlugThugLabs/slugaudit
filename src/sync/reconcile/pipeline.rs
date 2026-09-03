@@ -27,7 +27,8 @@ use std::path::Path;
 ///
 /// Returns an error if any file read, hash, sample, analysis, or database
 /// operation fails.
-pub fn reconcile_dirty_paths(
+#[cfg(test)]
+pub(crate) fn reconcile_dirty_paths(
     connection: &mut Connection,
     root: &Path,
     dirty: HashSet<String>,

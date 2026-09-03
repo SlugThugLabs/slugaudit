@@ -25,7 +25,7 @@ const RUST_MODULE_ROOT_STEMS: [&str; 3] = ["mod", "lib", "main"];
 
 /// Rust-specific import resolver. Handles `crate::`/`super::`/`self::`
 /// semantics that the generic resolver can't model.
-pub struct RustResolver;
+pub(super) struct RustResolver;
 
 impl LanguageResolver for RustResolver {
     fn supports(&self, language: &str) -> bool {

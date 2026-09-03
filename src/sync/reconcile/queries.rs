@@ -15,10 +15,9 @@ pub(super) fn query_existing_hashes(
     }
     let placeholders = vec!["?"; paths.len()].join(", ");
     let sql = format!("SELECT path, content_hash FROM files WHERE path IN ({placeholders})");
-    let params: Vec<&dyn rusqlite::ToSql> =
-        paths.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+    let params = rusqlite::params_from_iter(paths.iter());
     let mut stmt = connection.prepare(&sql)?;
-    let rows = stmt.query_map(params.as_slice(), |row| {
+    let rows = stmt.query_map(params, |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
     let mut result = HashMap::new();

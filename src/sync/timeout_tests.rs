@@ -5,6 +5,7 @@
 //! so the abort is deterministic without waiting out the production-sized
 //! budget. This is the same injection pattern `tools::query_tests` uses for
 //! its wall-clock budget.
+use super::reconcile::ReconcileError;
 use super::*;
 use crate::model::ResourceLimits;
 use crate::store::open_read_write;

@@ -2,7 +2,7 @@
 
 /// Report of a reconciliation pass.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ReconcileReport {
+pub(crate) struct ReconcileReport {
     /// Files that were re-indexed because their hash differed from the
     /// stored hash or because they were new to the database.
     pub reconciled: usize,

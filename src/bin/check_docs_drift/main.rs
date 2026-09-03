@@ -1,4 +1,6 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::print_stdout)]
+#![allow(clippy::exit)]
 
 //! Docs-drift gate.
 //!

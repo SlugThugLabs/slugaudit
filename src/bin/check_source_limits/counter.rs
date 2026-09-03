@@ -17,7 +17,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub fn code_lines(source: &str) -> usize {
+pub(crate) fn code_lines(source: &str) -> usize {
     let bytes = source.as_bytes();
     let len = bytes.len();
     let mut count: usize = 0;
@@ -277,7 +277,7 @@ pub(crate) fn verdict(code_lines: usize, exception: Option<String>, test_file: b
     Verdict::Pass
 }
 
-pub fn walk_rs_files(src_root: &Path) -> Vec<PathBuf> {
+pub(crate) fn walk_rs_files(src_root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     walk_rs(src_root, &mut out);
     out.sort();

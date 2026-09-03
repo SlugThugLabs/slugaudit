@@ -1,5 +1,6 @@
 //! Production Rust code-line limit checker.
 #![forbid(unsafe_code)]
+#![allow(clippy::print_stdout)]
 
 //!
 //! Replaces `tools/check_source_limits.sh`. Counts the number of lines

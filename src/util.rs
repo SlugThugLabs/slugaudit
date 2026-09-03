@@ -169,7 +169,7 @@ pub(crate) fn at_least_timestamp(observed: i64, persisted: Option<i64>) -> i64 {
 /// instead of a full read+hash.
 pub(crate) fn mtime_unix_seconds(metadata: &std::fs::Metadata) -> Option<i64> {
     let modified = metadata.modified().ok()?;
-    let elapsed = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    let elapsed = modified.duration_since(UNIX_EPOCH).ok()?;
     i64::try_from(elapsed.as_secs()).ok()
 }
 

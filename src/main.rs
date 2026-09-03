@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::print_stdout)]
 
 use rmcp::{ServiceExt, transport::stdio};
 use slugaudit_mcp_rust::cli::{self, Command};

@@ -3,7 +3,7 @@ use crate::model::{
 };
 use tree_sitter_language_pack::Error as PackError;
 
-pub struct ParseResult {
+pub(super) struct ParseResult {
     pub language: Option<String>,
     pub language_detected: bool,
     pub run: ParserRun,
@@ -42,7 +42,7 @@ fn is_load_failure(error: &PackError) -> bool {
 /// Detects a file's language and runs pack extraction when possible. Never
 /// invents completeness: a file the pack can't identify or doesn't support
 /// gets `Unavailable`/`NotAttempted`, never a false "parsed successfully".
-pub fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult {
+pub(super) fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult {
     let Some(content) = content else {
         tracing::trace!(path = relative_path, "no content; parser not invoked");
         return ParseResult::unavailable(None, false);

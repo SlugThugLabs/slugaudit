@@ -248,7 +248,7 @@ pub(crate) fn publish_full(
     sink: &dyn crate::progress::ProgressSink,
     warn_message: &str,
 ) -> Result<publish::PublishReport, ErrorData> {
-    publish::publish(connection, root, parse::PACK_VERSION, sink)
+    publish(connection, root, parse::PACK_VERSION, sink)
         .map_err(|error| map_publish_error(root, error, warn_message))
 }
 
@@ -264,8 +264,8 @@ pub(crate) fn publish_from_scratch(
         ErrorData::internal_error(format!("recreating the project database: {error}"), None)
     })?;
     ensure_project_row(&mut connection, root.as_path())?;
-    let report = publish::publish(&mut connection, root.as_path(), parse::PACK_VERSION, sink)
-        .map_err(|error| {
+    let report =
+        publish(&mut connection, root.as_path(), parse::PACK_VERSION, sink).map_err(|error| {
             map_publish_error(root.as_path(), error, "republishing after corruption")
         })?;
     drop(connection);
