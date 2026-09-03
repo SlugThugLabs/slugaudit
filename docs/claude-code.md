@@ -40,7 +40,7 @@ project setup yourself:
 | `finding` | The one write tool — records a conclusion the AI has personally reviewed, bound to the file's hash. |
 | `finding_read` | Session-gated finding query — returns only the current agent session's findings (never another session's conclusions). |
 | `project_control` | Enable/disable SlugAudit for a project (`action = "on"` / `"off"`). |
-| `health` | Operational snapshot: watcher health, unreconciled counts, last-sync timestamp. |
+| `health` | Operational snapshot: watcher health, unreconciled counts, last-sync timestamp and duration. |
 
 SlugAudit itself never audits — it supplies evidence, and the AI does all
 the judging.
