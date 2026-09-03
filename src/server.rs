@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=agent; reason=the MCP server surface declares all tool contracts, schema descriptions, and rmcp dispatch handlers in one cohesive registry
 //! MCP server surface: the tool contracts and their registration.
 //!
 //! This file declares *what* the tools are (their JSON schemas and the
@@ -135,7 +136,13 @@ impl SlugAuditServer {
     }
 
     #[tool(
-        description = "Query the indexed codebase with read-only SQL. Key tables: files (every source file with path, language, content), evidence (Symbol, Import, Comment, Structure extracted from each file — use json_extract on the payload column), dependency_edges (import resolution graph with Resolved/Unresolved/External status). Always query first to find which files and lines matter, then read only those. Example: SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND json_extract(e.payload, '$.name') = 'configure'. Schema discovery: SELECT name FROM sqlite_master WHERE type='table'."
+        description = "Query the indexed codebase with read-only SQL. Key tables: \
+         files (id, path, language, byte_len, content — full text of every indexed file including non-code files), \
+         evidence (id, file_id, kind, start_line, end_line, payload — Symbol, Import, Comment, Structure), \
+         dependency_edges (from_file_id, to_file_id, kind, status). \
+         To inspect code or file content directly from the DB without filesystem reads, query `files.content` (e.g. `SELECT content FROM files WHERE path = 'src/main.rs'`). \
+         To link evidence to file paths, always JOIN: `SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND json_extract(e.payload, '$.name') = 'configure'`. \
+         Schema discovery: `SELECT name FROM sqlite_master WHERE type='table'`."
     )]
     async fn query(
         &self,
@@ -150,7 +157,14 @@ impl SlugAuditServer {
     }
 
     #[tool(
-        description = "Tree-sitter structural pattern matching against one file, for patterns normalized evidence and query can't easily express (e.g. an S-expression query for a specific AST shape). The `query` must name at least one capture with `@name` — a bare node pattern like `(function_definition)` returns an error, not results. Examples: Python `(function_definition name: (identifier) @name)`, Rust `(function_item name: (identifier) @name)`, or whole-node `(class_definition) @cls`."
+        description = "Inspect and extract code AST structures from a file using Tree-sitter. \
+         Returns matched AST nodes with their actual source `text`, `start_line`, `end_line`, and byte spans \
+         directly from the indexed database — use this to inspect function bodies, type definitions, and blocks \
+         without reading disk files. The `query` must name at least one capture with `@name`. \
+         Examples: Rust `(function_item name: (identifier) @name body: (block) @body)`, \
+         Python `(function_definition name: (identifier) @name body: (block) @body)`, \
+         TypeScript/JS `(function_declaration name: (identifier) @name)`, \
+         or whole-node `(class_definition) @cls`."
     )]
     async fn structure(
         &self,
