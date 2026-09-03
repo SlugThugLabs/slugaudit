@@ -257,14 +257,21 @@ See [DEVELOPMENT_SCOPE.md](DEVELOPMENT_SCOPE.md) for the distinction between
 this repository's development materials and the runtime behavior of SlugAudit
 inside a user's project.
 
+## Repository Structure & The `.planning/` Directory
+
+All architectural blueprints, design decisions, and runtime index data live inside `.planning/`:
+
+- **Source of Truth**: [`.planning/ARCHITECTURE.md`](.planning/ARCHITECTURE.md) is the canonical, authoritative source of truth for the codebase. It details the complete module map, data flow, process lifecycle, security boundaries, and the 10 core architectural invariants governing SlugAudit.
+- **Design & Planning History**: [`.planning/archive/`](.planning/archive/) preserves historical planning records, architectural decision logs, and dependency inventories.
+- **Disposable Runtime Cache**: `.planning/slugaudit/project.db` houses the SQLite index and evidence tables. This is derived data that SlugAudit automatically creates and synchronizes—it can be deleted at any time and any tool call will rebuild it from source.
+
+Keeping these artifacts organized inside `.planning/` keeps the repository root uncluttered while providing both human developers and AI coding agents a dedicated, structured home for all architecture and design documentation.
+
 ## Documentation
 
-- **[Connection guides](docs/)** — agent-specific setup for Bob, Claude Code,
-  Grok, and Codex
-- **[Architecture](.planning/ARCHITECTURE.md)** — module map, data flow,
-  security model, design FAQ
-- **[Archive](.planning/archive/)** — historical planning docs, decision log,
-  dependency inventory
+- **[Architecture](.planning/ARCHITECTURE.md)** — the authoritative architectural specification (module map, data flow, security model, design FAQ)
+- **[Connection guides](docs/)** — agent-specific setup for Bob, Claude Code, Grok, and Codex
+- **[Archive](.planning/archive/)** — historical planning docs, decision log, dependency inventory
 
 ## Development
 
