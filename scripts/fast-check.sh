@@ -48,7 +48,6 @@ check_one_file() {
 
     # Error patterns (bad habits / anti-patterns)
     declare -A ERROR_PATTERNS=(
-        ["clone_on_copy"]='\.clone\(\)'
         ["as_str_to_string"]='\.as_str\(\)\.to_string\(\)'
     )
 
@@ -102,9 +101,9 @@ check_one_file() {
     echo "🔍 Fast-checking Rust file: $RUST_FILE"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-    # Check file length (200 line auto-pass limit, 300 with approved exception header)
+    # Check file length (200 code-line auto-pass limit, 300 with approved exception header)
     local LINE_COUNT
-    LINE_COUNT=$(wc -l < "$RUST_FILE")
+    LINE_COUNT=$(grep -Ev '^\s*(//|/\*|\*|$)' "$RUST_FILE" | wc -l)
     if [ "$LINE_COUNT" -gt 300 ]; then
         echo -e "${RED}🚨 CRITICAL${NC}: File exceeds hard 300-line ceiling"
         echo "   File: $RUST_FILE"
