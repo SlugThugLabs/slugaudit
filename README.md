@@ -79,10 +79,13 @@ SlugAudit does not judge code, assign arbitrary "scores", or tell your AI what t
 
 ## 🚀 Quick Start
 
-### 1. Build and Install
+### 1. Fast Install
 
 ```bash
-# Clone and install locally via Cargo:
+# One-line universal installer (Linux x86_64 or builds via cargo):
+curl -fsSL https://raw.githubusercontent.com/SlugThugLabs/slugaudit/main/install.sh | bash
+
+# Or build locally from source with Cargo:
 cargo install --path .
 
 # Or run the interactive setup menu:
@@ -152,6 +155,17 @@ Measured on standard development hardware (AMD Ryzen 9 / Linux kernel 6.x):
 | **Incremental Reconcile** | Hot reload dirty file on keystroke | **< 8.0 ms** |
 | **Memory Footprint** | Peak RSS during heavy repository sync | **26.9 MiB** |
 | **Code Safety** | Crate-wide `#![forbid(unsafe_code)]` | **0 unsafe blocks** |
+
+---
+
+## 📖 Query Cookbook & Recipes
+
+Ready-to-run queries for AI agents and security auditors in [`examples/queries/`](examples/queries/):
+
+- **[Auth Attack Surface](examples/queries/auth_attack_surface.sql)**: Map all authentication, token, and session endpoints in < 2ms.
+- **[Find Unhandled Panics](examples/queries/find_unhandled_panics.sql)**: Pinpoint crash-prone `.unwrap()`, `.expect()`, and `panic!()` calls.
+- **[Syntax Diagnostics](examples/queries/syntax_diagnostics.sql)**: Extract parser errors and syntax issues without running a compiler.
+- **[Rust AST Matcher](examples/queries/rust_functions.scm)**: Tree-sitter query matching exact function shapes and parameter blocks.
 
 ---
 
