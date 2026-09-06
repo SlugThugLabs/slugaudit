@@ -109,11 +109,12 @@ See the agent-specific guides for what to do next.
 - [Claude Code](claude-code.md)
 - [Grok](grok.md)
 - [Codex](codex.md)
+- *Plus native one-click support for Antigravity (`agy`), Gemini CLI, Cursor, Windsurf, Trae, Hermes, Copilot, Zed, OpenCode, Pi, and more via `slugaudit connect`.*
 
 ## Manual connection (no `connect` command)
 
-If you prefer to wire it up by hand, or your agent isn't one of the four
-above, register the binary as a stdio MCP server named `slugaudit`:
+If you prefer to wire it up by hand, or your agent is not yet in the native
+registry, register the binary as a stdio MCP server named `slugaudit`:
 
 ```
 slugaudit
@@ -129,13 +130,13 @@ enabled project.
 > software. See the [license summary](../README.md#license) and complete
 > [LICENSE](../LICENSE).
 
-**`unknown agent "..."`** — `connect` accepts `bob`, `claude`, `grok`,
-or `codex` (case-insensitive; `claude-code` and `claude_code` also map
-to Claude Code).
+**`unknown agent "..."`** — `connect` accepts 26 agents and editors including
+`agy`, `gemini`, `claude`, `hermes`, `cursor`, `copilot`, `codex`, `bob`,
+`grok`, `windsurf`, `trae`, `zed`, `opencode`, and `pi` (run `slugaudit connect`
+interactively to see all detected agents on your system).
 
-**`<agent> CLI not found on PATH`** — the agent's CLI must be installed
-and on `PATH` before `connect` can register with it. Install Claude Code
-(`npm install -g @anthropic-ai/claude-code`), Grok, or Codex first.
+**`<agent> CLI not found on PATH`** — if connecting an agent via CLI mode,
+the agent's executable must be installed and on `PATH`.
 
 **Agent doesn't see the `query`/`report`/`structure`/`finding` tools** —
 restart the AI session after connecting the server.
