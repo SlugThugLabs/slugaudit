@@ -32,7 +32,8 @@ The server exposes seven tools:
   The connection itself refuses writes; the SQL is never parsed for
   write intent.
 - **`structure`** — Tree-sitter structural pattern matching against
-  indexed source content (300+ languages).
+  indexed source content (300+ languages). Supports both single-file
+  deep extraction and multi-file project searches with lean token snippets.
 - **`finding`** — the single write tool. Persists AI-authored findings
   bound to a file's current `content_hash`, auto-invalidating on file
   change.

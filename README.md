@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/SlugThugLabs/slugaudit?color=7c3aed&label=Release)](https://github.com/SlugThugLabs/slugaudit/releases)
 [![Rust 2024](https://img.shields.io/badge/Rust-2024_Edition-orange?logo=rust)](Cargo.toml)
 [![Safety](https://img.shields.io/badge/Safety-%23!%5Bforbid(unsafe_code)%5D-emerald)](src/lib.rs)
-[![Tests](https://img.shields.io/badge/Tests-493_passed-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-495_passed-brightgreen)](tests/)
 [![Coverage](https://img.shields.io/badge/Coverage-83.37%25-blue)](src/bin/check_coverage.rs)
 [![MCP](https://img.shields.io/badge/Protocol-Model_Context_Protocol_(MCP)-purple)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/License-Free_Commercial_Use-blue)](LICENSE)
@@ -135,7 +135,7 @@ Your agent will call `report`, `query`, and `structure` in the background—answ
 | :--- | :--- | :--- |
 | **`report`** | High-level project shape, file counts, language distribution, and syntax diagnostics. | `report(path: ".")` |
 | **`query`** | High-speed read-only SQL queries against the indexed repository. | `SELECT f.path, e.start_line, e.payload FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol'` |
-| **`structure`** | Tree-sitter AST queries across 300+ languages returning exact code spans. | `(function_item name: (identifier) @fn body: (block) @body)` |
+| **`structure`** | Tree-sitter AST queries across 300+ languages (supports single-file or multi-file search with lean snippets). | `structure(language: "rust", query: "(function_item name: (identifier) @fn)")` |
 | **`finding`** | Store AI-reviewed conclusions bound to the file content hash. | Auto-invalidates if the underlying source lines change. |
 | **`finding_read`** | Session-gated finding retrieval (prevents cross-session hallucination). | Read only findings created by the current agent. |
 | **`project_control`** | Project enable/disable and cache management. | `project_control(action: "on", path: ".")` |

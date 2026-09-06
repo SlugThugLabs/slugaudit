@@ -2,7 +2,7 @@
   "identifier": "slugthuglabs-slugaudit-mcp",
   "name": "SlugAudit MCP",
   "description": "Pre-parsed, searchable, always-in-sync evidence about a codebase \u2014 symbols, imports, dependency edges, source spans \u2014 so the AI queries a SQLite database instead of reading hundreds of flat files.",
-  "version": "1.0.0",
+  "version": "1.0.8",
   "tools": [
     {
       "name": "query",
@@ -14,7 +14,7 @@
     },
     {
       "name": "structure",
-      "description": "Tree-sitter structural pattern matching across 300+ languages."
+      "description": "Tree-sitter structural pattern matching across 300+ languages (supports single-file or multi-file AST search with lean snippets)."
     },
     {
       "name": "finding",

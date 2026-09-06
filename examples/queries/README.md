@@ -31,13 +31,25 @@ When asking your AI agent (Claude Code, Cursor, Hermes, Codex, etc.) to audit a 
 }
 ```
 
-### Example: Running Tree-sitter AST Structure Queries
+### Example: Running Tree-sitter AST Structure Queries (Single File)
 ```json
 {
   "name": "structure",
   "arguments": {
-    "path": "src/main.rs",
+    "file": "src/main.rs",
     "query": "(function_item name: (identifier) @name body: (block) @body)"
+  }
+}
+```
+
+### Example: Running Multi-File Tree-sitter AST Structure Queries
+```json
+{
+  "name": "structure",
+  "arguments": {
+    "language": "rust",
+    "pattern": "src/**/*.rs",
+    "query": "(function_item name: (identifier) @name)"
   }
 }
 ```
