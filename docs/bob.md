@@ -8,7 +8,7 @@ where everything is. SlugAudit gathers facts; **Bob does the analysis**.
 ## One-line setup
 
 ```bash
-slugaudit-mcp connect bob
+slugaudit connect bob
 ```
 
 That registers the `slugaudit` stdio MCP server globally in Bob's MCP
@@ -16,7 +16,7 @@ config (`--scope global`, so it's available in every project). Verify:
 
 ```bash
 bob mcp list
-# slugaudit: /path/to/slugaudit-mcp - connected
+# slugaudit: /path/to/slugaudit - connected
 ```
 
 ## What you get
@@ -65,13 +65,13 @@ points at the current executable.
 If you'd rather not use the `connect` command, add it by hand:
 
 ```bash
-bob mcp add slugaudit --scope global -- $(which slugaudit-mcp)
+bob mcp add slugaudit --scope global -- $(which slugaudit)
 ```
 
 ## Troubleshooting
 
 - **`bob` not found** — install the Bob CLI first, or run
-  `slugaudit-mcp connect` without an agent and pick Bob from the menu.
+  `slugaudit connect` without an agent and pick Bob from the menu.
 - **Tools don't appear in a session** — restart Bob after running
   `connect`. Already-running sessions won't see a newly registered MCP
   server.
@@ -79,4 +79,4 @@ bob mcp add slugaudit --scope global -- $(which slugaudit-mcp)
   the project. This is an integration issue, not normal user setup.
 - **`bob mcp list` doesn't show slugaudit** — the binary path in your
   config may be stale (you moved or uninstalled it). Re-run
-  `slugaudit-mcp connect bob` to refresh.
+  `slugaudit connect bob` to refresh.

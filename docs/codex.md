@@ -9,7 +9,7 @@ analysis**.
 ## One-line setup
 
 ```bash
-slugaudit-mcp connect codex
+slugaudit connect codex
 ```
 
 That registers the `slugaudit` stdio MCP server globally in
@@ -17,7 +17,7 @@ That registers the `slugaudit` stdio MCP server globally in
 
 ```bash
 codex mcp list
-# slugaudit  /path/to/slugaudit-mcp  enabled
+# slugaudit  /path/to/slugaudit  enabled
 ```
 
 Codex has no user/project scope distinction — it always writes to the
@@ -41,7 +41,7 @@ at the current executable.
 ## Manual alternative
 
 ```bash
-codex mcp add slugaudit -- $(which slugaudit-mcp)
+codex mcp add slugaudit -- $(which slugaudit)
 ```
 
 ## Troubleshooting

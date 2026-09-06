@@ -29,13 +29,13 @@ the index or database.
 cargo install --path .
 
 # 2. Connect your agent — run this once, from any directory
-slugaudit-mcp connect
+slugaudit connect
 
 # Or connect a specific agent directly:
-slugaudit-mcp connect bob
-slugaudit-mcp connect claude
-slugaudit-mcp connect grok
-slugaudit-mcp connect codex
+slugaudit connect bob
+slugaudit connect claude
+slugaudit connect grok
+slugaudit connect codex
 ```
 
 `connect` with no argument shows an interactive menu of the supported
@@ -48,7 +48,7 @@ SlugAudit is a single binary, so upgrading is just replacing it at the same
 path. For a binary that's already installed, run:
 
 ```bash
-slugaudit-mcp update
+slugaudit update
 ```
 
 `update` fetches the latest GitHub release (via `curl`), verifies its
@@ -61,7 +61,7 @@ SHA-256 checksum, and atomically replaces the installed binary in place
 
 - **Server name:** `slugaudit`
 - **Transport:** stdio (the agent launches the binary on demand)
-- **Command:** the path to the `slugaudit-mcp` binary itself
+- **Command:** the path to the `slugaudit` binary itself
   (resolved via `current_exe()`, so a `cargo install`-ed binary keeps
   working across upgrades automatically)
 
@@ -101,7 +101,7 @@ If you prefer to wire it up by hand, or your agent isn't one of the four
 above, register the binary as a stdio MCP server named `slugaudit`:
 
 ```
-slugaudit-mcp
+slugaudit
 ```
 
 No arguments, no environment variables, no config file. The server uses

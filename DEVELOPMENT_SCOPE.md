@@ -2,7 +2,7 @@
 
 ## End-user product
 
-The end-user product is the single `slugaudit-mcp` binary.
+The end-user product is the single `slugaudit` binary.
 
 Users install and configure this binary with their AI agent. It runs as an MCP
 stdio server and indexes the user's own projects.
@@ -43,7 +43,7 @@ The following are development-only and are not shipped in end-user binary releas
 - `.github/` workflows
 - audit, planning, coverage, and performance artifacts
 
-Only `slugaudit-mcp` is the end-user executable. The `check_*` binaries are
+Only `slugaudit` is the end-user executable. The `check_*` binaries are
 quality and CI tools and are not required by an AI agent using the product.
 The supported runtime targets are Linux and macOS; unsupported operating
 systems fail closed before opening the SQLite database.
@@ -53,7 +53,7 @@ systems fail closed before opening the SQLite database.
 When auditing this repository:
 
 - Consult `.planning/ARCHITECTURE.md` as the authoritative source of truth for architectural design, threat model, and system invariants.
-- Score `slugaudit-mcp` runtime behavior as product functionality.
+- Score `slugaudit` runtime behavior as product functionality.
 - Treat `<customer-project>/.planning/slugaudit/` as runtime application state.
 - Treat the rest of a customer's `.planning/` directory as customer data.
 - Do not count development-only check binaries as end-user runtime code.

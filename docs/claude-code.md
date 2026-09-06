@@ -9,7 +9,7 @@ analysis**.
 ## One-line setup
 
 ```bash
-slugaudit-mcp connect claude
+slugaudit connect claude
 ```
 
 That's it. It writes the `slugaudit` stdio MCP server into your user-level
@@ -17,7 +17,7 @@ Claude Code config (`~/.claude.json`). Verify:
 
 ```bash
 claude mcp list
-# slugaudit: /path/to/slugaudit-mcp - ✔ Connected
+# slugaudit: /path/to/slugaudit - ✔ Connected
 ```
 
 ## What you get
@@ -68,14 +68,14 @@ at the current executable.
 If you'd rather not use the `connect` command, add it by hand:
 
 ```bash
-claude mcp add slugaudit -s user -- $(which slugaudit-mcp)
+claude mcp add slugaudit -s user -- $(which slugaudit)
 ```
 
 Or for a project-scoped registration (only available when working in that
 directory):
 
 ```bash
-claude mcp add slugaudit -s local -- $(which slugaudit-mcp)
+claude mcp add slugaudit -s local -- $(which slugaudit)
 ```
 
 ## Troubleshooting
@@ -89,4 +89,4 @@ claude mcp add slugaudit -s local -- $(which slugaudit-mcp)
   for the project. This is an integration issue, not normal user setup.
 - **`/mcps` shows slugaudit as disconnected** — the binary path in your
   config may be stale (you moved or uninstalled it). Re-run
-  `slugaudit-mcp connect claude` to refresh.
+  `slugaudit connect claude` to refresh.

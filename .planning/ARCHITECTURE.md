@@ -1,7 +1,7 @@
 # SlugAudit Architecture
 
 > **Product boundary:** SlugAudit is shipped to users as the single
-> `slugaudit-mcp` binary. It runs inside a user's project through an
+> `slugaudit` binary. It runs inside a user's project through an
 > MCP-compatible agent and stores disposable derived data in
 > `<project-root>/.planning/slugaudit/project.db`. In this repository,
 > `.planning/` contains SlugAudit's development documentation; in a customer
@@ -17,7 +17,7 @@ agent-specific notes. **This** file documents what the system *is*.
 
 ## High-level overview
 
-SlugAudit is a stdio-MCP server (`slugaudit-mcp serve`) backed by a
+SlugAudit is a stdio-MCP server (`slugaudit serve`) backed by a
 per-project SQLite database. Every enabled project gets its own
 `project.db` in `./<project>/.planning/slugaudit/`. The server is
 stateless across projects: enabling a project on a sibling is a
@@ -306,7 +306,7 @@ something else breaks loudly.
    reviewer doesn't have to verify it on every PR.
 9. **Findings are scoped to the agent session that wrote them.** Every
    finding row carries the active `session_id` (a UUID generated once
-   per `slugaudit-mcp` boot). Every `ensure_current` runs
+   per `slugaudit` boot). Every `ensure_current` runs
    `purge_prior_session_findings` (`sync::manager_meta`) as the first
    step inside `ensure_project_row`, deleting rows whose `session_id`
    does not match the current process. A new agent (new chat, new

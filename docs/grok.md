@@ -8,7 +8,7 @@ where everything is. SlugAudit gathers facts; **Grok does the analysis**.
 ## One-line setup
 
 ```bash
-slugaudit-mcp connect grok
+slugaudit connect grok
 ```
 
 That registers the `slugaudit` stdio MCP server at user scope
@@ -16,7 +16,7 @@ That registers the `slugaudit` stdio MCP server at user scope
 
 ```bash
 grok mcp list --scope user
-# slugaudit: /path/to/slugaudit-mcp - connected
+# slugaudit: /path/to/slugaudit - connected
 ```
 
 In an active Grok session, run `/mcps` (press `r` to refresh if it's
@@ -29,7 +29,7 @@ project-scoped registration instead — only available when working in that
 directory — use the manual form:
 
 ```bash
-grok mcp add slugaudit --scope project -- $(which slugaudit-mcp)
+grok mcp add slugaudit --scope project -- $(which slugaudit)
 ```
 
 For nearly all users, the user-scope default from `connect grok` is what
@@ -52,7 +52,7 @@ at the current executable.
 ## Manual alternative
 
 ```bash
-grok mcp add slugaudit --scope user -- $(which slugaudit-mcp)
+grok mcp add slugaudit --scope user -- $(which slugaudit)
 ```
 
 ## Troubleshooting

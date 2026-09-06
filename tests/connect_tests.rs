@@ -1,7 +1,7 @@
 //! End-to-end test for the `connect` subcommand.
 //!
 //! Unlike the unit tests in `cli_tests.rs` (which only exercise argument
-//! parsing), this spawns the real `slugaudit-mcp` binary as a subprocess,
+//! parsing), this spawns the real `slugaudit` binary as a subprocess,
 //! runs `connect <agent>`, and inspects the agent's actual config file to
 //! prove the MCP server registration was written correctly — right name,
 //! right binary path, right transport.
@@ -16,7 +16,7 @@
 //! `claude mcp remove slugaudit`, `bob mcp remove slugaudit`, etc. CI is
 //! safe only because no agent CLIs are installed there.
 //!
-//! The `install` step intentionally leaves `~/.slugthug/slugaudit/slugaudit-mcp`
+//! The `install` step intentionally leaves `~/.slugthug/slugaudit/slugaudit`
 //! behind (the real `connect` flow depends on it). If you ran this test
 //! on a development box, remove that binary and re-run
 //! `claude mcp remove slugaudit` / `bob mcp remove slugaudit` afterwards

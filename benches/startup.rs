@@ -4,7 +4,7 @@
 //! MCP `initialize` round-trip against the just-spawned binary — the
 //! worst case the user actually pays (cold invoke → first tool answer is
 //! the user-visible startup). Run as `cargo bench --bench startup`; spawns
-//! the compiled `slugaudit-mcp` binary via `CARGO_BIN_EXE_slugaudit-mcp`
+//! the compiled `slugaudit` binary via `CARGO_BIN_EXE_slugaudit`
 //! so the bench tests the same binary CI ships.
 //!
 //! The bench reports the median wall-clock time from `Command::spawn` to

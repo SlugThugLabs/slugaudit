@@ -184,7 +184,7 @@ Ready-to-run queries for AI agents and security auditors in [`examples/queries/`
 
 ## Product boundary
 
-The single end-user product is the `slugaudit-mcp` binary. Users install and
+The single end-user product is the `slugaudit` binary. Users install and
 configure it with their AI agent, and the binary operates on the user's own
 projects.
 
