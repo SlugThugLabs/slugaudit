@@ -16,21 +16,20 @@ pub fn zed_contains_slugaudit(path: &Path) -> bool {
 }
 
 fn has_slugaudit(path: &Path, keys: &[&str]) -> bool {
-    let Ok(c) = fs::read_to_string(path) else {
-        return false;
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&c) else {
-        return false;
-    };
-    keys.iter()
-        .any(|k| v.get(*k).and_then(|s| s.get("slugaudit")).is_some())
+    fs::read_to_string(path).is_ok_and(|c| {
+        serde_json::from_str::<serde_json::Value>(&c).is_ok_and(|v| {
+            keys.iter()
+                .any(|k| v.get(*k).and_then(|s| s.get("slugaudit")).is_some())
+        })
+    })
 }
 
 pub fn cli_check_connected(cli: &str) -> bool {
-    let Ok(out) = Command::new(cli).args(["mcp", "list"]).output() else {
-        return false;
-    };
-    String::from_utf8_lossy(&out.stdout).contains("slugaudit")
+    Command::new(cli)
+        .args(["mcp", "list"])
+        .stdin(Stdio::null())
+        .output()
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("slugaudit"))
 }
 
 pub fn connect_agent(
@@ -156,6 +155,7 @@ fn run_remove_cmd(agent: &AgentDef, cli: &str) -> Result<(), ConnectError> {
     };
     let _ = Command::new(cli)
         .args(args)
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
@@ -164,6 +164,7 @@ fn run_remove_cmd(agent: &AgentDef, cli: &str) -> Result<(), ConnectError> {
 
 fn run_add_cmd(agent: &AgentDef, cli: &str, binary: &Path) -> Result<(), ConnectError> {
     let mut cmd = Command::new(cli);
+    cmd.stdin(Stdio::null());
     cmd.arg("mcp").arg("add");
     match agent.dialect {
         Dialect::Agy => {

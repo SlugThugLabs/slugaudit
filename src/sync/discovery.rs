@@ -72,7 +72,7 @@ pub(crate) fn sniff_kind(path: &Path) -> Result<FileKind, DiscoveryError> {
         path: path.to_path_buf(),
         source,
     })?;
-    let mut buffer = vec![0_u8; BINARY_SNIFF_BYTES];
+    let mut buffer = [0_u8; BINARY_SNIFF_BYTES];
     let read = file
         .read(&mut buffer)
         .map_err(|source| DiscoveryError::Read {
