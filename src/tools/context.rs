@@ -1,45 +1,16 @@
 use crate::progress::ProgressSink;
 use crate::sync;
-use crate::util::lock_or_recover;
 use rmcp::ErrorData;
-use std::sync::Mutex;
-use uuid::Uuid;
 
 #[path = "context_transactions.rs"]
 mod context_transactions;
 pub(crate) use context_transactions::{with_verified_read, with_verified_write};
 
-// Re-export `SyncedProject` from `sync` so there is exactly one definition.
-// `SourceSyncManager::ensure_current` returns it, and `ensure_synced`
-// delegates to it — both must agree on the type.
 pub(crate) use sync::SyncedProject;
 
-/// UUID generated once per `slugaudit-mcp` process boot, stamped onto
-/// every `findings` row written by this process and used by
-/// `sync::manager_meta::purge_prior_session_findings` to delete findings
-/// left by a prior agent session at the next `ensure_current`. A
-/// `Mutex<Option<…>>` (not `OnceLock<…>`) so parallel-running tests can
-/// override the active value mid-suite; the production code path takes
-/// the lock once per call and holds it only long enough to read or
-/// initialize the inner `Option<Uuid>`.
-static SESSION_ID: Mutex<Option<Uuid>> = Mutex::new(None);
-
-/// Returns the current session UUID, allocating a fresh v4 on first
-/// call. After the first call the inner `Option` is `Some`, so every
-/// subsequent call is a single lock + clone and never regenerates.
-#[must_use]
-pub(crate) fn session_id() -> Uuid {
-    let mut guard = lock_or_recover(&SESSION_ID);
-    *guard.get_or_insert_with(Uuid::new_v4)
-}
-
-/// Tests override the live session ID to simulate a fresh process boot
-/// without spawning a new binary. Production code never calls this.
 #[cfg(test)]
-pub(crate) fn override_session_id_for_test(id: Uuid) {
-    let mut guard = lock_or_recover(&SESSION_ID);
-    *guard = Some(id);
-}
+pub(crate) use crate::util::override_session_id_for_test;
+pub(crate) use crate::util::session_id;
 
 /// Wraps a low-level store/rusqlite error with which operation failed and
 /// a generic recovery hint, instead of surfacing the bare `Display` text

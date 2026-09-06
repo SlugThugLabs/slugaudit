@@ -12,7 +12,7 @@ use super::publish;
 use crate::parse;
 use crate::project;
 use crate::store;
-use crate::tools::context::session_id;
+use crate::util::session_id;
 use rmcp::ErrorData;
 use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};

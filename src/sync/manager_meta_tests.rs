@@ -2,8 +2,7 @@
 
 use super::{current_revision_id, ensure_project_row, purge_prior_session_findings_with};
 use crate::store;
-use crate::tools::context::override_session_id_for_test;
-use crate::util::SESSION_TEST_LOCK;
+use crate::util::{SESSION_TEST_LOCK, override_session_id_for_test};
 use std::path::Path;
 use tempfile::TempDir;
 use uuid::Uuid;

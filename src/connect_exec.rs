@@ -41,26 +41,17 @@ pub fn connect_agent(
     match agent.dialect {
         Dialect::JsonFile => {
             let rel = agent.config_rel.ok_or(ConnectError::HomeUnavailable)?;
-            let path = home?.join(rel);
             write_json_server(
-                &path,
+                &home?.join(rel),
                 "mcpServers",
-                serde_json::json!({
-                    "command": binary.to_string_lossy(),
-                    "args": []
-                }),
+                serde_json::json!({ "command": binary.to_string_lossy(), "args": [] }),
             )
         }
-        Dialect::Zed => {
-            let path = home?.join(".config/zed/settings.json");
-            write_json_server(
-                &path,
-                "context_servers",
-                serde_json::json!({
-                    "command": { "path": binary.to_string_lossy(), "args": [] }
-                }),
-            )
-        }
+        Dialect::Zed => write_json_server(
+            &home?.join(".config/zed/settings.json"),
+            "context_servers",
+            serde_json::json!({ "command": { "path": binary.to_string_lossy(), "args": [] } }),
+        ),
         _ => {
             let cli = agent.cli.ok_or_else(|| ConnectError::AgentMissing {
                 agent: agent.display_name.to_string(),
@@ -78,6 +69,29 @@ pub fn connect_agent(
     }
 }
 
+fn write_atomic(path: &Path, content: &[u8]) -> Result<(), ConnectError> {
+    let parent = path.parent().ok_or(ConnectError::HomeUnavailable)?;
+    let temp = parent.join(format!(".slugaudit-tmp-{}-{:p}", std::process::id(), path));
+    fs::write(&temp, content)?;
+    if let Err(err) = fs::rename(&temp, path) {
+        let _ = fs::remove_file(&temp);
+        return Err(ConnectError::Io(err));
+    }
+    Ok(())
+}
+
+fn load_json_or_empty(path: &Path) -> Result<serde_json::Value, ConnectError> {
+    match fs::read_to_string(path) {
+        Ok(c) if c.trim().is_empty() => Ok(serde_json::json!({})),
+        Ok(c) => serde_json::from_str(&c).map_err(|source| ConnectError::InvalidConfig {
+            path: path.to_path_buf(),
+            source,
+        }),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
+        Err(err) => Err(ConnectError::Io(err)),
+    }
+}
+
 fn write_json_server(
     path: &Path,
     section: &str,
@@ -86,14 +100,13 @@ fn write_json_server(
     if let Some(p) = path.parent() {
         fs::create_dir_all(p)?;
     }
-    let mut root = load_json_or_empty(path);
+    let mut root = load_json_or_empty(path)?;
     let map = root.as_object_mut().ok_or(ConnectError::HomeUnavailable)?;
     let s = map.entry(section).or_insert_with(|| serde_json::json!({}));
     if let Some(s_map) = s.as_object_mut() {
         s_map.insert("slugaudit".into(), val);
     }
-    fs::write(path, serde_json::to_string_pretty(&root)?)?;
-    Ok(())
+    write_atomic(path, serde_json::to_string_pretty(&root)?.as_bytes())
 }
 
 pub fn disconnect_agent(agent: &AgentDef, home: Option<&Path>) -> Result<(), ConnectError> {
@@ -122,23 +135,15 @@ pub fn disconnect_agent(agent: &AgentDef, home: Option<&Path>) -> Result<(), Con
 
 fn remove_json_slugaudit(path: &Path, keys: &[&str]) -> Result<(), ConnectError> {
     if path.exists() {
-        let mut root = load_json_or_empty(path);
+        let mut root = load_json_or_empty(path)?;
         for key in keys {
             if let Some(s) = root.get_mut(*key).and_then(|s| s.as_object_mut()) {
                 s.remove("slugaudit");
             }
         }
-        fs::write(path, serde_json::to_string_pretty(&root)?)?;
+        write_atomic(path, serde_json::to_string_pretty(&root)?.as_bytes())?;
     }
     Ok(())
-}
-
-fn load_json_or_empty(path: &Path) -> serde_json::Value {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|c| serde_json::from_str(&c).ok())
-        .filter(|v: &serde_json::Value| v.is_object())
-        .unwrap_or_else(|| serde_json::json!({}))
 }
 
 fn run_remove_cmd(agent: &AgentDef, cli: &str) -> Result<(), ConnectError> {
@@ -167,18 +172,9 @@ fn run_add_cmd(agent: &AgentDef, cli: &str, binary: &Path) -> Result<(), Connect
     cmd.stdin(Stdio::null());
     cmd.arg("mcp").arg("add");
     match agent.dialect {
-        Dialect::Agy => {
-            cmd.arg("slugaudit").arg(binary);
-        }
-        Dialect::Claude => {
-            cmd.args(["-s", "user", "slugaudit", "--"]).arg(binary);
-        }
-        Dialect::Hermes | Dialect::Crush => {
-            cmd.args(["slugaudit", "--command"]).arg(binary);
-        }
-        Dialect::Q => {
-            cmd.args(["--name", "slugaudit", "--command"]).arg(binary);
-        }
+        Dialect::Claude => cmd.args(["-s", "user", "slugaudit", "--"]).arg(binary),
+        Dialect::Hermes | Dialect::Crush => cmd.args(["slugaudit", "--command"]).arg(binary),
+        Dialect::Q => cmd.args(["--name", "slugaudit", "--command"]).arg(binary),
         Dialect::DashSeparator => {
             cmd.arg("slugaudit");
             if agent.id == "bob" {
@@ -186,12 +182,10 @@ fn run_add_cmd(agent: &AgentDef, cli: &str, binary: &Path) -> Result<(), Connect
             } else if agent.id == "grok" {
                 cmd.args(["--scope", "user"]);
             }
-            cmd.arg("--").arg(binary);
+            cmd.arg("--").arg(binary)
         }
-        _ => {
-            cmd.arg("slugaudit").arg(binary);
-        }
-    }
+        _ => cmd.arg("slugaudit").arg(binary),
+    };
     let output = cmd.output().map_err(|inner| ConnectError::AgentCommand {
         cli: cli.to_string(),
         inner,

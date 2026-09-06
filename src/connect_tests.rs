@@ -153,3 +153,24 @@ fn connect_surfaces_an_add_failure_from_the_agent_cli() {
         }
     });
 }
+
+#[test]
+fn json_agent_refuses_to_overwrite_invalid_or_commented_json() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path();
+    let agent = find_agent("cursor").expect("cursor agent");
+    let binary = Path::new("/bin/slugaudit");
+
+    let cfg_path = home.join(".cursor/mcp.json");
+    fs::create_dir_all(cfg_path.parent().expect("parent")).expect("mkdir");
+    let original = "{\n  // User comment\n  \"mcpServers\": {}\n}";
+    fs::write(&cfg_path, original).expect("write original");
+
+    let result = connect_agent(&agent, binary, Some(home));
+    assert!(
+        matches!(result, Err(ConnectError::InvalidConfig { .. })),
+        "must error on invalid json, got {result:?}"
+    );
+    let after = fs::read_to_string(&cfg_path).expect("read after");
+    assert_eq!(after, original, "original file must remain untouched");
+}

@@ -130,6 +130,12 @@ pub enum ConnectError {
     RemoveFailed { cli: String, status: String },
     #[error("`{cli} mcp add` exited with {status} — see the output above")]
     AddFailed { cli: String, status: String },
+    #[error("cannot modify {path}: configuration file exists but contains invalid JSON: {source}")]
+    InvalidConfig {
+        path: std::path::PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
     #[error("JSON config error: {0}")]
     Json(#[from] serde_json::Error),
     #[error(transparent)]

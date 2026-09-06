@@ -92,19 +92,32 @@ impl Style {
 #[cfg(test)]
 pub(crate) static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
 
-/// Serializes tests that depend on the process-global `SESSION_ID`
-/// (see `tools::context::SESSION_ID`). Two kinds of tests race over that
-/// global: session-flipping tests that call `override_session_id_for_test`
-/// to simulate a fresh process boot, and read/write tests that query or
-/// store `findings` rows scoped by `session_id()`. A flip between a
-/// sibling test's write and read would make the read come back empty or
-/// spuriously purge the sibling's rows. Module-private duplicate locks
-/// (each module serializes only its own tests) cannot stop one module from
-/// racing another, so this single shared lock is held by every test that
-/// either overrides the session or relies on it staying stable. Test-only;
-/// production code never touches it.
+/// Serializes tests that depend on the process-global `SESSION_ID`.
+/// Two kinds of tests race over that global: session-flipping tests that call
+/// `override_session_id_for_test` to simulate a fresh process boot, and
+/// read/write tests that query or store `findings` rows scoped by
+/// `session_id()`. Test-only; production code never touches it.
 #[cfg(test)]
 pub(crate) static SESSION_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+static SESSION_ID: Mutex<Option<uuid::Uuid>> = Mutex::new(None);
+
+/// Returns the current session UUID, allocating a fresh v4 on first
+/// call. After the first call the inner `Option` is `Some`, so every
+/// subsequent call is a single lock + clone and never regenerates.
+#[must_use]
+pub(crate) fn session_id() -> uuid::Uuid {
+    let mut guard = lock_or_recover(&SESSION_ID);
+    *guard.get_or_insert_with(uuid::Uuid::new_v4)
+}
+
+/// Tests override the live session ID to simulate a fresh process boot
+/// without spawning a new binary. Production code never calls this.
+#[cfg(test)]
+pub(crate) fn override_session_id_for_test(id: uuid::Uuid) {
+    let mut guard = lock_or_recover(&SESSION_ID);
+    *guard = Some(id);
+}
 
 /// Acquires a mutex guard, recovering the inner value if the mutex was
 /// poisoned by a previous holder panicking. Without this recovery, a
