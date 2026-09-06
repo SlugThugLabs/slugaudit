@@ -13,7 +13,7 @@ fn verify_checksum_accepts_a_matching_file() {
         return;
     }
     let dir = tempfile::tempdir().expect("temp dir");
-    let binary = dir.path().join("slugaudit-mcp-x86_64-unknown-linux-gnu");
+    let binary = dir.path().join("slugaudit-x86_64-unknown-linux-gnu");
     let contents = b"#!/bin/sh\necho fake binary\n";
     std::fs::write(&binary, contents).expect("write fake binary");
 
@@ -21,7 +21,7 @@ fn verify_checksum_accepts_a_matching_file() {
     let expected = {
         let output = std::process::Command::new("sha256sum")
             .current_dir(dir.path())
-            .arg("slugaudit-mcp-x86_64-unknown-linux-gnu")
+            .arg("slugaudit-x86_64-unknown-linux-gnu")
             .output()
             .expect("run sha256sum");
         String::from_utf8_lossy(&output.stdout)
@@ -33,7 +33,7 @@ fn verify_checksum_accepts_a_matching_file() {
     let sums_file = dir.path().join("SHA256SUMS");
     std::fs::write(
         &sums_file,
-        format!("{expected}  slugaudit-mcp-x86_64-unknown-linux-gnu\n"),
+        format!("{expected}  slugaudit-x86_64-unknown-linux-gnu\n"),
     )
     .expect("write sha256sums");
 
@@ -43,9 +43,9 @@ fn verify_checksum_accepts_a_matching_file() {
 /// The temp binary no longer needs to be named exactly the asset filename:
 /// verification compares digests, not filenames, so a unique temp name (as
 /// `apply_update` now uses) must verify fine. This is the regression test
-/// for the clobber-a-same-named-file fix.
+/// for Task 17.5.
 #[test]
-fn verify_checksum_accepts_a_file_with_a_unique_temp_name() {
+fn verify_checksum_accepts_a_unique_temporary_file_path() {
     if which::which("sha256sum").is_err() {
         eprintln!("skipping: sha256sum not available");
         return;
@@ -54,7 +54,7 @@ fn verify_checksum_accepts_a_file_with_a_unique_temp_name() {
     // Deliberately NOT named the asset — a unique `.update-<pid>` name.
     let binary = dir
         .path()
-        .join(".slugaudit-mcp-update-12345-slugaudit-mcp-x86_64-unknown-linux-gnu");
+        .join(".slugaudit-update-12345-slugaudit-x86_64-unknown-linux-gnu");
     std::fs::write(&binary, b"#!/bin/sh\necho fake binary\n").expect("write fake binary");
 
     let expected = {
@@ -71,7 +71,7 @@ fn verify_checksum_accepts_a_file_with_a_unique_temp_name() {
     let sums_file = dir.path().join("SHA256SUMS");
     std::fs::write(
         &sums_file,
-        format!("{expected}  slugaudit-mcp-x86_64-unknown-linux-gnu\n"),
+        format!("{expected}  slugaudit-x86_64-unknown-linux-gnu\n"),
     )
     .expect("write sha256sums");
 
@@ -87,16 +87,13 @@ fn verify_checksum_rejects_a_mismatching_file() {
         return;
     }
     let dir = tempfile::tempdir().expect("temp dir");
-    let binary = dir.path().join("slugaudit-mcp-x86_64-unknown-linux-gnu");
+    let binary = dir.path().join("slugaudit-x86_64-unknown-linux-gnu");
     std::fs::write(&binary, b"different bytes\n").expect("write fake binary");
 
     let sums_file = dir.path().join("SHA256SUMS");
     std::fs::write(
         &sums_file,
-        format!(
-            "{}  slugaudit-mcp-x86_64-unknown-linux-gnu\n",
-            "0".repeat(64)
-        ),
+        format!("{}  slugaudit-x86_64-unknown-linux-gnu\n", "0".repeat(64)),
     )
     .expect("write sha256sums");
 
@@ -112,7 +109,7 @@ fn target_binary_prefers_the_installed_stable_path() {
     let temp = tempfile::tempdir().expect("temp dir");
     let slugthug = temp.path().join("slugaudit");
     std::fs::create_dir_all(&slugthug).expect("create dir");
-    let stable = slugthug.join("slugaudit-mcp");
+    let stable = slugthug.join("slugaudit");
     std::fs::write(&stable, b"fake installed binary").expect("write fake install");
 
     temp_env::with_var("SLUGTHUG_HOME", Some(temp.path().as_os_str()), || {

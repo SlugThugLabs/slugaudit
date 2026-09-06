@@ -55,14 +55,14 @@ pub(crate) fn running_binary() -> Result<PathBuf, std::io::Error> {
 pub fn run_install() -> Result<(), InstallError> {
     let source = running_binary().map_err(InstallError::CurrentExe)?;
     let bin_dir = slugaudit_dir().ok_or(InstallError::NoHome)?;
-    let target = bin_dir.join("slugaudit-mcp");
+    let target = bin_dir.join("slugaudit");
     std::fs::create_dir_all(&bin_dir).map_err(|inner| InstallError::Mkdir {
         path: bin_dir.display().to_string(),
         inner,
     })?;
 
     let temporary = bin_dir.join(format!(
-        ".slugaudit-mcp.{}.{}.tmp",
+        ".slugaudit.{}.{}.tmp",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -84,7 +84,7 @@ pub fn run_install() -> Result<(), InstallError> {
         inner,
     })?;
 
-    println!("Installed slugaudit-mcp to {}", target.display());
+    println!("Installed slugaudit to {}", target.display());
     // `install` is human-facing; `connect` follows naturally after PATH has
     // it, so offer to add the dir rather than forcing the user to type an
     // export by hand. No-op when stdin isn't a terminal or already on PATH.
@@ -96,14 +96,14 @@ pub fn run_install() -> Result<(), InstallError> {
             Err(error) => {
                 eprintln!("could not update shell config: {error}");
                 println!(
-                    "Add {} to your PATH, then run: slugaudit-mcp connect",
+                    "Add {} to your PATH, then run: slugaudit connect",
                     bin_dir.display()
                 );
             }
         }
     } else if !on_path(&bin_dir) {
         println!(
-            "Add {} to your PATH, then run: slugaudit-mcp connect",
+            "Add {} to your PATH, then run: slugaudit connect",
             bin_dir.display()
         );
     }

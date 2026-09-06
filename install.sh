@@ -5,7 +5,7 @@
 set -euo pipefail
 
 INSTALL_DIR="${HOME}/.slugthug/slugaudit"
-BINARY_NAME="slugaudit-mcp"
+BINARY_NAME="slugaudit"
 TARGET_PATH="${INSTALL_DIR}/${BINARY_NAME}"
 GITHUB_REPO="SlugThugLabs/slugaudit"
 
@@ -31,11 +31,11 @@ mkdir -p "${INSTALL_DIR}"
 
 if command -v cargo >/dev/null 2>&1 && [ -f "Cargo.toml" ] && grep -q "slugaudit-mcp-rust" Cargo.toml 2>/dev/null; then
     echo "==> Building directly from local repository with cargo..."
-    cargo build --release --locked --bin slugaudit-mcp
-    install -m 0755 target/release/slugaudit-mcp "${TARGET_PATH}"
+    cargo build --release --locked --bin slugaudit
+    install -m 0755 target/release/slugaudit "${TARGET_PATH}"
 elif [ "${OS}" = "Linux" ] && [ "${ARCH}" = "x86_64" ]; then
     echo "==> Downloading latest release for Linux x86_64..."
-    DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/slugaudit-mcp-x86_64-unknown-linux-gnu"
+    DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/slugaudit-x86_64-unknown-linux-gnu"
     TMP_FILE="$(mktemp)"
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL "${DOWNLOAD_URL}" -o "${TMP_FILE}"
@@ -49,7 +49,7 @@ elif [ "${OS}" = "Linux" ] && [ "${ARCH}" = "x86_64" ]; then
     rm -f "${TMP_FILE}"
 elif command -v cargo >/dev/null 2>&1; then
     echo "==> Installing via cargo..."
-    cargo install --git "https://github.com/${GITHUB_REPO}.git" --bin slugaudit-mcp
+    cargo install --git "https://github.com/${GITHUB_REPO}.git" --bin slugaudit
 else
     echo "Error: Pre-built binary currently available for Linux x86_64."
     echo "To build on ${OS} (${ARCH}), install Rust (https://rustup.rs) and run: cargo install --git https://github.com/${GITHUB_REPO}.git"

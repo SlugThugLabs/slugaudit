@@ -2,7 +2,7 @@
   "identifier": "slugthuglabs-slugaudit-mcp",
   "name": "SlugAudit MCP",
   "description": "Pre-parsed, searchable, always-in-sync evidence about a codebase \u2014 symbols, imports, dependency edges, source spans \u2014 so the AI queries a SQLite database instead of reading hundreds of flat files.",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "tools": [
     {
       "name": "query",

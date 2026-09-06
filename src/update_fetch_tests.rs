@@ -8,7 +8,7 @@ fn from_tag_builds_the_asset_and_checksum_urls() {
     let release = LatestRelease::from_tag("v1.0.3");
     assert_eq!(release.version, "1.0.3");
     assert!(release.asset_url.ends_with(
-        "/SlugThugLabs/slugaudit/releases/download/v1.0.3/slugaudit-mcp-x86_64-unknown-linux-gnu"
+        "/SlugThugLabs/slugaudit/releases/download/v1.0.3/slugaudit-x86_64-unknown-linux-gnu"
     ));
     assert!(
         release

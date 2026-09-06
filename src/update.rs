@@ -57,7 +57,7 @@ pub enum UpdateError {
     },
 }
 
-/// The absolute path the binary that `slugaudit-mcp update` should replace.
+/// The absolute path the binary that `slugaudit update` should replace.
 /// Prefers the stable install path when present (matches what `connect`
 /// registers), otherwise the running executable.
 fn target_binary() -> Result<PathBuf, UpdateError> {
@@ -82,10 +82,7 @@ fn apply_update(latest: &LatestRelease, target: &Path) -> Result<(), UpdateError
     // the temp binary no longer needs to be named exactly `ASSET` — which
     // would otherwise overwrite a same-named file a user had placed in the
     // directory before verification had a chance to run.
-    let temp_exe = dir.join(format!(
-        ".slugaudit-mcp-update-{}-{ASSET}",
-        std::process::id()
-    ));
+    let temp_exe = dir.join(format!(".slugaudit-update-{}-{ASSET}", std::process::id()));
     let temp_sums = dir.join(format!("{ASSET}-{}-SHA256SUMS", std::process::id()));
 
     let download = |url: &str, dest: &Path| -> Result<(), UpdateError> {
@@ -188,7 +185,7 @@ fn io_from_string(message: String) -> std::io::Error {
     std::io::Error::other(message)
 }
 
-/// Entry point for `slugaudit-mcp update`. Prints human-facing progress to
+/// Entry point for `slugaudit update`. Prints human-facing progress to
 /// stdout; never touches the MCP transport.
 pub fn run_update() -> Result<(), UpdateError> {
     let current = env!("CARGO_PKG_VERSION");
@@ -200,7 +197,7 @@ pub fn run_update() -> Result<(), UpdateError> {
     // what we want and proceed to fetch it.
     match compare_versions(current, &latest.version) {
         Ok(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal) => {
-            println!("slugaudit-mcp is already up to date (v{current}).");
+            println!("slugaudit is already up to date (v{current}).");
             return Ok(());
         }
         Ok(std::cmp::Ordering::Less) | Err(()) => {
@@ -213,7 +210,7 @@ pub fn run_update() -> Result<(), UpdateError> {
 
     let target = target_binary()?;
     println!(
-        "Updating slugaudit-mcp v{current} -> {} at {}...",
+        "Updating slugaudit v{current} -> {} at {}...",
         latest.version,
         target.display()
     );

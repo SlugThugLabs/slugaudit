@@ -201,7 +201,7 @@ fn connect_writes_the_correct_registration_for_each_installed_agent() {
         return;
     }
 
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_slugaudit-mcp"));
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_slugaudit"));
     assert!(
         binary.is_file(),
         "test binary not found: {}",
@@ -226,7 +226,7 @@ fn connect_writes_the_correct_registration_for_each_installed_agent() {
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".slugthug"))
         .join("slugaudit")
-        .join("slugaudit-mcp");
+        .join("slugaudit");
     assert!(
         slugthug_binary.is_file(),
         "install did not produce {}",

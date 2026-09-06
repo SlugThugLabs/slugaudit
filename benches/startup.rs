@@ -58,18 +58,18 @@ fn initialize_round_trip(binary_path: &std::path::Path) -> std::time::Duration {
 }
 
 fn bench_startup(c: &mut Criterion) {
-    // `CARGO_BIN_EXE_slugaudit-mcp` is set by `cargo bench` for benches
+    // `CARGO_BIN_EXE_slugaudit` is set by `cargo bench` for benches
     // that `harness = false`; fallback to a sibling binary at
-    // `target/release/slugaudit-mcp` for direct `cargo run` invocations
+    // `target/release/slugaudit` for direct `cargo run` invocations
     // of just this file (none expected, but a missing var would otherwise
     // panic on first iteration).
-    let binary_path = option_env!("CARGO_BIN_EXE_slugaudit-mcp")
+    let binary_path = std::env::var_os("CARGO_BIN_EXE_slugaudit")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("target")
                 .join("release")
-                .join("slugaudit-mcp")
+                .join("slugaudit")
         });
 
     // Warm: the first iteration pays filesystem-cached binary load +

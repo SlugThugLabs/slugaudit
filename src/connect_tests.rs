@@ -1,27 +1,22 @@
-//! Tests for `connect`: per-agent scope arguments and the stable-binary
-//! preference. Anything that would invoke a real agent CLI (`bob`,
-//! `claude`, `grok`, `codex`) is deliberately NOT exercised — on a machine
-//! where the agent is installed, such a test would touch the user's real
-//! registration.
-//!
-//! The real end-to-end path IS exercised by the integration test in
-//! `tests/connect_tests.rs`, which does touch a real agent's config when
-//! that agent's CLI is on PATH (backing it up and restoring it).
+//! Tests for connect, disconnect, and agent detection.
 
 use super::*;
+use crate::connect_agents::find_agent;
+use crate::connect_exec::{connect_agent, disconnect_agent};
 use crate::util::TEST_ENV_LOCK;
+use std::fs;
 use std::path::PathBuf;
 
 #[test]
-fn scope_args_match_the_documented_agent_scopes() {
-    assert_eq!(scope_add_args(ConnectAgent::Bob), &["--scope", "global"]);
-    assert_eq!(scope_add_args(ConnectAgent::Claude), &["-s", "user"]);
-    assert_eq!(scope_add_args(ConnectAgent::Grok), &["--scope", "user"]);
-    assert!(scope_add_args(ConnectAgent::Codex).is_empty());
-    assert_eq!(scope_remove_args(ConnectAgent::Bob), &["--scope", "global"]);
-    assert_eq!(scope_remove_args(ConnectAgent::Claude), &["-s", "user"]);
-    assert_eq!(scope_remove_args(ConnectAgent::Grok), &["--scope", "user"]);
-    assert!(scope_remove_args(ConnectAgent::Codex).is_empty());
+fn find_agent_finds_standard_and_aliased_names() {
+    assert_eq!(find_agent("agy").map(|a| a.id), Some("agy"));
+    assert_eq!(find_agent("antigravity").map(|a| a.id), Some("agy"));
+    assert_eq!(find_agent("claude").map(|a| a.id), Some("claude"));
+    assert_eq!(find_agent("claude-code").map(|a| a.id), Some("claude"));
+    assert_eq!(find_agent("claude_code").map(|a| a.id), Some("claude"));
+    assert_eq!(find_agent("cursor").map(|a| a.id), Some("cursor"));
+    assert_eq!(find_agent("zed").map(|a| a.id), Some("zed"));
+    assert_eq!(find_agent("nonexistent_agent"), None);
 }
 
 #[test]
@@ -29,14 +24,14 @@ fn prefer_slugthug_binary_uses_the_installed_path_when_present() {
     let _guard = TEST_ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("temp dir");
     let bin_dir = temp.path().join("slugaudit");
-    std::fs::create_dir_all(&bin_dir).expect("bin dir");
-    std::fs::write(bin_dir.join("slugaudit-mcp"), b"#!fake").expect("fake binary");
+    fs::create_dir_all(&bin_dir).expect("bin dir");
+    fs::write(bin_dir.join("slugaudit"), b"#!fake").expect("fake binary");
 
-    let current = PathBuf::from("/build/artifacts/slugaudit-mcp");
+    let current = PathBuf::from("/build/artifacts/slugaudit");
     temp_env::with_var("SLUGTHUG_HOME", Some(temp.path().as_os_str()), || {
         assert_eq!(
             prefer_slugthug_binary(&current),
-            bin_dir.join("slugaudit-mcp"),
+            bin_dir.join("slugaudit"),
             "the stable installed path wins over the current build artifact"
         );
     });
@@ -51,73 +46,79 @@ fn prefer_slugthug_binary_keeps_current_when_not_installed() {
             ("HOME", None::<&std::ffi::OsStr>),
         ],
         || {
-            let current = PathBuf::from("/build/artifacts/slugaudit-mcp");
+            let current = PathBuf::from("/build/artifacts/slugaudit");
             assert_eq!(prefer_slugthug_binary(&current), current);
         },
     );
 }
 
 #[test]
-fn prefer_slugthug_binary_falls_back_to_legacy_bin_when_slugaudit_dir_missing() {
-    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
-    let temp = tempfile::tempdir().expect("temp dir");
-    let bin_dir = temp.path().join("bin");
-    std::fs::create_dir_all(&bin_dir).expect("bin dir");
-    std::fs::write(bin_dir.join("slugaudit-mcp"), b"#!fake-legacy").expect("fake legacy");
+fn json_agent_connect_and_disconnect_modifies_config() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path();
+    let agent = find_agent("cursor").expect("cursor agent");
+    let binary = Path::new("/bin/slugaudit");
 
-    let current = PathBuf::from("/build/artifacts/slugaudit-mcp");
-    temp_env::with_var("SLUGTHUG_HOME", Some(temp.path().as_os_str()), || {
-        assert_eq!(
-            prefer_slugthug_binary(&current),
-            bin_dir.join("slugaudit-mcp"),
-            "legacy ~/.slugthug/bin path is used as a fallback"
-        );
-    });
+    assert!(!agent.is_connected(Some(home)));
+
+    connect_agent(&agent, binary, Some(home)).expect("connect cursor");
+    assert!(agent.is_connected(Some(home)));
+
+    let cfg_path = home.join(".cursor/mcp.json");
+    let content = fs::read_to_string(&cfg_path).expect("read config");
+    assert!(content.contains("slugaudit"));
+    assert!(content.contains("/bin/slugaudit"));
+
+    disconnect_agent(&agent, Some(home)).expect("disconnect cursor");
+    assert!(!agent.is_connected(Some(home)));
+    let after = fs::read_to_string(&cfg_path).expect("read config after");
+    assert!(!after.contains("/bin/slugaudit"));
 }
 
-/// Only meaningful on machines without the agent CLIs installed; skips
-/// otherwise rather than risk touching a real agent registration. Proves
-/// the missing-CLI error is a typed `ConnectError`, not a panic or a
-/// silent no-op.
-///
-/// Holds `TEST_ENV_LOCK` like the fake-CLI tests: without it, a concurrent
-/// test that prepends a fake `claude` to `PATH` mid-flight makes
-/// `run_connect` succeed against the fake instead of reporting
-/// `AgentMissing`, turning this into a nondeterministic race.
 #[test]
-fn connect_reports_a_missing_agent_cli_as_a_typed_error() {
-    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
-    if ["bob", "claude", "grok", "codex"]
-        .iter()
-        .any(|cli| which::which(cli).is_ok())
-    {
-        return;
-    }
-    let result = run_connect(ConnectAgent::Claude);
-    assert!(matches!(result, Err(ConnectError::AgentMissing { .. })));
+fn zed_agent_connect_and_disconnect_modifies_settings() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path();
+    let agent = find_agent("zed").expect("zed agent");
+    let binary = Path::new("/bin/slugaudit");
+
+    assert!(!agent.is_connected(Some(home)));
+
+    connect_agent(&agent, binary, Some(home)).expect("connect zed");
+    assert!(agent.is_connected(Some(home)));
+
+    let cfg_path = home.join(".config/zed/settings.json");
+    let content = fs::read_to_string(&cfg_path).expect("read zed settings");
+    assert!(content.contains("context_servers"));
+    assert!(content.contains("slugaudit"));
+
+    disconnect_agent(&agent, Some(home)).expect("disconnect zed");
+    assert!(!agent.is_connected(Some(home)));
 }
 
-/// Creates a fake agent CLI in a temp dir: a tiny inert shell script that
-/// ignores its arguments and exits with `exit_code`. Prepending the dir to
-/// `PATH` (under the env lock) lets the full `connect_one` flow run
-/// against the fake instead of a real agent registration, which is never
-/// touched.
+#[test]
+fn detected_agents_filters_by_installed_presence() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path();
+    fs::create_dir_all(home.join(".cursor")).expect("mkdir .cursor");
+    let detected = crate::connect_agents::detected_agents(Some(home));
+    assert!(detected.iter().any(|a| a.id == "cursor"));
+}
+
 fn fake_agent_cli(name: &str, exit_code: i32) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("bin dir");
     let script = dir.path().join(name);
-    std::fs::write(&script, format!("#!/bin/sh\nexit {exit_code}\n")).expect("write fake cli");
+    fs::write(&script, format!("#!/bin/sh\nexit {exit_code}\n")).expect("write fake cli");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&script).expect("metadata").permissions();
+        let mut perms = fs::metadata(&script).expect("metadata").permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).expect("chmod fake cli");
+        fs::set_permissions(&script, perms).expect("chmod fake cli");
     }
     dir
 }
 
-/// Runs `f` with `bin_dir` prepended to `PATH`, holding the env lock so a
-/// concurrent test can't observe the mutation window.
 fn with_fake_cli_on_path<T>(bin_dir: &std::path::Path, f: impl FnOnce() -> T) -> T {
     let _guard = TEST_ENV_LOCK.lock().expect("env lock");
     let old_path = std::env::var_os("PATH").unwrap_or_default();
@@ -127,27 +128,23 @@ fn with_fake_cli_on_path<T>(bin_dir: &std::path::Path, f: impl FnOnce() -> T) ->
     temp_env::with_var("PATH", Some(new_path.as_os_str()), f)
 }
 
-/// The full `connect_one` flow (remove existing registration, then add)
-/// must succeed end-to-end against a fake agent CLI that exits 0.
 #[test]
 fn connect_registers_with_a_fake_agent_cli_successfully() {
     let bin_dir = fake_agent_cli("claude", 0);
     with_fake_cli_on_path(bin_dir.path(), || {
-        let result = run_connect(ConnectAgent::Claude);
+        let result = run_connect(Some("claude"));
         assert!(
             result.is_ok(),
-            "a fake agent CLI that exits 0 must register successfully: {result:?}"
+            "fake claude CLI must register successfully: {result:?}"
         );
     });
 }
 
-/// A failed `mcp add` (fake CLI exits non-zero) must surface as the typed
-/// `AddFailed` error with the agent's CLI named, not a panic.
 #[test]
 fn connect_surfaces_an_add_failure_from_the_agent_cli() {
     let bin_dir = fake_agent_cli("claude", 1);
     with_fake_cli_on_path(bin_dir.path(), || {
-        let result = run_connect(ConnectAgent::Claude);
+        let result = run_connect(Some("claude"));
         match result {
             Err(ConnectError::AddFailed { cli, .. }) => {
                 assert_eq!(cli, "claude");

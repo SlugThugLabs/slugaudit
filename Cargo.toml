@@ -1,6 +1,6 @@
 [package]
 name = "slugaudit-mcp-rust"
-version = "1.0.8"
+version = "1.0.9"
 edition = "2024"
 # Never published: the license is a non-SPDX PolyForm Noncommercial 1.0.0
 # plus the SlugAudit tool-use additional permission, carried in LICENSE via
@@ -9,16 +9,16 @@ edition = "2024"
 # the root crate from license-expression checks it cannot evaluate.
 publish = false
 license-file = "LICENSE"
-default-run = "slugaudit-mcp"
+default-run = "slugaudit"
 
 # Product boundary:
-# - `slugaudit-mcp` is the only end-user executable.
+# - `slugaudit` is the only end-user executable.
 # - The `check_*` binaries are development/CI-only quality tools.
 # - Customer projects receive the MCP server binary, which owns only its
 #   runtime `.planning/slugaudit/` derived-data directory.
 
 [[bin]]
-name = "slugaudit-mcp"
+name = "slugaudit"
 path = "src/main.rs"
 
 # Pure-Rust dev tooling: every gate that used to live in tools/*.sh

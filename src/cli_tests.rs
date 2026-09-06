@@ -10,19 +10,12 @@ fn no_arguments_means_serve() {
 
 #[test]
 fn usage_with_a_plain_style_is_byte_identical_to_the_usage_const() {
-    // `usage()` colors only when stdout is a terminal; driving it with
-    // `Style::plain()` is not directly possible, but the function must
-    // return the exact const text when styling is off. We emulate that by
-    // asserting the public invariant: help routed to a non-terminal yields
-    // no ESC bytes and still names every command.
     let styled = usage();
     if styled.contains('\x1b') {
-        // A real terminal: styled output must still mention all sections.
         for heading in ["USAGE:", "COMMANDS:", "OPTIONS:", "EXAMPLES:"] {
             assert!(styled.contains(heading), "help must keep {heading:?}");
         }
     } else {
-        // Not a terminal (typical in CI / test): must be byte-identical.
         assert_eq!(styled, USAGE, "non-terminal help must match USAGE exactly");
     }
 }
@@ -41,7 +34,7 @@ fn unrecognized_input_returns_a_descriptive_error_rather_than_silently_serving()
     assert!(err.contains("unknown command"));
     assert!(err.contains("foobar"));
     assert!(err.contains("serve") && err.contains("connect") && err.contains("install"));
-    assert!(err.contains("menu"));
+    assert!(err.contains("menu") && err.contains("disconnect"));
 }
 
 #[test]
@@ -54,18 +47,9 @@ fn explicit_help_command_parses_as_help() {
 
 #[test]
 fn case_mismatched_known_command_is_an_error() {
-    // Edge case: a user runs `slugaudit SErve` (mixed case). Currently
-    // the parser is case-sensitive — we don't normalize to lowercase.
-    // Record the behavior so future case-insensitive work is a
-    // deliberate change, not a quiet backward-incompat.
     let result = parse_args(vec!["SErve".to_owned()].into_iter());
-    assert!(
-        result.is_err(),
-        "case-sensitive commands are the documented behavior; the test name and assertion must agree"
-    );
+    assert!(result.is_err());
 }
-
-// --- connect ---
 
 #[test]
 fn connect_with_no_agent_picks_interactive() {
@@ -76,63 +60,44 @@ fn connect_with_no_agent_picks_interactive() {
 }
 
 #[test]
-fn connect_accepts_each_supported_agent_by_cli_name() {
-    for (name, expected) in [
-        ("bob", ConnectAgent::Bob),
-        ("claude", ConnectAgent::Claude),
-        ("grok", ConnectAgent::Grok),
-        ("codex", ConnectAgent::Codex),
-    ] {
-        assert_eq!(
-            parse_args(vec!["connect".to_owned(), name.to_owned()].into_iter())
-                .expect("valid arguments parse"),
-            Command::Connect {
-                agent: Some(expected)
-            }
-        );
-    }
-}
-
-#[test]
-fn connect_agent_names_are_case_insensitive() {
+fn connect_accepts_agent_name() {
     assert_eq!(
-        parse_args(vec!["connect".to_owned(), "CLAUDE".to_owned()].into_iter())
+        parse_args(vec!["connect".to_owned(), "claude".to_owned()].into_iter())
             .expect("valid arguments parse"),
         Command::Connect {
-            agent: Some(ConnectAgent::Claude)
+            agent: Some("claude".to_string())
         }
     );
 }
 
 #[test]
-fn connect_accepts_claude_code_alias_for_claude() {
-    for alias in ["claude-code", "claude_code"] {
-        assert_eq!(
-            parse_args(vec!["connect".to_owned(), alias.to_owned()].into_iter())
-                .expect("valid arguments parse"),
-            Command::Connect {
-                agent: Some(ConnectAgent::Claude)
-            }
-        );
-    }
-}
-
-#[test]
-fn connect_with_an_unknown_agent_returns_a_descriptive_error() {
-    let err = parse_args(vec!["connect".to_owned(), "unknown".to_owned()].into_iter()).unwrap_err();
-    assert!(err.contains("unknown"));
-    assert!(
-        err.contains("bob")
-            && err.contains("claude")
-            && err.contains("grok")
-            && err.contains("codex")
+fn disconnect_with_no_agent_picks_interactive() {
+    assert_eq!(
+        parse_args(vec!["disconnect".to_owned()].into_iter()).expect("valid arguments parse"),
+        Command::Disconnect { agent: None }
     );
 }
 
 #[test]
-fn connect_agent_from_str_rejects_empty_and_garbage() {
-    assert!(ConnectAgent::from_str("").is_err());
-    assert!(ConnectAgent::from_str("foobar").is_err());
+fn disconnect_accepts_agent_name() {
+    assert_eq!(
+        parse_args(vec!["disconnect".to_owned(), "agy".to_owned()].into_iter())
+            .expect("valid arguments parse"),
+        Command::Disconnect {
+            agent: Some("agy".to_string())
+        }
+    );
+}
+
+#[test]
+fn remove_alias_parses_as_disconnect() {
+    assert_eq!(
+        parse_args(vec!["remove".to_owned(), "agy".to_owned()].into_iter())
+            .expect("valid arguments parse"),
+        Command::Disconnect {
+            agent: Some("agy".to_string())
+        }
+    );
 }
 
 #[test]

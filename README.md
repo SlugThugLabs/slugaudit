@@ -89,7 +89,7 @@ curl -fsSL https://raw.githubusercontent.com/SlugThugLabs/slugaudit/main/install
 cargo install --path .
 
 # Or run the interactive setup menu:
-slugaudit-mcp menu
+slugaudit menu
 ```
 
 ### 2. Connect Your AI Agent (One-Click)
@@ -97,13 +97,17 @@ slugaudit-mcp menu
 SlugAudit automatically configures your favorite AI coding assistant:
 
 ```bash
-slugaudit-mcp connect claude    # Claude Code (~/.claude.json)
-slugaudit-mcp connect codex     # Codex CLI (~/.codex/config.toml)
-slugaudit-mcp connect bob       # Bob AI Agent
-slugaudit-mcp connect grok      # Grok CLI (~/.grok/config.toml)
+slugaudit connect agy       # Antigravity (agy mcp add)
+slugaudit connect gemini    # Gemini CLI (gemini mcp add)
+slugaudit connect claude    # Claude Code (~/.claude.json)
+slugaudit connect cursor    # Cursor IDE (~/.cursor/mcp.json)
+slugaudit connect codex     # Codex CLI (~/.codex/config.toml)
+slugaudit connect hermes    # Hermes Agent
 ```
 
-*(Run `slugaudit-mcp connect` without arguments to choose interactively from the terminal).*
+*(Run `slugaudit connect` without arguments to auto-detect installed agents interactively from your terminal).*
+
+To disconnect: `slugaudit disconnect <agent>` or pick from `slugaudit disconnect`.
 
 ### 3. Ask Your Agent Anything
 
@@ -117,15 +121,24 @@ Your agent will call `report`, `query`, and `structure` in the background—answ
 
 ## 🔌 Supported AI Agents & Editors
 
-| AI Client | Setup Command / Config | Scope | Status |
+| AI Client / Editor | Setup Command / Config | Scope | Status |
 | :--- | :--- | :--- | :---: |
-| **Claude Code** | `slugaudit-mcp connect claude` | Global (`~/.claude.json`) | ✅ Native |
-| **Cursor** | Add to `.cursor/mcp.json` or Settings | Project / Global | ✅ Verified |
-| **Hermes Agent** | `hermes mcp add slugaudit --command slugaudit-mcp` | Global | ✅ Native |
-| **Codex** | `slugaudit-mcp connect codex` | Global (`~/.codex/config.toml`) | ✅ Native |
-| **Bob** | `slugaudit-mcp connect bob` | Global (`--scope global`) | ✅ Native |
-| **Grok** | `slugaudit-mcp connect grok` | User Scope (`~/.grok/config.toml`) | ✅ Native |
-| **Windsurf** | Add to `~/.codeium/windsurf/mcp_config.json` | Global | ✅ Verified |
+| **Antigravity (agy)** | `slugaudit connect agy` | Native CLI (`agy mcp add`) | ✅ Native |
+| **Gemini CLI** | `slugaudit connect gemini` | Native CLI (`gemini mcp add`) | ✅ Native |
+| **Claude Code** | `slugaudit connect claude` | Global (`~/.claude.json`) | ✅ Native |
+| **Cursor** | `slugaudit connect cursor` | Global (`~/.cursor/mcp.json`) | ✅ Native |
+| **Windsurf** | `slugaudit connect windsurf` | Global (`mcp_config.json`) | ✅ Native |
+| **Trae AI IDE** | `slugaudit connect trae` | Global (`~/.trae/mcp.json`) | ✅ Native |
+| **OpenCode** | `slugaudit connect opencode` | User config (`opencode.json`) | ✅ Native |
+| **Hermes Agent** | `slugaudit connect hermes` | Global CLI (`hermes mcp add`) | ✅ Native |
+| **Codex** | `slugaudit connect codex` | Global (`~/.codex/config.toml`) | ✅ Native |
+| **GitHub Copilot CLI** | `slugaudit connect copilot` | Global CLI (`copilot mcp add`) | ✅ Native |
+| **Bob** | `slugaudit connect bob` | Global (`--scope global`) | ✅ Native |
+| **Grok** | `slugaudit connect grok` | User Scope (`~/.grok/config.toml`) | ✅ Native |
+| **Zed Editor** | `slugaudit connect zed` | User settings (`settings.json`) | ✅ Native |
+| **Pi / Oh My Pi** | `slugaudit connect pi` / `omp` | User config (`mcp.json`) | ✅ Native |
+| **1MCP / OpenHands** | `slugaudit connect 1mcp` | Native CLI | ✅ Native |
+| **Other MCP Clients**| `slugaudit menu` (Option 4) | JSON snippet for any client | ✅ Standard |
 
 ---
 

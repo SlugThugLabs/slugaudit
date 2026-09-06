@@ -15,10 +15,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli::parse_args(std::env::args().skip(1)) {
         Ok(cmd) => match cmd {
             Command::Connect { agent } => {
-                match agent {
-                    Some(agent) => connect::run_connect(agent)?,
-                    None => connect::run_connect_interactive()?,
-                }
+                connect::run_connect(agent.as_deref())?;
+                return Ok(());
+            }
+            Command::Disconnect { agent } => {
+                connect::run_disconnect(agent.as_deref())?;
                 return Ok(());
             }
             Command::Install => return Ok(install::run_install()?),
@@ -28,16 +29,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             Command::Version => {
-                // `CARGO_PKG_VERSION` is compile-time; the binary
-                // prints it so a user can verify a download against its
-                // release tag and checksum.
-                println!("slugaudit-mcp {}", env!("CARGO_PKG_VERSION"));
+                println!("slugaudit {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
             Command::Menu => {
-                // The menu drives install/connect itself; only when the
-                // user picks "run the server now" does it return `true`
-                // and fall through to serve below.
                 if !menu::run_menu()? {
                     return Ok(());
                 }
@@ -50,15 +45,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Diagnostics only ever go to stderr — stdout is the MCP transport and
-    // must stay strictly JSON-RPC. `RUST_LOG` overrides the default level;
-    // unset, tool call spans/events log at `info` without drowning in
-    // per-row/per-poll `debug` noise from dependencies. ANSI color is
-    // disabled unconditionally: the MCP host that spawns this process
-    // pipes stderr for its own logging, not a terminal, and color escape
-    // codes would corrupt any log aggregation/parsing on the other end.
-    // Setting `SLUGAUDIT_LOG_FORMAT=json` switches stderr output to
-    // single-line JSON format for automated log aggregators (e.g. Datadog).
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let is_json = std::env::var("SLUGAUDIT_LOG_FORMAT")
         .map(|v| v.eq_ignore_ascii_case("json"))

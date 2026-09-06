@@ -54,15 +54,15 @@ jobs:
       - name: Build release binary
         # --locked: the release must match the checked-in Cargo.lock, or
         # the build fails instead of silently resolving differently.
-        run: cargo build --release --locked --bin slugaudit-mcp
+        run: cargo build --release --locked --bin slugaudit
 
       - name: Stage artifacts
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp target/release/slugaudit-mcp dist/slugaudit-mcp-x86_64-unknown-linux-gnu
-          chmod +x dist/slugaudit-mcp-x86_64-unknown-linux-gnu
-          (cd dist && sha256sum slugaudit-mcp-x86_64-unknown-linux-gnu > SHA256SUMS)
+          cp target/release/slugaudit dist/slugaudit-x86_64-unknown-linux-gnu
+          chmod +x dist/slugaudit-x86_64-unknown-linux-gnu
+          (cd dist && sha256sum slugaudit-x86_64-unknown-linux-gnu > SHA256SUMS)
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2

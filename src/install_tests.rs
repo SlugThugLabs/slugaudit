@@ -13,7 +13,7 @@ fn install_to(temp_dir: &tempfile::TempDir) -> PathBuf {
     temp_env::with_var("SLUGTHUG_HOME", Some(temp_dir.path().as_os_str()), || {
         run_install().expect("install succeeds");
     });
-    temp_dir.path().join("slugaudit").join("slugaudit-mcp")
+    temp_dir.path().join("slugaudit").join("slugaudit")
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn run_install_copies_the_running_binary_to_a_stable_path() {
 
     assert!(
         target.exists(),
-        "the binary must land at $SLUGTHUG_HOME/slugaudit/slugaudit-mcp"
+        "the binary must land at $SLUGTHUG_HOME/slugaudit/slugaudit"
     );
     let source = running_binary().expect("running binary");
     assert_ne!(target, source, "the install target differs from the source");

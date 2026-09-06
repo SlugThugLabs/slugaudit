@@ -77,6 +77,8 @@ src/
 │                             MCP progress sink plumbing
 ├── cli.rs                    Command enum + parse_args + USAGE string
 ├── connect.rs                register the running binary with a target agent
+├── connect_agents.rs         supported AI agents and editors registry
+├── connect_exec.rs           command execution and JSON config file modification
 ├── install.rs                copy the binary to a stable ~/.slugthug/slugaudit path
 ├── menu.rs                   interactive setup CLI (install/connect/other-client/run server)
 ├── util.rs                   cross-module helpers (lock_or_recover, hex_encode, …)

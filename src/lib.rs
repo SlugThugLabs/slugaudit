@@ -10,6 +10,8 @@
 
 pub mod cli;
 pub mod connect;
+pub mod connect_agents;
+pub mod connect_exec;
 pub mod evidence;
 pub mod graph;
 pub mod ignore_rules;

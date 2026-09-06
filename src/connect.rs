@@ -1,184 +1,149 @@
-//! Registering this binary as the `slugaudit` MCP server in an AI agent
-//! (Bob, Claude Code, Grok, Codex). Each agent is driven through its own CLI
-//! rather than by editing its config files directly, so the agent owns its
-//! own config format and we never corrupt it.
+//! Registering or removing this binary as the `slugaudit` MCP server in an AI agent or editor.
 #![allow(clippy::print_stdout)]
 
-use super::cli::{ConnectAgent, ConnectError};
+use crate::cli::ConnectError;
+use crate::connect_agents::{AgentDef, detected_agents, find_agent};
+use crate::connect_exec::{connect_agent, disconnect_agent};
 use crate::install::{running_binary, slugaudit_dir, slugthug_home};
 use std::io::{BufRead as _, Write as _};
 use std::path::{Path, PathBuf};
 
-/// Register the running binary as the `slugaudit` stdio MCP server in the
-/// given agent. The binary's own path (`std::env::current_exe()`) is what
-/// gets written into the agent's MCP config, so a `cargo install`'d binary
-/// keeps working across upgrades automatically.
-///
-/// If `~/.slugthug/slugaudit/slugaudit-mcp` exists (the user ran `install`), that
-/// stable path is registered instead of wherever the binary happens to sit
-/// right now — so rebuilding from source later doesn't stale the agent's
-/// registration.
-///
-/// Each agent is registered at its user/global scope so SlugAudit is
-/// available in every project rather than only the directory `connect` was
-/// run from. The server itself is per-project (each enabled project has
-/// its own `.planning/slugaudit/project.db` SQLite index), so a single
-/// global registration covers everything.
-pub fn run_connect(agent: ConnectAgent) -> Result<(), ConnectError> {
-    let binary = running_binary().map_err(ConnectError::BinaryPath)?;
-    let binary = prefer_slugthug_binary(&binary);
-    connect_one(agent, &binary)
+pub fn run_connect(agent_name: Option<&str>) -> Result<(), ConnectError> {
+    match agent_name {
+        Some(name) => {
+            let agent =
+                find_agent(name).ok_or_else(|| ConnectError::UnknownAgent(name.to_string()))?;
+            connect_one(agent)
+        }
+        None => run_connect_interactive(),
+    }
 }
 
-/// If the user has run `install` and `~/.slugthug/slugaudit/slugaudit-mcp`
-/// exists, return that path so `connect` registers the stable location
-/// rather than a one-off build artifact. Otherwise returns `current`
-/// unchanged. `pub(crate)` so the interactive setup menu (`src/menu.rs`)
-/// can print the same preferred path in its manual-instructions step.
+pub fn run_disconnect(agent_name: Option<&str>) -> Result<(), ConnectError> {
+    match agent_name {
+        Some(name) => {
+            let agent =
+                find_agent(name).ok_or_else(|| ConnectError::UnknownAgent(name.to_string()))?;
+            disconnect_one(agent)
+        }
+        None => run_disconnect_interactive(),
+    }
+}
+
 pub(crate) fn prefer_slugthug_binary(current: &Path) -> PathBuf {
     if let Some(slugaudit) = slugaudit_dir() {
-        let candidate = slugaudit.join("slugaudit-mcp");
+        let candidate = slugaudit.join("slugaudit");
         if candidate.exists() {
             return candidate;
-        }
-    }
-    if let Some(home) = slugthug_home() {
-        let legacy = home.join("bin").join("slugaudit-mcp");
-        if legacy.exists() {
-            return legacy;
         }
     }
     current.to_path_buf()
 }
 
-fn connect_one(agent: ConnectAgent, binary: &Path) -> Result<(), ConnectError> {
-    let cli = agent.cli_name();
-    if !binary_exists(cli) {
-        return Err(ConnectError::AgentMissing {
-            agent: agent.display_name().to_string(),
-            cli: cli.to_string(),
-        });
-    }
-
-    println!("Connecting SlugAudit to {}...", agent.display_name());
-
-    remove_existing(agent, cli)?;
-    add_server(agent, cli, binary)?;
-
-    println!("Done. Verify with: {} mcp list", cli,);
-    Ok(())
-}
-
-fn remove_existing(agent: ConnectAgent, cli: &str) -> Result<(), ConnectError> {
-    let status = std::process::Command::new(cli)
-        .args(["mcp", "remove", "slugaudit"])
-        .args(scope_remove_args(agent))
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|inner| ConnectError::AgentCommand {
-            cli: cli.to_string(),
-            inner,
-        })?;
-    // Exit 0 = removed, non-zero = was not registered. Either is fine.
-    if !status.success() {
-        tracing::debug!(
-            agent = agent.display_name(),
-            status = %status,
-            "no existing SlugAudit registration to remove"
+fn connect_one(agent: AgentDef) -> Result<(), ConnectError> {
+    let binary = running_binary().map_err(ConnectError::BinaryPath)?;
+    let binary = prefer_slugthug_binary(&binary);
+    let home = slugthug_home().or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+    if agent.is_connected(home.as_deref()) {
+        println!(
+            "SlugAudit is already registered with {}. Updating connection...",
+            agent.display_name
         );
+    } else {
+        println!("Connecting SlugAudit to {}...", agent.display_name);
+    }
+    connect_agent(&agent, &binary, home.as_deref())?;
+    println!("Done.");
+    if let Some(cli) = agent.cli {
+        println!("Verify with: {} mcp list", cli);
     }
     Ok(())
 }
 
-fn add_server(agent: ConnectAgent, cli: &str, binary: &Path) -> Result<(), ConnectError> {
-    let mut cmd = std::process::Command::new(cli);
-    cmd.args(["mcp", "add", "slugaudit"]);
-    cmd.args(scope_add_args(agent));
-    cmd.arg("--");
-    cmd.arg(binary);
-
-    let output = cmd.output().map_err(|inner| ConnectError::AgentCommand {
-        cli: cli.to_string(),
-        inner,
-    })?;
-
-    // Surface the agent's own stdout/stderr so the user sees what happened.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !stdout.is_empty() {
-        println!("{stdout}");
-    }
-    if !stderr.is_empty() {
-        eprintln!("{stderr}");
-    }
-
-    if !output.status.success() {
-        return Err(ConnectError::AddFailed {
-            cli: cli.to_string(),
-            status: output.status.to_string(),
-        });
-    }
+fn disconnect_one(agent: AgentDef) -> Result<(), ConnectError> {
+    let home = slugthug_home().or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+    println!("Disconnecting SlugAudit from {}...", agent.display_name);
+    disconnect_agent(&agent, home.as_deref())?;
+    println!("Done.");
     Ok(())
 }
 
-/// Extra args for the `mcp remove` invocation, per agent.
-fn scope_remove_args(agent: ConnectAgent) -> &'static [&'static str] {
-    match agent {
-        // Bob uses `--scope global` for both add and remove.
-        ConnectAgent::Bob => &["--scope", "global"],
-        // Claude: `mcp remove` requires an explicit scope; `user` matches
-        // where `add` writes by default below.
-        ConnectAgent::Claude => &["-s", "user"],
-        ConnectAgent::Grok => &["--scope", "user"],
-        // Codex has no scoped remove — it just deletes the named server.
-        ConnectAgent::Codex => &[],
-    }
-}
-
-/// Extra args for the `mcp add` invocation, per agent.
-fn scope_add_args(agent: ConnectAgent) -> &'static [&'static str] {
-    match agent {
-        // Bob uses `--scope global` to register across all projects.
-        ConnectAgent::Bob => &["--scope", "global"],
-        // Claude defaults to `local` (project-scoped) but SlugAudit is a
-        // global tool — one registration covers every project — so we pin
-        // `user` explicitly.
-        ConnectAgent::Claude => &["-s", "user"],
-        ConnectAgent::Grok => &["--scope", "user"],
-        // Codex has no scope flag; it always writes ~/.codex/config.toml.
-        ConnectAgent::Codex => &[],
-    }
-}
-
-fn binary_exists(name: &str) -> bool {
-    which::which(name).is_ok()
-}
-
-/// Interactive menu: print the supported agents and read a choice from
-/// stdin. Used when `connect` is run with no AGENT argument.
 pub fn run_connect_interactive() -> Result<(), ConnectError> {
-    println!(
-        "Connect SlugAudit to an AI agent (registers this binary as the `slugaudit` MCP server):\n"
-    );
-    for (i, agent) in ConnectAgent::all().iter().enumerate() {
-        println!("  {i}) {:<14} ({})", agent.display_name(), agent.cli_name());
+    let home = slugthug_home().or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+    let detected = detected_agents(home.as_deref());
+    if detected.is_empty() {
+        println!("No supported AI agents or editors were detected on this machine.");
+        println!("Install an agent (e.g. agy, claude, gemini, cursor) or use manual setup.");
+        return Ok(());
+    }
+    println!("Connect SlugAudit to an AI agent or editor:\n");
+    for (i, agent) in detected.iter().enumerate() {
+        let status = if agent.is_connected(home.as_deref()) {
+            " [Connected ✅]"
+        } else {
+            ""
+        };
+        println!("  {}) {:<24}{}", i + 1, agent.display_name, status);
     }
     println!();
-    print!("Choose an agent [0-{}]: ", ConnectAgent::all().len() - 1);
+    print!("Choose an agent [1-{}]: ", detected.len());
     std::io::stdout().flush()?;
 
     let mut choice = String::new();
     std::io::stdin().lock().read_line(&mut choice)?;
-    let choice = choice.trim().parse::<usize>();
+    let idx: usize = choice
+        .trim()
+        .parse()
+        .map_err(|_| ConnectError::InvalidChoice)?;
+    if idx == 0 || idx > detected.len() {
+        return Err(ConnectError::InvalidChoice);
+    }
+    let agent = detected[idx - 1];
+    if agent.is_connected(home.as_deref()) {
+        print!(
+            "{} is already connected. Re-connect / update path? [y/N]: ",
+            agent.display_name
+        );
+        std::io::stdout().flush()?;
+        let mut confirm = String::new();
+        std::io::stdin().lock().read_line(&mut confirm)?;
+        if !matches!(confirm.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            println!("Skipped.");
+            return Ok(());
+        }
+    }
+    connect_one(agent)
+}
 
-    let agent = choice
-        .ok()
-        .and_then(|i| ConnectAgent::all().get(i).copied())
-        .ok_or(ConnectError::InvalidChoice)?;
+pub fn run_disconnect_interactive() -> Result<(), ConnectError> {
+    let home = slugthug_home().or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+    let connected: Vec<_> = crate::connect_agents::AGENTS
+        .iter()
+        .copied()
+        .filter(|a| a.is_connected(home.as_deref()))
+        .collect();
+    if connected.is_empty() {
+        println!("No active SlugAudit connections found.");
+        return Ok(());
+    }
+    println!("Connected AI agents and editors:\n");
+    for (i, agent) in connected.iter().enumerate() {
+        println!("  {}) {}", i + 1, agent.display_name);
+    }
+    println!();
+    print!("Choose an agent to disconnect [1-{}]: ", connected.len());
+    std::io::stdout().flush()?;
 
-    let binary = running_binary().map_err(ConnectError::BinaryPath)?;
-    connect_one(agent, &prefer_slugthug_binary(&binary))
+    let mut choice = String::new();
+    std::io::stdin().lock().read_line(&mut choice)?;
+    let idx: usize = choice
+        .trim()
+        .parse()
+        .map_err(|_| ConnectError::InvalidChoice)?;
+    if idx == 0 || idx > connected.len() {
+        return Err(ConnectError::InvalidChoice);
+    }
+    disconnect_one(connected[idx - 1])
 }
 
 #[cfg(test)]

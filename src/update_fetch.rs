@@ -8,7 +8,7 @@ use super::UpdateError;
 /// Default repo owner/name and the single published Linux x86_64 asset.
 const OWNER: &str = "SlugThugLabs";
 const REPO: &str = "slugaudit";
-pub(crate) const ASSET: &str = "slugaudit-mcp-x86_64-unknown-linux-gnu";
+pub(crate) const ASSET: &str = "slugaudit-x86_64-unknown-linux-gnu";
 
 const GITHUB_API: &str = "https://api.github.com";
 const GITHUB_DL: &str = "https://github.com";
