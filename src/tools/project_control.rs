@@ -20,6 +20,9 @@ pub struct ProjectControlRequest {
     pub path: Option<String>,
     /// Action to perform: `"on"` enables the project, `"off"` disables it.
     pub action: ProjectControlAction,
+    /// Optional audit profile to configure: `"audit"`, `"lean"`, or `"adaptive"`.
+    #[schemars(default)]
+    pub profile: Option<String>,
 }
 
 /// The action to take — on enables, off disables.
@@ -78,16 +81,31 @@ pub fn project_control(
     let root = ProjectRoot::resolve(&path).map_err(|e| err(format!("resolve: {e}")))?;
 
     match inner.action {
-        ProjectControlAction::On => enable(&root, sink),
+        ProjectControlAction::On => enable(&root, inner.profile.as_deref(), sink),
         ProjectControlAction::Off => disable(&root, manager),
     }
 }
 
 fn enable(
     root: &ProjectRoot,
+    profile_override: Option<&str>,
     sink: &dyn crate::progress::ProgressSink,
 ) -> Result<Json<ProjectControlResponse>, ErrorData> {
     project::enable(root).map_err(|e| err(format!("enable: {e}")))?;
+    if let Some(prof_str) = profile_override
+        && let Some(profile) = crate::model::AuditProfile::parse_str(prof_str)
+    {
+        let conf_path = root
+            .as_path()
+            .join(".planning")
+            .join("slugaudit")
+            .join("config.json");
+        let cfg = serde_json::json!({ "profile": profile });
+        let _ = std::fs::write(
+            &conf_path,
+            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+        );
+    }
     let db_path = project::database_path(root);
     let mut connection = match store::open_read_write(&db_path) {
         Ok(conn) => conn,

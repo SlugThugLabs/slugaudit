@@ -69,7 +69,16 @@ pub fn query(
     sink: &dyn crate::progress::ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<QueryResponse>, ErrorData> {
-    query_with_limits(request, process_limits(), sink, manager)
+    let limits = resolve_query_limits(&request.0.path);
+    query_with_limits(request, &limits, sink, manager)
+}
+
+fn resolve_query_limits(path: &str) -> ResourceLimits {
+    match crate::project::find_project_root(std::path::Path::new(path)) {
+        Ok(root) => crate::project::ProjectConfig::load_or_default(root.as_path())
+            .apply_to_limits(*process_limits()),
+        Err(_) => *process_limits(),
+    }
 }
 
 /// Test-only seam: production code always goes through [`query`] with

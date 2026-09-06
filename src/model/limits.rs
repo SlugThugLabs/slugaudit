@@ -109,7 +109,14 @@ impl ResourceLimits {
     /// `ResourceLimits::from_env()`.
     #[must_use]
     pub fn from_env() -> Self {
-        let mut limits = Self::default();
+        let mut limits = match std::env::var("SLUGAUDIT_PROFILE")
+            .ok()
+            .as_deref()
+            .and_then(super::profile::AuditProfile::parse_str)
+        {
+            Some(profile) => super::profile::limits_for_profile(profile),
+            None => Self::default(),
+        };
         if let Some(val) = parse_u64("SLUGAUDIT_MAX_FILE_BYTES") {
             limits.max_file_bytes = val;
         }
@@ -166,20 +173,7 @@ fn parse_duration_secs(name: &str) -> Option<Duration> {
 
 impl Default for ResourceLimits {
     fn default() -> Self {
-        Self {
-            max_file_bytes: 64 * 1024 * 1024,
-            max_total_import_bytes: 4 * 1024 * 1024 * 1024,
-            max_query_response_bytes: 64 * 1024 * 1024,
-            max_query_sql_bytes: 100_000,
-            max_query_vm_steps: 10_000_000,
-            max_query_wall_clock: Duration::from_secs(30),
-            max_query_value_bytes: 64 * 1024 * 1024,
-            max_structure_query_bytes: 64_000,
-            max_structure_matches: 5_000,
-            max_structure_execution_time: Duration::from_secs(30),
-            max_sync_wall_clock: Duration::from_secs(600),
-            evidence: EvidenceLimits::default(),
-        }
+        super::profile::limits_for_profile(super::profile::AuditProfile::Adaptive)
     }
 }
 

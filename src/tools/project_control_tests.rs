@@ -18,6 +18,7 @@ fn request(path: &str, action: ProjectControlAction) -> Parameters<ProjectContro
     Parameters(ProjectControlRequest {
         path: Some(path.to_owned()),
         action,
+        profile: None,
     })
 }
 

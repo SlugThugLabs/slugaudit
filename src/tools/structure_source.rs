@@ -1,6 +1,6 @@
 use rmcp::ErrorData;
 
-pub(super) const MAX_TEXT_BYTES: usize = 2_000;
+pub(super) const MAX_TEXT_BYTES: usize = 1_000_000;
 pub(super) const MAX_SNIPPET_BYTES: usize = 120;
 
 pub(super) fn fetch_source(

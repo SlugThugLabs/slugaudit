@@ -87,6 +87,8 @@ pub struct HealthResponse {
     pub tool_call_error_count: u64,
     /// Sum of every tool call's work duration, in milliseconds.
     pub tool_call_total_ms: u64,
+    /// Host physical and available memory info.
+    pub system_memory: crate::model::SystemMemoryInfo,
     /// How many consecutive full publishes (untrusted-watcher or
     /// Unavailable-path verifications) have run since the last successful
     /// incremental reconcile. A value that persists at 1+ across calls
@@ -160,6 +162,7 @@ pub fn health(
         tool_call_count: counters.call_count,
         tool_call_error_count: counters.error_count,
         tool_call_total_ms: counters.total_ms,
+        system_memory: crate::model::detect_system_memory(),
         consecutive_full_publishes: manager.consecutive_full_publishes(),
     }))
 }

@@ -50,11 +50,9 @@ fn a_file_without_indexed_content_is_a_typed_error() {
 /// never panicking on the boundary slice.
 #[test]
 fn long_match_text_is_truncated_and_flagged() {
-    let mut content = String::new();
+    let mut content = String::with_capacity(1_100_000);
     content.push_str("let long = \"");
-    for _ in 0..500 {
-        content.push_str("abcdefghij");
-    }
+    content.push_str(&"abcdefghij".repeat(105_000));
     content.push_str("\";\n");
     let project = activated_project("lib.rs", content.as_bytes());
 
@@ -62,7 +60,7 @@ fn long_match_text_is_truncated_and_flagged() {
     let first = &response.matches[0];
     assert!(
         first.text_truncated,
-        "a >2000-byte match must be flagged as truncated"
+        "a >1MB match must be flagged as truncated"
     );
     assert!(
         first.text.len() <= super::MAX_TEXT_BYTES,

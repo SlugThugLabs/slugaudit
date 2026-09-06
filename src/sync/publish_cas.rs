@@ -51,13 +51,9 @@ pub fn publish(
     parser_pack_version: &str,
     sink: &dyn ProgressSink,
 ) -> Result<PublishReport, PublishError> {
-    publish_with_limits(
-        connection,
-        root,
-        parser_pack_version,
-        sink,
-        process_limits(),
-    )
+    let limits =
+        crate::project::ProjectConfig::load_or_default(root).apply_to_limits(*process_limits());
+    publish_with_limits(connection, root, parser_pack_version, sink, &limits)
 }
 
 /// [`publish`] under an explicit [`ResourceLimits`]. The wall-clock

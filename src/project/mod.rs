@@ -5,11 +5,13 @@
 //! the AI via the `project_control` MCP tool (`src/tools/project_control.rs`), not via any CLI command.
 
 mod activation;
+mod config;
 mod database_path;
 mod root;
 
 pub use activation::{
     ActivationError, activation_dir, disable, enable, find_project_root, resolve_project,
 };
+pub use config::ProjectConfig;
 pub use database_path::database_path;
 pub use root::{ProjectRoot, RootError};
