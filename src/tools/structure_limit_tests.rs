@@ -15,8 +15,11 @@ fn ask(
     structure(
         &Parameters(StructureRequest {
             path: project.path().to_string_lossy().into_owned(),
-            file: file.to_owned(),
+            file: Some(file.to_owned()),
+            language: None,
+            pattern: None,
             query: query.to_owned(),
+            full_text: None,
         }),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),

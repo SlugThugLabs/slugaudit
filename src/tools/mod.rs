@@ -21,6 +21,7 @@ mod query;
 mod query_value;
 mod report;
 mod structure;
+mod structure_source;
 
 #[cfg(test)]
 pub(crate) mod test_support;

@@ -88,6 +88,7 @@ src/
 │   ├── query.rs              arbitrary read-only SQL with budgets
 │   ├── query_value.rs        SQLite row → JSON conversion + size cap
 │   ├── structure.rs          tree-sitter pattern match
+│   ├── structure_source.rs   source loading + multi-file and snippet helpers
 │   ├── finding.rs            the single write tool
 │   ├── finding_read.rs       session-gated finding query
 │   ├── project_control.rs    enable/disable

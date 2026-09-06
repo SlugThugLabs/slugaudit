@@ -6,7 +6,11 @@ fn activated_project(relative: &str, content: &[u8]) -> tempfile::TempDir {
     let project = tempfile::tempdir().expect("project dir");
     fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
         .expect("activate project");
-    fs::write(project.path().join(relative), content).expect("write fixture file");
+    let target = project.path().join(relative);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).expect("create parent");
+    }
+    fs::write(target, content).expect("write fixture file");
     project
 }
 
@@ -18,8 +22,11 @@ fn ask(
     structure(
         &Parameters(StructureRequest {
             path: project.path().to_string_lossy().into_owned(),
-            file: file.to_owned(),
+            file: Some(file.to_owned()),
+            language: None,
+            pattern: None,
             query: query.to_owned(),
+            full_text: None,
         }),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
@@ -153,8 +160,11 @@ fn matches_are_capped_and_truncation_is_reported() {
     let response = structure_with_limits(
         &Parameters(StructureRequest {
             path: project.path().to_string_lossy().into_owned(),
-            file: "lib.rs".to_owned(),
+            file: Some("lib.rs".to_owned()),
+            language: None,
+            pattern: None,
             query: "(function_item name: (identifier) @name)".to_owned(),
+            full_text: None,
         }),
         &limits,
         &crate::progress::NoopProgressSink,
@@ -185,8 +195,11 @@ fn a_pathological_query_is_aborted_by_the_execution_time_budget() {
     let result = structure_with_limits(
         &Parameters(StructureRequest {
             path: project.path().to_string_lossy().into_owned(),
-            file: "lib.rs".to_owned(),
+            file: Some("lib.rs".to_owned()),
+            language: None,
+            pattern: None,
             query: "(function_item name: (identifier) @name)".to_owned(),
+            full_text: None,
         }),
         &limits,
         &crate::progress::NoopProgressSink,
@@ -199,4 +212,63 @@ fn a_pathological_query_is_aborted_by_the_execution_time_budget() {
         "unexpected message: {}",
         error.message
     );
+}
+
+#[test]
+fn matches_across_multiple_files_with_language_and_lean_snippets() {
+    let project = activated_project("src/a.rs", b"pub fn alpha() {}\n");
+    fs::write(project.path().join("src/b.rs"), b"pub fn beta() {}\n").expect("write b.rs");
+    fs::write(project.path().join("src/c.py"), b"def gamma(): pass\n").expect("write c.py");
+
+    let response = structure(
+        &Parameters(StructureRequest {
+            path: project.path().to_string_lossy().into_owned(),
+            file: None,
+            language: Some("rust".to_owned()),
+            pattern: None,
+            query: "(function_item name: (identifier) @name)".to_owned(),
+            full_text: None,
+        }),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .map(|Json(resp)| resp)
+    .expect("multi-file query succeeds");
+
+    assert_eq!(response.language, "rust");
+    assert_eq!(response.matches.len(), 2);
+    assert_eq!(response.matches[0].file, "src/a.rs");
+    assert_eq!(response.matches[0].text, "alpha");
+    assert_eq!(response.matches[1].file, "src/b.rs");
+    assert_eq!(response.matches[1].text, "beta");
+}
+
+#[test]
+fn pattern_filters_files_in_multi_file_query() {
+    let project = activated_project("src/auth/jwt.rs", b"pub fn verify() {}\n");
+    fs::create_dir_all(project.path().join("src/db")).expect("mkdir db");
+    fs::write(
+        project.path().join("src/db/pool.rs"),
+        b"pub fn connect() {}\n",
+    )
+    .expect("write pool.rs");
+
+    let response = structure(
+        &Parameters(StructureRequest {
+            path: project.path().to_string_lossy().into_owned(),
+            file: None,
+            language: Some("rust".to_owned()),
+            pattern: Some("*auth*".to_owned()),
+            query: "(function_item name: (identifier) @name)".to_owned(),
+            full_text: None,
+        }),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .map(|Json(resp)| resp)
+    .expect("filtered query succeeds");
+
+    assert_eq!(response.matches.len(), 1);
+    assert_eq!(response.matches[0].file, "src/auth/jwt.rs");
+    assert_eq!(response.matches[0].text, "verify");
 }

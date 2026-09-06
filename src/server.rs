@@ -157,10 +157,10 @@ impl SlugAuditServer {
     }
 
     #[tool(
-        description = "Inspect and extract code AST structures from a file using Tree-sitter. \
-         Returns matched AST nodes with their actual source `text`, `start_line`, `end_line`, and byte spans \
-         directly from the indexed database — use this to inspect function bodies, type definitions, and blocks \
-         without reading disk files. The `query` must name at least one capture with `@name`. \
+        description = "Inspect and extract code AST structures from a file or across the project using Tree-sitter. \
+         Specify `file` to search a single file, or omit `file` and specify `language` (with optional `pattern`) \
+         to search across matching project files. Returns matched AST nodes with `file`, `start_line`, `end_line`, \
+         and `text` snippet. The `query` must name at least one capture with `@name`. \
          Examples: Rust `(function_item name: (identifier) @name body: (block) @body)`, \
          Python `(function_definition name: (identifier) @name body: (block) @body)`, \
          TypeScript/JS `(function_declaration name: (identifier) @name)`, \
