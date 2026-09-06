@@ -44,7 +44,13 @@ fn total_payload_bytes(items: &[EvidenceItem]) -> usize {
 /// only, so it let the whole oversized set through.
 #[test]
 fn reproduces_the_5_326_990_byte_cumulative_overflow() {
-    let limits = ResourceLimits::default();
+    let limits = ResourceLimits {
+        evidence: EvidenceLimits {
+            max_payload_bytes_per_file: 4 * 1024 * 1024,
+            ..EvidenceLimits::default()
+        },
+        ..ResourceLimits::default()
+    };
     let mut items: Vec<EvidenceItem> = (0..81)
         .map(|i| item_with_content_bytes(i, 65_000))
         .collect();

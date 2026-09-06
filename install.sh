@@ -67,6 +67,10 @@ elif [ "${OS}" = "Linux" ] && [ "${ARCH}" = "x86_64" ]; then
             echo "Error: SHA256 checksum verification failed." >&2
             exit 1
         }
+    else
+        rm -rf "${TMP_DIR}"
+        echo "Error: sha256sum or shasum is required to verify the downloaded binary." >&2
+        exit 1
     fi
 
     install -m 0755 "${TMP_FILE}" "${TARGET_PATH}"

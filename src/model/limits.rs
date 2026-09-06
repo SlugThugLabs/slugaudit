@@ -13,9 +13,9 @@ pub struct EvidenceLimits {
 impl Default for EvidenceLimits {
     fn default() -> Self {
         Self {
-            max_items_per_file: 10_000,
-            max_payload_bytes_per_item: 64 * 1024,
-            max_payload_bytes_per_file: 4 * 1024 * 1024,
+            max_items_per_file: 100_000,
+            max_payload_bytes_per_item: 256 * 1024,
+            max_payload_bytes_per_file: 64 * 1024 * 1024,
         }
     }
 }
@@ -27,7 +27,7 @@ impl Default for EvidenceLimits {
 /// (see [`ResourceLimits::from_env`]). When no override is present, the
 /// compile-time default is used. The pattern is `SLUGAUDIT_<FIELD>` where
 /// `<FIELD>` is the snake_case name of the field — e.g.
-/// `SLUGAUDIT_MAX_FILE_BYTES=16777216` doubles the per-file size cap.
+/// `SLUGAUDIT_MAX_FILE_BYTES=134217728` doubles the per-file size cap.
 /// Duration fields accept a number of seconds (whole seconds only).
 /// Only explicitly-set variables override; defaults are never altered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,17 +167,17 @@ fn parse_duration_secs(name: &str) -> Option<Duration> {
 impl Default for ResourceLimits {
     fn default() -> Self {
         Self {
-            max_file_bytes: 8 * 1024 * 1024,
-            max_total_import_bytes: 256 * 1024 * 1024,
-            max_query_response_bytes: 2 * 1024 * 1024,
-            max_query_sql_bytes: 10_000,
-            max_query_vm_steps: 2_000_000,
-            max_query_wall_clock: Duration::from_secs(5),
-            max_query_value_bytes: 1024 * 1024,
-            max_structure_query_bytes: 8_000,
-            max_structure_matches: 500,
-            max_structure_execution_time: Duration::from_secs(5),
-            max_sync_wall_clock: Duration::from_secs(60),
+            max_file_bytes: 64 * 1024 * 1024,
+            max_total_import_bytes: 4 * 1024 * 1024 * 1024,
+            max_query_response_bytes: 64 * 1024 * 1024,
+            max_query_sql_bytes: 100_000,
+            max_query_vm_steps: 10_000_000,
+            max_query_wall_clock: Duration::from_secs(30),
+            max_query_value_bytes: 64 * 1024 * 1024,
+            max_structure_query_bytes: 64_000,
+            max_structure_matches: 5_000,
+            max_structure_execution_time: Duration::from_secs(30),
+            max_sync_wall_clock: Duration::from_secs(600),
             evidence: EvidenceLimits::default(),
         }
     }

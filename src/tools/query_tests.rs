@@ -414,3 +414,21 @@ fn a_pathological_query_is_aborted_by_the_wall_clock_budget() {
         error.message
     );
 }
+
+#[test]
+fn results_exceeding_response_bytes_are_truncated() {
+    let project = activated_project(&[]);
+    let limits = ResourceLimits {
+        max_query_response_bytes: 50,
+        ..ResourceLimits::default()
+    };
+    let response = ask_with_limits(
+        &project,
+        "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 50) SELECT printf('long_string_value_%d', x) AS s FROM cnt",
+        &limits,
+    )
+    .expect("query succeeds");
+    assert!(response.truncated);
+    assert!(!response.rows.is_empty());
+    assert!(response.rows.len() < 50);
+}

@@ -196,12 +196,40 @@ fn execute_and_collect(
         .query_map([], move |row| row_to_json(row, &column_names, value_cap))
         .map_err(|error| describe_error(&error, abort_reason))?;
     let mut rows = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut size_truncated = false;
     for row in mapped {
-        rows.push(row.map_err(|error| describe_error(&error, abort_reason))?);
+        let value = row.map_err(|error| describe_error(&error, abort_reason))?;
+        let row_bytes = json_value_len(&value);
+        if !rows.is_empty()
+            && total_bytes.saturating_add(row_bytes) > limits.max_query_response_bytes
+        {
+            size_truncated = true;
+            break;
+        }
+        total_bytes = total_bytes.saturating_add(row_bytes);
+        rows.push(value);
     }
-    let truncated = rows.len() > MAX_ROWS;
+    let truncated = size_truncated || rows.len() > MAX_ROWS;
     rows.truncate(MAX_ROWS);
     Ok((rows, truncated))
+}
+
+fn json_value_len(value: &serde_json::Value) -> usize {
+    use std::io::Write;
+    struct Counter(usize);
+    impl Write for Counter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(buf.len());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    let _ = serde_json::to_writer(&mut counter, value);
+    counter.0
 }
 
 /// Converts an aborted-query error into a message naming which budget was
