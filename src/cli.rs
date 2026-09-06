@@ -130,7 +130,9 @@ pub enum ConnectError {
     RemoveFailed { cli: String, status: String },
     #[error("`{cli} mcp add` exited with {status} — see the output above")]
     AddFailed { cli: String, status: String },
-    #[error("cannot modify {path}: configuration file exists but contains invalid JSON: {source}")]
+    #[error(
+        "cannot modify {path}: configuration file exists but contains invalid JSON: {source} (fix syntax/comments or remove the file to reset, then retry)"
+    )]
     InvalidConfig {
         path: std::path::PathBuf,
         #[source]

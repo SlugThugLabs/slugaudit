@@ -6,6 +6,7 @@ use crate::connect_agents::{AgentDef, Dialect};
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub fn json_contains_slugaudit(path: &Path) -> bool {
     has_slugaudit(path, &["mcpServers", "mcp"])
@@ -69,9 +70,12 @@ pub fn connect_agent(
     }
 }
 
+static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 fn write_atomic(path: &Path, content: &[u8]) -> Result<(), ConnectError> {
     let parent = path.parent().ok_or(ConnectError::HomeUnavailable)?;
-    let temp = parent.join(format!(".slugaudit-tmp-{}-{:p}", std::process::id(), path));
+    let count = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp = parent.join(format!(".slugaudit-tmp-{}-{}", std::process::id(), count));
     fs::write(&temp, content)?;
     if let Err(err) = fs::rename(&temp, path) {
         let _ = fs::remove_file(&temp);

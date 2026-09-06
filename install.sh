@@ -35,18 +35,42 @@ if command -v cargo >/dev/null 2>&1 && [ -f "Cargo.toml" ] && grep -q "slugaudit
     install -m 0755 target/release/slugaudit "${TARGET_PATH}"
 elif [ "${OS}" = "Linux" ] && [ "${ARCH}" = "x86_64" ]; then
     echo "==> Downloading latest release for Linux x86_64..."
-    DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/slugaudit-x86_64-unknown-linux-gnu"
-    TMP_FILE="$(mktemp)"
+    ASSET_NAME="slugaudit-x86_64-unknown-linux-gnu"
+    DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/${ASSET_NAME}"
+    CHECKSUM_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/SHA256SUMS"
+    TMP_DIR="$(mktemp -d)"
+    TMP_FILE="${TMP_DIR}/${ASSET_NAME}"
+    TMP_SUMS="${TMP_DIR}/SHA256SUMS"
+
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL "${DOWNLOAD_URL}" -o "${TMP_FILE}"
+        curl -fsSL "${CHECKSUM_URL}" -o "${TMP_SUMS}"
     elif command -v wget >/dev/null 2>&1; then
         wget -qO "${TMP_FILE}" "${DOWNLOAD_URL}"
+        wget -qO "${TMP_SUMS}" "${CHECKSUM_URL}"
     else
+        rm -rf "${TMP_DIR}"
         echo "Error: curl or wget is required to download SlugAudit." >&2
         exit 1
     fi
+
+    echo "==> Verifying SHA256 checksum..."
+    if command -v sha256sum >/dev/null 2>&1; then
+        (cd "${TMP_DIR}" && sha256sum --check --ignore-missing SHA256SUMS >/dev/null 2>&1) || {
+            rm -rf "${TMP_DIR}"
+            echo "Error: SHA256 checksum verification failed." >&2
+            exit 1
+        }
+    elif command -v shasum >/dev/null 2>&1; then
+        (cd "${TMP_DIR}" && shasum -a 256 --check --ignore-missing SHA256SUMS >/dev/null 2>&1) || {
+            rm -rf "${TMP_DIR}"
+            echo "Error: SHA256 checksum verification failed." >&2
+            exit 1
+        }
+    fi
+
     install -m 0755 "${TMP_FILE}" "${TARGET_PATH}"
-    rm -f "${TMP_FILE}"
+    rm -rf "${TMP_DIR}"
 elif command -v cargo >/dev/null 2>&1; then
     echo "==> Installing via cargo..."
     cargo install --git "https://github.com/${GITHUB_REPO}.git" --bin slugaudit
