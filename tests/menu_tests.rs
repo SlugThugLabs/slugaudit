@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Smoke tests for the `menu` command.
 
 use std::io::Read as _;

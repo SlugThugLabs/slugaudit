@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! End-to-end test for the `connect` subcommand.
 //!
 //! Unlike the unit tests in `cli_tests.rs` (which only exercise argument

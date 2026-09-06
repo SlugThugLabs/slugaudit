@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Search benchmarks: representative `query`-tool workloads run against a
 //! fully synced project database. Search is a bounded-scan over the
 //! `files.content` / `evidence.payload` columns (SQLite `LIKE`) — there is

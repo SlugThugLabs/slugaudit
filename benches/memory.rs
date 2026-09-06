@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Peak-memory benchmark (Task 9.2 last unmeasured row).
 //!
 //! "Memory, 200-file fixture" was an unmeasured budget because no bench

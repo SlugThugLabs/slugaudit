@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Startup latency benchmark (Task 9.2 last unmeasured row).
 //!
 //! "Ready for first tool call" means a process start followed by a full

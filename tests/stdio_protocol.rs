@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Proves the compiled server speaks real MCP over real stdio: every prior
 //! test in this repo calls Rust functions directly and never touches the
 //! actual protocol. This spawns the real binary as a subprocess.

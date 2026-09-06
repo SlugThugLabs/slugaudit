@@ -2,7 +2,22 @@
 
 use crate::model::{AuditProfile, ResourceLimits, limits_for_profile};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("failed to read config file at '{path}': {source}")]
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to parse config JSON at '{path}': {source}")]
+    Parse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProjectConfig {
@@ -15,18 +30,35 @@ pub struct ProjectConfig {
 }
 
 impl ProjectConfig {
-    #[must_use]
-    pub fn load_or_default(project_root: &Path) -> Self {
+    pub fn load(project_root: &Path) -> Result<Option<Self>, ConfigError> {
         let config_path = project_root
             .join(".planning")
             .join("slugaudit")
             .join("config.json");
-        if let Ok(content) = std::fs::read_to_string(&config_path)
-            && let Ok(cfg) = serde_json::from_str::<Self>(&content)
-        {
-            return cfg;
+        if !config_path.exists() {
+            return Ok(None);
         }
-        Self::default()
+        let content = std::fs::read_to_string(&config_path).map_err(|source| ConfigError::Io {
+            path: config_path.clone(),
+            source,
+        })?;
+        let cfg = serde_json::from_str::<Self>(&content).map_err(|source| ConfigError::Parse {
+            path: config_path,
+            source,
+        })?;
+        Ok(Some(cfg))
+    }
+
+    #[must_use]
+    pub fn load_or_default(project_root: &Path) -> Self {
+        match Self::load(project_root) {
+            Ok(Some(cfg)) => cfg,
+            Ok(None) => Self::default(),
+            Err(err) => {
+                tracing::warn!("ignoring malformed project config: {err}");
+                Self::default()
+            }
+        }
     }
 
     #[must_use]
@@ -56,6 +88,9 @@ mod tests {
         let json = r#"{"profile": "audit", "max_file_bytes": 536870912}"#;
         std::fs::write(conf_dir.join("config.json"), json).expect("write");
 
+        let loaded = ProjectConfig::load(dir.path()).expect("load should succeed");
+        assert!(loaded.is_some());
+
         let cfg = ProjectConfig::load_or_default(dir.path());
         assert_eq!(cfg.profile, Some(AuditProfile::Audit));
         assert_eq!(cfg.max_file_bytes, Some(536_870_912));
@@ -69,13 +104,26 @@ mod tests {
     #[test]
     fn loads_default_when_missing_or_invalid() {
         let dir = tempfile::tempdir().expect("tempdir");
+        assert!(
+            ProjectConfig::load(dir.path())
+                .expect("load missing")
+                .is_none()
+        );
         let cfg = ProjectConfig::load_or_default(dir.path());
         assert!(cfg.profile.is_none());
         assert!(cfg.max_file_bytes.is_none());
 
         let conf_dir = dir.path().join(".planning").join("slugaudit");
         std::fs::create_dir_all(&conf_dir).expect("create dir");
-        std::fs::write(conf_dir.join("config.json"), "invalid json").expect("write");
+        let conf_file = conf_dir.join("config.json");
+        std::fs::write(&conf_file, "invalid json").expect("write");
+
+        let load_err = ProjectConfig::load(dir.path()).expect_err("should return Parse error");
+        match load_err {
+            ConfigError::Parse { path, .. } => assert_eq!(path, conf_file),
+            ConfigError::Io { .. } => panic!("expected Parse error, got Io"),
+        }
+
         let cfg_invalid = ProjectConfig::load_or_default(dir.path());
         assert!(cfg_invalid.profile.is_none());
 

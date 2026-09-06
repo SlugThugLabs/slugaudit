@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Discovery benchmarks: the ignore-aware filesystem walk with binary
 //! sniffing that every sync begins with, and the walk + per-file BLAKE3
 //! hash pipeline (`discover` then `hash_file` for every indexed file) that

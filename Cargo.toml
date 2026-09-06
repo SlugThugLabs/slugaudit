@@ -74,6 +74,7 @@ temp-env = "0.3.6"
 tempfile = "3"
 
 [lints.rust]
+unsafe_code = "forbid"
 unreachable_pub = "deny"
 trivial_casts = "deny"
 trivial_numeric_casts = "deny"

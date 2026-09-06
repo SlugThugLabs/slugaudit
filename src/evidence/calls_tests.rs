@@ -10,7 +10,7 @@ fn extracts_direct_qualified_and_macro_calls() {
 
     let names: Vec<&str> = calls
         .iter()
-        .map(|item| item.payload["callee_name"].as_str().unwrap())
+        .map(|item| item.payload["callee_name"].as_str().expect("callee_name as string"))
         .collect();
     assert!(names.contains(&"helper"));
     assert!(names.contains(&"start"));
@@ -19,14 +19,14 @@ fn extracts_direct_qualified_and_macro_calls() {
     let run_call = calls
         .iter()
         .find(|item| item.payload["callee_name"] == "helper")
-        .unwrap();
+        .expect("expected run_call helper");
     assert_eq!(run_call.payload["caller"], "run");
     assert_eq!(run_call.payload["resolution"], "unresolved-syntactic");
 
     let macro_call = calls
         .iter()
         .find(|item| item.payload["callee_name"] == "println")
-        .unwrap();
+        .expect("expected macro_call println");
     assert_eq!(macro_call.payload["resolution"], "macro");
 }
 

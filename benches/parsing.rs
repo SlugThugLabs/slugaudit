@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Parsing benchmarks: cold parser load (the first grammar load in this
 //! process, including the language pack's on-demand grammar work) and warm
 //! per-file parse + evidence extraction through SlugAudit's normalization

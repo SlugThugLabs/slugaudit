@@ -221,7 +221,14 @@ fn a_stale_project_root_is_discarded_and_rebuilt_on_the_next_sync() {
     // project being accessed from a new location; here we just corrupt the
     // metadata row to say it was built somewhere else.)
     let database = project.path().join(".planning/slugaudit/project.db");
-    let stale_root = format!("{}-moved", project.path().canonicalize().unwrap().display());
+    let stale_root = format!(
+        "{}-moved",
+        project
+            .path()
+            .canonicalize()
+            .expect("canonicalize project tempdir")
+            .display()
+    );
     {
         let conn = crate::store::open_read_write(&database).expect("open db");
         conn.execute(

@@ -119,7 +119,10 @@ fn read_choice() -> Result<usize, Box<dyn std::error::Error>> {
     if bytes_read == 0 {
         return Ok(6);
     }
-    Ok(line.trim().parse().unwrap_or(0))
+    match line.trim().parse::<usize>() {
+        Ok(choice) => Ok(choice),
+        Err(_) => Ok(0),
+    }
 }
 
 fn install_step() {

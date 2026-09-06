@@ -27,7 +27,7 @@ fn verify_checksum_accepts_a_matching_file() {
         String::from_utf8_lossy(&output.stdout)
             .split_whitespace()
             .next()
-            .unwrap()
+            .expect("sha256sum stdout format has digest as first token")
             .to_string()
     };
     let sums_file = dir.path().join("SHA256SUMS");
@@ -65,7 +65,7 @@ fn verify_checksum_accepts_a_unique_temporary_file_path() {
         String::from_utf8_lossy(&output.stdout)
             .split_whitespace()
             .next()
-            .unwrap()
+            .expect("sha256sum stdout format has digest as first token")
             .to_string()
     };
     let sums_file = dir.path().join("SHA256SUMS");
