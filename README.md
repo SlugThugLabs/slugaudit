@@ -154,6 +154,18 @@ Your agent will call `report`, `query`, and `structure` in the background—answ
 | **`project_control`** | Project enable/disable and cache management. | `project_control(action: "on", path: ".")` |
 | **`health`** | Real-time watcher status, sync latency (`last_sync_duration_ms`), and counters. | Operational snapshot without side effects. |
 
+### 🎯 Context Optimization: Lean Results vs. Full Output
+
+SlugAudit follows a **"Results First, Full Code On-Demand"** model to prevent burning the agent's context window while ensuring no data is ever hidden from an audit:
+
+* **AST Pattern Search (`structure`)**:
+  * **Multi-File Search**: Omit `file` to search across all files of a given language (optionally filtered by `pattern`, e.g. `"src/**/*.rs"`). Defaults to **lean 1-line preview snippets** (`full_text: false`, max 120 bytes) with exact `start_line`/`end_line` and column coordinates.
+  * **Single-File Search**: Specify `file` to inspect a targeted file. Defaults to **full AST code blocks** (`full_text: true`, up to 2,000 bytes).
+  * **Explicit Control**: The agent can pass `"full_text": false` for compact coordinate-only sweeps across any scope, or `"full_text": true` to pull complete code blocks.
+* **SQL Queries (`query`)**:
+  * **Selective Projection**: The agent queries only what it needs (e.g. `SELECT path, line_number FROM evidence WHERE ...`) to stay lean, or `SELECT content` when full source text is required.
+  * **Paging with `next_offset`**: Results are safely capped at 500 rows and 64 MiB per page. When `truncated: true`, `next_offset` is provided so the agent can page through the entire dataset without context overflow.
+
 ---
 
 ## ⚡ Performance Benchmarks

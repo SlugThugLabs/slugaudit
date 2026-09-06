@@ -86,6 +86,12 @@ The intended workflow is simple: SlugAudit narrows the search and returns
 compact facts; the AI reads only the relevant source and spends its context
 on reasoning instead of repository housekeeping.
 
+### Output Control & Context Optimization
+
+To prevent flooding agent context windows while guaranteeing full auditability:
+- **`structure`**: Supports multi-file search across languages. By default, multi-file queries return **lean 1-line preview snippets** (`full_text: false`, max 120 bytes) with exact line spans. Agents can pass `"full_text": true` to fetch full code blocks (up to 2,000 bytes) when analyzing specific matches.
+- **`query`**: Results are capped per page to 500 rows and 64 MiB. Responses include `next_offset` when `truncated: true`, allowing agents to reliably page through full datasets without context bloat.
+
 See the agent-specific guides for what to do next.
 
 ## Agent-specific guides

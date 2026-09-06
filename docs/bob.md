@@ -32,9 +32,9 @@ project setup yourself:
 
 | Tool | What it does |
 |------|-------------|
-| `query` | Arbitrary read-only SQL against the project's SQLite index. The real workhorse — joins, CTEs, the lot. Row-capped for safety. |
+| `query` | Arbitrary read-only SQL against the project's SQLite index. The real workhorse — joins, CTEs, the lot. Row- and byte-capped with `next_offset` paging. |
 | `report` | Automatic snapshot of the current revision: file counts, languages, what changed since last import. No score, no risk leads. |
-| `structure` | Tree-sitter structural pattern matching across 300+ languages. |
+| `structure` | Tree-sitter AST queries across 300+ languages. Single- or multi-file search with lean preview snippets (`full_text: false`) or full blocks (`full_text: true`). |
 | `finding` | The one write tool — records a conclusion the AI has personally reviewed, bound to the file's hash. |
 | `finding_read` | Session-gated finding query — returns only the current agent session's findings (never another session's conclusions). |
 | `project_control` | Enable/disable SlugAudit for a project (`action = "on"` / `"off"`). |
