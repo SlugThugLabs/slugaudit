@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/SlugThugLabs/slugaudit?color=7c3aed&label=Release)](https://github.com/SlugThugLabs/slugaudit/releases)
 [![Rust 2024](https://img.shields.io/badge/Rust-2024_Edition-orange?logo=rust)](Cargo.toml)
 [![Safety](https://img.shields.io/badge/Safety-%23!%5Bforbid(unsafe_code)%5D-emerald)](src/lib.rs)
-[![Tests](https://img.shields.io/badge/Tests-497_passed-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-569_passed-brightgreen)](tests/)
 [![Coverage](https://img.shields.io/badge/Coverage-83.37%25-blue)](src/bin/check_coverage.rs)
 [![MCP](https://img.shields.io/badge/Protocol-Model_Context_Protocol_(MCP)-purple)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/License-Free_Commercial_Use-blue)](LICENSE)
@@ -160,11 +160,38 @@ SlugAudit follows a **"Results First, Full Code On-Demand"** model to prevent bu
 
 * **AST Pattern Search (`structure`)**:
   * **Multi-File Search**: Omit `file` to search across all files of a given language (optionally filtered by `pattern`, e.g. `"src/**/*.rs"`). Defaults to **lean 1-line preview snippets** (`full_text: false`, max 120 bytes) with exact `start_line`/`end_line` and column coordinates.
-  * **Single-File Search**: Specify `file` to inspect a targeted file. Defaults to **full AST code blocks** (`full_text: true`, up to 2,000 bytes).
+  * **Single-File Search**: Specify `file` to inspect a targeted file. Defaults to **full AST code blocks** (`full_text: true`, up to 1 MiB / 1,000,000 bytes).
   * **Explicit Control**: The agent can pass `"full_text": false` for compact coordinate-only sweeps across any scope, or `"full_text": true` to pull complete code blocks.
 * **SQL Queries (`query`)**:
   * **Selective Projection**: The agent queries only what it needs (e.g. `SELECT path, line_number FROM evidence WHERE ...`) to stay lean, or `SELECT content` when full source text is required.
-  * **Paging with `next_offset`**: Results are safely capped at 500 rows and 64 MiB per page. When `truncated: true`, `next_offset` is provided so the agent can page through the entire dataset without context overflow.
+  * **Paging with `next_offset`**: Results are capped at 500 rows and up to 256 MiB+ per page (dynamically scaled to host RAM). When `truncated: true`, `next_offset` is provided so the agent can page through the entire dataset without context overflow.
+
+### 🎛️ Profiles & Adaptive Host Memory
+
+SlugAudit never imposes artificial barriers on codebases. Following the design standards of CodeQL and Semgrep, it dynamically scales resource limits to match the host hardware:
+
+* **`Adaptive` (Default)**: Automatically detects physical and available host RAM (`/proc/meminfo` on Linux, `sysctl` on macOS). Dynamically scales import caches and per-file caps (up to 1 GiB single-file limit, half of available RAM for total project imports).
+* **`Audit`**: Deep audit mode for massive enterprise repos (256 MiB per-file cap, 32 GiB total import budget, 60s execution budgets).
+* **`Lean`**: Lightweight mode for resource-constrained environments (32 MiB per-file cap, 2 GiB total import budget, 10s execution budgets).
+
+**How to Configure:**
+1. **In-Repo Project Config**: Add `.planning/slugaudit/config.json` to the audited repository:
+   ```json
+   {
+     "profile": "audit"
+   }
+   ```
+2. **MCP Tool Control**: Agents can select or change profiles on the fly:
+   ```json
+   {
+     "name": "project_control",
+     "arguments": {
+       "action": "on",
+       "profile": "audit"
+     }
+   }
+   ```
+3. **Environment Overrides**: Set `SLUGAUDIT_PROFILE=audit` or tune granular variables (e.g. `SLUGAUDIT_MAX_FILE_BYTES=536870912`).
 
 ---
 

@@ -176,3 +176,21 @@ fn on_action_with_a_nonexistent_path_returns_an_error() {
         "enable on a nonexistent path must surface an error, not silently create state"
     );
 }
+
+#[test]
+fn on_action_with_profile_writes_config_json() {
+    let (project, path) = temp_project_with_source();
+    let req = Parameters(ProjectControlRequest {
+        path: Some(path),
+        action: ProjectControlAction::On,
+        profile: Some("audit".to_string()),
+    });
+    let response = project_control(&req, &crate::progress::NoopProgressSink, None)
+        .expect("enable with profile succeeds");
+    assert_eq!(response.0.status, "enabled");
+
+    let cfg_file = activation_dir(&project).join("config.json");
+    assert!(cfg_file.exists(), "config.json should be written");
+    let content = fs::read_to_string(cfg_file).expect("read config");
+    assert!(content.contains("\"audit\""));
+}

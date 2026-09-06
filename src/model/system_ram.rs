@@ -53,11 +53,11 @@ fn parse_proc_meminfo(content: &str) -> Option<SystemMemoryInfo> {
             break;
         }
     }
-    let total = total_kb? * 1024;
-    let avail = avail_kb.unwrap_or(total / 2) * 1024;
+    let total_bytes = total_kb? * 1024;
+    let avail_bytes = avail_kb.map_or(total_bytes / 2, |k| k * 1024);
     Some(SystemMemoryInfo {
-        total_bytes: total,
-        available_bytes: avail,
+        total_bytes,
+        available_bytes: avail_bytes,
     })
 }
 
@@ -75,6 +75,21 @@ mod tests {
         let info = parse_proc_meminfo(sample).expect("parse succeeds");
         assert_eq!(info.total_bytes, 16_384_000 * 1024);
         assert_eq!(info.available_bytes, 12_288_000 * 1024);
+    }
+
+    #[test]
+    fn parse_proc_meminfo_handles_missing_memavailable() {
+        let sample = "MemTotal:       16384000 kB\nMemFree:         8192000 kB\n";
+        let info = parse_proc_meminfo(sample).expect("parse succeeds");
+        assert_eq!(info.total_bytes, 16_384_000 * 1024);
+        assert_eq!(info.available_bytes, 8_192_000 * 1024);
+    }
+
+    #[test]
+    fn parse_proc_meminfo_handles_missing_memtotal() {
+        let sample = "MemFree:         8192000 kB\nMemAvailable:   12288000 kB\n";
+        assert!(parse_proc_meminfo(sample).is_none());
+        assert!(parse_proc_meminfo("invalid content").is_none());
     }
 
     #[test]

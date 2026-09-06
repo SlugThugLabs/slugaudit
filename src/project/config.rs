@@ -65,4 +65,25 @@ mod tests {
         assert_eq!(applied.max_file_bytes, 536_870_912);
         assert_eq!(applied.max_total_import_bytes, 32 * 1024 * 1024 * 1024);
     }
+
+    #[test]
+    fn loads_default_when_missing_or_invalid() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = ProjectConfig::load_or_default(dir.path());
+        assert!(cfg.profile.is_none());
+        assert!(cfg.max_file_bytes.is_none());
+
+        let conf_dir = dir.path().join(".planning").join("slugaudit");
+        std::fs::create_dir_all(&conf_dir).expect("create dir");
+        std::fs::write(conf_dir.join("config.json"), "invalid json").expect("write");
+        let cfg_invalid = ProjectConfig::load_or_default(dir.path());
+        assert!(cfg_invalid.profile.is_none());
+
+        let custom = ProjectConfig {
+            max_total_import_bytes: Some(1024),
+            ..Default::default()
+        };
+        let applied = custom.apply_to_limits(ResourceLimits::default());
+        assert_eq!(applied.max_total_import_bytes, 1024);
+    }
 }

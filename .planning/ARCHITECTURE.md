@@ -152,7 +152,8 @@ src/
 │   ├── mod.rs                find_project_root, enable/disable
 │   ├── root.rs               ProjectRoot type
 │   ├── activation.rs         write/read the activation dir marker
-│   └── database_path.rs      where this project's project.db lives
+│   ├── database_path.rs      where this project's project.db lives
+│   └── config.rs             in-repo project configuration (.planning/slugaudit/config.json)
 
 ├── store/                    SQLite connection boundary
 │   ├── mod.rs                open_read_write/open_read_only/discard_corrupt_database
@@ -483,14 +484,22 @@ a scenario (all 8 blocking workers stuck in uninterruptible kernel
 syscalls simultaneously) that the kernel's own I/O timeouts already
 handle. It is harmless to add, but its absence is not a defect.
 
-### Runtime resource-limit configuration
+### Runtime resource-limit configuration and adaptive memory
 
-Every field in `ResourceLimits` can be overridden at startup via
-an environment variable. The pattern is `SLUGAUDIT_<FIELD>` where
-`<FIELD>` is the SCREAMING_SNAKE_CASE name of the field:
+SlugAudit implements CodeQL/Semgrep-style adaptive hardware scaling and profiles rather than hard-coding static resource limits:
 
-- `SLUGAUDIT_MAX_FILE_BYTES` — per-file size cap (default 8 MiB)
-- `SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES` — total import byte cap (256 MiB)
+- **Host RAM detection** (`src/model/system_ram.rs`): Automatically parses `/proc/meminfo` on Linux or invokes `sysctl hw.memsize` on macOS to inspect host total and available RAM.
+- **Resource Profiles** (`src/model/profile.rs`):
+  - **`Adaptive` (Default)**: Automatically computes generous limits proportional to host memory: per-file size cap dynamically scales between 256 MiB and 1 GiB (`total_ram / 10`), and total import budget scales to 50% of available RAM (min 4 GiB).
+  - **`Audit`**: Maximum capability mode for enterprise-grade due-diligence audits (256 MiB per-file cap, 32 GiB total import budget, 60s query/structure execution timeouts).
+  - **`Lean`**: Lightweight mode for resource-constrained environments (32 MiB per-file cap, 2 GiB total import budget, 10s timeouts).
+- **In-Repo Project Config** (`src/project/config.rs`): A project can declare its required profile and limits in `.planning/slugaudit/config.json`.
+- **MCP Tool Control**: AI agents can specify `profile: "audit"` dynamically when calling `project_control(action: "on", ...)`.
+- **Environment Overrides**: Every field in `ResourceLimits` can be overridden at startup via an environment variable. The pattern is `SLUGAUDIT_<FIELD>` where `<FIELD>` is the SCREAMING_SNAKE_CASE name of the field (or `SLUGAUDIT_PROFILE` to select a preset):
+
+- `SLUGAUDIT_PROFILE` — preset profile (`adaptive`, `audit`, `lean`)
+- `SLUGAUDIT_MAX_FILE_BYTES` — per-file size cap
+- `SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES` — total import byte cap
 - `SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES` — query response JSON size cap
 - `SLUGAUDIT_MAX_QUERY_SQL_BYTES` — max SQL text length
 - `SLUGAUDIT_MAX_QUERY_VM_STEPS` — SQLite VM-step budget
@@ -502,9 +511,9 @@ an environment variable. The pattern is `SLUGAUDIT_<FIELD>` where
 - `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS` — sync time budget (seconds)
 
 Unset or unparseable vars are silently ignored — the compile-time
-default applies. Duration fields accept whole seconds. The limits are
-cached in a `OnceLock` on first use via `model::process_limits()` and
-never change for the lifetime of the process.
+default applies. Duration fields accept whole seconds. Process-level limits are
+cached in a `OnceLock` on first use via `model::process_limits()`.
+Per-project limits are resolved dynamically via `ProjectConfig::apply_to_limits`.
 
 ## Watcher health model
 

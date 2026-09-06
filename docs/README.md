@@ -89,8 +89,17 @@ on reasoning instead of repository housekeeping.
 ### Output Control & Context Optimization
 
 To prevent flooding agent context windows while guaranteeing full auditability:
-- **`structure`**: Supports multi-file search across languages. By default, multi-file queries return **lean 1-line preview snippets** (`full_text: false`, max 120 bytes) with exact line spans. Agents can pass `"full_text": true` to fetch full code blocks (up to 2,000 bytes) when analyzing specific matches.
-- **`query`**: Results are capped per page to 500 rows and 64 MiB. Responses include `next_offset` when `truncated: true`, allowing agents to reliably page through full datasets without context bloat.
+- **`structure`**: Supports multi-file search across languages. By default, multi-file queries return **lean 1-line preview snippets** (`full_text: false`, max 120 bytes) with exact line spans. Agents can pass `"full_text": true` to fetch full code blocks (up to 1 MiB / 1,000,000 bytes) when analyzing specific matches.
+- **`query`**: Results are capped per page to 500 rows and up to 256 MiB+ (dynamically scaled by host memory or configured profile). Responses include `next_offset` when `truncated: true`, allowing agents to reliably page through full datasets without context bloat.
+
+### Profiles & Hardware-Adaptive Memory
+
+SlugAudit eliminates arbitrary limits by adopting CodeQL/Semgrep-style hardware scaling:
+- **`Adaptive` (Default)**: Automatically reads available and physical host RAM, allocating generous import caches (up to 1 GiB single-file limit, 50% available RAM for total project imports).
+- **`Audit`**: Maximum capability mode for enterprise-grade due-diligence audits (256 MiB per file, 32 GiB total import budget).
+- **`Lean`**: Resource-constrained mode (32 MiB file limit, 2 GiB total import budget).
+
+Configure via `.planning/slugaudit/config.json` (`{"profile": "audit"}`), dynamic tool calls (`project_control(action: "on", profile: "audit")`), or the `SLUGAUDIT_PROFILE` environment variable.
 
 See the agent-specific guides for what to do next.
 
