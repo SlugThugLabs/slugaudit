@@ -71,11 +71,11 @@ impl SourceSyncManager {
                 tracing::warn!(
                     database_path = %database_path.display(),
                     error = %error,
-                    "database is corrupt; discarding and re-publishing from scratch",
+                    "database is corrupt or outdated; discarding and re-publishing from scratch",
                 );
                 store::discard_corrupt_database(database_path).map_err(|err| {
                     ErrorData::internal_error(
-                        format!("discarding the corrupt project database: {err}"),
+                        format!("discarding the corrupt or outdated project database: {err}"),
                         None,
                     )
                 })?;

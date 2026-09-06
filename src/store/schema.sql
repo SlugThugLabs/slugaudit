@@ -100,22 +100,16 @@ CREATE TABLE IF NOT EXISTS dependency_edges (
     -- Mirrors src/graph/resolve.rs::ResolutionKind::as_sql_text() — keep
     -- both in sync if a variant is ever added.
     resolution_kind TEXT NOT NULL CHECK (resolution_kind IN ('Resolved', 'Unresolved', 'External')),
-    confidence TEXT CHECK (confidence IS NULL OR confidence IN ('High', 'Low'))
+    confidence TEXT CHECK (confidence IS NULL OR confidence IN ('High', 'Low')),
+    syntax_unmodeled INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_edges_from ON dependency_edges (from_file_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to ON dependency_edges (to_file_id);
 
--- Findings are AI-authored only. Schema-version 1.
--- The session-scoped column is added by the v1→v2 migration
--- (`store::migrations::apply_v1_to_v2`) instead of being declared here,
--- so the v1-shape `CREATE TABLE IF NOT EXISTS findings` is byte-stable
--- across whatever version of SlugAudit first touches a fresh database.
--- Findings are still invalidated by source change on their target file
--- (status flips current → stale when content_hash drifts); the
--- `session_id` column added in v2 lets the
--- `sync::manager_meta::purge_prior_session_findings` defense run on
--- every fresh-process boot.
+-- Findings are AI-authored only.
+-- The session_id column supports the session-scoped cleanup
+-- (`sync::manager_meta::purge_prior_session_findings`) on fresh-process boots.
 CREATE TABLE IF NOT EXISTS findings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     path TEXT NOT NULL,
@@ -128,7 +122,9 @@ CREATE TABLE IF NOT EXISTS findings (
     description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 10000),
     created_at_unix INTEGER NOT NULL,
     evidence_revision TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'current' CHECK (status IN ('current', 'stale'))
+    status TEXT NOT NULL DEFAULT 'current' CHECK (status IN ('current', 'stale')),
+    session_id TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_findings_path_hash ON findings (path, source_hash);
+CREATE INDEX IF NOT EXISTS idx_findings_session ON findings (session_id);

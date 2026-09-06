@@ -89,8 +89,15 @@ fn enable(
 ) -> Result<Json<ProjectControlResponse>, ErrorData> {
     project::enable(root).map_err(|e| err(format!("enable: {e}")))?;
     let db_path = project::database_path(root);
-    let mut connection =
-        store::open_read_write(&db_path).map_err(|e| err(format!("database: {e}")))?;
+    let mut connection = match store::open_read_write(&db_path) {
+        Ok(conn) => conn,
+        Err(error) if error.is_corruption() => {
+            store::discard_corrupt_database(&db_path)
+                .map_err(|e| err(format!("discarding outdated database: {e}")))?;
+            store::open_read_write(&db_path).map_err(|e| err(format!("database: {e}")))?
+        }
+        Err(e) => return Err(err(format!("database: {e}"))),
+    };
     let report = sync::publish(&mut connection, root.as_path(), parse::PACK_VERSION, sink)
         .map_err(|e| err(format!("import: {e}")))?;
     Ok(Json(ProjectControlResponse {

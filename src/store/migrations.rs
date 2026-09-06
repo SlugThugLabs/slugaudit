@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=one migration per schema version plus their version-pinning tests form a single forward-only sequence where each step depends on the ones before it; splitting by migration would scatter the ordering invariant (and the exact-version pin) across files
+//! Database schema verification and initialization.
 use rusqlite::Connection;
 use thiserror::Error;
 
@@ -11,7 +11,10 @@ pub enum MigrationError {
     ReadVersion(#[source] rusqlite::Error),
     #[error("failed to apply schema: {0}")]
     Apply(#[source] rusqlite::Error),
-    #[error("database schema version {found} is newer than this build supports ({supported})")]
+    #[error(
+        "database schema version {found} is incompatible with this build (supported: {supported}); \
+         database will be discarded and rebuilt"
+    )]
     UnsupportedVersion { found: i64, supported: i64 },
 }
 
@@ -20,116 +23,39 @@ impl MigrationError {
     pub fn is_corruption(&self) -> bool {
         match self {
             Self::ReadVersion(error) | Self::Apply(error) => super::is_rusqlite_corruption(error),
-            Self::UnsupportedVersion { .. } => false,
+            Self::UnsupportedVersion { .. } => true,
         }
     }
 }
 
-/// One forward step from version `target - 1` to version `target`. Each
-/// closure is expected to be idempotent on `target` —
-/// `ensure_current_schema` doesn't re-run a step once `PRAGMA
-/// user_version` reaches its `target` value.
-type Migration = (i64, fn(&Connection) -> Result<(), rusqlite::Error>);
-
-/// Forward-only schema migrations, applied in order. v0→v1 is the
-/// original schema application; v1→v2 adds the
-/// `findings.session_id` column and the `idx_findings_session` index
-/// that the session-scoped cleanup relies on; v2→v3 adds
-/// `dependency_edges.syntax_unmodeled` (the C11 write-time import-
-/// syntax classifier verdict, so `report` counts it in SQL instead of
-/// re-extracting every edge on every call).
-const MIGRATIONS: &[Migration] = &[
-    (1, apply_v0_to_v1),
-    (2, apply_v1_to_v2),
-    (3, apply_v2_to_v3),
-];
-
-fn apply_v0_to_v1(connection: &Connection) -> Result<(), rusqlite::Error> {
-    // Fresh database — `CREATE … IF NOT EXISTS` is idempotent against
-    // a re-run, but we only ever reach this on a clean pragma=0 db, so
-    // the semantics are a one-time install.
-    connection.execute_batch(SCHEMA_DDL)
-}
-
-fn apply_v1_to_v2(connection: &Connection) -> Result<(), rusqlite::Error> {
-    // Idempotent against re-application: if a previous run already
-    // added the column (a test path that rewinds `user_version`
-    // rather than a real second `ensure_current_schema` call, since
-    // production moves monotonically forward), the `ALTER` is skipped
-    // and only the (also-idempotent) index creation runs. Findings
-    // from any prior session are back-filled to the empty string
-    // during the `ALTER`; the actual row deletion happens at every
-    // `ensure_current`
-    // (`sync::manager_meta::purge_prior_session_findings`) once the
-    // current session UUID is generated.
-    let column_present: i64 = connection.query_row(
-        "SELECT count(*) FROM pragma_table_info('findings') \
-         WHERE name = 'session_id'",
-        [],
-        |row| row.get(0),
-    )?;
-    if column_present == 0 {
-        connection.execute(
-            "ALTER TABLE findings ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
-            [],
-        )?;
-    }
-    connection
-        .execute_batch("CREATE INDEX IF NOT EXISTS idx_findings_session ON findings (session_id);")
-}
-
-fn apply_v2_to_v3(connection: &Connection) -> Result<(), rusqlite::Error> {
-    // Idempotent against re-application (a test path that rewinds
-    // `user_version`). Existing Unresolved edges default to 0 — the
-    // honest "not classified yet" value — and are back-filled the next
-    // time their file is published (which re-runs
-    // `revision_edges::resolve_and_store` and stores the verdict).
-    let column_present: i64 = connection.query_row(
-        "SELECT count(*) FROM pragma_table_info('dependency_edges') \
-         WHERE name = 'syntax_unmodeled'",
-        [],
-        |row| row.get(0),
-    )?;
-    if column_present == 0 {
-        connection.execute(
-            "ALTER TABLE dependency_edges ADD COLUMN syntax_unmodeled INTEGER NOT NULL DEFAULT 0",
-            [],
-        )?;
-    }
-    Ok(())
-}
-
 /// Brings a freshly-opened database up to `CURRENT_SCHEMA_VERSION`.
-/// Migrations are forward-only: a database at a newer schema version
-/// than this build knows about is rejected rather than guessed at.
-/// Stepping forward happens in one transaction so SQLite's WAL + DDL
-/// guarantees apply — either every migration lands and version bumps
-/// or none of them do.
+/// If the database version is not 0 (fresh) and does not match `CURRENT_SCHEMA_VERSION`,
+/// it is rejected with `UnsupportedVersion`. Because `UnsupportedVersion` marks
+/// `is_corruption() == true`, the sync manager discards the outdated database and
+/// rebuilds a fresh one from scratch from project source code.
 pub(super) fn ensure_current_schema(connection: &mut Connection) -> Result<(), MigrationError> {
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(MigrationError::ReadVersion)?;
 
-    if version > CURRENT_SCHEMA_VERSION {
-        return Err(MigrationError::UnsupportedVersion {
-            found: version,
-            supported: CURRENT_SCHEMA_VERSION,
-        });
-    }
     if version == CURRENT_SCHEMA_VERSION {
         return Ok(());
     }
 
-    let tx = connection.transaction().map_err(MigrationError::Apply)?;
-    for (target, step) in MIGRATIONS {
-        if version < *target {
-            step(&tx).map_err(MigrationError::Apply)?;
-            tx.pragma_update(None, "user_version", *target)
-                .map_err(MigrationError::Apply)?;
-        }
+    if version == 0 {
+        let tx = connection.transaction().map_err(MigrationError::Apply)?;
+        tx.execute_batch(SCHEMA_DDL)
+            .map_err(MigrationError::Apply)?;
+        tx.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)
+            .map_err(MigrationError::Apply)?;
+        tx.commit().map_err(MigrationError::Apply)?;
+        return Ok(());
     }
-    tx.commit().map_err(MigrationError::Apply)?;
-    Ok(())
+
+    Err(MigrationError::UnsupportedVersion {
+        found: version,
+        supported: CURRENT_SCHEMA_VERSION,
+    })
 }
 
 #[cfg(test)]
@@ -203,99 +129,51 @@ mod tests {
                 MigrationError::UnsupportedVersion { .. }
             ))
         ));
+        assert!(reopened.unwrap_err().is_corruption());
     }
 
     #[test]
-    fn v1_database_upgrades_to_v2_with_session_id_column() {
+    fn rejects_an_outdated_v1_database_and_marks_as_corruption_for_discard() {
         let directory = tempfile::tempdir().expect("temp dir");
         let path = directory.path().join("project.db");
         let mut connection = open_read_write(&path).expect("open database");
-        // Force the schema back to v1 so the v1→v2 migration actually
-        // runs. (Open writes the live CURRENT_SCHEMA_VERSION into
-        // user_version, so we rewind before calling
-        // ensure_current_schema.)
         connection
             .pragma_update(None, "user_version", 1_i64)
-            .expect("rewind version");
-        ensure_current_schema(&mut connection).expect("apply v1→v2");
-
-        let version: i64 = connection
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .expect("read post-migration version");
-        assert_eq!(version, CURRENT_SCHEMA_VERSION);
-
-        let column_present: i64 = connection
-            .query_row(
-                "SELECT count(*) FROM pragma_table_info('findings') \
-                 WHERE name = 'session_id'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("inspect findings columns");
-        assert_eq!(
-            column_present, 1,
-            "session_id column must exist after v1→v2"
+            .expect("rewind version to v1");
+        let err = ensure_current_schema(&mut connection).expect_err("must reject v1");
+        assert!(matches!(
+            err,
+            MigrationError::UnsupportedVersion {
+                found: 1,
+                supported: CURRENT_SCHEMA_VERSION
+            }
+        ));
+        assert!(
+            err.is_corruption(),
+            "must flag as corruption for auto-rebuild"
         );
-
-        // Existing rows must have back-filled the empty string, not NULL.
-        connection
-            .execute(
-                "INSERT INTO findings (path, source_hash, line_start, line_end, \
-                                          severity, category, title, description, \
-                                          created_at_unix, evidence_revision, status) \
-                 VALUES ('legacy.rs', 'hash', 1, 1, 'low', 'legacy', \
-                         't', 'd', 0, 'r0', 'current')",
-                [],
-            )
-            .expect("legacy insert");
-        let legacy_session: String = connection
-            .query_row(
-                "SELECT session_id FROM findings WHERE path = 'legacy.rs'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("legacy session_id");
-        assert_eq!(legacy_session, "");
     }
 
     #[test]
-    fn v2_database_upgrades_to_v3_with_syntax_unmodeled_column() {
+    fn rejects_an_outdated_v2_database_and_marks_as_corruption_for_discard() {
         let directory = tempfile::tempdir().expect("temp dir");
         let path = directory.path().join("project.db");
         let mut connection = open_read_write(&path).expect("open database");
-        // Force the schema back to v2 so the v2→v3 migration runs.
         connection
             .pragma_update(None, "user_version", 2_i64)
-            .expect("rewind version");
-        ensure_current_schema(&mut connection).expect("apply v2→v3");
-
-        let version: i64 = connection
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .expect("read post-migration version");
-        assert_eq!(version, CURRENT_SCHEMA_VERSION);
-
-        let column_present: i64 = connection
-            .query_row(
-                "SELECT count(*) FROM pragma_table_info('dependency_edges') \
-                 WHERE name = 'syntax_unmodeled'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("inspect dependency_edges columns");
-        assert_eq!(
-            column_present, 1,
-            "syntax_unmodeled column must exist after v2→v3"
+            .expect("rewind version to v2");
+        let err = ensure_current_schema(&mut connection).expect_err("must reject v2");
+        assert!(matches!(
+            err,
+            MigrationError::UnsupportedVersion {
+                found: 2,
+                supported: CURRENT_SCHEMA_VERSION
+            }
+        ));
+        assert!(
+            err.is_corruption(),
+            "must flag as corruption for auto-rebuild"
         );
-
-        // Existing edges default to 0 (unclassified), the honest value.
-        let default: i64 = connection
-            .query_row(
-                "SELECT syntax_unmodeled FROM dependency_edges LIMIT 0",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-        assert_eq!(default, 0);
     }
 
     #[test]

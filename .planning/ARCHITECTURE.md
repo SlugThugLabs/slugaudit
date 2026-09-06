@@ -221,7 +221,6 @@ test-file rule above.
 | `src/bin/check_source_limits/counter.rs` | 264 | the token-aware counter's comment/string/char/raw-string states are one atomic scanner; splitting the state machine would fragment the exact token-coverage semantics the gate depends on |
 | `src/evidence/normalize.rs` | 224 | one match arm per Tree-sitter evidence kind; splitting by kind would hide the exhaustiveness this file exists to guarantee |
 | `src/graph/resolve_rust.rs` | 210 | one resolution pipeline per Rust import form (workspace anchoring, super/self walk, item-vs-module shortening) with mutually recursive helpers on the same `known_paths` contract |
-| `src/store/migrations.rs` | 243 | one migration per schema version plus version-pinning tests form a single forward-only sequence; splitting would scatter the ordering invariant (and the exact-version pin) |
 | `src/tools/health.rs` | 236 | health is the schema-defining tool; Request + Response + phase + derivation live together so the schema isn't split from its only consumer |
 | `src/tools/query.rs` | 261 | one tool contract owns request/response types, the execution/budget path, and the separator scanner; splitting would fragment the validation order (empty → size → statement count → freshness → budget) the tests assert against |
 | `src/watch/manager.rs` | 287 | one file owns the notify watcher lifecycle, per-project watch states, scope/rule maintenance, and the event filter; splitting would fragment the manager's lock discipline and the unwatch rule |
@@ -427,10 +426,10 @@ deliberately trades durability for simplicity in every data path:
 | Concern | Traditional approach | SlugAudit approach |
 |---|---|---|
 | Database corruption | Backup + restore | Discard + republish from source |
-| Schema change | Migration + rollback plan | Forward-only migration; delete DB to go back |
+| Schema change | Migration + rollback plan | Discard old database + rebuild fresh from ground truth |
 | Connection errors | Retry + alert | Reopen; if corrupt, discard + rebuild |
 | Data loss | Replication + snapshots | Source files are the canonical copy |
-| Upgrade/downgrade | Compatibility matrix | Newer schema → reject. Older schema → migrate. No downgrade path. |
+| Upgrade/downgrade | Compatibility matrix | Schema mismatch or stale version → discard old database, rebuild fresh from source. |
 
 This is not a compromise — it is the correct architecture for a
 tool whose input (source files) is always available and whose

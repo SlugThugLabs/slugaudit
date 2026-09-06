@@ -372,3 +372,46 @@ fn drains_events_after_full_verification() {
             .contains("pub fn changed()")
     );
 }
+
+#[test]
+fn outdated_database_is_automatically_deleted_and_recreated() {
+    let manager = SourceSyncManager::with_watcher();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn first() {}\n");
+
+    // First sync to establish the initial database.
+    let synced = sync_project(&manager, &project);
+    assert!(!synced.revision_id.is_empty());
+
+    // Artificially stamp an outdated schema version into user_version (simulating an older version).
+    {
+        let connection = rusqlite::Connection::open(&synced.database_path).expect("raw open");
+        connection
+            .pragma_update(None, "user_version", 1_i64)
+            .expect("rewind user_version to 1");
+    }
+
+    // Next sync must detect the outdated version, discard the old DB, and create a fresh new one.
+    let synced_after = sync_project(&manager, &project);
+    assert!(!synced_after.revision_id.is_empty());
+
+    let version: i64 = with_verified_read(&synced_after, |tx| {
+        tx.query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(db_error)
+    })
+    .expect("read version");
+    assert_eq!(
+        version, 3,
+        "recreated database must be at current schema version"
+    );
+
+    let file_count: i64 = with_verified_read(&synced_after, |tx| {
+        tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
+            .map_err(db_error)
+    })
+    .expect("read count");
+    assert_eq!(
+        file_count, 1,
+        "source files must be republished from scratch"
+    );
+}
