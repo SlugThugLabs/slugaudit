@@ -28,7 +28,7 @@ fn scope_args_match_the_documented_agent_scopes() {
 fn prefer_slugthug_binary_uses_the_installed_path_when_present() {
     let _guard = TEST_ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("temp dir");
-    let bin_dir = temp.path().join("bin");
+    let bin_dir = temp.path().join("slugaudit");
     std::fs::create_dir_all(&bin_dir).expect("bin dir");
     std::fs::write(bin_dir.join("slugaudit-mcp"), b"#!fake").expect("fake binary");
 
@@ -55,6 +55,24 @@ fn prefer_slugthug_binary_keeps_current_when_not_installed() {
             assert_eq!(prefer_slugthug_binary(&current), current);
         },
     );
+}
+
+#[test]
+fn prefer_slugthug_binary_falls_back_to_legacy_bin_when_slugaudit_dir_missing() {
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("temp dir");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("bin dir");
+    std::fs::write(bin_dir.join("slugaudit-mcp"), b"#!fake-legacy").expect("fake legacy");
+
+    let current = PathBuf::from("/build/artifacts/slugaudit-mcp");
+    temp_env::with_var("SLUGTHUG_HOME", Some(temp.path().as_os_str()), || {
+        assert_eq!(
+            prefer_slugthug_binary(&current),
+            bin_dir.join("slugaudit-mcp"),
+            "legacy ~/.slugthug/bin path is used as a fallback"
+        );
+    });
 }
 
 /// Only meaningful on machines without the agent CLIs installed; skips

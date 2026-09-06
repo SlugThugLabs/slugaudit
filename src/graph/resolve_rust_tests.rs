@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=agent; reason=one test per Rust import form (workspace, glob, super/self, item names); each is small and independently named
+// slugaudit-line-exception: approved-by=slugthug; reason=one test per Rust import form (workspace, glob, super/self, item names); each is small and independently named
 use super::*;
 use crate::graph::reference::ImportReference;
 use crate::graph::resolver::ResolutionKind;

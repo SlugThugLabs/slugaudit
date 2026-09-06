@@ -1,5 +1,5 @@
 //! Integration tests for SourceSyncManager.
-// slugaudit-line-exception: approved-by=agent; reason=one end-to-end watcher-backed scenario per sync invariant, sharing the create_project/write_file/sync_project fixtures from sync/test_support; splitting would fragment the scenario set from its shared fixtures
+// slugaudit-line-exception: approved-by=slugthug; reason=one end-to-end watcher-backed scenario per sync invariant, sharing the create_project/write_file/sync_project fixtures from sync/test_support; splitting would fragment the scenario set from its shared fixtures
 
 use crate::sync::SourceSyncManager;
 use crate::sync::test_support::{create_project, sync_project, write_file};

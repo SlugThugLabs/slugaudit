@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/SlugThugLabs/slugaudit?color=7c3aed&label=Release)](https://github.com/SlugThugLabs/slugaudit/releases)
 [![Rust 2024](https://img.shields.io/badge/Rust-2024_Edition-orange?logo=rust)](Cargo.toml)
 [![Safety](https://img.shields.io/badge/Safety-%23!%5Bforbid(unsafe_code)%5D-emerald)](src/lib.rs)
-[![Tests](https://img.shields.io/badge/Tests-495_passed-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-497_passed-brightgreen)](tests/)
 [![Coverage](https://img.shields.io/badge/Coverage-83.37%25-blue)](src/bin/check_coverage.rs)
 [![MCP](https://img.shields.io/badge/Protocol-Model_Context_Protocol_(MCP)-purple)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/License-Free_Commercial_Use-blue)](LICENSE)

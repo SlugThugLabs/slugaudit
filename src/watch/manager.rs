@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=agent; reason=one file owns the notify watcher lifecycle, per-project watch states, scope/rule maintenance, and the event filter; splitting would fragment the manager's lock discipline and the tool-thread-vs-event-thread unwatch rule across modules
+// slugaudit-line-exception: approved-by=slugthug; reason=one file owns the notify watcher lifecycle, per-project watch states, scope/rule maintenance, and the event filter; splitting would fragment the manager's lock discipline and the tool-thread-vs-event-thread unwatch rule across modules
 //!
 //! Filesystem watcher manager. Owns the `notify` watcher and dispatches
 //! events to per-project `WatchState`. Runs on a dedicated background

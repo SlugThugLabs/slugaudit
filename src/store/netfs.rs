@@ -7,7 +7,7 @@
 //! failures. The busy timeout compounds it by making a fundamental
 //! incompatibility look like transient contention.
 
-// slugaudit-line-exception: approved-by=agent; reason=platform-specific mount inspection (Linux mountinfo parse + macOS `stat -f`) is one cohesive Unix-like filesystem-detection contract; further splitting would fragment the supported-platform guard matrix across files
+// slugaudit-line-exception: approved-by=slugthug; reason=platform-specific mount inspection (Linux mountinfo parse + macOS `stat -f`) is one cohesive Unix-like filesystem-detection contract; further splitting would fragment the supported-platform guard matrix across files
 
 use super::connection::StoreError;
 use std::path::Path;

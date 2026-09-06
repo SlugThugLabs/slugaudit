@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=agent; reason=the MCP server surface declares all tool contracts, schema descriptions, and rmcp dispatch handlers in one cohesive registry
+// slugaudit-line-exception: approved-by=slugthug; reason=the MCP server surface declares all tool contracts, schema descriptions, and rmcp dispatch handlers in one cohesive registry
 //! MCP server surface: the tool contracts and their registration.
 //!
 //! This file declares *what* the tools are (their JSON schemas and the

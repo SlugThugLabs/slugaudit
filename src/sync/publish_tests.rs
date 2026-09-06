@@ -1,7 +1,7 @@
 //! End-to-end publish scenarios: first sync, unchanged reuse, parser-version
 //! reanalysis, modify+delete, invalid UTF-8, real parsed evidence, cascade
 //! delete.
-// slugaudit-line-exception: approved-by=agent; reason=one end-to-end publish scenario per sync invariant against a real SQLite database; the shared write/stored_paths fixture helpers live in sync::test_support
+// slugaudit-line-exception: approved-by=slugthug; reason=one end-to-end publish scenario per sync invariant against a real SQLite database; the shared write/stored_paths fixture helpers live in sync::test_support
 use super::*;
 use crate::store::open_read_write;
 use crate::sync::test_support::{stored_paths, write};

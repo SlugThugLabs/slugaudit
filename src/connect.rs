@@ -5,7 +5,7 @@
 #![allow(clippy::print_stdout)]
 
 use super::cli::{ConnectAgent, ConnectError};
-use crate::install::{running_binary, slugthug_home};
+use crate::install::{running_binary, slugaudit_dir, slugthug_home};
 use std::io::{BufRead as _, Write as _};
 use std::path::{Path, PathBuf};
 
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 /// gets written into the agent's MCP config, so a `cargo install`'d binary
 /// keeps working across upgrades automatically.
 ///
-/// If `~/.slugthug/bin/slugaudit-mcp` exists (the user ran `install`), that
+/// If `~/.slugthug/slugaudit/slugaudit-mcp` exists (the user ran `install`), that
 /// stable path is registered instead of wherever the binary happens to sit
 /// right now — so rebuilding from source later doesn't stale the agent's
 /// registration.
@@ -30,21 +30,25 @@ pub fn run_connect(agent: ConnectAgent) -> Result<(), ConnectError> {
     connect_one(agent, &binary)
 }
 
-/// If the user has run `install` and `~/.slugthug/bin/slugaudit-mcp`
+/// If the user has run `install` and `~/.slugthug/slugaudit/slugaudit-mcp`
 /// exists, return that path so `connect` registers the stable location
 /// rather than a one-off build artifact. Otherwise returns `current`
 /// unchanged. `pub(crate)` so the interactive setup menu (`src/menu.rs`)
 /// can print the same preferred path in its manual-instructions step.
 pub(crate) fn prefer_slugthug_binary(current: &Path) -> PathBuf {
-    let Some(home) = slugthug_home() else {
-        return current.to_path_buf();
-    };
-    let slugthug = home.join("bin").join("slugaudit-mcp");
-    if slugthug.exists() {
-        slugthug
-    } else {
-        current.to_path_buf()
+    if let Some(slugaudit) = slugaudit_dir() {
+        let candidate = slugaudit.join("slugaudit-mcp");
+        if candidate.exists() {
+            return candidate;
+        }
     }
+    if let Some(home) = slugthug_home() {
+        let legacy = home.join("bin").join("slugaudit-mcp");
+        if legacy.exists() {
+            return legacy;
+        }
+    }
+    current.to_path_buf()
 }
 
 fn connect_one(agent: ConnectAgent, binary: &Path) -> Result<(), ConnectError> {

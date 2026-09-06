@@ -15,6 +15,11 @@ pub fn slugthug_home() -> Option<PathBuf> {
         })
 }
 
+/// The dedicated directory for SlugAudit (`~/.slugthug/slugaudit`).
+pub fn slugaudit_dir() -> Option<PathBuf> {
+    slugthug_home().map(|home| home.join("slugaudit"))
+}
+
 #[derive(Debug, Error)]
 pub enum InstallError {
     #[error("could not locate the running binary: {0}")]
@@ -49,7 +54,7 @@ pub(crate) fn running_binary() -> Result<PathBuf, std::io::Error> {
 /// hint instead of editing a shell config it can't confirm.
 pub fn run_install() -> Result<(), InstallError> {
     let source = running_binary().map_err(InstallError::CurrentExe)?;
-    let bin_dir = slugthug_home().ok_or(InstallError::NoHome)?.join("bin");
+    let bin_dir = slugaudit_dir().ok_or(InstallError::NoHome)?;
     let target = bin_dir.join("slugaudit-mcp");
     std::fs::create_dir_all(&bin_dir).map_err(|inner| InstallError::Mkdir {
         path: bin_dir.display().to_string(),

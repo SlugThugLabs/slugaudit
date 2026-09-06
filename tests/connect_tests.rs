@@ -10,13 +10,13 @@
 //! on.** With an agent CLI on PATH, `connect <agent>` adds a `slugaudit`
 //! entry to that agent's live config (`~/.claude.json`, `~/.bob/…`,
 //! etc.); the test backs up and restores that config, and its `install`
-//! step drops a real binary into `~/.slugthug/bin/` which is *not*
+//! step drops a real binary into `~/.slugthug/slugaudit/` which is *not*
 //! cleaned up (see below). Run this only on a disposable machine or when
 //! you're prepared to un-register the server afterwards with
 //! `claude mcp remove slugaudit`, `bob mcp remove slugaudit`, etc. CI is
 //! safe only because no agent CLIs are installed there.
 //!
-//! The `install` step intentionally leaves `~/.slugthug/bin/slugaudit-mcp`
+//! The `install` step intentionally leaves `~/.slugthug/slugaudit/slugaudit-mcp`
 //! behind (the real `connect` flow depends on it). If you ran this test
 //! on a development box, remove that binary and re-run
 //! `claude mcp remove slugaudit` / `bob mcp remove slugaudit` afterwards
@@ -208,7 +208,7 @@ fn connect_writes_the_correct_registration_for_each_installed_agent() {
         binary.display()
     );
 
-    // Run `install` so the binary lands at the stable ~/.slugthug/bin/ path.
+    // Run `install` so the binary lands at the stable ~/.slugthug/slugaudit/ path.
     // `connect` prefers that path over the build artifact, mirroring the
     // real user flow: install once, then connect (and reconnect after
     // rebuilds) against the stable location.
@@ -225,7 +225,7 @@ fn connect_writes_the_correct_registration_for_each_installed_agent() {
     let slugthug_binary = std::env::var_os("SLUGTHUG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".slugthug"))
-        .join("bin")
+        .join("slugaudit")
         .join("slugaudit-mcp");
     assert!(
         slugthug_binary.is_file(),

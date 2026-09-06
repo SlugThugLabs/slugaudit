@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=agent; reason=the structure tool's query handling (input validation, single- and multi-file dispatch, capture execution with progress abort, and node conversion) is one cohesive concern; splitting would fragment the contract that bare no-capture queries are rejected with guidance
+// slugaudit-line-exception: approved-by=slugthug; reason=the structure tool's query handling (input validation, single- and multi-file dispatch, capture execution with progress abort, and node conversion) is one cohesive concern; splitting would fragment the contract that bare no-capture queries are rejected with guidance
 
 use super::context::{ensure_synced, with_verified_read};
 use crate::model::{ResourceLimits, char_column, process_limits, saturating_u32};

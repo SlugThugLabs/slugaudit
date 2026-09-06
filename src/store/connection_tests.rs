@@ -1,7 +1,7 @@
 // Tests for `src/store/connection.rs`. Extracted to a sibling file so the
 // production source stays under the 300-line hard cap while the test suite
 // still has room to grow.
-// slugaudit-line-exception: approved-by=agent; reason=audit-trail tests covering each rejection guard, paired with their happy-path negative; keeping them co-located lets future regressions cross-compare symlink / permissions / network paths at a glance
+// slugaudit-line-exception: approved-by=slugthug; reason=audit-trail tests covering each rejection guard, paired with their happy-path negative; keeping them co-located lets future regressions cross-compare symlink / permissions / network paths at a glance
 
 use crate::store::test_capture::capture_warns;
 use crate::store::*;

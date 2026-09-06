@@ -126,7 +126,7 @@ slugaudit-mcp — searchable, trustworthy codebase evidence over MCP
 USAGE:
     slugaudit-mcp                    Run the MCP server (stdio transport)
     slugaudit-mcp menu               Interactive setup menu (recommended entry point)
-    slugaudit-mcp install            Copy binary to ~/.slugthug/bin/
+    slugaudit-mcp install            Copy binary to ~/.slugthug/slugaudit/
     slugaudit-mcp update             Fetch the latest release and replace this binary
     slugaudit-mcp version            Print version (also --version, -V)
     slugaudit-mcp help               Show this message (also --help, -h)
@@ -143,7 +143,7 @@ COMMANDS:
                   an AI agent. With an agent name (`bob`, `claude`,
                   `grok`, `codex`) it connects directly; without one it
                   shows an interactive agent picker.
-    install       Copy the binary to ~/.slugthug/bin/slugaudit-mcp so
+    install       Copy the binary to ~/.slugthug/slugaudit/slugaudit-mcp so
                   agents and MCP clients can launch a stable path that
                   survives rebuilds.
     update        Check the latest GitHub release and, if newer than the
@@ -159,7 +159,7 @@ OPTIONS:
 
 EXAMPLES:
     slugaudit-mcp menu               Set everything up interactively
-    slugaudit-mcp install            Install to ~/.slugthug/bin/
+    slugaudit-mcp install            Install to ~/.slugthug/slugaudit/
     slugaudit-mcp connect bob        Register with Bob
     slugaudit-mcp update             Update to the latest release
     slugaudit-mcp                    Run the server for your AI agent

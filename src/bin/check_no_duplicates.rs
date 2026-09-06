@@ -2,7 +2,7 @@
 #![allow(clippy::print_stdout)]
 
 //! No-duplicates gate.
-// slugaudit-line-exception: approved-by=agent; reason=the bin owns two orthogonal gate inputs (commit-subject dedupe via git log, and #[test] fn-name dedupe across src/ + tests/) and they share one argv parser, one process exit-code contract, and one failure-printer; splitting into separate bins would duplicate that scaffolding, and collapsing the test-name collector into a sibling module under src/lib.rs would smuggle production code into a path sized for internal-only modules
+// slugaudit-line-exception: approved-by=slugthug; reason=the bin owns two orthogonal gate inputs (commit-subject dedupe via git log, and #[test] fn-name dedupe across src/ + tests/) and they share one argv parser, one process exit-code contract, and one failure-printer; splitting into separate bins would duplicate that scaffolding, and collapsing the test-name collector into a sibling module under src/lib.rs would smuggle production code into a path sized for internal-only modules
 //!
 //! Replaces `tools/check_no_duplicates.sh`. Fails when:
 //! - a commit subject occurs more than once in reachable history (the

@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=agent; reason=one test per wall-clock deadline reaction (discovery, sampling, reconcile, barrier, manifest, analyze contract) sharing the tiny_budget/open_read_write/write fixtures in this file; splitting would fragment the injected-budget pattern that makes each abort deterministic
+// slugaudit-line-exception: approved-by=slugthug; reason=one test per wall-clock deadline reaction (discovery, sampling, reconcile, barrier, manifest, analyze) sharing the tiny_budget/open_read_write/write fixtures in this file; splitting would fragment the injected-budget pattern that makes each abort deterministic
 //!
 //! Wall-clock timeout coverage for the sync hot loops. Each test injects a
 //! nanosecond-sized budget — any positive elapsed time trips the deadline,

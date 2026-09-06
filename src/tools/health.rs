@@ -18,7 +18,7 @@
 //!    when no project is currently active or the DB can't be opened.
 //! 3. **Process counters**: total tool calls, error calls, total wall-
 //!    clock milliseconds across every tool call since process start.
-// slugaudit-line-exception: approved-by=agent; reason=health is the schema-defining tool; Request+Response+phase+derivation live together so the schema isn't split from its only consumer
+// slugaudit-line-exception: approved-by=slugthug; reason=health is the schema-defining tool; Request+Response+phase+derivation live together so the schema isn't split from its only consumer
 
 use crate::store;
 use crate::sync;

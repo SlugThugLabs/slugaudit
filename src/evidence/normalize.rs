@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=agent; reason=one match arm per Tree-sitter evidence kind; splitting by kind would hide the exhaustiveness this file exists to guarantee
+// slugaudit-line-exception: approved-by=slugthug; reason=one match arm per Tree-sitter evidence kind; splitting by kind would hide the exhaustiveness this file exists to guarantee
 use crate::model::{
     EvidenceItem, EvidenceKind, EvidenceOrigin, Position, Span, SpanAvailability, char_column,
     saturating_u32,

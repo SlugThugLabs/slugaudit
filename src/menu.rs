@@ -13,7 +13,7 @@
 //! owns no setup logic of its own, so the non-interactive commands stay
 //! the single source of truth for what each step does.
 #![allow(clippy::print_stdout)]
-// slugaudit-line-exception: approved-by=agent; reason=the interactive setup menu keeps rendering, choice dispatch, and its four setup branches together so the user-facing flow remains one cohesive CLI contract
+// slugaudit-line-exception: approved-by=slugthug; reason=the interactive setup menu keeps rendering, choice dispatch, and its four setup branches together so the user-facing flow remains one cohesive CLI contract
 
 use crate::connect;
 use crate::install;
@@ -65,7 +65,7 @@ const MENU: &str = "  ____  _             _             _ _ _
 
   ── Setup ───────────────────────────────────
 
-  1) Install the binary  (~/.slugthug/bin)
+  1) Install the binary  (~/.slugthug/slugaudit)
      A stable path for agents and MCP clients to launch.
 
   2) Connect to an AI agent
@@ -215,7 +215,7 @@ fn other_agent_instructions(binary: &Path) -> String {
         "Check your client's own documentation for where it reads MCP server\n\
          config, and paste the entry above (adjusting the command path if you\n\
          moved the binary). If you have run `slugaudit-mcp install`, the stable\n\
-         command path is ~/.slugthug/bin/slugaudit-mcp\n",
+         command path is ~/.slugthug/slugaudit/slugaudit-mcp\n",
     );
     text
 }
@@ -285,6 +285,6 @@ mod tests {
     #[test]
     fn other_agent_instructions_mention_the_stable_install_path() {
         let text = other_agent_instructions(Path::new("slugaudit-mcp"));
-        assert!(text.contains(".slugthug/bin"));
+        assert!(text.contains(".slugthug/slugaudit"));
     }
 }

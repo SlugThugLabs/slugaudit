@@ -94,7 +94,7 @@ fn code_after_block_comment_counts() {
 
 #[test]
 fn exception_reason_parsed() {
-    let src = "// slugaudit-line-exception: approved-by=agent; reason=foo bar\nfn x() {}\n";
+    let src = "// slugaudit-line-exception: approved-by=slugthug; reason=foo bar\nfn x() {}\n";
     assert_eq!(exception_reason(src).as_deref(), Some("foo bar"));
 }
 

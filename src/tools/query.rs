@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=agent; reason=one tool contract owns request/response types, the execution/budget path, and the single-statement separator scanner; splitting would fragment the query tool's validation order (empty → size → statement count → freshness → budget) that the tests assert against
+// slugaudit-line-exception: approved-by=slugthug; reason=one tool contract owns request/response types, the execution/budget path, and the single-statement separator scanner; splitting would fragment the query tool's validation order (empty → size → statement count → freshness → budget) that the tests assert against
 use super::context::{ensure_synced, with_verified_read};
 use super::query_value::row_to_json;
 use crate::model::{ResourceLimits, process_limits};

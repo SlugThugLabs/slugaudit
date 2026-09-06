@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=agent; reason=single-file read/hash/classify, evidence caps, and to_file_record are one cohesive per-file pipeline; the parallel batch loop lives in sample_batch.rs next to the loop that feeds it
+// slugaudit-line-exception: approved-by=slugthug; reason=single-file read/hash/classify, evidence caps, and to_file_record are one cohesive per-file pipeline; the parallel batch loop lives in sample_batch.rs next to the loop that feeds it
 use super::analyze::analyze;
 use super::discovery::{DiscoveredFile, FileKind};
 use super::hash;

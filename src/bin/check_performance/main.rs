@@ -2,7 +2,7 @@
 #![allow(clippy::print_stdout)]
 
 //! Performance regression gate.
-// slugaudit-line-exception: approved-by=agent; reason=criterion invocation argv, per-row regression comparison with budget tracking, and the verdict/warning/failure printer share one process so the bin's single user-visible CLI output stays coherent; extracting the comparison loop would force cross-module State for the baseline-entry budget fields and duplicate the threshold + record-mode arg parsing
+// slugaudit-line-exception: approved-by=slugthug; reason=criterion invocation argv, per-row regression comparison with budget tracking, and the verdict/warning/failure printer share one process so the bin's single user-visible CLI output stays coherent; extracting the comparison loop would force cross-module state for the baseline-entry budget fields and duplicate the threshold + record-mode arg parsing
 //!
 //! Replaces `tools/check_performance.sh`. Runs the discovery, parsing,
 //! and search criterion benches with a reduced sample size (fast enough

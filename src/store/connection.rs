@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=agent; reason=open/configure/permissions/symlink guards are a single atomic open contract; network-filesystem detection already split into netfs.rs
+// slugaudit-line-exception: approved-by=slugthug; reason=open/configure/permissions/symlink guards are a single atomic open contract; network-filesystem detection already split into netfs.rs
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 use std::time::Duration;

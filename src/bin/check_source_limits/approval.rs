@@ -1,7 +1,7 @@
 //! Parser for source-limit exception comments.
 
 const NEEDLE: &str = "slugaudit-line-exception:";
-const AGENT: &str = "approved-by=agent;";
+const AGENT: &str = "approved-by=slugthug;";
 const HUMAN: &str = "approved-by=human-user;";
 
 /// Returns the exception reason. Legacy agent approvals remain valid for

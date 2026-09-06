@@ -110,7 +110,7 @@ fn verify_checksum_rejects_a_mismatching_file() {
 fn target_binary_prefers_the_installed_stable_path() {
     let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("temp dir");
-    let slugthug = temp.path().join("bin");
+    let slugthug = temp.path().join("slugaudit");
     std::fs::create_dir_all(&slugthug).expect("create dir");
     let stable = slugthug.join("slugaudit-mcp");
     std::fs::write(&stable, b"fake installed binary").expect("write fake install");

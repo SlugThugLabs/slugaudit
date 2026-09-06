@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-INSTALL_DIR="${HOME}/.slugthug/bin"
+INSTALL_DIR="${HOME}/.slugthug/slugaudit"
 BINARY_NAME="slugaudit-mcp"
 TARGET_PATH="${INSTALL_DIR}/${BINARY_NAME}"
 GITHUB_REPO="SlugThugLabs/slugaudit"
@@ -61,7 +61,7 @@ echo "✅ SlugAudit successfully installed to: ${TARGET_PATH}"
 echo ""
 echo "Next steps:"
 echo "  1. Add to PATH (if not already present):"
-echo "     export PATH=\"\${HOME}/.slugthug/bin:\${PATH}\""
+echo "     export PATH=\"\${HOME}/.slugthug/slugaudit:\${PATH}\""
 echo ""
 echo "  2. Connect to your AI coding agent (Claude Code, Cursor, Codex, Bob, Grok):"
 echo "     ${TARGET_PATH} connect"

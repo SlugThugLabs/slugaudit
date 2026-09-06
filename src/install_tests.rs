@@ -13,7 +13,7 @@ fn install_to(temp_dir: &tempfile::TempDir) -> PathBuf {
     temp_env::with_var("SLUGTHUG_HOME", Some(temp_dir.path().as_os_str()), || {
         run_install().expect("install succeeds");
     });
-    temp_dir.path().join("bin").join("slugaudit-mcp")
+    temp_dir.path().join("slugaudit").join("slugaudit-mcp")
 }
 
 #[test]
@@ -27,6 +27,18 @@ fn slugthug_home_prefers_slugthug_home_over_home() {
         ],
         || assert_eq!(slugthug_home().expect("home resolves"), temp.path()),
     );
+}
+
+#[test]
+fn slugaudit_dir_resolves_under_slugthug_home() {
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("temp dir");
+    temp_env::with_var("SLUGTHUG_HOME", Some(temp.path().as_os_str()), || {
+        assert_eq!(
+            slugaudit_dir().expect("slugaudit dir resolves"),
+            temp.path().join("slugaudit")
+        );
+    });
 }
 
 #[test]
@@ -65,7 +77,7 @@ fn run_install_copies_the_running_binary_to_a_stable_path() {
 
     assert!(
         target.exists(),
-        "the binary must land at $SLUGTHUG_HOME/bin/slugaudit-mcp"
+        "the binary must land at $SLUGTHUG_HOME/slugaudit/slugaudit-mcp"
     );
     let source = running_binary().expect("running binary");
     assert_ne!(target, source, "the install target differs from the source");
@@ -104,9 +116,10 @@ fn path_config_maps_bash_shell_to_bashrc_export() {
             ("SHELL", Some(std::ffi::OsStr::new("/bin/bash"))),
         ],
         || {
-            let (config, line) = path_config(Path::new("/x/slugthug/bin")).expect("path config");
+            let (config, line) =
+                path_config(Path::new("/x/slugthug/slugaudit")).expect("path config");
             assert_eq!(config, temp.path().join(".bashrc"));
-            assert_eq!(line, "export PATH=\"/x/slugthug/bin:$PATH\"");
+            assert_eq!(line, "export PATH=\"/x/slugthug/slugaudit:$PATH\"");
         },
     );
 }
@@ -121,9 +134,10 @@ fn path_config_maps_fish_shell_to_config_fish() {
             ("SHELL", Some(std::ffi::OsStr::new("/usr/bin/fish"))),
         ],
         || {
-            let (config, line) = path_config(Path::new("/x/slugthug/bin")).expect("path config");
+            let (config, line) =
+                path_config(Path::new("/x/slugthug/slugaudit")).expect("path config");
             assert_eq!(config, temp.path().join(".config/fish/config.fish"));
-            assert_eq!(line, "fish_add_path /x/slugthug/bin");
+            assert_eq!(line, "fish_add_path /x/slugthug/slugaudit");
         },
     );
 }
@@ -138,9 +152,10 @@ fn path_config_defaults_to_bashrc_without_shell() {
             ("SHELL", None::<&std::ffi::OsStr>),
         ],
         || {
-            let (config, line) = path_config(Path::new("/x/slugthug/bin")).expect("path config");
+            let (config, line) =
+                path_config(Path::new("/x/slugthug/slugaudit")).expect("path config");
             assert_eq!(config, temp.path().join(".bashrc"));
-            assert!(line.contains("/x/slugthug/bin"));
+            assert!(line.contains("/x/slugthug/slugaudit"));
         },
     );
 }
@@ -149,7 +164,7 @@ fn path_config_defaults_to_bashrc_without_shell() {
 fn add_to_path_is_idempotent() {
     let _guard = TEST_ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("temp dir");
-    let bin_dir = temp.path().join("bin");
+    let bin_dir = temp.path().join("slugaudit");
     temp_env::with_vars(
         [
             ("HOME", Some(temp.path().as_os_str())),

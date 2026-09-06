@@ -2,7 +2,7 @@
 //! through the real publish pipeline (discovery → sample → parse → the
 //! graph resolver → write), not just at the unit level inside
 //! `graph::resolve_imports` itself.
-// slugaudit-line-exception: approved-by=agent; reason=one end-to-end test per edge scenario (relative/crate/external/replace/cascade + the generic-walker multi-language mechanism test) sharing the Edge/edges() harness and `use super::*` access to the publish pipeline; splitting would fragment the scenario set from its shared harness
+// slugaudit-line-exception: approved-by=slugthug; reason=one end-to-end test per edge scenario (relative/crate/external/replace/cascade + the generic-walker multi-language mechanism test) sharing the Edge/edges() harness and `use super::*` access to the publish pipeline; splitting would fragment the scenario set from its shared harness
 use super::*;
 use crate::store::open_read_write;
 use crate::sync::test_support::write;

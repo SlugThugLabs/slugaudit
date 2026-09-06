@@ -170,7 +170,7 @@ fn menu_runs_the_install_step_into_the_slugthug_home() {
         stdout.contains("Installed slugaudit-mcp to"),
         "the install step must confirm its destination, got: {stdout}"
     );
-    let installed = temp.path().join("bin").join("slugaudit-mcp");
+    let installed = temp.path().join("slugaudit").join("slugaudit-mcp");
     assert!(
         installed.exists(),
         "option 1 must have written the binary at {}",

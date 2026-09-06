@@ -13,7 +13,7 @@
 //! implementation: finalize-on-newline runs at the top of the loop
 //! regardless of state, so each `\n` inside a raw string still resets
 //! `has_code`).
-// slugaudit-line-exception: approved-by=agent; reason=the token-aware counter's comment/string/char/raw-string states are one atomic scanner; splitting the state machine would fragment the exact token-coverage semantics the gate depends on
+// slugaudit-line-exception: approved-by=slugthug; reason=the token-aware counter's comment/string/char/raw-string states are one atomic scanner; splitting the state machine would fragment the exact token-coverage semantics the gate depends on
 
 use std::path::{Path, PathBuf};
 

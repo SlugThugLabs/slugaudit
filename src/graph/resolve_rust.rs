@@ -8,7 +8,7 @@
 //! glob imports (`use super::*;` points at the globbed module's file),
 //! non-`mod.rs` module trees, and trailing item names that live in a
 //! module's own file rather than a nested one.
-// slugaudit-line-exception: approved-by=agent; reason=one resolution pipeline per Rust import form (workspace crate anchoring, super/self module-tree walk, item-vs-module segment shortening) where every helper is mutually recursive on the same known_paths contract; splitting would force pub(crate) exports across files and duplicate the candidate-matching loop
+// slugaudit-line-exception: approved-by=slugthug; reason=one resolution pipeline per Rust import form (workspace crate anchoring, super/self module-tree walk, item-vs-module segment shortening) where every helper is mutually recursive on the same known_paths contract; splitting would force pub(crate) exports across files and duplicate the candidate-matching loop
 
 use super::reference::ImportReference;
 use super::resolve::{normalize_join, parent_dir};

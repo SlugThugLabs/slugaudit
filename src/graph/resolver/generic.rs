@@ -5,7 +5,7 @@
 //! [`super::types`]; the raw import-statement parser lives in
 //! [`super::extract`]. This module owns the dispatcher contract and the
 //! resolution step — the two halves of the runtime API.
-// slugaudit-line-exception: approved-by=agent; reason=trait + config + resolver struct + resolve() are one cohesive dispatcher contract; the outcome model (types.rs) and raw-text extraction (extract.rs) are already split out
+// slugaudit-line-exception: approved-by=slugthug; reason=trait + config + resolver struct + resolve() are one cohesive dispatcher contract; the outcome model (types.rs) and raw-text extraction (extract.rs) are already split out
 
 use std::collections::HashSet;
 

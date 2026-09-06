@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=agent; reason=one migration per schema version plus their version-pinning tests form a single forward-only sequence where each step depends on the ones before it; splitting by migration would scatter the ordering invariant (and the exact-version pin) across files
+// slugaudit-line-exception: approved-by=slugthug; reason=one migration per schema version plus their version-pinning tests form a single forward-only sequence where each step depends on the ones before it; splitting by migration would scatter the ordering invariant (and the exact-version pin) across files
 use rusqlite::Connection;
 use thiserror::Error;
 
