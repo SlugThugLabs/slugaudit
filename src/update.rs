@@ -124,6 +124,10 @@ fn apply_update(latest: &LatestRelease, target: &Path) -> Result<(), UpdateError
         }
 
         std::fs::rename(&temp_exe, target)?;
+        let _ = std::fs::remove_file(dir.join("slugaudit-mcp"));
+        if let Some(home) = crate::install::slugthug_home() {
+            let _ = std::fs::remove_file(home.join("bin").join("slugaudit-mcp"));
+        }
         Ok(())
     })();
 

@@ -34,6 +34,33 @@ impl LatestRelease {
             checksums_url: format!("{base}/SHA256SUMS"),
         }
     }
+
+    /// Parses release metadata from GitHub release JSON, preferring asset URLs
+    /// from the release payload over formatted URL templates.
+    pub(crate) fn from_json(json: &serde_json::Value) -> Result<Self, UpdateError> {
+        let tag = json
+            .get("tag_name")
+            .and_then(|value| value.as_str())
+            .ok_or(UpdateError::NoTag)?;
+
+        let mut release = Self::from_tag(tag);
+        if let Some(assets) = json.get("assets").and_then(|a| a.as_array()) {
+            for asset in assets {
+                let name = asset.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                let url = asset.get("browser_download_url").and_then(|u| u.as_str());
+                if name == ASSET
+                    && let Some(u) = url
+                {
+                    release.asset_url = u.to_string();
+                } else if name == "SHA256SUMS"
+                    && let Some(u) = url
+                {
+                    release.checksums_url = u.to_string();
+                }
+            }
+        }
+        Ok(release)
+    }
 }
 
 /// Fetches the newest published release metadata.
@@ -42,12 +69,7 @@ pub(crate) fn fetch_latest_release() -> Result<LatestRelease, UpdateError> {
     let body = curl_get(&url)?;
     let json: serde_json::Value =
         serde_json::from_str(&body).map_err(|error| UpdateError::Json(error.to_string()))?;
-    let tag = json
-        .get("tag_name")
-        .and_then(|value| value.as_str())
-        .ok_or(UpdateError::NoTag)?
-        .to_string();
-    Ok(LatestRelease::from_tag(&tag))
+    LatestRelease::from_json(&json)
 }
 
 /// Runs a single `curl -fsSL <url>` and returns stdout. `-f` fails on HTTP

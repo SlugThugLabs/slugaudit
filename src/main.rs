@@ -15,15 +15,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli::parse_args(std::env::args().skip(1)) {
         Ok(cmd) => match cmd {
             Command::Connect { agent } => {
-                connect::run_connect(agent.as_deref())?;
+                if let Err(error) = connect::run_connect(agent.as_deref()) {
+                    eprintln!("Error: {error}");
+                    std::process::exit(1);
+                }
                 return Ok(());
             }
             Command::Disconnect { agent } => {
-                connect::run_disconnect(agent.as_deref())?;
+                if let Err(error) = connect::run_disconnect(agent.as_deref()) {
+                    eprintln!("Error: {error}");
+                    std::process::exit(1);
+                }
                 return Ok(());
             }
-            Command::Install => return Ok(install::run_install()?),
-            Command::Update => return Ok(update::run_update()?),
+            Command::Install => {
+                if let Err(error) = install::run_install() {
+                    eprintln!("Error: {error}");
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
+            Command::Update => {
+                if let Err(error) = update::run_update() {
+                    eprintln!("Error: {error}");
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
             Command::Help => {
                 print!("{}", cli::usage());
                 return Ok(());

@@ -84,6 +84,11 @@ pub fn run_install() -> Result<(), InstallError> {
         inner,
     })?;
 
+    let _ = std::fs::remove_file(bin_dir.join("slugaudit-mcp"));
+    if let Some(home) = slugthug_home() {
+        let _ = std::fs::remove_file(home.join("bin").join("slugaudit-mcp"));
+    }
+
     println!("Installed slugaudit to {}", target.display());
     // `install` is human-facing; `connect` follows naturally after PATH has
     // it, so offer to add the dir rather than forcing the user to type an
