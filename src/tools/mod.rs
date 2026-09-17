@@ -16,6 +16,8 @@ pub(crate) mod context;
 mod finding;
 mod finding_read;
 mod health;
+mod leads;
+mod leads_mechanics;
 mod project_control;
 mod query;
 mod query_value;
@@ -34,12 +36,26 @@ pub use context::ensure_synced;
 pub use finding::{FindingRequest, FindingResponse, finding};
 pub use finding_read::{FindingReadEntry, FindingReadRequest, FindingReadResponse, finding_read};
 pub use health::{HealthRequest, HealthResponse, health};
+pub use leads::{LeadRow, LeadsRequest, LeadsResponse, MechanicCount, leads};
 pub use project_control::{ProjectControlRequest, ProjectControlResponse, project_control};
 pub use query::{QueryRequest, QueryResponse, query};
 pub use report::{ReportRequest, ReportResponse, report};
 pub use structure::{StructureRequest, StructureResponse, structure};
 
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Single definition of "this path looks like a credential file". Shared by
+/// `report`'s count and `leads`' `credential_files` rows so the two surfaces
+/// can never disagree about what they are counting. The text is byte-for-byte
+/// what `report` inlined before this constant existed.
+pub(crate) const CREDENTIAL_PATH_PREDICATE: &str = "lower(path) LIKE '%.env' \
+    OR lower(path) LIKE '%.env.%' \
+    OR lower(path) LIKE '%.pem' \
+    OR lower(path) LIKE '%.key' \
+    OR lower(path) LIKE '%.p12' \
+    OR lower(path) LIKE '%.pfx' \
+    OR lower(path) LIKE '%/id_rsa%' \
+    OR lower(path) LIKE '%/id_ed25519%'";
 
 /// Total number of tool calls the MCP server has served since process
 /// start. Includes both successful and errored calls — operators

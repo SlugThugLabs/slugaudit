@@ -1,3 +1,4 @@
+use super::CREDENTIAL_PATH_PREDICATE;
 use super::context::{ensure_synced, with_verified_read};
 use crate::progress::ProgressSink;
 use crate::sync;
@@ -236,14 +237,7 @@ fn build_report(
     // case, and the patterns are deliberately narrow — ordinary source
     // files never match them.
     let credential_pattern_file_count: i64 = connection.query_row(
-        "SELECT count(*) FROM files WHERE lower(path) LIKE '%.env' \
-            OR lower(path) LIKE '%.env.%' \
-            OR lower(path) LIKE '%.pem' \
-            OR lower(path) LIKE '%.key' \
-            OR lower(path) LIKE '%.p12' \
-            OR lower(path) LIKE '%.pfx' \
-            OR lower(path) LIKE '%/id_rsa%' \
-            OR lower(path) LIKE '%/id_ed25519%'",
+        &format!("SELECT count(*) FROM files WHERE {CREDENTIAL_PATH_PREDICATE}"),
         [],
         |row| row.get(0),
     )?;

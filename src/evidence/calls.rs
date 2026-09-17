@@ -80,12 +80,18 @@ fn walk(node: Node, source: &str, items: &mut Vec<EvidenceItem>, counter: &mut u
 
 fn callee_node(node: &Node, macro_call: bool) -> Option<Node> {
     named_children(node).find(|child| {
-        macro_call || child.kind() == "identifier" || child.kind() == "scoped_identifier"
+        macro_call
+            || child.kind() == "identifier"
+            || child.kind() == "scoped_identifier"
+            || child.kind() == "field_expression"
     })
 }
 
+/// The simple name of a callee. `field_expression` (`v.unwrap`) recurses to
+/// its last named child — the `field_identifier` — so a method call reports
+/// `unwrap`, while `callee_text` keeps the receiver for context.
 fn simple_name(node: Node, source: &str) -> Option<String> {
-    if node.kind() == "identifier" {
+    if node.kind() == "identifier" || node.kind() == "field_identifier" {
         return Some(source[node.start_byte()..node.end_byte()].to_owned());
     }
     named_children(&node)

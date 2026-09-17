@@ -18,8 +18,11 @@ use crate::tools;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{
-    Implementation, ProtocolVersion, RequestMetaObject, ServerCapabilities, ServerInfo,
+    Implementation, ListResourcesResult, PaginatedRequestParams, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, RequestMetaObject,
+    ServerCapabilities, ServerInfo,
 };
+use rmcp::service::RequestContext;
 use rmcp::{ErrorData, Peer, RoleServer, ServerHandler, tool, tool_handler, tool_router};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -32,7 +35,15 @@ const INSTRUCTIONS: &str = "SlugAudit does not audit. It is not an auditor and n
     \
     WORKFLOW: Always query first, then read files only for what the queries surface. \
     Use `report` for a quick snapshot (file count, languages, evidence kinds, open findings). \
+    Use `leads` when you want mechanical signal without composing SQL: called with no `mechanic` \
+    it returns every mechanic id with its count, and called with one id it returns that \
+    mechanic's file/line rows, paged. Counts are unranked — they say how many observations of \
+    that shape exist, never whether any of them matters. \
     Then use `query` to locate exactly which files and lines matter before reading anything. \
+    \
+    RESOURCES: `slugaudit://queries/README.md` is a cookbook of pre-built SQL and Tree-sitter \
+    recipes; `slugaudit://schema.sql` is the index schema. Read one over `resources/read` \
+    instead of rediscovering the schema by trial. \
     \
     QUERY SCHEMA: Key tables are `files` (every source file with path, language, content), \
     `evidence` (Symbol, Import, Comment, Structure extracted from each file — payload is JSON, \
@@ -44,7 +55,8 @@ const INSTRUCTIONS: &str = "SlugAudit does not audit. It is not an auditor and n
     Use `structure` for Tree-sitter structural pattern matching, `finding` to persist \
     a conclusion you have actually reviewed, and `finding_read` to retrieve findings scoped to \
     the current agent session. Use `project_control` with `action` = `\"on\"` to enable a \
-    project or `\"off\"` to disable it. Never claim SlugAudit identified, rated, or \
+    project or `\"off\"` to disable it; every other tool fails until the project is enabled, so \
+    enable before the first read. Never claim SlugAudit identified, rated, or \
     recommended anything — it cannot; evidence is not judgment.";
 
 #[derive(Clone)]
@@ -131,6 +143,29 @@ impl SlugAuditServer {
     ) -> Result<Json<tools::ReportResponse>, ErrorData> {
         self.dispatch(meta, peer, "report", move |sink, manager| {
             tools::report(&request, sink.as_ref(), &manager)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Want somewhere to start? Mechanical facts extracted from the index — \
+         call sites by callee name (unwrap, expect, panic, todo, unimplemented, assert), \
+         diagnostics, TODO/FIXME/HACK comment markers, and credential-shaped files. Nothing here \
+         is judged, ranked, scored, or ordered by importance: every item is a fact, and deciding \
+         which of them matter is entirely your call. Call with only `path` to get a count per \
+         mechanic, then call again with one `mechanic` id to get file/line rows, paging with \
+         `limit`/`offset`. Callee-based mechanics cover Rust only in this revision (the call \
+         walker is Rust-only); diagnostics, comment markers, and credential files cover every \
+         indexed language."
+    )]
+    async fn leads(
+        &self,
+        meta: RequestMetaObject,
+        peer: Peer<RoleServer>,
+        request: Parameters<tools::LeadsRequest>,
+    ) -> Result<Json<tools::LeadsResponse>, ErrorData> {
+        self.dispatch(meta, peer, "leads", move |sink, manager| {
+            tools::leads(&request, sink.as_ref(), &manager)
         })
         .await
     }
@@ -263,12 +298,39 @@ impl SlugAuditServer {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for SlugAuditServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_protocol_version(ProtocolVersion::LATEST)
-            .with_instructions(INSTRUCTIONS)
-            // Without this, rmcp fills `serverInfo` from its own build
-            // environment and every MCP client shows the connected server
-            // as "rmcp" (the library's name/version) instead of SlugAudit.
-            .with_server_info(Implementation::new("slugaudit", env!("CARGO_PKG_VERSION")))
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+        .with_protocol_version(ProtocolVersion::LATEST)
+        .with_instructions(INSTRUCTIONS)
+        // Without this, rmcp fills `serverInfo` from its own build
+        // environment and every MCP client shows the connected server
+        // as "rmcp" (the library's name/version) instead of SlugAudit.
+        .with_server_info(Implementation::new("slugaudit", env!("CARGO_PKG_VERSION")))
+    }
+
+    /// The embedded cookbook and schema. Pull-based: an agent that never
+    /// reads them pays nothing for them.
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        Ok(ListResourcesResult::with_all_items(crate::resources::list()))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        crate::resources::read(&request.uri)
+            .map(|contents| ReadResourceResult::new(vec![contents]).into())
+            .ok_or_else(|| {
+                ErrorData::resource_not_found(format!("unknown resource `{}`", request.uri), None)
+            })
     }
 }

@@ -10,7 +10,11 @@ fn extracts_direct_qualified_and_macro_calls() {
 
     let names: Vec<&str> = calls
         .iter()
-        .map(|item| item.payload["callee_name"].as_str().expect("callee_name as string"))
+        .map(|item| {
+            item.payload["callee_name"]
+                .as_str()
+                .expect("callee_name as string")
+        })
         .collect();
     assert!(names.contains(&"helper"));
     assert!(names.contains(&"start"));
@@ -42,6 +46,16 @@ fn calls_have_spans_and_do_not_include_definition_names() {
         call.span,
         crate::model::SpanAvailability::Present(_)
     ));
+}
+
+#[test]
+fn method_calls_report_the_field_name_as_callee_name() {
+    let source = "fn run(v: Option<u8>) -> u8 {\n    v.unwrap()\n}\n";
+    let calls = extract_rust(source);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].payload["callee_name"], "unwrap");
+    assert_eq!(calls[0].payload["callee_text"], "v.unwrap");
+    assert_eq!(calls[0].payload["caller"], "run");
 }
 
 #[test]
