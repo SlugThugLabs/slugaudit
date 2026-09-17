@@ -210,15 +210,18 @@ mod tests {
 
     #[test]
     fn from_env_overrides_u64_fields() {
-        temp_env::with_var("SLUGAUDIT_MAX_FILE_BYTES", Some("16777216"), || {
-            let limits = ResourceLimits::from_env();
-            assert_eq!(limits.max_file_bytes, 16_777_216);
-            // Other fields remain at defaults
-            assert_eq!(
-                limits.max_total_import_bytes,
-                ResourceLimits::default().max_total_import_bytes
-            );
-        });
+        temp_env::with_vars(
+            [
+                ("SLUGAUDIT_PROFILE", Some("lean")),
+                ("SLUGAUDIT_MAX_FILE_BYTES", Some("16777216")),
+            ],
+            || {
+                let limits = ResourceLimits::from_env();
+                assert_eq!(limits.max_file_bytes, 16_777_216);
+                // Other fields remain at the selected profile's defaults.
+                assert_eq!(limits.max_total_import_bytes, 2 * 1024 * 1024 * 1024);
+            },
+        );
     }
 
     #[test]
