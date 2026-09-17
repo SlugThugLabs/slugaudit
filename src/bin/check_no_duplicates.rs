@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::print_stdout)]
+// Same production panic ban as the library root; see `lib.rs` for why
+// `expect` is denied alongside `unwrap`.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 //! No-duplicates gate.
 // slugaudit-line-exception: approved-by=slugthug; reason=the bin owns two orthogonal gate inputs (commit-subject dedupe via git log, and #[test] fn-name dedupe across src/ + tests/) and they share one argv parser, one process exit-code contract, and one failure-printer; splitting into separate bins would duplicate that scaffolding, and collapsing the test-name collector into a sibling module under src/lib.rs would smuggle production code into a path sized for internal-only modules
@@ -20,7 +23,10 @@ use std::process::{Command, ExitCode, Stdio};
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
-    let mut project_root = std::env::current_dir().expect("cwd");
+    let Ok(mut project_root) = std::env::current_dir() else {
+        eprintln!("cannot determine the current directory");
+        return ExitCode::from(2);
+    };
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--help" => {

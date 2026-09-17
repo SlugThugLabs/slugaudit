@@ -1,6 +1,9 @@
 //! Production Rust code-line limit checker.
 #![forbid(unsafe_code)]
 #![allow(clippy::print_stdout)]
+// Same production panic ban as the library root; see `lib.rs` for why
+// `expect` is denied alongside `unwrap`.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 //!
 //! Replaces `tools/check_source_limits.sh`. Counts the number of lines
@@ -42,7 +45,10 @@ fn is_test_file(path: &Path) -> bool {
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
-    let mut project_root = std::env::current_dir().expect("cwd");
+    let Ok(mut project_root) = std::env::current_dir() else {
+        eprintln!("cannot determine the current directory");
+        return ExitCode::from(2);
+    };
 
     while let Some(arg) = args.next() {
         match arg.as_str() {

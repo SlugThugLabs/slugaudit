@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::print_stdout)]
+// Same production panic ban as the library root; see `lib.rs` for why
+// `expect` is denied alongside `unwrap`.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 //! Performance regression gate.
 // slugaudit-line-exception: approved-by=slugthug; reason=criterion invocation argv, per-row regression comparison with budget tracking, and the verdict/warning/failure printer share one process so the bin's single user-visible CLI output stays coherent; extracting the comparison loop would force cross-module state for the baseline-entry budget fields and duplicate the threshold + record-mode arg parsing

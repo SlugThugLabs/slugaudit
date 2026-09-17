@@ -7,6 +7,15 @@
 // below because their stdout writes happen before serve mode, as the
 // user-facing CLI interface.
 #![deny(clippy::print_stdout)]
+// Production code must not panic on an error value. `unwrap` and `expect`
+// are denied outside `cfg(test)`, where a panic is exactly the harness's
+// failure signal and the conventional idiom. `expect` is included rather
+// than exempted because the two differ only in whether the panic carries a
+// reason: allowing `expect` while banning `unwrap` would push callers to
+// the less informative form. Nothing in this crate needs either - fallible
+// work returns `Result`, and the only genuinely fatal conditions (failed
+// process startup) report the error and choose an exit code.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod cli;
 pub mod connect;
