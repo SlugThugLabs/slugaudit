@@ -29,7 +29,10 @@ fn reads_the_schema_resource() {
         ResourceContents::TextResourceContents { text, .. } => text,
         other => panic!("expected text contents, got {other:?}"),
     };
-    assert!(text.contains("CREATE TABLE"), "schema is not empty");
+    assert!(
+        text.starts_with("-- SlugAudit per-project schema"),
+        "schema resource serves the canonical schema, not an empty stub"
+    );
 }
 
 #[test]
