@@ -4,7 +4,7 @@ Welcome! When inspecting, auditing, or developing within this repository, follow
 
 ## 1. Architectural Source of Truth
 - **[`.planning/ARCHITECTURE.md`](.planning/ARCHITECTURE.md)** is the single, authoritative source of truth for the entire codebase.
-- Consult it for the complete module map, data flow pipelines, process lifecycle, and the **10 core architectural invariants** (including `#![forbid(unsafe_code)]`, CAS atomic publishing, and the disposable SQLite database design).
+- Consult it for the complete module map, data flow pipelines, process lifecycle, and the **11 core architectural invariants** (including `#![forbid(unsafe_code)]`, CAS atomic publishing, the no-panic-on-error policy, and the disposable SQLite database design).
 
 ## 2. Repository Layout & The `.planning/` Directory
 - `.planning/`: High-density architectural and planning artifacts.
@@ -14,10 +14,11 @@ Welcome! When inspecting, auditing, or developing within this repository, follow
 - `src/`: Production Rust implementation.
   - `server.rs`: Declarative MCP tool router.
   - `server_runner.rs`: Semaphore-gated (8 permits) blocking-pool execution.
+  - `resources.rs`: Static MCP resources — the query cookbook and the index schema.
   - `sync/`: Indexing, discovery, and watcher reconciliation pipeline.
   - `store/`: Hardened SQLite storage (read-only query connections, WAL mode).
   - `watch/`: File watching and change reconciliation.
-  - `tools/`: MCP tool handlers (`report`, `query`, `structure`, `finding`, `finding_read`, `health`, `project_control`).
+  - `tools/`: MCP tool handlers (`report`, `query`, `structure`, `leads`, `finding`, `finding_read`, `health`, `project_control`).
 - `docs/`: MCP client setup guides for AI agents.
 - `tests/`: Integration and stdio protocol test suites.
 
@@ -34,4 +35,8 @@ When performing code audits or symbol lookups on this codebase, prefer the nativ
 - **`report`**: High-level project shape, file counts, and language breakdown.
 - **`query`**: Read-only SQL queries against the index. Inspect code and file contents directly via `files.content` without disk reads. Always join `evidence` with `files` (`ON evidence.file_id = files.id`).
 - **`structure`**: Tree-sitter AST queries returning exact source `text`, line numbers, and spans (e.g. Rust: `(function_item name: (identifier) @name body: (block) @body)`).
+- **`leads`**: Per-mechanic counts plus paged file/line rows for mechanical observations — call-site shapes (unwrap/expect/panic/todo/assert), diagnostics, TODO/FIXME/HACK/XXX comment markers, credential-shaped paths. Unranked: a count says how many observations of a shape exist, never whether any matters.
 - **`finding` / `finding_read`**: Record and inspect validated findings bound to content hashes.
+
+## 5. Production Code Must Not Panic
+`clippy::unwrap_used` and `clippy::expect_used` are denied outside `cfg(test)` (`src/lib.rs` and every gate binary). Fallible work returns `Result`; a genuinely fatal condition (failed process startup) reports the error and picks an exit code instead of panicking. Tests are exempt — there a panic *is* the failure signal.

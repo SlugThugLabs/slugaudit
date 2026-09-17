@@ -84,7 +84,11 @@ fresh as files change.
 
 The intended workflow is simple: SlugAudit narrows the search and returns
 compact facts; the AI reads only the relevant source and spends its context
-on reasoning instead of repository housekeeping.
+on reasoning instead of repository housekeeping. Two static,
+compile-time-embedded resources are also available over `resources/read` — a
+pre-built SQL/Tree-sitter cookbook at `slugaudit://queries/README.md` and the
+canonical index schema at `slugaudit://schema.sql` — and `leads` returns
+mechanical counts and paged file/line rows without composing SQL.
 
 ### Output Control & Context Optimization
 

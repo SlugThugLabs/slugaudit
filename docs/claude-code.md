@@ -28,15 +28,16 @@ and changes—so Claude can spend more context on analysis instead of reading
 the same source repeatedly. After connection, this should be invisible in
 normal use.
 
-Once connected, Claude Code gains seven tools. It enables the current
+Once connected, Claude Code gains eight tools. It enables the current
 project internally when it first needs the index; you should not need to run
 project setup yourself:
 
 | Tool | What it does |
 |------|-------------|
 | `query` | Arbitrary read-only SQL against the project's SQLite index. The real workhorse — joins, CTEs, the lot. Row- and byte-capped with `next_offset` paging. |
-| `report` | Automatic snapshot of the current revision: file counts, languages, what changed since last import. No score, no risk leads. |
+| `report` | Automatic snapshot of the current revision: file counts, languages, what changed since last import. No score, no judgments. |
 | `structure` | Tree-sitter AST queries across 300+ languages. Single- or multi-file search with lean preview snippets (`full_text: false`) or full blocks (`full_text: true`). |
+| `leads` | Counts and paged file/line rows for mechanical observations — call-site shapes (unwrap/expect/panic/todo/assert), diagnostics, TODO/FIXME/HACK/XXX comment markers, and credential-shaped paths. Unranked: no severity, no verdict. |
 | `finding` | The one write tool — records a conclusion the AI has personally reviewed, bound to the file's hash. |
 | `finding_read` | Session-gated finding query — returns only the current agent session's findings (never another session's conclusions). |
 | `project_control` | Enable/disable SlugAudit for a project (`action = "on"` / `"off"`). |
@@ -50,8 +51,12 @@ the judging.
 Start a fresh Claude Code session after connecting and work normally. Claude
 should call `project_control` internally on first use, then use `report`,
 `query`, and `structure` to locate the relevant source before reading it.
-The goal is not another workflow for you to operate; it is less repetitive
-repository reading for Claude.
+Two static, compile-time-embedded resources are also available over
+`resources/read` — a pre-built SQL/Tree-sitter cookbook at
+`slugaudit://queries/README.md` and the canonical index schema at
+`slugaudit://schema.sql` — and `leads` returns mechanical counts and paged
+file/line rows without composing SQL. The goal is not another workflow for
+you to operate; it is less repetitive repository reading for Claude.
 
 
 Subsequent sessions reuse the disposable index and re-verify freshness,

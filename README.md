@@ -115,7 +115,7 @@ Start a normal session with your agent and ask:
 
 > *"Audit our authentication flow. Are token expiration checks enforced on every endpoint?"*
 
-Your agent will call `report`, `query`, and `structure` in the background—answering with exact line ranges in milliseconds without flooding your context.
+Your agent will call `report`, `query`, and `structure` in the background—answering with exact line ranges in milliseconds without flooding your context. Two static resources ship with the server for pull-based use over `resources/read`—a pre-built SQL/Tree-sitter cookbook at `slugaudit://queries/README.md` and the canonical index schema at `slugaudit://schema.sql`—while `leads` returns mechanical counts and paged file/line rows without composing SQL.
 
 ---
 
@@ -142,13 +142,14 @@ Your agent will call `report`, `query`, and `structure` in the background—answ
 
 ---
 
-## 🛠️ The 7 Native MCP Tools
+## 🛠️ The 8 Native MCP Tools
 
 | Tool | Capability | Example AI Query |
 | :--- | :--- | :--- |
 | **`report`** | High-level project shape, file counts, language distribution, and syntax diagnostics. | `report(path: ".")` |
 | **`query`** | High-speed read-only SQL queries against the indexed repository. | `SELECT f.path, e.start_line, e.payload FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol'` |
 | **`structure`** | Tree-sitter AST queries across 300+ languages (supports single-file or multi-file search with lean snippets). | `structure(language: "rust", query: "(function_item name: (identifier) @fn)")` |
+| **`leads`** | Counts and paged file/line rows for mechanical observations—call-site shapes (unwrap/expect/panic/todo/assert), diagnostics, TODO/FIXME/HACK/XXX comment markers, and credential-shaped paths. Unranked: no severity, no verdict. | `leads(mechanic: "unwrap_calls", limit: 100)` |
 | **`finding`** | Store AI-reviewed conclusions bound to the file content hash. | Auto-invalidates if the underlying source lines change. |
 | **`finding_read`** | Session-gated finding retrieval (prevents cross-session hallucination). | Read only findings created by the current agent. |
 | **`project_control`** | Project enable/disable and cache management. | `project_control(action: "on", path: ".")` |
@@ -250,7 +251,7 @@ inside a user's project.
 
 All architectural blueprints, design decisions, and runtime index data live inside `.planning/`:
 
-- **Source of Truth**: [`.planning/ARCHITECTURE.md`](.planning/ARCHITECTURE.md) is the canonical, authoritative source of truth for the codebase. It details the complete module map, data flow, process lifecycle, security boundaries, and the 10 core architectural invariants governing SlugAudit.
+- **Source of Truth**: [`.planning/ARCHITECTURE.md`](.planning/ARCHITECTURE.md) is the canonical, authoritative source of truth for the codebase. It details the complete module map, data flow, process lifecycle, security boundaries, and the 11 core architectural invariants governing SlugAudit.
 - **Design & Planning History**: [`.planning/archive/`](.planning/archive/) preserves historical planning records, architectural decision logs, and dependency inventories.
 - **Disposable Runtime Cache**: `.planning/slugaudit/project.db` houses the SQLite index and evidence tables. This is derived data that SlugAudit automatically creates and synchronizes—it can be deleted at any time and any tool call will rebuild it from source.
 

@@ -39,7 +39,11 @@ you want.
 
 Start a fresh Grok session after connecting and work normally. Grok should
 call `project_control` internally when it first needs the index, then use
-`report`, `query`, and `structure` to narrow the source it reads. SlugAudit
+`report`, `query`, and `structure` to narrow the source it reads. Two static,
+compile-time-embedded resources are also available over `resources/read` — a
+pre-built SQL/Tree-sitter cookbook at `slugaudit://queries/README.md` and the
+canonical index schema at `slugaudit://schema.sql` — and `leads` returns
+mechanical counts and paged file/line rows without composing SQL. SlugAudit
 handles the repetitive repository fact-gathering so Grok can spend more
 context on actual analysis.
 

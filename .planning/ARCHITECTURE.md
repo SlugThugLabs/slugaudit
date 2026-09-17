@@ -24,7 +24,7 @@ stateless across projects: enabling a project on a sibling is a
 brand-new SQLite handle; cross-project questions go through the orchestrating
 agent, not through SlugAudit.
 
-The server exposes seven tools:
+The server exposes eight tools:
 
 - **`report`** — read-only snapshot of the indexed revision:
   file/language counts, parser failures, evidence-kind counts.
@@ -34,6 +34,11 @@ The server exposes seven tools:
 - **`structure`** — Tree-sitter structural pattern matching against
   indexed source content (300+ languages). Supports both single-file
   deep extraction and multi-file project searches with lean token snippets.
+- **`leads`** — mechanical observations without SQL: per-mechanic counts
+  (unwrap/expect/panic/todo/assert call sites, diagnostics, TODO/FIXME/HACK/
+  XXX comment markers, credential-shaped paths) plus paged file/line rows for
+  one mechanic. Unranked — a count says how many observations of a shape
+  exist, never whether any of them matters.
 - **`finding`** — the single write tool. Persists AI-authored findings
   bound to a file's current `content_hash`, auto-invalidating on file
   change.
@@ -52,6 +57,14 @@ state-bearing tools synchronize the relevant project before serving —
 if the watcher reports untrusted state (restart, integrity violation)
 the next tool call does a full publish instead of trusting the
 dirty-set.
+
+Beyond tools, the server advertises the MCP `resources` capability and serves
+two compile-time-embedded documents: `slugaudit://queries/README.md` (SQL and
+Tree-sitter cookbook) and `slugaudit://schema.sql` (the index schema). They are
+pull-based — nothing is pushed into a connecting agent's context — and reading
+one never touches a project database. The `initialize` response also carries an
+`instructions` string stating the does-not-audit boundary and the query-first
+workflow.
 
 ## Repository versus runtime scope
 
@@ -75,6 +88,7 @@ src/
 │                             (tool contracts only)
 ├── server_runner.rs          run_blocking worker pool (semaphore-bounded) +
 │                             MCP progress sink plumbing
+├── resources.rs              static MCP resources (query cookbook + schema)
 ├── cli.rs                    Command enum + parse_args + USAGE string
 ├── connect.rs                register the running binary with a target agent
 ├── connect_agents.rs         supported AI agents and editors registry
@@ -92,6 +106,7 @@ src/
 │   ├── query_value.rs        SQLite row → JSON conversion + size cap
 │   ├── structure.rs          tree-sitter pattern match
 │   ├── structure_source.rs   source loading + multi-file and snippet helpers
+│   ├── leads.rs              mechanical observation counts + rows (unranked)
 │   ├── finding.rs            the single write tool
 │   ├── finding_read.rs       session-gated finding query
 │   ├── project_control.rs    enable/disable
@@ -324,6 +339,16 @@ something else breaks loudly.
     session-scoped (invariant #9) and auto-invalidates on source
     change, so it follows the same philosophy: conclusions are
     ephemeral, evidence is reproducible.
+
+11. **Production code never panics on an error value.** `unwrap` and
+    `expect` are denied outside `cfg(test)` at the crate root
+    (`src/lib.rs`) and in every gate binary, so fallible work returns
+    `Result` and a genuinely fatal condition (failed process startup)
+    reports the error and selects an exit code. Together with invariant
+    #3 this is why a defect surfaces as one failed tool call —
+    `server_runner` maps a panicking blocking task to
+    `ErrorData::internal_error("tool task failed: …")` — rather than a
+    dead server. Tests are exempt: a panic there *is* the failure signal.
 
 ## Security and trust model
 
@@ -732,7 +757,7 @@ src/
 └── module_tests.rs        (same directory, sibling)
 ```
 
-The 57 `*_tests.rs` files share this pattern; `cargo test --lib` runs
+The 59 `*_tests.rs` files share this pattern; `cargo test --lib` runs
 all of them in parallel (`--test-threads=4` by default). Tool test
 modules occasionally split a focused scenario into a second sibling
 (e.g. `tools/finding_session_tests.rs`). Test files get a 500-code-line

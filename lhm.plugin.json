@@ -17,6 +17,10 @@
       "description": "Tree-sitter structural pattern matching across 300+ languages (supports single-file or multi-file AST search with lean snippets)."
     },
     {
+      "name": "leads",
+      "description": "Counts and paged file/line rows for mechanical observations \u2014 call-site shapes (unwrap/expect/panic/todo/assert), diagnostics, TODO/FIXME/HACK/XXX comment markers, and credential-shaped paths. Unranked: no severity, no verdict."
+    },
+    {
       "name": "finding",
       "description": "Records an audit finding against the evidence, bound to the file's current hash."
     },
