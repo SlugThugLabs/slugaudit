@@ -36,7 +36,7 @@ When performing code audits or symbol lookups on this codebase, prefer the nativ
 - **`query`**: Read-only SQL queries against the index. Inspect code and file contents directly via `files.content` without disk reads. Always join `evidence` with `files` (`ON evidence.file_id = files.id`).
 - **`structure`**: Tree-sitter AST queries returning exact source `text`, line numbers, and spans (e.g. Rust: `(function_item name: (identifier) @name body: (block) @body)`).
 - **`leads`**: Per-mechanic counts plus paged file/line rows for mechanical observations — call-site shapes (unwrap/expect/panic/todo/assert), diagnostics, TODO/FIXME/HACK/XXX comment markers, credential-shaped paths. Unranked: a count says how many observations of a shape exist, never whether any matters.
-- **`finding` / `finding_read`**: Record and inspect validated findings bound to content hashes.
+- **`finding` / `finding_read`**: Record and inspect validated findings bound to content hashes. Static `slugaudit://` resources carry the index schema and the SQL/Tree-sitter query recipes.
 
 ## 5. Production Code Must Not Panic
 `clippy::unwrap_used` and `clippy::expect_used` are denied outside `cfg(test)` (`src/lib.rs` and every gate binary). Fallible work returns `Result`; a genuinely fatal condition (failed process startup) reports the error and picks an exit code instead of panicking. Tests are exempt — there a panic *is* the failure signal.

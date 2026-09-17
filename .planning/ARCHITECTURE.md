@@ -28,17 +28,16 @@ The server exposes eight tools:
 
 - **`report`** — read-only snapshot of the indexed revision:
   file/language counts, parser failures, evidence-kind counts.
+- **`leads`** — unranked mechanical observations: call sites by callee name,
+  diagnostics, TODO/FIXME/HACK comment markers, credential-shaped files.
+  Counts by default; file/line rows for one mechanic on request. Callee-based
+  mechanics are Rust-only.
 - **`query`** — read-only arbitrary SQL on the project's own database.
   The connection itself refuses writes; the SQL is never parsed for
   write intent.
 - **`structure`** — Tree-sitter structural pattern matching against
   indexed source content (300+ languages). Supports both single-file
   deep extraction and multi-file project searches with lean token snippets.
-- **`leads`** — mechanical observations without SQL: per-mechanic counts
-  (unwrap/expect/panic/todo/assert call sites, diagnostics, TODO/FIXME/HACK/
-  XXX comment markers, credential-shaped paths) plus paged file/line rows for
-  one mechanic. Unranked — a count says how many observations of a shape
-  exist, never whether any of them matters.
 - **`finding`** — the single write tool. Persists AI-authored findings
   bound to a file's current `content_hash`, auto-invalidating on file
   change.
@@ -58,13 +57,8 @@ if the watcher reports untrusted state (restart, integrity violation)
 the next tool call does a full publish instead of trusting the
 dirty-set.
 
-Beyond tools, the server advertises the MCP `resources` capability and serves
-two compile-time-embedded documents: `slugaudit://queries/README.md` (SQL and
-Tree-sitter cookbook) and `slugaudit://schema.sql` (the index schema). They are
-pull-based — nothing is pushed into a connecting agent's context — and reading
-one never touches a project database. The `initialize` response also carries an
-`instructions` string stating the does-not-audit boundary and the query-first
-workflow.
+The same server exposes read-only MCP resources: the canonical database schema
+(`slugaudit://schema.sql`) and the query recipes under `slugaudit://queries/`.
 
 ## Repository versus runtime scope
 
@@ -89,6 +83,7 @@ src/
 ├── server_runner.rs          run_blocking worker pool (semaphore-bounded) +
 │                             MCP progress sink plumbing
 ├── resources.rs              static MCP resources (query cookbook + schema)
+├── resources_tests.rs        resources catalog tests
 ├── cli.rs                    Command enum + parse_args + USAGE string
 ├── connect.rs                register the running binary with a target agent
 ├── connect_agents.rs         supported AI agents and editors registry
@@ -107,6 +102,7 @@ src/
 │   ├── structure.rs          tree-sitter pattern match
 │   ├── structure_source.rs   source loading + multi-file and snippet helpers
 │   ├── leads.rs              mechanical observation counts + rows (unranked)
+│   ├── leads_tests.rs        leads tool tests — one behavior per test
 │   ├── finding.rs            the single write tool
 │   ├── finding_read.rs       session-gated finding query
 │   ├── project_control.rs    enable/disable

@@ -115,7 +115,7 @@ Start a normal session with your agent and ask:
 
 > *"Audit our authentication flow. Are token expiration checks enforced on every endpoint?"*
 
-Your agent will call `report`, `query`, and `structure` in the background—answering with exact line ranges in milliseconds without flooding your context. Two static resources ship with the server for pull-based use over `resources/read`—a pre-built SQL/Tree-sitter cookbook at `slugaudit://queries/README.md` and the canonical index schema at `slugaudit://schema.sql`—while `leads` returns mechanical counts and paged file/line rows without composing SQL.
+Your agent will call `report`, `leads`, `query`, and `structure` in the background—answering with exact line ranges in milliseconds without flooding your context.
 
 ---
 
@@ -147,9 +147,9 @@ Your agent will call `report`, `query`, and `structure` in the background—answ
 | Tool | Capability | Example AI Query |
 | :--- | :--- | :--- |
 | **`report`** | High-level project shape, file counts, language distribution, and syntax diagnostics. | `report(path: ".")` |
+| **`leads`** | Unranked mechanical facts — call sites by callee name (unwrap, expect, panic, todo, unimplemented, assert), diagnostics, TODO/FIXME/HACK markers, credential-shaped files. Rust-only for callee-based mechanics; counts by default, file/line rows for one mechanic on request. | `leads(path: ".")` |
 | **`query`** | High-speed read-only SQL queries against the indexed repository. | `SELECT f.path, e.start_line, e.payload FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol'` |
 | **`structure`** | Tree-sitter AST queries across 300+ languages (supports single-file or multi-file search with lean snippets). | `structure(language: "rust", query: "(function_item name: (identifier) @fn)")` |
-| **`leads`** | Counts and paged file/line rows for mechanical observations—call-site shapes (unwrap/expect/panic/todo/assert), diagnostics, TODO/FIXME/HACK/XXX comment markers, and credential-shaped paths. Unranked: no severity, no verdict. | `leads(mechanic: "unwrap_calls", limit: 100)` |
 | **`finding`** | Store AI-reviewed conclusions bound to the file content hash. | Auto-invalidates if the underlying source lines change. |
 | **`finding_read`** | Session-gated finding retrieval (prevents cross-session hallucination). | Read only findings created by the current agent. |
 | **`project_control`** | Project enable/disable and cache management. | `project_control(action: "on", path: ".")` |
@@ -166,6 +166,17 @@ SlugAudit follows a **"Results First, Full Code On-Demand"** model to prevent bu
 * **SQL Queries (`query`)**:
   * **Selective Projection**: The agent queries only what it needs (e.g. `SELECT path, line_number FROM evidence WHERE ...`) to stay lean, or `SELECT content` when full source text is required.
   * **Paging with `next_offset`**: Results are capped at 500 rows and up to 256 MiB+ per page (dynamically scaled to host RAM). When `truncated: true`, `next_offset` is provided so the agent can page through the entire dataset without context overflow.
+
+### 📚 Resources (schema + query recipes)
+
+Six static documents ship with the server as pull-based MCP resources over `resources/read`—an agent that never reads one pays nothing for it in context:
+
+- `slugaudit://queries/README.md` — Pre-built SQL and Tree-sitter recipes for querying the index.
+- `slugaudit://queries/find_unhandled_panics.sql` — Find unwrap/expect/panic call sites across the codebase.
+- `slugaudit://queries/auth_attack_surface.sql` — Map functions, methods, and calls touching auth, tokens, or sessions.
+- `slugaudit://queries/syntax_diagnostics.sql` — List syntax-error and parser diagnostics per file.
+- `slugaudit://queries/rust_functions.scm` — Tree-sitter pattern for Rust function declarations and bodies.
+- `slugaudit://schema.sql` — Canonical SQLite schema of the project index: tables, columns, and constraints.
 
 ### 🎛️ Profiles & Adaptive Host Memory
 

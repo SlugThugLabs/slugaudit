@@ -8,8 +8,8 @@ and connect it once; after that it's invisible.
 
 **What it's for:** saving your agent's context and time. SlugAudit gathers
 repository facts — files, symbols, calls, imports, structure, diagnostics,
-and changes — so the agent does not have to read and reread file after file
-while auditing.
+and changes — and answers the counts and aggregates grep cannot, so the
+agent does not have to read and reread file after file while auditing.
 
 **What it is not:** a standalone audit tool, and not an auditor. There is no
 command that prints an audit report, and SlugAudit doesn't judge code or
@@ -84,11 +84,7 @@ fresh as files change.
 
 The intended workflow is simple: SlugAudit narrows the search and returns
 compact facts; the AI reads only the relevant source and spends its context
-on reasoning instead of repository housekeeping. Two static,
-compile-time-embedded resources are also available over `resources/read` — a
-pre-built SQL/Tree-sitter cookbook at `slugaudit://queries/README.md` and the
-canonical index schema at `slugaudit://schema.sql` — and `leads` returns
-mechanical counts and paged file/line rows without composing SQL.
+on reasoning instead of repository housekeeping.
 
 ### Output Control & Context Optimization
 
@@ -142,7 +138,7 @@ interactively to see all detected agents on your system).
 **`<agent> CLI not found on PATH`** — if connecting an agent via CLI mode,
 the agent's executable must be installed and on `PATH`.
 
-**Agent doesn't see the `query`/`report`/`structure`/`finding` tools** —
+**Agent doesn't see the `query`/`report`/`leads`/`structure`/`finding` tools** —
 restart the AI session after connecting the server.
 
 **"project not enabled" / empty results** — this is an agent-integration
