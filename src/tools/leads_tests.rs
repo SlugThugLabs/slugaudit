@@ -143,3 +143,21 @@ fn call_mechanics_are_zero_for_a_project_without_rust_files() {
     assert_eq!(count_of(&response, "unwrap_calls"), 0);
     assert_eq!(count_of(&response, "credential_files"), 0);
 }
+
+#[test]
+fn detail_text_is_capped_at_the_char_limit() {
+    let project = tempfile::tempdir().expect("project dir");
+    activate(project.path());
+    // Multi-byte padding proves the cut lands on a char boundary, not a byte
+    // offset: 300 two-byte chars, truncated to the cap.
+    fs::write(
+        project.path().join("lib.rs"),
+        format!("// TODO: {}\n", "é".repeat(300)),
+    )
+    .expect("write rust source");
+
+    let response = run(project.path(), Some("comment_markers"), None, None);
+
+    assert_eq!(response.rows.len(), 1);
+    assert_eq!(response.rows[0].detail.chars().count(), MAX_DETAIL_CHARS);
+}

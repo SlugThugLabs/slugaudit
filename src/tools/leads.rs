@@ -11,12 +11,11 @@
 //! persisted, so there is no risk table and no second source of truth.
 
 use super::context::{ensure_synced, with_verified_read};
-use super::leads_mechanics::{MECHANICS, Mechanic, count_sql, resolve_mechanic, rows_sql};
+use super::leads_query::{count_all, resolve_mechanic, rows_for};
 use crate::progress::ProgressSink;
 use crate::sync;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rusqlite::{Transaction, params};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -93,52 +92,6 @@ fn truncate_detail(value: String) -> String {
     value.chars().take(MAX_DETAIL_CHARS).collect()
 }
 
-fn count_all(tx: &Transaction<'_>) -> Result<Vec<MechanicCount>, ErrorData> {
-    MECHANICS
-        .iter()
-        .map(|mechanic| {
-            let count: i64 = tx
-                .query_row(&count_sql(mechanic), [], |row| row.get(0))
-                .map_err(|error| super::context::internal_error("counting leads", error))?;
-            Ok(MechanicCount {
-                mechanic: mechanic.id.to_owned(),
-                count,
-            })
-        })
-        .collect()
-}
-
-fn rows_for(
-    tx: &Transaction<'_>,
-    mechanic: &Mechanic,
-    limit: usize,
-    offset: usize,
-) -> Result<Vec<LeadRow>, ErrorData> {
-    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-    let offset = i64::try_from(offset).unwrap_or(i64::MAX);
-    let mut statement = tx
-        .prepare(&rows_sql(mechanic))
-        .map_err(|error| super::context::internal_error("preparing leads rows", error))?;
-    let rows = statement
-        .query_map(params![limit, offset], |row| {
-            Ok(LeadRow {
-                file: row.get(0)?,
-                line: row.get(1)?,
-                detail: row.get(2)?,
-            })
-        })
-        .map_err(|error| super::context::internal_error("reading leads rows", error))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| super::context::internal_error("reading leads rows", error))?;
-    Ok(rows
-        .into_iter()
-        .map(|row| LeadRow {
-            detail: truncate_detail(row.detail),
-            ..row
-        })
-        .collect())
-}
-
 /// Unranked mechanical observations from the project's current revision.
 ///
 /// # Errors
@@ -176,7 +129,13 @@ pub fn leads(
             .iter()
             .find(|entry| entry.mechanic == mechanic.id)
             .map_or(0, |entry| entry.count);
-        let rows = rows_for(tx, mechanic, limit, offset)?;
+        let rows: Vec<LeadRow> = rows_for(tx, mechanic, limit, offset)?
+            .into_iter()
+            .map(|row| LeadRow {
+                detail: truncate_detail(row.detail),
+                ..row
+            })
+            .collect();
         let seen = i64::try_from(offset).unwrap_or(i64::MAX)
             + i64::try_from(rows.len()).unwrap_or(i64::MAX);
         let truncated = seen < total;
@@ -191,7 +150,7 @@ pub fn leads(
 
     tracing::info!(
         revision_id = response.0.revision_id,
-        mechanic = selected.map(|mechanic| mechanic.id),
+        mechanic = ?request.0.mechanic,
         row_count = response.0.rows.len(),
         "leads built"
     );

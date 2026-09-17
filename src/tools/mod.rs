@@ -17,7 +17,7 @@ mod finding;
 mod finding_read;
 mod health;
 mod leads;
-mod leads_mechanics;
+mod leads_query;
 mod project_control;
 mod query;
 mod query_value;

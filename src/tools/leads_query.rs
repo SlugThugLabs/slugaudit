@@ -1,4 +1,5 @@
-//! The `leads` mechanic catalogue, and the SQL each family compiles to.
+//! The `leads` mechanic catalogue, the SQL each family compiles to, and the
+//! two reads that execute it.
 //!
 //! Split from `leads.rs` so that adding a mechanic stays a one-entry edit to a
 //! declarative table, while the tool contract — request/response shapes,
@@ -6,7 +7,9 @@
 //! draws a conclusion: an entry says which shape to look for and which string
 //! to return, never whether the shape matters.
 
+use super::leads::{LeadRow, MechanicCount};
 use rmcp::ErrorData;
+use rusqlite::{Transaction, params};
 
 /// Where a mechanic's rows come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,19 +117,21 @@ pub(super) fn resolve_mechanic(
 
 /// `SELECT count(*)` for a mechanic's family. Counts are always complete,
 /// never paged, so they never carry `LIMIT`.
-pub(super) fn count_sql(mechanic: &Mechanic) -> String {
+fn count_sql(mechanic: &Mechanic) -> String {
     match mechanic.family {
-        Family::Evidence => format!(
-            "SELECT count(*) FROM evidence e WHERE {}",
-            mechanic.predicate
-        ),
+        Family::Evidence => {
+            format!(
+                "SELECT count(*) FROM evidence e WHERE {}",
+                mechanic.predicate
+            )
+        }
         Family::Files => format!("SELECT count(*) FROM files WHERE {}", mechanic.predicate),
     }
 }
 
 /// The paged row query for a mechanic, returning `(path, line, detail)`.
 /// `?1` is the limit and `?2` the offset, so both families page identically.
-pub(super) fn rows_sql(mechanic: &Mechanic) -> String {
+fn rows_sql(mechanic: &Mechanic) -> String {
     match mechanic.family {
         Family::Evidence => format!(
             "SELECT f.path, COALESCE(e.start_line, 0), COALESCE({}, '') \
@@ -139,4 +144,46 @@ pub(super) fn rows_sql(mechanic: &Mechanic) -> String {
             mechanic.predicate
         ),
     }
+}
+
+/// Counts for every mechanic, in `MECHANICS` order.
+pub(super) fn count_all(tx: &Transaction<'_>) -> Result<Vec<MechanicCount>, ErrorData> {
+    MECHANICS
+        .iter()
+        .map(|mechanic| {
+            let count: i64 = tx
+                .query_row(&count_sql(mechanic), [], |row| row.get(0))
+                .map_err(|error| super::context::internal_error("counting leads", error))?;
+            Ok(MechanicCount {
+                mechanic: mechanic.id.to_owned(),
+                count,
+            })
+        })
+        .collect()
+}
+
+/// One page of rows for a single mechanic.
+pub(super) fn rows_for(
+    tx: &Transaction<'_>,
+    mechanic: &Mechanic,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<LeadRow>, ErrorData> {
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let offset = i64::try_from(offset).unwrap_or(i64::MAX);
+    let mut statement = tx
+        .prepare(&rows_sql(mechanic))
+        .map_err(|error| super::context::internal_error("preparing leads rows", error))?;
+    let rows = statement
+        .query_map(params![limit, offset], |row| {
+            Ok(LeadRow {
+                file: row.get(0)?,
+                line: row.get(1)?,
+                detail: row.get(2)?,
+            })
+        })
+        .map_err(|error| super::context::internal_error("reading leads rows", error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| super::context::internal_error("reading leads rows", error))?;
+    Ok(rows)
 }
