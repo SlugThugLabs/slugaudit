@@ -163,4 +163,3 @@ fn is_on_network_filesystem(path: &Path) -> Result<bool, StoreError> {
 #[cfg(test)]
 #[path = "netfs_tests.rs"]
 mod tests;
-

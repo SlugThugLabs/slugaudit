@@ -95,7 +95,8 @@ fn mountinfo_parser_respects_path_boundaries_not_string_prefixes() {
 #[cfg(target_os = "linux")]
 #[test]
 fn mountinfo_parser_handles_optional_fields_before_the_dash_separator() {
-    let mountinfo = "52 23 0:44 / /home/user rw,relatime shared:32 master:1 - nfs4 server:/data rw,vers=4.2";
+    let mountinfo =
+        "52 23 0:44 / /home/user rw,relatime shared:32 master:1 - nfs4 server:/data rw,vers=4.2";
     assert!(is_mountpoint_network_filesystem(
         mountinfo,
         "/home/user/project/lib.rs"
