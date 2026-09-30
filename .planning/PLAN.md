@@ -178,6 +178,18 @@ independently small, and none is covered by the phases below.
    user's `~/.codex/config.toml` during a test run on 2026-09-30 (content intact, no
    slugaudit entry). Route those tests through the existing fake-CLI harness so the suite
    touches no real client and does not depend on what is installed.
+5. **The log-capture tests lost their own lines — resolved 2026-09-30** (`6433b06`). The suite
+   flaked under load (~3 suite-runs in 36) and always reported nine failures instead of one,
+   because the panic poisoned `SESSION_TEST_LOCK`. The visible symptom — a capture window holding
+   a `call_id` the test never made — was first read as another test's line landing in this one,
+   and instrumenting the capture writer falsified it (0 of 246 writes came from another thread):
+   the capture was losing lines, not gaining them, because tracing's callsite-interest cache and
+   max level are process-global and `Rebuilder::JustOne` blind-caches `NoSubscriber`'s
+   `Interest::never()`. Fixed in `store::test_capture` with a permanently registered permissive
+   backstop, plus per-test tool literals for the count assertions and liveness controls where the
+   assertion is absence-only. Differential: 3/36 failing suite-runs before, 15/36 with the literal
+   scoping alone (insufficient), 0/108 and 0/48 after both. The harness contract is now written
+   down in `AGENTS.md` and `.planning/ARCHITECTURE.md`.
 
 ## Connect surface: what is verified, and what is left
 

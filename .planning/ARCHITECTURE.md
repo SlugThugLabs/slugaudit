@@ -226,7 +226,7 @@ src/
 │   ├── netfs.rs              network-filesystem rejection
 │   ├── migrations.rs         schema versioning (CURRENT_SCHEMA_VERSION)
 │   ├── schema.sql            canonical schema
-│   └── test_capture.rs       test-only tracing capture helper
+│   └── test_capture.rs       test-only tracing capture helper (owns PERMISSIVE_BACKSTOP)
 │
 ├── parse/                    tree-sitter language-pack boundary
 │   ├── mod.rs                PACK_VERSION + re-exports
@@ -649,6 +649,19 @@ suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only
 names ending in `_tests.rs` are counted by the gate. Per-file test-code
 ceilings are enforced by `check_source_limits`; the ceilings themselves and
 the exception-comment format are documented in `AGENTS.md`.
+
+Log capture (`store::test_capture`) is thread-local but is **not** safe on
+thread-locality alone. tracing's filtering state — each callsite's cached `Interest`
+and the single `LevelFilter::current()` — is process-global, and tracing-core
+recomputes both from one arbitrary thread's dispatcher whenever the registry holds
+exactly one entry (`Rebuilder::JustOne`), where `NoSubscriber` answers
+`Interest::never()`. A capture installing itself into that state silently loses its
+own lines. `PERMISSIVE_BACKSTOP` is a permanently registered second dispatcher that
+keeps the registry from ever holding one entry; it can only enable callsites, never
+disable them, and must not be deleted as redundant. A test that **counts** captured
+lines names its tool with a literal unique to it and filters the capture to that
+literal; a test whose capture assertion is absence-only first asserts the capture is
+live.
 
 ## Design decisions and rejected alternatives
 

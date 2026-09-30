@@ -490,6 +490,15 @@ before replacing the binary (`src/update.rs`).
 - `src/sync/race_hook.rs` is the deterministic no-sleep race barrier —
   `cfg(test)` and private to `sync`; `tools` tests roll their own `mpsc`
   barrier.
+- Log capture goes through `store::test_capture` (`capture_at_level` /
+  `capture_warns`). It is thread-local, but its isolation also rests on
+  `PERMISSIVE_BACKSTOP`, a permanently registered permissive dispatcher: tracing's
+  callsite-interest cache and max level are process-global, so without a second
+  registered dispatcher a capture silently loses its own lines. Never delete the
+  backstop as redundant. A test that **counts** captured lines must name its tool
+  with a literal unique to it and filter the capture to that literal; a test whose
+  capture assertion is absence-only must first emit and detect a control line, or it
+  passes vacuously when the capture goes blind.
 - `tests/connect_tests.rs` mutates real agent config and self-skips without an
   agent CLI on PATH; `tests/stdio_protocol.rs` spawns the built binary and uses
   10-second receive timeouts (load-sensitive).

@@ -162,6 +162,36 @@ Newest first. Format: **what** / **why** / **where** / **reversible?**
   supply-chain backlog).
 - **Reversible:** n/a.
 
+## The log-capture flakiness: wrong diagnosis first, measured second
+
+- **What:** the test suite flaked under load (~3 suite-runs in 36) and every occurrence reported
+  **nine** failures rather than one. A log-capture test panics while holding `SESSION_TEST_LOCK`,
+  the lock is poisoned, and every test that later takes it panics with `session test lock
+  poisoned`.
+- **First diagnosis, and why it was wrong:** the failure dump showed a capture window containing a
+  `call_id` the test never made, which reads as another test's line landing in this test's
+  capture. Instrumenting the capture writer falsified it — 0 of 246 captured writes came from
+  another thread. The real failure is the opposite: a capture *losing its own* lines.
+- **Actual cause:** tracing's filtering state is process-global (each callsite's cached `Interest`
+  plus one `LevelFilter::current()`), and tracing-core recomputes both from an arbitrary thread's
+  default dispatcher whenever the registry holds exactly one entry (`Rebuilder::JustOne`). A
+  thread about to install a capture subscriber has no dispatcher yet, so `NoSubscriber` answers
+  `Interest::never()` and blind-caches every callsite process-wide; libtest reuses OS threads
+  across tests, so this happens routinely. The event is dropped before any thread-local subscriber
+  is consulted.
+- **Fix:** a permanently registered permissive backstop dispatcher in `store::test_capture`
+  (`PERMISSIVE_BACKSTOP`), forced before each capture; per-test tool literals so a count assertion
+  can only count its own calls; and a liveness control in the two tests whose capture assertions
+  are absence-only, because a blind capture previously made them pass vacuously.
+- **Numbers:** 3/36 failing suite-runs before; 15/36 with the literal scoping alone (insufficient);
+  0/108 after both, and 0/48 on an independent re-run.
+- **Where:** `6433b06`; the contract is written into `AGENTS.md` (*Fixtures and shared state*) and
+  `.planning/ARCHITECTURE.md` (*Testing layout*), and the finding is correctness follow-up 5 in
+  `.planning/PLAN.md`.
+- **Reversible:** the fix is revertible, but do not revert it. Deleting the backstop as redundant
+  restores a silent loss of captured lines — which is worse than the flake, because the affected
+  assertions then pass without observing anything.
+
 ## Added a session-hygiene rule to AGENTS.md
 
 - **What:** a new early section requiring, before a session ends: *what did we decide, discover, or
