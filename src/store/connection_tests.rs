@@ -344,8 +344,18 @@ fn network_filesystem_check_error_surfaces_the_underlying_command_error() {
 fn a_local_filesystem_open_does_not_emit_any_rejection_warnings() {
     let directory = tempfile::tempdir().expect("temp dir");
     let path = directory.path().join("project.db");
-    let (result, logs) = capture_warns(|| open_read_write(&path));
+    let (result, logs) = capture_warns(|| {
+        // Liveness control: proves the absence checks below cannot pass
+        // because the capture went blind.
+        tracing::warn!("capture liveness control");
+        open_read_write(&path)
+    });
     assert!(result.is_ok(), "sanity: the open itself must succeed");
+    assert!(
+        logs.contains("capture liveness control"),
+        "the capture must see this thread's events, or the absence checks \
+         below prove nothing, captured logs: {logs}"
+    );
     assert!(
         !logs.contains("\"symlink\""),
         "a successful local open must not log the symlink-rejection warning, captured logs: {logs}"

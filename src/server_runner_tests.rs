@@ -126,6 +126,11 @@ async fn the_semaphore_bounds_concurrent_blocking_work() {
 // (the call id/session live on the span both are emitted under), not the
 // internals a tool logs from inside `spawn_blocking` — which is exactly
 // the boundary this phase adds to.
+//
+// Each capturing test below names its tool with a literal only that test
+// uses and counts only the lines carrying it, so "exactly one start and
+// one completion per call" is a property of this test's own calls and can
+// never be satisfied by a line another test's call produced.
 
 /// The runtime the capture closures block on. Using the current-thread
 /// flavor keeps every `run_blocking` line the tests assert on on the test
@@ -152,10 +157,20 @@ fn logged_field(line: &str, key: &str) -> String {
     rest[..end].trim_matches('"').to_owned()
 }
 
-/// The completion lines of a capture: the single marker both outcomes use,
-/// so "exactly one per call" is a countable property.
-fn completion_lines(logs: &str) -> Vec<&str> {
-    logs.lines()
+/// The captured lines belonging to one tool literal. Each capturing test
+/// names its tool with a literal unique to itself, so a line another test's
+/// call produced can never be counted here: the assertions below then count
+/// exactly the lines the test's own calls emitted.
+fn lines_for_tool<'a>(logs: &'a str, tool: &str) -> Vec<&'a str> {
+    let needle = format!("tool=\"{tool}\"");
+    logs.lines().filter(|line| line.contains(&needle)).collect()
+}
+
+/// The completion lines of a capture for one tool literal: the single marker
+/// both outcomes use, so "exactly one per call" is a countable property.
+fn completion_lines<'a>(logs: &'a str, tool: &str) -> Vec<&'a str> {
+    lines_for_tool(logs, tool)
+        .into_iter()
         .filter(|line| line.contains("tool call completed"))
         .collect()
 }
@@ -165,6 +180,10 @@ fn completion_lines(logs: &str) -> Vec<&str> {
 /// sequence cannot be recovered from the log at all.
 #[test]
 fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() {
+    // Scoped to this test's own tool name: every capturing test names its
+    // tool with a literal nothing else uses, so these counts can only ever
+    // come from the calls made below.
+    const TOOL: &str = "probe_call_sequence";
     // The span stamps the live `util::SESSION_ID`, and the tests that flip
     // it (`sync::manager_meta_tests`) hold this lock while doing so — taking
     // it keeps the session stable across the two calls asserted below.
@@ -176,7 +195,7 @@ fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() 
                 for value in [1, 2] {
                     run_blocking(
                         Arc::clone(&semaphore),
-                        "probe",
+                        TOOL,
                         move || Ok::<_, ErrorData>(value),
                         None,
                     )
@@ -188,7 +207,7 @@ fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() 
         Level::INFO,
     );
 
-    let completions = completion_lines(&logs);
+    let completions = completion_lines(&logs, TOOL);
     assert_eq!(
         completions.len(),
         2,
@@ -204,7 +223,10 @@ fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() 
     );
 
     for line in &completions {
-        assert!(line.contains("tool=\"probe\""), "tool name missing: {line}");
+        assert!(
+            line.contains(&format!("tool=\"{TOOL}\"")),
+            "tool name missing: {line}"
+        );
         assert!(
             line.contains("outcome=\"success\""),
             "outcome missing: {line}"
@@ -222,8 +244,8 @@ fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() 
     // The start line of each call carries the same correlation pair as its
     // completion line, in call order: that is what makes the sequence — not
     // just the set — readable.
-    let started: Vec<&str> = logs
-        .lines()
+    let started: Vec<&str> = lines_for_tool(&logs, TOOL)
+        .into_iter()
         .filter(|line| line.contains("tool call started"))
         .collect();
     assert_eq!(started.len(), 2, "one start line per call:\n{logs}");
@@ -236,12 +258,15 @@ fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() 
 /// not silently skip the calls that errored.
 #[test]
 fn a_failed_tool_call_logs_one_completion_line_marked_error() {
+    // Scoped to this test's own tool name, so the single completion line it
+    // counts can only be the one its own call emitted.
+    const TOOL: &str = "probe_failed_call";
     let (result, logs) = capture_at_level(
         || {
             current_thread_runtime().block_on(async {
                 run_blocking(
                     Arc::new(Semaphore::new(4)),
-                    "probe",
+                    TOOL,
                     || Err::<(), _>(ErrorData::invalid_params("bad request", None)),
                     None,
                 )
@@ -252,7 +277,7 @@ fn a_failed_tool_call_logs_one_completion_line_marked_error() {
     );
     assert!(result.is_err(), "the tool's error must propagate");
 
-    let completions = completion_lines(&logs);
+    let completions = completion_lines(&logs, TOOL);
     assert_eq!(
         completions.len(),
         1,
@@ -273,6 +298,9 @@ fn a_failed_tool_call_logs_one_completion_line_marked_error() {
 #[test]
 fn tool_call_logging_never_emits_the_calls_argument_or_result() {
     const SENTINEL: &str = "SENTINEL_TOOLCALL_9147";
+    // Scoped to this test's own tool name, so the completion line it counts
+    // can only be the one its own call emitted.
+    const TOOL: &str = "query_tool_call_logging";
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let request = QueryRequest {
         path: project.path().to_string_lossy().into_owned(),
@@ -285,7 +313,7 @@ fn tool_call_logging_never_emits_the_calls_argument_or_result() {
         || {
             current_thread_runtime().block_on(run_blocking(
                 Arc::new(Semaphore::new(4)),
-                "query",
+                TOOL,
                 move || {
                     crate::tools::query(
                         &Parameters(request),
@@ -301,7 +329,7 @@ fn tool_call_logging_never_emits_the_calls_argument_or_result() {
     result.expect("query succeeds");
 
     assert_eq!(
-        completion_lines(&logs).len(),
+        completion_lines(&logs, TOOL).len(),
         1,
         "the completion line must be captured, or this test proves nothing:\n{logs}"
     );

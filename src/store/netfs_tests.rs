@@ -159,8 +159,18 @@ fn unsupported_targets_fail_closed() {
 fn a_local_filesystem_open_does_not_emit_the_network_filesystem_warning() {
     let directory = tempfile::tempdir().expect("temp dir");
     let path = directory.path().join("project.db");
-    let (result, logs) = capture_warns(|| open_read_write(&path));
+    let (result, logs) = capture_warns(|| {
+        // Liveness control: proves the absence check below cannot pass
+        // because the capture went blind.
+        tracing::warn!("capture liveness control");
+        open_read_write(&path)
+    });
     assert!(result.is_ok(), "sanity: a local tempfile open must succeed");
+    assert!(
+        logs.contains("capture liveness control"),
+        "the capture must see this thread's events, or the absence check \
+         below proves nothing, captured logs: {logs}"
+    );
     assert!(
         !logs.contains("network_filesystem"),
         "a local-filesystem open must not emit the network-filesystem warn, captured logs: {logs}"
