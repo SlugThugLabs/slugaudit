@@ -10,8 +10,8 @@ this file was written.
 (`cargo fmt --check`, clippy `-D warnings`, **556** lib tests plus every integration crate,
 `check_source_limits`, `check_no_duplicates`, `check_docs_drift`):
 
-1. **Phase 1 — Stop lying.** All four items in; `CURRENT_SCHEMA_VERSION` is now `4`
-   (`src/store/migrations.rs:9`). What the independent review changed in the same round —
+1. **Phase 1 — Stop lying.** All four items in; `CURRENT_SCHEMA_VERSION` went to `4` here and is
+   `6` as of Phase 3 (`src/store/migrations.rs`). What the independent review changed in the same round —
    and what it deliberately left — is recorded under *Review findings and their
    disposition*; read that before touching Phase 2.
 2. **Documentation reset.** The canonical set is `README.md`, `AGENTS.md`,
@@ -47,6 +47,11 @@ this file was written.
    failure no longer tells a caller to retry something permanent; item 4 makes the not-enabled
    state one actionable instruction behind all eight tools, with `health` answering normally
    when nothing is enabled.
+6. **Phase 3 — recall at scale.** All nine items landed: `leads` enumerates to completion against
+   a byte budget, counts completeness in files, declares per-mechanic coverage (`rust_only` /
+   `all_languages`) instead of letting a zero read as clean, filters by path, and refuses a
+   resumed page pinned to a stale revision; three producer-less evidence kinds are deleted and a
+   new gate refuses to let another appear; and `report` can name generated and vendored files.
 
 **Committed (2026-09-30).** One commit per workstream, each leaving the full gate suite green:
 `ec6a464` (the deviations log), `ecc25e7` (Phase 1), `9c0f77f` (the connect registry — its
@@ -55,17 +60,16 @@ map names the new connect modules and the `*_tests.rs` count sentence is gate-ch
 new test file), `dca4910` (the documentation reset), `5302bf0` (Phase 0's instrument), `9085f6c`
 (the plan/deviations bookkeeping), `b9bfb39` (Phase 2's index completeness — `fmt`, `clippy
 -D warnings`, 565 lib tests and the three cheap gates verified green on it), `fb6eea5` (Phase 2's
-error surface). **Not pushed** — the branch has no remote counterpart and publication is the
-owner's call.
+error surface), `78a245f` (the plan status reconciliation), `9ec589b` (Phase 3). **Not pushed** —
+the branch has no remote counterpart and publication is the owner's call.
 
-**Not started:** Phases 3–5 (Phase 3 is in flight); the *Correctness follow-ups* list; the
-*Connect surface* follow-up; and every item in the *Production-readiness backlog*.
+**Not started:** Phases 4–5; the *Correctness follow-ups* list; the *Connect surface* follow-up;
+and every item in the *Production-readiness backlog*.
 
-Phase 2 is **committed**: item 1 in `9c0f77f`, item 2 in `b9bfb39`, items 3–4 in `fb6eea5`. Item
-4's optional tool-hiding half is deliberately *not* implemented — see that entry for why. Note for
-whoever edits this file next: several agents wrote to it concurrently on 2026-09-30 and the status
-block briefly contradicted itself as a result; treat the commit log as authoritative if the prose
-and the hashes disagree.
+Item 4's optional tool-hiding half is deliberately *not* implemented — see its entry for why. Note
+for whoever edits this file next: several agents wrote to it concurrently on 2026-09-30 and the
+status block briefly contradicted itself as a result — treat the commit log as authoritative when
+the prose and the hashes disagree.
 
 ---
 
@@ -301,11 +305,11 @@ deliberately not implemented (see it).
 
 **DoD:** a cold agent's first two calls return something it didn't ask for and can use.
 
-## Phase 3 — Recall at scale (items 1–4, 6, 7 landed 2026-09-30; 5, 8, 9 not landed here)
+## Phase 3 — Recall at scale (landed 2026-09-30)
 
 **Goal:** find what selective reading misses, and let the agent finish.
 
-**Landed 2026-09-30 (uncommitted, dirty tree).** Items 1–4, 6, 7, and the `limit: 0`
+**Landed 2026-09-30, committed as `9ec589b`.** Items 1–9, plus the `limit: 0`
 half of correctness follow-up 1. The `leads` row cap is gone: `DEFAULT_LEADS_ROWS` /
 `MAX_LEADS_ROWS` are deleted and a page is cut only by the caller's `limit` and by
 `max_query_response_bytes` (the same budget `query` spends), measured as the sum of each
@@ -325,9 +329,13 @@ ceiling. Tests: 17 in `tools::leads` (including distinct-file denominators on an
 incomplete page, the byte budget, the pattern filter over an `OR`-chain predicate, and
 the stale-pin refusal) and a new stale-pin test in `tools::query`; the pre-change
 behaviour was captured by running the same probe against `HEAD` in a throwaway worktree
-(100-row default, `truncated` only, the pin accepted and ignored). **Still owed from
-this phase:** items 5 and 8–9 (generated/vendored classification and the producer gate)
-were carried by the parallel workstream; the completeness envelope across
+(100-row default, `truncated` only, the pin accepted and ignored). **The rest of the phase landed in the same commit through the parallel workstream:** items 5
+and 8–9 — the three producer-less evidence kinds (`Chunk`, `RawNode`, `Metric`) are deleted and
+the schema goes 5 → 6; `check_producer_coverage` is a new gate requiring a value-position
+construction for every enum variant (match arms excluded, because the SQL mirrors enumerate every
+variant and counting any mention would make the gate vacuous); and `files.file_class`
+(`authored` / `generated` / `vendored`, orthogonal to `file_kind`, since a generated file is
+still indexed) lets `report` say which files those are. The completeness envelope across
 `report`/`leads`/`health` remains Phase 2's.
 
 1. **Complete-or-labeled enumeration — landed 2026-09-30.** `leads` rows: default 100, hard cap 500
