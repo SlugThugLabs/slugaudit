@@ -81,12 +81,11 @@ compact `leads` mode). **Not pushed** — the branch has no remote counterpart a
 the owner's call.
 
 **Not started:** the *Connect surface* follow-up, and the remainder of the
-*Production-readiness backlog* — auto-ignore on enable; the credential predicate (widen and
-tighten) and the credential-content policy it gates (an owner decision); supply-chain pinning, a
-dependency-update bot and scheduled advisories; PR-time dependency and secret scanning; SBOM,
-provenance and reproducibility; third-party notices; wiring `check_performance` into CI; the
-`fuzz/` targets; a large-repo soak test; wider mutation testing; and the workspace split. Every
-correctness follow-up is resolved, and Phase 5 items 2–3 are non-goals.
+*Production-readiness backlog* — the credential-content policy (an owner decision); SBOM,
+provenance, reproducibility and third-party notices for a release; the `fuzz/` targets; a
+large-repo soak test; wider mutation testing; and the workspace split (which the *Sequencing*
+section puts last, because it renames every path). Every correctness follow-up is resolved, the
+credential predicate and auto-ignore landed, and Phase 5 items 2–3 are non-goals.
 
 Item 4's optional tool-hiding half is deliberately *not* implemented — see its entry for why. Note
 for whoever edits this file next: several agents wrote to it concurrently on 2026-09-30 and the
@@ -529,7 +528,9 @@ item are done, its report-completeness and dead-kind items live in Phase 2 item 
 Phase 3 item 8). **Landed 2026-09-30:** store safety's directory/sidecar permissions
 (`2b64cc3`), the governance shell's five files (`ec10812`) plus its `check_governance` gate,
 the exposure documentation (`SECURITY.md`), the install/update rollback (`5a59e69`), the
-adversarial `query` tests (`210ecaa`) and the version-consistency gate. The rest is open.
+adversarial `query` tests (`210ecaa`), the version-consistency gate, the credential predicate
+(`47f733d`), auto-ignore on enable (`b451b02`) and the supply-chain pins/scans (`fd9826e`).
+The rest is open.
 
 **Store safety and secrets.**
 
@@ -539,24 +540,26 @@ adversarial `query` tests (`210ecaa`) and the version-consistency gate. The rest
   not by this crate) are pinned by a test: SQLite derives their mode from the database
   file's, which is `0600` (`PRIVATE_MODE`, `reject_insecure_permissions`,
   `src/store/connection.rs`), so they come out owner-only in practice.
-- **Auto-ignore on enable.** Nothing in `src/` writes a `.gitignore` entry (the code only
-  reads ignore files), so a customer's first `git status` shows an untracked binary blob
-  plus sidecars. On `project_control {"action":"on"}`, append `.planning/slugaudit/` to
-  the project's `.gitignore` when absent and report that in the response
-  (`src/project/activation.rs`, `src/tools/project_control.rs`).
+- **Auto-ignore on enable — landed 2026-09-30** (`b451b02`). Nothing in `src/` wrote a
+  `.gitignore` entry, so a customer's first `git status` showed the database blob and its
+  sidecars untracked. `project_control {"action":"on"}` now appends `.planning/slugaudit/`
+  unless an equivalent rule is present, append-only (prior bytes preserved, trailing-newline and
+  CRLF conventions respected), built from the same constant the index-exclusion rules use. A
+  failed write is reported as `not_written`, never fatal: the activation directory is what makes
+  a project enabled. `off` never touches the file.
 - **Credential-content decision** (owner decision above). Files matching
   `CREDENTIAL_PATH_PREDICATE` are *identified* for `report`/`leads`, but their full text
   is still stored in `files.content`. Store hash/metadata, omit content, and mark the
   file so the agent knows the text is deliberately absent and must be read from disk.
-- **The predicate itself is too narrow in places and too broad in another.** It matches
-  `.env`, `.env.*`, `.pem`, `.key`, `.p12`, `.pfx`, `%/id_rsa%`, `%/id_ed25519%`
-  (`src/tools/mod.rs`), so it **misses** root-level `id_rsa`/`id_ed25519` (the patterns
-  require a leading slash), `.netrc`, `.npmrc`, `.git-credentials`, `id_ecdsa`, `*.p8`,
-  `*.jks`/`*.keystore`, `*.tfstate` and `service-account*.json`, while flagging
-  `id_rsa.pub` — a public key — as a credential. Widen and tighten it with a
-  table-driven test **before** relying on it for the content decision above, so the
-  "which files are secret" answer and the "whose content do we withhold" answer cannot
-  disagree.
+- **The predicate itself is too narrow in places and too broad in another — landed
+  2026-09-30** (`47f733d`). It now covers the root-level SSH keys, `.netrc`, `.npmrc`,
+  `.git-credentials`, `id_ecdsa`, `*.p8`, `*.jks`/`*.keystore`, `*.tfstate` and
+  `service-account*.json`, and stops counting `id_rsa.pub`. Two SQL traps were fixed on the way
+  and both are pinned by cases: `_` is a single-character `LIKE` wildcard, so `%id_rsa%` also
+  matched `id-rsa`/`idXrsa` (now escaped with `ESCAPE`), and `AND` binds tighter than `OR`, so
+  the `.pub` guard without its own parentheses applied to the last term only. The table-driven
+  test (49 pairs) evaluates the shared fragment **through SQLite**, so it cannot pass while
+  `report` and `leads` disagree. The credential-*content* policy remains an owner decision.
 - **Document the exposure — landed 2026-09-30** (`ec10812`): `SECURITY.md` states the DB
   location, its permissions (and the `0700`/`0600` split), that it holds full source text,
   and that it is disposable.
@@ -605,17 +608,24 @@ above) and `CHANGELOG.md` (newest entry `1.0.10`, dated from the real tag).
   `.github/dependabot.yml` or `renovate.json`; and `schedule:` appears in neither workflow,
   so a RustSec advisory published against an unchanged lockfile is invisible until the next
   push. What *does* run today is `cargo-deny`, `rustsec/audit-check` and `cargo-mutants`
-  (four files, Linux-only) — no CodeQL, OSV or secret scanning. Pin every action to a full
-  commit SHA and let the bot bump it; add a dependency-update bot; move advisories onto a
-  cron. The dependency with the most to gain is the exact-pinned parser pack
-  (`tree-sitter-language-pack = "=1.14.3"`, 371 bundled grammars), which has no automated
-  bump path at all.
-- **`check_performance` is a gate that CI does not run.** It is registered in `Cargo.toml`,
-  has a bin under `src/bin/`, and is listed among the gates, but `quality.yml` contains zero
-  references to it (`grep -c check_performance .github/workflows/quality.yml` → `0`), and
-  the workflow comment refers to a performance gate "below" that was never added. So the
-  perf-regression allowance is documentation rather than enforcement. Either wire it in
-  (with its `perf_baseline.json`) or stop presenting it as part of the suite.
+  (four files, Linux-only) — no CodeQL, OSV or secret scanning. **Landed 2026-09-30**
+  (`fd9826e`): every action is pinned to a full commit SHA — the *peeled* commit for annotated
+  tags, since a tag object is not a commit — with the version in a comment;
+  `.github/dependabot.yml` covers cargo and GitHub Actions weekly and records that the
+  exact-pinned parser pack has no other bump path and that a bump must move
+  `src/parse/PACK_VERSION`; `.github/workflows/advisories.yml` runs the advisory check on a cron
+  against the same `deny.toml`, so the parser pack's indirect exposure surfaces without a push;
+  and `.github/workflows/supply-chain.yml` runs dependency review, OSV scanning and secret
+  scanning on pull requests, with `.planning/slugaudit/` excluded from secret scanning so a
+  developer's local index is never uploaded. The `rustsec/audit-check` step was removed: it read
+  the same advisory database as the cargo-deny step beside it, and its `checks: write`
+  permission went with it.
+- **`check_performance` is a gate that CI does not run — resolved 2026-09-30** (`fd9826e`).
+  `Cargo.toml` registers it and the docs listed it, `quality.yml` contained zero references to
+  it, and the workflow comment referred to a performance gate "below" that was never added, so
+  the allowance was documentation rather than enforcement. Resolved by stating it as
+  **local-only** in both workflows and the three contributor docs, with the reason (criterion
+  timing on shared runners) and the baseline's recorded machine.
 - **Third-party attribution is a release step, not an idea.** A release ships a
   third-party attribution list covering the dependency graph, sourced from a per-crate
   licence/FFI inventory, and a new dependency that introduces transitive unsafe is named
