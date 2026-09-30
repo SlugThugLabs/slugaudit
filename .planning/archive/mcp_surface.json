@@ -798,7 +798,7 @@
         "destructiveHint": true,
         "readOnlyHint": false
       },
-      "description": "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable a project (creates the activation directory and runs the initial import), or `\"off\"` to disable it (removes the activation directory and purges its database). Supply `path` to target a specific project root; defaults to the current directory. If the project was moved, copied, or re-extracted elsewhere (e.g. unzipped fresh from an archive), a stale `.planning/slugaudit/project.db` is discarded and rebuilt from source automatically — the agent does not need to delete it or re-enable manually.",
+      "description": "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable a project (creates the activation directory and runs the initial import), or `\"off\"` to disable it (removes the activation directory and purges its database). On `\"on\"` the runtime directory `.planning/slugaudit/` is also appended to the project-root `.gitignore` unless a rule that already ignores it is present; the response's `gitignore` field reports `added`, `already_ignored`, or `not_written` plus the file's path. `\"off\"` never edits `.gitignore`. Supply `path` to target a specific project root; defaults to the current directory. If the project was moved, copied, or re-extracted elsewhere (e.g. unzipped fresh from an archive), a stale `.planning/slugaudit/project.db` is discarded and rebuilt from source automatically — the agent does not need to delete it or re-enable manually.",
       "inputSchema": {
         "$defs": {
           "ProjectControlAction": {
@@ -841,6 +841,40 @@
       "name": "project_control",
       "outputSchema": {
         "$defs": {
+          "GitignoreReport": {
+            "description": "What enabling a project did about its root `.gitignore`.",
+            "properties": {
+              "error": {
+                "description": "Why nothing was written. Present only for `\"not_written\"`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "description": "Absolute path of the project-root `.gitignore` that was inspected.",
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/$defs/GitignoreStatus",
+                "description": "One of `\"added\"` (the ignore rule was appended), `\"already_ignored\"`\n(an equivalent rule was present; file untouched), or `\"not_written\"`\n(the file was left untouched and the project is enabled anyway)."
+              }
+            },
+            "required": [
+              "status",
+              "path"
+            ],
+            "type": "object"
+          },
+          "GitignoreStatus": {
+            "description": "Outcome of the `.gitignore` guard, as a closed set.",
+            "enum": [
+              "added",
+              "already_ignored",
+              "not_written"
+            ],
+            "type": "string"
+          },
           "ImportReport": {
             "description": "Summary of an initial import that ran on enable.",
             "properties": {
@@ -868,6 +902,17 @@
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "gitignore": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/GitignoreReport"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What `\"on\"` did about the project-root `.gitignore`. Absent for\n`\"off\"`, which never touches that file."
+          },
           "import": {
             "anyOf": [
               {

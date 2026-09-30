@@ -238,3 +238,170 @@ fn a_marker_toggled_concurrently_never_panics_or_returns_a_partial_state() {
     stop.store(true, Ordering::Relaxed);
     toggler.join().expect("toggler thread joins");
 }
+
+/// Resolves `directory` and writes `contents` to its root `.gitignore`,
+/// returning both the root and the file's path.
+fn gitignore_fixture(directory: &tempfile::TempDir, contents: &[u8]) -> (ProjectRoot, PathBuf) {
+    let root = ProjectRoot::resolve(directory.path()).expect("valid root");
+    let path = root.as_path().join(GITIGNORE_FILE);
+    fs::write(&path, contents).expect("write .gitignore");
+    (root, path)
+}
+
+#[test]
+fn a_project_without_a_gitignore_gains_the_rule_in_a_new_file() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let root = ProjectRoot::resolve(directory.path()).expect("valid root");
+    let path = root.as_path().join(GITIGNORE_FILE);
+
+    let outcome = ensure_gitignore(&root);
+
+    assert_eq!(outcome, GitignoreOutcome::Added(path.clone()));
+    assert_eq!(
+        fs::read(&path).expect("read .gitignore"),
+        b".planning/slugaudit/\n".to_vec(),
+        "the created file holds exactly the one rule"
+    );
+}
+
+#[test]
+fn appending_keeps_every_existing_byte_of_the_gitignore() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let original = b"/target\n*.log\n";
+    let (root, path) = gitignore_fixture(&directory, original);
+
+    let outcome = ensure_gitignore(&root);
+
+    assert_eq!(outcome, GitignoreOutcome::Added(path.clone()));
+    let written = fs::read(&path).expect("read .gitignore");
+    assert!(
+        written.starts_with(original),
+        "the user's bytes must come through unchanged: {written:?}"
+    );
+    assert_eq!(&written[original.len()..], b".planning/slugaudit/\n");
+}
+
+#[test]
+fn an_equivalent_rule_is_recognised_and_not_duplicated() {
+    for rule in [
+        ".planning/slugaudit/",
+        ".planning/slugaudit",
+        "/.planning/slugaudit/",
+        "/.planning/slugaudit",
+    ] {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let contents = format!("{rule}\n");
+        let (root, path) = gitignore_fixture(&directory, contents.as_bytes());
+
+        let outcome = ensure_gitignore(&root);
+
+        assert_eq!(
+            outcome,
+            GitignoreOutcome::AlreadyIgnored(path.clone()),
+            "rule {rule:?} already ignores the directory"
+        );
+        assert_eq!(
+            fs::read(&path).expect("read .gitignore"),
+            contents.as_bytes(),
+            "an already-ignored project's file stays byte-identical"
+        );
+    }
+}
+
+#[test]
+fn a_commented_or_negated_line_does_not_make_the_directory_ignored() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let contents = b"# .planning/slugaudit/\n!.planning/slugaudit/\n.planning/slugaudit-extra/\n";
+    let (root, path) = gitignore_fixture(&directory, contents);
+
+    let outcome = ensure_gitignore(&root);
+
+    assert_eq!(outcome, GitignoreOutcome::Added(path.clone()));
+    assert!(
+        fs::read(&path)
+            .expect("read .gitignore")
+            .ends_with(b"\n.planning/slugaudit/\n"),
+        "the real rule is appended after the decoys"
+    );
+}
+
+#[test]
+fn a_last_line_without_a_newline_is_not_merged_with_the_rule() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let (root, path) = gitignore_fixture(&directory, b"/target");
+
+    let outcome = ensure_gitignore(&root);
+
+    assert_eq!(outcome, GitignoreOutcome::Added(path.clone()));
+    assert_eq!(
+        fs::read(&path).expect("read .gitignore"),
+        b"/target\n.planning/slugaudit/\n".to_vec(),
+        "the user's last line keeps its own line"
+    );
+}
+
+#[test]
+fn an_empty_gitignore_file_gains_only_the_rule() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let (root, path) = gitignore_fixture(&directory, b"");
+
+    let outcome = ensure_gitignore(&root);
+
+    assert_eq!(outcome, GitignoreOutcome::Added(path.clone()));
+    assert_eq!(
+        fs::read(&path).expect("read .gitignore"),
+        b".planning/slugaudit/\n".to_vec(),
+        "no blank line is introduced ahead of the rule"
+    );
+}
+
+#[test]
+fn a_crlf_gitignore_keeps_its_line_ending_convention() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let (root, path) = gitignore_fixture(&directory, b"/target\r\n");
+
+    let outcome = ensure_gitignore(&root);
+
+    assert_eq!(outcome, GitignoreOutcome::Added(path.clone()));
+    assert_eq!(
+        fs::read(&path).expect("read .gitignore"),
+        b"/target\r\n.planning/slugaudit/\r\n".to_vec(),
+        "the appended rule uses CRLF, not a mixed ending"
+    );
+}
+
+#[test]
+fn a_crlf_gitignore_without_a_final_newline_gets_a_crlf_separator() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let (root, path) = gitignore_fixture(&directory, b"/a\r\n/b");
+
+    let outcome = ensure_gitignore(&root);
+
+    assert_eq!(outcome, GitignoreOutcome::Added(path.clone()));
+    assert_eq!(
+        fs::read(&path).expect("read .gitignore"),
+        b"/a\r\n/b\r\n.planning/slugaudit/\r\n".to_vec(),
+        "the separator matches the file's convention too"
+    );
+}
+
+#[test]
+fn an_unreadable_gitignore_is_reported_rather_than_fatal() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let root = ProjectRoot::resolve(directory.path()).expect("valid root");
+    let path = root.as_path().join(GITIGNORE_FILE);
+    fs::create_dir(&path).expect("a directory where the ignore file belongs");
+
+    let outcome = ensure_gitignore(&root);
+
+    match outcome {
+        GitignoreOutcome::NotWritten {
+            path: reported,
+            reason,
+        } => {
+            assert_eq!(reported, path, "the unwritable path is named");
+            assert!(!reason.is_empty(), "the reason is reported");
+        }
+        other => panic!("a file that cannot be read must report NotWritten, got {other:?}"),
+    }
+}

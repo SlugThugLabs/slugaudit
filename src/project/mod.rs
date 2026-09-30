@@ -10,7 +10,8 @@ mod database_path;
 mod root;
 
 pub use activation::{
-    ActivationError, activation_dir, disable, enable, find_project_root, resolve_project,
+    ActivationError, GitignoreOutcome, activation_dir, disable, enable, ensure_gitignore,
+    find_project_root, resolve_project,
 };
 pub use config::ProjectConfig;
 pub use database_path::database_path;

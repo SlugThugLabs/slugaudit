@@ -94,7 +94,10 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     resolution, credential-shaped file count. `finding` persists a conclusion you have personally reviewed, \
     bound to the file's current content hash: it stales the moment that file changes, and it is visible only to \
     this session, so treat it as your notebook rather than a shared database. `finding_read` returns this \
-    session's findings. `project_control` enables or disables a project; a moved or re-extracted project's stale \
+    session's findings. `project_control` enables or disables a project — `on` also appends the runtime \
+    directory `.planning/slugaudit/` to the project's root `.gitignore` when no equivalent rule is there, and \
+    reports that as `gitignore.status` (`added` / `already_ignored` / `not_written`); `off` never edits that \
+    file. A moved or re-extracted project's stale \
     database is discarded and rebuilt from source automatically. `health` reports watcher and database state.\n\n\
     FLOW: report → leads → drill with query/structure → read source only where evidence points → finding.\n\n\
     FAILURES: an error's `ErrorData.data` carries `code` — a stable lowercase identifier (e.g. \
@@ -345,7 +348,11 @@ impl SlugAuditServer {
         annotations(read_only_hint = false, destructive_hint = true),
         description = "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable \
          a project (creates the activation directory and runs the initial import), or `\"off\"` to \
-         disable it (removes the activation directory and purges its database). Supply `path` to \
+         disable it (removes the activation directory and purges its database). On `\"on\"` the \
+         runtime directory `.planning/slugaudit/` is also appended to the project-root `.gitignore` \
+         unless a rule that already ignores it is present; the response's `gitignore` field reports \
+         `added`, `already_ignored`, or `not_written` plus the file's path. `\"off\"` never edits \
+         `.gitignore`. Supply `path` to \
          target a specific project root; defaults to the current directory. If the project was \
          moved, copied, or re-extracted elsewhere (e.g. unzipped fresh from an archive), a stale \
          `.planning/slugaudit/project.db` is discarded and rebuilt from source automatically — the \

@@ -194,3 +194,103 @@ fn on_action_with_profile_writes_config_json() {
     let content = fs::read_to_string(cfg_file).expect("read config");
     assert!(content.contains("\"audit\""));
 }
+
+#[test]
+fn on_action_reports_the_gitignore_rule_it_added() {
+    let (project, path) = temp_project_with_source();
+    let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
+        .expect("enable succeeds");
+
+    let report = response
+        .0
+        .gitignore
+        .expect("enable reports the gitignore guard");
+    let expected = project
+        .path()
+        .canonicalize()
+        .expect("tempdir canonicalizes")
+        .join(".gitignore");
+    assert_eq!(report.status, GitignoreStatus::Added);
+    assert_eq!(report.path, expected.to_string_lossy());
+    assert!(
+        report.error.is_none(),
+        "a successful append carries no error"
+    );
+    assert!(
+        fs::read_to_string(&expected)
+            .expect("read .gitignore")
+            .contains(".planning/slugaudit/"),
+        "the rule is on disk"
+    );
+}
+
+#[test]
+fn on_action_reports_an_already_ignored_project_without_duplicating_the_rule() {
+    let (project, path) = temp_project_with_source();
+    let gitignore = project.path().join(".gitignore");
+    let original = b"/target\n/.planning/slugaudit/\n";
+    fs::write(&gitignore, original).expect("write .gitignore");
+
+    let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
+        .expect("enable succeeds");
+
+    let report = response
+        .0
+        .gitignore
+        .expect("enable reports the gitignore guard");
+    assert_eq!(report.status, GitignoreStatus::AlreadyIgnored);
+    assert_eq!(response.0.status, "enabled");
+    assert!(response.0.import.is_some(), "the import still ran");
+    assert_eq!(
+        fs::read(&gitignore).expect("read .gitignore"),
+        original.to_vec(),
+        "an already-ignored project's file stays byte-identical"
+    );
+}
+
+#[test]
+fn on_action_enables_the_project_even_when_the_gitignore_cannot_be_written() {
+    let (project, path) = temp_project_with_source();
+    fs::create_dir(project.path().join(".gitignore")).expect("block the ignore file");
+
+    let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
+        .expect("the convenience guard must not fail the enable");
+
+    let report = response
+        .0
+        .gitignore
+        .expect("enable reports the gitignore guard");
+    assert_eq!(report.status, GitignoreStatus::NotWritten);
+    assert!(report.error.is_some(), "the reason is reported");
+    assert_eq!(response.0.status, "enabled");
+    assert!(
+        activation_dir(&project).join("project.db").exists(),
+        "the project is enabled regardless of the ignore guard"
+    );
+}
+
+#[test]
+fn off_action_does_not_touch_the_gitignore() {
+    let (project, path) = temp_project_with_source();
+    project_control(&on_request(&path), &crate::progress::NoopProgressSink, None).expect("enable");
+    let gitignore = project.path().join(".gitignore");
+    let after_enable = fs::read(&gitignore).expect("read .gitignore");
+
+    let response = project_control(
+        &off_request(&path),
+        &crate::progress::NoopProgressSink,
+        None,
+    )
+    .expect("disable succeeds");
+
+    assert_eq!(response.0.status, "disabled");
+    assert!(
+        response.0.gitignore.is_none(),
+        "off omits the gitignore field"
+    );
+    assert_eq!(
+        fs::read(&gitignore).expect("read .gitignore"),
+        after_enable,
+        "off leaves the user's ignore file alone"
+    );
+}

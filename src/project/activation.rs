@@ -1,7 +1,9 @@
 use super::database_path::database_path;
 use super::root::{ProjectRoot, RootError};
+use crate::ignore_rules::ACTIVATION_RELATIVE_DIR;
 use crate::store::open_read_write;
 use rusqlite::Connection;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -160,6 +162,109 @@ fn create_private_dir(path: &Path) -> Result<(), ActivationError> {
 fn create_private_dir(path: &Path) -> Result<(), ActivationError> {
     std::fs::create_dir_all(path)?;
     Ok(())
+}
+
+/// The ignore file at the project root. It belongs to the user: SlugAudit
+/// only ever appends one rule to it and never rewrites or removes anything.
+const GITIGNORE_FILE: &str = ".gitignore";
+
+/// What [`ensure_gitignore`] did, and to which file.
+///
+/// There is deliberately no error case here. The activation directory is
+/// what makes a project enabled; a `.gitignore` that cannot be read or
+/// written is *reported* to the caller, never fatal to the enable, because a
+/// convenience guard must not undo the primary action.
+///
+/// `disable` deliberately does not remove the rule: a `.gitignore` rule can
+/// be hiding paths SlugAudit knows nothing about, and un-hiding them is not
+/// SlugAudit's call.
+#[derive(Debug, PartialEq, Eq)]
+pub enum GitignoreOutcome {
+    /// The rule was appended; the file was created when it was absent.
+    Added(PathBuf),
+    /// A rule that already ignores the directory was present; file untouched.
+    AlreadyIgnored(PathBuf),
+    /// The file was left untouched, and the project is enabled regardless.
+    NotWritten { path: PathBuf, reason: String },
+}
+
+/// Appends the activation directory to the project-root `.gitignore` unless a
+/// rule that already ignores it is present, so a customer's first
+/// `git status` after `project_control {"action":"on"}` does not show the
+/// index database and its sidecars as untracked files.
+///
+/// The user's file is never rewritten: the rule goes out through an append
+/// handle, so every existing byte survives; a final line without a newline
+/// gets one first, so the rule can never be merged into it; and a file
+/// written with CRLF keeps that convention instead of acquiring a mixed one.
+///
+/// Failure is reported through [`GitignoreOutcome::NotWritten`], never
+/// propagated — see [`GitignoreOutcome`].
+#[must_use]
+pub fn ensure_gitignore(root: &ProjectRoot) -> GitignoreOutcome {
+    let path = root.as_path().join(GITIGNORE_FILE);
+    let existing = match std::fs::read(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            return GitignoreOutcome::NotWritten {
+                path,
+                reason: error.to_string(),
+            };
+        }
+    };
+    if ignores_activation_dir(&existing) {
+        return GitignoreOutcome::AlreadyIgnored(path);
+    }
+    // Match the file's own line-ending convention rather than mixing one into
+    // it, and give a newline-less final line its newline first.
+    let newline = if existing.windows(2).any(|window| window == b"\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let separator = if existing.is_empty() || existing.ends_with(b"\n") {
+        ""
+    } else {
+        newline
+    };
+    let entry = format!("{ACTIVATION_RELATIVE_DIR}/");
+    let addition = format!("{separator}{entry}{newline}");
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| file.write_all(addition.as_bytes()))
+    {
+        Ok(()) => GitignoreOutcome::Added(path),
+        Err(error) => GitignoreOutcome::NotWritten {
+            path,
+            reason: error.to_string(),
+        },
+    }
+}
+
+/// True when `contents` already holds a rule that ignores the activation
+/// directory.
+///
+/// The rule recognised is exact-path, not glob: a line counts when, with
+/// trailing whitespace removed (git ignores it unless escaped), one leading
+/// `/` removed (at the project root it anchors to the same directory) and
+/// trailing `/`s removed, it equals `.planning/slugaudit`. So
+/// `.planning/slugaudit/`, `.planning/slugaudit`, `/.planning/slugaudit/` and
+/// `/.planning/slugaudit` are all present. `#` comments and `!` negations are
+/// not rules that ignore anything. Broader patterns (`.planning/`,
+/// `**/slugaudit/`, a matching rule in a parent directory) are not
+/// recognised; the duplicate rule that results is harmless, since gitignore
+/// permits repeats and resolves them last-match-wins.
+fn ignores_activation_dir(contents: &[u8]) -> bool {
+    String::from_utf8_lossy(contents).lines().any(|line| {
+        let rule = line.trim_end();
+        if rule.starts_with('#') || rule.starts_with('!') {
+            return false;
+        }
+        rule.strip_prefix('/').unwrap_or(rule).trim_end_matches('/') == ACTIVATION_RELATIVE_DIR
+    })
 }
 
 /// Removes `.planning/slugaudit` under `root` — the one action that turns

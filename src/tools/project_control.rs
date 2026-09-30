@@ -44,6 +44,51 @@ pub struct ProjectControlResponse {
     /// Present when action was `"on"` and an initial import ran.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub import: Option<ImportReport>,
+    /// What `"on"` did about the project-root `.gitignore`. Absent for
+    /// `"off"`, which never touches that file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gitignore: Option<GitignoreReport>,
+}
+
+/// What enabling a project did about its root `.gitignore`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct GitignoreReport {
+    /// One of `"added"` (the ignore rule was appended), `"already_ignored"`
+    /// (an equivalent rule was present; file untouched), or `"not_written"`
+    /// (the file was left untouched and the project is enabled anyway).
+    pub status: GitignoreStatus,
+    /// Absolute path of the project-root `.gitignore` that was inspected.
+    pub path: String,
+    /// Why nothing was written. Present only for `"not_written"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Outcome of the `.gitignore` guard, as a closed set.
+#[derive(Debug, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GitignoreStatus {
+    Added,
+    AlreadyIgnored,
+    NotWritten,
+}
+
+/// Renders an activation outcome as the response's machine-readable field.
+fn gitignore_report(outcome: project::GitignoreOutcome) -> GitignoreReport {
+    let (status, path, error) = match outcome {
+        project::GitignoreOutcome::Added(path) => (GitignoreStatus::Added, path, None),
+        project::GitignoreOutcome::AlreadyIgnored(path) => {
+            (GitignoreStatus::AlreadyIgnored, path, None)
+        }
+        project::GitignoreOutcome::NotWritten { path, reason } => {
+            (GitignoreStatus::NotWritten, path, Some(reason))
+        }
+    };
+    GitignoreReport {
+        status,
+        path: path.to_string_lossy().into_owned(),
+        error,
+    }
 }
 
 /// Summary of an initial import that ran on enable.
@@ -92,6 +137,9 @@ fn enable(
     sink: &dyn crate::progress::ProgressSink,
 ) -> Result<Json<ProjectControlResponse>, ErrorData> {
     project::enable(root).map_err(|e| err(format!("enable: {e}")))?;
+    // Right after the directory itself: the guard must be in place even if
+    // the initial import below fails, and it never fails this call.
+    let gitignore = gitignore_report(project::ensure_gitignore(root));
     if let Some(prof_str) = profile_override
         && let Some(profile) = crate::model::AuditProfile::parse_str(prof_str)
     {
@@ -126,9 +174,13 @@ fn enable(
             unchanged: report.unchanged,
             revision_id: report.revision_id,
         }),
+        gitignore: Some(gitignore),
     }))
 }
 
+/// `off` never touches `.gitignore` — removing a rule can unhide paths
+/// SlugAudit knows nothing about, and the backlog item only asks for `on`.
+/// Every response from here therefore omits the `gitignore` field.
 fn disable(
     root: &ProjectRoot,
     manager: Option<&sync::SourceSyncManager>,
@@ -139,6 +191,7 @@ fn disable(
             status: "already_disabled".into(),
             path: root.as_path().to_string_lossy().to_string(),
             import: None,
+            gitignore: None,
         }));
     }
     if let Some(m) = manager {
@@ -149,6 +202,7 @@ fn disable(
         status: "disabled".into(),
         path: root.as_path().to_string_lossy().to_string(),
         import: None,
+        gitignore: None,
     }))
 }
 
