@@ -156,21 +156,26 @@ All four are in, each with a test that fails before the change.
 
 ## Correctness follow-ups (small; identified 2026-09-30, not scheduled)
 
-Found while auditing the surfaces, verified in the code, and **not yet fixed**. Each is
-independently small, and none is covered by the phases below.
+Found while auditing the surfaces and verified in the code. **Items 1, 2, 3 and 5 are resolved**
+(2026-09-30); item 4 is open. Each was independently small, and none is covered by the phases below.
 
 1. **`leads` with `limit: 0` can page forever — resolved 2026-09-30** (the row cap is gone; `limit` is clamped to `>= 1`, and the response reports `limited_by`/`complete`, so a resumed page always advances). `limit` is only floored at the maximum
    (`unwrap_or(100).min(500)`), so `LIMIT 0` returns an empty page while `truncated` stays
    `true` and `next_offset` equals the offset it was given — a caller following the
    documented paging contract loops on the same page forever. Clamp to `>= 1`, or reject
    it as a contract error. (`src/tools/leads.rs`, `src/tools/leads_query.rs`.)
-2. **`query.offset` is unbounded.** It is a `usize` interpolated straight into
-   `OFFSET {offset}`, so a value above `i64::MAX` is accepted and silently mis-pages
-   instead of returning a contract error. Bound it the way `limit` is bounded.
-   (`src/tools/query.rs`.)
-3. **`char_column` can panic on a non-boundary offset.** It slices `source[..byte_offset]`
-   on a doc-comment-only precondition, so a Tree-sitter node boundary landing mid-codepoint
-   panics inside `structure` on real project content — a tool call that dies mid-audit.
+2. **`query.offset` is unbounded — resolved 2026-09-30** (`869c126`). It was a `usize` interpolated
+   straight into `OFFSET {offset}`, so a value above `i64::MAX` was accepted, coerced to a REAL by
+   SQLite, and interpreted as a different number instead of returning a contract error — a caller
+   paging a result set got the wrong page with no error. It is now refused before the wrapper is
+   built, with the bound named in the message, and a test asserts both the refusal and that the
+   bound itself is still a usable offset. `leads` never had this problem: it binds its offset as a
+   parameter. (`src/tools/query.rs`.)
+3. **`char_column` can panic on a non-boundary offset — resolved 2026-09-30** (`869c126`). It sliced
+   `source[..byte_offset]` on a doc-comment-only precondition, so a Tree-sitter node boundary
+   landing mid-codepoint panicked inside `structure` on real project content — a tool call that
+   dies mid-audit. An offset landing mid-codepoint, or past the end of the source, is now floored
+   to the nearest boundary, and the doc comment states the guarantee rather than the precondition.
    (`src/model/span.rs`.)
 4. **Tests execute real client binaries.** `AgentDef::is_connected` falls through to
    `which(cli)` + `cli_check_connected(cli)`, so a connect test that passes a temporary
