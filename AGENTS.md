@@ -304,7 +304,11 @@ caught in `src/server_runner.rs`: `spawn_blocking(..)`'s `JoinError` becomes an
 1. Add `src/tools/<name>.rs` with `Request`/`Response` types (`serde` +
    `schemars::JsonSchema`; field docs become JSON-Schema descriptions).
 2. Register it in `src/tools/mod.rs` and add the `#[tool] async fn` handler plus
-   a parameters struct in `src/server.rs`.
+   a parameters struct in `src/server.rs`. Give the handler a `title` and
+   `annotations` (`read_only_hint`, `destructive_hint`) — the return type's
+   `JsonSchema` is the MCP `outputSchema` automatically — then re-record the
+   surface snapshot (`cargo run --bin check_mcp_surface -- --record`), which is
+   what makes a surface change a deliberate, reviewable one.
 3. Open data through `ensure_synced` + `with_verified_read`/`with_verified_write`.
 4. Follow the `leads` shape: module-level consts for caps, complete
    `mechanic_counts` regardless of paging, rows capped (mirrors `query`'s
@@ -382,6 +386,7 @@ planning docs go in `.planning/`; completed records go in
 | `.planning/PLAN.md` | The single active plan |
 | `.planning/archive/DECISIONS.md` | Append-only decision log — add entries, never rewrite history |
 | `.planning/archive/perf_baseline.json` | Consumed by `check_performance` — never delete |
+| `.planning/archive/mcp_surface.json` | The committed `tools/list` + `resources/list` surface, consumed by `check_mcp_surface` — re-record deliberately with `--record` |
 | `docs/CLIENTS.md` | Every `slugaudit connect` target and its config path/scope |
 | `docs/TROUBLESHOOTING.md` | Operator runbook: slow calls, full-publish loops, sync budget, watcher unavailable, rebuild semantics |
 | `.planning/slugaudit/` | Runtime DB state, gitignored — never documentation, never committed |
@@ -415,6 +420,7 @@ cargo run --quiet --bin check_source_limits --locked   # LoC ceilings + exceptio
 cargo run --quiet --bin check_no_duplicates --locked   # duplicate commit subjects / test fn names
 cargo run --quiet --bin check_docs_drift --locked      # ARCHITECTURE module map, test count, canonical docs
 cargo run --quiet --bin check_producer_coverage --locked  # every evidence kind is constructed somewhere
+cargo run --quiet --bin check_mcp_surface --locked     # tools/list + resources/list match the committed snapshot
 cargo check --all-targets --all-features --locked
 cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo test --lib --bins --tests --all-features --locked
@@ -499,8 +505,14 @@ before replacing the binary (`src/update.rs`).
   with a literal unique to it and filter the capture to that literal; a test whose
   capture assertion is absence-only must first emit and detect a control line, or it
   passes vacuously when the capture goes blind.
-- `tests/connect_tests.rs` mutates real agent config and self-skips without an
-  agent CLI on PATH; `tests/stdio_protocol.rs` spawns the built binary and uses
+- Client-facing tests are **hermetic**. `tests/connect_tests.rs` runs the real
+  binary against a temporary `HOME`/`SLUGTHUG_HOME`/`SLUGTHUG_CONFIG_HOME` with
+  `PATH` *replaced* by a fake CLI per agent that records its argv, so no test can
+  resolve or execute an installed client or read a real client config. Replacing
+  `PATH` is the rule, not prepending to it — `src/connect_tests.rs`'s
+  `with_fake_clis_on_path` / `with_no_cli_on_path` exist for that, and
+  `tests/menu_tests.rs` is sandboxed the same way, because menu options 2 and 3
+  run the connect path. `tests/stdio_protocol.rs` spawns the built binary and uses
   10-second receive timeouts (load-sensitive).
 
 ### Expectations

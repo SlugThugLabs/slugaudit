@@ -8,8 +8,9 @@
 //!
 //! Content is `include_str!`-ed from files that already live in this
 //! repository, so there is no second copy to drift: `examples/queries/` is the
-//! cookbook, `src/store/schema.sql` is the schema. Nothing here touches a
-//! project database or the filesystem at runtime.
+//! cookbook and the payload-key reference, `src/store/schema.sql` is the
+//! schema. Nothing here touches a project database or the filesystem at
+//! runtime.
 
 use rmcp::model::{Resource, ResourceContents};
 
@@ -29,6 +30,13 @@ const CATALOG: &[CatalogEntry] = &[
         description: "Pre-built SQL and Tree-sitter recipes for querying the index.",
         mime_type: "text/markdown",
         content: include_str!("../examples/queries/README.md"),
+    },
+    CatalogEntry {
+        uri: "slugaudit://queries/evidence_payload_keys.md",
+        name: "evidence-payload-keys",
+        description: "Every evidence.payload key, its JSON type, and the kind it belongs to.",
+        mime_type: "text/markdown",
+        content: include_str!("../examples/queries/evidence_payload_keys.md"),
     },
     CatalogEntry {
         uri: "slugaudit://queries/find_unhandled_panics.sql",
@@ -59,6 +67,13 @@ const CATALOG: &[CatalogEntry] = &[
         content: include_str!("../examples/queries/rust_functions.scm"),
     },
     CatalogEntry {
+        uri: "slugaudit://queries/blast_radius.sql",
+        name: "blast-radius",
+        description: "Per-file inbound/outbound dependency_edges counts and the transitive closure.",
+        mime_type: "application/sql",
+        content: include_str!("../examples/queries/blast_radius.sql"),
+    },
+    CatalogEntry {
         uri: "slugaudit://schema.sql",
         name: "database-schema",
         description: "Canonical SQLite schema of the project index: tables, columns, and constraints.",
@@ -68,7 +83,12 @@ const CATALOG: &[CatalogEntry] = &[
 ];
 
 /// Every resource this server exposes, for `resources/list`.
-pub(crate) fn list() -> Vec<Resource> {
+///
+/// `list_resources` (`src/server.rs`) returns exactly this, so
+/// `check_mcp_surface` snapshots the same list the wire carries and fails
+/// on drift. Adding, removing, or re-describing a resource is therefore a
+/// deliberate, recorded change.
+pub fn list() -> Vec<Resource> {
     CATALOG
         .iter()
         .map(|entry| {
@@ -82,10 +102,9 @@ pub(crate) fn list() -> Vec<Resource> {
 /// The document for `uri`, or `None` when this server does not serve it.
 /// Exact matching only — every URI is fixed, so there are no templates.
 pub(crate) fn read(uri: &str) -> Option<ResourceContents> {
-    CATALOG
-        .iter()
-        .find(|entry| entry.uri == uri)
-        .map(|entry| ResourceContents::text(entry.content, entry.uri))
+    CATALOG.iter().find(|entry| entry.uri == uri).map(|entry| {
+        ResourceContents::text(entry.content, entry.uri).with_mime_type(entry.mime_type)
+    })
 }
 
 #[cfg(test)]

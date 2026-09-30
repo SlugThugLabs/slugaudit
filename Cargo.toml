@@ -50,6 +50,10 @@ name = "check_producer_coverage"
 path = "src/bin/check_producer_coverage/main.rs"
 
 [[bin]]
+name = "check_mcp_surface"
+path = "src/bin/check_mcp_surface/main.rs"
+
+[[bin]]
 name = "check_performance"
 path = "src/bin/check_performance/main.rs"
 

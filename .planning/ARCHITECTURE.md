@@ -39,7 +39,7 @@ The server exposes eight tools (`src/server.rs`):
 
 - **`report`** — automatic snapshot of the current revision: file/language
   counts, parser failures, evidence-kind counts, import-resolution buckets,
-  credential-shaped file count.
+  inbound/outbound `dependency_edges` totals, credential-shaped file count.
 - **`leads`** — unranked mechanical observations: call sites by callee name,
   diagnostics, TODO/FIXME/HACK comment markers, credential-shaped files.
   Counts by default, each with its row count, distinct-file count and
@@ -69,10 +69,20 @@ untrusted state, that sync is a full publish rather than a trust of the
 dirty-set.
 
 The same server exposes read-only MCP resources (`src/resources.rs`): the
-canonical schema (`slugaudit://schema.sql`) and the query recipes under
-`slugaudit://queries/` (`examples/queries/`). They are embedded at compile time
-via `include_str!` and are pull-based — nothing is pushed into a connecting
-agent's context.
+canonical schema (`slugaudit://schema.sql`), the query recipes under
+`slugaudit://queries/` (`examples/queries/`), and
+`slugaudit://queries/evidence_payload_keys.md` — the per-kind
+`evidence.payload` key/type reference that would otherwise sit in every
+session's `INSTRUCTIONS`. They are embedded at compile time via `include_str!`
+and are pull-based — nothing is pushed into a connecting agent's context.
+
+Every tool also carries a `title`, MCP `annotations` (`readOnlyHint` false for
+`finding`/`project_control`, `destructiveHint` true only for
+`project_control`, whose `off` action purges the database), and an
+`outputSchema` derived from its response type. `check_mcp_surface` snapshots
+`tools/list` + `resources/list` into `.planning/archive/mcp_surface.json` and
+fails on drift, so none of those fields can change without a recorded,
+reviewable update.
 
 ## Repository versus runtime scope
 
@@ -113,7 +123,7 @@ src/
 ├── cli.rs                    Command enum, parse_args, usage text
 ├── server.rs                 MCP surface: tool contracts, INSTRUCTIONS, tool router
 ├── server_runner.rs          tool-call execution: semaphore, spawn_blocking, progress
-├── resources.rs              static MCP resources (query cookbook + schema)
+├── resources.rs              static MCP resources (cookbook, payload keys, schema)
 ├── progress.rs               ProgressEvent/ProgressSink bridge from sync to a renderer
 ├── ignore_rules.rs           single source of truth for excluded paths
 ├── error_codes.rs            stable machine-readable failure codes + remedies
@@ -135,6 +145,7 @@ src/
 │   ├── context_transactions.rs  with_verified_read / with_verified_write
 │   ├── report.rs             automatic project snapshot
 │   ├── report_completeness.rs  the report's index-completeness block
+│   ├── report_edges.rs       the report's inbound/outbound edge totals
 │   ├── query.rs              arbitrary read-only SQL with budgets
 │   ├── query_value.rs        SQLite row/value → JSON with a per-value cap
 │   ├── structure.rs          tree-sitter pattern match
@@ -257,6 +268,11 @@ src/
     │   ├── main.rs           argv + gate verdict + exit codes
     │   ├── scan.rs           enum-variant parser + production-source scanner
     │   └── tests.rs          scanner rules + the verdict on this repo
+    ├── check_mcp_surface/    the tools/list + resources/list snapshot gate
+    │   ├── main.rs           argv + snapshot compare/record + exit codes
+    │   ├── surface.rs        the live surface, derived from the server
+    │   ├── diff.rs           structural snapshot diff with paths
+    │   └── tests.rs          diff rules + the annotation/title table
     ├── check_coverage.rs     llvm-cov line-coverage gate
     └── check_performance/    criterion medians vs. the committed baseline
         ├── main.rs           run benches, compare, print verdict

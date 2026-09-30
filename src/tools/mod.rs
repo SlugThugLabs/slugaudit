@@ -24,6 +24,7 @@ mod query;
 mod query_value;
 mod report;
 mod report_completeness;
+mod report_edges;
 mod structure;
 mod structure_source;
 
@@ -48,6 +49,7 @@ pub use report::{ReportRequest, ReportResponse, report};
 pub use report_completeness::{
     CompletenessCount, CompletenessEnvelope, FileClassCount, FileKindCount, SkipReasonCount,
 };
+pub use report_edges::DependencyEdgeTotals;
 pub use structure::{StructureRequest, StructureResponse, structure};
 
 use std::sync::atomic::{AtomicU64, Ordering};

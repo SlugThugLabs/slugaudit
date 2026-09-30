@@ -1,6 +1,7 @@
 use super::CREDENTIAL_PATH_PREDICATE;
 use super::context::{ensure_synced, with_verified_read};
 use super::report_completeness::{CompletenessEnvelope, build as build_completeness};
+use super::report_edges::{DependencyEdgeTotals, build as build_edge_totals};
 use crate::progress::ProgressSink;
 use crate::sync;
 use rmcp::ErrorData;
@@ -97,6 +98,12 @@ pub struct ReportResponse {
     /// imports has a disconnected import graph that dependency traversal
     /// can't help with.
     pub import_resolution: Vec<ImportResolutionCount>,
+    /// The same graph counted in both directions: how many edges leave a
+    /// file, how many land on one, and how many files are on each end.
+    /// Pure arithmetic over `dependency_edges` — no ranking, no severity,
+    /// and no claim about which file matters. Per-file traversal is the
+    /// `slugaudit://queries/blast_radius.sql` recipe.
+    pub dependency_edges: DependencyEdgeTotals,
     /// Total number of Diagnostic evidence items (e.g. linter or compiler
     /// diagnostics extracted from source files).
     pub diagnostic_count: i64,
@@ -236,6 +243,11 @@ fn build_report(
         .collect::<Result<Vec<_>, _>>()?;
     drop(import_resolution_stmt);
 
+    // The same edges counted by direction — the zero-decision entry point
+    // carries the totals so an agent does not have to write the COUNT to
+    // get them; per-file traversal stays in the recipe resource.
+    let dependency_edges = build_edge_totals(connection)?;
+
     // Total diagnostics — linter/compiler diagnostics extracted from source
     // files. Separate from parser failures: a file can parse fine but
     // still have diagnostics.
@@ -294,6 +306,7 @@ fn build_report(
         parser_failure_files_total,
         open_finding_count,
         import_resolution,
+        dependency_edges,
         diagnostic_count,
         unsupported_language_unresolved_count,
         credential_pattern_file_count,

@@ -184,6 +184,36 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
     );
 }
 
+/// Inbound and outbound edge totals are arithmetic over
+/// `dependency_edges`: `report` carries them so the zero-decision entry
+/// point does not need SQL for the totals, and an edge that lands on no
+/// project file still counts outbound.
+#[test]
+fn dependency_edge_totals_count_edges_and_files_in_both_directions() {
+    let (_dir, mut connection) = database_with_one_revision();
+    for path in ["src/lib.rs", "src/main.rs"] {
+        insert_indexed_file(&connection, path, "Available", "Succeeded", None, "Full");
+    }
+    connection
+        .execute_batch(
+            "INSERT INTO dependency_edges (from_file_id, to_file_id, raw_import_text, resolution_kind) \
+             SELECT (SELECT id FROM files WHERE path = 'src/lib.rs'), \
+                    (SELECT id FROM files WHERE path = 'src/main.rs'), 'import x', 'Resolved'; \
+             INSERT INTO dependency_edges (from_file_id, to_file_id, raw_import_text, resolution_kind) \
+             SELECT (SELECT id FROM files WHERE path = 'src/lib.rs'), NULL, 'import ext', 'External';",
+        )
+        .expect("insert one resolved and one targetless edge");
+
+    let tx = connection.transaction().expect("begin transaction");
+    let response = build_report(&tx, "r1".to_owned()).expect("build report");
+
+    let totals = response.dependency_edges;
+    assert_eq!(totals.outbound_edge_count, 2, "both edges leave lib.rs");
+    assert_eq!(totals.inbound_edge_count, 1, "only the resolved edge lands");
+    assert_eq!(totals.outbound_file_count, 1, "one file imports anything");
+    assert_eq!(totals.inbound_file_count, 1, "one file is imported");
+}
+
 /// The envelope carries where files came from as its own breakdown, so an
 /// agent looking at a mechanic dominated by third-party or machine-written
 /// rows can read the class counts off the report instead of re-deriving the

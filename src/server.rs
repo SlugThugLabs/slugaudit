@@ -74,11 +74,9 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     to files: SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = \
     'Symbol' AND json_extract(e.payload, '$.name') = 'configure'. Discover the rest with SELECT name FROM \
     sqlite_master WHERE type='table', and read `slugaudit://schema.sql`.\n\n\
-    PAYLOAD KEYS (evidence.payload holds JSON — always json_extract, never LIKE on payload text): Symbol \
-    {name, kind, type_annotation, doc}; Structure {kind, name, visibility, decorators, signature}; Import \
-    {source, items, alias, is_wildcard}; Export {name, kind}; Comment {text, kind, associated_node}; Docstring \
-    {text, format, associated_item}; Diagnostic {message, severity}; Call {language, callee_text, callee_name, \
-    caller, resolution, confidence} (Rust only).\n\n\
+    PAYLOAD KEYS: read `slugaudit://queries/evidence_payload_keys.md` for every `evidence.payload` \
+    key, its JSON type, and the `evidence.kind` it belongs to (always json_extract the payload, \
+    never LIKE on its text).\n\n\
     IMPORTS: `dependency_edges.resolution_kind` is Resolved, Unresolved, or External; `syntax_unmodeled` = 1 \
     marks an Unresolved edge whose import syntax the resolver could not parse at all (e.g. Go's `import \"fmt\"`), \
     as opposed to one that parsed but matched no project file. `report` gives the split as `import_resolution` \
@@ -88,9 +86,8 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     capture) against indexed content — in one `file`, or project-wide with `language` and an optional `pattern` \
     path filter (e.g. `src/**/*.rs`). Rust `(function_item name: (identifier) @name)`, \
     Python `(function_definition name: (identifier) @name)`. Ready-made recipes are resources: \
-    `slugaudit://queries/README.md`, `slugaudit://queries/find_unhandled_panics.sql`, \
-    `slugaudit://queries/auth_attack_surface.sql`, `slugaudit://queries/syntax_diagnostics.sql`, \
-    `slugaudit://queries/rust_functions.scm`.\n\n\
+    `slugaudit://queries/README.md` is the index of every one of them, beside the payload-key \
+    reference and `slugaudit://schema.sql`.\n\n\
     OTHER TOOLS: `report` is the project snapshot — files, languages, evidence kinds, parser failures, import \
     resolution, credential-shaped file count. `finding` persists a conclusion you have personally reviewed, \
     bound to the file's current content hash: it stales the moment that file changes, and it is visible only to \
@@ -180,10 +177,29 @@ impl Default for SlugAuditServer {
     }
 }
 
+/// The complete tool surface as it is advertised on `tools/list` — names,
+/// titles, descriptions, input schemas, output schemas, and annotations,
+/// sorted by name.
+///
+/// `#[tool_handler]` generates `list_tools` as exactly
+/// `tool_router.list_all()` (rmcp 3.1.4), so this is the wire content, not a
+/// reconstruction of it. `check_mcp_surface` snapshots it beside
+/// `resources::list()` and fails on drift, which makes a deliberate change to
+/// any of those fields a recorded change; the router is built with a
+/// watcher-less manager because nothing here executes a tool.
+#[must_use]
+pub fn tool_surface() -> Vec<rmcp::model::Tool> {
+    SlugAuditServer::with_manager(sync::SourceSyncManager::default())
+        .tool_router
+        .list_all()
+}
+
 #[tool_router]
 impl SlugAuditServer {
     #[tool(
-        description = "Automatic project snapshot: file/language counts, parser failures, evidence-kind counts, open findings. Use this first to understand the project's shape, then query for specifics. No score, no risk leads."
+        title = "Project snapshot",
+        description = "Automatic project snapshot: file/language counts, parser failures, evidence-kind counts, open findings, and inbound/outbound dependency-edge counts. Use this first to understand the project's shape, then query for specifics. No score, no risk leads.",
+        annotations(read_only_hint = true, destructive_hint = false)
     )]
     async fn report(
         &self,
@@ -198,6 +214,8 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        title = "Mechanical leads",
+        annotations(read_only_hint = true, destructive_hint = false),
         description = "Want somewhere to start? Mechanical facts extracted from the index — \
          call sites by callee name (unwrap, expect, panic, todo, unimplemented, assert), \
          diagnostics, TODO/FIXME/HACK comment markers, and credential-shaped files. Nothing here \
@@ -227,6 +245,8 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        title = "Read-only SQL query",
+        annotations(read_only_hint = true, destructive_hint = false),
         description = "Query the indexed codebase with read-only SQL. Key tables: \
          files (id, path, language, byte_len, content — full text of every indexed file including non-code files), \
          evidence (id, file_id, kind, start_line, end_line, payload — Symbol, Import, Comment, Structure), \
@@ -248,6 +268,8 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        title = "AST structure query",
+        annotations(read_only_hint = true, destructive_hint = false),
         description = "Inspect and extract code AST structures from a file or across the project using Tree-sitter. \
          Specify `file` to search a single file, or omit `file` and specify `language` (with optional `pattern`) \
          to search across matching project files. Returns matched AST nodes with `file`, `start_line`, `end_line`, \
@@ -270,6 +292,8 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        title = "Record a finding",
+        annotations(read_only_hint = false, destructive_hint = false),
         description = "Persist a conclusion you have personally reviewed about a specific file \
          and line range. Supply `path` (any path in the active project, to select the database), \
          `file` (project-relative path of the file), `line_start`/`line_end` (one-based inclusive), \
@@ -291,6 +315,8 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        title = "Read session findings",
+        annotations(read_only_hint = true, destructive_hint = false),
         description = "Retrieve findings scoped to the current agent session — only returns \
          findings written by this session, never another session's conclusions. Safer than \
          querying the findings table directly through `query`, which returns every session's \
@@ -310,6 +336,8 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        title = "Enable or disable a project",
+        annotations(read_only_hint = false, destructive_hint = true),
         description = "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable \
          a project (creates the activation directory and runs the initial import), or `\"off\"` to \
          disable it (removes the activation directory and purges its database). Supply `path` to \
@@ -331,6 +359,8 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        title = "Operational health",
+        annotations(read_only_hint = true, destructive_hint = false),
         description = "Operational snapshot: watcher health, unreconciled event counts, last \
          verified sequence, current revision id and file count, parser pack version, and \
          process-wide tool-call counters. Intended for operators/health checks; safe to call \

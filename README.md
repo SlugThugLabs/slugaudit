@@ -93,7 +93,7 @@ The server exposes 8 MCP tools, registered in `src/server.rs`:
 
 | Tool | What it returns |
 | :--- | :--- |
-| `report` | Project snapshot: file and language counts, parser failures, evidence-kind counts, open findings. |
+| `report` | Project snapshot: file and language counts, parser failures, evidence-kind counts, open findings, inbound/outbound dependency-edge totals. |
 | `leads` | Unranked mechanical facts: call sites by callee (`unwrap`, `expect`, `panic`, `todo`, `unimplemented`, `assert`), diagnostics, `TODO`/`FIXME`/`HACK` markers, credential-shaped files. Counts by default; paged file/line rows for one `mechanic` on request. Callee-based mechanics cover Rust only in this revision. |
 | `query` | Read-only SQL over the index (`files`, `evidence`, `dependency_edges`), including full file text via `files.content`. |
 | `structure` | Tree-sitter AST queries in one file or across a language, returning matched nodes with line spans and snippets. |
@@ -102,22 +102,32 @@ The server exposes 8 MCP tools, registered in `src/server.rs`:
 | `project_control` | Enable (`on`) or disable (`off`) a project, optionally setting its profile; `off` purges the database. |
 | `health` | Operational snapshot: watcher health, unreconciled event counts, current revision and file count, parser-pack version, tool-call counters. |
 
-Tool schemas, payload keys, and usage guidance are served to the agent at runtime by
-the server itself (`INSTRUCTIONS` in `src/server.rs`).
+Every tool advertises a `title`, MCP `annotations` (`readOnlyHint` for the read-only
+tools; `destructiveHint` only on `project_control`, whose `off` action purges the
+database), and an `outputSchema` derived from its response type. Tool schemas and usage
+guidance are served to the agent at runtime by the server itself (`INSTRUCTIONS` in
+`src/server.rs`); the per-kind `evidence.payload` keys live in
+`slugaudit://queries/evidence_payload_keys.md` instead of in the briefing.
 
 ## Resources
 
-Six pull-based MCP resources, read with `resources/read`. They cost an agent nothing
-in context unless it asks for one. The five query resources are also in the repository
-under [`examples/queries/`](examples/queries/), and are compiled into the binary from
-those files:
+Eight pull-based MCP resources, read with `resources/read`. They cost an agent nothing
+in context unless it asks for one. The query resources are also in the repository under
+[`examples/queries/`](examples/queries/), and are compiled into the binary from those
+files:
 
 - `slugaudit://queries/README.md` — SQL and Tree-sitter recipes ([`examples/queries/README.md`](examples/queries/README.md))
+- `slugaudit://queries/evidence_payload_keys.md` — every `evidence.payload` key, its JSON type, and the kind it belongs to
 - `slugaudit://queries/find_unhandled_panics.sql` — `unwrap` / `expect` / `panic` call sites
 - `slugaudit://queries/auth_attack_surface.sql` — functions, methods, and calls touching auth, tokens, or sessions
 - `slugaudit://queries/syntax_diagnostics.sql` — syntax-error and parser diagnostics per file
 - `slugaudit://queries/rust_functions.scm` — Tree-sitter pattern for Rust functions
+- `slugaudit://queries/blast_radius.sql` — per-file inbound/outbound `dependency_edges` counts and the transitive closure
 - `slugaudit://schema.sql` — the index schema (from `src/store/schema.sql`)
+
+The `tools/list` and `resources/list` contract — names, titles, descriptions, input and
+output schemas, annotations, and this catalogue — is pinned by `check_mcp_surface`
+against `.planning/archive/mcp_surface.json`.
 
 ## Configuration
 
@@ -162,6 +172,7 @@ cargo run --quiet --bin check_source_limits --locked
 cargo run --quiet --bin check_no_duplicates --locked
 cargo run --quiet --bin check_docs_drift --locked
 cargo run --quiet --bin check_producer_coverage --locked
+cargo run --quiet --bin check_mcp_surface --locked
 cargo check --all-targets --all-features --locked
 cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo test --lib --bins --tests --all-features --locked
@@ -169,7 +180,10 @@ cargo run --quiet --bin check_coverage --locked
 ```
 
 CI also runs `cargo-deny` (advisories, bans, sources, licences), a RustSec audit, and
-scoped mutation testing. `check_performance` compares the criterion benches against the
+scoped mutation testing. `check_mcp_surface` fails when `tools/list` or `resources/list`
+drifts from the committed `.planning/archive/mcp_surface.json`; a deliberate surface
+change is recorded with `cargo run --bin check_mcp_surface -- --record`.
+`check_performance` compares the criterion benches against the
 committed baseline at `.planning/archive/perf_baseline.json`; it is not part of the CI
 job. `check_coverage` gates line coverage at 83% by default — the threshold is
 calibrated against measurement, not an aspirational target.

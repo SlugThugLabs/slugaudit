@@ -14,6 +14,12 @@ SlugAudit indexes repository symbols, imports, calls, AST shapes, and file metad
 | **[`find_unhandled_panics.sql`](find_unhandled_panics.sql)** | `query` | Find crash-prone `unwrap()`, `expect()`, and `panic!()` invocations across all files. |
 | **[`syntax_diagnostics.sql`](syntax_diagnostics.sql)** | `query` | Pull syntax errors and parser diagnostics discovered during tree-sitter indexing. |
 | **[`rust_functions.scm`](rust_functions.scm)** | `structure` | Match exact Rust function declarations, parameters, return types, and bodies. |
+| **[`blast_radius.sql`](blast_radius.sql)** | `query` | Per-file inbound/outbound `dependency_edges` counts, plus the transitive closure in either direction. Counts only — no ranking. |
+| **[`evidence_payload_keys.md`](evidence_payload_keys.md)** | reference | Every `evidence.payload` key, its JSON type, and the `evidence.kind` it belongs to. Read this instead of probing payload shapes by trial. |
+
+Each `.sql` file holds one or more statements; the `query` tool runs **one
+statement per call**, so paste them one at a time (the comments name the
+statement boundaries).
 
 ---
 

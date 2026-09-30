@@ -1,0 +1,1431 @@
+{
+  "resources": [
+    {
+      "description": "Pre-built SQL and Tree-sitter recipes for querying the index.",
+      "mimeType": "text/markdown",
+      "name": "query-cookbook",
+      "uri": "slugaudit://queries/README.md"
+    },
+    {
+      "description": "Every evidence.payload key, its JSON type, and the kind it belongs to.",
+      "mimeType": "text/markdown",
+      "name": "evidence-payload-keys",
+      "uri": "slugaudit://queries/evidence_payload_keys.md"
+    },
+    {
+      "description": "Find unwrap/expect/panic call sites across the codebase.",
+      "mimeType": "application/sql",
+      "name": "find-unhandled-panics",
+      "uri": "slugaudit://queries/find_unhandled_panics.sql"
+    },
+    {
+      "description": "Map functions, methods, and calls touching auth, tokens, or sessions.",
+      "mimeType": "application/sql",
+      "name": "auth-attack-surface",
+      "uri": "slugaudit://queries/auth_attack_surface.sql"
+    },
+    {
+      "description": "List syntax-error and parser diagnostics per file.",
+      "mimeType": "application/sql",
+      "name": "syntax-diagnostics",
+      "uri": "slugaudit://queries/syntax_diagnostics.sql"
+    },
+    {
+      "description": "Tree-sitter pattern for Rust function declarations and bodies.",
+      "mimeType": "text/plain",
+      "name": "rust-functions",
+      "uri": "slugaudit://queries/rust_functions.scm"
+    },
+    {
+      "description": "Per-file inbound/outbound dependency_edges counts and the transitive closure.",
+      "mimeType": "application/sql",
+      "name": "blast-radius",
+      "uri": "slugaudit://queries/blast_radius.sql"
+    },
+    {
+      "description": "Canonical SQLite schema of the project index: tables, columns, and constraints.",
+      "mimeType": "application/sql",
+      "name": "database-schema",
+      "uri": "slugaudit://schema.sql"
+    }
+  ],
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Persist a conclusion you have personally reviewed about a specific file and line range. Supply `path` (any path in the active project, to select the database), `file` (project-relative path of the file), `line_start`/`line_end` (one-based inclusive), plus `severity`, `category`, `title`, and `description` (all your own judgment — SlugAudit never generates these). The finding is bound to the file's current content hash and auto-invalidates (status becomes stale) the moment that file changes, so findings never outlive the source they were about. Use this to record reviewed issues, not raw diagnostics.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "category": {
+            "description": "Category label for the finding, e.g. security/performance/correctness/style",
+            "type": "string"
+          },
+          "description": {
+            "description": "Detailed description of the finding, its impact, and any remediation (max 10000 chars)",
+            "type": "string"
+          },
+          "file": {
+            "description": "Project-relative path of the file this finding is about",
+            "type": "string"
+          },
+          "line_end": {
+            "description": "One-based inclusive end line of the finding",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "line_start": {
+            "description": "One-based inclusive start line of the finding",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Any path inside the active project, used to select the database",
+            "type": "string"
+          },
+          "severity": {
+            "description": "Severity of the finding, e.g. critical/high/medium/low/informational",
+            "type": "string"
+          },
+          "title": {
+            "description": "Concise one-line title summarizing the finding (max 200 chars)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "file",
+          "line_start",
+          "line_end",
+          "severity",
+          "category",
+          "title",
+          "description"
+        ],
+        "type": "object"
+      },
+      "name": "finding",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "revision_id": {
+            "type": "string"
+          },
+          "source_hash": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "revision_id",
+          "source_hash",
+          "status"
+        ],
+        "type": "object"
+      },
+      "title": "Record a finding"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Retrieve findings scoped to the current agent session — only returns findings written by this session, never another session's conclusions. Safer than querying the findings table directly through `query`, which returns every session's rows. Supply `path` (any path in the active project) to select the database, and optionally `file` to filter to a specific file.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "file": {
+            "default": null,
+            "description": "Optional project-relative file path. When supplied, only findings\nfor that file are returned. Omit to return all current-session\nfindings for the project.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "description": "Any path inside the active project",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "finding_read",
+      "outputSchema": {
+        "$defs": {
+          "FindingReadEntry": {
+            "description": "One finding row, scoped to the current agent session. Every field is\nexactly what the `finding` tool stored — SlugAudit never generates\nany of this text.",
+            "properties": {
+              "category": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "id": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "line_end": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "line_start": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "type": "string"
+              },
+              "severity": {
+                "type": "string"
+              },
+              "source_hash": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "line_start",
+              "line_end",
+              "severity",
+              "category",
+              "title",
+              "description",
+              "status",
+              "source_hash"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "findings": {
+            "items": {
+              "$ref": "#/$defs/FindingReadEntry"
+            },
+            "type": "array"
+          },
+          "revision_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision_id",
+          "findings"
+        ],
+        "type": "object"
+      },
+      "title": "Read session findings"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Operational snapshot: watcher health, unreconciled event counts, last verified sequence, current revision id and file count, parser pack version, and process-wide tool-call counters. Intended for operators/health checks; safe to call repeatedly and never mutates state. Call `project_control` with `\"on\"` on a path first to surface per-project database state; calling without a path returns global counters and the most-recently-touched project's watcher health only.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "path": {
+            "default": null,
+            "description": "Optional project root. When omitted, returns watcher state for\nevery project currently registered with the server and skips the\nper-database stats. When supplied, returns stats for that project:\nwatcher state if the project is registered with the server's\nwatcher, database state if the project's database exists, and the\ncounters otherwise. Reading is strictly read-only — this tool\nnever syncs, never registers a watch, and never writes, so a\nhealth check can never perturb the state it is reporting on.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "health",
+      "outputSchema": {
+        "$defs": {
+          "HealthPhase": {
+            "description": "Coarse-grained operational phase. Derived from existing state rather\nthan tracked separately so it can't drift.\n\n- `Importing`: no current revision — the first sync has never succeeded.\n- `Restoring`: watcher is `NeedsVerification` or `Desynced`; the next\n  call will do a full verification rather than incremental reconcile.\n- `SteadyState`: watcher `Healthy`, no unreconciled events, a current\n  revision exists, the project is fully served from disk.\n- `Unavailable`: watcher could not be initialized; every call will\n  full-publish.\n- `NoActiveProject`: server has been initialized but no `ensure_current`\n  call has succeeded, so the watcher state can't be summarized.\n- `Disabled`: `request.path` resolved to no enabled project — the\n  activation marker is absent — so nothing can serve that path until\n  `project_control` enables it. `remedy` names that call. This is a\n  state, not an error: a diagnostic tool that fails when there is\n  nothing to diagnose is useless.",
+            "enum": [
+              "importing",
+              "restoring",
+              "steady_state",
+              "unavailable",
+              "no_active_project",
+              "disabled"
+            ],
+            "type": "string"
+          },
+          "SystemMemoryInfo": {
+            "properties": {
+              "available_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "total_bytes",
+              "available_bytes"
+            ],
+            "type": "object"
+          },
+          "WatcherHealth": {
+            "description": "Health of a project's filesystem watcher. Never silently assume healthy —\nthe caller must check before trusting the dirty set.\n\nDerived `Serialize` so the `health` MCP tool can return this enum as\npart of its `Json<HealthResponse>` response. Derived `JsonSchema` so\nthe same schema is surfaced through MCP to consumers.",
+            "oneOf": [
+              {
+                "const": "healthy",
+                "description": "Watcher is active and events are being recorded.",
+                "type": "string"
+              },
+              {
+                "const": "needs_verification",
+                "description": "Watcher history is untrustworthy (e.g. after restart). The current\nfilesystem must be reconciled against the stored state before the\ndatabase can be considered synchronized.",
+                "type": "string"
+              },
+              {
+                "const": "desynced",
+                "description": "Watcher detected an integrity problem (queue overflow, watch removed,\netc.). A full verification is required before serving evidence.",
+                "type": "string"
+              },
+              {
+                "const": "unavailable",
+                "description": "Watcher could not be initialized for this project (e.g. platform\ndoesn't support it, or the project root isn't watchable).",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "consecutive_full_publishes": {
+            "description": "How many consecutive full publishes (untrusted-watcher or\nUnavailable-path verifications) have run since the last successful\nincremental reconcile. A value that persists at 1+ across calls\nmeans the watcher is not being trusted — e.g. Linux inotify\n`fs.inotify.max_user_watches` overflow forcing `Desynced` — so\nevery tool call full-publishes. See the full-publish runbook\nin `docs/TROUBLESHOOTING.md`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "file_count": {
+            "description": "File count in the active project's database. `-1` if no project is\nactive or the count query failed (use this rather than\n`Option<i64>` so consumers can render a single JSON number). Counts\nevery discovered file, including rows with `file_kind = 'skipped'` —\n`skipped_file_count` breaks those out.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "last_sync_duration_ms": {
+            "description": "Duration of the most recent successful `ensure_current`, in\nmilliseconds. Zero before the first sync.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "last_sync_unix_seconds": {
+            "description": "Unix-epoch seconds of the most recent successful `ensure_current`\nacross the entire server's lifetime. Zero before the first sync.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "last_verified_sequence": {
+            "description": "Sequence acknowledged by the most recent reconcile. `None` if no\nproject is active.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "parser_pack_version": {
+            "description": "Parser pack version stored on the current revision. `None` if no\nrevision has been published yet.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pending_deleted": {
+            "description": "Number of unreconciled deleted paths. `None` if no project is active.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pending_dirty": {
+            "description": "Number of unreconciled dirty paths (modified or created since\nthe last successful reconcile). `None` if no project is active.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "phase": {
+            "$ref": "#/$defs/HealthPhase",
+            "description": "Coarse classification of what the server is doing right now.\nDerivation rule documented on [`HealthPhase`]."
+          },
+          "remedy": {
+            "description": "The next action to take when no project is being served by this\nanswer: the same static sentence the `project_not_enabled` error\ncarries in `ErrorData.data.remedy`, so a caller can treat \"health\nsays `disabled`\" and \"every tool fails with `project_not_enabled`\"\nas one instruction. `Some` exactly when `phase` is `disabled`, or\nwhen no `path` was supplied and this server has no project at all;\n`None` whenever a project is actually being served.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision_id": {
+            "description": "`revision_id` of the active project's current revision. `None`\nif no project is active or the database hasn't been published to.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "skipped_file_count": {
+            "description": "Of `file_count`, how many rows were discovered but never read\n(`file_kind = 'skipped'`: oversize or unreadable), so they hold no\ncontent. `-1` when the count is unavailable for the same reasons as\n`file_count`. `file_count - skipped_file_count` is the number of\nfiles that were actually read.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "system_memory": {
+            "$ref": "#/$defs/SystemMemoryInfo",
+            "description": "Host physical and available memory info."
+          },
+          "tool_call_count": {
+            "description": "Total tool calls served since process start.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tool_call_error_count": {
+            "description": "Total tool calls that returned any `ErrorData` since process start.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tool_call_total_ms": {
+            "description": "Sum of every tool call's work duration, in milliseconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "watcher_health": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/WatcherHealth"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Watcher health for the supervised project. `None` only if no\nproject is currently registered with the server."
+          },
+          "watcher_sequence": {
+            "description": "Watcher's monotonic event sequence. `None` if no project is active.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "phase",
+          "last_sync_unix_seconds",
+          "last_sync_duration_ms",
+          "file_count",
+          "skipped_file_count",
+          "tool_call_count",
+          "tool_call_error_count",
+          "tool_call_total_ms",
+          "system_memory",
+          "consecutive_full_publishes"
+        ],
+        "type": "object"
+      },
+      "title": "Operational health"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Want somewhere to start? Mechanical facts extracted from the index — call sites by callee name (unwrap, expect, panic, todo, unimplemented, assert), diagnostics, TODO/FIXME/HACK comment markers, and credential-shaped files. Nothing here is judged, ranked, scored, or ordered by importance: every item is a fact, and deciding which of them matter is entirely your call. Call with only `path` to get every mechanic with its row count, its distinct-file count (`files`) and `covers` (`rust_only` means a zero count is unchecked, not absent), then call again with one `mechanic` id to get file/line rows, optionally narrowed with `pattern` (a path GLOB, e.g. `src/auth/*`; without `*`/`?` it is a substring match). A rows response always reports `returned`/`total` and `complete` plus the file denominators `files_total`/`files_covered`; there is no row cap, so a page is cut only by your `limit` (omit it for everything that fits) and by the response byte budget (`row_budget_bytes`/`rows_bytes`, with `limited_by` naming what stopped it). To page, pass `offset` = `next_offset` together with `expected_revision` = the previous page's `revision_id`: a changed index is then refused with `stale_revision` instead of silently skipping or repeating rows.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "expected_revision": {
+            "default": null,
+            "description": "Pin the revision a resumed page expects; a mismatch is refused",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": null,
+            "description": "Max rows in this page; omit for everything that fits the byte budget",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mechanic": {
+            "default": null,
+            "description": "Optional mechanic id; omit for counts only",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "offset": {
+            "default": null,
+            "description": "Rows to skip when paging",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "path": {
+            "description": "Any path inside the active project, used to select the database",
+            "type": "string"
+          },
+          "pattern": {
+            "default": null,
+            "description": "Optional path GLOB filter (substring match when it has no `*`/`?`)",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "leads",
+      "outputSchema": {
+        "$defs": {
+          "FileCount": {
+            "description": "One file's share of a page, in first-appearance order.",
+            "properties": {
+              "count": {
+                "description": "Rows of this mechanic in *this page* that belong to this file — not\nthe file's total, which is what `files_total` / `files_covered`\ntrack across pages.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "file": {
+                "description": "Project-relative path.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "file",
+              "count"
+            ],
+            "type": "object"
+          },
+          "LeadRow": {
+            "properties": {
+              "detail": {
+                "description": "The mechanic's own text: callee text, diagnostic message, or comment\ntext. Empty for path-shaped mechanics. Clipped to `MAX_DETAIL_CHARS`\ncharacters when longer — check `detail_clipped`.",
+                "type": "string"
+              },
+              "detail_clipped": {
+                "description": "True when `detail` was clipped to `MAX_DETAIL_CHARS`; the text is then\na prefix of the stored evidence and the remainder exists only in the\nfile itself. False means the whole stored text is present.",
+                "type": "boolean"
+              },
+              "file": {
+                "description": "Project-relative path of the file the observation is in.",
+                "type": "string"
+              },
+              "line": {
+                "description": "One-based start line, or `0` when the evidence carries no span.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "file",
+              "line",
+              "detail",
+              "detail_clipped"
+            ],
+            "type": "object"
+          },
+          "MechanicCount": {
+            "properties": {
+              "count": {
+                "description": "How many observations this mechanic has in the current revision\nunder the same `pattern`. Complete, never paged.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "covers": {
+                "$ref": "#/$defs/MechanicCoverage",
+                "description": "The languages this count covers. `rust_only` with a zero count on a\nnon-Rust project means nothing was checked."
+              },
+              "files": {
+                "description": "Distinct files containing at least one observation. This is the\ndenominator to enumerate: a 50,000-row mechanic is usually far fewer\nfiles, and a file is the unit a sweep can finish.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "mechanic": {
+                "description": "Stable id — pass it back as `mechanic` to get this mechanic's rows.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "mechanic",
+              "count",
+              "files",
+              "covers"
+            ],
+            "type": "object"
+          },
+          "MechanicCoverage": {
+            "description": "Which languages a mechanic was actually measured over. A zero count on a\n[`MechanicCoverage::RustOnly`] mechanic means *unchecked*, not *absent* —\nwithout this field that distinction is only prose.",
+            "oneOf": [
+              {
+                "const": "rust_only",
+                "description": "Only the Rust call walker produces the evidence this mechanic reads.",
+                "type": "string"
+              },
+              {
+                "const": "all_languages",
+                "description": "Produced for every indexed language.",
+                "type": "string"
+              }
+            ]
+          },
+          "PageLimit": {
+            "description": "What stopped a page. Reports the cap that acted; never a judgment about\nwhether the page was the right size.",
+            "oneOf": [
+              {
+                "const": "none",
+                "description": "The mechanic was exhausted: `complete` is true.",
+                "type": "string"
+              },
+              {
+                "const": "limit",
+                "description": "The caller's `limit` was reached; more rows exist.",
+                "type": "string"
+              },
+              {
+                "const": "bytes",
+                "description": "The response byte budget was reached; more rows exist. Raise\n`limit` if one was set, or page on.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "complete": {
+            "description": "True when this page reaches the end of the mechanic\n(`offset + returned >= total`), and when no mechanic was requested.\nFalse means rows remain and `next_offset` is present.",
+            "type": "boolean"
+          },
+          "files_covered": {
+            "description": "Distinct files represented in rows `0..offset + returned` of the\nmechanic. Cumulative for a sweep at one revision, because rows are\nordered by path and a page boundary can split a file but never\nreorder the files. `files_total - files_covered` is what is left.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "files_total": {
+            "description": "Distinct files holding at least one observation of the requested\nmechanic — the denominator a sweep can exhaust. `0` when no mechanic\nwas requested. Equal to the selected `mechanic_counts` entry's\n`files`.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "limited_by": {
+            "$ref": "#/$defs/PageLimit",
+            "description": "What stopped the page: the mechanic ended, the caller's `limit`, or\nthe byte budget."
+          },
+          "mechanic_counts": {
+            "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit`/`offset`, and carry no\nordering by importance — the order is the fixed declaration order.",
+            "items": {
+              "$ref": "#/$defs/MechanicCount"
+            },
+            "type": "array"
+          },
+          "next_offset": {
+            "description": "Pass as `offset` on the next call while `complete` is false, with\n`expected_revision` set to this response's `revision_id`.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "page_file_counts": {
+            "description": "Rows grouped per file for this page only.",
+            "items": {
+              "$ref": "#/$defs/FileCount"
+            },
+            "type": "array"
+          },
+          "returned": {
+            "description": "Rows in this page.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "revision_id": {
+            "description": "Revision the counts and rows were read from. Pass it as\n`expected_revision` on the next page to have a changed index refused\nrather than mis-paged.",
+            "type": "string"
+          },
+          "row_budget_bytes": {
+            "description": "Serialized-JSON byte ceiling applied to `rows` this call — the value\nof `max_query_response_bytes`\n(`SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES`), the same budget `query`\nspends. One row is always returned even if it alone exceeds it.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rows": {
+            "description": "Empty when the request supplied no `mechanic`.",
+            "items": {
+              "$ref": "#/$defs/LeadRow"
+            },
+            "type": "array"
+          },
+          "rows_bytes": {
+            "description": "Serialized-JSON bytes of the returned `rows`, measured per row\nexactly as `query` measures its values. The rest of this envelope\n(`mechanic_counts` — at most one entry per mechanic — and\n`page_file_counts`) is additional and small relative to the rows.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total": {
+            "description": "Total rows for the requested mechanic under the same `pattern`; `0`\nwhen no mechanic was requested.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision_id",
+          "mechanic_counts",
+          "rows",
+          "returned",
+          "total",
+          "complete",
+          "files_total",
+          "files_covered",
+          "page_file_counts",
+          "limited_by",
+          "row_budget_bytes",
+          "rows_bytes"
+        ],
+        "type": "object"
+      },
+      "title": "Mechanical leads"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable a project (creates the activation directory and runs the initial import), or `\"off\"` to disable it (removes the activation directory and purges its database). Supply `path` to target a specific project root; defaults to the current directory. If the project was moved, copied, or re-extracted elsewhere (e.g. unzipped fresh from an archive), a stale `.planning/slugaudit/project.db` is discarded and rebuilt from source automatically — the agent does not need to delete it or re-enable manually.",
+      "inputSchema": {
+        "$defs": {
+          "ProjectControlAction": {
+            "description": "The action to take — on enables, off disables.",
+            "enum": [
+              "on",
+              "off"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "action": {
+            "$ref": "#/$defs/ProjectControlAction",
+            "description": "Action to perform: `\"on\"` enables the project, `\"off\"` disables it."
+          },
+          "path": {
+            "default": null,
+            "description": "Project root path. Defaults to the current directory when omitted.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "profile": {
+            "default": null,
+            "description": "Optional audit profile to configure: `\"audit\"`, `\"lean\"`, or `\"adaptive\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "project_control",
+      "outputSchema": {
+        "$defs": {
+          "ImportReport": {
+            "description": "Summary of an initial import that ran on enable.",
+            "properties": {
+              "added": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "revision_id": {
+                "type": "string"
+              },
+              "unchanged": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "added",
+              "unchanged",
+              "revision_id"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "import": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ImportReport"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present when action was `\"on\"` and an initial import ran."
+          },
+          "path": {
+            "description": "Absolute path of the project root that was affected.",
+            "type": "string"
+          },
+          "status": {
+            "description": "One of `\"enabled\"`, `\"disabled\"`, or `\"already_disabled\"` (no-op).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "path"
+        ],
+        "type": "object"
+      },
+      "title": "Enable or disable a project"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Query the indexed codebase with read-only SQL. Key tables: files (id, path, language, byte_len, content — full text of every indexed file including non-code files), evidence (id, file_id, kind, start_line, end_line, payload — Symbol, Import, Comment, Structure), dependency_edges (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled). To inspect code or file content directly from the DB without filesystem reads, query `files.content` (e.g. `SELECT content FROM files WHERE path = 'src/main.rs'`). To link evidence to file paths, always JOIN: `SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND json_extract(e.payload, '$.name') = 'configure'`. Schema discovery: `SELECT name FROM sqlite_master WHERE type='table'`.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "expected_revision": {
+            "default": null,
+            "description": "Set to the previous page's `revision_id` when resuming a sweep. If\nthe index changed since that page, the call is refused with the\n`stale_revision` code instead of returning a page whose ordering no\nlonger matches the offset: `files`/`evidence` hold only the current\nrevision, so a stored offset means nothing once the tree changes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "offset": {
+            "default": 0,
+            "description": "Number of matching rows to skip when paging through a result.\nCombined with the response's `next_offset`, and valid only while\nthe revision id stays the same across pages (see [`QueryResponse`]).",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Any path inside the active project.",
+            "type": "string"
+          },
+          "sql": {
+            "description": "Read-only SQL against the project's own database — arbitrary joins,\nCTEs, and window functions are fine. Only writes are rejected, and\nthat comes from the connection itself, not from inspecting this\ntext: there is no keyword blocklist or table allowlist.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "sql"
+        ],
+        "type": "object"
+      },
+      "name": "query",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "next_offset": {
+            "description": "Use this as the next request's `offset` when present. Only valid\nwhile `revision_id` is unchanged (see the paging contract above).",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "revision_id": {
+            "description": "Revision id the page was read from. Compare across pages to detect\na revision change that invalidates `next_offset` paging, or pass it\nback as `expected_revision` to have the change refused.",
+            "type": "string"
+          },
+          "rows": {
+            "items": true,
+            "type": "array"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "revision_id",
+          "rows",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "title": "Read-only SQL query"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Automatic project snapshot: file/language counts, parser failures, evidence-kind counts, open findings, and inbound/outbound dependency-edge counts. Use this first to understand the project's shape, then query for specifics. No score, no risk leads.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "path": {
+            "description": "Any path inside the active project: its root, or a file/directory under it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "report",
+      "outputSchema": {
+        "$defs": {
+          "CompletenessCount": {
+            "properties": {
+              "count": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "extraction_completeness": {
+                "description": "One of `Full`, `Partial`, `ContentOnly`, `Unavailable`. `ContentOnly`\nmeans the file's text is in `files.content` but no parser ran over it\n— the file is readable even though it has no structural evidence.\n`Unavailable` means no content is retained at all (binary, or skipped).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "extraction_completeness",
+              "count"
+            ],
+            "type": "object"
+          },
+          "CompletenessEnvelope": {
+            "description": "Counts that say whether the rest of the response is the whole truth.",
+            "properties": {
+              "evidence_capped_file_count": {
+                "description": "Files whose stored evidence was cut short by an evidence cap: each\ncarries the `evidence:truncated` diagnostic appended by\n`sync::sample::apply_evidence_limits`. Their structural record is\nincomplete in a way this report cannot recover, so an agent counting\n`evidence_counts` for them is counting a floor, not a total.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "extraction_completeness_counts": {
+                "description": "Every `files` row by `extraction_completeness`, so \"text present but\nnot parsed\" (`ContentOnly`) is visible as itself instead of vanishing\ninto a parser-failure count.",
+                "items": {
+                  "$ref": "#/$defs/CompletenessCount"
+                },
+                "type": "array"
+              },
+              "file_class_counts": {
+                "description": "Every `files` row by `file_class` — where the code came from, derived\nfrom the path alone (`sync::classify`): `authored` (the project's own\nsource), `generated` (a machine-written file: a `generated` path token\nor a codegen suffix such as `.pb.go` / `.g.dart` / `.min.js`), or\n`vendored` (a third-party tree: `vendor/`, `node_modules/`, …). A\nmechanic whose rows are dominated by one class can be summarised in a\nsentence instead of paged row by row. `vendored` subsumes `generated`\nwhen a path matches both. A path heuristic, not a verdict: it says\nwhere a file came from, never whether it matters.",
+                "items": {
+                  "$ref": "#/$defs/FileClassCount"
+                },
+                "type": "array"
+              },
+              "file_kind_counts": {
+                "description": "Every `files` row by `file_kind`. `indexed` is the set with content and\nstructural evidence; `binary` was sampled and deliberately not parsed;\n`skipped` was discovered but never read, so it has no content.",
+                "items": {
+                  "$ref": "#/$defs/FileKindCount"
+                },
+                "type": "array"
+              },
+              "index_partial": {
+                "description": "True when the index does not cover every file the last publish\ndiscovered — i.e. `skipped_file_count > 0`. False means every\ndiscovered file is represented by a row here.",
+                "type": "boolean"
+              },
+              "indexed_files_without_evidence": {
+                "description": "`indexed` rows with no evidence at all — content is present and\nreadable, but the index holds nothing structural about them (a\nlanguage with no loaded parser, or a file that parsed to nothing).\nBinary and skipped rows are excluded: no evidence is their expected\nstate, not a gap.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "skipped_by_reason": {
+                "description": "Those skipped rows grouped by `skip_reason`. This is the \"why\" paired\nwith `index_partial`; a file the walk could not even name (a non-UTF-8\npath) has no representable `files.path` and cannot appear here — it is\nvisible only in the publish report and the server log.",
+                "items": {
+                  "$ref": "#/$defs/SkipReasonCount"
+                },
+                "type": "array"
+              },
+              "skipped_file_count": {
+                "description": "`files` rows with `file_kind = 'skipped'`, i.e. files that exist in the\nproject but are not in the index.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "file_kind_counts",
+              "file_class_counts",
+              "skipped_file_count",
+              "skipped_by_reason",
+              "extraction_completeness_counts",
+              "index_partial",
+              "evidence_capped_file_count",
+              "indexed_files_without_evidence"
+            ],
+            "type": "object"
+          },
+          "DependencyEdgeTotals": {
+            "description": "Edge totals in both directions, over the whole revision.",
+            "properties": {
+              "inbound_edge_count": {
+                "description": "Edges whose `to_file_id` names a row in `files` — the subset that\nlands on a project file. `Unresolved` and `External` edges carry no\ntarget, and `import_resolution` splits those two apart; this total\ngroups them only by their absence of a target.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "inbound_file_count": {
+                "description": "Distinct files that are the target of at least one edge.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "outbound_edge_count": {
+                "description": "`count(*) FROM dependency_edges`: every edge, since every edge\noriginates at a file (`from_file_id` is `NOT NULL`).",
+                "format": "int64",
+                "type": "integer"
+              },
+              "outbound_file_count": {
+                "description": "Distinct files that are the source of at least one edge.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "outbound_edge_count",
+              "inbound_edge_count",
+              "outbound_file_count",
+              "inbound_file_count"
+            ],
+            "type": "object"
+          },
+          "EvidenceKindCount": {
+            "properties": {
+              "count": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "count"
+            ],
+            "type": "object"
+          },
+          "FileClassCount": {
+            "properties": {
+              "class": {
+                "description": "One of `authored`, `generated`, `vendored` — `files.file_class`.",
+                "type": "string"
+              },
+              "count": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "class",
+              "count"
+            ],
+            "type": "object"
+          },
+          "FileKindCount": {
+            "properties": {
+              "count": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "kind": {
+                "description": "One of `indexed`, `binary`, `skipped` — `files.file_kind`.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "count"
+            ],
+            "type": "object"
+          },
+          "ImportResolutionCount": {
+            "description": "How many import edges fell into each resolution bucket. A project with\nmostly `External` and `Unresolved` edges and very few `Resolved` ones\nhas an import graph the evidence can't connect — useful context for an\nAI deciding how much to trust dependency traversal for this project.",
+            "properties": {
+              "count": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "kind": {
+                "description": "One of `Resolved`, `Unresolved`, or `External`.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "count"
+            ],
+            "type": "object"
+          },
+          "LanguageCount": {
+            "properties": {
+              "file_count": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "language": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "language",
+              "file_count"
+            ],
+            "type": "object"
+          },
+          "ParserFailureFile": {
+            "description": "A file whose parse failed or was not attempted, with enough detail for\nan AI to decide whether the failure is worth investigating or just\nnoise (e.g. a `.claude_output.txt` scratch file that should have been\nexcluded, vs. a real source file with a genuine syntax error).",
+            "properties": {
+              "extraction_completeness": {
+                "description": "One of `Full`, `Partial`, `ContentOnly`, `Unavailable`. `ContentOnly`\nmeans the file's text *is* indexed but no parser ran over it — the\nrow is listed for availability reasons, not because extraction\nfailed, and its content can still be read from `files.content`.",
+                "type": "string"
+              },
+              "parse_error_reason": {
+                "description": "Set only when the parser returned a hard error (not just syntax\nerror nodes). `None` for `NotAttempted` and `SyntaxErrors`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "parse_outcome": {
+                "type": "string"
+              },
+              "parser_availability": {
+                "description": "One of `Available`, `Unavailable`, `LoadFailed`. Separates\n`ContentOnly` rows that have no parser for their language\n(`Unavailable`) from ones whose parser could not be loaded\n(`LoadFailed`), which a completeness value alone cannot.",
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "parse_outcome",
+              "extraction_completeness",
+              "parser_availability"
+            ],
+            "type": "object"
+          },
+          "SkipReasonCount": {
+            "properties": {
+              "count": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "reason": {
+                "description": "A short stable code from `files.skip_reason`: `oversize` (over the\nper-file import ceiling) or `unreadable` (the read failed). Empty when\na skipped row carries no recorded reason.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "count"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "completeness": {
+            "$ref": "#/$defs/CompletenessEnvelope",
+            "description": "Whether every count above is the whole truth: rows by kind, skipped\nrows by reason, rows by extraction completeness, and a partial-index\nflag. See [`CompletenessEnvelope`]."
+          },
+          "credential_pattern_file_count": {
+            "description": "How many rows in `files` match common credential-file patterns\n(`.env`, `*.pem`, `*.key`, `id_rsa*`, etc. — the same list the\nSQL below matches, and the same list `leads`' `credential_files`\nrows use). SlugAudit records these paths like any other file —\nincluding when the file was skipped and no content was retained —\nso this count makes the AI aware it is handling credential-*looking*\npaths even when it cannot read them.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "dependency_edges": {
+            "$ref": "#/$defs/DependencyEdgeTotals",
+            "description": "The same graph counted in both directions: how many edges leave a\nfile, how many land on one, and how many files are on each end.\nPure arithmetic over `dependency_edges` — no ranking, no severity,\nand no claim about which file matters. Per-file traversal is the\n`slugaudit://queries/blast_radius.sql` recipe."
+          },
+          "diagnostic_count": {
+            "description": "Total number of Diagnostic evidence items (e.g. linter or compiler\ndiagnostics extracted from source files).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "evidence_counts": {
+            "items": {
+              "$ref": "#/$defs/EvidenceKindCount"
+            },
+            "type": "array"
+          },
+          "file_count": {
+            "description": "Rows in `files`: every file the last publish discovered, whether or\nnot it was indexed. Read `completeness.file_kind_counts` to see how\nmany of those have content (`indexed`), are binary, or were skipped —\nthis number alone does not mean \"files with evidence\".",
+            "format": "int64",
+            "type": "integer"
+          },
+          "import_resolution": {
+            "description": "How many import edges are Resolved vs Unresolved vs External — a\nkey asymmetry signal. A project with mostly External/Unresolved\nimports has a disconnected import graph that dependency traversal\ncan't help with.",
+            "items": {
+              "$ref": "#/$defs/ImportResolutionCount"
+            },
+            "type": "array"
+          },
+          "languages": {
+            "items": {
+              "$ref": "#/$defs/LanguageCount"
+            },
+            "type": "array"
+          },
+          "open_finding_count": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "parser_failure_count": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "parser_failure_files": {
+            "description": "Up to `MAX_PARSER_FAILURE_FILES` files with parse failures, so the\nAI can see whether failures are concentrated in scratch/temp files\n(noise) or in real source files (worth investigating).",
+            "items": {
+              "$ref": "#/$defs/ParserFailureFile"
+            },
+            "type": "array"
+          },
+          "parser_failure_files_total": {
+            "description": "Uncapped total of files matching the `parser_failure_files` predicate.\nLarger than the returned list's length means the list was truncated at\n`MAX_PARSER_FAILURE_FILES`; equal means the list is complete.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "revision_id": {
+            "type": "string"
+          },
+          "unsupported_language_unresolved_count": {
+            "description": "Of the `Unresolved` count in `import_resolution`, how many come from\nimport syntax the resolver couldn't parse at all — `extract_reference`\nreturned `None` on the raw text (e.g. Go's `import \"fmt\"`), as\nopposed to an import whose syntax was parsed but matched no project\nfile (e.g. a stdlib module like `kotlin.math.max`). SlugAudit\nrecords both as `Unresolved` edges since it can't tell them apart\nat resolution time, but they mean very different things: a high\ncount here means \"this project's import syntax isn't modeled yet,\"\nnot \"this project's imports are broken.\"",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision_id",
+          "file_count",
+          "completeness",
+          "languages",
+          "evidence_counts",
+          "parser_failure_count",
+          "parser_failure_files",
+          "parser_failure_files_total",
+          "open_finding_count",
+          "import_resolution",
+          "dependency_edges",
+          "diagnostic_count",
+          "unsupported_language_unresolved_count",
+          "credential_pattern_file_count"
+        ],
+        "type": "object"
+      },
+      "title": "Project snapshot"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Inspect and extract code AST structures from a file or across the project using Tree-sitter. Specify `file` to search a single file, or omit `file` and specify `language` (with optional `pattern`) to search across matching project files. Returns matched AST nodes with `file`, `start_line`, `end_line`, and `text` snippet. The `query` must name at least one capture with `@name`. Examples: Rust `(function_item name: (identifier) @name body: (block) @body)`, Python `(function_definition name: (identifier) @name body: (block) @body)`, TypeScript/JS `(function_declaration name: (identifier) @name)`, or whole-node `(class_definition) @cls`.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "file": {
+            "default": null,
+            "description": "Project-relative path of a single file to match against.\nWhen omitted, matches all files in the project matching `language`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "full_text": {
+            "default": null,
+            "description": "Whether to include full matched source text up to MAX_TEXT_BYTES.\nDefaults to true for single-file queries, and false (lean 1-line snippet) for multi-file queries.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "language": {
+            "default": null,
+            "description": "Language grammar to use (e.g. \"rust\", \"python\", \"typescript\").\nRequired when `file` is omitted; optional if `file` is provided.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "description": "Any path inside the active project.",
+            "type": "string"
+          },
+          "pattern": {
+            "default": null,
+            "description": "Optional path pattern (e.g. \"*auth*\", \"src/**/*.rs\") to filter files.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "query": {
+            "description": "A tree-sitter S-expression query, e.g. `(function_item name: (identifier) @name)`.\nFor patterns normalized evidence and `query` can't easily express.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "structure",
+      "outputSchema": {
+        "$defs": {
+          "StructureMatch": {
+            "properties": {
+              "capture_name": {
+                "type": "string"
+              },
+              "end_byte": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "end_column": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "end_line": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "extraction_failed": {
+                "type": "boolean"
+              },
+              "file": {
+                "type": "string"
+              },
+              "node_kind": {
+                "type": "string"
+              },
+              "start_byte": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "start_column": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "start_line": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "text": {
+                "type": "string"
+              },
+              "text_truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "file",
+              "capture_name",
+              "node_kind",
+              "start_byte",
+              "end_byte",
+              "start_line",
+              "start_column",
+              "end_line",
+              "end_column",
+              "text",
+              "text_truncated",
+              "extraction_failed"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "language": {
+            "type": "string"
+          },
+          "matches": {
+            "items": {
+              "$ref": "#/$defs/StructureMatch"
+            },
+            "type": "array"
+          },
+          "revision_id": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "revision_id",
+          "language",
+          "matches",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "title": "AST structure query"
+    }
+  ]
+}

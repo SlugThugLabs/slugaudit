@@ -70,6 +70,14 @@ jobs:
       - name: Check producer coverage (every evidence kind is constructed)
         run: cargo run --quiet --bin check_producer_coverage --locked
 
+      # Fails when the tools/list or resources/list surface drifts from the
+      # committed snapshot (names, titles, descriptions, input and output
+      # schemas, annotations, the resource catalogue). Re-record a
+      # deliberate change with `--record`, in the style of
+      # check_performance.
+      - name: Check the MCP surface snapshot (tools/list + resources/list)
+        run: cargo run --quiet --bin check_mcp_surface --locked
+
       - name: Check compilation
         run: cargo check --all-targets --all-features --locked
 
