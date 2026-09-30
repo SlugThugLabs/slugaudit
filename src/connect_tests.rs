@@ -1,4 +1,14 @@
 //! Tests for connect, disconnect, and agent detection.
+//!
+//! Client CLIs are never the machine's: `AgentDef::is_connected`, `is_installed`
+//! and the `CliDirect` route all resolve executables through `PATH`, so every
+//! test below that can reach one runs under [`with_no_cli_on_path`] (an empty
+//! `PATH`) or [`with_fake_clis_on_path`] (a directory holding only the fakes
+//! that test wrote). Prepending to the inherited `PATH` is not enough — a real
+//! `codex`/`claude` further along it would still be found and executed, which
+//! is how a test run once rewrote the owner's `~/.codex/config.toml`
+//! (`.planning/DEVIATIONS.md`). Tests driving [`run_connect`] additionally pin
+//! both homes with [`with_config_home`].
 
 use super::*;
 use crate::connect_agents::{ConfigShape, Strategy, find_agent};
@@ -42,55 +52,61 @@ fn prefer_slugthug_binary_keeps_current_when_not_installed() {
 
 #[test]
 fn json_agent_connect_and_disconnect_modifies_config() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let home = temp.path();
-    let agent = find_agent("cursor").expect("cursor agent");
-    let binary = Path::new("/bin/slugaudit");
+    with_no_cli_on_path(|| {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path();
+        let agent = find_agent("cursor").expect("cursor agent");
+        let binary = Path::new("/bin/slugaudit");
 
-    assert!(!agent.is_connected(Some(home)));
+        assert!(!agent.is_connected(Some(home)));
 
-    connect_agent(&agent, binary, Some(home)).expect("connect cursor");
-    assert!(agent.is_connected(Some(home)));
+        connect_agent(&agent, binary, Some(home)).expect("connect cursor");
+        assert!(agent.is_connected(Some(home)));
 
-    let cfg_path = home.join(".cursor/mcp.json");
-    let content = fs::read_to_string(&cfg_path).expect("read config");
-    assert!(content.contains("slugaudit"));
-    assert!(content.contains("/bin/slugaudit"));
+        let cfg_path = home.join(".cursor/mcp.json");
+        let content = fs::read_to_string(&cfg_path).expect("read config");
+        assert!(content.contains("slugaudit"));
+        assert!(content.contains("/bin/slugaudit"));
 
-    disconnect_agent(&agent, Some(home)).expect("disconnect cursor");
-    assert!(!agent.is_connected(Some(home)));
-    let after = fs::read_to_string(&cfg_path).expect("read config after");
-    assert!(!after.contains("/bin/slugaudit"));
+        disconnect_agent(&agent, Some(home)).expect("disconnect cursor");
+        assert!(!agent.is_connected(Some(home)));
+        let after = fs::read_to_string(&cfg_path).expect("read config after");
+        assert!(!after.contains("/bin/slugaudit"));
+    });
 }
 
 #[test]
 fn zed_agent_connect_and_disconnect_modifies_settings() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let home = temp.path();
-    let agent = find_agent("zed").expect("zed agent");
-    let binary = Path::new("/bin/slugaudit");
+    with_no_cli_on_path(|| {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path();
+        let agent = find_agent("zed").expect("zed agent");
+        let binary = Path::new("/bin/slugaudit");
 
-    assert!(!agent.is_connected(Some(home)));
+        assert!(!agent.is_connected(Some(home)));
 
-    connect_agent(&agent, binary, Some(home)).expect("connect zed");
-    assert!(agent.is_connected(Some(home)));
+        connect_agent(&agent, binary, Some(home)).expect("connect zed");
+        assert!(agent.is_connected(Some(home)));
 
-    let cfg_path = home.join(".config/zed/settings.json");
-    let content = fs::read_to_string(&cfg_path).expect("read zed settings");
-    assert!(content.contains("context_servers"));
-    assert!(content.contains("slugaudit"));
+        let cfg_path = home.join(".config/zed/settings.json");
+        let content = fs::read_to_string(&cfg_path).expect("read zed settings");
+        assert!(content.contains("context_servers"));
+        assert!(content.contains("slugaudit"));
 
-    disconnect_agent(&agent, Some(home)).expect("disconnect zed");
-    assert!(!agent.is_connected(Some(home)));
+        disconnect_agent(&agent, Some(home)).expect("disconnect zed");
+        assert!(!agent.is_connected(Some(home)));
+    });
 }
 
 #[test]
 fn detected_agents_filters_by_installed_presence() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let home = temp.path();
-    fs::create_dir_all(home.join(".cursor")).expect("mkdir .cursor");
-    let detected = crate::connect_agents::detected_agents(Some(home));
-    assert!(detected.iter().any(|a| a.id == "cursor"));
+    with_no_cli_on_path(|| {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path();
+        fs::create_dir_all(home.join(".cursor")).expect("mkdir .cursor");
+        let detected = crate::connect_agents::detected_agents(Some(home));
+        assert!(detected.iter().any(|a| a.id == "cursor"));
+    });
 }
 
 fn fake_agent_cli(name: &str, exit_code: i32) -> tempfile::TempDir {
@@ -107,38 +123,64 @@ fn fake_agent_cli(name: &str, exit_code: i32) -> tempfile::TempDir {
     dir
 }
 
-fn with_fake_cli_on_path<T>(bin_dir: &std::path::Path, f: impl FnOnce() -> T) -> T {
+/// Runs `f` with `PATH` pointing at exactly `bin_dir`: the inherited entries
+/// are dropped, so a real client CLI installed on this machine cannot be found
+/// by `which` or executed by `Command::new` while the closure runs.
+fn with_fake_clis_on_path<T>(bin_dir: &std::path::Path, f: impl FnOnce() -> T) -> T {
     let _guard = TEST_ENV_LOCK.lock().expect("env lock");
-    let old_path = std::env::var_os("PATH").unwrap_or_default();
-    let mut paths = std::env::split_paths(&old_path).collect::<Vec<_>>();
-    paths.insert(0, bin_dir.to_path_buf());
-    let new_path = std::env::join_paths(paths).expect("join paths");
-    temp_env::with_var("PATH", Some(new_path.as_os_str()), f)
+    temp_env::with_var("PATH", Some(bin_dir.as_os_str()), f)
+}
+
+/// Runs `f` with `PATH` pointing at an empty directory, so no client CLI can
+/// be resolved, matched by `which`, or executed at all.
+fn with_no_cli_on_path<T>(f: impl FnOnce() -> T) -> T {
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+    let empty = tempfile::tempdir().expect("empty bin dir");
+    temp_env::with_var("PATH", Some(empty.path().as_os_str()), f)
+}
+
+/// Points both SlugAudit's own home and the client-config home at `home`, so a
+/// test driving [`run_connect`] cannot read the developer's real
+/// `~/.claude.json` or install into the real `~/.slugthug`.
+fn with_config_home<T>(home: &std::path::Path, f: impl FnOnce() -> T) -> T {
+    temp_env::with_vars(
+        [
+            ("SLUGTHUG_CONFIG_HOME", Some(home.as_os_str())),
+            ("SLUGTHUG_HOME", Some(home.as_os_str())),
+        ],
+        f,
+    )
 }
 
 #[test]
 fn connect_registers_with_a_fake_agent_cli_successfully() {
+    let temp = tempfile::tempdir().expect("tempdir");
     let bin_dir = fake_agent_cli("claude", 0);
-    with_fake_cli_on_path(bin_dir.path(), || {
-        let result = run_connect(Some("claude"));
-        assert!(
-            result.is_ok(),
-            "fake claude CLI must register successfully: {result:?}"
-        );
+    with_fake_clis_on_path(bin_dir.path(), || {
+        with_config_home(temp.path(), || {
+            let result = run_connect(Some("claude"));
+            assert!(
+                result.is_ok(),
+                "fake claude CLI must register successfully: {result:?}"
+            );
+        });
     });
 }
 
 #[test]
 fn connect_surfaces_an_add_failure_from_the_agent_cli() {
+    let temp = tempfile::tempdir().expect("tempdir");
     let bin_dir = fake_agent_cli("claude", 1);
-    with_fake_cli_on_path(bin_dir.path(), || {
-        let result = run_connect(Some("claude"));
-        match result {
-            Err(ConnectError::AddFailed { cli, .. }) => {
-                assert_eq!(cli, "claude");
+    with_fake_clis_on_path(bin_dir.path(), || {
+        with_config_home(temp.path(), || {
+            let result = run_connect(Some("claude"));
+            match result {
+                Err(ConnectError::AddFailed { cli, .. }) => {
+                    assert_eq!(cli, "claude");
+                }
+                other => panic!("expected AddFailed, got {other:?}"),
             }
-            other => panic!("expected AddFailed, got {other:?}"),
-        }
+        });
     });
 }
 
@@ -245,19 +287,21 @@ fn goose_refusal_prints_the_paste_ready_yaml_block() {
 
 #[test]
 fn connect_writes_the_config_file_for_interactive_only_clients() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let home = temp.path();
-    let agent = find_agent("omp").expect("omp");
-    assert_eq!(agent.strategy, Strategy::CliInteractiveOnly);
+    with_no_cli_on_path(|| {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path();
+        let agent = find_agent("omp").expect("omp");
+        assert_eq!(agent.strategy, Strategy::CliInteractiveOnly);
 
-    connect_agent(&agent, Path::new("/bin/slugaudit"), Some(home)).expect("connect omp");
-    let content = fs::read_to_string(home.join(".omp/agent/mcp.json")).expect("omp config");
-    assert!(content.contains("slugaudit"));
-    assert!(content.contains("/bin/slugaudit"));
-    assert!(agent.is_connected(Some(home)));
+        connect_agent(&agent, Path::new("/bin/slugaudit"), Some(home)).expect("connect omp");
+        let content = fs::read_to_string(home.join(".omp/agent/mcp.json")).expect("omp config");
+        assert!(content.contains("slugaudit"));
+        assert!(content.contains("/bin/slugaudit"));
+        assert!(agent.is_connected(Some(home)));
 
-    disconnect_agent(&agent, Some(home)).expect("disconnect omp");
-    assert!(!agent.is_connected(Some(home)));
+        disconnect_agent(&agent, Some(home)).expect("disconnect omp");
+        assert!(!agent.is_connected(Some(home)));
+    });
 }
 
 #[test]
@@ -279,7 +323,7 @@ fn connect_uses_the_cli_when_a_scriptable_executable_exists() {
     let home = temp.path();
     let agent = find_agent("pi").expect("pi");
     let bin_dir = fake_agent_cli("pi", 0);
-    with_fake_cli_on_path(bin_dir.path(), || {
+    with_fake_clis_on_path(bin_dir.path(), || {
         connect_agent(&agent, Path::new("/bin/slugaudit"), Some(home)).expect("connect pi via cli");
     });
     assert!(
@@ -337,7 +381,7 @@ fn connect_emits_the_transport_grammar_each_client_requires() {
         write_recording_cli(&bin_dir.join(id), &log);
 
         let agent = find_agent(id).expect("agent");
-        with_fake_cli_on_path(&bin_dir, || {
+        with_fake_clis_on_path(&bin_dir, || {
             connect_agent(&agent, Path::new("/bin/slugaudit"), Some(&home)).expect("connect");
         });
         let recorded = fs::read_to_string(&log).expect("args log");
@@ -350,22 +394,30 @@ fn connect_falls_back_to_the_config_file_when_the_executable_is_absent_or_fails(
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path();
     let agent = find_agent("pi").expect("pi");
+    let config = home.join(".pi/agent/mcp.json");
 
-    connect_agent(&agent, Path::new("/bin/slugaudit"), Some(home)).expect("connect pi without cli");
-    assert!(
-        home.join(".pi/agent/mcp.json").is_file(),
-        "the documented file path must be used when the CLI is absent"
-    );
-    disconnect_agent(&agent, Some(home)).expect("disconnect pi");
-    assert!(!agent.is_connected(Some(home)));
+    with_no_cli_on_path(|| {
+        connect_agent(&agent, Path::new("/bin/slugaudit"), Some(home))
+            .expect("connect pi without cli");
+        assert!(
+            config.is_file(),
+            "the documented file path must be used when the CLI is absent"
+        );
+        disconnect_agent(&agent, Some(home)).expect("disconnect pi");
+        assert!(!agent.is_connected(Some(home)));
+    });
+
+    // Remove the file the CLI-less path wrote, so the assertion below proves
+    // the rejected `mcp add` wrote it again rather than merely leaving it.
+    fs::remove_file(&config).expect("remove config before the fallback");
 
     let bin_dir = fake_agent_cli("pi", 1);
-    with_fake_cli_on_path(bin_dir.path(), || {
+    with_fake_clis_on_path(bin_dir.path(), || {
         connect_agent(&agent, Path::new("/bin/slugaudit"), Some(home))
             .expect("fall back after a rejected add");
     });
     assert!(
-        home.join(".pi/agent/mcp.json").is_file(),
+        config.is_file(),
         "a CLI that rejects `mcp add` must still fall back to the config file"
     );
 }

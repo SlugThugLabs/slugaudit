@@ -2,205 +2,193 @@
 
 //! End-to-end test for the `connect` subcommand.
 //!
-//! Unlike the unit tests in `cli_tests.rs` (which only exercise argument
-//! parsing), this spawns the real `slugaudit` binary as a subprocess,
-//! runs `connect <agent>`, and inspects the agent's actual config file to
-//! prove the MCP server registration was written correctly — right name,
-//! right binary path, right transport.
+//! This spawns the real `slugaudit` binary as a subprocess and runs
+//! `connect <agent>` against a fake client CLI, then asserts the exact argv
+//! slugaudit emitted. Nothing outside a temporary directory is read or
+//! written: `HOME`, `SLUGTHUG_HOME` and `SLUGTHUG_CONFIG_HOME` all point into
+//! the temp dir, and `PATH` is *replaced* (not prepended to) by a directory of
+//! fake clients — one shell script per agent name that appends its own argv,
+//! one line per invocation, to a log file and exits 0. The installed binary is
+//! the one `install` just copied into the temp home, so the asserted argument
+//! is a temp path too.
 //!
-//! ⚠️ **This test mutates the real agent's config on the machine it runs
-//! on.** With an agent CLI on PATH, `connect <agent>` adds a `slugaudit`
-//! entry to that agent's live config (`~/.claude.json`, `~/.bob/…`,
-//! etc.); the test backs up and restores that config, and its `install`
-//! step drops a real binary into `~/.slugthug/slugaudit/` which is *not*
-//! cleaned up (see below). Run this only on a disposable machine or when
-//! you're prepared to un-register the server afterwards with
-//! `claude mcp remove slugaudit`, `bob mcp remove slugaudit`, etc. CI is
-//! safe only because no agent CLIs are installed there.
+//! This replaced an earlier version that drove the *real* client binaries
+//! (`bob`, `claude`, `grok`, `codex`) against the real home, backing up and
+//! restoring the user's live configs and self-skipping when no client CLI was
+//! installed. That version was neither hermetic nor a test of slugaudit: what
+//! it verified depended on which clients happened to be on the machine, and
+//! `is_connected` executing the installed `codex` once rewrote the owner's
+//! `~/.codex/config.toml` during a run (`.planning/DEVIATIONS.md`). The fake
+//! CLI removes both problems — it runs deterministically everywhere, with no
+//! skip, and it asserts the registration argv itself rather than a client's
+//! interpretation of it.
 //!
-//! The `install` step intentionally leaves `~/.slugthug/slugaudit/slugaudit`
-//! behind (the real `connect` flow depends on it). If you ran this test
-//! on a development box, remove that binary and re-run
-//! `claude mcp remove slugaudit` / `bob mcp remove slugaudit` afterwards
-//! to leave the machine exactly as you found it.
-//!
-//! Requires the relevant agent CLI (`bob`, `claude`, `grok`, `codex`) to be
-//! on PATH. If none are present the whole module is skipped.
+//! The `install` step deliberately runs into the temp `SLUGTHUG_HOME`, never
+//! `~/.slugthug`, so it leaves the machine exactly as it found it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Agents this test knows how to verify. Each entry names the CLI tool,
-/// the connect subcommand argument, and a closure that inspects the
-/// agent's config file and returns true iff `slugaudit` is registered
-/// with the expected binary path.
-struct Agent {
-    cli: &'static str,
-    connect_arg: &'static str,
-    /// Returns true if the agent's config contains a `slugaudit` stdio
-    /// registration pointing at `binary`.
-    is_registered: fn(binary: &Path) -> bool,
-    /// Removes any existing `slugaudit` registration.
-    remove: fn() -> std::io::Result<std::process::Output>,
+/// One client whose registration is exercised end to end.
+struct Case {
+    /// The agent id passed to `connect` (also the fake CLI's file name, when
+    /// the agent is CLI-driven).
+    agent: &'static str,
+    /// Whether a fake CLI is put on `PATH` for this agent.
+    cli: bool,
+    /// The invocations the fake CLI must record, in order. Each entry is one
+    /// invocation with its argv space-joined; `{bin}` stands for the installed
+    /// slugaudit binary and is substituted at run time.
+    invocations: &'static [&'static str],
+    /// Home-relative config file `connect` must write for a client that has no
+    /// add command.
+    written: Option<&'static str>,
 }
 
-impl Agent {
-    fn bob() -> Self {
-        Agent {
-            cli: "bob",
-            connect_arg: "bob",
-            is_registered: |binary| {
-                let Ok(raw) = fs::read_to_string(home().join(".bob/mcp_settings.json")) else {
-                    return false;
-                };
-                let Ok(json): Result<serde_json::Value, _> = serde_json::from_str(&raw) else {
-                    return false;
-                };
-                let Some(server) = json.get("mcpServers").and_then(|s| s.get("slugaudit")) else {
-                    return false;
-                };
-                server.get("command").and_then(|c| c.as_str())
-                    == Some(&binary.display().to_string())
-            },
-            remove: || {
-                Command::new("bob")
-                    .args(["mcp", "remove", "slugaudit", "--scope", "global"])
-                    .output()
-            },
-        }
-    }
+/// The dialects the registry actually emits. `codex` is the plain `--`
+/// separator, `claude`/`gemini` the `-s user` scope forms (with and without
+/// the separator), `grok` a `--scope user` positional, `bob` transport *and*
+/// scope, `droid` `--type`, `openhands` `--transport`, `hermes` and `q` the
+/// `--command` positional spellings. The two `written` rows are the clients
+/// with no `mcp add` at all.
+///
+/// Every CLI-driven case starts with `mcp list`: `connect` asks the client
+/// whether slugaudit is already registered before it adds it.
+const CASES: &[Case] = &[
+    Case {
+        agent: "codex",
+        cli: true,
+        invocations: &["mcp list", "mcp add slugaudit -- {bin}"],
+        written: None,
+    },
+    Case {
+        agent: "claude",
+        cli: true,
+        invocations: &["mcp list", "mcp add -s user slugaudit -- {bin}"],
+        written: None,
+    },
+    Case {
+        agent: "grok",
+        cli: true,
+        invocations: &["mcp list", "mcp add slugaudit --scope user -- {bin}"],
+        written: None,
+    },
+    // Gemini's grammar is documented, not probed, so `connect` first confirms
+    // the installed binary really offers `mcp add`.
+    Case {
+        agent: "gemini",
+        cli: true,
+        invocations: &[
+            "mcp list",
+            "mcp add --help",
+            "mcp add -s user slugaudit {bin}",
+        ],
+        written: None,
+    },
+    Case {
+        agent: "bob",
+        cli: true,
+        invocations: &[
+            "mcp list",
+            "mcp add --transport stdio --scope global slugaudit {bin}",
+        ],
+        written: None,
+    },
+    Case {
+        agent: "droid",
+        cli: true,
+        invocations: &["mcp list", "mcp add --type stdio slugaudit {bin}"],
+        written: None,
+    },
+    Case {
+        agent: "openhands",
+        cli: true,
+        invocations: &["mcp list", "mcp add slugaudit --transport stdio {bin}"],
+        written: None,
+    },
+    Case {
+        agent: "hermes",
+        cli: true,
+        invocations: &["mcp list", "mcp add slugaudit --command {bin}"],
+        written: None,
+    },
+    Case {
+        agent: "q",
+        cli: true,
+        invocations: &["mcp list", "mcp add --name slugaudit --command {bin}"],
+        written: None,
+    },
+    // cursor's only executable is `agent`, a verify-only CLI that cannot
+    // register; omp has no CLI at all. Both must fall through to the file.
+    Case {
+        agent: "cursor",
+        cli: false,
+        invocations: &[],
+        written: Some(".cursor/mcp.json"),
+    },
+    Case {
+        agent: "omp",
+        cli: false,
+        invocations: &[],
+        written: Some(".omp/agent/mcp.json"),
+    },
+];
 
-    fn claude() -> Self {
-        Agent {
-            cli: "claude",
-            connect_arg: "claude",
-            is_registered: |binary| {
-                let Ok(raw) = fs::read_to_string(home().join(".claude.json")) else {
-                    return false;
-                };
-                let Ok(json): Result<serde_json::Value, _> = serde_json::from_str(&raw) else {
-                    return false;
-                };
-                let Some(server) = json.get("mcpServers").and_then(|s| s.get("slugaudit")) else {
-                    return false;
-                };
-                server.get("type").and_then(|t| t.as_str()) == Some("stdio")
-                    && server.get("command").and_then(|c| c.as_str())
-                        == Some(&binary.display().to_string())
-            },
-            remove: || {
-                Command::new("claude")
-                    .args(["mcp", "remove", "slugaudit", "-s", "user"])
-                    .output()
-            },
-        }
-    }
-
-    fn grok() -> Self {
-        Agent {
-            cli: "grok",
-            connect_arg: "grok",
-            is_registered: |binary| {
-                let Ok(raw) = fs::read_to_string(home().join(".grok/config.toml")) else {
-                    return false;
-                };
-                raw.contains("[mcp_servers.slugaudit]")
-                    && raw.contains(&format!("command = \"{}\"", binary.display()))
-            },
-            remove: || {
-                Command::new("grok")
-                    .args(["mcp", "remove", "slugaudit", "--scope", "user"])
-                    .output()
-            },
-        }
-    }
-
-    fn codex() -> Self {
-        Agent {
-            cli: "codex",
-            connect_arg: "codex",
-            is_registered: |binary| {
-                let Ok(raw) = fs::read_to_string(home().join(".codex/config.toml")) else {
-                    return false;
-                };
-                raw.contains("[mcp_servers.slugaudit]")
-                    && raw.contains(&format!("command = \"{}\"", binary.display()))
-            },
-            remove: || {
-                Command::new("codex")
-                    .args(["mcp", "remove", "slugaudit"])
-                    .output()
-            },
-        }
+/// Writes a fake client CLI named `name` into `bin_dir`: a shell script that
+/// records its argv — one line per invocation, arguments space-separated — to
+/// `log` and exits 0. Nothing is printed, so the `mcp list` probe answers "not
+/// registered" and `connect` always takes the add path.
+fn write_fake_cli(bin_dir: &Path, name: &str, log: &Path) {
+    let script = bin_dir.join(name);
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+            log.display()
+        ),
+    )
+    .expect("write fake cli");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).expect("chmod fake cli");
     }
 }
 
-fn home() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .expect("HOME must be set")
-}
-
-fn connect(binary: &Path, arg: &str) -> std::process::Output {
+/// Spawns the slugaudit binary with every home pointed at `home` and `PATH`
+/// reduced to `bin_dir`, so the child cannot reach a real client CLI or a real
+/// client config.
+fn hermetic_output(
+    binary: &Path,
+    home: &Path,
+    bin_dir: &Path,
+    args: &[&str],
+) -> std::process::Output {
     Command::new(binary)
-        .args(["connect", arg])
+        .args(args)
+        .env("HOME", home)
+        .env("SLUGTHUG_HOME", home.join(".slugthug"))
+        .env("SLUGTHUG_CONFIG_HOME", home)
+        .env("PATH", bin_dir)
         .output()
-        .expect("spawn connect")
-}
-
-/// Back up a config file if it exists so it can be restored after the
-/// test. Returns the backup path (or None if the file didn't exist).
-fn backup(path: &Path) -> Option<PathBuf> {
-    if !path.exists() {
-        return None;
-    }
-    let backup = path.with_extension(format!(
-        "{}.connect-test-backup",
-        path.extension()
-            .map(|e| e.to_string_lossy())
-            .unwrap_or_default()
-    ));
-    fs::copy(path, &backup).ok()?;
-    Some(backup)
-}
-
-fn restore(path: &Path, backup: Option<&PathBuf>) {
-    match backup {
-        Some(b) => {
-            let _ = fs::rename(b, path);
-        }
-        None => {
-            let _ = fs::remove_file(path);
-        }
-    }
-}
-
-fn agents() -> Vec<Agent> {
-    let mut out = Vec::new();
-    if which::which("bob").is_ok() {
-        out.push(Agent::bob());
-    }
-    if which::which("claude").is_ok() {
-        out.push(Agent::claude());
-    }
-    if which::which("grok").is_ok() {
-        out.push(Agent::grok());
-    }
-    if which::which("codex").is_ok() {
-        out.push(Agent::codex());
-    }
-    out
+        .expect("spawn slugaudit")
 }
 
 #[test]
-fn connect_writes_the_correct_registration_for_each_installed_agent() {
-    let agents = agents();
-    if agents.is_empty() {
-        // No agent CLI installed in this environment — nothing to verify.
-        // This is expected in CI and on machines without these tools.
-        eprintln!("skipping connect integration test: none of bob/claude/grok/codex on PATH");
-        return;
+fn connect_emits_the_documented_argv_for_every_client_dialect() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    let log = temp.path().join("argv.log");
+    fs::create_dir_all(&home).expect("mkdir home");
+    fs::create_dir_all(&bin_dir).expect("mkdir bin");
+    for case in CASES {
+        if case.cli {
+            write_fake_cli(&bin_dir, case.agent, &log);
+        }
     }
 
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_slugaudit"));
@@ -210,66 +198,63 @@ fn connect_writes_the_correct_registration_for_each_installed_agent() {
         binary.display()
     );
 
-    // Run `install` so the binary lands at the stable ~/.slugthug/slugaudit/ path.
-    // `connect` prefers that path over the build artifact, mirroring the
-    // real user flow: install once, then connect (and reconnect after
-    // rebuilds) against the stable location.
-    let install_output = Command::new(&binary)
-        .args(["install"])
-        .output()
-        .expect("spawn install");
+    // Run `install` so the binary lands at the stable home path `connect`
+    // prefers, mirroring the real flow: install once, then connect.
+    let install = hermetic_output(&binary, &home, &bin_dir, &["install"]);
     assert!(
-        install_output.status.success(),
+        install.status.success(),
         "install failed:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&install_output.stdout),
-        String::from_utf8_lossy(&install_output.stderr),
+        String::from_utf8_lossy(&install.stdout),
+        String::from_utf8_lossy(&install.stderr),
     );
-    let slugthug_binary = std::env::var_os("SLUGTHUG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".slugthug"))
-        .join("slugaudit")
-        .join("slugaudit");
+    let installed = home.join(".slugthug/slugaudit/slugaudit");
     assert!(
-        slugthug_binary.is_file(),
+        installed.is_file(),
         "install did not produce {}",
-        slugthug_binary.display()
+        installed.display()
     );
 
-    for agent in agents {
-        let config_path = match agent.connect_arg {
-            "bob" => home().join(".bob/mcp_settings.json"),
-            "claude" => home().join(".claude.json"),
-            "grok" => home().join(".grok/config.toml"),
-            "codex" => home().join(".codex/config.toml"),
-            other => panic!("unknown agent {other}"),
-        };
-
-        // Back up whatever was there before so we leave the user's config
-        // untouched regardless of pass/fail.
-        let backup = backup(&config_path);
-
-        // Remove any stale registration so we're testing a clean add.
-        let _ = (agent.remove)();
-
-        let output = connect(&binary, agent.connect_arg);
+    for case in CASES {
+        fs::write(&log, "").expect("truncate argv log");
+        let output = hermetic_output(&binary, &home, &bin_dir, &["connect", case.agent]);
         assert!(
             output.status.success(),
             "{} connect failed:\nstdout: {}\nstderr: {}",
-            agent.cli,
+            case.agent,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
 
-        assert!(
-            (agent.is_registered)(&slugthug_binary),
-            "{} connect ran, but {} does not contain a slugaudit stdio \
-             registration pointing at {}",
-            agent.cli,
-            config_path.display(),
-            slugthug_binary.display(),
+        let expected: Vec<String> = case
+            .invocations
+            .iter()
+            .map(|line| line.replace("{bin}", &installed.display().to_string()))
+            .collect();
+        let recorded: Vec<String> = fs::read_to_string(&log)
+            .expect("read argv log")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            recorded,
+            expected,
+            "{} emitted the wrong argv (install path {})",
+            case.agent,
+            installed.display()
         );
 
-        // Restore the user's original config.
-        restore(&config_path, backup.as_ref());
+        if let Some(relative) = case.written {
+            let path = home.join(relative);
+            let content = fs::read_to_string(&path).unwrap_or_else(|error| {
+                panic!("{} must write {}: {error}", case.agent, path.display())
+            });
+            assert!(
+                content.contains("slugaudit") && content.contains(&installed.display().to_string()),
+                "{} wrote {} without a slugaudit entry pointing at {}:\n{content}",
+                case.agent,
+                path.display(),
+                installed.display(),
+            );
+        }
     }
 }

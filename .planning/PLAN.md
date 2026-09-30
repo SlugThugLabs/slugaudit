@@ -156,8 +156,8 @@ All four are in, each with a test that fails before the change.
 
 ## Correctness follow-ups (small; identified 2026-09-30, not scheduled)
 
-Found while auditing the surfaces and verified in the code. **Items 1, 2, 3 and 5 are resolved**
-(2026-09-30); item 4 is open. Each was independently small, and none is covered by the phases below.
+Found while auditing the surfaces and verified in the code. **All five are resolved**
+(2026-09-30). Each was independently small, and none is covered by the phases below.
 
 1. **`leads` with `limit: 0` can page forever — resolved 2026-09-30** (the row cap is gone; `limit` is clamped to `>= 1`, and the response reports `limited_by`/`complete`, so a resumed page always advances). `limit` is only floored at the maximum
    (`unwrap_or(100).min(500)`), so `LIMIT 0` returns an empty page while `truncated` stays
@@ -177,12 +177,18 @@ Found while auditing the surfaces and verified in the code. **Items 1, 2, 3 and 
    dies mid-audit. An offset landing mid-codepoint, or past the end of the source, is now floored
    to the nearest boundary, and the doc comment states the guarantee rather than the precondition.
    (`src/model/span.rs`.)
-4. **Tests execute real client binaries.** `AgentDef::is_connected` falls through to
-   `which(cli)` + `cli_check_connected(cli)`, so a connect test that passes a temporary
-   `home` still runs whichever client CLI happens to be installed: `codex` rewrote the
-   user's `~/.codex/config.toml` during a test run on 2026-09-30 (content intact, no
-   slugaudit entry). Route those tests through the existing fake-CLI harness so the suite
-   touches no real client and does not depend on what is installed.
+4. **Tests execute real client binaries — resolved 2026-09-30.** `AgentDef::is_connected` falls
+   through to `which(cli)` + `cli_check_connected(cli)`, so a connect test that passed a
+   temporary `home` still ran whichever client CLI happened to be installed: `codex` rewrote the
+   user's `~/.codex/config.toml` during a test run on 2026-09-30 (content intact, no slugaudit
+   entry). No production change was needed — the tests were the defect. `tests/connect_tests.rs`
+   now runs the real binary against a temporary home with `PATH` replaced by a fake CLI per agent
+   that records its argv, and the dialect matrix is asserted from that log (stricter than the
+   config inspection it replaced); the self-skip and the ⚠️ warning are gone. `src/connect_tests.rs`
+   swapped its PATH-*prepending* helper for replace/empty ones — prepending left real CLIs
+   reachable further along — and `tests/menu_tests.rs` is sandboxed for the same reason. Verified
+   by hashing the real `~/.codex/config.toml` and `~/.claude.json` before and after a full run:
+   byte-identical.
 5. **The log-capture tests lost their own lines — resolved 2026-09-30** (`6433b06`). The suite
    flaked under load (~3 suite-runs in 36) and always reported nine failures instead of one,
    because the panic poisoned `SESSION_TEST_LOCK`. The visible symptom — a capture window holding

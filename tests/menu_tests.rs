@@ -11,8 +11,24 @@ const MENU_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn run_menu(input: &str, extra_env: Option<(&str, &str)>) -> (ExitStatus, String, String) {
     let binary = env!("CARGO_BIN_EXE_slugaudit");
+    // The menu reaches `connect`/`disconnect` on options 2 and 3, and those
+    // resolve and execute installed client CLIs (`is_connected`, `mcp list`)
+    // and read client configs from the user's home. Even though no test here
+    // chooses those options today, pin every home into a temp dir and replace
+    // `PATH` with an empty directory, so no option can ever reach a real
+    // client — the failure mode that rewrote `~/.codex/config.toml`
+    // (`.planning/DEVIATIONS.md`).
+    let sandbox = tempfile::tempdir().expect("temp dir");
+    let home = sandbox.path().join("home");
+    let empty_path = sandbox.path().join("bin");
+    std::fs::create_dir_all(&home).expect("mkdir home");
+    std::fs::create_dir_all(&empty_path).expect("mkdir empty path");
+
     let mut cmd = Command::new(binary);
-    cmd.arg("menu");
+    cmd.arg("menu")
+        .env("HOME", &home)
+        .env("SLUGTHUG_CONFIG_HOME", &home)
+        .env("PATH", &empty_path);
     if let Some((key, value)) = extra_env {
         cmd.env(key, value);
     }
