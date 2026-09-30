@@ -8,13 +8,39 @@ use super::publish_diff::{build_upserts_and_deletions, diff_against_stored};
 use super::race_hook;
 use super::revalidate::revalidate_unchanged_since_sample;
 use super::revision;
-use super::sample::sample_all_with_deadline;
+use super::revision_skipped::{SKIP_REASON_OVERSIZE, SKIP_REASON_UNREADABLE, SkippedRecord};
+use super::sample::{self, sample_all_with_deadline};
 use crate::model::ResourceLimits;
 use crate::progress::ProgressSink;
 use crate::util::Deadline;
 use rusqlite::Connection;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
+
+/// Folds one source of skipped files (discovery skips, then sampling skips)
+/// into the existence-row map and the discovered-path set. Both are needed:
+/// the map becomes the `files` rows, the set feeds edge resolution. A file
+/// whose path has no UTF-8 representation is left out of both — it has no
+/// usable key.
+fn collect_skipped(
+    root: &Path,
+    files: &[discovery::SkippedFile],
+    reason: &str,
+    discovered_paths: &mut HashSet<String>,
+    records: &mut BTreeMap<String, SkippedRecord>,
+) {
+    for file in files {
+        let Some(relative) = discovery::representable_relative_path(root, &file.absolute_path)
+        else {
+            continue;
+        };
+        discovered_paths.insert(relative.clone());
+        records.insert(
+            relative.clone(),
+            sample::skipped_record(&relative, &file.absolute_path, reason),
+        );
+    }
+}
 
 struct CurrentRevision {
     revision_id: String,
@@ -68,51 +94,54 @@ pub(super) fn try_publish(
         .as_ref()
         .map(|revision| revision.revision_id.as_str());
 
-    let (discovered, skipped) = discovery::discover_with_deadline(root, deadline)?;
+    let (discovered, discovery_skips) = discovery::discover_with_deadline(root, deadline)?;
     // Every path the walk saw on disk, including files sampling will skip
     // (oversize) — those exist, so an import targeting one must resolve
-    // rather than be written as `Unresolved`. They never get a `files`
-    // row, so edge resolution cannot learn about them from the database.
+    // rather than be written as `Unresolved`.
     let mut discovered_paths: HashSet<String> = discovered
         .iter()
         .map(|file| file.relative_path.clone())
         .collect();
-    // Discovery also skipped files it walked but could not read (mode
-    // 000, a filesystem error): they exist too. A path with no UTF-8
-    // representation, or one outside the root, has no usable key and is
-    // deliberately left out — the same reason discovery could not index
-    // it. `replace` mirrors discovery's own relative-path normalization.
-    for file in &skipped {
-        if let Ok(relative) = file.absolute_path.strip_prefix(root)
-            && let Some(relative) = relative.to_str()
-            && !relative.is_empty()
-        {
-            discovered_paths.insert(relative.replace('\\', "/"));
-        }
-    }
-    if !skipped.is_empty() {
-        for file in &skipped {
-            tracing::warn!(
-                path = %file.absolute_path.display(),
-                reason = %file.reason,
-                "skipping unreadable/invalid file during discovery"
-            );
-        }
+    // Existence rows for the files we deliberately do not index, keyed by
+    // path so one path can never be written twice and the order is
+    // deterministic. A path with no UTF-8 representation, or one outside the
+    // root, has no usable key — it stays visible only in
+    // `PublishReport::skipped` and the log below.
+    let mut skipped_records: BTreeMap<String, SkippedRecord> = BTreeMap::new();
+    collect_skipped(
+        root,
+        &discovery_skips,
+        SKIP_REASON_UNREADABLE,
+        &mut discovered_paths,
+        &mut skipped_records,
+    );
+    for file in &discovery_skips {
+        tracing::warn!(
+            path = %file.absolute_path.display(),
+            reason = %file.reason,
+            "skipping unreadable/invalid file during discovery"
+        );
     }
     let (samples, sampling_skips) = sample_all_with_deadline(&discovered, limits, sink, deadline)?;
-    if !sampling_skips.is_empty() {
-        for file in &sampling_skips {
-            tracing::warn!(
-                path = %file.absolute_path.display(),
-                reason = %file.reason,
-                "skipping oversized file during sampling"
-            );
-        }
+    for file in &sampling_skips {
+        tracing::warn!(
+            path = %file.absolute_path.display(),
+            reason = %file.reason,
+            "skipping oversized file during sampling"
+        );
     }
-    let mut skipped = skipped;
+    collect_skipped(
+        root,
+        &sampling_skips,
+        SKIP_REASON_OVERSIZE,
+        &mut discovered_paths,
+        &mut skipped_records,
+    );
+    let skipped_records: Vec<SkippedRecord> = skipped_records.into_values().collect();
+    let mut skipped = discovery_skips;
     skipped.extend(sampling_skips);
     race_hook::fire(root);
-    let diff = diff_against_stored(connection, &samples, discovered.len(), deadline)?;
+    let diff = diff_against_stored(connection, &samples, &skipped_records, deadline)?;
 
     let parser_version_changed = baseline
         .as_ref()
@@ -143,12 +172,15 @@ pub(super) fn try_publish(
 
     let revision_id = revision::publish_revision(
         connection,
-        expected_current,
-        &diff.manifest_hash,
-        parser_pack_version,
-        &upserts,
-        &deletions,
-        &discovered_paths,
+        revision::RevisionInputs {
+            expected_current,
+            manifest_hash: &diff.manifest_hash,
+            parser_pack_version,
+            upserts: &upserts,
+            deletions: &deletions,
+            skipped: &skipped_records,
+            discovered_paths: &discovered_paths,
+        },
     )?;
 
     Ok(PublishReport {

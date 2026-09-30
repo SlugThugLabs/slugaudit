@@ -18,6 +18,8 @@ mod reconcile;
 mod revalidate;
 mod revision;
 mod revision_edges;
+mod revision_files;
+mod revision_skipped;
 mod sample;
 mod sample_batch;
 mod sweep;

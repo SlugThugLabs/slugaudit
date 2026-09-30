@@ -47,9 +47,11 @@ connect modules and the `*_tests.rs` count sentence is gate-checked against the 
 `dca4910` (this documentation reset). **Not pushed** — the branch has no remote counterpart and
 publication is the owner's call. Work continues from here, one commit per workstream.
 
-**Not started:** Phase 2 items 2–4 (item 1, the `INSTRUCTIONS` rewrite, landed with the owner's
-creed placement); Phases 3–5; the *Correctness follow-ups* list; the *Connect surface* follow-up;
-and every item in the *Production-readiness backlog*.
+**Not started:** Phase 0's instrument; Phase 2 items 3–4 (item 1, the `INSTRUCTIONS` rewrite, and
+item 2, the `report` completeness envelope plus file-existence rows, both landed 2026-09-30 — item 2
+is uncommitted and unvalidated against the full gate suite); Phases 3–5; the *Correctness
+follow-ups* list; the *Connect surface* follow-up; and every item in the *Production-readiness
+backlog*.
 
 ---
 
@@ -185,15 +187,16 @@ registry rather than as documentation drift: of the clients the two research pas
 disagreed about, each pass was wrong on roughly half, and only the installed binaries
 settled it.
 
-## Phase 2 — The door: make the first minute win (item 1 landed; items 2–4 not started)
+## Phase 2 — The door: make the first minute win (items 1–2 landed; items 3–4 not started)
 
 **Goal:** an agent that was not going to use this tool uses it twice.
 
-**Item 1 is landed (2026-09-30):** `INSTRUCTIONS` was rewritten in this order — what it is
-and what it adds; the first-win rule as a trigger rather than a request; the replacement
+**Items 1–2 are landed (2026-09-30).** `INSTRUCTIONS` was rewritten in this order — what it
+is and what it adds; the first-win rule as a trigger rather than a request; the replacement
 map; the operational facts (schema, payload keys, imports, structure, resources); then the
-no-judgment contract once, near the end — with the creed placement the owner resolved. The
-remaining items in this phase are open.
+no-judgment contract once, near the end — with the creed placement the owner resolved, and
+`report` gained the completeness envelope plus the file-existence rows behind it (item 2).
+Item 2 is uncommitted and has not yet seen the full gate suite. Items 3–4 are open.
 
 1. **`INSTRUCTIONS` rewrite — landed 2026-09-30.** Written in this order: (a) what it is
    and what it adds, in the agent's interest — budget as a consequence, not the pitch;
@@ -207,14 +210,45 @@ remaining items in this phase are open.
    callee-based `leads` mechanics are Rust-only (zero rows means *unchecked*, not
    *absent*), and `detail` is clipped at 200 chars and now flags it. Still owed from this
    item: moving the payload keys out of the briefing into a resource (Phase 4 item 1).
-2. **`report` returns surprises, not just counts.** Add the completeness envelope:
-   skipped files and why, unparsed files, binary files, files with no evidence, evidence
-   caps hit. `ReportResponse` (`src/tools/report.rs:71`) carries none of this today, and
-   `file_count` is a bare `count(*) FROM files`. The storage half of this — an existence
-   row per discovered file with a nullable `skip_reason` and a streaming BLAKE3 identity
-   so identity is cheap when content is not retained, plus an audit of every consumer
-   that assumes `files` == indexed set (file counts, `report`, manifest hash) — belongs
-   here too.
+2. **`report` returns surprises, not just counts — landed 2026-09-30 (uncommitted).**
+   The completeness envelope: skipped files and why, unparsed files, binary files, files
+   with no evidence, evidence caps hit. `ReportResponse` (`src/tools/report.rs:72`) now
+   carries `completeness` (`src/tools/report_completeness.rs`): counts by `file_kind`
+   (`indexed`/`binary`/`skipped`), `skipped_file_count`, `skipped_by_reason`, counts by
+   `extraction_completeness` (so `ContentOnly` — text indexed, nothing parsed — is visible
+   as itself), `index_partial`, `evidence_capped_file_count`, and
+   `indexed_files_without_evidence`. Facts only: no score, severity, or ranking. The
+   storage half landed with it — **every discovered file now gets a `files` row**
+   (`src/sync/revision_skipped.rs`), on both the full-publish and the reconcile path, and
+   `health` reports `skipped_file_count` beside its `file_count`. Decisions taken here,
+   recorded so the next author does not re-litigate them:
+   - **`skip_reason` is a short code** (`oversize`, `unreadable`), never the per-file human
+     message: that message embeds each file's own path and size, so grouping by it would
+     yield one bucket per file and `skipped_by_reason` would say nothing.
+   - **Skipped rows carry a stat-derived identity**, not a content hash:
+     `hash::stat_identity` = BLAKE3 over (path, byte_len, modified_unix_seconds) tagged
+     `hash_algorithm = 'stat-identity'`. Reading the file to identify it would cost exactly
+     what skipping avoids. Accepted consequence — a skipped file edited to the same size
+     within the same mtime second is not detected — is documented in `schema.sql` and
+     `ARCHITECTURE.md`, and is the stat sweep's own blind spot.
+   - **A non-UTF-8-named file is the one gap that cannot be closed**: `files.path` is TEXT,
+     so such a file has no row and `report` cannot count it. It stays visible in
+     `PublishReport::skipped` and the server log. Do not read `index_partial` as "nothing
+     at all was skipped".
+   - **`PublishReport.added/modified/deleted/unchanged` now describe the whole file set**,
+     skipped rows included (`added + modified + unchanged` = the existence-set size), not
+     the indexed subset; `PublishReport::skipped` still names the skipped ones.
+   - **Schema 4 → 5** (`files.skip_reason`, `file_kind` CHECK gains `'skipped'`); the
+     mismatch path discards and rebuilds, so no migration was needed.
+   - The manifest hash now includes skipped rows, so every existing project rebuilds once —
+     accepted, the database is disposable.
+   Consumers audited and updated in the same round, each with its own test: `report`'s
+   counts, `health`'s file count, `publish_diff` (a skipped file is on disk and must not
+   diff as `Deleted`), `compute_manifest_hash`, `sweep`'s stored-set comparison,
+   `known_paths` (union kept and documented as still-required, not simplified),
+   `leads`' `credential_files` (a credential-shaped skipped file is now reported rather
+   than hidden), and the reconcile pipeline (oversize paths are no longer hashed — their
+   existence row is the stat identity, so a sweep stops re-reading them).
 3. **Branchable errors.** No `ErrorData` in `src/` carries a machine-readable payload
    today (64 constructors, all `None`; e.g. `src/tools/query.rs:98`,
    `src/tools/structure.rs:149`). Add a code plus a remedy. Priority case: sync budget

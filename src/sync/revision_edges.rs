@@ -14,11 +14,16 @@ use std::collections::HashSet;
 ///
 /// `discovered_paths` are the project-relative paths the caller walked on
 /// disk (discovery for a full publish, the stat sweep for a reconcile).
-/// They are unioned with the `files` rows, never replaced by them: a
-/// discovered file that sampling *skipped* (oversize, unreadable) has no
-/// `files` row, yet it exists, and resolving its importers against indexed
-/// rows alone would write `Unresolved` — which an auditing agent reads as
-/// *dead code*, a fabricated finding.
+/// They are unioned with the `files` rows, never replaced by them.
+///
+/// Since Phase 2 the `files` table also holds one existence row per
+/// discovered-but-skipped file (`file_kind = 'skipped'`), so the stored side
+/// is now a superset of the caller's walked set for every representable
+/// path. The union is kept anyway: it is one set union, and the caller's
+/// discovered set remains the transaction's authoritative statement of what
+/// exists — a file skipped in this very transaction, or one whose path has
+/// no representable key, must still resolve. Removing it would trade a
+/// correctness guarantee for nothing.
 pub(super) fn known_paths(
     tx: &Transaction<'_>,
     discovered_paths: &HashSet<String>,

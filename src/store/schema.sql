@@ -33,11 +33,34 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_revisions_single_current
     ON revisions (is_current)
     WHERE is_current = 1;
 
+-- One row per file the project contains — not per file that was indexed. A
+-- discovered file that could not be read (oversize, unreadable) gets an
+-- existence row with file_kind = 'skipped' and no content, so it is
+-- countable instead of invisible in every `count(*) FROM files`.
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     path TEXT NOT NULL UNIQUE,
-    file_kind TEXT NOT NULL DEFAULT 'indexed' CHECK (file_kind IN ('indexed', 'binary')),
+    -- 'indexed' (text sampled and parsed), 'binary' (sampled, inert), or
+    -- 'skipped' (discovered but deliberately not read). 'skipped' rows are
+    -- written by `sync::revision_skipped::upsert_skipped_file`.
+    file_kind TEXT NOT NULL DEFAULT 'indexed'
+        CHECK (file_kind IN ('indexed', 'binary', 'skipped')),
+    -- Why a 'skipped' row was not indexed, as one of two short stable codes
+    -- (`sync::revision_skipped::SKIP_REASON_*`) rather than the per-file
+    -- human message — which embeds each file's own path and size and so
+    -- could never group. 'oversize' = over the per-file import ceiling;
+    -- 'unreadable' = the read failed. NULL for every other kind: those rows
+    -- were read, so nothing was skipped.
+    skip_reason TEXT,
     content TEXT,
+    -- BLAKE3 over the file's content for 'indexed'/'binary' rows
+    -- (hash_algorithm = 'blake3-v1'). A 'skipped' row retains no content,
+    -- and reading the file to hash it would defeat the skip, so its
+    -- identity is stat-derived instead: BLAKE3 over (path, byte_len,
+    -- modified_unix_seconds) with hash_algorithm = 'stat-identity'
+    -- (`sync::hash::stat_identity`). Consequence, accepted and identical to
+    -- the stat sweep's documented blind spot: a skipped file whose content
+    -- changes without changing its size or mtime is not detected.
     content_hash TEXT NOT NULL,
     hash_algorithm TEXT NOT NULL,
     byte_len INTEGER NOT NULL,

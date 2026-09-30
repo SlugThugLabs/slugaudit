@@ -29,6 +29,44 @@ pub fn hash_bytes(relative_path: &str, bytes: &[u8]) -> SourceIdentity {
     SourceIdentity::new(relative_path.to_owned(), digest.to_string())
 }
 
+/// The `hash_algorithm` value for a stat-derived identity (see
+/// [`stat_identity`]). Distinct from `blake3-v1` on purpose: nothing should
+/// be able to mistake a stat identity for a hash of the file's content.
+pub(super) const STAT_IDENTITY_ALGORITHM: &str = "stat-identity";
+
+/// A cheap identity for a file whose content is deliberately not retained
+/// (an existence row for a skipped file — see
+/// [`crate::sync::revision_skipped`]). Hashes the path with the file's size
+/// and mtime instead of its bytes, so identity costs one `stat` rather than
+/// a full read — the read is exactly what skipping avoids. The price is the
+/// stat sweep's documented blind spot: same size and same mtime means the
+/// same identity even if the bytes changed.
+#[must_use]
+pub(super) fn stat_identity(
+    relative_path: &str,
+    byte_len: u64,
+    modified_unix_seconds: Option<i64>,
+) -> SourceIdentity {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(relative_path.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(&byte_len.to_le_bytes());
+    match modified_unix_seconds {
+        Some(seconds) => {
+            hasher.update(b"m");
+            hasher.update(&seconds.to_le_bytes());
+        }
+        None => {
+            hasher.update(b"n");
+        }
+    }
+    SourceIdentity {
+        relative_path: relative_path.to_owned(),
+        content_hash: hasher.finalize().to_string(),
+        hash_algorithm: STAT_IDENTITY_ALGORITHM.to_owned(),
+    }
+}
+
 /// A single deterministic hash over an entire file set: sorted by path so
 /// insertion order never affects the result, changing if any path or
 /// content hash in the set changes.
@@ -96,6 +134,37 @@ mod tests {
         assert_eq!(
             identity.content_hash,
             hash_bytes("a.rs", b"fn a() {}").content_hash
+        );
+    }
+
+    /// A stat identity must be distinguishable from a content hash and must
+    /// actually track the two stat fields it stands in for — otherwise a
+    /// skipped file would look unchanged after any edit that kept its path.
+    #[test]
+    fn stat_identity_is_tagged_and_tracks_size_and_mtime() {
+        let baseline = stat_identity("a.rs", 10, Some(100));
+        assert_eq!(baseline.hash_algorithm, STAT_IDENTITY_ALGORITHM);
+        assert_ne!(
+            baseline.hash_algorithm, "blake3-v1",
+            "a stat identity must never be mistakable for a content hash"
+        );
+        assert_eq!(
+            baseline.content_hash,
+            stat_identity("a.rs", 10, Some(100)).content_hash,
+            "identical stat state must hash identically"
+        );
+        assert_ne!(
+            baseline.content_hash,
+            stat_identity("a.rs", 11, Some(100)).content_hash
+        );
+        assert_ne!(
+            baseline.content_hash,
+            stat_identity("a.rs", 10, Some(101)).content_hash
+        );
+        assert_ne!(
+            baseline.content_hash,
+            stat_identity("a.rs", 10, None).content_hash,
+            "a missing mtime must not collide with any recorded one"
         );
     }
 }

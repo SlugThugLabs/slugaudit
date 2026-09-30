@@ -228,3 +228,36 @@ fn clip_detail_flags_only_past_the_char_limit() {
     assert_eq!(over_limit.detail.len(), MAX_DETAIL_CHARS * 2);
     assert!(over_limit.detail_clipped, "one past the cap is clipped");
 }
+
+/// `credential_files` reads `files` directly, so a credential-shaped file the
+/// index deliberately skipped is still something the agent must be told
+/// about: no content was retained, but the path is exactly the signal this
+/// mechanic exists to surface.
+#[test]
+fn credential_files_reports_a_skipped_credential_shaped_file() {
+    let project = tempfile::tempdir().expect("project dir");
+    activate(project.path());
+    fs::write(
+        project
+            .path()
+            .join(".planning")
+            .join("slugaudit")
+            .join("config.json"),
+        br#"{"max_file_bytes": 500}"#,
+    )
+    .expect("write config");
+    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
+    fs::write(project.path().join("big.pem"), vec![b'k'; 5_000])
+        .expect("write oversize credential-shaped file");
+
+    let counts = run(project.path(), None, None, None);
+    assert_eq!(
+        count_of(&counts, "credential_files"),
+        1,
+        "a skipped credential-shaped file must still be counted, not hidden"
+    );
+
+    let rows = run(project.path(), Some("credential_files"), None, None);
+    assert_eq!(rows.rows.len(), 1);
+    assert_eq!(rows.rows[0].file, "big.pem");
+}

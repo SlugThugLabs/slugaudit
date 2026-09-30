@@ -404,15 +404,26 @@ fn healthy_sweep_apply_resolves_an_import_to_a_discovered_but_skipped_file() {
     .expect("apply the sweep report");
 
     assert_eq!(candidates, 3, "all three new files are candidates");
-    let indexed: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM files WHERE path = 'pkg/helper.py'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("count indexed helper");
-    assert_eq!(indexed, 0, "the oversize target must stay unindexed");
-    let kind: String = connection
+    // The oversize target must stay unindexed — but it must not vanish
+    // either: since the existence-row change it is a `skipped` row with no
+    // content, so `count(*)` still sees it while nothing pretends it was
+    // read. The old assertion (`COUNT(*) == 0`) encoded the defect this
+    // phase removes: a discovered-but-skipped file was invisible in every
+    // count the tools return.
+    let (kind, content, completeness, outcome): (String, Option<String>, String, String) =
+        connection
+            .query_row(
+                "SELECT file_kind, content, extraction_completeness, parse_outcome \
+                 FROM files WHERE path = 'pkg/helper.py'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("the oversize target must have an existence row");
+    assert_eq!(kind, "skipped", "the oversize target must stay unindexed");
+    assert_eq!(content, None, "no content is retained for a skipped file");
+    assert_eq!(completeness, "Unavailable");
+    assert_eq!(outcome, "NotAttempted");
+    let edge_kind: String = connection
         .query_row(
             "SELECT e.resolution_kind FROM dependency_edges e \
              JOIN files f ON f.id = e.from_file_id WHERE f.path = 'pkg/main.py'",
@@ -421,7 +432,7 @@ fn healthy_sweep_apply_resolves_an_import_to_a_discovered_but_skipped_file() {
         )
         .expect("pkg/main.py's edge");
     assert_eq!(
-        kind, "Resolved",
+        edge_kind, "Resolved",
         "the apply must resolve imports against the sweep's on_disk, not indexed rows alone"
     );
 }

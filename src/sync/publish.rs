@@ -63,12 +63,20 @@ pub enum PublishError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishReport {
     pub revision_id: String,
+    /// Counts describe the project's *file set* — every discovered file,
+    /// including ones only an existence row describes (`skipped`). A skipped
+    /// file new to the project counts as added; it is listed in `skipped`
+    /// with why. `added + modified + unchanged` is therefore the size of the
+    /// current existence set, not the number of indexed files.
     pub added: usize,
     pub modified: usize,
     pub deleted: usize,
     pub unchanged: usize,
     /// Files the discovery walk found but could not include (unreadable,
-    /// non-UTF8 path, etc.), with why. Never fails the publish by itself.
+    /// non-UTF8 path, oversize, etc.), with why. Never fails the publish by
+    /// itself. Those whose path is representable got a `files` row with
+    /// `file_kind = 'skipped'`; a non-UTF-8 name cannot be stored and is
+    /// only visible here and in the log.
     pub skipped: Vec<discovery::SkippedFile>,
 }
 

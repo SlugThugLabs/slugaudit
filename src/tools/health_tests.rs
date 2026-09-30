@@ -184,9 +184,10 @@ fn read_database_fields_degrades_to_empty_when_the_database_cannot_be_opened() {
     // rather than surfacing as an error.
     std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o644))
         .expect("widen database permissions");
-    let (revision_id, parser_pack_version, file_count) =
+    let (revision_id, parser_pack_version, file_count, skipped_file_count) =
         crate::tools::health::read_database_fields(&db);
     assert_eq!(revision_id, None);
     assert_eq!(parser_pack_version, None);
     assert_eq!(file_count, -1);
+    assert_eq!(skipped_file_count, -1);
 }

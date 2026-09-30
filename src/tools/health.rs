@@ -79,8 +79,16 @@ pub struct HealthResponse {
     pub parser_pack_version: Option<String>,
     /// File count in the active project's database. `-1` if no project is
     /// active or the count query failed (use this rather than
-    /// `Option<i64>` so consumers can render a single JSON number).
+    /// `Option<i64>` so consumers can render a single JSON number). Counts
+    /// every discovered file, including rows with `file_kind = 'skipped'` —
+    /// `skipped_file_count` breaks those out.
     pub file_count: i64,
+    /// Of `file_count`, how many rows were discovered but never read
+    /// (`file_kind = 'skipped'`: oversize or unreadable), so they hold no
+    /// content. `-1` when the count is unavailable for the same reasons as
+    /// `file_count`. `file_count - skipped_file_count` is the number of
+    /// files that were actually read.
+    pub skipped_file_count: i64,
     /// Total tool calls served since process start.
     pub tool_call_count: u64,
     /// Total tool calls that returned any `ErrorData` since process start.
@@ -159,6 +167,7 @@ pub fn health(
         revision_id: fields.revision_id,
         parser_pack_version: fields.parser_pack_version,
         file_count: fields.file_count,
+        skipped_file_count: fields.skipped_file_count,
         tool_call_count: counters.call_count,
         tool_call_error_count: counters.error_count,
         tool_call_total_ms: counters.total_ms,
@@ -190,6 +199,7 @@ struct ProjectHealthFields {
     revision_id: Option<String>,
     parser_pack_version: Option<String>,
     file_count: i64,
+    skipped_file_count: i64,
 }
 
 fn compute_project_state(
@@ -204,7 +214,8 @@ fn compute_project_state(
         .watch_state_for(root.as_path())
         .map(|state| state.snapshot());
 
-    let (revision_id, parser_pack_version, file_count) = read_database_fields(&database_path);
+    let (revision_id, parser_pack_version, file_count, skipped_file_count) =
+        read_database_fields(&database_path);
 
     let phase = match snapshot.as_ref() {
         Some(snapshot) => derive_phase(
@@ -229,6 +240,7 @@ fn compute_project_state(
         revision_id,
         parser_pack_version,
         file_count,
+        skipped_file_count,
     })
 }
 
@@ -239,9 +251,11 @@ fn compute_project_state(
 /// expected, silent `-1`/`None`), so an operator investigating a health
 /// payload full of empty fields can distinguish "not synced yet" from
 /// "the database is unreadable" (permissions, corruption, symlink, NFS).
-fn read_database_fields(database_path: &std::path::Path) -> (Option<String>, Option<String>, i64) {
+fn read_database_fields(
+    database_path: &std::path::Path,
+) -> (Option<String>, Option<String>, i64, i64) {
     if !database_path.exists() {
-        return (None, None, -1);
+        return (None, None, -1, -1);
     }
     let mut connection = match store::open_read_only(database_path) {
         Ok(connection) => connection,
@@ -252,7 +266,7 @@ fn read_database_fields(database_path: &std::path::Path) -> (Option<String>, Opt
                 "health: failed to open the project database read-only; \
                  reporting empty database fields",
             );
-            return (None, None, -1);
+            return (None, None, -1, -1);
         }
     };
     let revision_id = current_revision_id(&mut connection);
@@ -268,7 +282,23 @@ fn read_database_fields(database_path: &std::path::Path) -> (Option<String>, Opt
             -1
         }
     };
-    (revision_id, parser_pack_version, file_count)
+    let skipped_file_count = match count_skipped_files(&mut connection) {
+        Ok(count) => count,
+        Err(error) => {
+            tracing::warn!(
+                database_path = %database_path.display(),
+                error = %error,
+                "health: skipped file count query failed",
+            );
+            -1
+        }
+    };
+    (
+        revision_id,
+        parser_pack_version,
+        file_count,
+        skipped_file_count,
+    )
 }
 
 /// Builds a per-project field set from the global state only — no
@@ -289,6 +319,7 @@ fn compute_global_only_state(manager: &sync::SourceSyncManager) -> ProjectHealth
             revision_id: None,
             parser_pack_version: None,
             file_count: -1,
+            skipped_file_count: -1,
         };
     }
     // In the current single-active-project model, snapshots has one
@@ -311,6 +342,7 @@ fn compute_global_only_state(manager: &sync::SourceSyncManager) -> ProjectHealth
             revision_id: None,
             parser_pack_version: None,
             file_count: -1,
+            skipped_file_count: -1,
         };
     };
     let phase = derive_phase(snapshot.health, &None, snapshot.has_unreconciled_events());
@@ -324,6 +356,7 @@ fn compute_global_only_state(manager: &sync::SourceSyncManager) -> ProjectHealth
         revision_id: None,
         parser_pack_version: None,
         file_count: -1,
+        skipped_file_count: -1,
     }
 }
 
@@ -377,8 +410,18 @@ fn current_parser_pack_version(connection: &mut rusqlite::Connection) -> Option<
         .flatten()
 }
 
+/// `count(*)` over every row in `files`, including skipped rows.
 fn count_files(connection: &mut rusqlite::Connection) -> rusqlite::Result<i64> {
     connection.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
+}
+
+/// The subset of `count_files` whose content was never read.
+fn count_skipped_files(connection: &mut rusqlite::Connection) -> rusqlite::Result<i64> {
+    connection.query_row(
+        "SELECT count(*) FROM files WHERE file_kind = 'skipped'",
+        [],
+        |row| row.get(0),
+    )
 }
 
 #[cfg(test)]

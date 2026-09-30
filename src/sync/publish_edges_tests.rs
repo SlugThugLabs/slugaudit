@@ -264,10 +264,10 @@ fn a_deleted_target_file_cascades_away_its_incoming_edge() {
 /// An import whose target is discovered on disk but skipped by sampling
 /// (here: oversize) must still resolve. Reporting it `Unresolved` would
 /// read as *dead code* to an auditing agent, which is a fabricated finding
-/// — the exact lie `known_paths` exists to prevent. The target is not
-/// indexed (no `files` row yet — existence rows for skipped files are a
-/// later phase), so the edge's `to_file_id` stays `NULL`; what this test
-/// pins is the resolution verdict.
+/// — the exact lie `known_paths` exists to prevent. The target now also has
+/// a `skipped` existence row, so the edge resolves to a real `files.id`
+/// rather than only being classified `Resolved`; what this test pins is the
+/// verdict either way.
 #[test]
 fn an_import_to_a_discovered_but_oversize_skipped_file_resolves() {
     let project = tempfile::tempdir().expect("project dir");
@@ -310,5 +310,10 @@ fn an_import_to_a_discovered_but_oversize_skipped_file_resolves() {
     assert_eq!(
         imported.kind, "Resolved",
         "an import of a discovered-but-skipped file must not be reported Unresolved: {all:?}"
+    );
+    assert_eq!(
+        imported.to.as_deref(),
+        Some("pkg/helper.py"),
+        "the skipped file's existence row is the edge's resolved target: {all:?}"
     );
 }

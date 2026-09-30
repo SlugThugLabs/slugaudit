@@ -3,13 +3,14 @@ use super::analyze::analyze;
 use super::discovery::{DiscoveredFile, FileKind};
 use super::hash;
 use super::revision::FileRecord;
+use super::revision_skipped::SkippedRecord;
 use crate::model::{
     EvidenceItem, EvidenceKind, EvidenceOrigin, ExtractionCompleteness, ResourceLimits,
     SourceIdentity, SpanAvailability,
 };
 use crate::util;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 // The parallel batch loop lives in `sample_batch` — it outgrew this
@@ -108,6 +109,30 @@ pub(super) fn sample_file(
         utf8_lossy,
         modified_unix_seconds: util::mtime_unix_seconds(&metadata),
     })
+}
+
+/// The existence row for a file discovery or sampling deliberately did not
+/// index. Never reads the file: the identity is stat-derived
+/// (`hash::stat_identity`) precisely so that skipping keeps its no-read
+/// cost, and a failed stat (the file vanished, or was never readable)
+/// records zero bytes and no mtime rather than failing the publish.
+#[must_use]
+pub(super) fn skipped_record(
+    relative_path: &str,
+    absolute_path: &Path,
+    reason: &str,
+) -> SkippedRecord {
+    let (byte_len, modified_unix_seconds) = match std::fs::metadata(absolute_path) {
+        Ok(metadata) => (metadata.len(), util::mtime_unix_seconds(&metadata)),
+        Err(_) => (0, None),
+    };
+    SkippedRecord {
+        relative_path: relative_path.to_owned(),
+        reason: reason.to_owned(),
+        identity: hash::stat_identity(relative_path, byte_len, modified_unix_seconds),
+        byte_len,
+        modified_unix_seconds,
+    }
 }
 
 fn utf8_lossy_evidence() -> EvidenceItem {

@@ -60,6 +60,21 @@ fn is_excluded(relative: &Path) -> bool {
     is_excluded_path(&relative.to_string_lossy())
 }
 
+/// The project-relative path of a file the walk skipped, when that path can
+/// be stored as text. `None` for a non-UTF-8 name, a path outside the root,
+/// or the root itself (a walk error has no file behind it) — none of those
+/// can be a `files.path` value, so such a file stays visible only in the
+/// publish report's `skipped` list and the stderr log, never in the index.
+#[must_use]
+pub(super) fn representable_relative_path(root: &Path, absolute_path: &Path) -> Option<String> {
+    let relative = absolute_path.strip_prefix(root).ok()?;
+    let relative = relative.to_str()?;
+    if relative.is_empty() {
+        return None;
+    }
+    Some(relative.replace('\\', "/"))
+}
+
 /// Sniffs whether `path` is binary (a NUL byte in the first
 /// `BINARY_SNIFF_BYTES`) or indexable text. This is the single source of
 /// truth for binary-ness: the initial import calls it during discovery,

@@ -1,5 +1,6 @@
 use super::CREDENTIAL_PATH_PREDICATE;
 use super::context::{ensure_synced, with_verified_read};
+use super::report_completeness::{CompletenessEnvelope, build as build_completeness};
 use crate::progress::ProgressSink;
 use crate::sync;
 use rmcp::ErrorData;
@@ -70,7 +71,15 @@ const MAX_PARSER_FAILURE_FILES: usize = 20;
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ReportResponse {
     pub revision_id: String,
+    /// Rows in `files`: every file the last publish discovered, whether or
+    /// not it was indexed. Read `completeness.file_kind_counts` to see how
+    /// many of those have content (`indexed`), are binary, or were skipped —
+    /// this number alone does not mean "files with evidence".
     pub file_count: i64,
+    /// Whether every count above is the whole truth: rows by kind, skipped
+    /// rows by reason, rows by extraction completeness, and a partial-index
+    /// flag. See [`CompletenessEnvelope`].
+    pub completeness: CompletenessEnvelope,
     pub languages: Vec<LanguageCount>,
     pub evidence_counts: Vec<EvidenceKindCount>,
     pub parser_failure_count: i64,
@@ -101,12 +110,13 @@ pub struct ReportResponse {
     /// count here means "this project's import syntax isn't modeled yet,"
     /// not "this project's imports are broken."
     pub unsupported_language_unresolved_count: i64,
-    /// How many indexed files match common credential-file patterns
+    /// How many rows in `files` match common credential-file patterns
     /// (`.env`, `*.pem`, `*.key`, `id_rsa*`, etc. — the same list the
-    /// SQL below matches). SlugAudit indexes these like any other file;
-    /// this count just makes the AI aware it is handling credential-
-    /// looking content and can treat it carefully (or ask the user to
-    /// gitignore it) instead of silently reading secrets.
+    /// SQL below matches, and the same list `leads`' `credential_files`
+    /// rows use). SlugAudit records these paths like any other file —
+    /// including when the file was skipped and no content was retained —
+    /// so this count makes the AI aware it is handling credential-*looking*
+    /// paths even when it cannot read them.
     pub credential_pattern_file_count: i64,
 }
 
@@ -134,6 +144,7 @@ fn build_report(
 ) -> Result<ReportResponse, rusqlite::Error> {
     let file_count: i64 =
         connection.query_row("SELECT count(*) FROM files", [], |row| row.get(0))?;
+    let completeness = build_completeness(connection)?;
 
     let mut language_statement = connection.prepare(
         "SELECT language, count(*) FROM files \
@@ -275,6 +286,7 @@ fn build_report(
     Ok(ReportResponse {
         revision_id,
         file_count,
+        completeness,
         languages,
         evidence_counts,
         parser_failure_count: parser_failure_files_total,

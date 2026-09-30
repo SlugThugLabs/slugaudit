@@ -127,6 +127,7 @@ src/
 │   ├── context.rs            ensure_synced + revision verification
 │   ├── context_transactions.rs  with_verified_read / with_verified_write
 │   ├── report.rs             automatic project snapshot
+│   ├── report_completeness.rs  the report's index-completeness block
 │   ├── query.rs              arbitrary read-only SQL with budgets
 │   ├── query_value.rs        SQLite row/value → JSON with a per-value cap
 │   ├── structure.rs          tree-sitter pattern match
@@ -167,6 +168,8 @@ src/
 │   ├── manifest.rs           manifest hash + change classification
 │   ├── revision.rs           revisions/files/evidence writes (atomic current-pointer swap)
 │   ├── revision_edges.rs     dependency_edges writes for upserted files
+│   ├── revision_files.rs     files/evidence writes for one upserted file
+│   ├── revision_skipped.rs   existence rows for discovered-but-skipped files
 │   ├── analyze.rs            tree-sitter parse + evidence extraction for one file
 │   └── race_hook.rs          test-only race-injection hook
 │
@@ -354,6 +357,26 @@ their evidence, deletes removed files (cascading their evidence and edges),
 and flips `revisions.is_current` only as the transaction's last statements;
 nothing is visible to another connection until `commit` succeeds. `revision_id`
 is derived from the row id (`rev-{id}`), so it changes on every publish.
+
+A `files` row means "this file is in the project", not "this file was read".
+Every discovered file gets one: a file discovery or sampling skipped (oversize,
+unreadable) is written as `file_kind = 'skipped'` with a `skip_reason` code
+(`oversize` / `unreadable`), `content` NULL, `extraction_completeness =
+'Unavailable'` and `parse_outcome = 'NotAttempted'` — so `count(*) FROM files`
+counts it instead of losing it, and `report.completeness` states how many rows
+are skipped and why. Its identity is stat-derived (`hash::stat_identity`:
+BLAKE3 over path + size + mtime, tagged `stat-identity`, never `blake3-v1`),
+because reading the file to hash it would cost exactly what skipping avoids;
+the accepted consequence is the stat sweep's own documented blind spot — a
+skipped file edited to the same size within the same mtime second is not
+detected. A path with no representable text form (a non-UTF-8 name) still has
+no row and is visible only in the publish report and the server log.
+
+Existence rows take part in the diff and the manifest hash, which is what keeps
+a skipped file from being classified as deleted (it is on disk) and keeps an
+unchanged tree hashing to the same value. `known_paths` still unions the
+caller's walked set with the stored rows: the walked set is the transaction's
+authoritative statement of what exists, and the union costs one set operation.
 
 A successful `ensure_current` never guarantees that no concurrent publish will
 follow. `tools/context_transactions.rs::with_verified_read` and
@@ -696,6 +719,14 @@ something else loudly.
     panicking blocking task to `ErrorData::internal_error("tool task
     failed: …")` — rather than a dead server. A panic in a test is exempt: it
     *is* the failure signal.
+12. **Every count a tool returns is quotable as-is.** If a number needs a
+    caveat the response does not carry, it is wrong. The concrete form: a
+    `files` row is written for every discovered file, including the ones that
+    were skipped (`file_kind = 'skipped'`, `skip_reason`, no content), so
+    `count(*)` cannot silently omit them; and `report.completeness` states the
+    breakdowns (kind, skip reason, extraction completeness) and a partial-index
+    flag beside the counts they qualify. No response carries a score, a
+    severity, or a ranking — evidence is not judgment.
 
 ## Where to start reading
 

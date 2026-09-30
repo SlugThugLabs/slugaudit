@@ -47,6 +47,7 @@ fn project_state_populates_database_fields_for_an_active_project() {
     );
     assert!(fields.parser_pack_version.is_some());
     assert_eq!(fields.file_count, 1, "one indexed source file");
+    assert_eq!(fields.skipped_file_count, 0, "nothing was skipped");
     assert_eq!(fields.pending_dirty, Some(0));
     assert_eq!(fields.pending_deleted, Some(0));
     assert!(fields.watcher_sequence.is_some());

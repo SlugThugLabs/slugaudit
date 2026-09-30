@@ -22,6 +22,7 @@ mod project_control;
 mod query;
 mod query_value;
 mod report;
+mod report_completeness;
 mod structure;
 mod structure_source;
 
@@ -40,6 +41,9 @@ pub use leads::{LeadRow, LeadsRequest, LeadsResponse, MechanicCount, leads};
 pub use project_control::{ProjectControlRequest, ProjectControlResponse, project_control};
 pub use query::{QueryRequest, QueryResponse, query};
 pub use report::{ReportRequest, ReportResponse, report};
+pub use report_completeness::{
+    CompletenessCount, CompletenessEnvelope, FileKindCount, SkipReasonCount,
+};
 pub use structure::{StructureRequest, StructureResponse, structure};
 
 use std::sync::atomic::{AtomicU64, Ordering};

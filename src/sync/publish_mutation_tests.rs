@@ -5,7 +5,7 @@
 //! `publish_race_tests.rs` to keep both under the source-size gate.
 use super::*;
 use crate::store::open_read_write;
-use crate::sync::test_support::write;
+use crate::sync::test_support::{stored_paths, write};
 
 #[test]
 fn is_retryable_is_true_only_for_the_two_documented_race_hazards() {
@@ -226,8 +226,9 @@ fn one_oversized_file_does_not_block_publishing_the_rest_of_the_project() {
     .expect("publish must succeed despite one oversized file");
 
     assert_eq!(
-        report.added, 1,
-        "the good file must still be indexed, not blocked by the oversized file"
+        report.added, 2,
+        "the good file is indexed and the oversize file gets an existence row; \
+         neither is blocked by the other"
     );
     assert_eq!(
         report.skipped.len(),
@@ -239,4 +240,168 @@ fn one_oversized_file_does_not_block_publishing_the_rest_of_the_project() {
         "skip reason names the ceiling: {}",
         report.skipped[0].reason
     );
+}
+
+/// A skipped file is on disk, so it must keep its existence row and must
+/// never be classified as a deletion — and because that row carries a
+/// stat-derived identity, an unchanged tree must still publish nothing on the
+/// next call. Without the row in the compared set, every skipped file would
+/// look `Deleted` and be re-inserted on each publish; without the stat
+/// identity being stable, every publish would churn a revision.
+#[test]
+fn a_skipped_file_keeps_its_row_and_is_not_deleted_by_the_next_publish() {
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "good.rs", b"fn good() {}\n");
+    std::fs::write(project.path().join("huge.rs"), vec![b'x'; 100_000])
+        .expect("write oversized file");
+
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    let limits = ResourceLimits {
+        max_file_bytes: 50_000,
+        ..ResourceLimits::default()
+    };
+
+    let first = crate::sync::publish_with_limits(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+        &limits,
+    )
+    .expect("first publish");
+    assert_eq!(
+        first.added, 2,
+        "the indexed file and the skipped file's existence row are both new"
+    );
+    assert_eq!(first.deleted, 0);
+    assert_eq!(
+        stored_paths(&connection),
+        ["good.rs", "huge.rs"],
+        "the skipped file must have an existence row"
+    );
+
+    let second = crate::sync::publish_with_limits(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+        &limits,
+    )
+    .expect("second publish");
+
+    assert_eq!(
+        second.revision_id, first.revision_id,
+        "an unchanged tree — skipped file included — must not publish a new revision"
+    );
+    assert_eq!(
+        second.deleted, 0,
+        "a skipped file exists on disk and must never be classified as deleted"
+    );
+    assert_eq!(stored_paths(&connection), ["good.rs", "huge.rs"]);
+    let (kind, reason): (String, Option<String>) = connection
+        .query_row(
+            "SELECT file_kind, skip_reason FROM files WHERE path = 'huge.rs'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("skipped row survives");
+    assert_eq!(kind, "skipped");
+    assert_eq!(reason.as_deref(), Some("oversize"));
+}
+
+/// A file that was indexed and then grows past the ceiling must *become* a
+/// skipped row: its content, evidence, and completeness all have to be
+/// replaced rather than left behind describing bytes nobody retained. This is
+/// the overclaim `ContentOnly` exists to prevent, one kind over — a row whose
+/// `extraction_completeness` says `Unavailable` sitting beside live `Symbol`
+/// rows would contradict itself.
+#[test]
+fn a_file_that_grows_past_the_ceiling_becomes_a_skipped_row_without_content() {
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "lib.rs", b"pub fn a() {}\n");
+    write(project.path(), "grow.rs", b"fn a() {}\n");
+
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    crate::sync::publish_with_limits(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+        &ResourceLimits::default(),
+    )
+    .expect("first publish indexes grow.rs");
+    let evidence_before: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM evidence e JOIN files f ON f.id = e.file_id \
+             WHERE f.path = 'grow.rs'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count evidence before");
+    assert!(evidence_before > 0, "an indexed file carries evidence");
+
+    std::fs::write(project.path().join("grow.rs"), vec![b'x'; 100_000])
+        .expect("grow the file past the ceiling");
+    let second = crate::sync::publish_with_limits(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+        &ResourceLimits {
+            max_file_bytes: 50_000,
+            ..ResourceLimits::default()
+        },
+    )
+    .expect("second publish");
+
+    assert_eq!(second.modified, 1, "grow.rs changed on disk");
+    let (kind, reason, content, completeness, outcome): (
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+    ) = connection
+        .query_row(
+            "SELECT file_kind, skip_reason, content, extraction_completeness, parse_outcome \
+             FROM files WHERE path = 'grow.rs'",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .expect("grow.rs row");
+    assert_eq!(kind, "skipped");
+    assert_eq!(reason.as_deref(), Some("oversize"));
+    assert_eq!(content, None, "no content survives the flip to skipped");
+    assert_eq!(completeness, "Unavailable");
+    assert_eq!(outcome, "NotAttempted");
+    let evidence_after: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM evidence e JOIN files f ON f.id = e.file_id \
+             WHERE f.path = 'grow.rs'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count evidence after");
+    assert_eq!(
+        evidence_after, 0,
+        "the evidence of content nobody retained must be deleted"
+    );
+    let lib_kind: String = connection
+        .query_row(
+            "SELECT file_kind FROM files WHERE path = 'lib.rs'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("lib.rs row");
+    assert_eq!(lib_kind, "indexed", "the untouched file is unaffected");
 }

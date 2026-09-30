@@ -1,5 +1,6 @@
 use super::revision_edges;
-use crate::evidence::{self, EvidenceRow};
+use super::revision_files;
+use super::revision_skipped::{self, SkippedRecord};
 use crate::model::{EvidenceItem, ParserRun, SourceIdentity};
 use crate::util;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -38,31 +39,69 @@ pub enum RevisionError {
     StaleBaseline { expected: String, found: String },
 }
 
+/// The inputs one publish transaction needs, grouped by role.
+///
+/// Grouped rather than passed positionally for a concrete reason:
+/// `manifest_hash` and `parser_pack_version` are both `&str`, and `deletions`
+/// and `discovered_paths` are both path collections, so a positional call
+/// site can silently swap two same-typed arguments — a mistake the compiler
+/// cannot catch. Same precedent as
+/// [`crate::sync::reconcile::ReconcileOptions`].
+pub(super) struct RevisionInputs<'a> {
+    /// The revision this publish expects to still be current (`None` when the
+    /// project has never been published). CAS: a mismatch fails with
+    /// [`RevisionError::StaleBaseline`] rather than overwriting a newer
+    /// revision with older disk state.
+    pub(super) expected_current: Option<&'a str>,
+    /// Aggregate hash over the post-update file set — for a reconcile,
+    /// `manifest::compute_manifest_hash`; for a full publish,
+    /// `aggregate_manifest_hash` over the sampled *and* skipped set.
+    pub(super) manifest_hash: &'a str,
+    /// Parser pack version this revision is pinned against.
+    pub(super) parser_pack_version: &'a str,
+    /// Added/modified files with their parsed evidence.
+    pub(super) upserts: &'a [FileRecord],
+    /// Project-relative paths no longer on disk; their rows (and cascading
+    /// evidence and edges) are deleted.
+    pub(super) deletions: &'a [String],
+    /// Existence rows for the discovered-but-not-indexed files: one
+    /// `file_kind = 'skipped'` row each, so the file is countable instead of
+    /// invisible in every `count(*) FROM files`. Written before edge
+    /// resolution so an import targeting one resolves to a real row.
+    pub(super) skipped: &'a [SkippedRecord],
+    /// Project-relative paths the caller walked on disk (discovery for a full
+    /// publish, the stat sweep for a reconcile). Edge resolution needs them
+    /// because a discovered file that sampling skipped (oversize, unreadable)
+    /// exists; importing it must resolve, not read as dead code.
+    pub(super) discovered_paths: &'a HashSet<String>,
+}
+
 /// Publishes one revision atomically under compare-and-swap: the write
-/// transaction only proceeds if the current revision is still
-/// `expected_current` (or still absent when `None`). Discovery/hashing
-/// happen outside this lock; CAS is what stops an older sample from
-/// committing after a newer one.
+/// transaction only proceeds if the current revision is still the expected
+/// one (see [`RevisionInputs::expected_current`]). Discovery/hashing happen
+/// outside this lock; CAS is what stops an older sample from committing
+/// after a newer one.
 ///
-/// Upserts added/modified files and their evidence, deletes removed files
-/// (cascading evidence and dependency edges via foreign keys), and flips
-/// `is_current` only as the transaction's last statements. Nothing here is
-/// visible to another connection until `commit` succeeds.
-///
-/// `discovered_paths` are the project-relative paths the caller walked on
-/// disk (discovery for a full publish, the stat sweep for a reconcile).
-/// Edge resolution needs them because a discovered file that sampling
-/// skipped (oversize, unreadable) exists without ever getting a `files`
-/// row, and importing it must resolve, not read as dead code.
+/// Upserts added/modified files and their evidence, writes the skipped
+/// files' existence rows, deletes removed files (cascading evidence and
+/// dependency edges via foreign keys), and flips `is_current` only as the
+/// transaction's last statements. Nothing here is visible to another
+/// connection until `commit` succeeds. The ordering is load-bearing: the
+/// files, evidence, and skipped rows must all be in place before edge
+/// resolution reads the known-path set, and the pointer swap comes last.
 pub(super) fn publish_revision(
     connection: &mut Connection,
-    expected_current: Option<&str>,
-    manifest_hash: &str,
-    parser_pack_version: &str,
-    upserts: &[FileRecord],
-    deletions: &[String],
-    discovered_paths: &HashSet<String>,
+    inputs: RevisionInputs<'_>,
 ) -> Result<String, RevisionError> {
+    let RevisionInputs {
+        expected_current,
+        manifest_hash,
+        parser_pack_version,
+        upserts,
+        deletions,
+        skipped,
+        discovered_paths,
+    } = inputs;
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     assert_baseline(&tx, expected_current)?;
     let persisted_time: Option<i64> =
@@ -92,8 +131,11 @@ pub(super) fn publish_revision(
 
     let mut upserted_ids = Vec::with_capacity(upserts.len());
     for file in upserts {
-        upserted_ids.push(upsert_file(&tx, file, revision_db_id)?);
+        upserted_ids.push(revision_files::upsert_file(&tx, file, revision_db_id)?);
     }
+    // Existence rows, before edge resolution: an import targeting a skipped
+    // file must resolve to a real `files.id`.
+    revision_skipped::upsert_skipped_files(&tx, skipped, revision_db_id)?;
 
     // Edges are resolved after every upsert/deletion has landed, against
     // the complete post-transaction path set — so a file added earlier in
@@ -110,6 +152,10 @@ pub(super) fn publish_revision(
         .iter()
         .map(|file| file.relative_path.as_str())
         .chain(deletions.iter().map(String::as_str))
+        // A file that became skipped has no content hash to match a finding
+        // against any more, so a finding recorded against it must go stale
+        // exactly as if it had been edited.
+        .chain(skipped.iter().map(|record| record.relative_path.as_str()))
         .collect();
     invalidate_stale_findings(&tx, &touched_paths)?;
 
@@ -147,67 +193,6 @@ fn assert_baseline(
     }
 }
 
-fn upsert_file(
-    tx: &rusqlite::Transaction<'_>,
-    file: &FileRecord,
-    revision_db_id: i64,
-) -> Result<i64, RevisionError> {
-    file.run
-        .validate()
-        .map_err(|reason| RevisionError::InvalidParserRun {
-            path: file.relative_path.clone(),
-            reason,
-        })?;
-    tx.execute(
-        "INSERT INTO files (\
-            path, file_kind, content, content_hash, hash_algorithm, byte_len, \
-            modified_unix_seconds, language, language_detected, parser_availability, \
-            parse_outcome, parse_error_reason, extraction_completeness, last_revision_id\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
-         ON CONFLICT(path) DO UPDATE SET \
-            file_kind = excluded.file_kind, \
-            content = excluded.content, \
-            content_hash = excluded.content_hash, \
-            hash_algorithm = excluded.hash_algorithm, \
-            byte_len = excluded.byte_len, \
-            modified_unix_seconds = excluded.modified_unix_seconds, \
-            language = excluded.language, \
-            language_detected = excluded.language_detected, \
-            parser_availability = excluded.parser_availability, \
-            parse_outcome = excluded.parse_outcome, \
-            parse_error_reason = excluded.parse_error_reason, \
-            extraction_completeness = excluded.extraction_completeness, \
-            last_revision_id = excluded.last_revision_id",
-        params![
-            file.relative_path,
-            if file.is_binary { "binary" } else { "indexed" },
-            file.content,
-            file.identity.content_hash,
-            file.identity.hash_algorithm,
-            file.byte_len,
-            file.modified_unix_seconds,
-            file.language,
-            file.language_detected,
-            file.run.availability.as_sql_text(),
-            file.run.outcome.as_sql_text(),
-            file.run.error_reason(),
-            file.run.completeness.as_sql_text(),
-            revision_db_id,
-        ],
-    )?;
-
-    let file_id: i64 = tx.query_row(
-        "SELECT id FROM files WHERE path = ?1",
-        params![file.relative_path],
-        |row| row.get(0),
-    )?;
-    tx.execute("DELETE FROM evidence WHERE file_id = ?1", params![file_id])?;
-    for item in &file.evidence {
-        insert_evidence(tx, file_id, &evidence::to_row(item))?;
-    }
-    Ok(file_id)
-}
-
 /// A finding is stale the moment its file's content hash no longer matches
 /// the hash it was recorded against — including when the file is gone
 /// entirely. This runs inside the publish transaction so a finding can
@@ -230,34 +215,6 @@ fn invalidate_stale_findings(
     );
     let params = rusqlite::params_from_iter(touched_paths.iter());
     tx.execute(&sql, params)?;
-    Ok(())
-}
-
-fn insert_evidence(
-    tx: &rusqlite::Transaction<'_>,
-    file_id: i64,
-    row: &EvidenceRow,
-) -> Result<(), rusqlite::Error> {
-    tx.execute(
-        "INSERT INTO evidence (\
-            file_id, key, kind, origin, span_availability, \
-            start_byte, end_byte, start_line, start_column, end_line, end_column, payload\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        params![
-            file_id,
-            row.key,
-            row.kind,
-            row.origin,
-            row.span_availability,
-            row.start_byte,
-            row.end_byte,
-            row.start_line,
-            row.start_column,
-            row.end_line,
-            row.end_column,
-            row.payload,
-        ],
-    )?;
     Ok(())
 }
 

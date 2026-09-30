@@ -7,6 +7,7 @@ use super::hash::aggregate_manifest_hash;
 use super::manifest::{self, ChangeStatus, FileChange};
 use super::publish::PublishError;
 use super::revision::FileRecord;
+use super::revision_skipped::SkippedRecord;
 use super::sample::{Sample, to_file_record};
 use crate::model::ResourceLimits;
 use crate::util::Deadline;
@@ -22,10 +23,19 @@ pub(super) struct Diff {
     pub(super) unchanged: usize,
 }
 
+/// Compares the current existence set — every sampled file *plus* every
+/// discovered-but-skipped one — against the stored rows.
+///
+/// Both halves are the current set on purpose. A skipped file is on disk, so
+/// leaving it out of the comparison would report it as `Deleted` on every
+/// publish (its row would be re-deleted and re-inserted, and `PublishReport`
+/// would claim deletions that never happened). Including it also makes the
+/// manifest hash a statement about the project's files, not just the indexed
+/// ones, so an unchanged tree still hashes to the same value.
 pub(super) fn diff_against_stored(
     connection: &Connection,
     samples: &[Sample],
-    discovered_len: usize,
+    skipped: &[SkippedRecord],
     deadline: &Deadline,
 ) -> Result<Diff, PublishError> {
     if let Some(elapsed) = deadline.exceeded() {
@@ -46,7 +56,7 @@ pub(super) fn diff_against_stored(
         .iter()
         .map(|(path, hash)| (path.as_str(), hash.as_str()))
         .collect();
-    let current_refs: Vec<(&str, &str)> = samples
+    let mut current_refs: Vec<(&str, &str)> = samples
         .iter()
         .map(|sample| {
             (
@@ -55,6 +65,12 @@ pub(super) fn diff_against_stored(
             )
         })
         .collect();
+    current_refs.extend(skipped.iter().map(|record| {
+        (
+            record.relative_path.as_str(),
+            record.identity.content_hash.as_str(),
+        )
+    }));
     let changes = manifest::compare(stored_refs, current_refs.clone());
     let manifest_hash = aggregate_manifest_hash(current_refs);
 
@@ -70,7 +86,7 @@ pub(super) fn diff_against_stored(
         .iter()
         .filter(|c| c.status == ChangeStatus::Deleted)
         .count();
-    let unchanged = discovered_len - (added + modified);
+    let unchanged = samples.len() + skipped.len() - (added + modified);
 
     Ok(Diff {
         changes,

@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 
 use super::hash;
 use super::revision;
+use super::revision_skipped::SkippedRecord;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeStatus {
@@ -60,7 +61,11 @@ pub fn compare<'a>(
 }
 
 /// Computes the aggregate manifest hash from a post-update file set:
-/// existing DB state, updated with upserts, minus deletions.
+/// existing DB state, updated with upserts and skipped records, minus
+/// deletions. The skipped records matter twice: their paths stay in the set
+/// (a skipped file is on disk and must not be hashed out of existence), and
+/// a refreshed stat identity must replace the stored one or the hash would
+/// describe a row the transaction is about to overwrite.
 ///
 /// Avoids reading rows that will be replaced or removed: upserted paths are
 /// overwritten in-memory, and deleted paths are excluded at the SQL level so
@@ -69,9 +74,10 @@ pub(crate) fn compute_manifest_hash(
     connection: &Connection,
     upserts: &[revision::FileRecord],
     deletions: &[String],
+    skipped: &[SkippedRecord],
 ) -> Result<String, rusqlite::Error> {
     let current_refs: BTreeMap<String, String> = {
-        let exclude_count = upserts.len() + deletions.len();
+        let exclude_count = upserts.len() + deletions.len() + skipped.len();
         if exclude_count == 0 {
             let rows: Vec<(String, String)> = connection
                 .prepare("SELECT path, content_hash FROM files")?
@@ -88,7 +94,8 @@ pub(crate) fn compute_manifest_hash(
                 upserts
                     .iter()
                     .map(|r| &r.relative_path)
-                    .chain(deletions.iter()),
+                    .chain(deletions.iter())
+                    .chain(skipped.iter().map(|r| &r.relative_path)),
             );
             let rows: Vec<(String, String)> = connection
                 .prepare(&sql)?
@@ -102,6 +109,12 @@ pub(crate) fn compute_manifest_hash(
 
     let mut current_refs = current_refs;
     for record in upserts {
+        current_refs.insert(
+            record.relative_path.clone(),
+            record.identity.content_hash.clone(),
+        );
+    }
+    for record in skipped {
         current_refs.insert(
             record.relative_path.clone(),
             record.identity.content_hash.clone(),

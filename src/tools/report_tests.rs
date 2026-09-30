@@ -357,3 +357,195 @@ fn parser_failure_files_total_exceeds_the_capped_list_when_over_the_cap() {
     );
     assert_eq!(response.parser_failure_files_total, total as i64);
 }
+
+/// A file the walk discovers but deliberately does not index must be visible
+/// rather than absent: a `skipped` row with its reason and no content, plus a
+/// response that says the index is partial. Needs the real publish path, so
+/// the oversize ceiling comes from the project's own config.
+#[test]
+fn a_discovered_but_skipped_file_is_visible_as_a_skipped_row_and_a_partial_index() {
+    let project = tempfile::tempdir().expect("project dir");
+    activate(project.path());
+    fs::write(
+        project
+            .path()
+            .join(".planning")
+            .join("slugaudit")
+            .join("config.json"),
+        br#"{"max_file_bytes": 50000}"#,
+    )
+    .expect("write project config");
+    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
+    fs::write(project.path().join("huge.rs"), vec![b'x'; 100_000]).expect("write oversize file");
+
+    let response = report(
+        &Parameters(ReportRequest {
+            path: project.path().to_string_lossy().into_owned(),
+        }),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .expect("report succeeds");
+
+    assert_eq!(
+        response.0.file_count, 2,
+        "both discovered files have a row, indexed or not"
+    );
+    let envelope = &response.0.completeness;
+    assert!(
+        envelope.index_partial,
+        "a skipped file makes the index partial"
+    );
+    assert_eq!(envelope.skipped_file_count, 1);
+    assert_eq!(envelope.skipped_by_reason.len(), 1);
+    assert_eq!(envelope.skipped_by_reason[0].reason, "oversize");
+    assert_eq!(envelope.skipped_by_reason[0].count, 1);
+    assert_eq!(
+        envelope
+            .file_kind_counts
+            .iter()
+            .find(|entry| entry.kind == "indexed")
+            .map(|entry| entry.count),
+        Some(1)
+    );
+
+    let database = project
+        .path()
+        .join(".planning")
+        .join("slugaudit")
+        .join("project.db");
+    let connection =
+        crate::store::open_read_only(&database).expect("open the published database read-only");
+    let (kind, reason, content, completeness, outcome, algorithm): (
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+        String,
+    ) = connection
+        .query_row(
+            "SELECT file_kind, skip_reason, content, extraction_completeness, parse_outcome, \
+                    hash_algorithm \
+             FROM files WHERE path = 'huge.rs'",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .expect("the skipped file must have an existence row");
+    assert_eq!(kind, "skipped");
+    assert_eq!(reason.as_deref(), Some("oversize"));
+    assert_eq!(content, None, "no content is retained for a skipped file");
+    assert_eq!(completeness, "Unavailable");
+    assert_eq!(outcome, "NotAttempted");
+    assert_eq!(
+        algorithm, "stat-identity",
+        "the skipped row's identity is stat-derived, never a content hash"
+    );
+}
+
+/// The envelope counts kinds, skip reasons, extraction completeness, and the
+/// two evidence gaps independently. Asserted over hand-built rows so each
+/// bucket is unambiguous: a `ContentOnly` row (text indexed, nothing parsed)
+/// must show up as `ContentOnly` and not as a parser failure, a skipped row
+/// must be counted as skipped rather than as either, and a row whose evidence
+/// was cut short by a cap must not read as a complete one.
+#[test]
+fn completeness_envelope_separates_kinds_reasons_and_completeness() {
+    let (_dir, mut connection) = database_with_one_revision();
+    insert_indexed_file(
+        &connection,
+        "notes.txt",
+        "Unavailable",
+        "NotAttempted",
+        None,
+        "ContentOnly",
+    );
+    insert_indexed_file(
+        &connection,
+        "capped.rs",
+        "Available",
+        "Succeeded",
+        None,
+        "Full",
+    );
+    let capped_id: i64 = connection
+        .query_row("SELECT id FROM files WHERE path = 'capped.rs'", [], |row| {
+            row.get(0)
+        })
+        .expect("capped.rs id");
+    connection
+        .execute(
+            "INSERT INTO evidence \
+             (file_id, key, kind, origin, span_availability, payload) \
+             VALUES (?1, 'evidence:truncated', 'Diagnostic', 'SourceContent', \
+                     'DerivedEvidence', '{}')",
+            [capped_id],
+        )
+        .expect("insert the evidence-cap marker");
+    connection
+        .execute(
+            "INSERT INTO files \
+             (path, file_kind, skip_reason, content, content_hash, hash_algorithm, byte_len, \
+              language_detected, parser_availability, parse_outcome, extraction_completeness, \
+              last_revision_id) \
+             VALUES ('huge.rs', 'skipped', 'oversize', NULL, 'stat', 'stat-identity', 100000, \
+                     0, 'Unavailable', 'NotAttempted', 'Unavailable', 1)",
+            [],
+        )
+        .expect("insert skipped row");
+
+    let tx = connection.transaction().expect("begin transaction");
+    let response = build_report(&tx, "r1".to_owned()).expect("build report");
+
+    let kind_count = |kind: &str| {
+        response
+            .completeness
+            .file_kind_counts
+            .iter()
+            .find(|entry| entry.kind == kind)
+            .map(|entry| entry.count)
+    };
+    assert_eq!(kind_count("indexed"), Some(2));
+    assert_eq!(kind_count("skipped"), Some(1));
+    assert_eq!(response.completeness.skipped_file_count, 1);
+    assert!(response.completeness.index_partial);
+    assert_eq!(response.completeness.skipped_by_reason.len(), 1);
+    assert_eq!(
+        response.completeness.skipped_by_reason[0].reason,
+        "oversize"
+    );
+    assert_eq!(response.completeness.skipped_by_reason[0].count, 1);
+    let completeness_for = |value: &str| {
+        response
+            .completeness
+            .extraction_completeness_counts
+            .iter()
+            .find(|entry| entry.extraction_completeness == value)
+            .map(|entry| entry.count)
+    };
+    assert_eq!(completeness_for("ContentOnly"), Some(1));
+    assert_eq!(completeness_for("Full"), Some(1));
+    assert_eq!(completeness_for("Unavailable"), Some(1));
+    assert_eq!(
+        response.completeness.indexed_files_without_evidence, 1,
+        "notes.txt has content but no structural evidence; capped.rs has evidence and the \
+         skipped row is not an indexed gap"
+    );
+    assert_eq!(
+        response.completeness.evidence_capped_file_count, 1,
+        "capped.rs carries the truncation marker"
+    );
+    assert_eq!(
+        response.parser_failure_count, 1,
+        "a skipped file is never parsed, so it is not a parser failure"
+    );
+}
