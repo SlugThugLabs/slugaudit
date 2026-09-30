@@ -1,0 +1,32 @@
+# Review ownership for this repository.
+#
+# The single owner is the SlugThugLabs organisation: it owns the `origin`
+# remote (https://github.com/SlugThugLabs/slugaudit.git), it is named as the
+# maintainer in `glama.json`, and it is the licensor in `LICENSE`.
+#
+# Syntax: a pattern followed by one or more owners; the last matching pattern
+# wins. Patterns are repository-root-relative.
+
+# Everything, unless a later rule says otherwise.
+*                               @SlugThugLabs
+
+# Indexing: manager, orchestration, health, reconcile, publish/CAS, revision,
+# sweep, discovery, ignore rules.
+/src/sync/                      @SlugThugLabs
+
+# The only SQLite boundary: connection guards, migrations, `schema.sql`.
+/src/store/                     @SlugThugLabs
+
+# MCP tool handlers: report, query, structure, leads, finding, finding_read,
+# project_control, health.
+/src/tools/                     @SlugThugLabs
+
+# Authoritative design and invariants. Structure is gate-checked by
+# `check_docs_drift`, so a path change here is a reviewed change.
+/.planning/ARCHITECTURE.md      @SlugThugLabs
+
+# Workflows, release, and this file.
+/.github/                       @SlugThugLabs
+
+# Long-form contributor guidance for agents and humans.
+/AGENTS.md                      @SlugThugLabs

@@ -480,6 +480,12 @@ do not go looking for a different audience. The behavior is the product.
   weaken if the audience is agents.
 - The credential-content policy in the backlog (store hash/metadata and omit content, or
   store full text): a product decision, not a code decision.
+- **Governance contacts.** `CODE_OF_CONDUCT.md` has no private enforcement address, so the
+  canonical placeholder is filled with this repository's **public** issue tracker — disclosed in
+  the file, but public by construction, and a conduct report should not be. `SECURITY.md` uses
+  GitHub's private security advisories, which is the standard channel, but the repository
+  publishes no security address either. Decide whether to publish a private contact for conduct
+  and security reports (the file says plainly that none is published today).
 - **`1mcp` is a gateway, not a client.** It aggregates other MCP servers and is fronted by
   real clients (`1mcp serve`, `1mcp proxy`), so `1mcp mcp add slugaudit …` registers
   slugaudit as a *backend of 1mcp* rather than connecting slugaudit to an agent. Keep the
