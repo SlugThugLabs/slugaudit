@@ -67,6 +67,7 @@ fn reconcile_sweep(connection: &mut rusqlite::Connection, root: &Path, report: s
         report.deleted,
         expected.as_deref(),
         &options,
+        &report.on_disk,
     )
     .expect("reconcile succeeds");
 }
@@ -262,5 +263,165 @@ fn ensure_current_heals_a_change_the_watcher_never_reported() {
     assert!(
         content.contains("changed_and_longer"),
         "stale content served after sync: {content}"
+    );
+}
+
+/// The single-walk contract: one Healthy sync call must walk the tree
+/// exactly once, even when it also reconciles unreconciled events. The
+/// defect this guards against walked a second time inside the event-driven
+/// reconcile just to obtain `on_disk`. The file is marked dirty directly
+/// (the default manager has no watcher) so the event branch actually runs —
+/// without events the old path happened to walk once too. Counting is keyed
+/// per root, so tests running in parallel cannot interfere.
+#[test]
+fn healthy_sync_walks_the_tree_exactly_once_with_unreconciled_events() {
+    use crate::sync::SourceSyncManager;
+    use crate::watch::WatcherHealth;
+
+    let project = create_project();
+    write(project.path(), "lib.rs", b"fn original() {}\n");
+    let manager = SourceSyncManager::default();
+    let _first = sync_project(&manager, &project);
+
+    let state = manager
+        .watch_state_for(project.path())
+        .expect("project registered by the first sync");
+    state.set_health(WatcherHealth::Healthy);
+
+    let walks = super::count_walks(project.path());
+    write(project.path(), "lib.rs", b"fn changed_and_longer() {}\n");
+    state.mark_dirty("lib.rs".to_owned());
+    let _second = sync_project(&manager, &project);
+
+    assert_eq!(
+        walks.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the Healthy path must walk the tree exactly once per call"
+    );
+}
+
+/// The Healthy branch walks the tree once and feeds that single report to
+/// both consumers: an importer added since the last revision, whose target
+/// is on disk, must come back `Resolved` from the sweep-driven apply rather
+/// than from a full publish. The default manager has no watcher, so forcing
+/// health `Healthy` is what makes the sweep — not a full publish — the
+/// healer.
+#[test]
+fn healthy_sweep_resolves_an_import_against_the_walked_on_disk_set() {
+    use crate::sync::SourceSyncManager;
+    use crate::watch::WatcherHealth;
+
+    let project = create_project();
+    write(project.path(), "lib.rs", b"fn original() {}\n");
+    let manager = SourceSyncManager::default();
+    let first = sync_project(&manager, &project);
+
+    let state = manager
+        .watch_state_for(project.path())
+        .expect("project registered by the first sync");
+    state.set_health(WatcherHealth::Healthy);
+
+    write(project.path(), "pkg/__init__.py", b"");
+    write(project.path(), "pkg/main.py", b"from .helper import f\n");
+    write(project.path(), "pkg/helper.py", b"def f():\n    return 1\n");
+
+    let second = sync_project(&manager, &project);
+    assert_ne!(
+        first.revision_id, second.revision_id,
+        "the sweep must publish the files it discovered"
+    );
+
+    let connection = open_read_only(&second.database_path).expect("open served database");
+    let kind: String = connection
+        .query_row(
+            "SELECT e.resolution_kind FROM dependency_edges e \
+             JOIN files f ON f.id = e.from_file_id WHERE f.path = 'pkg/main.py'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("pkg/main.py's edge");
+    assert_eq!(
+        kind, "Resolved",
+        "the Healthy sweep path must resolve the import against the walked on-disk set"
+    );
+}
+
+/// The Healthy path reuses the one sweep report for both consumers, so the
+/// apply resolves imports against the same `on_disk` the walk produced. A
+/// target too large for the reconcile's per-file ceiling is the only way a
+/// discovered file can stay unindexed — nothing but `on_disk` can resolve
+/// its importer — so the edge must still be `Resolved`, never the
+/// `Unresolved` an agent would read as dead code.
+///
+/// `ensure_current` draws its limits from a process-wide `OnceLock`, and
+/// only the full-publish path consults the project's configured overrides,
+/// so the ceiling cannot be injected through the manager. This drives the
+/// exact two steps the Healthy branch drives — one walk, then the apply —
+/// with explicit limits, on a watcher-less manager whose health is forced
+/// `Healthy`.
+#[test]
+fn healthy_sweep_apply_resolves_an_import_to_a_discovered_but_skipped_file() {
+    use crate::model::ResourceLimits;
+    use crate::store::open_read_write;
+    use crate::sync::SourceSyncManager;
+    use crate::watch::WatcherHealth;
+
+    let project = create_project();
+    write(project.path(), "lib.rs", b"fn original() {}\n");
+    let manager = SourceSyncManager::default();
+    let first = sync_project(&manager, &project);
+    let state = manager
+        .watch_state_for(project.path())
+        .expect("project registered by the first sync");
+    state.set_health(WatcherHealth::Healthy);
+
+    write(project.path(), "pkg/__init__.py", b"");
+    write(project.path(), "pkg/main.py", b"from .helper import f\n");
+    // Over `max_file_bytes` below: the walk discovers it, sampling never
+    // indexes it. It has no `files` row, so only `on_disk` can say it exists.
+    write(project.path(), "pkg/helper.py", &[b'#'; 200]);
+
+    let mut connection = open_read_write(&first.database_path).expect("open read-write");
+    let limits = ResourceLimits {
+        max_file_bytes: 50,
+        ..ResourceLimits::default()
+    };
+    let options = ReconcileOptions {
+        limits,
+        deadline: Deadline::after(limits.max_sync_wall_clock),
+        rules: None,
+    };
+
+    // Step 1: the single walk the Healthy branch performs.
+    let report = sweep(&connection, project.path(), &options.deadline).expect("sweep");
+    // Step 2: apply that report's findings with its own `on_disk`.
+    let (candidates, _deleted, _unchanged) = crate::sync::sweep_reconcile::apply_sweep_report(
+        project.path(),
+        &mut connection,
+        report,
+        &options,
+    )
+    .expect("apply the sweep report");
+
+    assert_eq!(candidates, 3, "all three new files are candidates");
+    let indexed: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM files WHERE path = 'pkg/helper.py'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count indexed helper");
+    assert_eq!(indexed, 0, "the oversize target must stay unindexed");
+    let kind: String = connection
+        .query_row(
+            "SELECT e.resolution_kind FROM dependency_edges e \
+             JOIN files f ON f.id = e.from_file_id WHERE f.path = 'pkg/main.py'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("pkg/main.py's edge");
+    assert_eq!(
+        kind, "Resolved",
+        "the apply must resolve imports against the sweep's on_disk, not indexed rows alone"
     );
 }

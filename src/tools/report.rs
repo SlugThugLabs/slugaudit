@@ -48,6 +48,16 @@ pub struct ParserFailureFile {
     /// Set only when the parser returned a hard error (not just syntax
     /// error nodes). `None` for `NotAttempted` and `SyntaxErrors`.
     pub parse_error_reason: Option<String>,
+    /// One of `Full`, `Partial`, `ContentOnly`, `Unavailable`. `ContentOnly`
+    /// means the file's text *is* indexed but no parser ran over it — the
+    /// row is listed for availability reasons, not because extraction
+    /// failed, and its content can still be read from `files.content`.
+    pub extraction_completeness: String,
+    /// One of `Available`, `Unavailable`, `LoadFailed`. Separates
+    /// `ContentOnly` rows that have no parser for their language
+    /// (`Unavailable`) from ones whose parser could not be loaded
+    /// (`LoadFailed`), which a completeness value alone cannot.
+    pub parser_availability: String,
 }
 
 /// Cap on how many parser-failure files to include in the report. Enough
@@ -68,6 +78,10 @@ pub struct ReportResponse {
     /// AI can see whether failures are concentrated in scratch/temp files
     /// (noise) or in real source files (worth investigating).
     pub parser_failure_files: Vec<ParserFailureFile>,
+    /// Uncapped total of files matching the `parser_failure_files` predicate.
+    /// Larger than the returned list's length means the list was truncated at
+    /// `MAX_PARSER_FAILURE_FILES`; equal means the list is complete.
+    pub parser_failure_files_total: i64,
     pub open_finding_count: i64,
     /// How many import edges are Resolved vs Unresolved vs External — a
     /// key asymmetry signal. A project with mostly External/Unresolved
@@ -149,8 +163,11 @@ fn build_report(
 
     // Failures include load/availability problems *and* parses that ran
     // and then failed — both are "the AI cannot trust this file's
-    // structural evidence" conditions.
-    let parser_failure_count: i64 = connection.query_row(
+    // structural evidence" conditions. This is the uncapped total for
+    // exactly the predicate the capped `parser_failure_files` list below
+    // selects, so the response can state whether that list is complete
+    // without a second scan; it is exposed under both names.
+    let parser_failure_files_total: i64 = connection.query_row(
         "SELECT count(*) FROM files WHERE file_kind = 'indexed' AND (\
             parser_availability != 'Available' OR parse_outcome = 'Failed'\
          )",
@@ -163,7 +180,8 @@ fn build_report(
     // for determinism. The AI uses this to distinguish noise (scratch
     // files, non-source files) from real source files worth investigating.
     let mut failure_stmt = connection.prepare(
-        "SELECT path, parse_outcome, parse_error_reason \
+        "SELECT path, parse_outcome, parse_error_reason, extraction_completeness, \
+                parser_availability \
          FROM files \
          WHERE file_kind = 'indexed' \
            AND (parser_availability != 'Available' OR parse_outcome = 'Failed') \
@@ -176,6 +194,8 @@ fn build_report(
                 path: row.get(0)?,
                 parse_outcome: row.get(1)?,
                 parse_error_reason: row.get(2)?,
+                extraction_completeness: row.get(3)?,
+                parser_availability: row.get(4)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -247,7 +267,7 @@ fn build_report(
     tracing::info!(
         revision_id,
         file_count,
-        parser_failure_count,
+        parser_failure_count = parser_failure_files_total,
         open_finding_count,
         diagnostic_count,
         "report built"
@@ -257,8 +277,9 @@ fn build_report(
         file_count,
         languages,
         evidence_counts,
-        parser_failure_count,
+        parser_failure_count: parser_failure_files_total,
         parser_failure_files,
+        parser_failure_files_total,
         open_finding_count,
         import_resolution,
         diagnostic_count,

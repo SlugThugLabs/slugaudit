@@ -10,7 +10,7 @@ pub use super::publish_cas::publish;
 // homes; this module just makes them reachable from tests. Gated behind
 // `cfg(test)` because nothing in the library build uses them directly.
 #[cfg(test)]
-pub(super) use super::publish_cas::{MAX_CAS_RETRIES, is_retryable};
+pub(super) use super::publish_cas::{MAX_CAS_RETRIES, is_retryable, publish_with_limits};
 #[cfg(test)]
 pub(super) use super::publish_diff::build_upserts_and_deletions;
 #[cfg(test)]

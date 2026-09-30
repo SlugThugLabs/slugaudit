@@ -226,3 +226,134 @@ fn report_on_an_inactive_project_is_a_typed_error_not_a_panic() {
     );
     assert!(result.is_err());
 }
+
+/// A project DB with one revision and no files, ready for direct `files`
+/// inserts — the report tests below assert SQL over hand-built rows rather
+/// than running the full sync pipeline.
+fn database_with_one_revision() -> (tempfile::TempDir, rusqlite::Connection) {
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let connection =
+        crate::store::open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    connection
+        .execute(
+            "INSERT INTO revisions \
+             (revision_id, manifest_hash, parser_pack_version, created_at_unix, is_current) \
+             VALUES ('r1', 'h', '1.0.0', 0, 1)",
+            [],
+        )
+        .expect("insert revision");
+    (db_dir, connection)
+}
+
+/// Inserts one indexed text file with the given parser columns, so a test
+/// can reproduce a specific failure shape without a real parser.
+fn insert_indexed_file(
+    connection: &rusqlite::Connection,
+    path: &str,
+    availability: &str,
+    outcome: &str,
+    error_reason: Option<&str>,
+    completeness: &str,
+) {
+    connection
+        .execute(
+            "INSERT INTO files \
+             (path, file_kind, content, content_hash, hash_algorithm, byte_len, language, \
+              language_detected, parser_availability, parse_outcome, parse_error_reason, \
+              extraction_completeness, last_revision_id) \
+             VALUES (?1, 'indexed', '', 'h', 'blake3', 0, NULL, 0, ?2, ?3, ?4, ?5, 1)",
+            rusqlite::params![path, availability, outcome, error_reason, completeness],
+        )
+        .expect("insert file");
+}
+
+/// A text file that is fully indexed but has no parser must appear in the
+/// report as `ContentOnly` — its content is present and readable — rather
+/// than as an indistinguishable `NotAttempted` failure; a parse that really
+/// ran and then failed must still read as `Failed`.
+#[test]
+fn parser_failure_rows_distinguish_content_only_from_a_failed_parse() {
+    let (_dir, mut connection) = database_with_one_revision();
+    insert_indexed_file(
+        &connection,
+        "notes.txt",
+        "Unavailable",
+        "NotAttempted",
+        None,
+        "ContentOnly",
+    );
+    insert_indexed_file(
+        &connection,
+        "broken.rs",
+        "Available",
+        "Failed",
+        Some("boom"),
+        "ContentOnly",
+    );
+
+    let tx = connection.transaction().expect("begin transaction");
+    let response = build_report(&tx, "r1".to_owned()).expect("build report");
+
+    let notes = response
+        .parser_failure_files
+        .iter()
+        .find(|file| file.path == "notes.txt")
+        .expect("indexed-but-unparsed file is listed");
+    assert_eq!(notes.extraction_completeness, "ContentOnly");
+    assert_eq!(notes.parser_availability, "Unavailable");
+    assert_eq!(notes.parse_outcome, "NotAttempted");
+
+    let broken = response
+        .parser_failure_files
+        .iter()
+        .find(|file| file.path == "broken.rs")
+        .expect("genuinely failed parse is listed");
+    assert_eq!(broken.parse_outcome, "Failed");
+    assert_eq!(broken.parse_error_reason.as_deref(), Some("boom"));
+}
+
+#[test]
+fn parser_failure_files_total_equals_the_list_when_under_the_cap() {
+    let (_dir, mut connection) = database_with_one_revision();
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        insert_indexed_file(
+            &connection,
+            name,
+            "Unavailable",
+            "NotAttempted",
+            None,
+            "ContentOnly",
+        );
+    }
+
+    let tx = connection.transaction().expect("begin transaction");
+    let response = build_report(&tx, "r1".to_owned()).expect("build report");
+
+    assert_eq!(response.parser_failure_files.len(), 3);
+    assert_eq!(response.parser_failure_files_total, 3);
+}
+
+#[test]
+fn parser_failure_files_total_exceeds_the_capped_list_when_over_the_cap() {
+    let (_dir, mut connection) = database_with_one_revision();
+    let total = MAX_PARSER_FAILURE_FILES + 5;
+    for index in 0..total {
+        insert_indexed_file(
+            &connection,
+            &format!("f{index:03}.txt"),
+            "Unavailable",
+            "NotAttempted",
+            None,
+            "ContentOnly",
+        );
+    }
+
+    let tx = connection.transaction().expect("begin transaction");
+    let response = build_report(&tx, "r1".to_owned()).expect("build report");
+
+    assert_eq!(
+        response.parser_failure_files.len(),
+        MAX_PARSER_FAILURE_FILES
+    );
+    assert_eq!(response.parser_failure_files_total, total as i64);
+}

@@ -39,6 +39,7 @@ fn gitignored_dirty_paths_are_not_indexed() {
         deleted,
         Some(&revision),
         &options,
+        &HashSet::new(),
     )
     .expect("reconcile");
 

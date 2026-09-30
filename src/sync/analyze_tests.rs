@@ -1,19 +1,27 @@
 use super::*;
-use crate::model::{ParseOutcome, ParserAvailability};
+use crate::model::{ExtractionCompleteness, ParseOutcome, ParserAvailability};
 
 #[test]
-fn a_file_with_no_detectable_language_is_marked_unavailable() {
+fn sampled_content_with_no_detectable_language_is_content_only() {
     let result = analyze("README", Some("plain text"));
+
     assert_eq!(result.run.availability, ParserAvailability::Unavailable);
     assert_eq!(result.run.outcome, ParseOutcome::NotAttempted);
     assert!(!result.language_detected);
+    assert_eq!(
+        result.run.completeness,
+        ExtractionCompleteness::ContentOnly,
+        "the text is indexed, so 'Unavailable' would read as 'no content'"
+    );
     assert!(result.run.validate().is_ok());
 }
 
 #[test]
-fn binary_content_is_never_analyzed() {
+fn content_free_binary_text_is_unavailable() {
     let result = analyze("main.rs", None);
+
     assert_eq!(result.run.availability, ParserAvailability::Unavailable);
+    assert_eq!(result.run.completeness, ExtractionCompleteness::Unavailable);
     assert!(result.evidence.is_empty());
     assert!(result.run.validate().is_ok());
 }
@@ -36,6 +44,34 @@ fn malformed_source_reports_syntax_errors_with_a_real_count() {
         other => panic!("expected SyntaxErrors, got {other:?}"),
     }
     assert!(result.run.validate().is_ok());
+}
+
+#[test]
+fn a_cleanly_parsed_file_reports_full_extraction() {
+    let result = analyze("lib.rs", Some("pub fn a() {}\n"));
+
+    assert_eq!(result.run.outcome, ParseOutcome::Succeeded);
+    assert_eq!(
+        result.run.completeness,
+        ExtractionCompleteness::Full,
+        "nothing degraded the extraction, so it must not report Partial"
+    );
+}
+
+#[test]
+fn syntax_error_diagnostics_degrade_extraction_to_partial() {
+    let result = analyze("lib.rs", Some("fn broken( {\n"));
+
+    assert!(
+        matches!(result.run.outcome, ParseOutcome::SyntaxErrors { .. }),
+        "expected a degraded parse, got {:?}",
+        result.run.outcome
+    );
+    assert_eq!(
+        result.run.completeness,
+        ExtractionCompleteness::Partial,
+        "an error tree means extraction covered only part of the file"
+    );
 }
 
 #[test]

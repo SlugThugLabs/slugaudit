@@ -10,7 +10,13 @@ pub enum SpanAvailability {
     DerivedEvidence,
 }
 
+// `JsonSchema` is derived in test builds only: it is the one derive that
+// turns the variant list into machine-readable data, which is how the store
+// test enumerates every kind without a hand-kept copy that a new variant
+// could silently miss (see `store::connection_tests`). Production code never
+// needs the impl, so the crate's public API does not gain one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub enum EvidenceKind {
     Structure,
     Import,

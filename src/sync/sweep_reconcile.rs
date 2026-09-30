@@ -1,81 +1,86 @@
-//! The sweep orchestrator: run the stat sweep, then reconcile what it
-//! found under one shared wall-clock budget. Split from `manager.rs`
-//! (the same pattern as `manager_meta.rs`) so the sync orchestrator stays
-//! under the small-file rule cap. Owns the failure contract too: a failed
-//! sweep leaves freshness ambiguous, so the watcher is marked `Desynced`
-//! and the progress lifecycle is closed before the error propagates.
+//! The sweep-driven reconcile: apply the stat sweep's findings under the
+//! caller's compare-and-swap revision read. Split from `manager.rs` (the
+//! same pattern as `manager_meta.rs`) so the sync orchestrator stays under
+//! the small-file rule cap. The walk and the apply are separate on purpose:
+//! the Healthy path walks the tree exactly once and reuses that report for
+//! both the event-driven reconcile's `on_disk` and the apply below, so the
+//! edit-then-query hot path never pays two whole-tree walks. Owns the
+//! failure contract too: a failed sweep leaves freshness ambiguous, so the
+//! watcher is marked `Desynced` and the progress lifecycle is closed before
+//! the error propagates.
 
 use super::manager_meta::current_revision_id;
 use super::reconcile::{ReconcileOptions, reconcile_dirty_paths_with_deadline};
-use super::sweep::{SweepError, sweep};
-use crate::ignore_rules::IgnoreRules;
-use crate::model::process_limits;
+use super::sweep::{SweepError, SweepReport, sweep};
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::util::Deadline;
 use crate::watch::{WatchState, WatcherHealth};
 use rmcp::ErrorData;
 use rusqlite::Connection;
 use std::path::Path;
-use std::sync::Arc;
 
-/// Runs the stat sweep and reconciles what it found: new files, stat
-/// mismatches, and deletions converge the database to disk state with a
-/// compare-and-swap publish, exactly like a watcher-driven reconcile.
-/// Candidate re-hashes skip unchanged content, so a sweep over an unchanged
-/// project costs one stat per file and publishes nothing.
+/// Walks `root` once under `deadline`, mapping the sweep's typed error into
+/// the sync error vocabulary. Separated from the apply so a caller that also
+/// needs the sweep's `on_disk` for an event-driven reconcile can reuse one
+/// report instead of walking twice.
 ///
-/// On any failure the watcher is marked [`WatcherHealth::Desynced`] and the
-/// progress lifecycle is closed — the next `ensure_current` does a full
-/// verification instead of silently serving stale evidence.
-pub(super) fn sweep_and_reconcile(
+/// # Errors
+///
+/// Returns an error if the stored stat state can't be read or the walk
+/// exhausts its budget — failing closed, because a partial sweep that
+/// silently skipped the rest of the tree would serve the staleness the
+/// sweep exists to prevent.
+pub(super) fn sweep_tree(
     root: &Path,
-    rules: Option<Arc<IgnoreRules>>,
-    connection: &mut Connection,
-    state: &WatchState,
-    sink: &dyn ProgressSink,
-) -> Result<(), ErrorData> {
-    match sweep_then_reconcile(root, rules, connection) {
-        Ok((candidates, deleted, unchanged)) => {
-            if candidates > 0 || deleted > 0 {
-                tracing::debug!(
-                    root = %root.display(),
-                    candidates,
-                    deleted,
-                    unchanged,
-                    "stat sweep reconciled changes the watcher did not report",
-                );
-            }
-            Ok(())
-        }
-        Err(error) => {
-            tracing::warn!(
-                root = %root.display(),
-                error = %error,
-                "stat sweep failed; marking watcher Desynced so the next call re-verifies",
-            );
-            state.set_health(WatcherHealth::Desynced);
-            sink.emit(ProgressEvent::Completed {
-                phase: "ensuring_current",
-            });
-            Err(error)
-        }
-    }
+    connection: &Connection,
+    deadline: &Deadline,
+) -> Result<SweepReport, ErrorData> {
+    sweep(connection, root, deadline)
+        .map_err(|error| ErrorData::internal_error(sweep_error_text(error), None))
 }
 
-/// The sweep plus its reconcile under one deadline. `unchanged` counts the
-/// files the sweep proved unchanged with a single stat — the observability
-/// signal that the backstop is cheap, not just correct.
-fn sweep_then_reconcile(
+/// The failure contract for a failed walk or apply: freshness is ambiguous,
+/// so the watcher is marked [`WatcherHealth::Desynced`] and the progress
+/// lifecycle is closed before the error propagates — the next
+/// `ensure_current` full-verifies instead of silently serving unverified
+/// evidence.
+pub(super) fn sweep_failed(
     root: &Path,
-    rules: Option<Arc<IgnoreRules>>,
+    state: &WatchState,
+    sink: &dyn ProgressSink,
+    error: ErrorData,
+) -> ErrorData {
+    tracing::warn!(
+        root = %root.display(),
+        error = %error,
+        "stat sweep failed; marking watcher Desynced so the next call re-verifies",
+    );
+    state.set_health(WatcherHealth::Desynced);
+    sink.emit(ProgressEvent::Completed {
+        phase: "ensuring_current",
+    });
+    error
+}
+
+/// Applies a sweep report's findings — its candidate re-hashes and its
+/// deletions — with a compare-and-swap publish, exactly like a
+/// watcher-driven reconcile. The expected revision is read here, at the
+/// point this step publishes, so it is never shared with the event-driven
+/// reconcile's baseline; a race between the two surfaces as the existing
+/// `StaleBaseline` retry. The walk belongs to the caller: the report carries
+/// `on_disk`, so edge resolution treats discovered-but-skipped files as
+/// existing. Returns `(candidates, deleted, unchanged)` for the caller's log.
+///
+/// # Errors
+///
+/// Returns an error if reading the current revision or reconciling the
+/// report's candidate/deleted paths fails.
+pub(super) fn apply_sweep_report(
+    root: &Path,
     connection: &mut Connection,
+    report: SweepReport,
+    options: &ReconcileOptions,
 ) -> Result<(usize, usize, usize), ErrorData> {
-    let limits = *process_limits();
-    // One deadline for the sweep walk and its reconcile together, so a
-    // pathological tree fails closed instead of stalling the tool call.
-    let deadline = Deadline::after(limits.max_sync_wall_clock);
-    let report = sweep(connection, root, &deadline)
-        .map_err(|error| ErrorData::internal_error(sweep_error_text(error), None))?;
     let unchanged = report.unchanged;
     if report.candidates.is_empty() && report.deleted.is_empty() {
         return Ok((0, 0, unchanged));
@@ -86,11 +91,6 @@ fn sweep_then_reconcile(
             None,
         )
     })?;
-    let options = ReconcileOptions {
-        limits,
-        deadline,
-        rules,
-    };
     let candidates = report.candidates.len();
     let deleted = report.deleted.len();
     reconcile_dirty_paths_with_deadline(
@@ -99,12 +99,57 @@ fn sweep_then_reconcile(
         report.candidates,
         report.deleted,
         expected.as_deref(),
-        &options,
+        options,
+        &report.on_disk,
     )
     .map_err(|error| {
         ErrorData::internal_error(format!("reconciling sweep results: {error}"), None)
     })?;
     Ok((candidates, deleted, unchanged))
+}
+
+/// Applies a precomputed sweep report and owns its failure contract:
+/// [`apply_sweep_report`], then the findings log, and — on failure — the
+/// `Desynced` marking and progress-lifecycle close that keep a failed sweep
+/// from serving unverified evidence. The walk itself stays with the caller
+/// ([`sweep_tree`]), so the Healthy path walks once and reuses that report
+/// for the event-driven reconcile too.
+///
+/// # Errors
+///
+/// Returns the failure-contract error if the apply fails.
+pub(super) fn sweep_and_reconcile(
+    root: &Path,
+    report: SweepReport,
+    options: &ReconcileOptions,
+    connection: &mut Connection,
+    state: &WatchState,
+    sink: &dyn ProgressSink,
+) -> Result<(), ErrorData> {
+    match apply_sweep_report(root, connection, report, options) {
+        Ok((candidates, deleted, unchanged)) => {
+            log_sweep_findings(root, candidates, deleted, unchanged);
+            Ok(())
+        }
+        Err(error) => Err(sweep_failed(root, state, sink, error)),
+    }
+}
+
+/// Logs the sweep's findings. `unchanged` counts the files the sweep proved
+/// unchanged with a single stat — the observability signal that the backstop
+/// is cheap, not just correct. Silent when the sweep found nothing, so an
+/// unchanged project pays no log line.
+pub(super) fn log_sweep_findings(root: &Path, candidates: usize, deleted: usize, unchanged: usize) {
+    if candidates == 0 && deleted == 0 {
+        return;
+    }
+    tracing::debug!(
+        root = %root.display(),
+        candidates,
+        deleted,
+        unchanged,
+        "stat sweep reconciled changes the watcher did not report",
+    );
 }
 
 /// Sweeps share the reconcile pipeline's error vocabulary; the budget

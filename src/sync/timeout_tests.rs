@@ -134,6 +134,7 @@ fn reconcile_times_out_when_the_budget_is_exhausted() {
         deleted,
         None,
         &options,
+        &HashSet::new(),
     )
     .expect_err("a spent budget must abort reconcile");
     assert!(

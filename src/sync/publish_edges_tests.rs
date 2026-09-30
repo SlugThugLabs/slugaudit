@@ -260,3 +260,55 @@ fn a_deleted_target_file_cascades_away_its_incoming_edge() {
         "an edge pointing at a deleted file must not survive"
     );
 }
+
+/// An import whose target is discovered on disk but skipped by sampling
+/// (here: oversize) must still resolve. Reporting it `Unresolved` would
+/// read as *dead code* to an auditing agent, which is a fabricated finding
+/// — the exact lie `known_paths` exists to prevent. The target is not
+/// indexed (no `files` row yet — existence rows for skipped files are a
+/// later phase), so the edge's `to_file_id` stays `NULL`; what this test
+/// pins is the resolution verdict.
+#[test]
+fn an_import_to_a_discovered_but_oversize_skipped_file_resolves() {
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "pkg/__init__.py", b"");
+    write(project.path(), "pkg/main.py", b"from .helper import f\n");
+    // Larger than `max_file_bytes` below, so sampling skips it while
+    // discovery still walks it.
+    write(project.path(), "pkg/helper.py", &[b'#'; 200]);
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    let limits = ResourceLimits {
+        max_file_bytes: 50,
+        max_total_import_bytes: 100_000,
+        ..ResourceLimits::default()
+    };
+
+    let report = publish_with_limits(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+        &limits,
+    )
+    .expect("publish");
+
+    assert!(
+        report
+            .skipped
+            .iter()
+            .any(|file| file.absolute_path.ends_with("pkg/helper.py")),
+        "helper.py must be skipped as oversize, got {:?}",
+        report.skipped
+    );
+
+    let all = edges(&connection);
+    let imported = all
+        .iter()
+        .find(|edge| edge.from == "pkg/main.py")
+        .unwrap_or_else(|| panic!("no edge for pkg/main.py among {all:?}"));
+    assert_eq!(
+        imported.kind, "Resolved",
+        "an import of a discovered-but-skipped file must not be reported Unresolved: {all:?}"
+    );
+}

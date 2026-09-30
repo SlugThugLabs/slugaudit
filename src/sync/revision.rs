@@ -48,6 +48,12 @@ pub enum RevisionError {
 /// (cascading evidence and dependency edges via foreign keys), and flips
 /// `is_current` only as the transaction's last statements. Nothing here is
 /// visible to another connection until `commit` succeeds.
+///
+/// `discovered_paths` are the project-relative paths the caller walked on
+/// disk (discovery for a full publish, the stat sweep for a reconcile).
+/// Edge resolution needs them because a discovered file that sampling
+/// skipped (oversize, unreadable) exists without ever getting a `files`
+/// row, and importing it must resolve, not read as dead code.
 pub(super) fn publish_revision(
     connection: &mut Connection,
     expected_current: Option<&str>,
@@ -55,6 +61,7 @@ pub(super) fn publish_revision(
     parser_pack_version: &str,
     upserts: &[FileRecord],
     deletions: &[String],
+    discovered_paths: &HashSet<String>,
 ) -> Result<String, RevisionError> {
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     assert_baseline(&tx, expected_current)?;
@@ -90,8 +97,10 @@ pub(super) fn publish_revision(
 
     // Edges are resolved after every upsert/deletion has landed, against
     // the complete post-transaction path set — so a file added earlier in
-    // this same loop is a valid resolution target for one added later.
-    let all_paths = revision_edges::known_paths(&tx)?;
+    // this same loop is a valid resolution target for one added later, and
+    // a discovered-but-skipped file (no `files` row) still counts as
+    // existing.
+    let all_paths = revision_edges::known_paths(&tx, discovered_paths)?;
     let all_paths_ref: HashSet<&str> = all_paths.iter().map(String::as_str).collect();
     for (file, file_id) in upserts.iter().zip(upserted_ids.iter().copied()) {
         revision_edges::resolve_and_store(&tx, file, file_id, &all_paths_ref)?;

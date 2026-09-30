@@ -366,6 +366,7 @@ fn oversized_dirty_paths_are_skipped_while_other_files_reconcile() {
         deleted,
         Some(&revision),
         &options,
+        &HashSet::new(),
     )
     .expect("an oversized dirty path must be skipped, not fatal");
 
@@ -373,4 +374,62 @@ fn oversized_dirty_paths_are_skipped_while_other_files_reconcile() {
     assert_eq!(report.unchanged, 0);
     assert_eq!(report.deleted, 0);
     assert_eq!(report.skipped, 1, "big.rs is reported as skipped");
+}
+
+/// The watcher-driven and sweep-driven reconcile both funnel through this
+/// pipeline, so they must resolve imports against the discovered on-disk
+/// set exactly like a full publish. Without it, editing an importer whose
+/// target was discovered but skipped (oversize) rewrites the edge as
+/// `Unresolved` — an auditing agent reads that as dead code.
+#[test]
+fn reconcile_resolves_imports_against_the_discovered_set_not_indexed_rows_alone() {
+    let (project, _db_dir, mut connection, revision) = setup_project();
+    write(project.path(), "pkg/__init__.py", b"");
+    write(project.path(), "pkg/main.py", b"from .helper import f\n");
+    // Larger than `max_file_bytes` below, so this path is discovered but
+    // never gets a `files` row.
+    write(project.path(), "pkg/helper.py", &[b'#'; 200]);
+
+    let dirty = ["pkg/main.py", "pkg/helper.py"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let deleted = HashSet::new();
+    let options = ReconcileOptions {
+        limits: ResourceLimits {
+            max_file_bytes: 50,
+            ..ResourceLimits::default()
+        },
+        deadline: Deadline::after(std::time::Duration::from_secs(60)),
+        rules: None,
+    };
+    let discovered: HashSet<String> = ["pkg/__init__.py", "pkg/main.py", "pkg/helper.py"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    let report = reconcile_dirty_paths_with_deadline(
+        &mut connection,
+        project.path(),
+        dirty,
+        deleted,
+        Some(&revision),
+        &options,
+        &discovered,
+    )
+    .expect("reconcile");
+
+    assert_eq!(report.skipped, 1, "helper.py is skipped as oversize");
+    let kind: String = connection
+        .query_row(
+            "SELECT e.resolution_kind FROM dependency_edges e \
+             JOIN files f ON f.id = e.from_file_id WHERE f.path = 'pkg/main.py'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("main.py's edge");
+    assert_eq!(
+        kind, "Resolved",
+        "a reconcile must not turn an export of a discovered-but-skipped file into Unresolved"
+    );
 }

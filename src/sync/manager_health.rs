@@ -12,6 +12,7 @@ use crate::project;
 use crate::watch::{WatchState, WatcherHealth};
 use rmcp::ErrorData;
 use rusqlite::Connection;
+use std::collections::HashSet;
 use std::path::Path;
 
 impl SourceSyncManager {
@@ -67,8 +68,36 @@ impl SourceSyncManager {
                 Ok(report.revision_id)
             }
             WatcherHealth::Healthy => {
+                // An ignore file may have changed since the last pass:
+                // recompute the scope and the event-filtering rules before
+                // the reconcile reads them. A no-op when nothing changed.
+                self.watch_manager.refresh_scope(root.as_path());
+                // One deadline spans the whole Healthy operation — the sweep
+                // walk, the event-driven reconcile, and applying the sweep's
+                // findings — so no step silently starts a fresh clock.
+                let options =
+                    ReconcileOptions::for_sync(self.watch_manager.rules_for(root.as_path()));
+                // Walk exactly once: the report's `on_disk` serves the
+                // event-driven reconcile below, and its candidates/deletions
+                // are applied after it. A failed walk is as fatal as in the
+                // sweep-driven reconcile — an unverified tree must not be
+                // published against.
+                let report = super::super::sweep_reconcile::sweep_tree(
+                    root.as_path(),
+                    connection,
+                    &options.deadline,
+                )
+                .map_err(|error| {
+                    super::super::sweep_reconcile::sweep_failed(root.as_path(), state, sink, error)
+                })?;
                 if state.has_unreconciled_events() {
-                    match self.reconcile(root.as_path(), state, connection) {
+                    match reconcile_events(
+                        root.as_path(),
+                        state,
+                        connection,
+                        &options,
+                        &report.on_disk,
+                    ) {
                         Ok(()) => self.record_incremental_reconcile(),
                         Err(error) => {
                             // `snapshot_dirty` cleared the dirty sets, but
@@ -92,13 +121,13 @@ impl SourceSyncManager {
                         }
                     }
                 }
-                // Stat sweep: the watcher-independent freshness backstop — a
-                // change the watcher dropped or never saw is still found and
-                // reconciled before this call serves evidence. Failure marks
-                // the watcher Desynced so the next call re-verifies.
+                // The sweep's findings, applied after the event-driven
+                // reconcile so the observable order is unchanged — only the
+                // walk moved earlier. Failure marks the watcher Desynced.
                 super::super::sweep_reconcile::sweep_and_reconcile(
                     root.as_path(),
-                    self.watch_manager.rules_for(root.as_path()),
+                    report,
+                    &options,
                     connection,
                     state,
                     sink,
@@ -151,6 +180,12 @@ impl SourceSyncManager {
     /// watcher sequence stabilizes. Only acknowledges events after the
     /// reconciliation succeeds.
     ///
+    /// This is the entry point for a watcher that holds no sweep report of
+    /// its own (the `NeedsVerification`/`Desynced` post-verification drain):
+    /// it walks once to obtain `on_disk`. The `Healthy` path walks once up
+    /// front and reuses that report via [`reconcile_events`], so it never
+    /// picks up a second whole-tree walk here.
+    ///
     /// # Errors
     ///
     /// Returns an error if reading a dirty file, querying the database, or
@@ -166,41 +201,71 @@ impl SourceSyncManager {
         // the watch scope and the event-filtering rules before deciding
         // what to reconcile. A no-op when nothing changed.
         self.watch_manager.refresh_scope(root);
-        let expected_current = current_revision_id(connection)?;
         // One deadline for the whole barrier operation — every iteration
         // and every per-path reconcile inside it — so a pathological
         // event producer can't stall a tool call indefinitely. The
         // project's ignore rules make the incremental path index exactly
         // what a full publish would index.
         let options = ReconcileOptions::for_sync(self.watch_manager.rules_for(root));
-        let started = std::time::Instant::now();
-        // Accumulated across every barrier iteration so the log line below
-        // reports the total skip count, not just the last pass's.
-        let mut skipped_total = 0usize;
-
-        super::super::reconcile::sync_with_barrier_with_deadline(
-            state,
-            &options.deadline,
-            |dirty, deleted| {
-                let report = super::super::reconcile::reconcile_dirty_paths_with_deadline(
-                    connection,
-                    root,
-                    dirty,
-                    deleted,
-                    expected_current.as_deref(),
-                    &options,
-                )?;
-                skipped_total += report.skipped;
-                Ok(())
-            },
-        )?;
-
-        tracing::debug!(
-            root = %root.display(),
-            elapsed_ms = started.elapsed().as_millis(),
-            skipped = skipped_total,
-            "incremental reconcile phase complete",
-        );
-        Ok(())
+        // Edge resolution must treat every path that exists as existing —
+        // not just indexed rows. A file sampling skipped (oversize,
+        // unreadable) has no `files` row, so resolving its importers
+        // against indexed rows alone would write `Unresolved`, which reads
+        // as dead code. This path has no report in hand, so it walks once;
+        // its failure is as fatal here as in the sweep-driven reconcile:
+        // an unverified tree must not be published against.
+        let report = super::super::sweep::sweep(connection, root, &options.deadline)
+            .map_err(|error| SyncError::Sweep(error.to_string()))?;
+        reconcile_events(root, state, connection, &options, &report.on_disk)
     }
+}
+
+/// Reconciles watcher events under a caller-supplied deadline and on-disk
+/// path set. The `Healthy` path walks the tree once for the sweep and passes
+/// that report's `on_disk` here, so this never walks. The expected revision
+/// is read here — at the point this step publishes — so the CAS baseline is
+/// never shared with another publishing step (the sweep apply reads its own
+/// immediately before it publishes).
+///
+/// # Errors
+///
+/// Returns an error if the barrier loop or any per-path reconcile fails.
+fn reconcile_events(
+    root: &Path,
+    state: &WatchState,
+    connection: &mut Connection,
+    options: &ReconcileOptions,
+    on_disk: &HashSet<String>,
+) -> Result<(), SyncError> {
+    let expected_current = current_revision_id(connection)?;
+    let started = std::time::Instant::now();
+    // Accumulated across every barrier iteration so the log line below
+    // reports the total skip count, not just the last pass's.
+    let mut skipped_total = 0usize;
+
+    super::super::reconcile::sync_with_barrier_with_deadline(
+        state,
+        &options.deadline,
+        |dirty, deleted| {
+            let report = super::super::reconcile::reconcile_dirty_paths_with_deadline(
+                connection,
+                root,
+                dirty,
+                deleted,
+                expected_current.as_deref(),
+                options,
+                on_disk,
+            )?;
+            skipped_total += report.skipped;
+            Ok(())
+        },
+    )?;
+
+    tracing::debug!(
+        root = %root.display(),
+        elapsed_ms = started.elapsed().as_millis(),
+        skipped = skipped_total,
+        "incremental reconcile phase complete",
+    );
+    Ok(())
 }

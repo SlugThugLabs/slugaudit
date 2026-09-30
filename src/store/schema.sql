@@ -73,7 +73,16 @@ CREATE TABLE IF NOT EXISTS evidence (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file_id INTEGER NOT NULL REFERENCES files (id) ON DELETE CASCADE,
     key TEXT NOT NULL,
-    kind TEXT NOT NULL,
+    -- The SQL mirror of src/evidence/sql.rs::kind_text(), which maps every
+    -- model::EvidenceKind variant (src/model/evidence.rs) — including the
+    -- ones with no producer today. A variant outside this list is a bug in
+    -- the writer, not data, so the mirror has to stay exact in both
+    -- directions: `store::connection::tests::
+    -- every_evidence_kind_text_passes_the_kind_check` derives every variant
+    -- from the enum itself and fails until this list carries its text.
+    kind TEXT NOT NULL
+        CHECK (kind IN ('Structure', 'Import', 'Export', 'Comment', 'Docstring',
+                        'Symbol', 'Diagnostic', 'Chunk', 'RawNode', 'Metric', 'Call')),
     origin TEXT NOT NULL,
     span_availability TEXT NOT NULL,
     start_byte INTEGER,

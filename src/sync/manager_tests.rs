@@ -1,6 +1,7 @@
 //! Integration tests for SourceSyncManager.
 // slugaudit-line-exception: approved-by=slugthug; reason=one end-to-end watcher-backed scenario per sync invariant, sharing the create_project/write_file/sync_project fixtures from sync/test_support; splitting would fragment the scenario set from its shared fixtures
 
+use crate::store::CURRENT_SCHEMA_VERSION;
 use crate::sync::SourceSyncManager;
 use crate::sync::test_support::{create_project, sync_project, write_file};
 use crate::tools::context::with_verified_read;
@@ -401,7 +402,7 @@ fn outdated_database_is_automatically_deleted_and_recreated() {
     })
     .expect("read version");
     assert_eq!(
-        version, 3,
+        version, CURRENT_SCHEMA_VERSION,
         "recreated database must be at current schema version"
     );
 

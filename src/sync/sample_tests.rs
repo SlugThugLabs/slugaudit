@@ -1,6 +1,6 @@
 // slugaudit-line-exception: approved-by=slugthug; reason=parallel-sampling tests for sample_all_with_deadline intentionally construct synthetic DiscoveredFile trees and exercise ordering, byte-cap, and deadline branches in isolation; collapsing this back into sample_tests would mix the synthetic-fixture scaffolding with the discoverer-driven integration tests that already live there
 use super::*;
-use crate::model::EvidenceLimits;
+use crate::model::{EvidenceLimits, ExtractionCompleteness};
 use crate::sync::publish::PublishError;
 use std::sync::Arc;
 use std::thread;
@@ -66,7 +66,7 @@ fn reproduces_the_5_326_990_byte_cumulative_overflow() {
         "fixture must reproduce the exact reported overflow size"
     );
 
-    apply_evidence_limits(&mut items, &limits);
+    let _ = apply_evidence_limits(&mut items, &limits);
 
     assert!(
         total_payload_bytes(&items) <= limits.evidence.max_payload_bytes_per_file,
@@ -84,7 +84,7 @@ fn evidence_within_every_cap_is_untouched() {
     let mut items: Vec<EvidenceItem> = (0..5).map(|i| item_with_content_bytes(i, 100)).collect();
     let original = items.clone();
 
-    apply_evidence_limits(&mut items, &limits);
+    let _ = apply_evidence_limits(&mut items, &limits);
 
     assert_eq!(
         items, original,
@@ -108,7 +108,7 @@ fn an_oversized_single_item_is_dropped_and_recorded() {
         item_with_content_bytes(1, 500),
     ];
 
-    apply_evidence_limits(&mut items, &limits);
+    let _ = apply_evidence_limits(&mut items, &limits);
 
     assert_eq!(items.len(), 2, "the kept item plus the truncation marker");
     assert!(items.iter().any(|item| item.key == "structure:0"));
@@ -127,7 +127,7 @@ fn item_count_cap_truncates_and_reserves_room_for_the_marker() {
     };
     let mut items: Vec<EvidenceItem> = (0..10).map(|i| item_with_content_bytes(i, 10)).collect();
 
-    apply_evidence_limits(&mut items, &limits);
+    let _ = apply_evidence_limits(&mut items, &limits);
 
     // Cap is 3; one slot is reserved for the marker itself, so at most 2
     // real items survive plus the marker — never more than the cap total.
@@ -147,11 +147,62 @@ fn cumulative_byte_cap_stops_before_the_file_cap_not_after() {
     };
     let mut items: Vec<EvidenceItem> = (0..10).map(|i| item_with_content_bytes(i, 300)).collect();
 
-    apply_evidence_limits(&mut items, &limits);
+    let _ = apply_evidence_limits(&mut items, &limits);
 
     assert!(total_payload_bytes(&items) <= limits.evidence.max_payload_bytes_per_file);
     assert!(items.len() < 10, "later items must have been dropped");
     assert!(has_truncation_marker(&items));
+}
+
+/// A file that parsed cleanly is `Full` — the completeness the evidence caps
+/// can overclaim. Once the caps discard any item, the stored run must
+/// downgrade to `Partial` rather than assert `Full` beside its own truncation
+/// marker.
+#[test]
+fn evidence_limit_truncation_downgrades_a_full_run_to_partial() {
+    let limits = ResourceLimits {
+        evidence: EvidenceLimits {
+            max_items_per_file: 1,
+            ..EvidenceLimits::default()
+        },
+        ..ResourceLimits::default()
+    };
+    let content = "pub fn a() {}\npub fn b() {}\n";
+    let sample = Sample {
+        relative_path: "lib.rs".to_owned(),
+        is_binary: false,
+        content: Some(content.to_owned()),
+        utf8_lossy: false,
+        identity: hash::hash_bytes("lib.rs", content.as_bytes()),
+        byte_len: content.len() as u64,
+        modified_unix_seconds: None,
+    };
+
+    let record = to_file_record(sample, &limits);
+
+    assert!(has_truncation_marker(&record.evidence));
+    assert_eq!(record.run.completeness, ExtractionCompleteness::Partial);
+}
+
+/// The downgrade must be conditional: a clean parse with room for every item
+/// stays `Full`, so the change cannot simply erase `Full` everywhere.
+#[test]
+fn a_full_run_within_every_evidence_cap_stays_full() {
+    let content = "pub fn a() {}\npub fn b() {}\n";
+    let sample = Sample {
+        relative_path: "lib.rs".to_owned(),
+        is_binary: false,
+        content: Some(content.to_owned()),
+        utf8_lossy: false,
+        identity: hash::hash_bytes("lib.rs", content.as_bytes()),
+        byte_len: content.len() as u64,
+        modified_unix_seconds: None,
+    };
+
+    let record = to_file_record(sample, &ResourceLimits::default());
+
+    assert!(!has_truncation_marker(&record.evidence));
+    assert_eq!(record.run.completeness, ExtractionCompleteness::Full);
 }
 
 /// Parallel-sampling tests below. They construct `DiscoveredFile`s

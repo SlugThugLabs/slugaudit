@@ -11,14 +11,33 @@ pub(super) struct ParseResult {
 }
 
 impl ParseResult {
-    fn unavailable(language: Option<String>, language_detected: bool) -> Self {
+    /// There was no content to describe (binary, or otherwise never
+    /// sampled), so nothing was extracted and there is nothing to read.
+    fn without_content() -> Self {
+        Self {
+            language: None,
+            language_detected: false,
+            run: ParserRun {
+                availability: ParserAvailability::Unavailable,
+                outcome: ParseOutcome::NotAttempted,
+                completeness: ExtractionCompleteness::Unavailable,
+            },
+            evidence: Vec::new(),
+        }
+    }
+
+    /// The file's content *was* sampled and is indexed in `files.content`,
+    /// but no parser ran over it. Reporting `Unavailable` here reads as
+    /// "no content" while the text sits in the DB — a fabricated verdict
+    /// about a file an agent can still read.
+    fn content_only(language: Option<String>, language_detected: bool) -> Self {
         Self {
             language,
             language_detected,
             run: ParserRun {
                 availability: ParserAvailability::Unavailable,
                 outcome: ParseOutcome::NotAttempted,
-                completeness: ExtractionCompleteness::Unavailable,
+                completeness: ExtractionCompleteness::ContentOnly,
             },
             evidence: Vec::new(),
         }
@@ -41,26 +60,27 @@ fn is_load_failure(error: &PackError) -> bool {
 
 /// Detects a file's language and runs pack extraction when possible. Never
 /// invents completeness: a file the pack can't identify or doesn't support
-/// gets `Unavailable`/`NotAttempted`, never a false "parsed successfully".
+/// gets `ContentOnly`/`NotAttempted` — its text is indexed — and only a file
+/// with no content at all is `Unavailable`.
 pub(super) fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult {
     let Some(content) = content else {
         tracing::trace!(path = relative_path, "no content; parser not invoked");
-        return ParseResult::unavailable(None, false);
+        return ParseResult::without_content();
     };
     let Some(language) = crate::parse::detect_language(relative_path) else {
         tracing::trace!(
             path = relative_path,
             "no language detected; parser not invoked"
         );
-        return ParseResult::unavailable(None, false);
+        return ParseResult::content_only(None, false);
     };
     if !crate::parse::language_available(&language) {
         tracing::debug!(
             path = relative_path,
             language = %language,
-            "detected language has no parser loaded in the pack; recording Unavailable",
+            "detected language has no parser loaded in the pack; recording ContentOnly",
         );
-        return ParseResult::unavailable(Some(language), true);
+        return ParseResult::content_only(Some(language), true);
     }
     match crate::evidence::extract(&language, content) {
         Ok(items) => {
@@ -75,6 +95,13 @@ pub(super) fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult
             } else {
                 ParseOutcome::Succeeded
             };
+            // Syntax-error diagnostics mean the walk covered a degraded tree;
+            // a run with none extracted everything the pack can see.
+            let completeness = if diagnostic_count > 0 {
+                ExtractionCompleteness::Partial
+            } else {
+                ExtractionCompleteness::Full
+            };
             tracing::debug!(
                 path = relative_path,
                 language = %language,
@@ -88,7 +115,7 @@ pub(super) fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult
                 run: ParserRun {
                     availability: ParserAvailability::Available,
                     outcome,
-                    completeness: ExtractionCompleteness::Partial,
+                    completeness,
                 },
                 evidence: items,
             }
@@ -108,7 +135,7 @@ pub(super) fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult
                         reason: error.to_string(),
                     },
                     outcome: ParseOutcome::NotAttempted,
-                    completeness: ExtractionCompleteness::Unavailable,
+                    completeness: ExtractionCompleteness::ContentOnly,
                 },
                 evidence: Vec::new(),
             }
@@ -128,7 +155,7 @@ pub(super) fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult
                     outcome: ParseOutcome::Failed {
                         reason: error.to_string(),
                     },
-                    completeness: ExtractionCompleteness::Unavailable,
+                    completeness: ExtractionCompleteness::ContentOnly,
                 },
                 evidence: Vec::new(),
             }

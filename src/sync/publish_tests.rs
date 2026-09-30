@@ -217,7 +217,7 @@ fn a_real_rust_file_gets_real_parsed_evidence_not_a_placeholder() {
     assert_eq!(language, "rust");
     assert_eq!(availability, "Available");
     assert_eq!(outcome, "Succeeded");
-    assert_eq!(completeness, "Partial");
+    assert_eq!(completeness, "Full", "a clean parse degraded nothing");
 
     let structure_count: i64 = connection
         .query_row(

@@ -43,6 +43,9 @@ pub(crate) fn reconcile_dirty_paths(
         deleted,
         expected_revision,
         &options,
+        // No walk in hand: fixtures index every file they write, so the
+        // indexed rows are the correct universe for these tests.
+        &HashSet::new(),
     )
 }
 
@@ -52,6 +55,12 @@ pub(crate) fn reconcile_dirty_paths(
 /// [`ReconcileError::TimeBudgetExceeded`] instead of stalling the tool
 /// call forever. The deadline is created by the caller so the whole
 /// barrier-sync operation shares one budget across its iterations.
+///
+/// `discovered_paths` are the project-relative paths the caller's walk saw
+/// on disk (the stat sweep's `on_disk`). Edge resolution treats them as
+/// existing even when they were never indexed — an oversize-skipped file
+/// that exists must not turn its importers into `Unresolved` dead-code
+/// findings.
 pub(crate) fn reconcile_dirty_paths_with_deadline(
     connection: &mut Connection,
     root: &Path,
@@ -59,6 +68,7 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
     deleted: HashSet<String>,
     expected_revision: Option<&str>,
     options: &ReconcileOptions,
+    discovered_paths: &HashSet<String>,
 ) -> Result<ReconcileReport, ReconcileError> {
     let ReconcileOptions {
         limits,
@@ -190,6 +200,7 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
         &parser_pack_version,
         &upserts,
         &deletions,
+        discovered_paths,
     )?;
 
     Ok(ReconcileReport {

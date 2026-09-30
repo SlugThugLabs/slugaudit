@@ -38,6 +38,12 @@ pub enum SyncError {
     Revision(#[from] revision::RevisionError),
     #[error("reconcile error: {0}")]
     Reconcile(#[from] reconcile::ReconcileError),
+    /// The watcher-driven reconcile needs the stat sweep's on-disk path
+    /// set for edge resolution; a sweep that cannot complete leaves that
+    /// set unknown, so the reconcile fails closed instead of publishing
+    /// edges resolved against a set it knows is incomplete.
+    #[error("stat sweep error: {0}")]
+    Sweep(String),
     #[error("IO error reading {path}: {source}")]
     Read {
         path: PathBuf,
@@ -70,7 +76,7 @@ pub struct SourceSyncManager {
     /// watcher keeps dropping into `Desynced` (e.g. Linux inotify
     /// `fs.inotify.max_user_watches` overflow) is the earliest signal that
     /// every tool call is paying a full-publish cost — see the
-    /// production-failure runbook in `.planning/PERFORMANCE.md`.
+    /// full-publish runbook in `docs/TROUBLESHOOTING.md`.
     consecutive_full_publishes: std::sync::Arc<AtomicU64>,
 }
 

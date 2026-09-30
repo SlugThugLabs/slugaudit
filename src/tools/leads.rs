@@ -63,8 +63,13 @@ pub struct LeadRow {
     /// One-based start line, or `0` when the evidence carries no span.
     pub line: i64,
     /// The mechanic's own text: callee text, diagnostic message, or comment
-    /// text. Empty for path-shaped mechanics.
+    /// text. Empty for path-shaped mechanics. Clipped to `MAX_DETAIL_CHARS`
+    /// characters when longer — check `detail_clipped`.
     pub detail: String,
+    /// True when `detail` was clipped to `MAX_DETAIL_CHARS`; the text is then
+    /// a prefix of the stored evidence and the remainder exists only in the
+    /// file itself. False means the whole stored text is present.
+    pub detail_clipped: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -83,13 +88,15 @@ pub struct LeadsResponse {
     pub next_offset: Option<usize>,
 }
 
-/// Truncates a detail string to `MAX_DETAIL_CHARS` characters on a char
-/// boundary. No shared truncation helper exists in `crate::util`.
-fn truncate_detail(value: String) -> String {
-    if value.chars().count() <= MAX_DETAIL_CHARS {
-        return value;
+/// Clips a row's `detail` to `MAX_DETAIL_CHARS` characters on a char
+/// boundary, setting `detail_clipped` only when characters were removed.
+/// No shared truncation helper exists in `crate::util`.
+fn clip_detail(row: &mut LeadRow) {
+    if row.detail.chars().count() <= MAX_DETAIL_CHARS {
+        return;
     }
-    value.chars().take(MAX_DETAIL_CHARS).collect()
+    row.detail = row.detail.chars().take(MAX_DETAIL_CHARS).collect();
+    row.detail_clipped = true;
 }
 
 /// Unranked mechanical observations from the project's current revision.
@@ -131,9 +138,9 @@ pub fn leads(
             .map_or(0, |entry| entry.count);
         let rows: Vec<LeadRow> = rows_for(tx, mechanic, limit, offset)?
             .into_iter()
-            .map(|row| LeadRow {
-                detail: truncate_detail(row.detail),
-                ..row
+            .map(|mut row| {
+                clip_detail(&mut row);
+                row
             })
             .collect();
         let seen = i64::try_from(offset).unwrap_or(i64::MAX)

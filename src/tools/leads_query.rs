@@ -162,7 +162,8 @@ pub(super) fn count_all(tx: &Transaction<'_>) -> Result<Vec<MechanicCount>, Erro
         .collect()
 }
 
-/// One page of rows for a single mechanic.
+/// One page of rows for a single mechanic. `detail` is the stored text,
+/// unclipped, so `detail_clipped` starts false; `leads` clips and flags.
 pub(super) fn rows_for(
     tx: &Transaction<'_>,
     mechanic: &Mechanic,
@@ -180,6 +181,7 @@ pub(super) fn rows_for(
                 file: row.get(0)?,
                 line: row.get(1)?,
                 detail: row.get(2)?,
+                detail_clipped: false,
             })
         })
         .map_err(|error| super::context::internal_error("reading leads rows", error))?

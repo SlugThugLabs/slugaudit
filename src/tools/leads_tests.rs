@@ -161,3 +161,70 @@ fn detail_text_is_capped_at_the_char_limit() {
     assert_eq!(response.rows.len(), 1);
     assert_eq!(response.rows[0].detail.chars().count(), MAX_DETAIL_CHARS);
 }
+
+#[test]
+fn comment_marker_clip_is_reported_on_the_row() {
+    let project = tempfile::tempdir().expect("project dir");
+    activate(project.path());
+    fs::write(
+        project.path().join("lib.rs"),
+        format!("// TODO: {}\n", "x".repeat(300)),
+    )
+    .expect("write rust source");
+
+    let response = run(project.path(), Some("comment_markers"), None, None);
+
+    assert_eq!(response.rows.len(), 1);
+    assert_eq!(response.rows[0].detail.chars().count(), MAX_DETAIL_CHARS);
+    assert!(
+        response.rows[0].detail_clipped,
+        "a comment longer than the cap must report detail_clipped"
+    );
+}
+
+#[test]
+fn short_comment_detail_is_not_flagged_as_clipped() {
+    let project = tempfile::tempdir().expect("project dir");
+    activate(project.path());
+    let body = "y".repeat(120);
+    fs::write(project.path().join("lib.rs"), format!("// TODO: {body}\n"))
+        .expect("write rust source");
+
+    let response = run(project.path(), Some("comment_markers"), None, None);
+
+    assert_eq!(response.rows.len(), 1);
+    assert!(!response.rows[0].detail_clipped);
+    assert!(
+        response.rows[0].detail.ends_with(&body),
+        "unclipped detail must carry the whole stored text: {}",
+        response.rows[0].detail
+    );
+}
+
+#[test]
+fn clip_detail_flags_only_past_the_char_limit() {
+    let mut at_limit = LeadRow {
+        file: "f.rs".to_owned(),
+        line: 1,
+        detail: "é".repeat(MAX_DETAIL_CHARS),
+        detail_clipped: false,
+    };
+
+    clip_detail(&mut at_limit);
+
+    assert_eq!(at_limit.detail.chars().count(), MAX_DETAIL_CHARS);
+    assert!(!at_limit.detail_clipped, "exactly the cap is not clipped");
+
+    let mut over_limit = LeadRow {
+        file: "f.rs".to_owned(),
+        line: 1,
+        detail: "é".repeat(MAX_DETAIL_CHARS + 1),
+        detail_clipped: false,
+    };
+
+    clip_detail(&mut over_limit);
+
+    assert_eq!(over_limit.detail.chars().count(), MAX_DETAIL_CHARS);
+    assert_eq!(over_limit.detail.len(), MAX_DETAIL_CHARS * 2);
+    assert!(over_limit.detail_clipped, "one past the cap is clipped");
+}

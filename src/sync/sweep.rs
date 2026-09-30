@@ -43,9 +43,14 @@ pub(super) enum SweepError {
 /// the stored mtime/byte_len); `deleted` are database rows whose file is no
 /// longer on disk — including files that became gitignored, which converge
 /// out of the index exactly as a full publish would converge them.
+/// `on_disk` is every path the walk stat'd successfully: the set that
+/// exists, including files sampling skips — edge resolution resolves
+/// imports against it so an import of an oversize-skipped file is not
+/// misreported as `Unresolved`.
 pub(super) struct SweepReport {
     pub candidates: HashSet<String>,
     pub deleted: HashSet<String>,
+    pub on_disk: HashSet<String>,
     pub unchanged: usize,
 }
 
@@ -65,6 +70,7 @@ pub(super) fn sweep(
     root: &Path,
     deadline: &Deadline,
 ) -> Result<SweepReport, SweepError> {
+    note_walk(root);
     let mut statement =
         connection.prepare("SELECT path, modified_unix_seconds, byte_len FROM files")?;
     let stored: HashMap<String, (Option<i64>, i64)> = statement
@@ -143,8 +149,59 @@ pub(super) fn sweep(
     Ok(SweepReport {
         candidates,
         deleted,
+        on_disk,
         unchanged,
     })
+}
+
+/// Test-only per-root walk counters, so the Healthy-path regression can
+/// prove one whole-tree walk per call. Keyed by canonical root (the same
+/// per-root keying `race_hook` uses) so tests running in parallel never
+/// share a counter.
+#[cfg(test)]
+static WALK_COUNTERS: std::sync::Mutex<
+    Option<
+        std::collections::HashMap<
+            std::path::PathBuf,
+            std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        >,
+    >,
+> = std::sync::Mutex::new(None);
+
+/// Arms walk counting for `root` and returns the counter [`sweep`] bumps on
+/// every walk of that root.
+#[cfg(test)]
+pub(super) fn count_walks(root: &Path) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut guard = crate::util::lock_or_recover(&WALK_COUNTERS);
+    guard
+        .get_or_insert_with(std::collections::HashMap::new)
+        .insert(canonical_root(root), std::sync::Arc::clone(&counter));
+    counter
+}
+
+/// Bumps the armed counter for `root`, if any. A no-op outside tests (only
+/// the `#[cfg(test)]` block below does anything) and a no-op for any root
+/// nobody armed a counter for.
+#[cfg_attr(not(test), allow(unused_variables))]
+fn note_walk(root: &Path) {
+    #[cfg(test)]
+    {
+        let guard = crate::util::lock_or_recover(&WALK_COUNTERS);
+        if let Some(counter) = guard
+            .as_ref()
+            .and_then(|counters| counters.get(&canonical_root(root)))
+        {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+/// Canonicalizes `root` the way the watcher does, so a counter armed with a
+/// tempdir path matches the walk's resolved root.
+#[cfg(test)]
+fn canonical_root(root: &Path) -> std::path::PathBuf {
+    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
 }
 
 #[cfg(test)]

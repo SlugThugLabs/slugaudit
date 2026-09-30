@@ -4,7 +4,8 @@ use super::discovery::{DiscoveredFile, FileKind};
 use super::hash;
 use super::revision::FileRecord;
 use crate::model::{
-    EvidenceItem, EvidenceKind, EvidenceOrigin, ResourceLimits, SourceIdentity, SpanAvailability,
+    EvidenceItem, EvidenceKind, EvidenceOrigin, ExtractionCompleteness, ResourceLimits,
+    SourceIdentity, SpanAvailability,
 };
 use crate::util;
 use serde_json::json;
@@ -131,7 +132,17 @@ pub(super) fn to_file_record(sample: Sample, limits: &ResourceLimits) -> FileRec
     if sample.utf8_lossy {
         parsed.evidence.push(utf8_lossy_evidence());
     }
-    apply_evidence_limits(&mut parsed.evidence, limits);
+    // `analyze` decides completeness from the pack's own diagnostics, before
+    // the evidence caps run. A run it called `Full` whose items are then
+    // discarded by the caps must not be stored as `Full` beside the "records
+    // were dropped" marker the caps append — that is the same class of
+    // overclaim `ContentOnly` exists to remove. `ContentOnly`/`Unavailable`
+    // are left alone: they already describe a file whose structural evidence
+    // was never available.
+    let discarded = apply_evidence_limits(&mut parsed.evidence, limits);
+    if discarded && parsed.run.completeness == ExtractionCompleteness::Full {
+        parsed.run.completeness = ExtractionCompleteness::Partial;
+    }
     FileRecord {
         relative_path: sample.relative_path,
         is_binary: sample.is_binary,
@@ -158,7 +169,15 @@ const TRUNCATION_MARKER_RESERVE_BYTES: usize = 512;
 /// caught the 5,326,990-byte failure. Whenever anything is discarded, an
 /// explicit `Diagnostic` evidence item records it — the AI sees a "this
 /// file's evidence was truncated" signal instead of silently incomplete data.
-pub(crate) fn apply_evidence_limits(items: &mut Vec<EvidenceItem>, limits: &ResourceLimits) {
+///
+/// Returns `true` when anything was discarded, so `to_file_record` can
+/// downgrade a would-be `Full` run to `Partial` instead of storing a
+/// completeness claim that contradicts the marker sitting next to it.
+#[must_use]
+pub(crate) fn apply_evidence_limits(
+    items: &mut Vec<EvidenceItem>,
+    limits: &ResourceLimits,
+) -> bool {
     let cap = limits.evidence;
     let original_len = items.len();
     let max_items = cap.max_items_per_file.saturating_sub(1);
@@ -192,13 +211,15 @@ pub(crate) fn apply_evidence_limits(items: &mut Vec<EvidenceItem>, limits: &Reso
 
     let kept_len = kept.len();
     *items = kept;
-    if limit_truncated || oversized_dropped > 0 {
+    let discarded = limit_truncated || oversized_dropped > 0;
+    if discarded {
         items.push(truncation_evidence(
             original_len,
             kept_len,
             oversized_dropped,
         ));
     }
+    discarded
 }
 
 fn truncation_evidence(

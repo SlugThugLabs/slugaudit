@@ -13,6 +13,7 @@ use crate::model::ResourceLimits;
 use crate::progress::ProgressSink;
 use crate::util::Deadline;
 use rusqlite::Connection;
+use std::collections::HashSet;
 use std::path::Path;
 
 struct CurrentRevision {
@@ -68,6 +69,27 @@ pub(super) fn try_publish(
         .map(|revision| revision.revision_id.as_str());
 
     let (discovered, skipped) = discovery::discover_with_deadline(root, deadline)?;
+    // Every path the walk saw on disk, including files sampling will skip
+    // (oversize) — those exist, so an import targeting one must resolve
+    // rather than be written as `Unresolved`. They never get a `files`
+    // row, so edge resolution cannot learn about them from the database.
+    let mut discovered_paths: HashSet<String> = discovered
+        .iter()
+        .map(|file| file.relative_path.clone())
+        .collect();
+    // Discovery also skipped files it walked but could not read (mode
+    // 000, a filesystem error): they exist too. A path with no UTF-8
+    // representation, or one outside the root, has no usable key and is
+    // deliberately left out — the same reason discovery could not index
+    // it. `replace` mirrors discovery's own relative-path normalization.
+    for file in &skipped {
+        if let Ok(relative) = file.absolute_path.strip_prefix(root)
+            && let Some(relative) = relative.to_str()
+            && !relative.is_empty()
+        {
+            discovered_paths.insert(relative.replace('\\', "/"));
+        }
+    }
     if !skipped.is_empty() {
         for file in &skipped {
             tracing::warn!(
@@ -126,6 +148,7 @@ pub(super) fn try_publish(
         parser_pack_version,
         &upserts,
         &deletions,
+        &discovered_paths,
     )?;
 
     Ok(PublishReport {

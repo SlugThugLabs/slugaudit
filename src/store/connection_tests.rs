@@ -1,8 +1,12 @@
 // Tests for `src/store/connection.rs`. Extracted to a sibling file so the
 // production source stays under the 300-line hard cap while the test suite
-// still has room to grow.
+// still has room to grow. The `evidence.kind` CHECK tests live here too:
+// this is the store's only test surface that opens a migrated connection,
+// and the constraint is only observable through one.
 // slugaudit-line-exception: approved-by=slugthug; reason=audit-trail tests covering each rejection guard, paired with their happy-path negative; keeping them co-located lets future regressions cross-compare symlink / permissions / network paths at a glance
 
+use crate::evidence::to_row;
+use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, SpanAvailability};
 use crate::store::test_capture::capture_warns;
 use crate::store::*;
 
@@ -353,5 +357,152 @@ fn a_local_filesystem_open_does_not_emit_any_rejection_warnings() {
     assert!(
         !logs.contains("\"network_filesystem\""),
         "a successful local open must not log the network-filesystem warning, captured logs: {logs}"
+    );
+}
+
+/// Every variant of `model::EvidenceKind`, derived rather than restated:
+/// `EvidenceKind` carries a test-build-only `JsonSchema` derive, whose schema
+/// has one entry per variant, so the compiler regenerates this list from the
+/// enum definition itself. A variant added to the enum appears here with no
+/// hand-kept copy to forget — and the tests below then ask `evidence::to_row`
+/// for that variant's text and compare it against the CHECK SQLite actually
+/// installed, which is what forces `schema.sql` to gain the text too.
+fn every_evidence_kind() -> Vec<EvidenceKind> {
+    let schema = serde_json::to_value(schemars::schema_for!(EvidenceKind))
+        .expect("the derived EvidenceKind schema serializes as JSON");
+    let names = schema
+        .get("enum")
+        .and_then(serde_json::Value::as_array)
+        .expect("the EvidenceKind schema lists its variants as a flat enum of names");
+
+    names
+        .iter()
+        .map(|name| {
+            serde_json::from_value(name.clone())
+                .expect("every variant name in the schema deserializes into an EvidenceKind")
+        })
+        .collect()
+}
+
+/// The `CHECK (kind IN (...))` allow-list, read back out of the schema's own
+/// DDL so the comparison is against the constraint SQLite actually installed
+/// rather than a restatement of what it should be.
+fn kind_check_allowed_values(connection: &rusqlite::Connection) -> Vec<String> {
+    let ddl: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'evidence'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read the evidence table DDL");
+    let list = ddl
+        .split_once("kind IN (")
+        .expect("evidence.kind must carry a CHECK (kind IN (...))")
+        .1
+        .split_once(')')
+        .expect("the kind CHECK's closing paren")
+        .0;
+
+    list.split(',')
+        .map(|value| value.trim().trim_matches('\'').to_owned())
+        .collect()
+}
+
+/// The parent rows an `evidence` insert needs: `revisions` backs
+/// `files.last_revision_id`, and every parser column on `files` is CHECKed,
+/// so the fixture supplies modeled values.
+fn insert_a_file_row(connection: &rusqlite::Connection) -> i64 {
+    connection
+        .execute(
+            "INSERT INTO revisions \
+                (revision_id, manifest_hash, parser_pack_version, created_at_unix, is_current) \
+             VALUES ('rev-1', 'manifest-hash', 'parser-pack', 0, 1)",
+            [],
+        )
+        .expect("insert the parent revision");
+    connection
+        .execute(
+            "INSERT INTO files \
+                (path, content_hash, hash_algorithm, byte_len, parser_availability, \
+                 parse_outcome, extraction_completeness, last_revision_id) \
+             VALUES ('src/main.rs', 'content-hash', 'sha256', 0, 'Available', 'Succeeded', \
+                     'Full', (SELECT id FROM revisions WHERE revision_id = 'rev-1'))",
+            [],
+        )
+        .expect("insert the parent file");
+
+    connection.last_insert_rowid()
+}
+
+/// An evidence kind this build does not model must be refused by SQLite
+/// itself. Without the CHECK the row is stored, and a later reader sees a
+/// kind no producer claims — an unmodeled verdict dressed as evidence.
+#[test]
+fn evidence_kind_check_rejects_an_unmodeled_kind() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let connection = open_read_write(&directory.path().join("project.db")).expect("open");
+    let file_id = insert_a_file_row(&connection);
+
+    let result = connection.execute(
+        "INSERT INTO evidence (file_id, key, kind, origin, span_availability, payload) \
+         VALUES (?1, 'unmodeled:0', 'NotAnEvidenceKind', 'PackSymbol', 'PackOmitted', '{}')",
+        [file_id],
+    );
+
+    assert!(
+        result.is_err(),
+        "an unmodeled evidence kind must be rejected by the CHECK constraint, got {result:?}"
+    );
+}
+
+/// Every kind `kind_text` can produce must be accepted, and the CHECK must
+/// list those strings and no others — the SQL mirror has to be exact in both
+/// directions. The insert set is driven through `evidence::to_row`, the one
+/// production enum→text mapping, so this test cannot carry a stale copy of
+/// the strings.
+#[test]
+fn every_evidence_kind_text_passes_the_kind_check() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let connection = open_read_write(&directory.path().join("project.db")).expect("open");
+    let file_id = insert_a_file_row(&connection);
+
+    let mut inserted_kinds = Vec::new();
+    for (index, kind) in every_evidence_kind().into_iter().enumerate() {
+        let row = to_row(&EvidenceItem {
+            key: format!("kind:{index}"),
+            kind,
+            origin: EvidenceOrigin::PackSymbol,
+            span: SpanAvailability::PackOmitted,
+            payload: serde_json::json!({}),
+        });
+        let inserted = connection.execute(
+            "INSERT INTO evidence (file_id, key, kind, origin, span_availability, payload) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                file_id,
+                row.key,
+                row.kind,
+                row.origin,
+                row.span_availability,
+                row.payload
+            ],
+        );
+
+        assert!(
+            inserted.is_ok(),
+            "kind {} must be modeled by the CHECK: {inserted:?}",
+            row.kind
+        );
+        inserted_kinds.push(row.kind.to_owned());
+    }
+
+    let mut allowed = kind_check_allowed_values(&connection);
+    inserted_kinds.sort();
+    allowed.sort();
+    assert_eq!(
+        allowed, inserted_kinds,
+        "left is the evidence.kind allow-list SQLite installed from src/store/schema.sql, \
+         right is the text src/evidence/sql.rs::kind_text produces: the CHECK must list \
+         exactly these strings"
     );
 }

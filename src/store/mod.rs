@@ -28,3 +28,9 @@ pub(crate) fn is_rusqlite_corruption(error: &rusqlite::Error) -> bool {
 
 pub use connection::{StoreError, discard_corrupt_database, open_read_only, open_read_write};
 pub use migrations::MigrationError;
+
+/// The schema version a fresh database is brought to. Re-exported for tests
+/// outside this module so they assert against the constant instead of a
+/// literal that goes stale on every bump.
+#[cfg(test)]
+pub(crate) use migrations::CURRENT_SCHEMA_VERSION;
