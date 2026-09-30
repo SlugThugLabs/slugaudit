@@ -52,7 +52,9 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     diagnostics, TODO/FIXME/HACK/XXX comment markers, and credential-shaped file paths. Counts are complete \
     regardless of `limit`/`offset` and carry no ordering by importance. Call again with one `mechanic` id for \
     file/line rows, optionally narrowed with `pattern` (a path GLOB like `src/auth/*`; without `*` or `?` it is \
-    a substring match) — it filters the counts and the rows alike. A rows response always carries \
+    a substring match) — it filters the counts and the rows alike. Pass `mode: compact` to drop each row's \
+    `detail` and get `mechanic`/`file`/`line` triples instead; with no `mechanic` that enumerates the whole \
+    surface in one response, under the same paging fields. A rows response always carries \
     `returned`/`total` and `complete`, plus the file denominators `files_total`/`files_covered`: at scale the \
     number you can actually exhaust is the files containing the mechanic, not the rows. There is no row cap — a \
     page is cut only by your `limit` (omit it for everything that fits) and by the response byte budget, \
@@ -230,7 +232,10 @@ impl SlugAuditServer {
          response byte budget (`row_budget_bytes`/`rows_bytes`, with `limited_by` naming what \
          stopped it). To page, pass `offset` = `next_offset` together with `expected_revision` = \
          the previous page's `revision_id`: a changed index is then refused with `stale_revision` \
-         instead of silently skipping or repeating rows."
+         instead of silently skipping or repeating rows. For `mechanic`/`file`/`line` triples \
+         with no per-row text, pass `mode: compact`; with only `path` it then enumerates every \
+         mechanic in one response under the same completeness fields — the cheap way to see the \
+         whole surface."
     )]
     async fn leads(
         &self,

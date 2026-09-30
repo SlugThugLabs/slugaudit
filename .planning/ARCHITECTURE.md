@@ -153,6 +153,8 @@ src/
 │   ├── leads.rs              unranked mechanical observations
 │   ├── leads_mechanics.rs    the leads mechanic catalogue
 │   ├── leads_query.rs        the SQL each leads mechanic compiles to
+│   ├── leads_page.rs         one response assembled: counts, a row page, or the compact enumeration
+│   ├── leads_compact.rs      the compact mechanic/file/line row shape over one mechanic or all
 │   ├── finding.rs            the single write tool
 │   ├── finding_read.rs       session-gated finding query
 │   ├── project_control.rs    enable/disable a project

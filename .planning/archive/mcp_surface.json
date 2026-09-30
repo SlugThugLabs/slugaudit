@@ -465,8 +465,25 @@
         "destructiveHint": false,
         "readOnlyHint": true
       },
-      "description": "Want somewhere to start? Mechanical facts extracted from the index — call sites by callee name (unwrap, expect, panic, todo, unimplemented, assert), diagnostics, TODO/FIXME/HACK comment markers, and credential-shaped files. Nothing here is judged, ranked, scored, or ordered by importance: every item is a fact, and deciding which of them matter is entirely your call. Call with only `path` to get every mechanic with its row count, its distinct-file count (`files`) and `covers` (`rust_only` means a zero count is unchecked, not absent), then call again with one `mechanic` id to get file/line rows, optionally narrowed with `pattern` (a path GLOB, e.g. `src/auth/*`; without `*`/`?` it is a substring match). A rows response always reports `returned`/`total` and `complete` plus the file denominators `files_total`/`files_covered`; there is no row cap, so a page is cut only by your `limit` (omit it for everything that fits) and by the response byte budget (`row_budget_bytes`/`rows_bytes`, with `limited_by` naming what stopped it). To page, pass `offset` = `next_offset` together with `expected_revision` = the previous page's `revision_id`: a changed index is then refused with `stale_revision` instead of silently skipping or repeating rows.",
+      "description": "Want somewhere to start? Mechanical facts extracted from the index — call sites by callee name (unwrap, expect, panic, todo, unimplemented, assert), diagnostics, TODO/FIXME/HACK comment markers, and credential-shaped files. Nothing here is judged, ranked, scored, or ordered by importance: every item is a fact, and deciding which of them matter is entirely your call. Call with only `path` to get every mechanic with its row count, its distinct-file count (`files`) and `covers` (`rust_only` means a zero count is unchecked, not absent), then call again with one `mechanic` id to get file/line rows, optionally narrowed with `pattern` (a path GLOB, e.g. `src/auth/*`; without `*`/`?` it is a substring match). A rows response always reports `returned`/`total` and `complete` plus the file denominators `files_total`/`files_covered`; there is no row cap, so a page is cut only by your `limit` (omit it for everything that fits) and by the response byte budget (`row_budget_bytes`/`rows_bytes`, with `limited_by` naming what stopped it). To page, pass `offset` = `next_offset` together with `expected_revision` = the previous page's `revision_id`: a changed index is then refused with `stale_revision` instead of silently skipping or repeating rows. For `mechanic`/`file`/`line` triples with no per-row text, pass `mode: compact`; with only `path` it then enumerates every mechanic in one response under the same completeness fields — the cheap way to see the whole surface.",
       "inputSchema": {
+        "$defs": {
+          "LeadMode": {
+            "description": "How a response renders its rows. See [`LeadsResponse::rows`].",
+            "oneOf": [
+              {
+                "const": "full",
+                "description": "Each row carries its `detail` text (clipped; see [`LeadRow`]).",
+                "type": "string"
+              },
+              {
+                "const": "compact",
+                "description": "Each row is a [`CompactLeadRow`]: no per-row text at all.",
+                "type": "string"
+              }
+            ]
+          }
+        },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
           "expected_revision": {
@@ -494,6 +511,10 @@
               "string",
               "null"
             ]
+          },
+          "mode": {
+            "$ref": "#/$defs/LeadMode",
+            "description": "Row shape: `full` (default) carries `detail`; `compact` drops it"
           },
           "offset": {
             "default": null,
@@ -526,6 +547,30 @@
       "name": "leads",
       "outputSchema": {
         "$defs": {
+          "CompactLeadRow": {
+            "description": "One row of a compact page: which mechanic observed what, at a path and\nline. No text is carried — read the file, or ask for `mode: full` — which\nis what makes a whole-surface sweep affordable.",
+            "properties": {
+              "file": {
+                "description": "Project-relative path of the file the observation is in.",
+                "type": "string"
+              },
+              "line": {
+                "description": "One-based start line, or `0` when the evidence carries no span.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "mechanic": {
+                "description": "The mechanic this row belongs to — an id from `mechanic_counts`, and\nthe id to pass as `mechanic` for that mechanic's `detail` text.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "mechanic",
+              "file",
+              "line"
+            ],
+            "type": "object"
+          },
           "FileCount": {
             "description": "One file's share of a page, in first-appearance order.",
             "properties": {
@@ -572,6 +617,23 @@
               "detail_clipped"
             ],
             "type": "object"
+          },
+          "LeadRows": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/LeadRow"
+                },
+                "type": "array"
+              },
+              {
+                "items": {
+                  "$ref": "#/$defs/CompactLeadRow"
+                },
+                "type": "array"
+              }
+            ],
+            "description": "The rows of a page, shaped by the request's `mode`; one response carries\none variant, never a mix. `full` (the default) is [`LeadRow`] with its\n`detail` text; `compact` is [`CompactLeadRow`] with no per-row text. All\nthe envelope's completeness fields mean the same thing either way."
           },
           "MechanicCount": {
             "properties": {
@@ -641,22 +703,22 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
           "complete": {
-            "description": "True when this page reaches the end of the mechanic\n(`offset + returned >= total`), and when no mechanic was requested.\nFalse means rows remain and `next_offset` is present.",
+            "description": "True when this page reaches the end of the scope\n(`offset + returned >= total`), and when a `full` call requested no\nmechanic. False means rows remain and `next_offset` is present.",
             "type": "boolean"
           },
           "files_covered": {
-            "description": "Distinct files represented in rows `0..offset + returned` of the\nmechanic. Cumulative for a sweep at one revision, because rows are\nordered by path and a page boundary can split a file but never\nreorder the files. `files_total - files_covered` is what is left.",
+            "description": "Distinct files represented in rows `0..offset + returned` of the\nscope. Cumulative for a sweep at one revision, because rows are\nordered by path and a page boundary can split a file but never\nreorder the files. `files_total - files_covered` is what is left.",
             "format": "int64",
             "type": "integer"
           },
           "files_total": {
-            "description": "Distinct files holding at least one observation of the requested\nmechanic — the denominator a sweep can exhaust. `0` when no mechanic\nwas requested. Equal to the selected `mechanic_counts` entry's\n`files`.",
+            "description": "Distinct files holding at least one observation of any mechanic in\nscope — the denominator a sweep can exhaust. `0` when a `full` call\nrequested no mechanic. For a single mechanic it equals that\n`mechanic_counts` entry's `files`.",
             "format": "int64",
             "type": "integer"
           },
           "limited_by": {
             "$ref": "#/$defs/PageLimit",
-            "description": "What stopped the page: the mechanic ended, the caller's `limit`, or\nthe byte budget."
+            "description": "What stopped the page: the scope ended, the caller's `limit`, or the\nbyte budget."
           },
           "mechanic_counts": {
             "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit`/`offset`, and carry no\nordering by importance — the order is the fixed declaration order.",
@@ -698,11 +760,8 @@
             "type": "integer"
           },
           "rows": {
-            "description": "Empty when the request supplied no `mechanic`.",
-            "items": {
-              "$ref": "#/$defs/LeadRow"
-            },
-            "type": "array"
+            "$ref": "#/$defs/LeadRows",
+            "description": "The page's rows, shaped by the request's `mode`. Empty when a `full`\ncall supplied no `mechanic`; a `compact` call with no `mechanic`\nenumerates every mechanic instead, one triple per row."
           },
           "rows_bytes": {
             "description": "Serialized-JSON bytes of the returned `rows`, measured per row\nexactly as `query` measures its values. The rest of this envelope\n(`mechanic_counts` — at most one entry per mechanic — and\n`page_file_counts`) is additional and small relative to the rows.",
@@ -711,7 +770,7 @@
             "type": "integer"
           },
           "total": {
-            "description": "Total rows for the requested mechanic under the same `pattern`; `0`\nwhen no mechanic was requested.",
+            "description": "Total rows in the enumerated scope — the requested mechanic, or (in\n`compact` mode with no `mechanic`) every mechanic — under the same\n`pattern`; `0` when a `full` call requested no mechanic.",
             "format": "int64",
             "type": "integer"
           }

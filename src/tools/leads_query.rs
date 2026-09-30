@@ -21,7 +21,7 @@ use rusqlite::{Transaction, params_from_iter};
 /// GLOB over the project-relative path, with a pattern containing no `*` or
 /// `?` treated as a substring match. The result is always bound as a
 /// parameter, never spliced into SQL.
-fn compile_pattern(pattern: Option<&str>) -> Option<String> {
+pub(super) fn compile_pattern(pattern: Option<&str>) -> Option<String> {
     pattern.map(|pattern| {
         if pattern.contains(['*', '?']) {
             pattern.to_owned()
@@ -73,7 +73,7 @@ fn covered_sql(mechanic: &Mechanic, matched: bool) -> String {
 
 /// Binds a `usize` as SQLite's 64-bit integer; `None` becomes the largest
 /// value SQLite accepts, i.e. "no limit".
-fn int_bind(value: Option<usize>) -> i64 {
+pub(super) fn int_bind(value: Option<usize>) -> i64 {
     value.map_or(i64::MAX, |value| i64::try_from(value).unwrap_or(i64::MAX))
 }
 
@@ -105,23 +105,55 @@ pub(super) fn count_all(
         .collect()
 }
 
-/// One page of rows for a single mechanic: the rows, their serialized JSON
-/// size, and what stopped the page.
-pub(super) struct Page {
-    pub(super) rows: Vec<LeadRow>,
+/// One page of rows: the rows, their serialized JSON size, and what stopped
+/// the page. Generic over the row shape so the full reader and the compact
+/// reader charge the same budget the same way.
+pub(super) struct Page<R> {
+    pub(super) rows: Vec<R>,
     /// Sum of each returned row's serialized JSON length — the same measure
     /// `query` applies, so the two tools' byte budgets are comparable.
     pub(super) bytes: usize,
     pub(super) limited_by: PageLimit,
 }
 
+/// Charges mapped rows against the caller's `limit` and the response byte
+/// budget. The caller fetched one row past `limit` when one was set, so
+/// `LimitedBy::Limit` can be told apart from exhaustion; that row is never
+/// kept. The first row is always kept even when it alone exceeds
+/// `max_bytes`; stopping at zero rows would make the budget
+/// indistinguishable from an empty result set.
+pub(super) fn fill_page<R: serde::Serialize>(
+    mapped: impl Iterator<Item = rusqlite::Result<R>>,
+    limit: Option<usize>,
+    max_bytes: usize,
+    context: &'static str,
+) -> Result<Page<R>, ErrorData> {
+    let mut page = Page {
+        rows: Vec::new(),
+        bytes: 0,
+        limited_by: PageLimit::None,
+    };
+    for row in mapped {
+        if limit.is_some_and(|limit| page.rows.len() >= limit) {
+            page.limited_by = PageLimit::Limit;
+            break;
+        }
+        let row = row.map_err(|error| super::context::internal_error(context, error))?;
+        let row_bytes = serialized_len(&row);
+        if !page.rows.is_empty() && page.bytes.saturating_add(row_bytes) > max_bytes {
+            page.limited_by = PageLimit::Bytes;
+            break;
+        }
+        page.bytes = page.bytes.saturating_add(row_bytes);
+        page.rows.push(row);
+    }
+    Ok(page)
+}
+
 /// Reads one page of `mechanic`'s rows, in `order_expr` order.
 ///
 /// `detail` is clipped to `MAX_DETAIL_CHARS` before the row is measured, so
-/// the budget is charged for exactly the bytes the caller receives. The
-/// first row is always returned even when it alone exceeds `max_bytes`;
-/// stopping at zero rows would make the budget indistinguishable from an
-/// empty mechanic.
+/// the budget is charged for exactly the bytes the caller receives.
 pub(super) fn rows_for(
     tx: &Transaction<'_>,
     mechanic: &Mechanic,
@@ -129,7 +161,7 @@ pub(super) fn rows_for(
     limit: Option<usize>,
     offset: usize,
     max_bytes: usize,
-) -> Result<Page, ErrorData> {
+) -> Result<Page<LeadRow>, ErrorData> {
     let glob = compile_pattern(pattern);
     // One row past the caller's limit is fetched only to learn whether more
     // exist (so `limited_by` can say `limit` rather than nothing); it is
@@ -147,37 +179,17 @@ pub(super) fn rows_for(
         .map_err(|error| super::context::internal_error("preparing leads rows", error))?;
     let mapped = statement
         .query_map(params_from_iter(binds), |row| {
-            Ok(LeadRow {
+            let mut row = LeadRow {
                 file: row.get(0)?,
                 line: row.get(1)?,
                 detail: row.get(2)?,
                 detail_clipped: false,
-            })
+            };
+            clip_detail(&mut row);
+            Ok(row)
         })
         .map_err(|error| super::context::internal_error("reading leads rows", error))?;
-
-    let mut page = Page {
-        rows: Vec::new(),
-        bytes: 0,
-        limited_by: PageLimit::None,
-    };
-    for row in mapped {
-        if limit.is_some_and(|limit| page.rows.len() >= limit) {
-            page.limited_by = PageLimit::Limit;
-            break;
-        }
-        let mut row =
-            row.map_err(|error| super::context::internal_error("reading leads rows", error))?;
-        clip_detail(&mut row);
-        let row_bytes = serialized_len(&row);
-        if !page.rows.is_empty() && page.bytes.saturating_add(row_bytes) > max_bytes {
-            page.limited_by = PageLimit::Bytes;
-            break;
-        }
-        page.bytes = page.bytes.saturating_add(row_bytes);
-        page.rows.push(row);
-    }
-    Ok(page)
+    fill_page(mapped, limit, max_bytes, "reading leads rows")
 }
 
 /// Distinct files represented in the first `through` rows of the mechanic's
@@ -202,15 +214,15 @@ pub(super) fn files_covered(
     .map_err(|error| super::context::internal_error("counting covered files", error))
 }
 
-/// The per-file histogram of one page, in first-appearance order. Rows come
-/// back ordered by path, so equal paths are adjacent.
-pub(super) fn page_file_counts(rows: &[LeadRow]) -> Vec<FileCount> {
+/// The per-file histogram of one page's files, in first-appearance order.
+/// Pages come back ordered by path, so equal paths are adjacent.
+pub(super) fn page_file_counts<'a>(files: impl Iterator<Item = &'a str>) -> Vec<FileCount> {
     let mut counts: Vec<FileCount> = Vec::new();
-    for row in rows {
+    for file in files {
         match counts.last_mut() {
-            Some(last) if last.file == row.file => last.count += 1,
+            Some(last) if last.file == file => last.count += 1,
             _ => counts.push(FileCount {
-                file: row.file.clone(),
+                file: file.to_owned(),
                 count: 1,
             }),
         }

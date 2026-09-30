@@ -24,7 +24,7 @@
 
 use super::context::{ensure_synced, guard_expected_revision, with_verified_read};
 use super::leads_mechanics::resolve_mechanic;
-use super::leads_query::{count_all, files_covered, page_file_counts, rows_for};
+use super::leads_page::{self, Paging};
 use crate::model::{ResourceLimits, process_limits};
 use crate::progress::ProgressSink;
 use crate::sync;
@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 /// Longest `detail` string returned per row. Callee text and comment lines
 /// can be arbitrarily long; the caller can always read the file itself.
-const MAX_DETAIL_CHARS: usize = 200;
+pub(super) const MAX_DETAIL_CHARS: usize = 200;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LeadsRequest {
@@ -77,6 +77,25 @@ pub struct LeadsRequest {
     #[schemars(description = "Pin the revision a resumed page expects; a mismatch is refused")]
     #[serde(default)]
     pub expected_revision: Option<String>,
+    /// Row representation. `full` (the default) returns each row's `detail`
+    /// text. `compact` returns `mechanic` / `file` / `line` only — no
+    /// per-row text — so the mechanical surface costs a fraction of the
+    /// bytes; with no `mechanic` it enumerates every mechanic's rows in one
+    /// response instead of returning counts only.
+    #[schemars(description = "Row shape: `full` (default) carries `detail`; `compact` drops it")]
+    #[serde(default)]
+    pub mode: LeadMode,
+}
+
+/// How a response renders its rows. See [`LeadsResponse::rows`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LeadMode {
+    /// Each row carries its `detail` text (clipped; see [`LeadRow`]).
+    #[default]
+    Full,
+    /// Each row is a [`CompactLeadRow`]: no per-row text at all.
+    Compact,
 }
 
 /// Which languages a mechanic was actually measured over. A zero count on a
@@ -123,6 +142,31 @@ pub struct LeadRow {
     pub detail_clipped: bool,
 }
 
+/// One row of a compact page: which mechanic observed what, at a path and
+/// line. No text is carried — read the file, or ask for `mode: full` — which
+/// is what makes a whole-surface sweep affordable.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CompactLeadRow {
+    /// The mechanic this row belongs to — an id from `mechanic_counts`, and
+    /// the id to pass as `mechanic` for that mechanic's `detail` text.
+    pub mechanic: String,
+    /// Project-relative path of the file the observation is in.
+    pub file: String,
+    /// One-based start line, or `0` when the evidence carries no span.
+    pub line: i64,
+}
+
+/// The rows of a page, shaped by the request's `mode`; one response carries
+/// one variant, never a mix. `full` (the default) is [`LeadRow`] with its
+/// `detail` text; `compact` is [`CompactLeadRow`] with no per-row text. All
+/// the envelope's completeness fields mean the same thing either way.
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum LeadRows {
+    Full(Vec<LeadRow>),
+    Compact(Vec<CompactLeadRow>),
+}
+
 /// One file's share of a page, in first-appearance order.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct FileCount {
@@ -159,31 +203,34 @@ pub struct LeadsResponse {
     /// Counts are complete regardless of `limit`/`offset`, and carry no
     /// ordering by importance — the order is the fixed declaration order.
     pub mechanic_counts: Vec<MechanicCount>,
-    /// Empty when the request supplied no `mechanic`.
-    pub rows: Vec<LeadRow>,
+    /// The page's rows, shaped by the request's `mode`. Empty when a `full`
+    /// call supplied no `mechanic`; a `compact` call with no `mechanic`
+    /// enumerates every mechanic instead, one triple per row.
+    pub rows: LeadRows,
     /// Rows in this page.
     pub returned: usize,
-    /// Total rows for the requested mechanic under the same `pattern`; `0`
-    /// when no mechanic was requested.
+    /// Total rows in the enumerated scope — the requested mechanic, or (in
+    /// `compact` mode with no `mechanic`) every mechanic — under the same
+    /// `pattern`; `0` when a `full` call requested no mechanic.
     pub total: i64,
-    /// True when this page reaches the end of the mechanic
-    /// (`offset + returned >= total`), and when no mechanic was requested.
-    /// False means rows remain and `next_offset` is present.
+    /// True when this page reaches the end of the scope
+    /// (`offset + returned >= total`), and when a `full` call requested no
+    /// mechanic. False means rows remain and `next_offset` is present.
     pub complete: bool,
-    /// Distinct files holding at least one observation of the requested
-    /// mechanic — the denominator a sweep can exhaust. `0` when no mechanic
-    /// was requested. Equal to the selected `mechanic_counts` entry's
-    /// `files`.
+    /// Distinct files holding at least one observation of any mechanic in
+    /// scope — the denominator a sweep can exhaust. `0` when a `full` call
+    /// requested no mechanic. For a single mechanic it equals that
+    /// `mechanic_counts` entry's `files`.
     pub files_total: i64,
     /// Distinct files represented in rows `0..offset + returned` of the
-    /// mechanic. Cumulative for a sweep at one revision, because rows are
+    /// scope. Cumulative for a sweep at one revision, because rows are
     /// ordered by path and a page boundary can split a file but never
     /// reorder the files. `files_total - files_covered` is what is left.
     pub files_covered: i64,
     /// Rows grouped per file for this page only.
     pub page_file_counts: Vec<FileCount>,
-    /// What stopped the page: the mechanic ended, the caller's `limit`, or
-    /// the byte budget.
+    /// What stopped the page: the scope ended, the caller's `limit`, or the
+    /// byte budget.
     pub limited_by: PageLimit,
     /// Serialized-JSON byte ceiling applied to `rows` this call — the value
     /// of `max_query_response_bytes`
@@ -225,11 +272,13 @@ pub fn leads(
     sink: &dyn ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<LeadsResponse>, ErrorData> {
-    let limits = resolve_leads_limits(&request.0.path);
+    let limits = resolve_limits(&request.0.path);
     leads_with_limits(request, &limits, sink, manager)
 }
 
-fn resolve_leads_limits(path: &str) -> ResourceLimits {
+/// The process and project resource limits for `path`, resolved before the
+/// index is touched.
+fn resolve_limits(path: &str) -> ResourceLimits {
     match crate::project::find_project_root(std::path::Path::new(path)) {
         Ok(root) => crate::project::ProjectConfig::load_or_default(root.as_path())
             .apply_to_limits(*process_limits()),
@@ -237,9 +286,9 @@ fn resolve_leads_limits(path: &str) -> ResourceLimits {
     }
 }
 
-/// Test-only seam: production code always goes through [`leads`] with
-/// [`process_limits`]; tests inject a tighter `max_query_response_bytes` to
-/// exercise the byte budget without generating 32 MiB of rows.
+/// Test-only seam: production code always goes through [`leads`] with the
+/// process/project limits; tests inject a tighter `max_query_response_bytes`
+/// to exercise the byte budget without generating 32 MiB of rows.
 fn leads_with_limits(
     request: &Parameters<LeadsRequest>,
     limits: &ResourceLimits,
@@ -253,68 +302,25 @@ fn leads_with_limits(
         limit,
         offset,
         expected_revision,
+        mode,
     } = &request.0;
     let synced = ensure_synced(path, sink, manager)?;
     guard_expected_revision(&synced.revision_id, expected_revision.as_deref())?;
     let selected = resolve_mechanic(mechanic.as_deref())?;
-    let offset = offset.unwrap_or(0);
-    let limit = limit.map(|rows| rows.max(1));
-    let pattern = pattern.as_deref();
-    let budget_bytes = limits.max_query_response_bytes;
-
+    let paging = Paging {
+        limit: limit.map(|rows| rows.max(1)),
+        offset: offset.unwrap_or(0),
+        budget_bytes: limits.max_query_response_bytes,
+    };
     let response = with_verified_read(&synced, |tx| {
-        let mechanic_counts = count_all(tx, pattern)?;
-        let Some(mechanic) = selected else {
-            return Ok(Json(LeadsResponse {
-                revision_id: synced.revision_id.clone(),
-                mechanic_counts,
-                rows: Vec::new(),
-                returned: 0,
-                total: 0,
-                complete: true,
-                files_total: 0,
-                files_covered: 0,
-                page_file_counts: Vec::new(),
-                limited_by: PageLimit::None,
-                row_budget_bytes: budget_bytes,
-                rows_bytes: 0,
-                next_offset: None,
-            }));
-        };
-        let entry = mechanic_counts
-            .iter()
-            .find(|entry| entry.mechanic == mechanic.id);
-        let total = entry.map_or(0, |entry| entry.count);
-        let files_total = entry.map_or(0, |entry| entry.files);
-        let page = rows_for(tx, mechanic, pattern, limit, offset, budget_bytes)?;
-        let returned = page.rows.len();
-        let through = offset.saturating_add(returned);
-        let seen = i64::try_from(through).unwrap_or(i64::MAX);
-        let complete = seen >= total;
-        // The page that ends the mechanic has seen every file by
-        // construction; earlier pages ask the index how many distinct files
-        // their rows reach.
-        let covered = if complete {
-            files_total
-        } else {
-            files_covered(tx, mechanic, pattern, through)?
-        };
-        let counts = page_file_counts(&page.rows);
-        Ok(Json(LeadsResponse {
-            revision_id: synced.revision_id.clone(),
-            mechanic_counts,
-            rows: page.rows,
-            returned,
-            total,
-            complete,
-            files_total,
-            files_covered: covered,
-            page_file_counts: counts,
-            limited_by: page.limited_by,
-            row_budget_bytes: budget_bytes,
-            rows_bytes: page.bytes,
-            next_offset: (!complete).then_some(through),
-        }))
+        leads_page::build(
+            tx,
+            &synced.revision_id,
+            selected,
+            *mode,
+            pattern.as_deref(),
+            paging,
+        )
     })?;
 
     tracing::info!(
