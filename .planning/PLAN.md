@@ -52,6 +52,16 @@ this file was written.
    `all_languages`) instead of letting a zero read as clean, filters by path, and refuses a
    resumed page pinned to a stale revision; three producer-less evidence kinds are deleted and a
    new gate refuses to let another appear; and `report` can name generated and vendored files.
+7. **Phase 4 — the contract (items 1–2).** Output schemas, titles and annotations on all eight
+   tools (annotations derived from the crate source, not guessed); the payload-key reference moved
+   out of `INSTRUCTIONS` into a resource, shortening the briefing by 337 characters; a
+   `check_mcp_surface` gate that derives the live surface in-process and refuses on drift unless
+   `--record` is passed; and blast radius as arithmetic in `report`. Item 3 — the compact
+   `mechanic, path, line` enumeration mode — is open.
+8. **Phase 5 — the loop (item 1).** `finding` dedupes a restated conclusion inside the session by
+   (path, source_hash, line range, category, title), updating the row in place and keeping its id,
+   while a restatement after the file changed correctly becomes a new finding. Items 2 and 3 are
+   the plan's own non-goals.
 
 **Committed (2026-09-30).** One commit per workstream, each leaving the full gate suite green:
 `ec6a464` (the deviations log), `ecc25e7` (Phase 1), `9c0f77f` (the connect registry — its
@@ -60,11 +70,15 @@ map names the new connect modules and the `*_tests.rs` count sentence is gate-ch
 new test file), `dca4910` (the documentation reset), `5302bf0` (Phase 0's instrument), `9085f6c`
 (the plan/deviations bookkeeping), `b9bfb39` (Phase 2's index completeness — `fmt`, `clippy
 -D warnings`, 565 lib tests and the three cheap gates verified green on it), `fb6eea5` (Phase 2's
-error surface), `78a245f` (the plan status reconciliation), `9ec589b` (Phase 3). **Not pushed** —
-the branch has no remote counterpart and publication is the owner's call.
+error surface), `9ec589b` (Phase 3), `6433b06` (the log-capture harness fix), `869c126` (the
+offset and `char_column` follow-ups), `2b64cc3` (store directory permissions), `ec10812` (the
+governance shell), `afe4128` (the hermetic connect suite), `d9cb506` (finding dedupe) and
+`8c03f9e` (the MCP surface contract). **Not pushed** — the branch has no remote counterpart and
+publication is the owner's call.
 
-**Not started:** Phases 4–5; the *Correctness follow-ups* list; the *Connect surface* follow-up;
-and every item in the *Production-readiness backlog*.
+**Not started:** Phase 4 item 3 (the compact `leads` enumeration mode); the *Connect surface*
+follow-up; and the rest of the *Production-readiness backlog* — every correctness follow-up is
+resolved, and Phase 5 items 2–3 are non-goals.
 
 Item 4's optional tool-hiding half is deliberately *not* implemented — see its entry for why. Note
 for whoever edits this file next: several agents wrote to it concurrently on 2026-09-30 and the
@@ -504,16 +518,18 @@ do not go looking for a different audience. The behavior is the product.
 Folded from `PROD_READINESS_PLAN.md`. Items already landed are dropped; the evidence
 phase of that plan is now Phases 1–3 above (its `known_paths` fix and its `ContentOnly`
 item are done, its report-completeness and dead-kind items live in Phase 2 item 2 and
-Phase 3 item 8). Nothing here has been started.
+Phase 3 item 8). **Landed 2026-09-30:** store safety's directory/sidecar permissions
+(`2b64cc3`), the governance shell's five files (`ec10812`), and the exposure documentation
+(`SECURITY.md`). The rest is open.
 
 **Store safety and secrets.**
 
-- `.planning/slugaudit/` is created with plain `create_dir_all`
-  (`src/project/database_path.rs:25`) — no explicit `0700`. The database *file* is already
-  hardened: created `0600` atomically and refused if broader (`PRIVATE_MODE`,
-  `reject_insecure_permissions`, `src/store/connection.rs:11,157,181`; test
-  `store::connection::tests`). Extend the same explicitness to the directory and to the
-  WAL/SHM sidecars, and test-pin the mode bits.
+- **Landed 2026-09-30** (`2b64cc3`). `.planning/slugaudit/` was created with plain
+  `create_dir_all` — whatever the process umask allowed. It is now created `0700` and
+  tightened when an earlier run left it wider, and the WAL/SHM sidecars (created by SQLite,
+  not by this crate) are pinned by a test: SQLite derives their mode from the database
+  file's, which is `0600` (`PRIVATE_MODE`, `reject_insecure_permissions`,
+  `src/store/connection.rs`), so they come out owner-only in practice.
 - **Auto-ignore on enable.** Nothing in `src/` writes a `.gitignore` entry (the code only
   reads ignore files), so a customer's first `git status` shows an untracked binary blob
   plus sidecars. On `project_control {"action":"on"}`, append `.planning/slugaudit/` to
@@ -532,22 +548,21 @@ Phase 3 item 8). Nothing here has been started.
   table-driven test **before** relying on it for the content decision above, so the
   "which files are secret" answer and the "whose content do we withhold" answer cannot
   disagree.
-- **Document the exposure**: DB location, permissions, that it holds full source text,
-  and that it is disposable (belongs with the governance docs below).
+- **Document the exposure — landed 2026-09-30** (`ec10812`): `SECURITY.md` states the DB
+  location, its permissions (and the `0700`/`0600` split), that it holds full source text,
+  and that it is disposable.
 
-**Governance shell.** All absent today (`.github/` holds only the two workflows; no
-`CODEOWNERS`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `CHANGELOG.md`).
+**Governance shell — landed 2026-09-30** (`ec10812`). All five files exist:
+`.github/CODEOWNERS` (owner handle grounded in `glama.json`, `LICENSE` and the remote),
+`CONTRIBUTING.md` (pointer-first; it states the DCO requirement and that it is not yet
+machine-enforced), `SECURITY.md` (threat model, permissions, disclosure via GitHub
+advisories), `CODE_OF_CONDUCT.md` (Contributor Covenant v2.1, fetched and diffed; its
+contact placeholder is disclosed as the public issue tracker — see the owner decision
+above) and `CHANGELOG.md` (newest entry `1.0.10`, dated from the real tag).
 
-- `OWNERS` / `.github/CODEOWNERS` mapping at least `/src/sync/`, `/src/store/`,
-  `/src/tools/`, `/.planning/ARCHITECTURE.md`, `/.github/`, `/AGENTS.md`.
-- `CONTRIBUTING.md` — build/test/gate commands, house style, branch and commit rules
-  (unique subjects), DCO sign-off, where plans live.
-- `SECURITY.md` — threat model (lazy/unsupervised agent, **not** a hostile attacker),
-  what the tool can read, DB location and permissions, disclosure address, supported
-  versions.
-- `CODE_OF_CONDUCT.md` — Contributor Covenant verbatim; `CHANGELOG.md` stub.
 - `check_governance` — a pure-Rust bin that fails when a required file is missing or when
   `CODEOWNERS` references a path that does not exist (same spirit as `check_docs_drift`).
+  Still open.
 
 **Release, versioning, supply chain.**
 
