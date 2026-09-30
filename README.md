@@ -181,13 +181,32 @@ cargo test --lib --bins --tests --all-features --locked
 cargo run --quiet --bin check_coverage --locked
 ```
 
-CI also runs `cargo-deny` (advisories, bans, sources, licences), a RustSec audit, and
-scoped mutation testing. `check_mcp_surface` fails when `tools/list` or `resources/list`
+CI also runs `cargo-deny` (advisories, bans, sources, licences — its `advisories`
+check is the RustSec advisory database, with nothing suppressed by `deny.toml`)
+and scoped mutation testing. Every third-party action in `.github/workflows/` is
+pinned to a full commit SHA, and [`.github/dependabot.yml`](.github/dependabot.yml)
+proposes the next pin weekly for both `cargo` and `github-actions`.
+Two workflows cover what a push cannot:
+[`.github/workflows/advisories.yml`](.github/workflows/advisories.yml) re-runs the
+same `deny.toml` policy weekly, so an advisory published against an unchanged
+`Cargo.lock` is visible without waiting for a push, and
+[`.github/workflows/supply-chain.yml`](.github/workflows/supply-chain.yml) gates
+each pull request — dependency review of the diff, an OSV.dev scan of
+`Cargo.lock`, and a secret scan of the working tree, which skips the runtime state
+directory `.planning/slugaudit/` exactly as GitHub's own secret scanning does via
+[`.github/secret_scanning.yml`](.github/secret_scanning.yml).
+`check_mcp_surface` fails when `tools/list` or `resources/list`
 drifts from the committed `.planning/archive/mcp_surface.json`; a deliberate surface
 change is recorded with `cargo run --bin check_mcp_surface -- --record`.
-`check_performance` compares the criterion benches against the
-committed baseline at `.planning/archive/perf_baseline.json`; it is not part of the CI
-job. `check_coverage` gates line coverage at 83% by default — the threshold is
+
+`check_performance` compares the criterion benches against the committed baseline
+at `.planning/archive/perf_baseline.json`, and it is **local-only: CI does not run
+it**. The reason is the baseline itself — it records the machine that measured it,
+and criterion medians on a shared, unpinned GitHub runner differ from that machine
+for reasons unrelated to the commit, so the 20 percent allowance would measure the
+runner rather than the change. Its value is a same-machine before/after
+comparison, so run it on the machine you are changing.
+`check_coverage` gates line coverage at 83% by default — the threshold is
 calibrated against measurement, not an aspirational target.
 
 ### Unsafe code policy

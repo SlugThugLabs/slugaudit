@@ -1,12 +1,24 @@
 name: Rust quality
 
+# Every third-party `uses:` in this file is pinned to the full commit SHA behind
+# its release tag, with the version kept as a trailing comment so a human can
+# still read what is pinned. A tag is a name its owner can repoint at any commit;
+# a SHA cannot be repointed. `.github/dependabot.yml` is what proposes the next
+# pin, which is why the comment form matters — Dependabot rewrites both together.
+#
+# `check_performance` is deliberately NOT in this file. It is a local gate: see
+# the comment above the test step for the reason.
+
 on:
   push:
   pull_request:
 
 permissions:
+  # Least privilege for what this job actually does: it checks out the
+  # repository and runs commands. The `checks: write` this block used to carry
+  # existed for `rustsec/audit-check`'s check run, and went with that step
+  # (2026-09-30) — nothing else here writes a check, a comment, or a release.
   contents: read
-  checks: write
 
 jobs:
   quality:
@@ -18,14 +30,20 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Full history so the no-duplicates check can scan every commit
           # subject (a shallow clone would only see the tip commit).
           fetch-depth: 0
 
+      # dtolnay/rust-toolchain publishes no release tags — the action's versions
+      # *are* its branches (`stable`, `nightly`, `master`) — so `master` was the
+      # moving ref this repository tracked before the pin. The SHA below is the
+      # commit that ref resolved to on 2026-09-30. That also means Dependabot
+      # cannot bump this one: there is no release tag to compare against, so
+      # re-pinning it is a deliberate manual act.
       - name: Install pinned Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (branch; no releases)
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy, llvm-tools-preview
@@ -45,7 +63,7 @@ jobs:
       # download directory directly because its path includes a
       # build-hash segment that isn't stable across cache keys.
       - name: Cache cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -96,9 +114,24 @@ jobs:
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       # --lib --bins --tests excludes the criterion bench binaries
-      # (harness = false), so benches execute exactly once per push — in
-      # the dedicated performance gate below — instead of once here and
-      # again there (C6).
+      # (harness = false) on purpose: `check_performance` is a LOCAL-ONLY gate
+      # and CI does not run it, so no bench executes here or anywhere else in
+      # this workflow.
+      #
+      # Why not: `check_performance` compares criterion medians against
+      # `.planning/archive/perf_baseline.json`, and that baseline records the
+      # machine that measured it ("AMD Ryzen 9 5900X (6 cores visible), Linux
+      # 6.17.13-3-pve, rustc 1.97.1", recorded 2026-08-10). A GitHub-hosted
+      # runner is a different, shared, unpinned CPU of an unknown generation, so
+      # its medians differ from the baseline for reasons that have nothing to do
+      # with the commit, and the 20 percent allowance would then be measuring the
+      # runner: false failures on a slow neighbour, and silent passes on a fast
+      # one. The gate's value is a same-machine before/after comparison, which is
+      # exactly what running it locally gives you — see AGENTS.md and README.md
+      # for the command.
+      #
+      # (An earlier revision of this comment referred to "the dedicated
+      # performance gate below". There was no such gate; it was never added.)
       - name: Run tests
         run: cargo test --lib --bins --tests --all-features --locked
 
@@ -116,7 +149,7 @@ jobs:
         run: cargo build --release --locked
 
       - name: Check dependency advisories, bans, sources, and licenses
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check advisories bans sources licenses
 
@@ -132,13 +165,22 @@ jobs:
       # its metric counts have no natural pass/fail threshold. This is a
       # deliberate scope decision, not a gap to fill in later.
 
-      - name: Security audit (RustSec advisory-db)
-        uses: rustsec/audit-check@v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      # RustSec advisories are covered by the `cargo-deny` step above: both read
+      # the same RustSec advisory-database, and `deny.toml`'s
+      # `[advisories] ignore = []` suppresses nothing, so the two verdicts could
+      # not disagree. The `rustsec/audit-check` step that used to sit here was
+      # removed on 2026-09-30 rather than left in place, because it could not
+      # run: its newest release (v2.0.0, still the tip of the upstream `v2`
+      # branch) declares `runs.using: node20`, Node 20 was removed from
+      # GitHub-hosted runners on 2026-09-23, and the
+      # `ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION` escape hatch was deactivated at
+      # the same time. A security step that cannot execute is worse than no step,
+      # because it still reads as coverage. Re-add it here (with
+      # `checks: write` back on the job) when upstream ships a node24 release.
+      # Scheduled advisory runs live in `.github/workflows/advisories.yml`.
 
       - name: Install coverage tooling
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-llvm-cov
 
@@ -154,7 +196,7 @@ jobs:
         run: cargo run --quiet --bin check_coverage --locked
 
       - name: Install mutation testing tooling
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-mutants
 

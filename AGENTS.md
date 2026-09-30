@@ -430,12 +430,28 @@ cargo test --test stdio_protocol --locked              # re-run alone so a trans
 cargo build --release --locked
 ```
 
-Then `cargo-deny` (`check advisories bans sources licenses`),
-`rustsec/audit-check`, `check_coverage`, and — Linux only, fails closed —
-`cargo mutants` over `src/sync/revision.rs`, `src/sync/publish.rs`,
-`src/sync/hash.rs`, `src/tools/context.rs`.
+Then `cargo-deny` (`check advisories bans sources licenses`), `check_coverage`,
+and — Linux only, fails closed — `cargo mutants` over `src/sync/revision.rs`,
+`src/sync/publish.rs`, `src/sync/hash.rs`, `src/tools/context.rs`. The `advisories`
+half of that cargo-deny run is the RustSec advisory-database (the RustSec
+`audit-check` action quality.yml used to add read the same database and could not
+run at all once Node 20 left GitHub-hosted runners, so it was removed on
+2026-09-30 rather than left standing as false coverage).
 
-`check_performance` is a local gate, **not** wired into CI. Run it when
+Two workflows cover what a push cannot: `.github/workflows/advisories.yml`
+re-runs `cargo-deny check advisories` against the same `deny.toml` on a weekly
+cron, so an advisory published against an unchanged `Cargo.lock` is visible
+without a push; `.github/workflows/supply-chain.yml` gates each pull request with
+dependency review of the diff, an OSV.dev scan of `Cargo.lock`, and a secret scan
+that skips `.planning/slugaudit/` (as GitHub's own secret scanning does, via
+`.github/secret_scanning.yml`).
+
+`check_performance` is **local-only and is not wired into CI at all** — not in
+`quality.yml`, not on a schedule. The reason is the baseline: it records the
+machine that measured it (`perf_baseline.json`'s `machine` field), and criterion
+medians on a shared, unpinned GitHub runner differ from that machine for reasons
+that have nothing to do with the commit, so the 20 percent allowance would measure
+the runner. Its value is a same-machine before/after comparison. Run it when
 touching the discovery/parsing/search paths:
 
 ```bash
@@ -545,6 +561,14 @@ before replacing the binary (`src/update.rs`).
 - Supply chain (`deny.toml`): no advisories ignored, no wildcards, duplicate
   versions denied outside a reviewed skip list, sources restricted to crates.io,
   licenses allow-listed. A new dependency must clear `cargo deny`.
+  Every third-party action in `.github/workflows/` is pinned to the full commit
+  SHA behind its release tag with a `# vX.Y.Z` comment (`.github/dependabot.yml`
+  proposes the next pin, weekly, for both `cargo` and `github-actions`); the one
+  exception is `dtolnay/rust-toolchain`, which publishes no release tags and is
+  therefore re-pinned by hand. The exact-pinned parser pack has no other automated
+  bump path — `cargo update` cannot move an `=` requirement — so its only
+  automatic bump arrives as a Dependabot PR, and that PR must move
+  `src/parse/PACK_VERSION` with it.
   One dependency was considered and rejected on those grounds, and should not be
   re-proposed without new evidence: a **YAML writer** for `goose`'s config.
   `serde_yaml` was archived in 2024, and its maintained continuation `yaml_serde`

@@ -1,0 +1,130 @@
+name: Supply chain (pull request)
+
+# The supply-chain gates that only make sense at PR time. `quality.yml` answers
+# "does this commit build, pass, and stay inside its policies"; this workflow
+# answers "does this PR *introduce* a vulnerable dependency, or a secret".
+#
+# Triggered by `pull_request` and never `pull_request_target`. Nothing here needs
+# a repository secret or a write token, so the untrusted-code path stays fully
+# isolated: a fork's PR runs this workflow with the default `contents: read`
+# token and nothing else. No job uploads SARIF to code scanning, which is why no
+# `security-events: write` appears below.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Dependency review (PR diff)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Reads the base/head dependency diff through the dependency-graph API and
+      # fails when the PR adds a dependency with a known advisory. This is the
+      # diff-scoped half: `cargo-deny` in quality.yml judges the whole graph
+      # against `deny.toml`, which cannot say "this PR is the commit that added
+      # it".
+      - name: Review the dependency diff
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          # State the threshold explicitly: the default is `low`, and "any
+          # severity" is the intent, not an incidental default.
+          fail-on-severity: low
+          # The licence half is off on purpose. This repository's licence policy
+          # is `deny.toml`'s `[licenses] allow` list, checked by cargo-deny in
+          # quality.yml. Enabling GitHub's licence check would create a second
+          # allow list that can disagree with the first, and a disagreement
+          # between two policies is a policy nobody can read.
+          license-check: false
+
+  vulnerability-scan:
+    name: OSV scan (Cargo.lock)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # OSV-Scanner, not CodeQL — and the reason is scope and permissions, not
+      # capability. CodeQL does support Rust (GA since October 2025) and would
+      # add source-level analysis nothing else here does, but publishing its
+      # results needs `security-events: write` plus `actions: read` on the job,
+      # i.e. a token scope this workflow deliberately does not take; without the
+      # upload its findings are unreachable. OSV-Scanner runs as an ordinary
+      # process under `contents: read`, needs no build, and reads `Cargo.lock`
+      # in about a second, so the gate costs no compile step on a PR. What it
+      # adds on the dependency axis (the axis this gate exists for) is OSV.dev's
+      # aggregate — GitHub advisories and ecosystem databases alongside RustSec —
+      # which is a genuinely different source from the RustSec-database-only
+      # cargo-deny policy. Trade-off accepted: findings land in the job log and
+      # summary instead of the Security tab.
+      - name: Install osv-scanner
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: osv-scanner@2.6.0
+          # Refuse the cargo-binstall fallback: this tool is covered by an
+          # install-action manifest, so the download comes from its GitHub
+          # Release with the SHA256 checksum verified.
+          fallback: none
+
+      # Non-zero exit when the lockfile resolves to a known advisory; that exit
+      # code is the gate. `--recursive` finds `Cargo.lock` without naming it, so
+      # the step keeps working if the workspace ever gains a crate.
+      - name: Scan the dependency graph against OSV.dev
+        run: osv-scanner scan source --recursive --format table --verbosity error .
+
+  secret-scan:
+    name: Secret scan (working tree)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Trivy, installed by the already-pinned install-action. The two obvious
+      # alternatives were rejected for concrete reasons: gitleaks-action v3
+      # requires a `GITLEAKS_LICENSE` secret for organization-owned repositories
+      # (this repository belongs to an organization) and a fork's PR cannot see
+      # repository secrets, so the step would fail for exactly the PRs it is
+      # meant to guard; and trufflehog's official action pulls
+      # `ghcr.io/trufflesecurity/trufflehog:latest` at run time — an unpinned
+      # scanner inside a pinned action — and apt-installs `jq` first. Trivy needs
+      # no licence key, and install-action pins its version and verifies the
+      # release's SHA256 checksum.
+      - name: Install trivy
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: trivy@0.74.0
+          fallback: none
+
+      # Coverage boundary, stated so it is not mistaken for completeness: trivy's
+      # builtin allow rules skip Markdown by default, and this scans the working
+      # tree rather than the history. GitHub's own secret scanning — on by
+      # default for public repositories, and configured by
+      # `.github/secret_scanning.yml` — covers both of those, so the two are
+      # complementary: the native scanner has the history and raises the alert,
+      # this step fails the PR before the secret is merged.
+      - name: Scan for secrets
+        run: |
+          trivy fs \
+            --scanners secret \
+            --exit-code 1 \
+            --no-progress \
+            --disable-telemetry \
+            --skip-version-check \
+            --skip-dirs .git \
+            --skip-dirs target \
+            --skip-dirs vendor \
+            --skip-dirs mutants.out \
+            --skip-dirs .planning/slugaudit \
+            .
+      # `.planning/slugaudit/` is the runtime state directory: a disposable
+      # SQLite index holding the full source text of whatever project was
+      # indexed. It is gitignored, so it is normally absent from a CI checkout;
+      # the skip means even a force-added copy is never read, so a developer's
+      # local index cannot be uploaded by this step. (Checked by hand: a planted
+      # token under that directory is reported without the flag and absent with
+      # it.)

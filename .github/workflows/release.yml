@@ -1,10 +1,21 @@
 name: Release
 
 # Cuts the distributable end-user `slugaudit-mcp` binary. The check_* binaries
-# are development/CI tools and are not distributed to users. Quality gates (fmt, clippy, tests, audit,
-# coverage, perf, mutation) run on every push/PR in quality.yml — this
-# workflow only builds the release artifact and attaches it to the
-# GitHub Release, so it stays lean and fast.
+# are development/CI tools and are not distributed to users.
+#
+# Gate ownership, so the other workflows do not have to be read alongside this
+# one: quality.yml runs fmt, clippy, tests, cargo-deny (advisories, bans,
+# sources, licences), coverage and mutation testing on every push/PR;
+# `.github/workflows/advisories.yml` re-runs the advisory policy on a weekly
+# cron; `.github/workflows/supply-chain.yml` gates the PR diff and scans for
+# secrets. `check_performance` is deliberately in none of them — it is a
+# local-only gate, and quality.yml carries the reason. This workflow only builds
+# the release artifact and attaches it to the GitHub Release, so it stays lean
+# and fast.
+#
+# Every third-party `uses:` here is pinned to the full commit SHA behind its
+# release tag, with the version kept as a trailing comment so a human can still
+# read what is pinned; `.github/dependabot.yml` proposes the next pin.
 #
 # Triggered by pushing a tag like `v1.0.0` (the normal path), or manually
 # with a tag name via the workflow_dispatch UI. `Cargo.toml`'s version
@@ -40,15 +51,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # Same branch-pinned action as quality.yml — dtolnay/rust-toolchain
+      # publishes no release tags, so this one is re-pinned by hand.
       - name: Install pinned Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (branch; no releases)
         with:
           toolchain: 1.97.1
 
       - name: Cache cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Build release binary
         # --locked: the release must match the checked-in Cargo.lock, or
@@ -64,7 +77,7 @@ jobs:
           (cd dist && sha256sum slugaudit-x86_64-unknown-linux-gnu > SHA256SUMS)
 
       - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           # On a tag push, use the pushed tag; on a manual run, use the
           # operator-supplied tag input.

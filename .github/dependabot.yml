@@ -1,0 +1,35 @@
+# Dependabot — the update bot for the two ecosystems this repository has.
+#
+# `github-actions` is not optional here: every third-party action under
+# `.github/workflows/` is pinned to a full commit SHA (with a `# vX.Y.Z`
+# comment so the version is still readable at a glance — see `quality.yml` and
+# `release.yml`). A pin without a bot is a pin that only ever gets older, so
+# Dependabot is what proposes the next SHA; it rewrites the SHA and the trailing
+# version comment together, which is why the comment form matters.
+#
+# `cargo` carries one dependency with no other bump path:
+# `tree-sitter-language-pack = "=1.14.3"` in `Cargo.toml`. The `=` is
+# deliberate — the pack bundles 371 grammars and the crate's public surface
+# moves with it — so `cargo update` can never move it (an `=` requirement admits
+# exactly one version), and every other dependency here moves by caret range.
+# Dependabot reads `=` pins too, so a bump arrives as a PR that edits the
+# manifest; that PR MUST also move `src/parse/PACK_VERSION`, the hand-duplicated
+# string `check_version_consistency` asserts against the manifest pin. Treat
+# such a PR as a deliberate dependency change, not a routine bump: it clears the
+# same full gate as any other change.
+#
+# Deliberately no `groups:` — `AGENTS.md` records that a toolchain or lockfile
+# update is its own deliberate change, never a side effect of unrelated work,
+# and grouping unrelated bumps into one PR is that side effect.
+
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

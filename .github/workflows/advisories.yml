@@ -1,0 +1,53 @@
+name: Scheduled advisories
+
+# Why a schedule exists at all: every other dependency check in this repository
+# runs on push or pull_request. An advisory published against a version this
+# repository already locks is therefore invisible until somebody pushes — which,
+# on a quiet week, is exactly when it stays invisible. This workflow re-runs the
+# advisory policy on a cron, so "no commits" stops meaning "no signal".
+#
+# The policy is not restated here. `deny.toml` is the single source of truth and
+# `EmbarkStudios/cargo-deny-action` reads it from the checkout, so this job and
+# quality.yml's cargo-deny step cannot drift apart. `cargo-deny check advisories`
+# consumes the RustSec advisory-database — the same database the RustSec action
+# quality.yml used to add — and `[advisories] ignore = []` in `deny.toml` means
+# nothing is suppressed.
+#
+# `bans`, `sources` and `licences` deliberately stay on the push/PR path: they
+# are properties of `Cargo.toml`/`Cargo.lock`, which change only when a commit
+# changes them, so a cron run of them would add minutes and no information.
+
+on:
+  schedule:
+    # 06:41 UTC on Monday — off the hour, because the top of the hour is when
+    # most of the world's scheduled workflows fire.
+    - cron: "41 6 * * 1"
+  # Re-run on demand without waiting for Monday.
+  workflow_dispatch:
+
+# Read-only. This job checks out the repository and reads `Cargo.lock` and
+# `deny.toml`; it writes nothing back — no issue, no comment, no artifact — so it
+# asks for no scope beyond the checkout itself.
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    name: cargo-deny advisories (deny.toml)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # A manifest and a lockfile are all this job reads: no history.
+          fetch-depth: 1
+
+      # The action ships and runs cargo-deny inside its own container, so no
+      # Rust toolchain step is needed here. The advisory database is fetched
+      # inside that container on each run, which is the point of the schedule:
+      # the numbers below are always checked against today's database, not
+      # against one cached at the last push.
+      - name: Check dependency advisories
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories
