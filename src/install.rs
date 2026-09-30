@@ -65,6 +65,32 @@ pub(crate) fn running_binary() -> Result<PathBuf, std::io::Error> {
     })
 }
 
+/// The name retained for the binary a replacement install or update displaces.
+/// Both `slugaudit install` and `slugaudit update` publish it next to the
+/// binary they replace, so a revert is a copy in the same directory.
+pub const PREVIOUS_BINARY_NAME: &str = "slugaudit.prev";
+
+/// Copies the binary at `target` to `slugaudit.prev` beside it, so the install
+/// or update that follows can be undone. Returns `None` when there is nothing
+/// to retain (a first install).
+///
+/// Called **before** the replacement rename. That preserves the existing
+/// property that a crash during replacement leaves the current binary intact,
+/// and it means the retained copy is a complete file rather than one caught
+/// mid-write. The copy keeps the source's permission bits, so reverting needs
+/// no separate `chmod`.
+pub(crate) fn retain_previous_binary(target: &Path) -> Result<Option<PathBuf>, std::io::Error> {
+    if !target.exists() {
+        return Ok(None);
+    }
+    let Some(directory) = target.parent() else {
+        return Ok(None);
+    };
+    let previous = directory.join(PREVIOUS_BINARY_NAME);
+    std::fs::copy(target, &previous)?;
+    Ok(Some(previous))
+}
+
 /// Installs a complete executable and publishes it with an atomic rename,
 /// then offers to put `bin_dir` on `PATH` (interactively). Adding to PATH is
 /// always opt-in: an unattended install (piped stdin / CI) keeps the manual
@@ -96,6 +122,10 @@ pub fn run_install() -> Result<(), InstallError> {
         permissions.set_mode(0o755);
         std::fs::set_permissions(&temporary, permissions)?;
     }
+    retain_previous_binary(&target).map_err(|inner| InstallError::Copy {
+        path: target.display().to_string(),
+        inner,
+    })?;
     std::fs::rename(&temporary, &target).map_err(|inner| InstallError::Copy {
         path: target.display().to_string(),
         inner,

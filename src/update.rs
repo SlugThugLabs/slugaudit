@@ -21,6 +21,12 @@
 //!   target directory, then `rename`d over the old one, so a crash mid-copy
 //!   never leaves a truncated executable behind. On the same filesystem,
 //!   `std::fs::rename` is atomic.
+//! - The displaced binary is retained as `slugaudit.prev` beside the new one
+//!   (copied before the rename, so the atomicity above still holds and the copy
+//!   comes from a complete file). An update that turns out to be worse than the
+//!   version it replaced can therefore be undone without a download — see
+//!   `docs/TROUBLESHOOTING.md`. The copy is overwritten by the next install or
+//!   update, and nothing else reads it.
 #![allow(clippy::print_stdout)]
 
 use std::path::{Path, PathBuf};
@@ -123,6 +129,11 @@ fn apply_update(latest: &LatestRelease, target: &Path) -> Result<(), UpdateError
             std::fs::set_permissions(&temp_exe, permissions)?;
         }
 
+        crate::install::retain_previous_binary(target).map_err(|error| UpdateError::Stage {
+            action: "retaining the previous binary at",
+            path: dir.join(crate::install::PREVIOUS_BINARY_NAME),
+            source: error,
+        })?;
         std::fs::rename(&temp_exe, target)?;
         let _ = std::fs::remove_file(dir.join("slugaudit-mcp"));
         if let Some(home) = crate::install::slugthug_home() {

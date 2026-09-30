@@ -211,3 +211,29 @@ project or any parent directory`
 the supported way to remove it (`src/project/activation.rs:126-142`,
 `src/tools/project_control.rs:132-135`); `{"action": "on"}` recreates it and
 runs the initial import (`src/project/activation.rs:120-123`).
+
+## 7. Reverting an update or install
+
+Both installers retain the binary they displace as `slugaudit.prev` beside the
+one they publish (`~/.slugthug/slugaudit/slugaudit.prev` for the default
+install): `slugaudit update` before its replacement rename
+(`src/update.rs::apply_update`), `slugaudit install` before its own
+(`src/install.rs::run_install`), and `install.sh` before either of its install
+paths. The copy keeps the original's permission bits, so reverting is one copy:
+
+```sh
+cp ~/.slugthug/slugaudit/slugaudit.prev ~/.slugthug/slugaudit/slugaudit
+```
+
+Agent configs point at the stable path, so nothing else needs to change. The
+retained copy is overwritten by the next install or update and is never read by
+the running program — it exists only for this. If the copy cannot be written, the
+install or update **fails** rather than proceeding: a revert path that silently
+does not exist is worse than a refused update.
+
+A revert is only needed when the new build misbehaves; the project databases are
+untouched by either operation (§6), so no index work is involved.
+
+For a release you no longer have locally, `slugaudit --version` reports the
+running version, and the release page for that tag has the binary and its
+`SHA256SUMS`.

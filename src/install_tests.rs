@@ -16,6 +16,69 @@ fn install_to(temp_dir: &tempfile::TempDir) -> PathBuf {
     temp_dir.path().join("slugaudit").join("slugaudit")
 }
 
+/// An install that displaces an existing binary keeps it beside the new one.
+/// This is the whole reason an update is reversible without a download.
+#[test]
+fn installing_over_an_existing_binary_retains_the_previous_one() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let installed = install_to(&directory);
+    std::fs::write(&installed, b"the previous build").expect("plant a previous binary");
+
+    install_to(&directory);
+
+    let previous = installed.with_file_name(PREVIOUS_BINARY_NAME);
+    assert_eq!(
+        std::fs::read(&previous).expect("the previous binary is retained"),
+        b"the previous build",
+        "the retained file must be the binary that was replaced, not the new one"
+    );
+}
+
+/// The retained copy keeps the source's permission bits, so restoring it needs
+/// no separate `chmod` — a revert path that yielded a non-executable binary
+/// would be worse than no revert path.
+#[cfg(unix)]
+#[test]
+fn a_retained_binary_keeps_the_permissions_of_the_binary_it_replaced() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().expect("temp dir");
+    let target = directory.path().join("slugaudit");
+    std::fs::write(&target, b"the previous build").expect("write the binary to replace");
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let previous = retain_previous_binary(&target)
+        .expect("retaining succeeds")
+        .expect("there was a binary to retain");
+
+    assert_eq!(
+        previous.file_name().map(std::ffi::OsStr::to_owned),
+        Some(std::ffi::OsString::from(PREVIOUS_BINARY_NAME)),
+        "the retained copy sits beside the binary it replaces"
+    );
+    let mode = std::fs::metadata(&previous)
+        .expect("stat the retained copy")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o755, "restoring it must not need a chmod");
+}
+
+/// A first install displaces nothing, so it retains nothing and creates no
+/// stray file.
+#[test]
+fn a_first_install_has_nothing_to_retain() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let target = directory.path().join("slugaudit");
+
+    assert!(
+        retain_previous_binary(&target)
+            .expect("retaining succeeds")
+            .is_none(),
+        "no previous binary existed, so none is created"
+    );
+    assert!(!target.exists(), "and the target is not created either");
+}
+
 #[test]
 fn slugthug_home_prefers_slugthug_home_over_home() {
     let _guard = TEST_ENV_LOCK.lock().expect("env lock");

@@ -7,7 +7,26 @@ set -euo pipefail
 INSTALL_DIR="${HOME}/.slugthug/slugaudit"
 BINARY_NAME="slugaudit"
 TARGET_PATH="${INSTALL_DIR}/${BINARY_NAME}"
+PREVIOUS_PATH="${TARGET_PATH}.prev"
 GITHUB_REPO="SlugThugLabs/slugaudit"
+
+# Retains the binary being replaced as "${TARGET_PATH}.prev", so a version that
+# turns out to be worse than the one it replaced can be restored with a copy.
+# Fails closed: installing silently without a retained copy would leave the
+# operator believing a revert is possible when it is not.
+retain_previous() {
+    [ -f "${TARGET_PATH}" ] || return 0
+    # `cp` would happily copy *into* a directory of that name and report
+    # success, leaving the operator believing a revert is available.
+    if [ -e "${PREVIOUS_PATH}" ] && [ ! -f "${PREVIOUS_PATH}" ]; then
+        echo "Error: ${PREVIOUS_PATH} exists and is not a regular file; refusing to replace ${TARGET_PATH}." >&2
+        exit 1
+    fi
+    if ! cp -p "${TARGET_PATH}" "${PREVIOUS_PATH}"; then
+        echo "Error: could not retain the current binary as ${PREVIOUS_PATH}; refusing to replace it." >&2
+        exit 1
+    fi
+}
 
 # Print banner
 echo -e "\033[36m"
@@ -32,6 +51,7 @@ mkdir -p "${INSTALL_DIR}"
 if command -v cargo >/dev/null 2>&1 && [ -f "Cargo.toml" ] && grep -q "slugaudit-mcp-rust" Cargo.toml 2>/dev/null; then
     echo "==> Building directly from local repository with cargo..."
     cargo build --release --locked --bin slugaudit
+    retain_previous
     install -m 0755 target/release/slugaudit "${TARGET_PATH}"
 elif [ "${OS}" = "Linux" ] && [ "${ARCH}" = "x86_64" ]; then
     echo "==> Downloading latest release for Linux x86_64..."
@@ -73,6 +93,7 @@ elif [ "${OS}" = "Linux" ] && [ "${ARCH}" = "x86_64" ]; then
         exit 1
     fi
 
+    retain_previous
     install -m 0755 "${TMP_FILE}" "${TARGET_PATH}"
     rm -rf "${TMP_DIR}"
 elif command -v cargo >/dev/null 2>&1; then
@@ -87,6 +108,11 @@ fi
 echo ""
 echo "✅ SlugAudit successfully installed to: ${TARGET_PATH}"
 echo ""
+if [ -f "${PREVIOUS_PATH}" ]; then
+    echo "The version this replaced is kept at: ${PREVIOUS_PATH}"
+    echo "To revert:  cp \"${PREVIOUS_PATH}\" \"${TARGET_PATH}\""
+    echo ""
+fi
 echo "Next steps:"
 echo "  1. Add to PATH (if not already present):"
 echo "     export PATH=\"\${HOME}/.slugthug/slugaudit:\${PATH}\""
