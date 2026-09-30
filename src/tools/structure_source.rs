@@ -1,3 +1,4 @@
+use crate::error_codes::{self, ErrorCode};
 use rmcp::ErrorData;
 
 pub(super) const MAX_TEXT_BYTES: usize = 1_000_000;
@@ -16,7 +17,10 @@ pub(super) fn fetch_source(
         .map_err(|error| ErrorData::invalid_params(format!("{file}: {error}"), None))
         .and_then(|(content, language): (Option<String>, Option<String>)| {
             let c = content.ok_or_else(|| {
-                ErrorData::invalid_params(format!("{file} has no indexed source content"), None)
+                ErrorData::invalid_params(
+                    format!("{file} has no indexed source content"),
+                    error_codes::payload(ErrorCode::FileNotIndexed),
+                )
             })?;
             let l = language.ok_or_else(|| {
                 ErrorData::invalid_params(format!("{file} has no detected language"), None)

@@ -109,3 +109,32 @@ fn sync_and_report_logging_never_emits_source_content() {
         "the sync/report path leaked source content into logs:\n{logs}"
     );
 }
+
+/// The machine-readable half of an error is a mirrored surface too: a code
+/// and its remedy are static strings, so agent-supplied input may appear in
+/// the human message (it has to, to be useful) but must never reach
+/// `ErrorData.data` — the payload travels to the client and into logs
+/// exactly like the message does, since rmcp's `Display for ErrorData`
+/// renders it. Pinned at two real sites: an unknown mechanic id and an
+/// oversized SQL string.
+#[test]
+fn agent_supplied_input_never_reaches_the_error_payload() {
+    let error = match crate::tools::leads_query::resolve_mechanic(Some("SENTINEL_MECHANIC_9147")) {
+        Err(error) => error,
+        Ok(_) => panic!("an unknown mechanic must fail"),
+    };
+    assert!(
+        error.message.contains("SENTINEL_MECHANIC_9147"),
+        "the message still names what the caller asked for: {}",
+        error.message
+    );
+    let payload = serde_json::to_string(&error.data).expect("payload serializes");
+    assert!(
+        !payload.contains("SENTINEL_MECHANIC_9147"),
+        "the mechanic id must not reach the payload: {payload}"
+    );
+    assert!(
+        payload.contains("unknown_mechanic"),
+        "and the payload is the machine-readable half instead: {payload}"
+    );
+}

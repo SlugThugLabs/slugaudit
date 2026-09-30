@@ -283,6 +283,16 @@ caught in `src/server_runner.rs`: `spawn_blocking(..)`'s `JoinError` becomes an
   whose message tells the caller the failure is often transient and to retry.
   Sibling translators: `tools::query::describe_error`,
   `tools::project_control::err`.
+- A failing call may carry a **machine-readable code**: `ErrorData.data` is
+  `{"code": …, "remedy": …}`, drawn from the closed set in
+  `src/error_codes.rs` and documented in `.planning/ARCHITECTURE.md` (a unit
+  test checks the two in both directions). The sync budget is the case that
+  forced it — a spent `max_sync_wall_clock` is permanent on a repo too big for
+  the limit, so its remedy names the knob rather than advising the retry the
+  generic message suggests. Remedies are static: never interpolate paths,
+  SQL, or file content into a code or a remedy. Attach a code where the typed
+  failure exists (discovery/publish/reconcile/sweep/activation), not by
+  matching a message at the outermost tool.
 - Corruption and staleness are **recovered, not surfaced**:
   `open_or_rebuild` / `verify_metadata_or_rebuild`
   (`src/sync/manager_orchestration.rs`) discard and rebuild the database on

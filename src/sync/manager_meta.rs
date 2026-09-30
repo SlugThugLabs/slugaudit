@@ -9,6 +9,7 @@
 
 use super::SyncedProject;
 use super::publish;
+use crate::error_codes::{self, ErrorCode};
 use crate::parse;
 use crate::project;
 use crate::store;
@@ -234,7 +235,20 @@ pub(crate) fn map_publish_error(
     warn_message: &str,
 ) -> ErrorData {
     tracing::warn!(root = %root.display(), error = %error, "{warn_message}");
-    ErrorData::internal_error(format!("publishing a new revision: {error}"), None)
+    // The two publish failures a caller would do something different about.
+    // A spent budget is permanent on a repo too big for the limit, so its
+    // remedy names the knob rather than advising the retry that fails
+    // identically; the CAS race is the opposite — retrying re-samples and
+    // succeeds.
+    let budget = error.budget_elapsed_ms();
+    let data = if budget.is_some() {
+        error_codes::budget_payload(budget)
+    } else if matches!(error, publish::PublishError::ChangedDuringSample { .. }) {
+        error_codes::payload(ErrorCode::StaleRevision)
+    } else {
+        None
+    };
+    ErrorData::internal_error(format!("publishing a new revision: {error}"), data)
 }
 
 /// Publishes a full revision from the current filesystem state, mapping

@@ -279,15 +279,41 @@ fn empty_sql_is_a_typed_error() {
     assert!(result.is_err());
 }
 
+/// An oversized statement is a contract error a caller can act on: it
+/// carries `sql_too_large` and the knob that raises the cap, and — like
+/// every coded payload — none of the agent's own SQL text, which stays in
+/// the human message.
 #[test]
-fn oversized_sql_is_a_typed_error() {
+fn oversized_sql_carries_its_code_and_never_the_sql_text() {
     let project = activated_project(&[]);
+    let sentinel = "SENTINEL_SQL_9147";
     let huge = format!(
-        "SELECT {}",
+        "SELECT '{sentinel}' {}",
         "1+".repeat(crate::model::ResourceLimits::default().max_query_sql_bytes)
     );
-    let result = ask(&project, &huge);
-    assert!(result.is_err());
+    let error = match ask(&project, &huge) {
+        Err(error) => error,
+        Ok(_) => panic!("a statement over the byte cap must fail"),
+    };
+    assert!(
+        !error.message.contains(sentinel),
+        "the SQL text is not echoed in the message either: {}",
+        error.message
+    );
+    let data = error
+        .data
+        .expect("an oversized statement carries a payload");
+    assert_eq!(data["code"], "sql_too_large");
+    let remedy = data["remedy"].as_str().expect("remedy is a string");
+    assert!(
+        remedy.contains("SLUGAUDIT_MAX_QUERY_SQL_BYTES"),
+        "the remedy must name the knob: {remedy}"
+    );
+    assert!(
+        !serde_json::to_string(&data)
+            .expect("serializes")
+            .contains(sentinel)
+    );
 }
 
 #[test]
@@ -304,8 +330,23 @@ fn results_are_capped_and_truncation_is_reported() {
 #[test]
 fn query_on_an_inactive_project_is_a_typed_error_not_a_panic() {
     let project = tempfile::tempdir().expect("project dir");
-    let result = ask(&project, "SELECT 1");
-    assert!(result.is_err());
+    let error = match ask(&project, "SELECT 1") {
+        Err(error) => error,
+        Ok(_) => panic!("an inactive project must fail"),
+    };
+    // The disabled state is one instruction, not one opaque failure per
+    // tool: the prose stays, and the machine-readable half says *which*
+    // state this is and which call leaves it.
+    assert!(
+        error.message.contains("not enabled"),
+        "the existing wording stays: {}",
+        error.message
+    );
+    let data = error.data.expect("the disabled state carries a payload");
+    assert_eq!(data["code"], "project_not_enabled");
+    let remedy = data["remedy"].as_str().expect("remedy is a string");
+    assert!(remedy.contains("project_control"), "{remedy}");
+    assert!(remedy.contains("\"action\":\"on\""), "{remedy}");
 }
 
 #[test]

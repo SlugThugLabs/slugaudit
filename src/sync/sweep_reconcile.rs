@@ -12,6 +12,7 @@
 use super::manager_meta::current_revision_id;
 use super::reconcile::{ReconcileOptions, reconcile_dirty_paths_with_deadline};
 use super::sweep::{SweepError, SweepReport, sweep};
+use crate::error_codes;
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::util::Deadline;
 use crate::watch::{WatchState, WatcherHealth};
@@ -35,8 +36,10 @@ pub(super) fn sweep_tree(
     connection: &Connection,
     deadline: &Deadline,
 ) -> Result<SweepReport, ErrorData> {
-    sweep(connection, root, deadline)
-        .map_err(|error| ErrorData::internal_error(sweep_error_text(error), None))
+    sweep(connection, root, deadline).map_err(|error| {
+        let data = error_codes::budget_payload(error.budget_elapsed_ms());
+        ErrorData::internal_error(sweep_error_text(error), data)
+    })
 }
 
 /// The failure contract for a failed walk or apply: freshness is ambiguous,
@@ -103,7 +106,8 @@ pub(super) fn apply_sweep_report(
         &report.on_disk,
     )
     .map_err(|error| {
-        ErrorData::internal_error(format!("reconciling sweep results: {error}"), None)
+        let data = error_codes::budget_payload(error.budget_elapsed_ms());
+        ErrorData::internal_error(format!("reconciling sweep results: {error}"), data)
     })?;
     Ok((candidates, deleted, unchanged))
 }

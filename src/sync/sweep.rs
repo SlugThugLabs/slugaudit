@@ -38,6 +38,17 @@ pub(super) enum SweepError {
     TimeBudgetExceeded { elapsed_ms: u128 },
 }
 
+impl SweepError {
+    /// The elapsed budget when this is a budget exhaustion, else `None`.
+    #[must_use]
+    pub(crate) fn budget_elapsed_ms(&self) -> Option<u128> {
+        match self {
+            SweepError::TimeBudgetExceeded { elapsed_ms } => Some(*elapsed_ms),
+            SweepError::Database(_) => None,
+        }
+    }
+}
+
 /// What the sweep found, ready to feed the reconcile pipeline. `candidates`
 /// are paths needing a re-hash check (new on disk, or stat mismatch against
 /// the stored mtime/byte_len); `deleted` are database rows whose file is no

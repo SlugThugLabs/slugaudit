@@ -6,7 +6,9 @@
 
 use super::super::manager_meta::current_revision_id;
 use super::super::reconcile::ReconcileOptions;
+use super::super::sweep::SweepError;
 use super::{SourceSyncManager, SyncError};
+use crate::error_codes;
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::project;
 use crate::watch::{WatchState, WatcherHealth};
@@ -58,9 +60,10 @@ impl SourceSyncManager {
                             error = %error,
                             "post-verification drain failed; events remain unreconciled",
                         );
+                        let data = error_codes::budget_payload(error.budget_elapsed_ms());
                         ErrorData::internal_error(
                             format!("draining events after verification: {error}"),
-                            None,
+                            data,
                         )
                     })?;
                 state.set_health(WatcherHealth::Healthy);
@@ -114,9 +117,10 @@ impl SourceSyncManager {
                             sink.emit(ProgressEvent::Completed {
                                 phase: "ensuring_current",
                             });
+                            let data = error_codes::budget_payload(error.budget_elapsed_ms());
                             return Err(ErrorData::internal_error(
                                 format!("reconciling watcher events: {error}"),
-                                None,
+                                data,
                             ));
                         }
                     }
@@ -215,7 +219,7 @@ impl SourceSyncManager {
         // its failure is as fatal here as in the sweep-driven reconcile:
         // an unverified tree must not be published against.
         let report = super::super::sweep::sweep(connection, root, &options.deadline)
-            .map_err(|error| SyncError::Sweep(error.to_string()))?;
+            .map_err(sweep_error_to_sync)?;
         reconcile_events(root, state, connection, &options, &report.on_disk)
     }
 }
@@ -268,4 +272,18 @@ fn reconcile_events(
         "incremental reconcile phase complete",
     );
     Ok(())
+}
+
+/// The one sweep failure that must stay typed on its way into
+/// [`SyncError`]: a spent budget carries `sync_budget_exhausted` and the
+/// knob that raises it, and that code cannot be recovered from a flattened
+/// string. Every other sweep failure converts losslessly to text, which is
+/// all its response needs.
+fn sweep_error_to_sync(error: SweepError) -> SyncError {
+    match error {
+        SweepError::TimeBudgetExceeded { elapsed_ms } => {
+            SyncError::SweepBudgetExceeded { elapsed_ms }
+        }
+        other => SyncError::Sweep(other.to_string()),
+    }
 }

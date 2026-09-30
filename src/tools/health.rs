@@ -6,7 +6,12 @@
 //! parse. The intent is that calling `health` should never cause a
 //! sync, never emit MCP progress, and never fail transiently — every
 //! failure mode degrades to "field is null/0" rather than an error, so
-//! a stale health read is still actionable.
+//! a stale health read is still actionable. The state a cold caller is
+//! most likely to hit — a `path` that is not an enabled project — is one
+//! of those states too: the answer is `phase: "disabled"` plus a
+//! `remedy` naming the call that enables it, never an error. A
+//! diagnostic tool that fails when there is nothing to diagnose is
+//! useless.
 //!
 //! Three categories of data are surfaced:
 //!
@@ -20,6 +25,7 @@
 //!    clock milliseconds across every tool call since process start.
 // slugaudit-line-exception: approved-by=slugthug; reason=health is the schema-defining tool; Request+Response+phase+derivation live together so the schema isn't split from its only consumer
 
+use crate::error_codes::ErrorCode;
 use crate::store;
 use crate::sync;
 use crate::watch;
@@ -52,6 +58,14 @@ pub struct HealthResponse {
     /// Coarse classification of what the server is doing right now.
     /// Derivation rule documented on [`HealthPhase`].
     pub phase: HealthPhase,
+    /// The next action to take when no project is being served by this
+    /// answer: the same static sentence the `project_not_enabled` error
+    /// carries in `ErrorData.data.remedy`, so a caller can treat "health
+    /// says `disabled`" and "every tool fails with `project_not_enabled`"
+    /// as one instruction. `Some` exactly when `phase` is `disabled`, or
+    /// when no `path` was supplied and this server has no project at all;
+    /// `None` whenever a project is actually being served.
+    pub remedy: Option<String>,
     /// Watcher health for the supervised project. `None` only if no
     /// project is currently registered with the server.
     pub watcher_health: Option<watch::WatcherHealth>,
@@ -119,6 +133,11 @@ pub struct HealthResponse {
 ///   full-publish.
 /// - `NoActiveProject`: server has been initialized but no `ensure_current`
 ///   call has succeeded, so the watcher state can't be summarized.
+/// - `Disabled`: `request.path` resolved to no enabled project — the
+///   activation marker is absent — so nothing can serve that path until
+///   `project_control` enables it. `remedy` names that call. This is a
+///   state, not an error: a diagnostic tool that fails when there is
+///   nothing to diagnose is useless.
 #[derive(Debug, Serialize, JsonSchema, PartialEq, Eq, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum HealthPhase {
@@ -127,6 +146,7 @@ pub enum HealthPhase {
     SteadyState,
     Unavailable,
     NoActiveProject,
+    Disabled,
 }
 
 /// Composes the health snapshot for `path` (or for "no path" when
@@ -134,11 +154,14 @@ pub enum HealthPhase {
 ///
 /// # Errors
 ///
-/// Returns an error only if `request.path` was provided but no project is
-/// enabled for it. All other failure modes — database missing or locked,
-/// query failed, no current revision, project not registered with the
-/// watcher — are surfaced as zero/None fields so the caller still gets an
-/// actionable response.
+/// Returns an error only if `request.path` was provided and cannot be
+/// resolved at all. Every other state — database missing or locked, query
+/// failed, no current revision, project not registered with the watcher,
+/// and *no project enabled for that path* — is surfaced as a field so the
+/// caller still gets an actionable response. The not-enabled case is a
+/// successful answer with `phase: disabled` and a `remedy`, because it is
+/// the state a cold caller is most likely to be in and the one thing
+/// `health` must be able to report.
 pub fn health(
     request: &Parameters<HealthRequest>,
     _sink: &dyn crate::progress::ProgressSink,
@@ -157,6 +180,7 @@ pub fn health(
 
     Ok(Json(HealthResponse {
         phase: fields.phase,
+        remedy: fields.remedy,
         watcher_health: fields.watcher_health,
         pending_dirty: fields.pending_dirty,
         pending_deleted: fields.pending_deleted,
@@ -191,6 +215,7 @@ pub fn health(
 #[derive(Debug, PartialEq, Eq)]
 struct ProjectHealthFields {
     phase: HealthPhase,
+    remedy: Option<String>,
     watcher_health: Option<watch::WatcherHealth>,
     pending_dirty: Option<usize>,
     pending_deleted: Option<usize>,
@@ -206,8 +231,20 @@ fn compute_project_state(
     path: &str,
     manager: &sync::SourceSyncManager,
 ) -> Result<ProjectHealthFields, ErrorData> {
-    let (root, database_path) = crate::project::resolve_project(std::path::Path::new(path))
-        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+    let (root, database_path) = match crate::project::resolve_project(std::path::Path::new(path)) {
+        Ok(resolved) => resolved,
+        // No activation marker: report the state instead of failing on it.
+        // `health` is the tool a caller reaches for precisely when nothing
+        // works, so "this path is not an enabled project, here is the call
+        // that enables it" must be an answer, not another opaque failure.
+        // Any *other* resolution failure (an unreadable parent, a symlinked
+        // activation component) stays an error: enabling the project would
+        // not fix it.
+        Err(crate::project::ActivationError::NotActive) => {
+            return Ok(disabled_project_fields());
+        }
+        Err(error) => return Err(ErrorData::invalid_params(error.to_string(), None)),
+    };
     // Read-only: `watch_state_for` never registers a watch and never
     // changes watcher health (unlike `activate`).
     let snapshot = manager
@@ -232,6 +269,7 @@ fn compute_project_state(
 
     Ok(ProjectHealthFields {
         phase,
+        remedy: None,
         watcher_health: snapshot.as_ref().map(|s| s.health),
         pending_dirty: snapshot.as_ref().map(|s| s.dirty_paths.len()),
         pending_deleted: snapshot.as_ref().map(|s| s.deleted_paths.len()),
@@ -242,6 +280,45 @@ fn compute_project_state(
         file_count,
         skipped_file_count,
     })
+}
+
+/// The field set for a `path` with no activation marker: nothing to
+/// report but the phase and the way out of it. Every other slot is
+/// `None`/`-1` for the same reason it is on the never-synced path — this
+/// server has no database to open for that path.
+fn disabled_project_fields() -> ProjectHealthFields {
+    ProjectHealthFields {
+        phase: HealthPhase::Disabled,
+        remedy: Some(ErrorCode::ProjectNotEnabled.remedy().to_owned()),
+        watcher_health: None,
+        pending_dirty: None,
+        pending_deleted: None,
+        watcher_sequence: None,
+        last_verified_sequence: None,
+        revision_id: None,
+        parser_pack_version: None,
+        file_count: -1,
+        skipped_file_count: -1,
+    }
+}
+
+/// The field set when the caller supplied no `path` and this server has no
+/// project registered at all: nothing is active, and the same remedy the
+/// not-enabled errors carry tells the caller how to start one.
+fn no_active_project_fields() -> ProjectHealthFields {
+    ProjectHealthFields {
+        phase: HealthPhase::NoActiveProject,
+        remedy: Some(ErrorCode::ProjectNotEnabled.remedy().to_owned()),
+        watcher_health: None,
+        pending_dirty: None,
+        pending_deleted: None,
+        watcher_sequence: None,
+        last_verified_sequence: None,
+        revision_id: None,
+        parser_pack_version: None,
+        file_count: -1,
+        skipped_file_count: -1,
+    }
 }
 
 /// Reads the DB-derived health fields read-only, degrading gracefully when
@@ -309,18 +386,7 @@ fn read_database_fields(
 fn compute_global_only_state(manager: &sync::SourceSyncManager) -> ProjectHealthFields {
     let snapshots = manager.watch_states_snapshot();
     if snapshots.is_empty() {
-        return ProjectHealthFields {
-            phase: HealthPhase::NoActiveProject,
-            watcher_health: None,
-            pending_dirty: None,
-            pending_deleted: None,
-            watcher_sequence: None,
-            last_verified_sequence: None,
-            revision_id: None,
-            parser_pack_version: None,
-            file_count: -1,
-            skipped_file_count: -1,
-        };
+        return no_active_project_fields();
     }
     // In the current single-active-project model, snapshots has one
     // entry; reduce it to the reported fields. Future multi-project
@@ -332,22 +398,12 @@ fn compute_global_only_state(manager: &sync::SourceSyncManager) -> ProjectHealth
     // panic in production code" invariant literal rather than relying
     // on the guard staying in place.
     let Some(snapshot) = snapshots.into_iter().next() else {
-        return ProjectHealthFields {
-            phase: HealthPhase::NoActiveProject,
-            watcher_health: None,
-            pending_dirty: None,
-            pending_deleted: None,
-            watcher_sequence: None,
-            last_verified_sequence: None,
-            revision_id: None,
-            parser_pack_version: None,
-            file_count: -1,
-            skipped_file_count: -1,
-        };
+        return no_active_project_fields();
     };
     let phase = derive_phase(snapshot.health, &None, snapshot.has_unreconciled_events());
     ProjectHealthFields {
         phase,
+        remedy: None,
         watcher_health: Some(snapshot.health),
         pending_dirty: Some(snapshot.dirty_paths.len()),
         pending_deleted: Some(snapshot.deleted_paths.len()),

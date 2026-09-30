@@ -60,6 +60,23 @@ pub enum PublishError {
     TimeBudgetExceeded { path: String, elapsed_ms: u128 },
 }
 
+impl PublishError {
+    /// The elapsed wall-clock budget when this failure is the budget being
+    /// exhausted — including one raised by discovery *inside* a publish,
+    /// which arrives wrapped — else `None`. The map site pairs this with
+    /// `crate::error_codes::budget_payload` so a budget failure carries
+    /// `sync_budget_exhausted` and its knob, rather than reading as a
+    /// transient failure the caller should retry.
+    #[must_use]
+    pub(crate) fn budget_elapsed_ms(&self) -> Option<u128> {
+        match self {
+            PublishError::TimeBudgetExceeded { elapsed_ms, .. } => Some(*elapsed_ms),
+            PublishError::Discovery(error) => error.budget_elapsed_ms(),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishReport {
     pub revision_id: String,

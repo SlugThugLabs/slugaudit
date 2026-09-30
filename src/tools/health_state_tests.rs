@@ -7,6 +7,7 @@
 use crate::store;
 use crate::sync::SourceSyncManager;
 use crate::watch::WatcherHealth;
+use rmcp::handler::server::wrapper::Parameters;
 use std::fs;
 
 fn activated_temp_project() -> (tempfile::TempDir, String) {
@@ -208,4 +209,70 @@ fn health_with_an_active_project_path_reports_db_fields() {
         "ensure_current must stamp the last-sync timestamp"
     );
     let _ = project;
+}
+
+/// A `path` with no activation marker is a *state*, not a failure: a
+/// diagnostic tool that fails when there is nothing to diagnose is useless.
+/// The answer must say `disabled` and carry the same remedy every tool's
+/// `project_not_enabled` error carries, so a caller can treat both as one
+/// instruction.
+#[test]
+fn health_with_a_path_outside_any_enabled_project_reports_disabled() {
+    let project = tempfile::tempdir().expect("project dir");
+    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
+    let path = project.path().to_string_lossy().into_owned();
+
+    let response = super::health(
+        &Parameters(super::HealthRequest { path: Some(path) }),
+        &crate::progress::NoopProgressSink,
+        &SourceSyncManager::new(),
+    )
+    .expect("a disabled path is an answer, not an error");
+
+    assert_eq!(response.0.phase, super::HealthPhase::Disabled);
+    assert_eq!(response.0.watcher_health, None);
+    assert_eq!(response.0.pending_dirty, None);
+    assert_eq!(response.0.revision_id, None);
+    assert_eq!(response.0.file_count, -1);
+    let remedy = response
+        .0
+        .remedy
+        .as_deref()
+        .expect("a disabled answer carries the remedy");
+    assert!(remedy.contains("project_control"), "{remedy}");
+    assert!(remedy.contains("\"action\":\"on\""), "{remedy}");
+    assert!(remedy.contains("<project directory>"), "{remedy}");
+}
+
+/// The no-`path` case names no project, but it is still the state a cold
+/// caller lands in: it must say nothing is active and how to start.
+#[test]
+fn health_without_a_path_still_names_the_way_to_enable_a_project() {
+    let response = super::health(
+        &Parameters(super::HealthRequest { path: None }),
+        &crate::progress::NoopProgressSink,
+        &SourceSyncManager::new(),
+    )
+    .expect("health never fails without a path");
+
+    assert_eq!(response.0.phase, super::HealthPhase::NoActiveProject);
+    assert!(response.0.remedy.is_some());
+}
+
+/// Once a project is actually being served the remedy disappears: the field
+/// means "no project is served for this answer", nothing else.
+#[test]
+fn health_reports_no_remedy_for_an_active_project() {
+    let (project, path) = activated_temp_project();
+    let manager = synced_manager(&project, &path);
+
+    let response = super::health(
+        &Parameters(super::HealthRequest { path: Some(path) }),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .expect("health succeeds for an active project");
+
+    assert_eq!(response.0.remedy, None);
+    assert!(response.0.revision_id.is_some());
 }

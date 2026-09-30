@@ -52,6 +52,19 @@ pub enum DiscoveryError {
     TimeBudgetExceeded { elapsed_ms: u128 },
 }
 
+impl DiscoveryError {
+    /// The elapsed budget when this is a budget exhaustion, else `None`.
+    /// A publish wraps this variant in [`super::publish::PublishError::Discovery`],
+    /// so the classifier has to be reachable through the wrapper.
+    #[must_use]
+    pub(crate) fn budget_elapsed_ms(&self) -> Option<u128> {
+        match self {
+            DiscoveryError::TimeBudgetExceeded { elapsed_ms } => Some(*elapsed_ms),
+            _ => None,
+        }
+    }
+}
+
 fn is_excluded(relative: &Path) -> bool {
     // The hardcoded exclusion set (SlugAudit's own data dir, VCS
     // internals, scratch files) lives in `crate::ignore_rules` and is

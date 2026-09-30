@@ -100,6 +100,18 @@ fn a_stale_synced_handle_fails_loudly_instead_of_returning_mismatched_data() {
         message.contains("retry the call"),
         "expected a retry hint in the error message, got: {message}"
     );
+    // And the machine-readable half: a stale revision keeps the retry
+    // advice *as a code*, so a caller can branch on it without reading the
+    // message. This is the one failure where "retry" is the right answer,
+    // which is exactly why it must be distinguishable from the sync budget
+    // (whose remedy says the opposite).
+    let data = error.data.expect("a stale revision carries a payload");
+    assert_eq!(data["code"], "stale_revision");
+    let remedy = data["remedy"].as_str().expect("remedy is a string");
+    assert!(
+        remedy.contains("retry the call"),
+        "the stale-revision remedy must keep the retry advice: {remedy}"
+    );
 }
 
 #[test]

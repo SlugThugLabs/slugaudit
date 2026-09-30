@@ -44,12 +44,35 @@ pub enum SyncError {
     /// edges resolved against a set it knows is incomplete.
     #[error("stat sweep error: {0}")]
     Sweep(String),
+    /// Same failure as [`SyncError::Sweep`], kept typed: the sweep ran out
+    /// of wall-clock budget. A spent budget is a permanent, actionable
+    /// condition (`sync_budget_exhausted` + the knob that raises it), while
+    /// a stringified sweep failure is not, so the two cannot share a
+    /// variant.
+    #[error("stat sweep exceeded its wall-clock time budget after {elapsed_ms} ms")]
+    SweepBudgetExceeded { elapsed_ms: u128 },
     #[error("IO error reading {path}: {source}")]
     Read {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
+}
+
+impl SyncError {
+    /// The elapsed budget when this failure is the budget being exhausted,
+    /// else `None`. The two `ErrorData` map sites in `manager_health` pair
+    /// this with `crate::error_codes::budget_payload`; the reconcile
+    /// pipeline's own budget variant arrives wrapped, so this recurses one
+    /// level rather than matching only the top variant.
+    #[must_use]
+    pub(crate) fn budget_elapsed_ms(&self) -> Option<u128> {
+        match self {
+            SyncError::SweepBudgetExceeded { elapsed_ms } => Some(*elapsed_ms),
+            SyncError::Reconcile(error) => error.budget_elapsed_ms(),
+            _ => None,
+        }
+    }
 }
 
 /// Owns a `WatchManager` and provides watcher-aware sync entry points.

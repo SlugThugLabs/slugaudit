@@ -8,6 +8,7 @@
 //! to return, never whether the shape matters.
 
 use super::leads::{LeadRow, MechanicCount};
+use crate::error_codes::{self, ErrorCode};
 use rmcp::ErrorData;
 use rusqlite::{Transaction, params};
 
@@ -111,7 +112,10 @@ pub(super) fn resolve_mechanic(
                 .map(|mechanic| mechanic.id)
                 .collect::<Vec<_>>()
                 .join(", ");
-            ErrorData::invalid_params(format!("unknown mechanic `{id}`; valid ids: {valid}"), None)
+            ErrorData::invalid_params(
+                format!("unknown mechanic `{id}`; valid ids: {valid}"),
+                error_codes::payload(ErrorCode::UnknownMechanic),
+            )
         })
 }
 

@@ -1,3 +1,4 @@
+use crate::error_codes::{self, ErrorCode};
 use crate::progress::ProgressSink;
 use crate::sync;
 use rmcp::ErrorData;
@@ -90,7 +91,7 @@ fn verify_revision_matches(
             format!(
                 "revision changed concurrently (expected {expected_revision_id}, now {current}); retry the call"
             ),
-            None,
+            error_codes::payload(ErrorCode::StaleRevision),
         ));
     }
     Ok(())

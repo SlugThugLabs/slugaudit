@@ -1,6 +1,8 @@
 //! Tests for the metadata helpers split out of `manager.rs`.
 
-use super::{current_revision_id, ensure_project_row, purge_prior_session_findings_with};
+use super::{
+    current_revision_id, ensure_project_row, map_publish_error, purge_prior_session_findings_with,
+};
 use crate::store;
 use crate::util::{SESSION_TEST_LOCK, override_session_id_for_test};
 use std::path::Path;
@@ -218,4 +220,66 @@ fn ensure_project_row_purges_findings_on_a_warm_cache_too() {
         .query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
         .expect("count after cross-session");
     assert_eq!(count_cleaned, 0, "different session → row must be purged");
+}
+
+/// The publish half of the machine-readable failure contract. A spent sync
+/// budget is the case that used to read as "often transient — retry": on a
+/// repo too big for the limit, retrying unchanged fails identically, so the
+/// payload has to name the knob instead. The CAS race is the opposite and
+/// must stay distinguishable. A publish failure that is neither carries no
+/// code at all — an over-attached code is as useless as a missing one.
+#[test]
+fn publish_failures_classify_into_the_documented_error_codes() {
+    let root = Path::new("/tmp/example-project");
+
+    let budget = map_publish_error(
+        root,
+        super::publish::PublishError::TimeBudgetExceeded {
+            path: String::new(),
+            elapsed_ms: 4_500,
+        },
+        "test",
+    );
+    let data = budget.data.expect("a spent budget carries a payload");
+    assert_eq!(data["code"], "sync_budget_exhausted");
+    let remedy = data["remedy"].as_str().expect("remedy is a string");
+    assert!(
+        remedy.contains("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS"),
+        "the remedy must name the knob: {remedy}"
+    );
+    // The same budget raised by discovery inside the publish arrives
+    // wrapped, and must classify identically.
+    let wrapped = map_publish_error(
+        root,
+        super::publish::PublishError::Discovery(
+            crate::sync::discovery::DiscoveryError::TimeBudgetExceeded { elapsed_ms: 4_500 },
+        ),
+        "test",
+    );
+    assert_eq!(
+        wrapped.data.expect("wrapped budget")["code"],
+        "sync_budget_exhausted"
+    );
+
+    let raced = map_publish_error(
+        root,
+        super::publish::PublishError::ChangedDuringSample {
+            path: "src/lib.rs".to_owned(),
+        },
+        "test",
+    );
+    assert_eq!(
+        raced.data.expect("the CAS race carries a payload")["code"],
+        "stale_revision"
+    );
+
+    let other = map_publish_error(
+        root,
+        super::publish::PublishError::InvalidParserPackVersion("nope".to_owned()),
+        "test",
+    );
+    assert!(
+        other.data.is_none(),
+        "a failure no caller can act on differently must not carry a code"
+    );
 }

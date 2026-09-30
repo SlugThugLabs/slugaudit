@@ -87,6 +87,10 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     session's findings. `project_control` enables or disables a project; a moved or re-extracted project's stale \
     database is discarded and rebuilt from source automatically. `health` reports watcher and database state.\n\n\
     FLOW: report → leads → drill with query/structure → read source only where evidence points → finding.\n\n\
+    FAILURES: an error's `ErrorData.data` carries `code` — a stable lowercase identifier (e.g. \
+    `sync_budget_exhausted`, `project_not_enabled`) — plus `remedy`, the next action to take; branch \
+    on `code` instead of parsing the message, and when `remedy` names a knob or a call, do that \
+    rather than retrying unchanged.\n\n\
     JUDGMENT IS YOURS: SlugAudit is not an auditor and never will be — it performs no risk detection, assigns \
     no severity, ranks nothing, and draws no conclusions. Every judgment in your response — what is buggy, how \
     severe, what to fix — is entirely yours; the index hands you mechanics, and deciding which of them is a lead \

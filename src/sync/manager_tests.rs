@@ -416,3 +416,43 @@ fn outdated_database_is_automatically_deleted_and_recreated() {
         "source files must be republished from scratch"
     );
 }
+
+/// The classifier behind the two `ErrorData` map sites in
+/// `manager_health`. Both budget shapes reach them — the sweep's own
+/// variant, and the reconcile pipeline's budget wrapped one level deeper —
+/// and everything else must stay `None` so no unrelated failure gets the
+/// budget code attached.
+#[test]
+fn sync_error_budget_classifier_sees_through_the_reconcile_wrapper() {
+    use super::SyncError;
+    use crate::sync::DiscoveryError;
+    use crate::sync::reconcile::ReconcileError;
+
+    assert_eq!(
+        SyncError::SweepBudgetExceeded { elapsed_ms: 9 }.budget_elapsed_ms(),
+        Some(9)
+    );
+    assert_eq!(
+        SyncError::Reconcile(ReconcileError::TimeBudgetExceeded {
+            path: String::new(),
+            elapsed_ms: 3,
+        })
+        .budget_elapsed_ms(),
+        Some(3)
+    );
+    assert_eq!(
+        SyncError::Reconcile(ReconcileError::Discovery(
+            DiscoveryError::TimeBudgetExceeded { elapsed_ms: 5 },
+        ))
+        .budget_elapsed_ms(),
+        Some(5)
+    );
+    assert_eq!(
+        SyncError::Sweep("database error: disk I/O error".to_owned()).budget_elapsed_ms(),
+        None
+    );
+    assert_eq!(
+        SyncError::Database(rusqlite::Error::QueryReturnedNoRows).budget_elapsed_ms(),
+        None
+    );
+}

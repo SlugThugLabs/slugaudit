@@ -47,11 +47,13 @@ connect modules and the `*_tests.rs` count sentence is gate-checked against the 
 `dca4910` (this documentation reset). **Not pushed** — the branch has no remote counterpart and
 publication is the owner's call. Work continues from here, one commit per workstream.
 
-**Not started:** Phase 0's instrument; Phase 2 items 3–4 (item 1, the `INSTRUCTIONS` rewrite, and
-item 2, the `report` completeness envelope plus file-existence rows, both landed 2026-09-30 — item 2
-is uncommitted and unvalidated against the full gate suite); Phases 3–5; the *Correctness
-follow-ups* list; the *Connect surface* follow-up; and every item in the *Production-readiness
-backlog*.
+**Not started:** Phase 0's instrument; Phases 3–5; the *Correctness follow-ups* list; the
+*Connect surface* follow-up; and every item in the *Production-readiness backlog*.
+
+**Uncommitted:** Phase 2 items 2–4. Item 1 (the `INSTRUCTIONS` rewrite) and item 2 (the `report`
+completeness envelope plus file-existence rows) landed 2026-09-30; item 2 has not yet seen the
+full gate suite. Items 3–4 are implemented as written in their entries below, and item 4's
+optional tool-hiding half is deliberately *not* implemented — see that entry for why.
 
 ---
 
@@ -187,7 +189,7 @@ registry rather than as documentation drift: of the clients the two research pas
 disagreed about, each pass was wrong on roughly half, and only the installed binaries
 settled it.
 
-## Phase 2 — The door: make the first minute win (items 1–2 landed; items 3–4 not started)
+## Phase 2 — The door: make the first minute win (items 1–4 landed; item 4 half-deferred)
 
 **Goal:** an agent that was not going to use this tool uses it twice.
 
@@ -196,7 +198,8 @@ is and what it adds; the first-win rule as a trigger rather than a request; the 
 map; the operational facts (schema, payload keys, imports, structure, resources); then the
 no-judgment contract once, near the end — with the creed placement the owner resolved, and
 `report` gained the completeness envelope plus the file-existence rows behind it (item 2).
-Item 2 is uncommitted and has not yet seen the full gate suite. Items 3–4 are open.
+Item 2 is uncommitted and has not yet seen the full gate suite. Items 3–4 are implemented and
+uncommitted; item 4's optional tool-hiding half is deliberately not implemented (see it).
 
 1. **`INSTRUCTIONS` rewrite — landed 2026-09-30.** Written in this order: (a) what it is
    and what it adds, in the agent's interest — budget as a consequence, not the pitch;
@@ -249,19 +252,39 @@ Item 2 is uncommitted and has not yet seen the full gate suite. Items 3–4 are 
    `leads`' `credential_files` (a credential-shaped skipped file is now reported rather
    than hidden), and the reconcile pipeline (oversize paths are no longer hashed — their
    existence row is the stat identity, so a sweep stops re-reading them).
-3. **Branchable errors.** No `ErrorData` in `src/` carries a machine-readable payload
-   today (64 constructors, all `None`; e.g. `src/tools/query.rs:98`,
-   `src/tools/structure.rs:149`). Add a code plus a remedy. Priority case: sync budget
-   exhaustion must not read as *"often transient, retry"* — on an oversized repo it is
-   permanent and the agent should be told the knob
-   (`SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS`, `profile=audit`).
-4. **Disabled state must not be eight failures.** `ActivationError::NotActive`
-   (`src/project/activation.rs:18`) is good prose in the wrong shape. Either (a) fix the
-   static case so the disabled responses are one actionable line and `health` answers
-   normally, and (b) optionally hide non-`project_control` tools until a project is
-   enabled. **Compatibility constraint:** `notifications/tools/list_changed` is not
-   uniformly honored — a client that ignores it must still degrade to (a), never to
-   "capability invisible". Do not ship the filter without (a).
+3. **Branchable errors — landed 2026-09-30 (uncommitted).** `src/error_codes.rs` owns a
+   closed set of six codes — `sync_budget_exhausted`, `project_not_enabled`,
+   `stale_revision`, `unknown_mechanic`, `sql_too_large`, `file_not_indexed` — each a
+   lowercase stable string with a doc comment and a static remedy, attached as
+   `ErrorData.data = {"code": …, "remedy": …}` (`payload`/`budget_payload`). The code is
+   attached where the *typed* failure still exists, never guessed from a message at the
+   outermost tool: the budget routes through
+   `PublishError`/`ReconcileError`/`SweepError`/`SyncError::budget_elapsed_ms` into five
+   sync map sites, `PublishError::ChangedDuringSample` becomes `stale_revision`, and the
+   contract errors are attached at their own site. The budget remedy names
+   `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS` (with the `audit`/`lean` profile values) and says
+   outright that retrying unchanged fails identically. The list is tabled in
+   `.planning/ARCHITECTURE.md` (invariant 13 + the `error-codes` markers) and pinned by
+   `error_codes::tests::the_documented_table_matches_the_code_set_exactly`, so a code
+   cannot be added without its row. `INSTRUCTIONS` gained one sentence naming
+   `ErrorData.data.code`. Note for the next author: the *"often transient — retry"*
+   wording lives in `tools::context::internal_error`, which wraps database/transaction
+   errors — it never wrapped the sync budget, whose message has always said "publish
+   exceeded its wall-clock time budget". The remedy, not the message, is what makes the
+   budget self-healing.
+4. **Disabled state must not be eight failures — (a) landed 2026-09-30 (uncommitted);
+   (b) deliberately not implemented.** (a) `manager_orchestration::map_activation_error`
+   is the single funnel behind every tool, so a not-enabled project now yields one
+   `project_not_enabled` payload with the `project_control {"action":"on","path":…}`
+   remedy instead of one opaque failure per tool, and `health` answers *normally* for
+   such a path: `phase: "disabled"` plus the same `remedy` (`HealthPhase::Disabled`,
+   `HealthResponse::remedy`; the no-`path` case reports `no_active_project` with the same
+   remedy). (b) **Not implemented, and deliberately so:** hiding non-`project_control`
+   tools requires `notifications/tools/list_changed`, which clients do not uniformly
+   honor, so a client that ignores it would be left with **no** slugaudit tool at all —
+   the exact "capability invisible" failure the compatibility constraint forbids. Since
+   (a) alone turns the disabled state into one actionable instruction, the filter buys
+   nothing that justifies that risk; it stays unbuilt and optional.
 
 **DoD:** a cold agent's first two calls return something it didn't ask for and can use.
 

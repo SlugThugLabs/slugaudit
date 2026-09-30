@@ -110,6 +110,7 @@ src/
 ├── resources.rs              static MCP resources (query cookbook + schema)
 ├── progress.rs               ProgressEvent/ProgressSink bridge from sync to a renderer
 ├── ignore_rules.rs           single source of truth for excluded paths
+├── error_codes.rs            stable machine-readable failure codes + remedies
 ├── util.rs                   cross-module helpers (lock_or_recover, Deadline, SESSION_ID)
 ├── menu.rs                   interactive setup menu
 ├── menu_render.rs            ANSI rendering helpers for the setup menu
@@ -727,6 +728,43 @@ something else loudly.
     breakdowns (kind, skip reason, extraction completeness) and a partial-index
     flag beside the counts they qualify. No response carries a score, a
     severity, or a ranking — evidence is not judgment.
+13. **A failing tool call carries a machine-readable code.** A tool error
+    may attach `{"code": …, "remedy": …}` in `ErrorData.data` — the only
+    machine-readable channel rmcp gives a response. The code is a member of
+    the closed set below, and it is attached where the *typed* failure still
+    exists (discovery, publish, reconcile, sweep, project activation), never
+    guessed from a message at the outermost tool. Because a code a caller
+    cannot act on is noise, the set is small and every remedy is an action:
+    the sync-budget remedy names the knob rather than advising a retry that
+    fails identically, and a path that is not an enabled project produces one
+    `project_not_enabled` instruction instead of one opaque failure per tool.
+
+### Machine-readable failure codes
+
+The closed set lives in `src/error_codes.rs`; this table is checked against
+`ErrorCode::ALL` in both directions by a unit test there, so a code cannot be
+added without its row and a row cannot outlive its code. Codes are lowercase
+`snake_case`, name the condition rather than the call site, and are stable
+once shipped — renaming one breaks every caller that branches on it. Remedies
+are static strings: **never** interpolate a path, SQL, query string, finding
+body, or file content into a code or a remedy (the redaction contract in
+`tools/redaction_tests.rs` keeps that text off every logged or mirrored
+surface).
+
+<!-- error-codes:begin -->
+| code | meaning | attached where |
+| --- | --- | --- |
+| `sync_budget_exhausted` | the sync wall-clock budget (`max_sync_wall_clock`) was spent while discovering, hashing, parsing, or publishing; permanent on a tree too big for the budget, so the remedy names the knob | every sync map site: `manager_meta::map_publish_error`, `sweep_reconcile::sweep_tree` and `sweep_reconcile::apply_sweep_report`, both `manager_health` map sites |
+| `project_not_enabled` | no ancestor of the requested path has an activation marker, so no tool can serve it | `manager_orchestration::map_activation_error` — the single funnel behind every tool |
+| `stale_revision` | the revision this call was pinned to is no longer current, or a sampled file changed before the write — the compare-and-swap race, where retrying is right | `tools::context::verify_revision_matches`, `manager_meta::map_publish_error` |
+| `unknown_mechanic` | `leads` was asked for a mechanic id that is not in the catalogue | `tools::leads_query::resolve_mechanic` |
+| `sql_too_large` | the SQL passed to `query` exceeded `max_query_sql_bytes` | `tools::query::query_with_limits` |
+| `file_not_indexed` | the named file has no indexed source content (never discovered, skipped as oversize/unreadable, or binary) | `tools::structure_source::fetch_source`, `tools::finding::fetch_file` |
+<!-- error-codes:end -->
+
+`health` is the deliberate exception: it answers normally in the not-enabled
+state (`phase: "disabled"` plus the same `remedy`) instead of failing, because
+it is the tool a caller reaches for precisely when nothing works.
 
 ## Where to start reading
 

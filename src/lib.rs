@@ -23,6 +23,7 @@ pub mod connect_agents;
 pub mod connect_cli;
 pub mod connect_exec;
 pub mod connect_guidance;
+pub mod error_codes;
 pub mod evidence;
 pub mod graph;
 pub mod ignore_rules;

@@ -39,3 +39,18 @@ pub enum ReconcileError {
     #[error("reconcile exceeded its wall-clock time budget after {elapsed_ms} ms{path}")]
     TimeBudgetExceeded { path: String, elapsed_ms: u128 },
 }
+
+impl ReconcileError {
+    /// The elapsed budget when this failure is the budget being exhausted
+    /// — including one raised by discovery inside a reconciled path — else
+    /// `None`. Callers pair this with
+    /// `crate::error_codes::budget_payload`.
+    #[must_use]
+    pub(crate) fn budget_elapsed_ms(&self) -> Option<u128> {
+        match self {
+            ReconcileError::TimeBudgetExceeded { elapsed_ms, .. } => Some(*elapsed_ms),
+            ReconcileError::Discovery(error) => error.budget_elapsed_ms(),
+            _ => None,
+        }
+    }
+}

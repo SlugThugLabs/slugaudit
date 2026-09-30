@@ -7,6 +7,7 @@
 
 use super::super::manager_meta::{ProjectMetaError, ensure_project_row, publish_from_scratch};
 use super::{SourceSyncManager, SyncedProject};
+use crate::error_codes::{self, ErrorCode};
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::project;
 use crate::store;
@@ -36,8 +37,8 @@ impl SourceSyncManager {
         sink.emit(ProgressEvent::Started {
             phase: "ensuring_current",
         });
-        let (root, database_path) = project::resolve_project(Path::new(path))
-            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+        let (root, database_path) =
+            project::resolve_project(Path::new(path)).map_err(map_activation_error)?;
 
         let connection = match self.open_or_rebuild(&root, &database_path, start, sink)? {
             Ok(conn) => conn,
@@ -191,4 +192,21 @@ impl SourceSyncManager {
         });
         Ok(synced)
     }
+}
+
+/// Every state-bearing tool funnels through `ensure_current`, so this is
+/// the one place the "no project here" case can be shaped: a path with no
+/// activation marker is not an opaque failure of whichever tool was called
+/// — it is a project that was never enabled, and the response carries
+/// `project_not_enabled` plus the exact remedy (`project_control` with
+/// `action: "on"` and the path argument). Any other resolution failure — an
+/// unresolvable path, a symlinked activation directory — keeps its plain
+/// message and no code, because `project_control` cannot fix it.
+fn map_activation_error(error: project::ActivationError) -> ErrorData {
+    let data = if matches!(error, project::ActivationError::NotActive) {
+        error_codes::payload(ErrorCode::ProjectNotEnabled)
+    } else {
+        None
+    };
+    ErrorData::invalid_params(error.to_string(), data)
 }

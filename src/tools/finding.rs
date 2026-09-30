@@ -1,4 +1,5 @@
 use super::context::{ensure_synced, session_id, with_verified_write};
+use crate::error_codes::{self, ErrorCode};
 use crate::sync;
 use crate::util;
 use rmcp::ErrorData;
@@ -180,7 +181,10 @@ fn fetch_file(tx: &Transaction<'_>, file: &str) -> Result<(String, String), Erro
         )
         .map_err(|error| ErrorData::invalid_params(format!("{file}: {error}"), None))?;
     let content = content.ok_or_else(|| {
-        ErrorData::invalid_params(format!("{file} has no indexed source content"), None)
+        ErrorData::invalid_params(
+            format!("{file} has no indexed source content"),
+            error_codes::payload(ErrorCode::FileNotIndexed),
+        )
     })?;
     Ok((source_hash, content))
 }
