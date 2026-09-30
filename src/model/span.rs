@@ -27,12 +27,22 @@ pub fn saturating_u32(value: usize) -> u32 {
 /// `Point::column` counts bytes since the last `\n` (or the start of
 /// `source`), not characters — copying it directly produces a column too
 /// large for any position after a multi-byte UTF-8 character on the same
-/// line. `byte_offset` must land on a UTF-8 char boundary in `source`,
-/// which every Tree-sitter node boundary does for a well-formed parse.
+/// line.
+///
+/// A Tree-sitter node boundary lands on a char boundary for a well-formed
+/// parse, but this does not require one: an offset that lands mid-codepoint,
+/// or past the end of the source, is floored to the nearest boundary rather
+/// than panicking. A `structure` call that dies on real project content is
+/// worse than a column measured one character early.
 #[must_use]
 pub fn char_column(source: &str, byte_offset: usize) -> u32 {
-    let line_start = source[..byte_offset].rfind('\n').map_or(0, |idx| idx + 1);
-    saturating_u32(source[line_start..byte_offset].chars().count())
+    let mut offset = byte_offset.min(source.len());
+    // Offset 0 is always a char boundary, so this terminates.
+    while !source.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    let line_start = source[..offset].rfind('\n').map_or(0, |idx| idx + 1);
+    saturating_u32(source[line_start..offset].chars().count())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,5 +112,20 @@ mod tests {
             Span::new(2, 1, position, position),
             Err(SpanError::ReversedBytes)
         );
+    }
+
+    #[test]
+    fn a_mid_codepoint_offset_floors_to_the_character_boundary() {
+        // `é` occupies bytes 0..2, so byte 1 is inside it: the column must be
+        // measured from the boundary before it rather than panicking.
+        let source = "é=1";
+        assert_eq!(char_column(source, 1), 0);
+        assert_eq!(char_column(source, 2), 1);
+    }
+
+    #[test]
+    fn an_offset_past_the_end_measures_the_whole_line() {
+        let source = "a\nbc";
+        assert_eq!(char_column(source, 99), 2);
     }
 }

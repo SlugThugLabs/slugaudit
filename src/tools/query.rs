@@ -121,6 +121,22 @@ fn query_with_limits(
             error_codes::payload(ErrorCode::SqlTooLarge),
         ));
     }
+    // SQLite stores an integer literal too large for i64 as a REAL, so an
+    // `OFFSET` past i64::MAX silently becomes a floating-point offset and pages
+    // from an unpredictable position instead of failing. Refuse it here as a
+    // contract error, before the wrapper is built. No error code: this is
+    // one-off validation prose a caller cannot act on beyond fixing its own
+    // arithmetic (see the deliberate list in `error_codes`).
+    if *offset as u64 > i64::MAX as u64 {
+        return Err(ErrorData::invalid_params(
+            format!(
+                "offset {offset} exceeds the maximum supported page offset ({}); \
+                 page from the start or from a returned next_offset",
+                i64::MAX
+            ),
+            None,
+        ));
+    }
     if let Some(position) = first_statement_separator(trimmed) {
         return Err(ErrorData::invalid_params(
             format!(

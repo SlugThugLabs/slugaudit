@@ -482,6 +482,40 @@ fn a_stale_expected_revision_refuses_a_resumed_query_page() {
 }
 
 #[test]
+fn an_offset_past_the_supported_maximum_is_refused_as_a_contract_error() {
+    // SQLite turns an integer literal too large for i64 into a REAL, so an
+    // unbounded offset would page from a floating-point position instead of
+    // failing - wrong rows, no error.
+    let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
+    let at = |offset: usize| {
+        query(
+            &Parameters(QueryRequest {
+                path: project.path().to_string_lossy().into_owned(),
+                sql: "SELECT path FROM files".to_owned(),
+                offset,
+                expected_revision: None,
+            }),
+            &crate::progress::NoopProgressSink,
+            &crate::sync::SourceSyncManager::default(),
+        )
+        .map(|Json(response)| response)
+    };
+
+    let error = at(i64::MAX as usize + 1).expect_err("an unusable offset is refused");
+    assert!(
+        error
+            .message
+            .contains("exceeds the maximum supported page offset"),
+        "the message names the bound: {}",
+        error.message
+    );
+
+    // The bound itself is still a usable offset: an empty page, not an error.
+    let page = at(i64::MAX as usize).expect("the maximum offset is accepted");
+    assert!(page.rows.is_empty(), "no row lives at that offset");
+}
+
+#[test]
 fn a_pathological_query_is_aborted_by_the_wall_clock_budget() {
     let project = activated_project(&[]);
     // Effectively zero: by the time the progress handler first fires (every
