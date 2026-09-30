@@ -27,76 +27,72 @@ use rmcp::{ErrorData, Peer, RoleServer, ServerHandler, tool, tool_handler, tool_
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
-const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an index of a project's code — parsed \
-    structure, symbols, imports, call sites, comments, and diagnostics — that you query instead of \
-    reading files. The point is budget. A search that costs tens of thousands of tokens in file \
-    reads costs a few hundred as a query, and the tokens you don't burn re-reading files are tokens \
-    you spend finding what actually matters. \
-    \
-    It is not an auditor and never will be: it performs no risk detection, assigns no severity, \
-    ranks nothing, and draws no conclusions. Every judgment in your response — what is buggy, how \
-    severe, what to fix — is entirely yours. SlugAudit hands you mechanics; deciding which of them \
-    is a lead is your call. \
-    \
-    FIRST MOVE: call `report` for the project snapshot (files, languages, evidence kinds, parser \
-    failures, import resolution), then call `leads` with only `path` for a count of every mechanic \
-    it can surface — call sites by callee (`unwrap`, `expect`, `panic`, `todo`, `unimplemented`, \
-    `assert`), diagnostics, TODO/FIXME/HACK comment markers, credential-shaped files. Those counts \
-    are unranked, so pick whichever you think matters and call `leads` again with that `mechanic` \
-    for file/line rows, paging with `limit`/`offset`. Callee-based mechanics are Rust-only in this \
-    revision. \
-    \
-    WHAT THIS ADDS: structural and aggregate questions that reading or grep can't answer cheaply — \
-    what a symbol is and where it is defined, every call site of a given callee, which project files \
-    import which, per-file counts, parser diagnostics, and repo-wide denominators (\"14 call sites of \
-    `unwrap` in this file; the repo median is 1\"). Evidence is re-synchronized on every call, so you \
-    are never reasoning about a stale copy of the tree — it mirrors the files on disk, not unsaved \
-    editor buffers. grep and reading files remain the right tools for a literal lookup; this is one \
-    more instrument on your belt, not a replacement for the ones you already have. \
-    \
-    TRY IT FIRST: on a project where the index is already enabled, spend two calls on `report` and \
-    `leads` before your first file read. It costs almost nothing and shows you what this index can \
-    answer here. Then use whichever instrument answers each question best — grep, reading, or this. \
-    Nobody is asking you to prefer SlugAudit. \
-    \
-    QUERY SCHEMA: `files` (id, path, language, byte_len, content — full text of every indexed file, \
-    including non-code files), `evidence` (id, file_id, kind, start_line, end_line, payload — JSON; \
-    kinds Structure, Import, Export, Comment, Docstring, Symbol, Diagnostic, Chunk, RawNode, Metric, \
-    Call), `dependency_edges` (from_file_id, to_file_id, resolution_kind, syntax_unmodeled). Always \
-    JOIN evidence to files: SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = \
-    f.id WHERE e.kind = 'Symbol' AND json_extract(e.payload, '$.name') = 'configure'. Discover the \
-    rest with SELECT name FROM sqlite_master WHERE type='table', and read `slugaudit://schema.sql`. \
-    \
-    PAYLOAD KEYS (evidence.payload holds JSON — always json_extract, never LIKE on payload text): \
-    Symbol {name, kind, type_annotation, doc}; Structure {kind, name, visibility, decorators, \
-    signature}; Import {source, items, alias, is_wildcard}; Export {name, kind}; Comment {text, \
-    kind, associated_node}; Docstring {text, format, associated_item}; Diagnostic {message, \
-    severity}; Call {language, callee_text, callee_name, caller, resolution, confidence} (Rust only). \
-    \
-    IMPORTS: dependency_edges.resolution_kind is Resolved, Unresolved, or External, and \
-    syntax_unmodeled = 1 marks edges whose import syntax the resolver could not parse at all. \
-    `report.import_resolution` gives you the ratio before you lean on traversal — a graph that is \
-    mostly External/Unresolved makes dependency walking a dead end, not a finding. \
-    \
-    STRUCTURE: `structure` runs Tree-sitter queries against the same indexed content — Rust \
-    (function_item name: (identifier) @name body: (block) @body), Python (function_definition name: \
-    (identifier) @name), or project-wide with `language` + `pattern`. Ready-made recipes are \
-    resources: `slugaudit://queries/README.md`, `slugaudit://queries/find_unhandled_panics.sql`, \
+const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an index of this project's code — parsed \
+    structure, symbols, imports, exports, call sites, comments, diagnostics — that you query instead of reading \
+    files. It answers structural and aggregate questions that reading and grep cannot answer cheaply: what a \
+    symbol is and where it is defined, every call site of a given callee, which project files import which, \
+    per-file counts, parser diagnostics, and repo-wide denominators (\"14 call sites of `unwrap` in this file; \
+    the repo median is 1\"). A question that costs tens of thousands of tokens in file reads usually costs a \
+    few hundred as a query, and the tokens you don't burn re-reading files are tokens you spend finding what \
+    matters. Evidence is re-synchronized on every call, so you are never reasoning about a stale copy of the \
+    tree — it mirrors the files on disk, not unsaved editor buffers.\n\n\
+    FIRST-WIN RULE: about to open more than ~3 files to answer one structural question — where is X defined, \
+    who calls Y, what does Z import? — query instead. A cheap start on an enabled project: `report` for the \
+    snapshot, then `leads` with only `path` for every mechanic and its count — two calls, no source reads. After \
+    that, use whichever instrument answers each question best.\n\n\
+    USE IT INSTEAD OF: grep for a symbol, callee, diagnostic, or comment marker → `query` (SQL over the index) \
+    or `leads` (the same mechanics without writing SQL); cat to read a file → SELECT content FROM files WHERE \
+    path = '…', or `structure` when you want AST nodes rather than text; tracing imports by hand → \
+    `dependency_edges` joined in a recursive CTE (see IMPORTS); notes you want back later → `finding` (see \
+    OTHER TOOLS). grep and reading a file you already know remain the right tools for a literal lookup.\n\n\
+    LEADS: `leads` with only `path` returns every mechanic id with its count, in declaration order — call sites \
+    by callee (`unwrap`, `expect`, `panic`/`unreachable`, `todo`/`unimplemented`, \
+    `assert`/`assert_eq`/`assert_ne`/`debug_assert*`), diagnostics, TODO/FIXME/HACK/XXX comment markers, and \
+    credential-shaped file paths. Counts are complete regardless of `limit`/`offset` and carry no ordering by \
+    importance; call again with one `mechanic` id for file/line rows, paging with `limit`/`offset` and checking \
+    `truncated`/`next_offset`. Two limits to know. (1) The callee-based mechanics read Call evidence, which only \
+    the Rust call walker produces: on a project with no Rust files those counts are 0 because nothing was \
+    checked, not because nothing is there — diagnostics, comment markers, and credential paths cover every \
+    indexed language. (2) Each row's `detail` is clipped to 200 characters, and `detail_clipped` is true when \
+    characters were dropped; the remainder lives only in the file.\n\n\
+    QUERY SCHEMA: `files` (id, path, language, byte_len, content — full text of every indexed file, including \
+    non-code files), `evidence` (id, file_id, kind, start_line, end_line, payload — JSON; kinds Structure, \
+    Import, Export, Comment, Docstring, Symbol, Diagnostic, Chunk, RawNode, Metric, Call), `dependency_edges` \
+    (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled). One read-only \
+    SQL statement per call, capped at 500 rows (`truncated`/`next_offset`). Always JOIN evidence to files: \
+    SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND \
+    json_extract(e.payload, '$.name') = 'configure'. Discover the rest with SELECT name FROM sqlite_master \
+    WHERE type='table', and read `slugaudit://schema.sql`.\n\n\
+    PAYLOAD KEYS (evidence.payload holds JSON — always json_extract, never LIKE on payload text): Symbol \
+    {name, kind, type_annotation, doc}; Structure {kind, name, visibility, decorators, signature}; Import \
+    {source, items, alias, is_wildcard}; Export {name, kind}; Comment {text, kind, associated_node}; Docstring \
+    {text, format, associated_item}; Diagnostic {message, severity}; Call {language, callee_text, callee_name, \
+    caller, resolution, confidence} (Rust only).\n\n\
+    IMPORTS: `dependency_edges.resolution_kind` is Resolved, Unresolved, or External; `syntax_unmodeled` = 1 \
+    marks an Unresolved edge whose import syntax the resolver could not parse at all (e.g. Go's `import \"fmt\"`), \
+    as opposed to one that parsed but matched no project file. `report` gives the split as `import_resolution` \
+    plus `unsupported_language_unresolved_count` — a graph that is mostly External/Unresolved makes dependency \
+    walking a dead end, not a finding.\n\n\
+    STRUCTURE: `structure` runs a Tree-sitter S-expression query (required, and it must name at least one \
+    capture) against indexed content — in one `file`, or project-wide with `language` and an optional `pattern` \
+    path filter (e.g. `src/**/*.rs`). Rust `(function_item name: (identifier) @name)`, \
+    Python `(function_definition name: (identifier) @name)`. Ready-made recipes are resources: \
+    `slugaudit://queries/README.md`, `slugaudit://queries/find_unhandled_panics.sql`, \
     `slugaudit://queries/auth_attack_surface.sql`, `slugaudit://queries/syntax_diagnostics.sql`, \
-    `slugaudit://queries/rust_functions.scm`. \
-    \
-    RECORD: `finding` persists a conclusion you have personally reviewed, bound to the file's \
-    current content hash — it stales the moment that file changes, and it is visible only to this \
-    session, so treat it as your notebook rather than a shared database. `finding_read` returns this \
-    session's findings. `project_control` enables or disables a project; `health` reports watcher and \
-    database state. \
-    \
-    FLOW: report → leads → drill with query/structure → read source only where evidence points → \
-    finding. \
-    \
-    WHEN NOT TO USE THIS: a `LIKE` over `files.content` is the worst of both worlds — index-build \
-    cost for grep-quality output. Ask the structured question instead, or use grep. Never claim \
-    SlugAudit identified, rated, or recommended anything — it cannot; evidence is not judgment.";
+    `slugaudit://queries/rust_functions.scm`.\n\n\
+    OTHER TOOLS: `report` is the project snapshot — files, languages, evidence kinds, parser failures, import \
+    resolution, credential-shaped file count. `finding` persists a conclusion you have personally reviewed, \
+    bound to the file's current content hash: it stales the moment that file changes, and it is visible only to \
+    this session, so treat it as your notebook rather than a shared database. `finding_read` returns this \
+    session's findings. `project_control` enables or disables a project; a moved or re-extracted project's stale \
+    database is discarded and rebuilt from source automatically. `health` reports watcher and database state.\n\n\
+    FLOW: report → leads → drill with query/structure → read source only where evidence points → finding.\n\n\
+    JUDGMENT IS YOURS: SlugAudit is not an auditor and never will be — it performs no risk detection, assigns \
+    no severity, ranks nothing, and draws no conclusions. Every judgment in your response — what is buggy, how \
+    severe, what to fix — is entirely yours; the index hands you mechanics, and deciding which of them is a lead \
+    is your call. It records only the severity, category, and description you supply — it never generates \
+    them. Never claim SlugAudit identified, rated, or recommended anything — it cannot; evidence is \
+    not judgment.";
 
 #[derive(Clone)]
 pub struct SlugAuditServer {
@@ -213,7 +209,7 @@ impl SlugAuditServer {
         description = "Query the indexed codebase with read-only SQL. Key tables: \
          files (id, path, language, byte_len, content — full text of every indexed file including non-code files), \
          evidence (id, file_id, kind, start_line, end_line, payload — Symbol, Import, Comment, Structure), \
-         dependency_edges (from_file_id, to_file_id, kind, status). \
+         dependency_edges (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled). \
          To inspect code or file content directly from the DB without filesystem reads, query `files.content` (e.g. `SELECT content FROM files WHERE path = 'src/main.rs'`). \
          To link evidence to file paths, always JOIN: `SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND json_extract(e.payload, '$.name') = 'configure'`. \
          Schema discovery: `SELECT name FROM sqlite_master WHERE type='table'`."

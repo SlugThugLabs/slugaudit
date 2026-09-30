@@ -7,235 +7,251 @@
 > `.planning/` contains SlugAudit's development documentation; in a customer
 > project, `.planning/` is customer-owned project data. SlugAudit owns only the
 > `slugaudit/` child directory and excludes it from discovery.
->
-This document is the single high-level source of truth for how SlugAudit
-fits together. It is the first thing a senior engineer should read when
-joining — `.planning/PHASE-*.md` files document specific work,
-`OBSERVABILITY.md` documents telemetry behavior, `PACKAGING.md` documents
-release mechanics, and `CLAUDE.md` (if present at any point) documents
-agent-specific notes. **This** file documents what the system *is*.
 
-## High-level overview
+This document describes what the system *is*: its structure, its data flow,
+its invariants, and the reasoning behind the choices that shape them. It is
+written so an engineer can predict where a change belongs and which
+constraints a change must not break. It is not a plan (`.planning/PLAN.md`), not an
+operator runbook (`docs/TROUBLESHOOTING.md`), and not a guide to wiring up a
+specific client (`docs/CLIENTS.md`).
 
-SlugAudit is a stdio-MCP server (`slugaudit serve`) backed by a
-per-project SQLite database. Every enabled project gets its own
-`project.db` in `./<project>/.planning/slugaudit/`. The server is
-stateless across projects: enabling a project on a sibling is a
-brand-new SQLite handle; cross-project questions go through the orchestrating
-agent, not through SlugAudit.
+## What SlugAudit is
 
-The server exposes eight tools:
+SlugAudit is a **stdio MCP server** (`slugaudit serve`) backed by a
+per-project SQLite database. It parses a project's source into evidence —
+structure, symbols, imports, call sites, comments, diagnostics — and answers
+queries about that evidence. It is an index the calling agent queries instead
+of re-reading files.
 
-- **`report`** — read-only snapshot of the indexed revision:
-  file/language counts, parser failures, evidence-kind counts.
+It is **not an auditor and never will be**: it performs no risk detection,
+assigns no severity, ranks nothing, and draws no conclusions. Every judgment
+in a response belongs to the calling agent. This is a structural property, not
+a tone-of-voice choice:
+
+- the schema has no table whose purpose is to claim SlugAudit found a bug
+  (`src/store/schema.sql`);
+- the `findings` table holds text the agent supplied, verbatim
+  (`src/tools/finding.rs`);
+- `leads` returns unranked counts and rows derived at read time
+  (`src/tools/leads.rs`).
+
+The server exposes eight tools (`src/server.rs`):
+
+- **`report`** — automatic snapshot of the current revision: file/language
+  counts, parser failures, evidence-kind counts, import-resolution buckets,
+  credential-shaped file count.
 - **`leads`** — unranked mechanical observations: call sites by callee name,
   diagnostics, TODO/FIXME/HACK comment markers, credential-shaped files.
   Counts by default; file/line rows for one mechanic on request. Callee-based
-  mechanics are Rust-only.
-- **`query`** — read-only arbitrary SQL on the project's own database.
-  The connection itself refuses writes; the SQL is never parsed for
-  write intent.
-- **`structure`** — Tree-sitter structural pattern matching against
-  indexed source content (300+ languages). Supports both single-file
-  deep extraction and multi-file project searches with lean token snippets.
-- **`finding`** — the single write tool. Persists AI-authored findings
-  bound to a file's current `content_hash`, auto-invalidating on file
-  change.
-- **`finding_read`** — returns findings scoped to the current agent
-  session. Unlike raw `query` against the `findings` table (which
-  returns every session's rows), `finding_read` gates on the current
-  `session_id` — a new agent sees only its own conclusions.
-- **`project_control`** — enable/disable a project (creates or removes
-  the activation directory and runs the initial import).
-- **`health`** — operational snapshot: watcher health, unreconciled
-  counts, cumulative tool-call counters, last-sync timestamp and duration.
+  mechanics are Rust-only in this revision.
+- **`query`** — arbitrary read-only SQL against the project's own database.
+  The connection itself refuses writes; the SQL is never inspected for write
+  intent.
+- **`structure`** — Tree-sitter structural pattern matching against indexed
+  source content, either single-file or project-wide.
+- **`finding`** — the single write tool. Persists agent-authored conclusions
+  bound to a file's current `content_hash`.
+- **`finding_read`** — returns findings scoped to the calling agent session.
+- **`project_control`** — enable or disable a project (create or remove the
+  activation directory and run the initial import).
+- **`health`** — operational snapshot: watcher health, unreconciled counts,
+  cumulative tool-call counters, last-sync timestamp and duration.
 
-Of these, only `finding` and `project_control` mutate state; the rest
-are read-only views into the most recent revision's evidence. All
-state-bearing tools synchronize the relevant project before serving —
-if the watcher reports untrusted state (restart, integrity violation)
-the next tool call does a full publish instead of trusting the
+Only `finding` and `project_control` mutate state. Every state-bearing tool
+first brings the project current (see *Data flow*); if the watcher reports
+untrusted state, that sync is a full publish rather than a trust of the
 dirty-set.
 
-The same server exposes read-only MCP resources: the canonical database schema
-(`slugaudit://schema.sql`) and the query recipes under `slugaudit://queries/`.
+The same server exposes read-only MCP resources (`src/resources.rs`): the
+canonical schema (`slugaudit://schema.sql`) and the query recipes under
+`slugaudit://queries/` (`examples/queries/`). They are embedded at compile time
+via `include_str!` and are pull-based — nothing is pushed into a connecting
+agent's context.
 
 ## Repository versus runtime scope
 
-The `.planning/` directory at this repository root contains development
-material for SlugAudit. It is not shipped as part of the end-user binary.
-When the binary runs in a customer project, however, that project's
-`.planning/` directory is customer data and may be indexed. Only
-`<project-root>/.planning/slugaudit/` is application-owned runtime state; its
-`project.db` is disposable derived data.
+`.planning/` at this repository root is development material for SlugAudit; it
+is not shipped in the binary. When the binary runs in a customer project, that
+project's `.planning/` directory is customer data and may be indexed. Only
+`<project-root>/.planning/slugaudit/` is application-owned runtime state, and
+its `project.db` is disposable derived data. `src/ignore_rules.rs` is the
+single source of truth for what is excluded (the activation directory, VCS
+internals, scratch files, and the project's own ignore files), consulted by
+discovery, the watcher, and reconcile alike so those three can never disagree
+about what the index contains.
 
-See the repository-level [DEVELOPMENT_SCOPE.md](../DEVELOPMENT_SCOPE.md) for
-the complete scope policy.
+## Layering
+
+Bottom-up: `store` and `parse` know nothing of MCP. `graph` knows nothing of
+`sync`. `sync` knows nothing of `tools` — including `progress`, which exists
+precisely so the sync layer can emit progress events without depending on the
+MCP-aware code that renders them. `tools` orchestrates across the others but
+never duplicates their logic.
+
+Three single-entry-point rules keep the graph acyclic and the write surface
+narrow:
+
+- `sync::revision::publish_revision` is the only path that writes `files`,
+  `evidence`, `dependency_edges`, and `revisions`.
+- `tools::context::ensure_synced` is the only path that brings a project
+  current. Every state-bearing tool calls it — `report` included.
+- `tools::ToolCounters` is the only definition of "how many tool calls have we
+  served". A parallel counter elsewhere would be a second source of truth.
 
 ## Module map
 
 ```
 src/
-├── main.rs                   CLI dispatch (parse_args → Connect/Install/Serve)
-├── lib.rs / mod.rs           crate root, top-level pub mod declarations
-├── server.rs                 rmcp ServerHandler + tool router registration
-│                             (tool contracts only)
-├── server_runner.rs          run_blocking worker pool (semaphore-bounded) +
-│                             MCP progress sink plumbing
+├── main.rs                   binary entry: parse args, then serve MCP over stdio
+├── lib.rs                    crate root: module declarations + crate-wide lint policy
+├── cli.rs                    Command enum, parse_args, usage text
+├── server.rs                 MCP surface: tool contracts, INSTRUCTIONS, tool router
+├── server_runner.rs          tool-call execution: semaphore, spawn_blocking, progress
 ├── resources.rs              static MCP resources (query cookbook + schema)
-├── resources_tests.rs        resources catalog tests
-├── cli.rs                    Command enum + parse_args + USAGE string
-├── connect.rs                register the running binary with a target agent
-├── connect_agents.rs         supported AI agents and editors registry
-├── connect_exec.rs           command execution and JSON config file modification
-├── install.rs                copy the binary to a stable ~/.slugthug/slugaudit path
-├── menu.rs                   interactive setup CLI (install/connect/other-client/run server)
-├── util.rs                   cross-module helpers (lock_or_recover, hex_encode, …)
-
-├── tools/                    MCP tool handlers — thin orchestration:
-│   ├── mod.rs                ToolCounters, public exports
-│   ├── context.rs            ensure_synced() + transaction envelopes
-│   ├── context_transactions.rs with / with_verified_write helpers
-│   ├── report.rs             automatic snapshot
+├── progress.rs               ProgressEvent/ProgressSink bridge from sync to a renderer
+├── ignore_rules.rs           single source of truth for excluded paths
+├── util.rs                   cross-module helpers (lock_or_recover, Deadline, SESSION_ID)
+├── menu.rs                   interactive setup menu
+├── menu_render.rs            ANSI rendering helpers for the setup menu
+├── install.rs                stable binary installation into ~/.slugthug
+├── update.rs                 self-update: fetch release, atomically replace the binary
+├── update_fetch.rs           network + version helpers for self-update
+├── connect.rs                register/remove this binary with a target agent
+├── connect_agents.rs         supported agents and editors registry
+├── connect_cli.rs            per-client `mcp add`/`remove` argv grammar and execution
+├── connect_exec.rs           registration policy: dispatch, config merging, refusals
+├── connect_guidance.rs       user-facing instructions, provenance and docs links
+│
+├── tools/                    MCP tool handlers — thin orchestration
+│   ├── mod.rs                ToolCounters, shared credential predicate, exports
+│   ├── context.rs            ensure_synced + revision verification
+│   ├── context_transactions.rs  with_verified_read / with_verified_write
+│   ├── report.rs             automatic project snapshot
 │   ├── query.rs              arbitrary read-only SQL with budgets
-│   ├── query_value.rs        SQLite row → JSON conversion + size cap
+│   ├── query_value.rs        SQLite row/value → JSON with a per-value cap
 │   ├── structure.rs          tree-sitter pattern match
 │   ├── structure_source.rs   source loading + multi-file and snippet helpers
-│   ├── leads.rs              mechanical observation counts + rows (unranked)
-│   ├── leads_tests.rs        leads tool tests — one behavior per test
+│   ├── leads.rs              unranked mechanical observations
+│   ├── leads_query.rs        leads mechanic catalogue + the SQL each compiles to
 │   ├── finding.rs            the single write tool
 │   ├── finding_read.rs       session-gated finding query
-│   ├── project_control.rs    enable/disable
-│   └── health.rs             operational snapshot (Phase 2.1)
-
-├── sync/                     Indexing + watcher-aware reconciliation
+│   ├── project_control.rs    enable/disable a project
+│   └── health.rs             operational snapshot
+│
+├── sync/                     detection and persistence of what changed on disk
 │   ├── mod.rs                public exports
-│   ├── manager.rs                 SourceSyncManager state, public accessors, and related types
-│   ├── manager_orchestration.rs   project resolution, database recovery, ensure_current entry point
-│   ├── manager_health.rs           watcher-health dispatch and incremental barrier reconciliation
-│   ├── manager_meta.rs       current_revision_id + ensure_project_row helpers
-│   ├── reconcile/             dirty/deleted reconciliation — split into 6 files (mod.rs + error/report/options/pipeline/barrier/queries)
-│   │   ├── mod.rs             re-exports + MAX_BARRIER_LOOPS
-│   │   ├── error.rs           ReconcileError
-│   │   ├── report.rs          ReconcileReport
-│   │   ├── options.rs         ReconcileOptions (budget + ignore rules)
-│   │   ├── pipeline.rs        per-path dirty-file loop
-│   │   ├── barrier.rs         event-barrier sync loop
-│   │   └── queries.rs         SQL helpers (existing hashes, parser pack version)
+│   ├── manager.rs            SourceSyncManager: state, watcher ownership, observability
+│   ├── manager_orchestration.rs  ensure_current: resolve, open/recover, rebuild tail
+│   ├── manager_health.rs     sync_by_health: the WatcherHealth dispatch
+│   ├── manager_meta.rs       metadata row, session purge, publish_from_scratch
+│   ├── sweep.rs              the stat sweep — the freshness backstop
+│   ├── sweep_reconcile.rs    apply the sweep's findings under compare-and-swap
+│   ├── reconcile/            dirty/deleted reconciliation
+│   │   ├── mod.rs            re-exports + MAX_BARRIER_LOOPS
+│   │   ├── error.rs          ReconcileError
+│   │   ├── report.rs         ReconcileReport
+│   │   ├── options.rs        ReconcileOptions (budget + ignore rules)
+│   │   ├── pipeline.rs       per-path dirty-file loop
+│   │   ├── barrier.rs        event-barrier sync loop
+│   │   └── queries.rs        SQL the pipeline reads
 │   ├── discovery.rs          filesystem walk with extension/limit filters
 │   ├── hash.rs               BLAKE3 content hashing
 │   ├── sample.rs             read-file-with-budgets
-│   ├── sample_batch.rs       parallel batch sampling loop + per-file skips
-│   ├── publish.rs            drive a single publish attempt
-│   ├── publish_attempt.rs    first-try wrapper
+│   ├── sample_batch.rs       parallel batch sampling loop
+│   ├── publish.rs            drive a single publish
+│   ├── publish_attempt.rs    one attempt: discover → sample → diff → commit
 │   ├── publish_cas.rs        compare-and-swap retry primitive
 │   ├── publish_diff.rs       before/after diff for diagnostics
-│   ├── publish_log.rs        retry counter + warn! on each retry
-│   ├── revalidate.rs         re-sample previously-upserted files
-│   ├── manifest.rs           manifest hash computation
-│   ├── revision.rs           revisions table writes (atomic current-pointer swap)
-│   ├── revision_edges.rs     dependency_edges table writes
-│   ├── analyze.rs            tree-sitter parse for one file
-│   └── race_hook.rs          test-only injection hook
-
-├── graph/                    import → project-file resolution
-│   ├── mod.rs                public exports + dispatch entry point
+│   ├── publish_log.rs        per-attempt tracing outcome
+│   ├── revalidate.rs         re-check sampled files before the commit
+│   ├── manifest.rs           manifest hash + change classification
+│   ├── revision.rs           revisions/files/evidence writes (atomic current-pointer swap)
+│   ├── revision_edges.rs     dependency_edges writes for upserted files
+│   ├── analyze.rs            tree-sitter parse + evidence extraction for one file
+│   └── race_hook.rs          test-only race-injection hook
+│
+├── graph/                    import evidence → dependency_edges
+│   ├── mod.rs                public entry point (resolve captured Import evidence)
 │   ├── reference.rs          ImportReference (pre-resolution extraction)
-│   ├── resolve.rs            path-arithmetic primitives
-│   ├── resolve_rust.rs       Rust-specific `crate::`/`super::`/`self::` resolution
-│   └── resolver/             generic + per-language resolvers — split into 5 files (mod.rs + generic/python/js/path_helpers/registry)
-│       ├── mod.rs            re-exports + module map (entry point)
-│       ├── generic.rs        Resolution/ResolutionKind, LanguageResolver trait, GenericResolver
-│       ├── python.rs         Python-style relative imports + __init__.py
-│       ├── js.rs             JS/TS-style `import … from 'path'`
-│       ├── path_helpers.rs   extract_quoted_string, candidate_paths, …
-│       └── registry.rs       OnceLock-backed registry + get_resolver/resolve_one
-
+│   ├── resolve.rs            generic path-arithmetic utilities
+│   ├── resolve_rust.rs       Rust crate::/super::/self:: resolution
+│   └── resolver/             generic + per-language resolvers
+│       ├── mod.rs            entry point + dispatch
+│       ├── generic.rs        LanguageResolver trait + generic resolver
+│       ├── python.rs         Python relative imports
+│       ├── js.rs             JS/TS import forms
+│       ├── extract.rs        raw import statement → reference
+│       ├── path_helpers.rs   path-arithmetic helpers
+│       ├── registry.rs       resolver registry + public entry points
+│       └── types.rs          resolution outcome model
+│
+├── evidence/                 evidence extraction + normalization
+│   ├── mod.rs                neutral normalization of pack output
+│   ├── normalize.rs          pack node → evidence
+│   ├── normalize_builders.rs payload builders
+│   ├── sql.rs                EvidenceKind ↔ SQL text mirror
+│   ├── calls.rs              Rust call-site walker
+│   └── generic_imports.rs    generic import extraction
+│
 ├── watch/                    filesystem watching
-│   ├── mod.rs                module map
-│   ├── state.rs              WatchState concurrency wrapper (locks go through lock_or_recover)
-│   ├── types.rs              pure data types: WatcherHealth enum, ProjectWatchState struct
-│   ├── path.rs               normalize_relative_path helper
-│   ├── manager.rs            WatchManager: event dispatch + project registry
-│   └── tests.rs              integration tests
-
+│   ├── mod.rs                public exports
+│   ├── manager.rs            WatchManager: notify lifecycle + event dispatch
+│   ├── state.rs              WatchState — thread-safe per-project state
+│   ├── types.rs              WatcherHealth + ProjectWatchState
+│   ├── scope.rs              which directories are watched
+│   └── path.rs               relative-path normalization
+│
 ├── project/                  project resolution + activation
-│   ├── mod.rs                find_project_root, enable/disable
-│   ├── root.rs               ProjectRoot type
-│   ├── activation.rs         write/read the activation dir marker
+│   ├── mod.rs                exports: resolve_project, enable/disable
+│   ├── root.rs               ProjectRoot
+│   ├── activation.rs         activation-directory marker read/write
 │   ├── database_path.rs      where this project's project.db lives
-│   └── config.rs             in-repo project configuration (.planning/slugaudit/config.json)
-
+│   └── config.rs             in-repo config (.planning/slugaudit/config.json)
+│
 ├── store/                    SQLite connection boundary
-│   ├── mod.rs                open_read_write/open_read_only/discard_corrupt_database
-│   ├── connection.rs         typed StoreError + symlink/NFS/perm guards
-│   ├── netfs.rs              network-filesystem rejection (Linux macOS)
-│   ├── migrations.rs         schema versioning
-│   └── schema.sql            canonical schema
-
-├── parse/                    tree-sitter parser registration
-├── model/                    ResourceLimits + evidence/span types
-├── evidence/                 evidence kind/category enums + normalize helpers
-│   └── calls.rs              Rust call-site evidence walker
-└── cli_tests.rs etc.         inline #[path] test modules per source file
+│   ├── mod.rs                open_read_write / open_read_only / discard_corrupt_database
+│   ├── connection.rs         typed StoreError + symlink/permission/ATTACH guards
+│   ├── netfs.rs              network-filesystem rejection
+│   ├── migrations.rs         schema versioning (CURRENT_SCHEMA_VERSION)
+│   ├── schema.sql            canonical schema
+│   └── test_capture.rs       test-only tracing capture helper
+│
+├── parse/                    tree-sitter language-pack boundary
+│   ├── mod.rs                PACK_VERSION + re-exports
+│   └── language.rs           language detection + parser availability
+│
+├── model/                    contracts shared by parsing, storage, and tools
+│   ├── mod.rs                re-exports
+│   ├── limits.rs             ResourceLimits + process_limits()
+│   ├── profile.rs            Lean / Audit / Adaptive profiles
+│   ├── system_ram.rs         host memory detection
+│   ├── parser.rs             parser-availability / parse-outcome enums
+│   ├── evidence.rs           evidence kind + payload model
+│   ├── source.rs             source-text model
+│   └── span.rs               byte/line span types
+│
+└── bin/                      development-only gate binaries
+    ├── check_source_limits/  per-file code-line ceilings
+    │   ├── main.rs           check loop + verdict printer
+    │   ├── counter.rs        token-aware Rust code-line counter
+    │   └── approval.rs       exception-comment parser
+    ├── check_no_duplicates.rs   duplicate commit subjects / test names
+    ├── check_docs_drift/     documentation drift gate
+    │   ├── main.rs           argv + failure printer + exit codes
+    │   ├── canonical_docs.rs the canonical doc set must exist
+    │   ├── module_map.rs     this module map must reference real paths
+    │   └── test_file_count.rs  the `*_tests.rs` count claim must match
+    ├── check_coverage.rs     llvm-cov line-coverage gate
+    └── check_performance/    criterion medians vs. the committed baseline
+        ├── main.rs           run benches, compare, print verdict
+        ├── estimates.rs      criterion estimate collection + baseline loading
+        └── format.rs         time formatting
 ```
 
-### Manager split decision
-
-The former `src/sync/manager.rs` combined three distinct responsibilities in
-one 511-line file: manager state and observability, project/database recovery,
-and watcher-health reconciliation. It is now split along those responsibility
-boundaries:
-
-- `manager.rs` owns `SourceSyncManager`, `SyncedProject`, `SyncError`,
-  constructors, counters, watcher registration, and public observability.
-- `manager_orchestration.rs` owns the outer `ensure_current` workflow,
-  including project resolution, database recovery, and the shared rebuild tail.
-- `manager_health.rs` owns the watcher-health state machine and incremental
-  barrier reconciliation, because those paths share health transitions,
-  counters, progress signaling, and freshness invariants.
-
-The two implementation modules are private children of `manager.rs`, rather
-than sibling public modules. That preserves private-field access, keeps the
-existing `sync::SourceSyncManager` API unchanged, and avoids weakening
-encapsulation with `pub(crate)` state fields. This is a structural split only:
-the synchronization behavior and its tests are unchanged.
-
-## File-size authorization summary
-
-Every file under `src/` is governed by `cargo run --bin check_source_limits --locked` (the bin that replaced the prior `tools/check_source_limits.sh` shell script). Production files at 0–199 code lines auto-pass the gate; 200–300 requires an in-source comment of the form
-
-```rust
-// slugaudit-line-exception: approved-by=<who>; reason=<why>
-```
-
-and ≥300 hard-fails the gate (CI red). Test files (`*_tests.rs`, `tests.rs`) enumerate one named behavior per `#[test]` — repetition that cannot be DRY'd without losing failure diagnostics — so they auto-pass up to 500 code lines and hard-fail above, with no exception step. The scopes below mirror those stages as OAuth-style decisions so a reviewer can see at a glance which files are explicit grants versus implicit auto-passes versus active violations — without re-running the script.
-
-| Stage | Scope decision | Count |
-|---|---|---|
-| 0–199 LoC (any file) | `source-size:auto` | 142 |
-| test files 200–500 LoC | `source-size:test-auto` | 9 |
-| production 200–300 LoC, annotated | `source-size:approved-exception` | 9 |
-| production 200–300 LoC, **NOT** annotated | `source-size:violation` | 0 |
-| >300 production / >500 test LoC | `source-size:hard-fail` | 0 |
-
-### Approved exceptions — `source-size:approved-exception`
-
-The following **production** files exceed the 200 LoC soft cap with an
-`approved-by=agent; reason=…` annotation justifying the bundling.
-Test files between 200–500 lines need no annotation under the
-test-file rule above.
-
-| File | LoC | Reason |
-|---|---:|---|
-| `src/bin/check_no_duplicates.rs` | 279 | two orthogonal gate inputs (commit-subject dedupe via `git log`, `#[test]` name dedupe) share one argv parser, exit-code contract, and failure-printer |
-| `src/bin/check_performance/main.rs` | 249 | criterion argv, per-row regression comparison with budget tracking, and the verdict printer share one process so the single user-visible CLI output stays coherent |
-| `src/bin/check_source_limits/counter.rs` | 264 | the token-aware counter's comment/string/char/raw-string states are one atomic scanner; splitting the state machine would fragment the exact token-coverage semantics the gate depends on |
-| `src/evidence/normalize.rs` | 224 | one match arm per Tree-sitter evidence kind; splitting by kind would hide the exhaustiveness this file exists to guarantee |
-| `src/graph/resolve_rust.rs` | 210 | one resolution pipeline per Rust import form (workspace anchoring, super/self walk, item-vs-module shortening) with mutually recursive helpers on the same `known_paths` contract |
-| `src/tools/health.rs` | 236 | health is the schema-defining tool; Request + Response + phase + derivation live together so the schema isn't split from its only consumer |
-| `src/tools/query.rs` | 261 | one tool contract owns request/response types, the execution/budget path, and the separator scanner; splitting would fragment the validation order (empty → size → statement count → freshness → budget) the tests assert against |
-| `src/watch/manager.rs` | 287 | one file owns the notify watcher lifecycle, per-project watch states, scope/rule maintenance, and the event filter; splitting would fragment the manager's lock discipline and the unwatch rule |
+The two structures in this document that a gate checks — the module map above
+and the test-file count sentence under *Testing layout* — are parsed by
+`src/bin/check_docs_drift/`. Renaming, adding, or removing a file under `src/`
+means updating the map in the same change.
 
 ## Data flow (one tool call)
 
@@ -243,545 +259,425 @@ test-file rule above.
 Caller                             SlugAudit server
 └─ MCP request                     run_blocking (semaphore-bounded)
    └─ tools::ensure_synced         → SourceSyncManager::ensure_current
-      │                              <!-- mcp://progress: ensuring_current (Phase 2.2 wire point) -->
-      ├─ project::find_project_root  search parents for `.planning/slugaudit`
-      ├─ store::open_read_write      symlink/NFS/perm reject; WAL; migrations
-      ├─ ensure_project_row          INSERT OR IGNORE the singleton metadata row
+      │                              <!-- mcp://progress: ensuring_current -->
+      ├─ project::resolve_project    walk parents for `.planning/slugaudit`
+      ├─ store::open_read_write      symlink/NFS/permission guards; WAL; schema
+      ├─ ensure_project_row          INSERT OR IGNORE the singleton row; purge prior-session findings
       ├─ watch_manager.watch         register or reuse the project's WatchState
-      └─ match health branch         │
-         ├─ NeedsVerification│Desynced│Unavailable → publish::publish (full)
-         │                              <!-- mcp://progress: publishing {i}/{total} per file sampled -->
-         │                          then reconcile drained events + set Healthy
-         └─ Healthy + dirty events → reconcile (barrier-bounded to MAX_BARRIER_LOOPS)
-            └─ Healthy + no events → read current revision_id from revisions
-   └─ tools::* handler             read-only context-transaction or finding write
-   └─ ToolCounters::record_call    bump call_count / total_ms / error_count
+      └─ sync_by_health branch
+         ├─ NeedsVerification│Desynced → full publish + drain events → Healthy
+         │                              <!-- mcp://progress: publishing {i}/{total} -->
+         ├─ Healthy → stat sweep, then reconcile unreconciled events
+         │            (barrier-bounded to MAX_BARRIER_LOOPS), then apply sweep findings
+         └─ Unavailable → full publish every call
+   └─ tools::* handler             with_verified_read / with_verified_write
+   └─ ToolCounters::record_call    bump call_count / error_count / total_ms
    └─ tracing::info!|warn!         log completion (or failure) with counters in span
    └─ Json<{…}>                    return
                                        <!-- mcp://progress: completed -->
 Caller receives JSON response
 ```
 
-> **MCP progress annotations** (the `<!-- mcp://progress: ... -->` Slack-style inline
-> comments in the diagram): these mark the live wire points where MCP
-> `/notifications/progress` events are emitted by
-> `server_runner::run_blocking` — `0.0` with message
-> `{tool} ensuring_current` before the semaphore acquire, `0.5` with
-> `{tool} publishing` once the permit is held (per-file `Sampling`
-> events from the sync layer's `McpProgressSink` then overwrite this
-> with the real i/N ratio), and `1.0` with `{tool} completed` when the
-> work finishes, whether it succeeded or failed. Notifications are
-> best-effort: a broken progress channel can never fail a successful
-> tool call. Labels that differ slightly from these messages (e.g. a
-> reconcile stage between publishing and completed) reflect phases the
-> sync layer reports through its own `ProgressEvent` stream rather than
-> a separate wire point.
+The `<!-- mcp://progress: … -->` annotations mark the wire points where MCP
+`/notifications/progress` events are emitted by `server_runner::run_blocking`:
+`0.0` with message `{tool} ensuring_current` before the semaphore acquire,
+`0.5` with `{tool} publishing` once the permit is held (per-file `Sampling`
+events from the sync layer's `McpProgressSink` then overwrite this with the
+real i/N ratio), and `1.0` with `{tool} completed` when the work finishes,
+whether it succeeded or failed. Notifications are best-effort: a broken
+progress channel can never fail a successful tool call. Phases the sync layer
+reports through its own `ProgressEvent` stream (e.g. a reconcile stage between
+publishing and completed) appear as labels of the same shape.
 
-## Key invariants
+## Publish and revision model
 
-These constraints shape every module above; remove or weaken one and
-something else breaks loudly.
+`ensure_current` (`sync/manager_orchestration.rs`) resolves the project,
+opens the database (recovering or rebuilding it when necessary), verifies the
+metadata row, and dispatches on watcher health (`sync/manager_health.rs`):
 
-1. **Correctness come from the connection itself, never from inspecting
-   query text.** Read tools open a `SQLITE_OPEN_READ_ONLY`, write tools
-   open a `SQLITE_OPEN_READ_WRITE` but the `query` tool path never
-   reaches for the write connection.
-2. **Symlinks and network filesystems are rejected at open time.** A
-   symlinked `project.db` returns `StoreError::Symlink`; an `project.db`
-   on NFS/CIFS/SMB returns `StoreError::NetworkFilesystem`. The
-   open is the only place this is checked — every other tool trusts the
-   connection.
-3. **All `Mutex` locks go through `lock_or_recover`.** A poisoned mutex
-   after a panic inside a critical section is recovered (inner value
-   returned) instead of crashing the next caller. This is the
-   single-line reason a bug in watcher state mutation can't take down
-   the entire MCP server.
-4. **The barrier sync loops at most `MAX_BARRIER_LOOPS = 16` times.**
-   A racing producer (editor auto-save, fsmonitor storm) is detected,
-   `WatcherHealth::Desynced` is set, and `ReconcileError::BarrierCapExceeded`
-   is returned rather than looping forever and exhausting memory.
-5. **Tools use `run_blocking` on Tokio's blocking thread pool, gated by
-   an `Arc<Semaphore>` of 8 permits.** Slow I/O never starves the
-   async runtime; concurrent tool calls fan out across the permit pool.
-6. **Each revision is published atomically.** `revision::publish_revision`
-   computes the manifest hash, opens a write transaction, upserts files,
-   inserts the revision row, and updates `revisions.is_current` in one
-   txn. Concurrent publishers detect the mismatch via compare-and-swap
-   and retry.
-7. **Findings auto-invalidate on file change.** A finding is stored with
-   the file's current `content_hash`; the moment that hash changes, the
-   finding becomes `stale` and won't be served. The auto-invalidation
-   runs on the next `ensure_synced`/publish pass.
-8. **`#![forbid(unsafe_code)]` is enforced crate-wide.** The CI
-   `cargo deny` and `clippy -D warnings` checks enforce this, so a
-   reviewer doesn't have to verify it on every PR.
-9. **Findings are scoped to the agent session that wrote them.** Every
-   finding row carries the active `session_id` (a UUID generated once
-   per `slugaudit` boot). Every `ensure_current` runs
-   `purge_prior_session_findings` (`sync::manager_meta`) as the first
-   step inside `ensure_project_row`, deleting rows whose `session_id`
-   does not match the current process. A new agent (new chat, new
-   model, new reasoning context) starts with a clean finding set —
-   it does not silently inherit another session's audit conclusions.
-   The defense fires on both the `ensure_synced` read path and the
-   `publish_from_scratch` recover-from-corruption path.
-10. **The database is disposable derived data.** Every row in `files`,
-    `evidence`, `dependency_edges`, and `revisions` is computed from
-    the project's source files. The database can be deleted and
-    rebuilt with no data loss: `rm -rf .planning/slugaudit` followed
-    by any tool call. This is not a compromise — it is the correct
-    architecture for a cache whose input is always available and
-    whose output is always reproducible. The `findings` table is
-    session-scoped (invariant #9) and auto-invalidates on source
-    change, so it follows the same philosophy: conclusions are
-    ephemeral, evidence is reproducible.
+| Health | Action |
+|---|---|
+| `NeedsVerification`, `Desynced` | full publish, then drain events that arrived during it, then mark `Healthy` |
+| `Healthy` | stat sweep; reconcile unreconciled events if any; apply the sweep's findings |
+| `Unavailable` | full publish every call |
 
-11. **Production code never panics on an error value.** `unwrap` and
-    `expect` are denied outside `cfg(test)` at the crate root
-    (`src/lib.rs`) and in every gate binary, so fallible work returns
-    `Result` and a genuinely fatal condition (failed process startup)
-    reports the error and selects an exit code. Together with invariant
-    #3 this is why a defect surfaces as one failed tool call —
-    `server_runner` maps a panicking blocking task to
-    `ErrorData::internal_error("tool task failed: …")` — rather than a
-    dead server. Tests are exempt: a panic there *is* the failure signal.
+A publish is compare-and-swap. `sync/publish_cas.rs::publish` discovers, hashes,
+and diffs the current disk state against what the database holds, then asks
+`revision::publish_revision` to commit exactly that delta in one transaction.
+Two hazards are retried the same way, up to `MAX_CAS_RETRIES = 4`, each retry
+re-sampling from scratch: another publisher committing first (the CAS on the
+current revision id), and a file changing on disk after this attempt sampled
+it but before the transaction that would record it. Neither is papered over —
+both fail closed into a retry rather than publishing a revision that does not
+match a stable disk state. One `Deadline` spans every retry, so a pathological
+repository cannot restart the clock and stall the tool call.
+
+A disk state identical to the current revision skips publishing entirely: an
+unchanged sync writes no rows, so the database does not grow when nothing
+changed.
+
+Within the transaction, `publish_revision` upserts added/modified files and
+their evidence, deletes removed files (cascading their evidence and edges),
+and flips `revisions.is_current` only as the transaction's last statements;
+nothing is visible to another connection until `commit` succeeds. `revision_id`
+is derived from the row id (`rev-{id}`), so it changes on every publish.
+
+A successful `ensure_current` never guarantees that no concurrent publish will
+follow. `tools/context_transactions.rs::with_verified_read` and
+`with_verified_write` therefore open a fresh connection, begin a transaction,
+and re-verify the expected revision id inside it; a mismatch is retried by the
+caller. That is the completeness check between "the revision we synced to" and
+"the revision we are reading from".
+
+## Dependency-edge resolution scope
+
+`graph/` resolves each captured `Import` evidence item into exactly one
+`dependency_edges` row. Resolution is syntactic and file-set-local: no
+language's real module resolver is run, `node_modules` and package indexes are
+never consulted, and cross-language edges are never inferred. Every row keeps
+the verbatim `raw_import_text` whatever the outcome — the column is `NOT NULL`,
+and an import with no reference at all is still recorded, as `Unresolved`.
+
+| Language | Resolves to a project file | Otherwise |
+|---|---|---|
+| Python | dot-prefixed relative imports (`from . import x`, `from ..pkg import y`), including the `__init__.py` package marker | a single-token absolute import (`import os`, `from collections import X`) is `External`; a dotted absolute path (`from foo.bar import X`) is probed as a module path and resolves when the file exists, else `Unresolved` |
+| Rust | `crate::` (anchored at the owning crate's `src`, found by walking up to the nearest indexed `Cargo.toml`), plus `super::`/`self::` | `std::` and bare crate names are `External` |
+| JavaScript / TypeScript | relative `./x` / `../x`, probing the configured extensions and a directory `index` file | bare package names are `External`; `node_modules` is never searched |
+| every other language | the generic fallback, which models relative paths, module paths, and the `import`/`from`/`using`/`use`/`open`/`#include`/quoted forms | a bare name is `External`; an import whose syntax the fallback does not model is `Unresolved` |
+
+Confidence rides only on `Resolved` edges: exactly one candidate matches the
+known file set is `High`, more than one is `Low` (the first candidate is
+reported rather than discarded), and no match is `Unresolved` with no
+confidence. Rust `super::`/`self::` are always `Low` because `mod`
+declarations are never read, so which module a path names cannot be proven
+from the file tree alone.
+
+`syntax_unmodeled = 1` on an `Unresolved` edge marks syntax the resolver could
+not parse at all (e.g. Go's `import "fmt"`), as opposed to syntax that parsed
+but matched no project file (e.g. `kotlin.math.max`). The flag is computed
+once per edge at publish time and `report` returns the split as
+`import_resolution` plus `unsupported_language_unresolved_count`.
+
+The consequence for a caller is direct: on many projects the edge table is
+mostly `External`/`Unresolved`, and a graph in that shape makes dependency
+walking a dead end rather than a finding.
+
+## Freshness model
+
+Freshness has two layers, and the ordering matters:
+
+- **The `notify` watcher is an optimization.** Its callback runs on `notify`'s
+  internal event loop and takes the manager state with `try_lock`; if a tool
+  thread holds the lock, the event is dropped rather than blocking the event
+  loop. A dropped event is harmless because the next call re-verifies. The
+  watcher's error arm marks every project `Desynced`, which forces a full
+  publish on the next call.
+- **The stat sweep is the guarantee** (`sync/sweep.rs`). On every `Healthy`
+  call the project is walked with the same walker discovery uses, and every
+  file is `stat`ed — one `stat`, no read. A file whose stored
+  `modified_unix_seconds` and `byte_len` both match is proven unchanged;
+  everything else (stat mismatch, new on disk, or present in the database but
+  gone from disk) becomes a reconcile candidate or a deletion. Candidates are
+  only nominees: the reconcile pipeline re-hashes each one and skips files
+  whose content hash still matches, so a false positive costs one hash, never
+  a parse.
+
+    A failed sweep fails closed: it sets the watcher `Desynced` and the call
+    errors, because a partial sweep that silently skipped the rest of the tree
+    would serve exactly the staleness the sweep exists to prevent.
+
+**Accepted blind spot.** A same-size in-place edit that lands in the same
+wall-clock second as the stored stat *and* produces no watcher event is not
+detected by the sweep. It is covered whenever either layer fires (the watcher
+event, or a later second), and the residual case is accepted rather than
+hidden.
+
+The sweep reconciles against the same ignore rules a full publish uses, and
+`WatchManager::refresh_scope` recomputes the watch set when an ignore file
+changes, so the incremental path indexes exactly what a fresh publish would
+index — including files that became ignored, which converge out of the index
+as deletions.
+
+## Concurrency and deadlines
+
+- **Blocking work is bounded, not the async runtime.** Every tool call's
+  filesystem/SQLite/parse work goes through
+  `server_runner::run_blocking`, which acquires a permit from one
+  `Arc<Semaphore>` of `MAX_CONCURRENT_BLOCKING_OPS = 8` per server before
+  moving the closure onto Tokio's blocking pool. The permit is moved *into*
+  the closure, so a cancelled caller cannot free it while the blocking work
+  runs. The acquire is an async yield, not a thread block.
+- **Every operation has its own deadline.** Sync checks its deadline
+  cooperatively (per discovered file, per dirty path, per barrier iteration).
+  `query` has an SQLite VM-step budget and a wall-clock budget enforced
+  through the progress handler. `structure` has a wall-clock budget enforced
+  through Tree-sitter's native progress callback. The permit is bounded
+  because the work it guards is bounded.
+- **Barrier sync loops at most `MAX_BARRIER_LOOPS = 16` times**
+  (`sync/reconcile/mod.rs`). Snapshot dirty/deleted sets, reconcile, then loop
+  if new events arrived during reconciliation. Exceeding the cap means a
+  pathological producer is racing reconciliation; the watcher is marked
+  `Desynced` and `ReconcileError::BarrierCapExceeded` is returned rather than
+  draining forever.
+- **State is per server, not global.** `SlugAuditServer` owns its
+  `SourceSyncManager` (and thus its watcher, ignore rules, and last-sync
+  counters) and its semaphore, and passes the manager down explicitly. Two
+  servers in one process track independent state. The process-wide state that
+  remains is deliberate and small: `ToolCounters` atomics, `util::SESSION_ID`,
+  `model::limits::process_limits` (a `OnceLock`), and `parse::PACK_VERSION`.
+- **Every `Mutex` lock goes through `util::lock_or_recover`.** A mutex
+  poisoned by a panic in a critical section is recovered (the inner value is
+  returned, and the recovery is logged) instead of crashing the next caller.
+
+## Store and schema lifecycle
+
+`src/store/` is the only SQLite boundary. A fresh connection is opened per
+tool call; WAL mode makes that cheap, and the connection's mode (read-only vs.
+read-write) is fixed at open time and cannot change. Read tools take
+`open_read_only`; the write tool takes `open_read_write`.
+
+Three guards live at the open, because the open is the only place they can be
+enforced atomically:
+
+- **Symlinks.** Opened with `SQLITE_OPEN_NOFOLLOW` so a path that is or becomes
+  a symlink is rejected by SQLite itself, with a pre-check for a clearer error
+  in the common case.
+- **Network filesystems.** `store/netfs.rs` refuses a database on NFS/CIFS/SMB
+  (detected via `/proc/self/mountinfo` on Linux, the native inspection command
+  on macOS; unknown platforms fail closed), because WAL locking is unreliable
+  across those protocols.
+- **Permissions.** A newly created database file is created owner-only in one
+  syscall; an existing file readable or writable by group or other is
+  rejected rather than silently exposed.
+
+`store/connection.rs` also installs a SQLite authorizer that blocks
+`ATTACH DATABASE` on every connection, so a read-only connection cannot reach
+a second database file. This is the engine-level half of the invariant that
+correctness comes from the connection, not from inspecting query text.
+
+**Schema versioning is discard-and-rebuild.** `store/migrations.rs` writes
+`CURRENT_SCHEMA_VERSION` (currently `4`) to `PRAGMA user_version`. A database
+whose version is neither fresh (`0`) nor current resolves as
+`UnsupportedVersion`, which `is_corruption()` reports as corruption; the sync
+layer discards the file and rebuilds it from project source. There is no
+migration code path, and a version bump needs only a matching `schema.sql`
+change — a bump is free because there is no primary data to preserve.
+
+The database holds only current state: `files`, `evidence`, and
+`dependency_edges` are replaced in place, never duplicated per revision, and
+`revisions` is an append-only log of publish events used as freshness metadata
+for the caller. Atomicity comes from SQLite's transaction semantics; a unique
+partial index (`idx_revisions_single_current`) guarantees at most one current
+revision, and readers bind to it and never observe a half-published one.
 
 ## Security and trust model
 
-SlugAudit does not implement authentication or authorization — and
-that is correct for its deployment model. Here is why every layer
-of the trust boundary is already handled by the environment, not by
-code the server reimplements.
+SlugAudit implements no authentication or authorization, and that is correct
+for its deployment model. Here is why every layer of the trust boundary is
+already handled by the environment rather than by code the server
+reimplements.
 
-### Process-level isolation (the transport boundary)
+### Process-level isolation is the transport boundary
 
-The server speaks MCP over **stdio only** (`rmcp::transport::stdio`).
-It is spawned as a child process by the AI agent. Only the parent
-process that launched it can send it MCP requests. There is no
-network listener, no HTTP/SSE transport, no socket, and no
-multi-client multiplexing. An attacker who wants to send a malicious
-MCP request must already have code execution on the same machine and
-a handle to the same process — at which point they can `cat` any
-file the user can read, including the project database directly via
-`sqlite3`.
+The server speaks MCP over **stdio only** (`rmcp::transport::stdio`); stdout
+is the JSON-RPC transport and logs go to stderr. It is spawned as a child
+process by the agent, so only that parent can send it requests: there is no
+network listener, no HTTP/SSE transport, no socket, and no multi-client
+multiplexing. An attacker who wants to send a malicious MCP request must
+already have code execution on the same machine and a handle to the same
+process — at which point they can read any file the user can, including
+`project.db` directly.
 
 ### The activation marker is an opt-in signal, not an authorization gate
 
-Every tool call resolves a project root by walking up from the
-given `path` looking for `.planning/slugaudit/`. If the marker
-doesn't exist, the call fails with `NotActive`. But this marker's
-purpose is **discoverability and scope** — "which project am I
-operating on?" — not authorization. The AI agent already has
-filesystem access as the user that launched it. If the agent wanted
-to read files from an unindexed project, it could `cat` them
-directly. SlugAudit makes queries fast; it does not grant access the
-agent didn't already have.
+Every tool call resolves a project by walking up from the given path looking
+for `.planning/slugaudit/`; if the marker is absent the call fails with
+`NotActive`. The marker's purpose is **discoverability and scope** — "which
+project am I operating on?" — not authorization. The agent already has
+filesystem access as the user that launched it, so SlugAudit grants no access
+the agent did not already have; it makes queries fast.
 
-A future network-accessible transport (SSE, WebSocket) would need
-its own authentication layer. The current stdio transport needs
-none because the process boundary is the auth boundary.
+A future network-accessible transport (SSE, WebSocket) would need its own
+authentication layer. The stdio transport needs none because the process
+boundary is the auth boundary.
 
-### Credential audit & prompt-leakage redaction
+### Credential awareness and log redaction
 
-SlugAudit is designed specifically to assist with auditing codebases. To alert
-the AI agent and auditor to accidental credential exposure without leaking
-secrets, `report` inspects file paths and surfaces a
-`credential_pattern_file_count` (`.env*`, `*.pem`, `*.key`, `id_rsa*`). To
-prevent secret values from leaking into logs or host stderr, all query
-parameters, finding text, and source contents are strictly redacted from log
-emissions (`src/tools/redaction_tests.rs`).
-
-### The database is disposable derived data
-
-Every byte in `project.db` — files, content hashes, evidence,
-dependency edges — is computed from the project's source files. The
-database is a cache. If it is corrupt, it is discarded and rebuilt
-(`store::discard_corrupt_database`). If it is deleted, it is
-re-created on the next tool call. The only non-derived data is
-the `findings` table (AI-authored conclusions), and those are
-session-scoped (purged on fresh boot) and auto-invalidated on
-source change.
-
-This means entire categories of production concerns do not apply:
-
-- **Rollback:** `rm -rf .planning/slugaudit`. There is no primary
-  data to preserve.
-- **Backups:** the source tree is the backup. Re-index it.
-- **Connection-close errors:** a failed WAL checkpoint on drop is a
-  non-issue — the next open recovers or discards.
-- **Schema downgrades:** unsupported — delete the database and
-  let the new binary rebuild it.
+SlugAudit is designed to assist with auditing codebases. `report` surfaces a
+`credential_pattern_file_count` so the agent is aware it is handling
+credential-shaped content rather than silently reading secrets
+(`src/tools/report.rs`), and `leads` can return the matching file paths. All
+query parameters, finding text, and source contents are kept out of log
+emissions (`src/tools/redaction_tests.rs`); the tool-call span logs only the
+tool name and timing/outcome.
 
 ## Process lifecycle
 
-SlugAudit is a **session-scoped child process**. It lives exactly as
-long as the AI agent session that spawned it. When the agent
-disconnects (session ends, model switch, user closes the agent),
-it closes the server's stdin. The server receives EOF on
-`waiting().await` and the process exits.
-
-### Why there is no graceful shutdown
-
-A graceful-shutdown handler (SIGTERM → stop accepting new calls →
-drain in-flight → exit) is needed for a persistent daemon that
-serves multiple clients and must not drop work. SlugAudit is not a
-daemon. It is a child process with exactly one caller. When the
-caller disconnects:
-
-- stdin closes → the server exits.
-- In-flight tool calls are abandoned, but the caller is gone —
-  there is nobody to return results to.
-- The database is disposable — a mid-publish kill leaves the
-  database in a state that SQLite's WAL recovers or the
-  corruption path discards on the next open.
-- The OS cleans up the process.
-
-No work is dropped that had a recipient. No primary data is lost.
-A signal handler that drains in-flight calls would add complexity
-for a scenario that cannot occur in this deployment model.
-
-## Disposable-data philosophy
-
-SlugAudit's database is **derived, not primary**. The design
-deliberately trades durability for simplicity in every data path:
-
-| Concern | Traditional approach | SlugAudit approach |
-|---|---|---|
-| Database corruption | Backup + restore | Discard + republish from source |
-| Schema change | Migration + rollback plan | Discard old database + rebuild fresh from ground truth |
-| Connection errors | Retry + alert | Reopen; if corrupt, discard + rebuild |
-| Data loss | Replication + snapshots | Source files are the canonical copy |
-| Upgrade/downgrade | Compatibility matrix | Schema mismatch or stale version → discard old database, rebuild fresh from source. |
-
-This is not a compromise — it is the correct architecture for a
-tool whose input (source files) is always available and whose
-output (cached evidence) is always reproducible. The integrity
-check is simple: at any time, delete the database and run one tool
-call. If the evidence comes back identical, the system is correct.
-
-The `findings` table is the exception: AI-authored conclusions
-persist within a session. Those are scoped to the process that
-wrote them and purged on the next boot (invariant #9), so even
-findings do not require durability across process lifetimes.
-
-## Concurrency and deadline model
-
-### The semaphore gates blocking-pool permits, not work duration
-
-Tool calls are dispatched through `server_runner::run_blocking`,
-which acquires a permit from an `Arc<Semaphore>` of 8 permits
-before moving work onto Tokio's blocking thread pool (invariant #5).
-The acquire is an **async yield** — it parks the calling task on a
-Tokio worker thread and yields to other tasks. It does not block a
-thread. A caller waiting for a permit is waiting in the async
-runtime, not consuming a blocking-pool thread.
-
-### Why the semaphore does not need its own timeout
-
-A naive audit flags `semaphore.acquire_owned().await` with no
-`.timeout()` as a hang risk. In practice:
-
-- **Every blocking work closure has its own deadline.** Sync
-  operations check `Deadline::exceeded()` at each cooperative
-  point (per discovered file, per dirty path, per barrier
-  iteration). `query` has a 5-second wall-clock budget enforced
-  through SQLite's progress handler (which fires during statement
-  execution, not between statements). `structure` has a 5-second
-  budget enforced through Tree-sitter's native progress callback.
-- **The per-operation deadlines bound permit hold time.** A permit
-  cannot be held indefinitely because the work it guards will
-  finish or fail under its own budget.
-- **The single-client model means the pool is rarely contended.**
-  An MCP agent makes one tool call at a time (request-response).
-  Multiple concurrent permits are headroom, not a load-bearing
-  concurrency mechanism.
-- **The acquire is async, not blocking.** If no permit is
-  available, the calling task yields. The async runtime schedules
-  other work. The semaphore is a fairness mechanism, not a
-  bottleneck.
-
-Adding a timeout to the acquire would be defense-in-depth against
-a scenario (all 8 blocking workers stuck in uninterruptible kernel
-syscalls simultaneously) that the kernel's own I/O timeouts already
-handle. It is harmless to add, but its absence is not a defect.
-
-### Runtime resource-limit configuration and adaptive memory
-
-SlugAudit implements CodeQL/Semgrep-style adaptive hardware scaling and profiles rather than hard-coding static resource limits:
-
-- **Host RAM detection** (`src/model/system_ram.rs`): Automatically parses `/proc/meminfo` on Linux or invokes `sysctl hw.memsize` on macOS to inspect host total and available RAM.
-- **Resource Profiles** (`src/model/profile.rs`):
-  - **`Adaptive` (Default)**: Automatically computes generous limits proportional to host memory: per-file size cap dynamically scales between 256 MiB and 1 GiB (`total_ram / 10`), and total import budget scales to 50% of available RAM (min 4 GiB).
-  - **`Audit`**: Maximum capability mode for enterprise-grade due-diligence audits (256 MiB per-file cap, 32 GiB total import budget, 60s query/structure execution timeouts).
-  - **`Lean`**: Lightweight mode for resource-constrained environments (32 MiB per-file cap, 2 GiB total import budget, 10s timeouts).
-- **In-Repo Project Config** (`src/project/config.rs`): A project can declare its required profile and limits in `.planning/slugaudit/config.json`.
-- **MCP Tool Control**: AI agents can specify `profile: "audit"` dynamically when calling `project_control(action: "on", ...)`.
-- **Environment Overrides**: Every field in `ResourceLimits` can be overridden at startup via an environment variable. The pattern is `SLUGAUDIT_<FIELD>` where `<FIELD>` is the SCREAMING_SNAKE_CASE name of the field (or `SLUGAUDIT_PROFILE` to select a preset):
-
-- `SLUGAUDIT_PROFILE` — preset profile (`adaptive`, `audit`, `lean`)
-- `SLUGAUDIT_MAX_FILE_BYTES` — per-file size cap
-- `SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES` — total import byte cap
-- `SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES` — query response JSON size cap
-- `SLUGAUDIT_MAX_QUERY_SQL_BYTES` — max SQL text length
-- `SLUGAUDIT_MAX_QUERY_VM_STEPS` — SQLite VM-step budget
-- `SLUGAUDIT_MAX_QUERY_WALL_CLOCK_SECS` — query wall-clock budget (seconds)
-- `SLUGAUDIT_MAX_QUERY_VALUE_BYTES` — per-column value cap
-- `SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES` — tree-sitter query text length
-- `SLUGAUDIT_MAX_STRUCTURE_MATCHES` — max structure matches returned
-- `SLUGAUDIT_MAX_STRUCTURE_EXECUTION_TIME_SECS` — structure time budget
-- `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS` — sync time budget (seconds)
-
-Unset or unparseable vars are silently ignored — the compile-time
-default applies. Duration fields accept whole seconds. Process-level limits are
-cached in a `OnceLock` on first use via `model::process_limits()`.
-Per-project limits are resolved dynamically via `ProjectConfig::apply_to_limits`.
-
-## Watcher health model
-
-The filesystem watcher (`src/watch/manager.rs`) runs on `notify`'s
-internal event loop. Its callback is deliberately non-blocking:
-`try_lock()` to acquire the manager's state, then quick `HashSet`
-inserts. If the lock is held by the sync layer, the event is
-silently dropped — the sync layer will re-verify on the next
-`ensure_current`, so a dropped event is harmless.
-
-### What the error callback catches
-
-The watcher's `Err` arm (line ~116 of `manager.rs`) transitions
-every project to `WatcherHealth::Desynced` when `notify` reports
-a queue overflow, watch removal, or other integrity problem. The
-next `ensure_current` sees `Desynced` and does a full publish.
-This catches every watcher failure `notify` can report.
-
-### Why there is no separate health heartbeat
-
-A true watcher heartbeat would need a **separate watchdog thread**
-— a thread whose only job is to check that the notify event loop
-is still delivering events. The notify callback cannot heartbeat
-itself (if the loop is dead, the heartbeat never fires). A
-watchdog thread adds complexity for a failure mode that:
-
-- `notify`'s own error callback already covers (inotify queue
-  overflow, watch removal).
-- Is self-correcting: if the watcher silently stops, the user or
-  AI agent notices stale evidence and restarts the server, which
-  triggers `NeedsVerification` → full publish.
-- Is a `notify` crate bug, not a SlugAudit bug — and the
-  session-scoped process lifetime means the watcher is re-created
-  on every agent session anyway.
-
-The `health` MCP tool exposes `watcher_health` and
-`consecutive_full_publishes` — an operator monitoring those fields
-can see that the watcher is being trusted (incremental reconcile)
-vs. falling back to full publishes (distrust). This is the
-observability surface that matters.
-
-## Design FAQ — "Why didn't you do X?"
-
-Every question below is something a commercial audit or architecture
-review will ask. If a new question comes up during review, add it here
-with the answer so the next auditor finds it immediately.
-
-### Q: What does Rust call evidence guarantee?
-
-**Answer:** Rust call evidence is syntax evidence produced from the Rust
-Tree-sitter grammar. It records call spans, callee text, a simple callee name,
-and the enclosing function when available. It does not claim exact runtime
-resolution for trait dispatch, generics, function pointers, closures, macros,
-or generated code. Agents should use the `Call` evidence rows to locate
-likely call sites, then inspect the stored source before drawing conclusions.
-
-The implementation lives in `src/evidence/calls.rs`. Additional language
-support must preserve explicit uncertainty rather than inventing targets.
-
-### Q: Why is there no separate watcher heartbeat?
-
-**Answer:** `ensure_synced` runs before every state-bearing tool call
-(see Data Flow diagram). If the watcher is healthy and has pending
-events, it incrementally reconciles. If the watcher is Desynced or
-Unavailable, it does a full publish from disk. A "silently dead"
-watcher means events aren't delivered → next call does a full publish
-(correct, just slower). The staleness window is bounded by the
-session-scoped process lifetime — the watcher is re-created on every
-agent session anyway. A watchdog thread would add complexity for a
-failure mode (`notify` crate bug — thread exits without firing error
-callback) that is both extremely rare and self-correcting.
-
-Full rationale: "Watcher health model" section above.
-
-### Q: Why `try_lock()` in the watcher callback? Doesn't that drop events?
-
-**Answer:** Yes, and that's correct. The watcher callback runs on
-`notify`'s internal event loop. Blocking that loop (via `lock()`)
-would stall event delivery for every project. A dropped event is
-harmless — the next `ensure_synced` will see unreconciled events or
-do a full publish. Dropping is the recovery path, not a bug.
-
-Full rationale: "Watcher health model" section above.
-
-### Q: Why do state-bearing tool calls run `sweep_and_reconcile` on every call instead of caching or throttling?
-
-**Answer:** Guaranteed 100% freshness is the foundational trust contract of SlugAudit. When an AI agent calls `query`, `report`, or `structure`, the database must be an exact, mathematically fresh mirror of the files on disk at that exact millisecond. If a tool call were served from a throttled cache (e.g. 10 or 30 seconds stale), any recent edits, git branch switches, or dropped inotify events would cause the agent to read stale code, hallucinate, doubt its tools, and enter paranoid validation loops. The synchronous sweep provides watcher-independent healing on every read so there is zero chance of the index drifting out of sync.
-
-### Q: How is logging formatted (human-readable text vs structured JSON)?
-
-**Answer:** SlugAudit speaks MCP over stdio. Stdout is the JSON-RPC
-transport. Stderr is piped to the MCP host's log viewer — by default,
-human-readable text with ANSI color disabled (since the host's log viewer
-is not a terminal). For enterprise/CI environments with automated log
-aggregators (e.g. Datadog, Loki, CloudWatch), setting `SLUGAUDIT_LOG_FORMAT=json`
-switches stderr output to single-line JSON format.
-
-Full rationale: `src/main.rs`.
-
-### Q: Why no graceful shutdown / SIGTERM handler?
-
-**Answer:** SlugAudit is a session-scoped child process, not a
-daemon. It has exactly one caller (the MCP agent). When the caller
-disconnects, stdin closes → the process exits. In-flight tool calls
-are abandoned, but the caller is gone — there's nobody to return
-results to. The database is disposable — WAL recovery or the
-corruption path handles mid-publish kills on the next open.
-
-Full rationale: "Process lifecycle" section above.
-
-### Q: Why no HTTP health endpoint?
-
-**Answer:** Stdio is the only transport. There's no HTTP listener to
-hang a `/health` endpoint on. The MCP `health` tool provides the
-same information through the existing transport. An HTTP health
-endpoint belongs with SSE/HTTP transport, not stdio.
-
-### Q: Why no connection pooling?
-
-**Answer:** A fresh SQLite connection is opened per tool call. WAL
-mode makes `open` cheap (no journal replay on every open). The
-connection is the correctness boundary — read-only vs. read-write
-mode is set at open time, and a connection's mode can't change.
-Reusing connections would require tracking which connection is
-which mode and handling corruption/poisoning per-connection.
-Per-call open is simpler and correct.
-
-### Q: Why no structured metrics / Prometheus endpoint?
-
-**Answer:** The `health` MCP tool returns atomic counters
-(tool calls, errors, cumulative latency, consecutive full publishes,
-sync duration in milliseconds, watcher health, pending event counts).
-For the stdio deployment model, pulling these via an MCP call is the
-right interface — the same transport that calls tools can query health.
-A Prometheus endpoint belongs with SSE/HTTP transport.
-
-### Q: Why are findings session-scoped and purged on restart?
-
-**Answer:** Findings are AI-authored conclusions from a specific
-reasoning session, not durable facts about the code. A different
-agent (different model, different chat) should not silently inherit
-another session's conclusions — it would be tempted to treat them
-as "already checked, skip." Evidence (files, hashes, dependency
-edges) persists across sessions because it's reproducible from
-source. Findings don't because they're not.
-
-Full rationale: `ARCHITECTURE.md` invariant #9 and the 2026-08-12
-DECISIONS.md entry "Findings scoped to the agent session that wrote
-them."
-
-### Q: Why is the ATTACH guard needed if the agent already has filesystem access?
-
-**Answer:** It isn't a security boundary — it's an architectural
-discipline. The invariant says "correctness comes from the
-connection itself." `guard_against_attach` prevents future code
-changes to the `query` tool from accidentally widening the SQL
-surface to other databases. The agent could run `sqlite3` directly
-to read any file it has permissions for; the ATTACH guard keeps
-the invariant honest, not the user contained.
-
-### Q: Why is progress notification delivery fire-and-forget (`tokio::spawn`)?
-
-**Answer:** Progress notifications are best-effort — a broken
-progress channel must never turn a successful tool call into an
-error. Each notification spawns a tiny future (one RPC call).
-Volume is throttled at 10 events/s. The alternative (a channel +
-drain task) would need its own observable state for the same
-best-effort guarantee with more complexity.
-
-Full rationale: comments in `src/server_runner.rs::McpProgressSink`.
-
-### Q: Which operating systems are supported?
-
-**Answer:** SlugAudit supports Linux and macOS. The CI matrix and
-filesystem-safety implementation cover those targets. Other operating
-systems are rejected by the filesystem guard rather than running with
-unknown SQLite safety properties.
-
-### Q: Why does `record_error` lock through `lock_or_recover` instead of a raw mutex unwrap?
-
-**Answer:** Consistency. The rest of the codebase uses the
-`lock_or_recover` helper, which also logs at `error` on recovery, so
-a poisoned mutex in the sample worker pool is recovered loudly
-instead of silently. (`src/sync/sample_batch.rs` — an early version
-of this FAQ documented a raw `.lock().unwrap_or_else()` that has
-since been replaced.)
-
-## Layering rules
-
-Bottom-up: `store` and `parse` know nothing of MCP. `graph` knows
-nothing of `sync`. `sync` knows nothing of `tools`. `tools` orchestrates
-across all three but never duplicates their logic.
-
-Cross-crate callers go through the following path:
-
-- `sync::revision::publish_revision` is the single write path for every
-  table. Nothing writes to `files`, `findings`, or `edges` directly.
-- `tools::context::ensure_synced` is the single point where a project
-  gets brought current. Every state-bearing tool calls it — `report`
-  included: its snapshot is always built from a freshly ensured
-  revision, never from a stale one.
-- `tools::core::ToolCounters` is the single source for "how many tool
-  calls have we served". Avoid adding a parallel counter outside this
-  module — keep one definition.
+SlugAudit is a **session-scoped child process**. It lives exactly as long as
+the agent session that spawned it. When the agent disconnects (session ends,
+model switch, the user closes the agent), it closes the server's stdin; the
+server receives EOF on `waiting().await` and the process exits.
+
+There is deliberately no graceful-shutdown handler. A SIGTERM → drain
+handler is needed for a persistent daemon that serves multiple clients and
+must not drop work. SlugAudit has exactly one caller. When that caller
+disconnects, in-flight calls are abandoned but there is nobody to return
+results to; a mid-publish kill leaves the database in a state WAL recovers or
+the corruption path discards on the next open; the OS cleans up the process.
+No work is dropped that had a recipient, and no primary data is lost.
+
+## Performance characteristics
+
+Benchmarks live in `benches/` (discovery, parsing, search, memory, startup)
+with shared fixture generation in `benches/common/mod.rs`. Criterion is a
+dev-dependency; benchmark builds are separate targets from correctness gates.
+`check_performance` reruns the benches with a reduced sample size, compares
+median point estimates against the committed baseline
+(`.planning/archive/perf_baseline.json`), and fails when any bench regresses
+past the threshold (default 20%); `--record` deliberately re-baselines.
+Baselines are machine-class specific.
+
+Two design consequences worth recording:
+
+- **Search is a bounded scan, not an index.** Substring search runs as a
+  `LIKE` over `files.content` / `evidence.payload`; there is no FTS5 table
+  (see `benches/search.rs`). At the fixture sizes
+  measured this is well inside budget, and FTS5 is the option to revisit only
+  if scan cost grows super-linearly on much larger trees.
+- **Unchanged sync writes nothing.** A manifest-identical publish is skipped,
+  so the database grows only when content or the parser pack version actually
+  changes. The database therefore tracks the current tree, not a history of
+  it.
+
+Operator-facing failure modes and their remedies — slow calls, full-publish
+loops, sync-budget exhaustion, watcher limits, rebuild semantics — are in
+`docs/TROUBLESHOOTING.md`.
 
 ## Testing layout
 
-Tests live inline next to the code they cover, included via
-`#[path = "..."  ] mod tests;`. The shape:
+Tests live inline beside the code they cover, pulled in with
+`#[cfg(test)] #[path = "..."] mod tests;`:
 
 ```
 src/
-└── module.rs                production code
-                          └── #[cfg(test)] #[path = "module_tests.rs"] mod tests;
-src/
-└── module_tests.rs        (same directory, sibling)
+└── module.rs                production code, ending with
+                             #[cfg(test)] #[path = "module_tests.rs"] mod tests;
+└── module_tests.rs          the sibling suite
 ```
 
-The 59 `*_tests.rs` files share this pattern; `cargo test --lib` runs
-all of them in parallel (`--test-threads=4` by default). Tool test
-modules occasionally split a focused scenario into a second sibling
-(e.g. `tools/finding_session_tests.rs`). Test files get a 500-code-line
-ceiling — each `#[test]` names one behavior contract, repetition that
-can't be DRY'd without losing failure diagnostics — while production
-files keep the 300-line ceiling; the
-`cargo run --bin check_source_limits` bin (formerly
-`tools/check_source_limits.sh`) enforces both.
+The 60 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+them in parallel. Large suites are split into focused siblings (e.g.
+`tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
+suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only
+names ending in `_tests.rs` are counted by the gate. Per-file test-code
+ceilings are enforced by `check_source_limits`; the ceilings themselves and
+the exception-comment format are documented in `AGENTS.md`.
+
+## Design decisions and rejected alternatives
+
+Each of these was considered and deliberately not done; the reason is part of
+the architecture so the next reviewer does not re-litigate it from scratch.
+
+- **No connection pooling.** A fresh connection per call is the correctness
+  boundary: its read-only/read-write mode is set at open time and cannot
+  change. Pooling would require tracking each connection's mode and handling
+  per-connection corruption, for no measured benefit under WAL.
+- **No watcher heartbeat thread.** The `notify` error callback already covers
+  the failures `notify` reports (queue overflow, watch removal), and a
+  silently dead watcher is self-correcting: the stat sweep and the
+  `NeedsVerification` full publish both re-verify from disk, and the watcher
+  is re-created on every agent session.
+- **No graceful shutdown** (see *Process lifecycle*).
+- **No HTTP health endpoint or metrics endpoint.** stdio is the only
+  transport; the `health` MCP tool returns watcher health, unreconciled
+  counts, tool-call counters, and sync timing over that same transport. An
+  HTTP surface belongs with a network transport, not with stdio.
+- **Findings are session-scoped.** A finding is a conclusion from one
+  reasoning session, not a durable fact. A different agent must not silently
+  inherit another session's conclusions; evidence persists because it is
+  reproducible from source, findings do not (`sync/manager_meta.rs::
+  purge_prior_session_findings`, invariant 9).
+- **Findings are bound to a content hash, not a line range alone.** The hash
+  is what makes auto-invalidation reliable when a file changes; the line range
+  is a hint for the reader.
+- **The `query` ATTACH guard is discipline, not containment.** The agent could
+  read any file it has permission for with `sqlite3` directly. The authorizer
+  exists so the "correctness comes from the connection" invariant stays true
+  if the tool surface changes (see *Store and schema lifecycle*).
+- **Progress delivery is fire-and-forget.** Each notification spawns a tiny
+  future and sends are best-effort, so a broken progress channel cannot turn a
+  successful call into an error. Volume is throttled by `McpProgressSink`.
+- **The database is discarded, not migrated.** See *Store and schema
+  lifecycle*.
+
+## Key invariants
+
+These constraints shape every module above; removing or weakening one breaks
+something else loudly.
+
+1. **Correctness comes from the connection itself, never from inspecting
+   query text.** Read paths open `SQLITE_OPEN_READ_ONLY`; the `query` tool
+   never reaches a read-write connection, and the ATTACH authorizer blocks the
+   one read a read-only connection would otherwise permit.
+2. **Symlinks and network filesystems are rejected at open time.** A
+   symlinked database returns `StoreError::Symlink`; one on NFS/CIFS/SMB
+   returns `StoreError::NetworkFilesystem`. The open is the only check.
+3. **All `Mutex` locks go through `lock_or_recover`.** A poisoned mutex is
+   recovered and logged, not re-panicked, so a bug in watcher state mutation
+   cannot take down the server.
+4. **The barrier sync loops at most `MAX_BARRIER_LOOPS = 16` times.** A racing
+   producer is detected, the watcher is marked `Desynced`, and
+   `ReconcileError::BarrierCapExceeded` is returned rather than looping
+   forever.
+5. **Tool work runs on the blocking pool, gated by a per-server
+   `Arc<Semaphore>` of 8 permits.** Slow I/O never starves the async runtime;
+   concurrent calls fan out across the permit pool.
+6. **Each revision is published atomically under compare-and-swap.**
+   `revision::publish_revision` upserts files and evidence, deletes removed
+   files, and flips `is_current` in one transaction; a concurrent publisher
+   detects the mismatch and retries (bounded by `MAX_CAS_RETRIES = 4`).
+7. **Findings auto-invalidate on file change.** A finding is stored with the
+   file's current `content_hash`; when that hash changes, the finding becomes
+   `stale` inside the publish transaction and is not served.
+8. **`#![forbid(unsafe_code)]` is enforced crate-wide**, alongside
+   `deny(unreachable_pub, trivial_casts, trivial_numeric_casts,
+   elided_lifetimes_in_paths)` and `deny(clippy::print_stdout)` — stdout is
+   the JSON-RPC transport, so a stray `println!` in serve-reachable code is a
+   compile error, not a corrupted stream.
+9. **Findings are scoped to the agent session that wrote them.** Every finding
+   row carries the active `session_id` (a UUID generated once per process);
+   `purge_prior_session_findings` runs as part of the first sync,
+   deleting rows from any other session. A new agent starts with a clean
+   finding set rather than silently inheriting another's conclusions.
+10. **The database is disposable derived data.** Every row in `files`,
+    `evidence`, `dependency_edges`, and `revisions` is computed from project
+    source and can be regenerated: `rm -rf .planning/slugaudit` followed by any
+    tool call. Findings are session-scoped (invariant 9) and hash-bound
+    (invariant 7), so they follow the same philosophy: conclusions are
+    ephemeral, evidence is reproducible.
+11. **Production code never panics on an error value.** `unwrap` and `expect`
+    are denied outside `cfg(test)` at the crate root and in every gate binary,
+    so fallible work returns `Result` and a genuinely fatal condition reports
+    the error and chooses an exit code. Together with invariant 3 this is why
+    a defect surfaces as one failed tool call — `server_runner` maps a
+    panicking blocking task to `ErrorData::internal_error("tool task
+    failed: …")` — rather than a dead server. A panic in a test is exempt: it
+    *is* the failure signal.
 
 ## Where to start reading
 
-Joining the project? Read in this order:
+1. `README.md` — install, connect, license.
+2. `AGENTS.md` — why this exists, the founding metric, verified conventions,
+   and the gate suite.
+3. **This file** — structure, invariants, and the reasoning behind them.
+4. `src/main.rs` + `src/server.rs` + `src/server_runner.rs` — what actually
+   happens when a tool call arrives: tool contracts in `server.rs`,
+   semaphore-bounded dispatch and progress in `server_runner.rs`.
+5. `src/sync/manager.rs` with its `sync/manager_orchestration.rs`,
+   `sync/manager_health.rs`, and `sync/manager_meta.rs` children — the
+   synchronization state machine.
+6. `src/sync/sweep.rs` + `src/sync/reconcile/` — the freshness guarantee.
+7. `src/graph/resolver/` — how imports become dependency edges.
 
-1. **`.planning/PHASE-00.md`** — where the codebase came from and why.
-2. **This file (ARCHITECTURE.md)** — overall structure. Pay particular
-   attention to the **Design FAQ** (below) — it preemptively answers
-   every "why didn't you do X?" question an auditor will ask — and the
-   Security and trust model, Disposable-data philosophy, and Key
-   invariants sections.
-3. **`OBSERVABILITY.md`** — what telemetry exists and where it goes.
-4. **`AUDIT.md`** — the most recent commercial audit with corrected
-   findings and the current remediation roadmap.
-5. **`src/main.rs`** + **`src/server.rs`** + **`src/server_runner.rs`** —
-   the "what actually happens when a tool call arrives" story: tool
-   contracts in `server.rs`, semaphore-bounded dispatch + progress in
-   `server_runner.rs`.
-6. **`src/sync/manager.rs`** plus its private `manager_orchestration.rs` and `manager_health.rs` children — the synchronization state machine, recovery boundary, and watcher-health boundary.
-7. **`src/graph/resolver/`** — how imports become dependency edges.
-
-If something in the codebase disagrees with this document, **fix one or
-the other** — never both — and update any in-flight plan files to match.
+If something in the codebase disagrees with this document, fix one or the
+other — never both.

@@ -4,7 +4,7 @@
 use crate::cli::ConnectError;
 use crate::connect_agents::{AgentDef, detected_agents, find_agent};
 use crate::connect_exec::{connect_agent, disconnect_agent};
-use crate::install::{running_binary, slugaudit_dir, slugthug_home};
+use crate::install::{config_home, running_binary, slugaudit_dir};
 use std::io::{BufRead as _, Write as _};
 use std::path::{Path, PathBuf};
 
@@ -43,7 +43,7 @@ pub(crate) fn prefer_slugthug_binary(current: &Path) -> PathBuf {
 fn connect_one(agent: AgentDef) -> Result<(), ConnectError> {
     let binary = running_binary().map_err(ConnectError::BinaryPath)?;
     let binary = prefer_slugthug_binary(&binary);
-    let home = slugthug_home().or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+    let home = config_home();
     if agent.is_connected(home.as_deref()) {
         println!(
             "SlugAudit is already registered with {}. Updating connection...",
@@ -61,7 +61,7 @@ fn connect_one(agent: AgentDef) -> Result<(), ConnectError> {
 }
 
 fn disconnect_one(agent: AgentDef) -> Result<(), ConnectError> {
-    let home = slugthug_home().or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+    let home = config_home();
     println!("Disconnecting SlugAudit from {}...", agent.display_name);
     disconnect_agent(&agent, home.as_deref())?;
     println!("Done.");
@@ -69,7 +69,7 @@ fn disconnect_one(agent: AgentDef) -> Result<(), ConnectError> {
 }
 
 pub fn run_connect_interactive() -> Result<(), ConnectError> {
-    let home = slugthug_home().or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+    let home = config_home();
     let detected = detected_agents(home.as_deref());
     if detected.is_empty() {
         println!("No supported AI agents or editors were detected on this machine.");
@@ -116,7 +116,7 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
 }
 
 pub fn run_disconnect_interactive() -> Result<(), ConnectError> {
-    let home = slugthug_home().or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+    let home = config_home();
     let connected: Vec<_> = crate::connect_agents::AGENTS
         .iter()
         .copied()

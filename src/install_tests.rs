@@ -42,6 +42,66 @@ fn slugaudit_dir_resolves_under_slugthug_home() {
 }
 
 #[test]
+fn config_home_is_the_user_home_not_the_slugthug_directory() {
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+    temp_env::with_vars(
+        [
+            ("SLUGTHUG_HOME", Some(std::ffi::OsStr::new("/slug/home"))),
+            ("SLUGTHUG_CONFIG_HOME", None),
+            ("HOME", Some(std::ffi::OsStr::new("/somewhere/else"))),
+        ],
+        || {
+            assert_eq!(
+                config_home().expect("config home resolves"),
+                PathBuf::from("/somewhere/else"),
+                "client config must resolve against the user's home, never ~/.slugthug"
+            );
+        },
+    );
+}
+
+#[test]
+fn config_home_override_wins_over_home() {
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+    temp_env::with_vars(
+        [
+            (
+                "SLUGTHUG_CONFIG_HOME",
+                Some(std::ffi::OsStr::new("/agents/home")),
+            ),
+            ("HOME", Some(std::ffi::OsStr::new("/somewhere/else"))),
+        ],
+        || {
+            assert_eq!(
+                config_home().expect("config home resolves"),
+                PathBuf::from("/agents/home")
+            );
+        },
+    );
+}
+
+#[test]
+fn a_client_config_path_resolves_under_the_user_home() {
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+    temp_env::with_vars(
+        [
+            ("SLUGTHUG_HOME", Some(std::ffi::OsStr::new("/slug/home"))),
+            ("SLUGTHUG_CONFIG_HOME", None),
+            ("HOME", Some(std::ffi::OsStr::new("/somewhere/else"))),
+        ],
+        || {
+            assert_eq!(
+                config_home()
+                    .expect("config home resolves")
+                    .join(".cursor/mcp.json"),
+                PathBuf::from("/somewhere/else/.cursor/mcp.json"),
+                "guards the regression where a client config landed in ~/.slugthug/ and the client never read it"
+            );
+        },
+    );
+}
+
+#[test]
 fn slugthug_home_falls_back_to_home_slugthug() {
     let _guard = TEST_ENV_LOCK.lock().expect("env lock");
     temp_env::with_vars(

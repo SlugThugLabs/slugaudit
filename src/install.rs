@@ -20,6 +20,23 @@ pub fn slugaudit_dir() -> Option<PathBuf> {
     slugthug_home().map(|home| home.join("slugaudit"))
 }
 
+/// The **user's** home directory — the base that a client's MCP configuration
+/// path is resolved against.
+///
+/// Deliberately separate from [`slugthug_home`]. That one is SlugAudit's own
+/// `~/.slugthug` directory (binary install, runtime state); an editor or agent
+/// reads its MCP config from the user's home instead (e.g. `~/.cursor/mcp.json`).
+/// Joining a client config path onto `slugthug_home` writes a file the client
+/// never reads — a silent failure, because the write succeeds.
+///
+/// `SLUGTHUG_CONFIG_HOME` overrides the base for tests and for setups where the
+/// agents run under a different home than the process that runs `connect`.
+pub fn config_home() -> Option<PathBuf> {
+    std::env::var_os("SLUGTHUG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+}
+
 #[derive(Debug, Error)]
 pub enum InstallError {
     #[error("could not locate the running binary: {0}")]

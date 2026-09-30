@@ -1,11 +1,13 @@
 //! Low-level command execution and JSON config file modification for agent connect.
 #![allow(clippy::print_stdout)]
+// slugaudit-line-exception: approved-by=slugthug; reason=one cohesive concern - the registration policy for 26 clients (probe-or-fallback dispatch, single-key config merging, and the wiring of every refusal/failure into actionable guidance); it reads as one decision table and moving any branch out scatters the policy that is verified entry-by-entry against the registry
 
 use crate::cli::ConnectError;
-use crate::connect_agents::{AgentDef, Dialect};
+use crate::connect_agents::{AgentDef, Evidence, Strategy};
+use crate::connect_cli;
+use crate::connect_guidance as guidance;
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub fn json_contains_slugaudit(path: &Path) -> bool {
@@ -16,7 +18,7 @@ pub fn zed_contains_slugaudit(path: &Path) -> bool {
     has_slugaudit(path, &["context_servers"])
 }
 
-fn has_slugaudit(path: &Path, keys: &[&str]) -> bool {
+pub fn has_slugaudit(path: &Path, keys: &[&str]) -> bool {
     fs::read_to_string(path).is_ok_and(|c| {
         serde_json::from_str::<serde_json::Value>(&c).is_ok_and(|v| {
             keys.iter()
@@ -25,48 +27,156 @@ fn has_slugaudit(path: &Path, keys: &[&str]) -> bool {
     })
 }
 
-pub fn cli_check_connected(cli: &str) -> bool {
-    Command::new(cli)
-        .args(["mcp", "list"])
-        .stdin(Stdio::null())
-        .output()
-        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("slugaudit"))
-}
-
 pub fn connect_agent(
     agent: &AgentDef,
     binary: &Path,
     home: Option<&Path>,
 ) -> Result<(), ConnectError> {
-    let home = home.ok_or(ConnectError::HomeUnavailable);
-    match agent.dialect {
-        Dialect::JsonFile => {
-            let rel = agent.config_rel.ok_or(ConnectError::HomeUnavailable)?;
-            write_json_server(
-                &home?.join(rel),
-                "mcpServers",
-                serde_json::json!({ "command": binary.to_string_lossy(), "args": [] }),
-            )
+    // Anything we cannot be confident about at call time is instructed, never
+    // attempted: unverified mechanisms and entries needing a manual step.
+    if agent.blocker().is_some() {
+        return Err(guidance::refusal(agent, binary, home));
+    }
+    match agent.strategy {
+        Strategy::ConfigFile | Strategy::CliInteractiveOnly => {
+            write_agent_config(agent, binary, home, None).inspect_err(|err| {
+                report_failure(
+                    agent,
+                    binary,
+                    &write_action(agent, home),
+                    None,
+                    &err.to_string(),
+                );
+            })
         }
-        Dialect::Zed => write_json_server(
-            &home?.join(".config/zed/settings.json"),
-            "context_servers",
-            serde_json::json!({ "command": { "path": binary.to_string_lossy(), "args": [] } }),
-        ),
-        _ => {
-            let cli = agent.cli.ok_or_else(|| ConnectError::AgentMissing {
-                agent: agent.display_name.to_string(),
-                cli: agent.id.to_string(),
-            })?;
-            if which::which(cli).is_err() {
-                return Err(ConnectError::AgentMissing {
-                    agent: agent.display_name.to_string(),
-                    cli: cli.to_string(),
-                });
+        Strategy::CliDirect => connect_via_cli(agent, binary, home),
+        Strategy::Unknown => Err(guidance::refusal(agent, binary, home)),
+    }
+}
+
+/// The CLI route. Probed entries run the grammar recorded at probe time;
+/// documented entries are attempted only when their own binary confirms
+/// `mcp add` exists right now.
+fn connect_via_cli(
+    agent: &AgentDef,
+    binary: &Path,
+    home: Option<&Path>,
+) -> Result<(), ConnectError> {
+    let installed = agent.cli.filter(|cli| which::which(cli).is_ok());
+    let Some(cli) = installed else {
+        // No binary to drive. With a documented file path we can still write
+        // the config; otherwise the user gets instructions.
+        return match (agent.file_fallback, agent.cli) {
+            (true, Some(cli)) if guidance::config_writable(agent) => {
+                let note = guidance::fallback_note(agent, home, cli, "not found on PATH");
+                write_agent_config(agent, binary, home, Some(&note)).inspect_err(|err| {
+                    report_failure(
+                        agent,
+                        binary,
+                        &write_action(agent, home),
+                        None,
+                        &err.to_string(),
+                    );
+                })
             }
-            let _ = run_remove_cmd(agent, cli);
-            run_add_cmd(agent, cli, binary)
+            (_, Some(cli)) => Err(guidance::cli_absent(
+                agent,
+                binary,
+                cli,
+                &connect_cli::display_command(cli, &connect_cli::add_args(agent, binary)),
+            )),
+            (_, None) => Err(guidance::refusal(agent, binary, home)),
+        };
+    };
+    let args = connect_cli::add_args(agent, binary);
+    let attempted = connect_cli::display_command(cli, &args);
+    if agent.evidence != Evidence::VerifiedByProbe && !connect_cli::supports_add(cli) {
+        return Err(guidance::unconfirmed_cli(agent, binary, cli, &attempted));
+    }
+    match connect_cli::run_add(cli, &args) {
+        Ok(()) => {
+            print_lines(&guidance::success_lines(
+                agent,
+                &format!("Ran: {attempted}"),
+            ));
+            Ok(())
         }
+        Err(cli_err) if agent.file_fallback && guidance::config_writable(agent) => {
+            // The safer route: leave the CLI alone and merge the config file.
+            let note = guidance::fallback_note(agent, home, cli, "rejected `mcp add`");
+            match write_agent_config(agent, binary, home, Some(&note)) {
+                Ok(()) => Ok(()),
+                Err(file_err) => {
+                    let why = format!("{cli_err}; the file fallback failed too: {file_err}");
+                    report_failure(
+                        agent,
+                        binary,
+                        &write_action(agent, home),
+                        Some(&attempted),
+                        &why,
+                    );
+                    Err(cli_err)
+                }
+            }
+        }
+        Err(cli_err) => {
+            report_failure(
+                agent,
+                binary,
+                &attempted,
+                Some(&attempted),
+                &cli_err.to_string(),
+            );
+            Err(cli_err)
+        }
+    }
+}
+
+fn write_action(agent: &AgentDef, home: Option<&Path>) -> String {
+    format!("write {}", guidance::target(agent, home))
+}
+
+/// Writes the `slugaudit` entry in the shape the client reads: exactly one key
+/// merged into a file we can parse. Refuses when the path or shape is unknown,
+/// and never rewrites a config it could not parse.
+fn write_agent_config(
+    agent: &AgentDef,
+    binary: &Path,
+    home: Option<&Path>,
+    note: Option<&str>,
+) -> Result<(), ConnectError> {
+    if !guidance::config_writable(agent) {
+        return Err(guidance::refusal(agent, binary, home));
+    }
+    let home = home.ok_or(ConnectError::HomeUnavailable)?;
+    let path = agent
+        .config
+        .resolve(home)
+        .ok_or_else(|| guidance::refusal(agent, binary, Some(home)))?;
+    let section = agent
+        .shape
+        .write_section()
+        .ok_or_else(|| guidance::refusal(agent, binary, Some(home)))?;
+    write_json_server(&path, section, agent.shape.entry(binary))?;
+    if let Some(note) = note {
+        println!("{note}");
+    }
+    let action = format!("Wrote {section}.slugaudit to {}", path.display());
+    print_lines(&guidance::success_lines(agent, &action));
+    Ok(())
+}
+
+/// A failed attempt still ends with instructions, the source it came from, and
+/// the docs page — never a bare error.
+fn report_failure(agent: &AgentDef, binary: &Path, attempted: &str, hint: Option<&str>, why: &str) {
+    print_lines(&guidance::failure_lines(
+        agent, binary, attempted, hint, why,
+    ));
+}
+
+fn print_lines(lines: &[String]) {
+    for line in lines {
+        println!("{line}");
     }
 }
 
@@ -115,26 +225,22 @@ fn write_json_server(
 
 pub fn disconnect_agent(agent: &AgentDef, home: Option<&Path>) -> Result<(), ConnectError> {
     let Some(home) = home else { return Ok(()) };
-    match agent.dialect {
-        Dialect::JsonFile => {
-            if let Some(rel) = agent.config_rel {
-                remove_json_slugaudit(&home.join(rel), &["mcpServers", "mcp"])?;
-            }
-            Ok(())
-        }
-        Dialect::Zed => remove_json_slugaudit(
-            &home.join(".config/zed/settings.json"),
-            &["context_servers"],
-        ),
-        _ => {
-            if let Some(cli) = agent.cli
-                && which::which(cli).is_ok()
-            {
-                return run_remove_cmd(agent, cli);
-            }
-            Ok(())
-        }
+    // Only entries slugaudit actually writes to carry a removable file entry,
+    // and only where the written shape is established; detection-only paths
+    // (`.claude.json`, `config.yaml`, `config.toml`) are left untouched.
+    if agent.writes_config_file()
+        && agent.shape.write_section().is_some()
+        && let Some(path) = agent.config.resolve(home)
+    {
+        remove_json_slugaudit(&path, agent.shape.sections())?;
     }
+    if matches!(agent.strategy, Strategy::CliDirect)
+        && let Some(cli) = agent.cli
+        && which::which(cli).is_ok()
+    {
+        connect_cli::run_remove(agent, cli)?;
+    }
+    Ok(())
 }
 
 fn remove_json_slugaudit(path: &Path, keys: &[&str]) -> Result<(), ConnectError> {
@@ -146,63 +252,6 @@ fn remove_json_slugaudit(path: &Path, keys: &[&str]) -> Result<(), ConnectError>
             }
         }
         write_atomic(path, serde_json::to_string_pretty(&root)?.as_bytes())?;
-    }
-    Ok(())
-}
-
-fn run_remove_cmd(agent: &AgentDef, cli: &str) -> Result<(), ConnectError> {
-    let args: &[&str] = match agent.dialect {
-        Dialect::Claude => &["mcp", "remove", "-s", "user", "slugaudit"],
-        Dialect::Q => &["mcp", "remove", "--name", "slugaudit"],
-        Dialect::DashSeparator if agent.id == "bob" => {
-            &["mcp", "remove", "slugaudit", "--scope", "global"]
-        }
-        Dialect::DashSeparator if agent.id == "grok" => {
-            &["mcp", "remove", "slugaudit", "--scope", "user"]
-        }
-        _ => &["mcp", "remove", "slugaudit"],
-    };
-    let _ = Command::new(cli)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    Ok(())
-}
-
-fn run_add_cmd(agent: &AgentDef, cli: &str, binary: &Path) -> Result<(), ConnectError> {
-    let mut cmd = Command::new(cli);
-    cmd.stdin(Stdio::null());
-    cmd.arg("mcp").arg("add");
-    match agent.dialect {
-        Dialect::Claude => cmd.args(["-s", "user", "slugaudit", "--"]).arg(binary),
-        Dialect::Hermes | Dialect::Crush => cmd.args(["slugaudit", "--command"]).arg(binary),
-        Dialect::Q => cmd.args(["--name", "slugaudit", "--command"]).arg(binary),
-        Dialect::DashSeparator => {
-            cmd.arg("slugaudit");
-            if agent.id == "bob" {
-                cmd.args(["--scope", "global"]);
-            } else if agent.id == "grok" {
-                cmd.args(["--scope", "user"]);
-            }
-            cmd.arg("--").arg(binary)
-        }
-        _ => cmd.arg("slugaudit").arg(binary),
-    };
-    let output = cmd.output().map_err(|inner| ConnectError::AgentCommand {
-        cli: cli.to_string(),
-        inner,
-    })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.is_empty() {
-            eprintln!("{stderr}");
-        }
-        return Err(ConnectError::AddFailed {
-            cli: cli.to_string(),
-            status: output.status.to_string(),
-        });
     }
     Ok(())
 }
