@@ -9,34 +9,31 @@
 //!
 //! Replaces the never-built `tools/check_docs_drift.sh` from plan C8. Fails
 //! when the documentation and the codebase disagree in a machine-checkable
-//! way. The four checks live in sibling modules — [`module_map`],
-//! [`test_file_count`], and [`plan`] — sharing this crate root's argv
+//! way. The three checks live in sibling modules — [`canonical_docs`],
+//! [`module_map`], and [`test_file_count`] — sharing this crate root's argv
 //! parser, failure-printer, and process exit-code contract, so a single
 //! gate verdict stays in one process.
 //!
-//! 1. **`ARCHITECTURE.md` module map** — every file/directory the module-map
+//! 1. **Canonical doc set** — the documents that define the project must
+//!    exist at their canonical paths ([`canonical_docs`]).
+//! 2. **`ARCHITECTURE.md` module map** — every file/directory the module-map
 //!    tree references must exist ([`module_map`]).
-//! 2. **`*_tests.rs` count claim** — the prose in `ARCHITECTURE.md` ("The N
+//! 3. **`*_tests.rs` count claim** — the prose in `ARCHITECTURE.md` ("The N
 //!    `*_tests.rs` files share this pattern") must match the real number of
 //!    `*_tests.rs` files under `src/` ([`test_file_count`]).
-//! 3. **Plan status header freshness** — `IMPLEMENTATION_PLAN.md`'s `Status:`
-//!    line must reference the §22 audit-corrections section ([`plan`]).
-//! 4. **Plan tasks with no implementation** — a `### Task X.Y` section whose
-//!    listed `src/` files all fail to exist must have an explicit descope
-//!    entry in `DECISIONS.md` mentioning that exact task id ([`plan`]).
 //!
 //! Pure-Rust: no Python, no shell. stdlib only.
 
+mod canonical_docs;
 mod module_map;
-mod plan;
 mod test_file_count;
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use canonical_docs::check_canonical_docs;
 use module_map::check_module_map;
-use plan::{check_plan_status_header, check_plan_task_descope};
 use test_file_count::check_test_file_count;
 
 fn main() -> ExitCode {
@@ -49,8 +46,8 @@ fn main() -> ExitCode {
         match arg.as_str() {
             "--help" => {
                 println!(
-                    "Checks that ARCHITECTURE.md module map, test-count claims, and plan task \
-                     descope entries match the codebase."
+                    "Checks that the canonical doc set exists and that ARCHITECTURE.md's module \
+                     map and test-count claims match the codebase."
                 );
                 return ExitCode::SUCCESS;
             }
@@ -70,10 +67,12 @@ fn main() -> ExitCode {
 
     let mut failures: Vec<String> = Vec::new();
 
+    // Existence first: when a required document is absent it is reported
+    // alongside every other missing one, before any check that has to read
+    // a document can bail out.
+    check_canonical_docs(&project_root, &mut failures);
     check_module_map(&project_root, &mut failures);
     check_test_file_count(&project_root, &mut failures);
-    check_plan_status_header(&project_root, &mut failures);
-    check_plan_task_descope(&project_root, &mut failures);
 
     for failure in &failures {
         println!("docs-drift: {failure}");
@@ -89,11 +88,14 @@ fn main() -> ExitCode {
 /// Reads a project document by logical path (no directory prefix).
 /// Resolved against three locations in order: the project root,
 /// `.planning/`, then `.planning/archive/` — the planning record moved
-/// under `archive/` (commit 231e8c8) and the gate verifies the archived
-/// record stays coherent. Customer-project `.planning/` is unrelated
+/// under `archive/` (commit 231e8c8) and the prose references inside
+/// `ARCHITECTURE.md` are written bare, so the lookup keeps them resolving
+/// wherever the record lives. Customer-project `.planning/` is unrelated
 /// runtime data and is never inspected by this development-only gate.
 /// A missing document exits with code 2: a gate that cannot read what it
-/// must verify cannot produce a verdict.
+/// must verify cannot produce a verdict. This path is *not* used by the
+/// canonical-doc-set check, whose whole verdict is presence/absence; see
+/// [`canonical_docs`].
 fn read(root: &Path, relative: &str) -> String {
     let candidates = [
         root.join(relative),
@@ -122,13 +124,13 @@ fn read(root: &Path, relative: &str) -> String {
 mod test_support;
 
 #[cfg(test)]
+#[path = "canonical_docs_tests.rs"]
+mod canonical_docs_tests;
+
+#[cfg(test)]
 #[path = "module_map_tests.rs"]
 mod module_map_tests;
 
 #[cfg(test)]
 #[path = "test_file_count_tests.rs"]
 mod test_file_count_tests;
-
-#[cfg(test)]
-#[path = "plan_tests.rs"]
-mod plan_tests;

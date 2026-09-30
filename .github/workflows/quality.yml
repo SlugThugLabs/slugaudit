@@ -60,7 +60,7 @@ jobs:
       - name: Check for duplicate commit subjects and test names
         run: cargo run --quiet --bin check_no_duplicates --locked
 
-      - name: Check docs/schema drift (module map, test counts, task descope)
+      - name: Check docs drift (canonical doc set, module map, test counts)
         run: cargo run --quiet --bin check_docs_drift --locked
 
       - name: Check compilation
@@ -116,13 +116,13 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
-      # Line coverage is gated by tools/check_coverage.sh, which reads the
+      # Line coverage is gated by the `check_coverage` bin, which reads the
       # merged JSON line coverage (totals.lines.percent — the metric
       # --fail-under-lines compares) and prints it, so the gated number is
       # never ambiguous. The --summary-only text table prints region-
       # weighted columns that have been misread as line coverage before;
-      # the script reads the JSON report instead. Recalibrate the threshold
-      # in the script deliberately as real coverage moves — it is not an
+      # the bin reads the JSON report instead. Recalibrate the threshold
+      # in the bin deliberately as real coverage moves — it is not an
       # aspirational target picked in advance.
       - name: Coverage (cargo llvm-cov)
         run: cargo run --quiet --bin check_coverage --locked
@@ -138,7 +138,7 @@ jobs:
       # full-crate cargo-mutants run is far too slow to run on every CI
       # push. This step now FAILS CLOSED: the 2026-08-12 full-crate
       # baseline recorded zero surviving mutants on this exact surface
-      # (17 caught, 0 missed, 3 unviable; see .planning/DECISIONS.md), so
+      # (17 caught, 0 missed, 3 unviable; see .planning/archive/DECISIONS.md), so
       # a survivor here is a real regression, not an un-triaged baseline.
       # Linux-only: cargo-mutants has platform-specific behavior and the
       # baseline was recorded on Linux.

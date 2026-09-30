@@ -29,7 +29,7 @@ fn main() -> ExitCode {
     // measurement rather than an aspirational number. Use `cargo run
     // --quiet --bin check_coverage -- <threshold>` to override for a
     // single run (e.g. CI flavor that wants a harder floor); document
-    // any raise in `.planning/DECISIONS.md` so the gate stays honest.
+    // any raise in `.planning/archive/DECISIONS.md` so the gate stays honest.
     let threshold_str: String = args.next().unwrap_or_else(|| "83".to_string());
     let threshold: f64 = match threshold_str.parse() {
         Ok(n) => n,

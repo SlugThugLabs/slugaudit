@@ -2,7 +2,7 @@
 //!
 //! Pure I/O + JSON: walks `target/criterion/<group>/<func>/new/estimates.json`
 //! to harvest the median point estimate for every bench that just ran,
-//! and loads (or rejects) `.planning/perf_baseline.json` for comparison.
+//! and loads (or rejects) `.planning/archive/perf_baseline.json` for comparison.
 
 use std::collections::BTreeMap;
 use std::path::Path;

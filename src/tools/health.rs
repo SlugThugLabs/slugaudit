@@ -94,8 +94,8 @@ pub struct HealthResponse {
     /// incremental reconcile. A value that persists at 1+ across calls
     /// means the watcher is not being trusted — e.g. Linux inotify
     /// `fs.inotify.max_user_watches` overflow forcing `Desynced` — so
-    /// every tool call full-publishes. See the production-failure runbook
-    /// in `.planning/PERFORMANCE.md`.
+    /// every tool call full-publishes. See the full-publish runbook
+    /// in `docs/TROUBLESHOOTING.md`.
     pub consecutive_full_publishes: u64,
 }
 

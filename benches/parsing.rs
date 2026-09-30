@@ -7,8 +7,9 @@
 //!
 //! The cold-load value is captured once, before any criterion benchmark
 //! runs, and printed to stderr so it lands in the same output as the
-//! steady-state numbers and can be recorded in
-//! `.planning/PERFORMANCE.md`. The steady-state benches therefore measure
+//! steady-state numbers and can be recorded in the committed baseline
+//! `.planning/archive/perf_baseline.json` that `check_performance` consumes.
+//! The steady-state benches therefore measure
 //! warm-cache parse+extract, which is the cost a running server pays per
 //! changed file during sync.
 

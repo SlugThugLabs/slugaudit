@@ -10,16 +10,15 @@ name: Release
 # with a tag name via the workflow_dispatch UI. `Cargo.toml`'s version
 # must be bumped to match the tag before cutting a release.
 #
-# Scope: Linux x86_64 only — the platform CI actually verifies
-# (PACKAGING.md §1). Additional runners can be added when new platforms are supported
-# once those platforms get CI coverage; until then shipping binaries for
-# them would be shipping unverified artifacts.
+# Scope: Linux x86_64 only — the platform CI actually verifies, and
+# therefore the only one shipped. Additional runners can be added when new
+# platforms are supported once those platforms get CI coverage; until then
+# shipping binaries for them would be shipping unverified artifacts.
 #
 # Release hygiene: every artifact ships with a SHA256SUMS file so a
-# consumer can verify what they downloaded (the checksums commitment in
-# PACKAGING.md §8). The ~450 MB tree-sitter parser-sources tarball is
-# downloaded by the build script on cache miss, hence the same
-# Swatinem/rust-cache strategy quality.yml uses.
+# consumer can verify what they downloaded. The ~450 MB tree-sitter
+# parser-sources tarball is downloaded by the build script on cache miss,
+# hence the same Swatinem/rust-cache strategy quality.yml uses.
 
 on:
   push:

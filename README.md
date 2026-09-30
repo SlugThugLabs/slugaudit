@@ -1,316 +1,209 @@
 # 🐌 SlugAudit
 
-### High-performance, zero-bloat repository intelligence for AI coding agents.
+SlugAudit is a stdio [MCP](https://modelcontextprotocol.io) server. It indexes a
+project into a disposable SQLite / Tree-sitter evidence index and answers the calling
+agent's queries, instead of making the agent read files to reconstruct the same facts.
 
-[![Release](https://img.shields.io/github/v/release/SlugThugLabs/slugaudit?color=7c3aed&label=Release)](https://github.com/SlugThugLabs/slugaudit/releases)
-[![Rust 2024](https://img.shields.io/badge/Rust-2024_Edition-orange?logo=rust)](Cargo.toml)
-[![Safety](https://img.shields.io/badge/Safety-%23!%5Bforbid(unsafe_code)%5D-emerald)](src/lib.rs)
-[![Tests](https://img.shields.io/badge/Tests-569_passed-brightgreen)](tests/)
-[![Coverage](https://img.shields.io/badge/Coverage-83.37%25-blue)](src/bin/check_coverage.rs)
-[![MCP](https://img.shields.io/badge/Protocol-Model_Context_Protocol_(MCP)-purple)](https://modelcontextprotocol.io)
-[![License](https://img.shields.io/badge/License-Free_Commercial_Use-blue)](LICENSE)
+## What it is
 
-> **Stop burning 80% of your AI agent's context window on repetitive file scans.**  
-> SlugAudit indexes your codebase once, verifies freshness in sub-milliseconds on every keystroke, and arms your AI agent with queryable SQL and Tree-sitter AST tools. Your agent spends **zero tokens on file rediscovery** and **100% of its context on deep reasoning**.
+SlugAudit is built for AI agents, not for humans. It is an index of a project's code —
+parsed structure, symbols, imports, call sites, comments, and diagnostics — that an
+agent queries over MCP.
 
----
+- **Evidence, not judgment.** SlugAudit performs no risk detection, assigns no
+  severity, ranks nothing, and draws no conclusions. Every judgment — what is buggy,
+  how severe, what to fix — belongs to the calling agent. Sorting out which facts
+  matter is the agent's job, not the tool's.
+- **Facts with coordinates.** Evidence rows carry a file path and a line span, so an
+  agent can act on them without re-reading the tree.
+- **Freshness without re-verification.** The index is re-synchronized before every
+  tool call, so an answer describes the files on disk (not unsaved editor buffers) and
+  the agent never has to double-check whether its view is current.
+- **Caps are reported in the response.** A paged or capped result carries `truncated`
+  and, when more rows exist, the `next_offset` to continue from; `leads` rows flag
+  detail text that was clipped (`detail_clipped`).
 
-## ⚡ The Problem: Why AI Code Audits Fail
+For each enabled project, SlugAudit owns exactly one derived-data directory:
 
-When you ask an AI coding agent to inspect or audit a codebase, it typically resorts to brute force:
-1. It lists directories and reads 40+ entire files looking for symbol definitions and call sites.
-2. It burns **100,000+ context tokens** before writing a single line of analysis.
-3. As the context window fills up, the agent hits compaction, forgets earlier files, hallucinates stale paths, and enters paranoid re-validation loops.
-
-| Audit Metric | Without SlugAudit ❌ | With SlugAudit ⚡ |
-| :--- | :--- | :--- |
-| **Context Cost** | 50,000–150,000+ tokens burned reading whole files | **~400 tokens** (returns only relevant symbols & AST spans) |
-| **Search Latency** | 15–60 seconds of slow disk I/O & file reading | **< 2 ms** directly from SQLite WAL & Tree-sitter |
-| **Freshness Guarantee** | Stale caches; agent hallucinations on edited files | **100% Guaranteed Fresh**: Synchronous atomic reconcile on every read |
-| **Safety & Integrity** | Script execution risks, unbounded write surfaces | **Hardened Read-Only**: `SQLITE_OPEN_READ_ONLY` + engine authorizers |
-| **Session Isolation** | Old agent notes contaminate future runs | **Zero Contamination**: Session-scoped findings auto-purged on restart |
-
----
-
-## 🏗️ How It Works
-
-SlugAudit acts as an invisible, high-speed telemetry and evidence layer between your filesystem and your AI agent over the standard **Model Context Protocol (MCP)**:
-
-```mermaid
-graph LR
-    subgraph Host ["Your Machine"]
-        Repo["Source Code"]
-        Watcher["File Watcher (inotify/kqueue)"]
-    end
-
-    subgraph SlugAudit ["SlugAudit MCP Engine"]
-        TS["Tree-Sitter AST & BLAKE3 Hasher"]
-        CAS["Atomic CAS Publishing"]
-        DB[("Disposable SQLite Index\n.planning/slugaudit/project.db")]
-        Guards["Read-Only Authorizer & Subquery Wrappers"]
-    end
-
-    subgraph Agent ["AI Coding Agent"]
-        Client["Claude Code · Cursor · Codex · Hermes · Windsurf · Bob · Grok"]
-    end
-
-    Repo --> Watcher
-    Repo --> TS
-    TS --> CAS --> DB
-    DB --> Guards --> Client
+```text
+<project>/.planning/slugaudit/project.db
 ```
 
-1. **Discovery & Hash**: Respects `.gitignore` and `.ignore` recursively, walks the repo in milliseconds, and hashes files with BLAKE3.
-2. **Deep AST Extraction**: Runs Tree-sitter across 300+ languages to index functions, methods, imports, call hierarchies, comments, and syntax diagnostics.
-3. **Atomic CAS Publish**: Commits the entire index into an ephemeral SQLite database in `.planning/slugaudit/project.db` using compare-and-swap (CAS) concurrency control.
-4. **Sub-millisecond Reconcile**: Background watcher detects file edits. Every tool call verifies freshness synchronously before returning results—zero chance of stale data.
-5. **Precise SQL & AST Tools**: The AI agent queries exact facts (`files`, `evidence`, `revisions`) without ever touching the disk.
+The surrounding `.planning/` directory belongs to the project, is indexed normally,
+and SlugAudit's own `.planning/slugaudit/` is excluded from discovery. The database is
+disposable: delete it and the next tool call rebuilds it from source. No fact lives
+only in the index.
 
----
+## Install
 
-## 🎯 The Division of Labor
-
-- **SlugAudit gathers facts:** indexes, extracts, synchronizes, and searches.
-- **The AI does the audit:** interprets evidence, spots logic bugs, judges security implications, and refactors code.
-
-SlugAudit does not judge code, assign arbitrary "scores", or tell your AI what to think. It provides ground truth so your AI can do real engineering.
-
----
-
-## 🚀 Quick Start
-
-### 1. Fast Install
+Prebuilt binaries are published for Linux x86_64. On any other platform, build from
+source with Rust 1.97.1 (edition 2024) — the toolchain version is pinned in
+`rust-toolchain.toml`.
 
 ```bash
-# One-line universal installer (Linux x86_64 or builds via cargo):
+# Installer script: downloads the Linux x86_64 release (SHA256-verified),
+# falls back to `cargo install --git`, and builds from a local checkout when
+# run inside this repository.
 curl -fsSL https://raw.githubusercontent.com/SlugThugLabs/slugaudit/main/install.sh | bash
 
-# Or build locally from source with Cargo:
+# From a source checkout
 cargo install --path .
 
-# Or run the interactive setup menu:
+# Interactive setup: install, connect an agent, disconnect, instructions for
+# any other MCP client, or run the server
 slugaudit menu
 ```
 
-### 2. Connect Your AI Agent (One-Click)
+The installer script and `slugaudit install` both place the binary at
+`~/.slugthug/slugaudit/slugaudit`, a stable path that survives rebuilds — which is
+what `slugaudit connect` registers with your agent. `slugaudit update` downloads a
+newer release and atomically replaces that binary.
 
-SlugAudit automatically configures your favorite AI coding assistant:
+## Connect an agent
+
+`slugaudit connect` writes a `slugaudit` MCP server entry into an agent's or editor's
+own configuration. With no argument it lists the agents detected on the machine to
+pick from; with a name it configures that target directly.
 
 ```bash
-slugaudit connect agy       # Antigravity (agy mcp add)
-slugaudit connect gemini    # Gemini CLI (gemini mcp add)
-slugaudit connect claude    # Claude Code (~/.claude.json)
-slugaudit connect cursor    # Cursor IDE (~/.cursor/mcp.json)
-slugaudit connect codex     # Codex CLI (~/.codex/config.toml)
-slugaudit connect hermes    # Hermes Agent
+slugaudit connect claude     # Claude Code (~/.claude.json)
+slugaudit disconnect claude  # alias: slugaudit remove claude
 ```
 
-*(Run `slugaudit connect` without arguments to auto-detect installed agents interactively from your terminal).*
+26 targets in this revision (ids are the `connect` argument; the display name is in
+parentheses where the id is not self-evident):
 
-To disconnect: `slugaudit disconnect <agent>` or pick from `slugaudit disconnect`.
+`agy` (Antigravity), `amp`, `bob`, `claude` (Claude Code), `claude-desktop`, `codex`,
+`copilot` (GitHub Copilot), `crush`, `cursor`, `droid` (Droid / Factory), `gemini`
+(Gemini CLI), `goose`, `grok`, `hermes`, `kimi` (Kimi Code), `omp` (Oh My Pi),
+`opencode`, `openhands`, `pearai`, `pi`, `q` (Amazon Q Developer), `trae`, `warp`,
+`windsurf`, `zed`, `1mcp`.
 
-### 3. Ask Your Agent Anything
+`claude-code` is accepted as an alias for `claude`, `antigravity` for `agy`,
+`github-copilot` for `copilot`, and `oh-my-pi` for `omp`. The registry is
+`src/connect_agents.rs`; each target's config path and scope is listed in
+[docs/CLIENTS.md](docs/CLIENTS.md).
 
-Start a normal session with your agent and ask:
+For a client that is not in that list, `slugaudit menu` (option 4) prints a JSON
+snippet you can paste into any MCP client's config.
 
-> *"Audit our authentication flow. Are token expiration checks enforced on every endpoint?"*
+## Tools
 
-Your agent will call `report`, `leads`, `query`, and `structure` in the background—answering with exact line ranges in milliseconds without flooding your context.
+The server exposes 8 MCP tools, registered in `src/server.rs`:
 
----
+| Tool | What it returns |
+| :--- | :--- |
+| `report` | Project snapshot: file and language counts, parser failures, evidence-kind counts, open findings. |
+| `leads` | Unranked mechanical facts: call sites by callee (`unwrap`, `expect`, `panic`, `todo`, `unimplemented`, `assert`), diagnostics, `TODO`/`FIXME`/`HACK` markers, credential-shaped files. Counts by default; paged file/line rows for one `mechanic` on request. Callee-based mechanics cover Rust only in this revision. |
+| `query` | Read-only SQL over the index (`files`, `evidence`, `dependency_edges`), including full file text via `files.content`. |
+| `structure` | Tree-sitter AST queries in one file or across a language, returning matched nodes with line spans and snippets. |
+| `finding` | Persists a conclusion the agent has reviewed, bound to the file's current content hash — it goes stale when that file changes. The judgment is the agent's; SlugAudit never generates it. |
+| `finding_read` | Findings written by the current session only, never another session's conclusions. |
+| `project_control` | Enable (`on`) or disable (`off`) a project, optionally setting its profile; `off` purges the database. |
+| `health` | Operational snapshot: watcher health, unreconciled event counts, current revision and file count, parser-pack version, tool-call counters. |
 
-## 🔌 Supported AI Agents & Editors
+Tool schemas, payload keys, and usage guidance are served to the agent at runtime by
+the server itself (`INSTRUCTIONS` in `src/server.rs`).
 
-| AI Client / Editor | Setup Command / Config | Scope | Status |
-| :--- | :--- | :--- | :---: |
-| **Antigravity (agy)** | `slugaudit connect agy` | Native CLI (`agy mcp add`) | ✅ Native |
-| **Gemini CLI** | `slugaudit connect gemini` | Native CLI (`gemini mcp add`) | ✅ Native |
-| **Claude Code** | `slugaudit connect claude` | Global (`~/.claude.json`) | ✅ Native |
-| **Cursor** | `slugaudit connect cursor` | Global (`~/.cursor/mcp.json`) | ✅ Native |
-| **Windsurf** | `slugaudit connect windsurf` | Global (`mcp_config.json`) | ✅ Native |
-| **Trae AI IDE** | `slugaudit connect trae` | Global (`~/.trae/mcp.json`) | ✅ Native |
-| **OpenCode** | `slugaudit connect opencode` | User config (`opencode.json`) | ✅ Native |
-| **Hermes Agent** | `slugaudit connect hermes` | Global CLI (`hermes mcp add`) | ✅ Native |
-| **Codex** | `slugaudit connect codex` | Global (`~/.codex/config.toml`) | ✅ Native |
-| **GitHub Copilot CLI** | `slugaudit connect copilot` | Global CLI (`copilot mcp add`) | ✅ Native |
-| **Bob** | `slugaudit connect bob` | Global (`--scope global`) | ✅ Native |
-| **Grok** | `slugaudit connect grok` | User Scope (`~/.grok/config.toml`) | ✅ Native |
-| **Zed Editor** | `slugaudit connect zed` | User settings (`settings.json`) | ✅ Native |
-| **Pi / Oh My Pi** | `slugaudit connect pi` / `omp` | User config (`mcp.json`) | ✅ Native |
-| **1MCP / OpenHands** | `slugaudit connect 1mcp` | Native CLI | ✅ Native |
-| **Other MCP Clients**| `slugaudit menu` (Option 4) | JSON snippet for any client | ✅ Standard |
+## Resources
 
----
+Six pull-based MCP resources, read with `resources/read`. They cost an agent nothing
+in context unless it asks for one. The five query resources are also in the repository
+under [`examples/queries/`](examples/queries/), and are compiled into the binary from
+those files:
 
-## 🛠️ The 8 Native MCP Tools
+- `slugaudit://queries/README.md` — SQL and Tree-sitter recipes ([`examples/queries/README.md`](examples/queries/README.md))
+- `slugaudit://queries/find_unhandled_panics.sql` — `unwrap` / `expect` / `panic` call sites
+- `slugaudit://queries/auth_attack_surface.sql` — functions, methods, and calls touching auth, tokens, or sessions
+- `slugaudit://queries/syntax_diagnostics.sql` — syntax-error and parser diagnostics per file
+- `slugaudit://queries/rust_functions.scm` — Tree-sitter pattern for Rust functions
+- `slugaudit://schema.sql` — the index schema (from `src/store/schema.sql`)
 
-| Tool | Capability | Example AI Query |
-| :--- | :--- | :--- |
-| **`report`** | High-level project shape, file counts, language distribution, and syntax diagnostics. | `report(path: ".")` |
-| **`leads`** | Unranked mechanical facts — call sites by callee name (unwrap, expect, panic, todo, unimplemented, assert), diagnostics, TODO/FIXME/HACK markers, credential-shaped files. Rust-only for callee-based mechanics; counts by default, file/line rows for one mechanic on request. | `leads(path: ".")` |
-| **`query`** | High-speed read-only SQL queries against the indexed repository. | `SELECT f.path, e.start_line, e.payload FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol'` |
-| **`structure`** | Tree-sitter AST queries across 300+ languages (supports single-file or multi-file search with lean snippets). | `structure(language: "rust", query: "(function_item name: (identifier) @fn)")` |
-| **`finding`** | Store AI-reviewed conclusions bound to the file content hash. | Auto-invalidates if the underlying source lines change. |
-| **`finding_read`** | Session-gated finding retrieval (prevents cross-session hallucination). | Read only findings created by the current agent. |
-| **`project_control`** | Project enable/disable and cache management. | `project_control(action: "on", path: ".")` |
-| **`health`** | Real-time watcher status, sync latency (`last_sync_duration_ms`), and counters. | Operational snapshot without side effects. |
+## Configuration
 
-### 🎯 Context Optimization: Lean Results vs. Full Output
+Three resource profiles scale the per-file, import, query, and sync budgets
+(`src/model/profile.rs`):
 
-SlugAudit follows a **"Results First, Full Code On-Demand"** model to prevent burning the agent's context window while ensuring no data is ever hidden from an audit:
+- `adaptive` (default) — sizes limits from detected host memory.
+- `audit` — large caps and long budgets for large repositories.
+- `lean` — small caps for constrained environments.
 
-* **AST Pattern Search (`structure`)**:
-  * **Multi-File Search**: Omit `file` to search across all files of a given language (optionally filtered by `pattern`, e.g. `"src/**/*.rs"`). Defaults to **lean 1-line preview snippets** (`full_text: false`, max 120 bytes) with exact `start_line`/`end_line` and column coordinates.
-  * **Single-File Search**: Specify `file` to inspect a targeted file. Defaults to **full AST code blocks** (`full_text: true`, up to 1 MiB / 1,000,000 bytes).
-  * **Explicit Control**: The agent can pass `"full_text": false` for compact coordinate-only sweeps across any scope, or `"full_text": true` to pull complete code blocks.
-* **SQL Queries (`query`)**:
-  * **Selective Projection**: The agent queries only what it needs (e.g. `SELECT path, line_number FROM evidence WHERE ...`) to stay lean, or `SELECT content` when full source text is required.
-  * **Paging with `next_offset`**: Results are capped at 500 rows and up to 256 MiB+ per page (dynamically scaled to host RAM). When `truncated: true`, `next_offset` is provided so the agent can page through the entire dataset without context overflow.
+Set the profile in a project as `.planning/slugaudit/config.json`:
 
-### 📚 Resources (schema + query recipes)
-
-Six static documents ship with the server as pull-based MCP resources over `resources/read`—an agent that never reads one pays nothing for it in context:
-
-- `slugaudit://queries/README.md` — Pre-built SQL and Tree-sitter recipes for querying the index.
-- `slugaudit://queries/find_unhandled_panics.sql` — Find unwrap/expect/panic call sites across the codebase.
-- `slugaudit://queries/auth_attack_surface.sql` — Map functions, methods, and calls touching auth, tokens, or sessions.
-- `slugaudit://queries/syntax_diagnostics.sql` — List syntax-error and parser diagnostics per file.
-- `slugaudit://queries/rust_functions.scm` — Tree-sitter pattern for Rust function declarations and bodies.
-- `slugaudit://schema.sql` — Canonical SQLite schema of the project index: tables, columns, and constraints.
-
-### 🎛️ Profiles & Adaptive Host Memory
-
-SlugAudit never imposes artificial barriers on codebases. Following the design standards of CodeQL and Semgrep, it dynamically scales resource limits to match the host hardware:
-
-* **`Adaptive` (Default)**: Automatically detects physical and available host RAM (`/proc/meminfo` on Linux, `sysctl` on macOS). Dynamically scales import caches and per-file caps (up to 1 GiB single-file limit, half of available RAM for total project imports).
-* **`Audit`**: Deep audit mode for massive enterprise repos (256 MiB per-file cap, 32 GiB total import budget, 60s execution budgets).
-* **`Lean`**: Lightweight mode for resource-constrained environments (32 MiB per-file cap, 2 GiB total import budget, 10s execution budgets).
-
-**How to Configure:**
-1. **In-Repo Project Config**: Add `.planning/slugaudit/config.json` to the audited repository:
-   ```json
-   {
-     "profile": "audit"
-   }
-   ```
-2. **MCP Tool Control**: Agents can select or change profiles on the fly:
-   ```json
-   {
-     "name": "project_control",
-     "arguments": {
-       "action": "on",
-       "profile": "audit"
-     }
-   }
-   ```
-3. **Environment Overrides**: Set `SLUGAUDIT_PROFILE=audit` or tune granular variables (e.g. `SLUGAUDIT_MAX_FILE_BYTES=536870912`).
-
----
-
-## ⚡ Performance Benchmarks
-
-Measured on standard development hardware (AMD Ryzen 9 / Linux kernel 6.x):
-
-| Operation | Benchmark / Metric | Latency / RSS |
-| :--- | :--- | :---: |
-| **Repository Discovery** | Walk & BLAKE3 hash 200 files | **4.2 ms** |
-| **Cold Tree-Sitter AST Parse** | Full syntax extraction (Rust grammar) | **370 µs** |
-| **SQL Query Latency** | General query + subquery authorizer | **< 1.0 ms** |
-| **Incremental Reconcile** | Hot reload dirty file on keystroke | **< 8.0 ms** |
-| **Memory Footprint** | Peak RSS during heavy repository sync | **26.9 MiB** |
-| **Code Safety** | Crate-wide `#![forbid(unsafe_code)]` | **0 unsafe blocks** |
-
----
-
-## 📖 Query Cookbook & Recipes
-
-Ready-to-run queries for AI agents and security auditors in [`examples/queries/`](examples/queries/):
-
-- **[Auth Attack Surface](examples/queries/auth_attack_surface.sql)**: Map all authentication, token, and session endpoints in < 2ms.
-- **[Find Unhandled Panics](examples/queries/find_unhandled_panics.sql)**: Pinpoint crash-prone `.unwrap()`, `.expect()`, and `panic!()` calls.
-- **[Syntax Diagnostics](examples/queries/syntax_diagnostics.sql)**: Extract parser errors and syntax issues without running a compiler.
-- **[Rust AST Matcher](examples/queries/rust_functions.scm)**: Tree-sitter query matching exact function shapes and parameter blocks.
-
----
-
-## Product boundary
-
-The single end-user product is the `slugaudit` binary. Users install and
-configure it with their AI agent, and the binary operates on the user's own
-projects.
-
-For each enabled user project, SlugAudit owns only this derived-data directory:
-
-```text
-<user-project>/.planning/slugaudit/project.db
+```json
+{ "profile": "audit" }
 ```
 
-The surrounding `.planning/` directory belongs to the user's project workflow.
-Its other files are ordinary user project data and may be indexed normally.
-SlugAudit excludes its own `.planning/slugaudit/` directory from discovery.
+…or pass it to the `project_control` tool, or set `SLUGAUDIT_PROFILE=audit`. Individual
+limits can be overridden with environment variables named `SLUGAUDIT_<FIELD>` (for
+example `SLUGAUDIT_MAX_FILE_BYTES`, `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS`); each field
+and its variable are documented in `src/model/limits.rs`. An unset or unparseable
+override is ignored, leaving the default in place.
 
-The database is disposable derived data — delete it and any tool call
-rebuilds it from source.
-
-## Repository scope
-
-See [DEVELOPMENT_SCOPE.md](DEVELOPMENT_SCOPE.md) for the distinction between
-this repository's development materials and the runtime behavior of SlugAudit
-inside a user's project.
-
-## Repository Structure & The `.planning/` Directory
-
-All architectural blueprints, design decisions, and runtime index data live inside `.planning/`:
-
-- **Source of Truth**: [`.planning/ARCHITECTURE.md`](.planning/ARCHITECTURE.md) is the canonical, authoritative source of truth for the codebase. It details the complete module map, data flow, process lifecycle, security boundaries, and the 11 core architectural invariants governing SlugAudit.
-- **Design & Planning History**: [`.planning/archive/`](.planning/archive/) preserves historical planning records, architectural decision logs, and dependency inventories.
-- **Disposable Runtime Cache**: `.planning/slugaudit/project.db` houses the SQLite index and evidence tables. This is derived data that SlugAudit automatically creates and synchronizes—it can be deleted at any time and any tool call will rebuild it from source.
-
-Keeping these artifacts organized inside `.planning/` keeps the repository root uncluttered while providing both human developers and AI coding agents a dedicated, structured home for all architecture and design documentation.
+Logging goes to `stderr`; `stdout` carries JSON-RPC only. Set
+`SLUGAUDIT_LOG_FORMAT=json` for one-line JSON log events.
 
 ## Documentation
 
-- **[Architecture](.planning/ARCHITECTURE.md)** — the authoritative architectural specification (module map, data flow, security model, design FAQ)
-- **[Connection guides](docs/)** — agent-specific setup for Bob, Claude Code, Grok, and Codex
-- **[Archive](.planning/archive/)** — historical planning docs, decision log, dependency inventory
+- [AGENTS.md](AGENTS.md) — why this exists, the founding metric, non-negotiables, verified conventions
+- [.planning/ARCHITECTURE.md](.planning/ARCHITECTURE.md) — design, invariants, data flow, module map
+- [.planning/PLAN.md](.planning/PLAN.md) — the active plan
+- [.planning/archive/DECISIONS.md](.planning/archive/DECISIONS.md) — decision log (append-only history)
+- [docs/CLIENTS.md](docs/CLIENTS.md) — every `connect` target, its config path, and its scope
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — operator runbook
 
 ## Development
 
-Requires Rust 1.97.1+ (edition 2024) on Linux or macOS. Run the same gates CI uses:
+Rust 1.97.1 (edition 2024). The same gates CI runs:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --lib --bins --tests --all-features
 cargo run --quiet --bin check_source_limits --locked
-cargo run --quiet --bin check_docs_drift --locked
 cargo run --quiet --bin check_no_duplicates --locked
+cargo run --quiet --bin check_docs_drift --locked
+cargo check --all-targets --all-features --locked
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo test --lib --bins --tests --all-features --locked
+cargo run --quiet --bin check_coverage --locked
 ```
 
-`#![forbid(unsafe_code)]` is enforced crate-wide. Zero unsafe in `src/`.
+CI also runs `cargo-deny` (advisories, bans, sources, licences), a RustSec audit, and
+scoped mutation testing. `check_performance` compares the criterion benches against the
+committed baseline at `.planning/archive/perf_baseline.json`; it is not part of the CI
+job. `check_coverage` gates line coverage at 83% by default — the threshold is
+calibrated against measurement, not an aspirational target.
 
-### Structured Logging
+### Unsafe code policy
 
-Diagnostics log to `stderr` with ANSI colors disabled by default. For automated log aggregators (e.g. Datadog, Grafana Loki, CloudWatch), set:
-
-```bash
-export SLUGAUDIT_LOG_FORMAT=json
-```
-
-All `stderr` events will be formatted as single-line JSON while `stdout` remains strictly JSON-RPC.
+`unsafe_code = "forbid"` is set crate-wide in `Cargo.toml`, so this crate's own source
+contains no `unsafe` blocks. Transitive unsafe inside dependencies that perform FFI,
+syscalls, or cryptography (tree-sitter, bundled SQLite, tokio) is expected and is
+reviewed by hand when a dependency is added rather than gated in CI.
 
 ## License
 
-SlugAudit is **free to use** — including for your own commercial software.
-Use it to develop, audit, test, and maintain whatever you build, and you may
-sell the software you create with it. Software you make using SlugAudit (and
-the results it produces) does not become subject to SlugAudit's license just
-because the tool was used.
-The only thing you need to contact us about (`admin@slugthuglabs.dev`) is
-distributing **SlugAudit itself** — for example embedding, bundling,
-redistributing, sublicensing, or selling the tool as part of another product
-or service. That includes a company wanting to make SlugAudit a branded part
-of something they sell — we'd love to talk. Internal team and dev use is
-always free.
+SlugAudit is free to use as a development tool, including on commercial software. From
+[`LICENSE`](LICENSE):
 
-See the complete [LICENSE](LICENSE) for the binding terms.
+> You may use SlugAudit for free to develop, audit, test, and maintain your own
+> software—including commercial software—and you may sell the software you build
+> with it. This covers software you create while using SlugAudit as a tool; it does
+> not cover selling, embedding, bundling, or redistributing SlugAudit itself, or a
+> modified version of it, as part of a commercial product or service. You do not need
+> to contact SlugThugLabs for tool use.
+>
+> Contact admin@slugthuglabs.dev only if you want to embed, bundle, redistribute,
+> sublicense, or otherwise make SlugAudit itself part of a commercial product or
+> service. The permission summary above is explanatory; the terms below control.
+
+The binding terms are the PolyForm Noncommercial License 1.0.0 plus the SlugAudit
+Tool-Use Additional Permission, both carried in [`LICENSE`](LICENSE). The additional
+permission states:
+
+> Notwithstanding the Noncommercial Purposes limitation in the license below,
+> SlugThugLabs grants you permission to run, reproduce, and modify SlugAudit
+> internally as a development tool to analyze, audit, develop, test, or maintain
+> any other software or project, including commercial products and services.
+
+That permission does not cover distributing or embedding SlugAudit itself; those uses
+need a separate written commercial license (`admin@slugthuglabs.dev`).

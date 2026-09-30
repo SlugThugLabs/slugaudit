@@ -1,5 +1,10 @@
 use super::*;
+use crate::store::test_capture::capture_at_level;
+use crate::tools::QueryRequest;
+use crate::tools::test_support::activated_project;
+use rmcp::handler::server::wrapper::Parameters;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tracing::Level;
 
 /// The sampling throttle must pass the first event, drop everything inside
 /// the window, and pass again once the window elapses — the exact
@@ -110,5 +115,193 @@ async fn the_semaphore_bounds_concurrent_blocking_work() {
         "observed {} concurrent blocking operations against a {}-permit semaphore",
         peak.load(Ordering::SeqCst),
         PERMITS
+    );
+}
+
+/// Phase 0's instrument is a log line, so it is pinned like one. These
+/// tests capture through `store::test_capture`, the same harness
+/// `tools::redaction_tests` uses: `capture_at_level` installs a
+/// thread-local subscriber, so only events emitted on the test thread are
+/// captured. That covers `run_blocking`'s own start and completion lines
+/// (the call id/session live on the span both are emitted under), not the
+/// internals a tool logs from inside `spawn_blocking` — which is exactly
+/// the boundary this phase adds to.
+
+/// The runtime the capture closures block on. Using the current-thread
+/// flavor keeps every `run_blocking` line the tests assert on on the test
+/// thread, under the capture subscriber.
+fn current_thread_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime")
+}
+
+/// Reads one `key=value` field out of a captured log line, accepting the
+/// span-prefix form (`call_id=7}`), the event form (`call_id=7 `), and
+/// quoted values (`session_id="…"`). Panics with the offending line when
+/// the field is absent, so a regression names the line it lost the field on.
+fn logged_field(line: &str, key: &str) -> String {
+    let needle = format!("{key}=");
+    let start = line
+        .find(&needle)
+        .unwrap_or_else(|| panic!("field `{key}` missing from log line: {line}"))
+        + needle.len();
+    let rest = &line[start..];
+    let end = rest.find([' ', '}', ',']).unwrap_or(rest.len());
+    rest[..end].trim_matches('"').to_owned()
+}
+
+/// The completion lines of a capture: the single marker both outcomes use,
+/// so "exactly one per call" is a countable property.
+fn completion_lines(logs: &str) -> Vec<&str> {
+    logs.lines()
+        .filter(|line| line.contains("tool call completed"))
+        .collect()
+}
+
+/// Two consecutive calls to the same tool must be distinguishable, and each
+/// must carry the session it belongs to — otherwise a session's call
+/// sequence cannot be recovered from the log at all.
+#[test]
+fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() {
+    let (_, logs) = capture_at_level(
+        || {
+            current_thread_runtime().block_on(async {
+                let semaphore = Arc::new(Semaphore::new(4));
+                for value in [1, 2] {
+                    run_blocking(
+                        Arc::clone(&semaphore),
+                        "probe",
+                        move || Ok::<_, ErrorData>(value),
+                        None,
+                    )
+                    .await
+                    .expect("call succeeds");
+                }
+            });
+        },
+        Level::INFO,
+    );
+
+    let completions = completion_lines(&logs);
+    assert_eq!(
+        completions.len(),
+        2,
+        "expected exactly one completion line per call:\n{logs}"
+    );
+
+    let session = logged_field(completions[0], "session_id");
+    uuid::Uuid::parse_str(&session).expect("the completion line carries a real session id");
+    assert_eq!(
+        session,
+        logged_field(completions[1], "session_id"),
+        "both calls ran in one process, so they share one session id:\n{logs}"
+    );
+
+    for line in &completions {
+        assert!(line.contains("tool=\"probe\""), "tool name missing: {line}");
+        assert!(
+            line.contains("outcome=\"success\""),
+            "outcome missing: {line}"
+        );
+        assert!(!logged_field(line, "elapsed_ms").is_empty(), "{line}");
+    }
+
+    let first = logged_field(completions[0], "call_id");
+    let second = logged_field(completions[1], "call_id");
+    assert_ne!(
+        first, second,
+        "two consecutive calls to one tool must not share a call id:\n{logs}"
+    );
+
+    // The start line of each call carries the same correlation pair as its
+    // completion line, in call order: that is what makes the sequence — not
+    // just the set — readable.
+    let started: Vec<&str> = logs
+        .lines()
+        .filter(|line| line.contains("tool call started"))
+        .collect();
+    assert_eq!(started.len(), 2, "one start line per call:\n{logs}");
+    assert_eq!(logged_field(started[0], "call_id"), first);
+    assert_eq!(logged_field(started[1], "call_id"), second);
+}
+
+/// A failed call is still one completion line, and it says so in a field
+/// rather than only in the level — a sequence log grepping one marker must
+/// not silently skip the calls that errored.
+#[test]
+fn a_failed_tool_call_logs_one_completion_line_marked_error() {
+    let (result, logs) = capture_at_level(
+        || {
+            current_thread_runtime().block_on(async {
+                run_blocking(
+                    Arc::new(Semaphore::new(4)),
+                    "probe",
+                    || Err::<(), _>(ErrorData::invalid_params("bad request", None)),
+                    None,
+                )
+                .await
+            })
+        },
+        Level::INFO,
+    );
+    assert!(result.is_err(), "the tool's error must propagate");
+
+    let completions = completion_lines(&logs);
+    assert_eq!(
+        completions.len(),
+        1,
+        "a failure logs exactly one completion line:\n{logs}"
+    );
+    assert!(
+        completions[0].contains("outcome=\"error\""),
+        "{}",
+        completions[0]
+    );
+}
+
+/// The hard redaction invariant (`tools/redaction_tests.rs`) holds for the
+/// new lines too: a call whose argument is a sentinel must not put that
+/// sentinel in any log line, the completion line included. The completion
+/// line is asserted to be present as well, so the absence check cannot pass
+/// vacuously.
+#[test]
+fn tool_call_logging_never_emits_the_calls_argument_or_result() {
+    const SENTINEL: &str = "SENTINEL_TOOLCALL_9147";
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let request = QueryRequest {
+        path: project.path().to_string_lossy().into_owned(),
+        sql: format!("SELECT '{SENTINEL}' AS marker FROM files"),
+        offset: 0,
+    };
+
+    let (result, logs) = capture_at_level(
+        || {
+            current_thread_runtime().block_on(run_blocking(
+                Arc::new(Semaphore::new(4)),
+                "query",
+                move || {
+                    crate::tools::query(
+                        &Parameters(request),
+                        &crate::progress::NoopProgressSink,
+                        &crate::sync::SourceSyncManager::default(),
+                    )
+                },
+                None,
+            ))
+        },
+        Level::INFO,
+    );
+    result.expect("query succeeds");
+
+    assert_eq!(
+        completion_lines(&logs).len(),
+        1,
+        "the completion line must be captured, or this test proves nothing:\n{logs}"
+    );
+    assert!(
+        !logs.contains(SENTINEL),
+        "the query text leaked into the tool-call log:\n{logs}"
     );
 }

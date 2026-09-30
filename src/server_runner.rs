@@ -15,6 +15,7 @@ use crate::progress::{NoopProgressSink, ProgressEvent, ProgressSink};
 use rmcp::model::{ProgressNotificationParam, ProgressToken, RequestMetaObject};
 use rmcp::{ErrorData, Peer, RoleServer};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Semaphore;
 use tracing::Instrument;
 
@@ -25,6 +26,23 @@ use tracing::Instrument;
 /// once, independent of how many concurrent tool calls arrive.
 pub(crate) const MAX_CONCURRENT_BLOCKING_OPS: usize = 8;
 
+/// Process-local monotonic id assigned to every tool call, so two
+/// consecutive calls to the same tool are distinguishable in the log —
+/// otherwise a session's call sequence is unreadable (`tool="query"`
+/// repeated N times tells an operator nothing about chain or repetition).
+///
+/// Process-local is sufficient: `util::SESSION_ID` already identifies the
+/// process, and the pair (session id, call id) is unique for the life of
+/// that process. Never reset, never persisted, never sent to the caller.
+static NEXT_CALL_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Allocates the next call id. `Relaxed` suffices: the only contract is
+/// that concurrent callers never receive the same value, which
+/// `fetch_add` guarantees without ordering any other memory.
+fn next_call_id() -> u64 {
+    NEXT_CALL_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 /// Runs `work` on Tokio's blocking thread pool rather than the calling
 /// async task's worker thread, after acquiring a permit that caps how many
 /// such operations run concurrently. `Semaphore::acquire` only errors if
@@ -32,15 +50,23 @@ pub(crate) const MAX_CONCURRENT_BLOCKING_OPS: usize = 8;
 ///
 /// Wraps the whole call — permit wait, blocking work, and outcome — in one
 /// span per tool call, logged to stderr only (see `main.rs`'s subscriber
-/// setup): a start event, then completion/failure with elapsed time. Never
-/// logs `work`'s actual arguments or return value — only the tool name and
-/// timing/outcome, so SQL text, file content, and finding text never reach
-/// the log. `work` itself may add its own fields to the current span (e.g.
-/// revision id, row/edge counts) by calling `tracing::Span::current()`
-/// from inside `tools::*` — the span is entered for the full duration of
-/// the blocking closure via `blocking_span.enter()`, a sync guard, since
-/// `spawn_blocking` runs on a thread the async instrumentation above does
-/// not automatically follow.
+/// setup): a start event, then exactly one completion event with elapsed
+/// time and outcome. Every line this call emits carries the span's
+/// `call_id` (unique per call, monotonic within the process) and
+/// `session_id` (`util::SESSION_ID`), so a session's call sequence can be
+/// recovered from the log by grepping one session id. The completion
+/// event additionally carries the process-wide `ToolCounters` deltas
+/// observed across the call and `outcome = "success" | "error"`; the
+/// counters cannot be reset and concurrent calls bump them too, so they
+/// are logged as deltas rather than as this call's exclusive share.
+/// Never logs `work`'s actual arguments or return value — only the tool
+/// name and timing/outcome, so SQL text, file content, and finding text
+/// never reach the log. `work` itself may add its own fields to the
+/// current span (e.g. revision id, row/edge counts) by calling
+/// `tracing::Span::current()` from inside `tools::*` — the span is entered
+/// for the full duration of the blocking closure via
+/// `blocking_span.enter()`, a sync guard, since `spawn_blocking` runs on a
+/// thread the async instrumentation above does not automatically follow.
 ///
 /// When `progress` is `Some`, sends MCP progress notifications at three
 /// points: "queued" before waiting on the semaphore, "working" once the
@@ -56,7 +82,17 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, ErrorData> + Send + 'static,
     progress: Option<(Peer<RoleServer>, ProgressToken)>,
 ) -> Result<T, ErrorData> {
-    let span = tracing::info_span!("tool_call", tool = tool_name);
+    // `call_id` and `session_id` live on the span (not only on the
+    // completion line) so the start line and every line a tool adds to the
+    // current span carry the same pair. Metadata only: the tool's name, an
+    // id, and the session — never its arguments or result.
+    let span = tracing::info_span!(
+        "tool_call",
+        tool = tool_name,
+        call_id = next_call_id(),
+        session_id = %crate::util::session_id(),
+    );
+    let counters_before = crate::tools::ToolCounters::snapshot();
     let started = std::time::Instant::now();
     let blocking_span = span.clone();
 
@@ -104,29 +140,39 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
 
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let succeeded = result.is_ok();
-    // Snapshot is taken inside `record_call` so the post-bump value is
-    // the one logged here. The caller isn't observable, but the count
-    // fields log accurately to the trace event so an operator reading
-    // the log sees both the outcome of this call and the cumulative
-    // rate at the time of the log line.
-    let counters = crate::tools::ToolCounters::record_call(succeeded, elapsed_ms);
+    // `record_call` bumps the process-wide counters and returns the
+    // post-bump snapshot; `counters_before` was taken before the work
+    // started. The difference is the movement observed across this call's
+    // lifetime — concurrent calls' bumps are included, which is why it is
+    // logged as a delta and never as an absolute or as this call's share.
+    let counters_after = crate::tools::ToolCounters::record_call(succeeded, elapsed_ms);
+    let calls_delta = counters_after
+        .call_count
+        .saturating_sub(counters_before.call_count);
+    let errors_delta = counters_after
+        .error_count
+        .saturating_sub(counters_before.error_count);
+    let outcome = if succeeded { "success" } else { "error" };
     let _guard = span.enter();
+    // One completion line per call, both outcomes: a failure keeps WARN
+    // (and keeps the error message), a success stays INFO, and `outcome`
+    // makes the single marker greppable for the sequence log.
     match &result {
         Ok(_) => tracing::info!(
             elapsed_ms,
-            call_count = counters.call_count,
-            error_count = counters.error_count,
+            outcome,
+            calls_delta,
+            errors_delta,
             "tool call completed",
         ),
-        Err(error) => {
-            tracing::warn!(
-                elapsed_ms,
-                error = %error.message,
-                call_count = counters.call_count,
-                error_count = counters.error_count,
-                "tool call failed",
-            );
-        }
+        Err(error) => tracing::warn!(
+            elapsed_ms,
+            outcome,
+            error = %error.message,
+            calls_delta,
+            errors_delta,
+            "tool call completed",
+        ),
     }
     result
 }

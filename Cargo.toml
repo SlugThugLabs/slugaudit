@@ -92,7 +92,7 @@ multiple_crate_versions = "allow"
 # Criterion benchmarks (Task 9.2). Each bench target is its own binary with
 # `harness = false` so criterion provides main(); `cargo test --all-targets`
 # compiles them but never runs them, keeping correctness gates separate
-# from benchmark builds (plan-audit PHASE-09).
+# from benchmark builds.
 [[bench]]
 name = "discovery"
 path = "benches/discovery.rs"
