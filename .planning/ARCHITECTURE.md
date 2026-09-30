@@ -42,8 +42,14 @@ The server exposes eight tools (`src/server.rs`):
   credential-shaped file count.
 - **`leads`** — unranked mechanical observations: call sites by callee name,
   diagnostics, TODO/FIXME/HACK comment markers, credential-shaped files.
-  Counts by default; file/line rows for one mechanic on request. Callee-based
-  mechanics are Rust-only in this revision.
+  Counts by default, each with its row count, distinct-file count and
+  `covers` (`rust_only` / `all_languages`); file/line rows for one mechanic on
+  request, optionally narrowed by a `pattern` path filter. Rows are cut by a
+  response byte budget rather than a row cap, and every rows response reports
+  `returned` / `total` / `complete` with `files_total` / `files_covered`. A
+  resumed page may pin `expected_revision` and is refused (`stale_revision`)
+  when the index moved on. Callee-based mechanics are Rust-only in this
+  revision.
 - **`query`** — arbitrary read-only SQL against the project's own database.
   The connection itself refuses writes; the SQL is never inspected for write
   intent.
@@ -134,7 +140,8 @@ src/
 │   ├── structure.rs          tree-sitter pattern match
 │   ├── structure_source.rs   source loading + multi-file and snippet helpers
 │   ├── leads.rs              unranked mechanical observations
-│   ├── leads_query.rs        leads mechanic catalogue + the SQL each compiles to
+│   ├── leads_mechanics.rs    the leads mechanic catalogue
+│   ├── leads_query.rs        the SQL each leads mechanic compiles to
 │   ├── finding.rs            the single write tool
 │   ├── finding_read.rs       session-gated finding query
 │   ├── project_control.rs    enable/disable a project
@@ -172,6 +179,7 @@ src/
 │   ├── revision_files.rs     files/evidence writes for one upserted file
 │   ├── revision_skipped.rs   existence rows for discovered-but-skipped files
 │   ├── analyze.rs            tree-sitter parse + evidence extraction for one file
+│   ├── classify.rs           path-derived authored/generated/vendored file class
 │   └── race_hook.rs          test-only race-injection hook
 │
 ├── graph/                    import evidence → dependency_edges
@@ -245,6 +253,10 @@ src/
     │   ├── canonical_docs.rs the canonical doc set must exist
     │   ├── module_map.rs     this module map must reference real paths
     │   └── test_file_count.rs  the `*_tests.rs` count claim must match
+    ├── check_producer_coverage/  every evidence kind is constructed somewhere
+    │   ├── main.rs           argv + gate verdict + exit codes
+    │   ├── scan.rs           enum-variant parser + production-source scanner
+    │   └── tests.rs          scanner rules + the verdict on this repo
     ├── check_coverage.rs     llvm-cov line-coverage gate
     └── check_performance/    criterion medians vs. the committed baseline
         ├── main.rs           run benches, compare, print verdict
@@ -372,6 +384,14 @@ the accepted consequence is the stat sweep's own documented blind spot — a
 skipped file edited to the same size within the same mtime second is not
 detected. A path with no representable text form (a non-UTF-8 name) still has
 no row and is visible only in the publish report and the server log.
+
+Every row also carries `file_class` — `authored`, `generated`, or `vendored` —
+derived from its path alone by `sync::classify::classify`, never from content,
+so it is available for a skipped row too. It is a fixed fact, not a judgment:
+a mechanic whose rows are dominated by `vendor/` can be summarised in one
+sentence, and `report.completeness.file_class_counts` is the breakdown. The
+schema column comment documents the heuristic and `vendored`'s precedence over
+`generated`.
 
 Existence rows take part in the diff and the manifest hash, which is what keeps
 a skipped file from being classified as deleted (it is on disk) and keeps an
@@ -513,7 +533,7 @@ a second database file. This is the engine-level half of the invariant that
 correctness comes from the connection, not from inspecting query text.
 
 **Schema versioning is discard-and-rebuild.** `store/migrations.rs` writes
-`CURRENT_SCHEMA_VERSION` (currently `4`) to `PRAGMA user_version`. A database
+`CURRENT_SCHEMA_VERSION` (currently `6`) to `PRAGMA user_version`. A database
 whose version is neither fresh (`0`) nor current resolves as
 `UnsupportedVersion`, which `is_corruption()` reports as corruption; the sync
 layer discards the file and rebuilds it from project source. There is no
@@ -725,9 +745,9 @@ something else loudly.
     `files` row is written for every discovered file, including the ones that
     were skipped (`file_kind = 'skipped'`, `skip_reason`, no content), so
     `count(*)` cannot silently omit them; and `report.completeness` states the
-    breakdowns (kind, skip reason, extraction completeness) and a partial-index
-    flag beside the counts they qualify. No response carries a score, a
-    severity, or a ranking — evidence is not judgment.
+    breakdowns (kind, class, skip reason, extraction completeness) and a
+    partial-index flag beside the counts they qualify. No response carries a
+    score, a severity, or a ranking — evidence is not judgment.
 13. **A failing tool call carries a machine-readable code.** A tool error
     may attach `{"code": …, "remedy": …}` in `ErrorData.data` — the only
     machine-readable channel rmcp gives a response. The code is a member of
@@ -756,8 +776,8 @@ surface).
 | --- | --- | --- |
 | `sync_budget_exhausted` | the sync wall-clock budget (`max_sync_wall_clock`) was spent while discovering, hashing, parsing, or publishing; permanent on a tree too big for the budget, so the remedy names the knob | every sync map site: `manager_meta::map_publish_error`, `sweep_reconcile::sweep_tree` and `sweep_reconcile::apply_sweep_report`, both `manager_health` map sites |
 | `project_not_enabled` | no ancestor of the requested path has an activation marker, so no tool can serve it | `manager_orchestration::map_activation_error` — the single funnel behind every tool |
-| `stale_revision` | the revision this call was pinned to is no longer current, or a sampled file changed before the write — the compare-and-swap race, where retrying is right | `tools::context::verify_revision_matches`, `manager_meta::map_publish_error` |
-| `unknown_mechanic` | `leads` was asked for a mechanic id that is not in the catalogue | `tools::leads_query::resolve_mechanic` |
+| `stale_revision` | the revision this call was pinned to is no longer current, or a sampled file changed before the write — the compare-and-swap race, where retrying is right | `tools::context::verify_revision_matches`, `manager_meta::map_publish_error`; also `tools::context::guard_expected_revision`, where the caller pinned a resumed page (`leads`/`query` `expected_revision`) and the remedy restarts the sweep from offset 0 instead of retrying the offset |
+| `unknown_mechanic` | `leads` was asked for a mechanic id that is not in the catalogue | `tools::leads_mechanics::resolve_mechanic` |
 | `sql_too_large` | the SQL passed to `query` exceeded `max_query_sql_bytes` | `tools::query::query_with_limits` |
 | `file_not_indexed` | the named file has no indexed source content (never discovered, skipped as oversize/unreadable, or binary) | `tools::structure_source::fetch_source`, `tools::finding::fetch_file` |
 <!-- error-codes:end -->

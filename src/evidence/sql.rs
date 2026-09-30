@@ -58,9 +58,6 @@ fn kind_text(kind: &EvidenceKind) -> &'static str {
         EvidenceKind::Docstring => "Docstring",
         EvidenceKind::Symbol => "Symbol",
         EvidenceKind::Diagnostic => "Diagnostic",
-        EvidenceKind::Chunk => "Chunk",
-        EvidenceKind::RawNode => "RawNode",
-        EvidenceKind::Metric => "Metric",
         EvidenceKind::Call => "Call",
     }
 }
@@ -118,8 +115,8 @@ mod tests {
     #[test]
     fn a_missing_span_carries_no_coordinates() {
         let item = EvidenceItem {
-            key: "chunk:0".into(),
-            kind: EvidenceKind::Chunk,
+            key: "structure:0".into(),
+            kind: EvidenceKind::Structure,
             origin: EvidenceOrigin::PackStructure,
             span: SpanAvailability::PackOmitted,
             payload: serde_json::json!({}),

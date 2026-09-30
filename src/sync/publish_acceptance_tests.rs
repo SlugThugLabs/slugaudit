@@ -188,3 +188,52 @@ fn a_realistic_polyglot_project_syncs_correctly_end_to_end() {
     let logo_after: FileRow = file_row(&connection, "assets/logo.png");
     assert_eq!(logo_after.file_kind, "binary");
 }
+
+/// `files.file_class` is derived from the path at write time, on both write
+/// paths. The skipped case is the one a content-based classifier could never
+/// cover: a file over the ceiling is never read, so its class has to come
+/// from its path alone.
+#[test]
+fn a_published_file_row_carries_its_path_derived_class() {
+    let project = tempfile::tempdir().expect("project dir");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+
+    write(project.path(), "src/auth.rs", b"pub fn a() {}\n");
+    write(project.path(), "src/generated/api.rs", b"pub fn c() {}\n");
+    write(project.path(), "vendor/dep/lib.rs", b"pub fn b() {}\n");
+    // Over the ceiling: never read, so only the path can classify it.
+    write(project.path(), "vendor/dep/huge.rs", &vec![b'x'; 50_000]);
+
+    let limits = ResourceLimits {
+        max_file_bytes: 10_000,
+        ..ResourceLimits::default()
+    };
+    crate::sync::publish_with_limits(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+        &limits,
+    )
+    .expect("publish");
+
+    let class_of = |path: &str| -> (String, String) {
+        connection
+            .query_row(
+                "SELECT file_class, file_kind FROM files WHERE path = ?1",
+                [path],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or_else(|error| panic!("expected a row for {path}: {error}"))
+    };
+    assert_eq!(class_of("src/auth.rs").0, "authored");
+    assert_eq!(class_of("src/generated/api.rs").0, "generated");
+    assert_eq!(class_of("vendor/dep/lib.rs").0, "vendored");
+    let (huge_class, huge_kind) = class_of("vendor/dep/huge.rs");
+    assert_eq!(huge_kind, "skipped", "the oversize file was never read");
+    assert_eq!(
+        huge_class, "vendored",
+        "a skipped file's class is derived from its path, not its content"
+    );
+}

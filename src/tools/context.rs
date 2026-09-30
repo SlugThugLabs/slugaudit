@@ -97,6 +97,40 @@ fn verify_revision_matches(
     Ok(())
 }
 
+/// Refuses a read whose caller-supplied `expected_revision` is no longer
+/// current.
+///
+/// `verify_revision_matches` catches a publish that races *this* call; this
+/// catches the caller's own pin, which by construction can only be compared
+/// against the revision `ensure_synced` has just re-established. The two
+/// share the `stale_revision` code and differ in the remedy: a raced read is
+/// retried, a resumed page must restart from offset 0 because the rows the
+/// caller already saw came from a different ordering
+/// ([`error_codes::stale_page_payload`]).
+///
+/// # Errors
+///
+/// Returns `invalid_params` carrying the `stale_revision` code when
+/// `expected` is `Some` and differs from `current`.
+pub(super) fn guard_expected_revision(
+    current: &str,
+    expected: Option<&str>,
+) -> Result<(), ErrorData> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    if expected == current {
+        return Ok(());
+    }
+    Err(ErrorData::invalid_params(
+        format!(
+            "expected_revision `{expected}` is not the current revision (`{current}`); the index \
+             changed since the page this call resumes"
+        ),
+        error_codes::stale_page_payload(),
+    ))
+}
+
 #[cfg(test)]
 #[path = "context_tests.rs"]
 mod tests;

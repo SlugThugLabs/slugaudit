@@ -25,9 +25,6 @@ pub enum EvidenceKind {
     Docstring,
     Symbol,
     Diagnostic,
-    Chunk,
-    RawNode,
-    Metric,
     Call,
 }
 

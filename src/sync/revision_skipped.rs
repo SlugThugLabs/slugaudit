@@ -10,6 +10,7 @@
 //! Split out of `revision.rs` (the same pattern as `revision_edges.rs`) so
 //! the indexed-file write path stays focused on content rows.
 
+use super::classify::classify;
 use crate::model::SourceIdentity;
 use rusqlite::{Transaction, params};
 
@@ -74,11 +75,13 @@ pub(super) fn upsert_skipped_file(
         "INSERT INTO files (\
             path, file_kind, skip_reason, content, content_hash, hash_algorithm, byte_len, \
             modified_unix_seconds, language, language_detected, parser_availability, \
-            parse_outcome, parse_error_reason, extraction_completeness, last_revision_id\
+            parse_outcome, parse_error_reason, extraction_completeness, last_revision_id, \
+            file_class\
          ) VALUES (?1, 'skipped', ?2, NULL, ?3, ?4, ?5, ?6, NULL, 0, 'Unavailable', \
-                   'NotAttempted', NULL, 'Unavailable', ?7) \
+                   'NotAttempted', NULL, 'Unavailable', ?7, ?8) \
          ON CONFLICT(path) DO UPDATE SET \
             file_kind = 'skipped', \
+            file_class = excluded.file_class, \
             skip_reason = excluded.skip_reason, \
             content = NULL, \
             content_hash = excluded.content_hash, \
@@ -100,6 +103,7 @@ pub(super) fn upsert_skipped_file(
             record.byte_len,
             record.modified_unix_seconds,
             revision_db_id,
+            classify(&record.relative_path).as_sql_text(),
         ],
     )?;
     let file_id: i64 = tx.query_row(

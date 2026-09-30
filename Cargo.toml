@@ -26,9 +26,9 @@ path = "src/main.rs"
 # workflow calls these directly; locally the same `cargo run --bin <name>`
 # is the single entry point. No shell, no Python interpreter required.
 #
-# Three of the bins are directory-laid-out (`src/bin/<name>/main.rs`) so
-# the algorithm and tests fit under the project's 200-LoC source-size
-# cap without broad exclusions; the remaining one is a single file.
+# Some bins are directory-laid-out (`src/bin/<name>/main.rs`) so the
+# algorithm and its tests fit under the project's 200-LoC source-size cap
+# without broad exclusions; the rest are single files.
 [[bin]]
 name = "check_source_limits"
 path = "src/bin/check_source_limits/main.rs"
@@ -44,6 +44,10 @@ path = "src/bin/check_coverage.rs"
 [[bin]]
 name = "check_docs_drift"
 path = "src/bin/check_docs_drift/main.rs"
+
+[[bin]]
+name = "check_producer_coverage"
+path = "src/bin/check_producer_coverage/main.rs"
 
 [[bin]]
 name = "check_performance"

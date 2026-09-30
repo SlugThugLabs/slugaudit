@@ -52,6 +52,23 @@ CREATE TABLE IF NOT EXISTS files (
     -- 'unreadable' = the read failed. NULL for every other kind: those rows
     -- were read, so nothing was skipped.
     skip_reason TEXT,
+    -- Where the file came from, as a fixed set rather than a judgment:
+    -- 'authored' (neither below — the default, so a row written by older
+    -- code or a test fixture still carries the truthful value), 'generated'
+    -- (a machine-written file: a `generated` path segment or filename
+    -- token, or a codegen suffix such as `.pb.go` / `.g.dart` / `.min.js`),
+    -- or 'vendored' (a third-party tree: `vendor/`, `node_modules/`,
+    -- `third_party/`, `site-packages/`, …). Derived from the path alone by
+    -- `sync::classify::classify` — never from file content — so it costs
+    -- nothing to store and is available for skipped rows too. It is a path
+    -- heuristic: a hand-written file named `*generated*` is classified
+    -- `generated`. 'vendored' wins when a path matches both (a generated
+    -- file inside `vendor/` is vendored — the third-party fact already
+    -- explains it). No score, severity, or ranking: a count of vendored
+    -- rows is a fact about where code came from, not about whether it
+    -- matters.
+    file_class TEXT NOT NULL DEFAULT 'authored'
+        CHECK (file_class IN ('authored', 'generated', 'vendored')),
     content TEXT,
     -- BLAKE3 over the file's content for 'indexed'/'binary' rows
     -- (hash_algorithm = 'blake3-v1'). A 'skipped' row retains no content,
@@ -87,8 +104,10 @@ CREATE TABLE IF NOT EXISTS files (
 CREATE INDEX IF NOT EXISTS idx_files_hash ON files (content_hash);
 
 -- One generic evidence table backs structures, imports, exports, comments,
--- docstrings, symbols, diagnostics, chunks, and raw-tree fallback nodes —
--- the kinds in src/model/evidence.rs::EvidenceKind. Fields common to every
+-- docstrings, symbols, diagnostics, and call sites — the kinds in
+-- src/model/evidence.rs::EvidenceKind. Every variant here has a producer in
+-- `src/evidence/` or `src/sync/`: `src/bin/check_producer_coverage` fails
+-- the gate when one does not. Fields common to every
 -- kind (span, origin, provenance) are real columns so `query` can filter
 -- and index on them; kind-specific fields live in `payload` as JSON.
 -- Scoped only to its file — deleting a file cascades away its evidence.
@@ -97,15 +116,16 @@ CREATE TABLE IF NOT EXISTS evidence (
     file_id INTEGER NOT NULL REFERENCES files (id) ON DELETE CASCADE,
     key TEXT NOT NULL,
     -- The SQL mirror of src/evidence/sql.rs::kind_text(), which maps every
-    -- model::EvidenceKind variant (src/model/evidence.rs) — including the
-    -- ones with no producer today. A variant outside this list is a bug in
-    -- the writer, not data, so the mirror has to stay exact in both
-    -- directions: `store::connection::tests::
+    -- model::EvidenceKind variant (src/model/evidence.rs). A variant outside
+    -- this list is a bug in the writer, not data, so the mirror has to stay
+    -- exact in both directions: `store::connection::tests::
     -- every_evidence_kind_text_passes_the_kind_check` derives every variant
-    -- from the enum itself and fails until this list carries its text.
+    -- from the enum itself and fails until this list carries its text, and
+    -- `src/bin/check_producer_coverage` fails until something under `src/`
+    -- actually constructs it — no kind may be advertised that cannot occur.
     kind TEXT NOT NULL
         CHECK (kind IN ('Structure', 'Import', 'Export', 'Comment', 'Docstring',
-                        'Symbol', 'Diagnostic', 'Chunk', 'RawNode', 'Metric', 'Call')),
+                        'Symbol', 'Diagnostic', 'Call')),
     origin TEXT NOT NULL,
     span_availability TEXT NOT NULL,
     start_byte INTEGER,

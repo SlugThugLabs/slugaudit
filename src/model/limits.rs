@@ -40,7 +40,10 @@ pub struct ResourceLimits {
     /// oversized tree from exhausting process memory during import.
     /// Env: `SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES` (u64).
     pub max_total_import_bytes: u64,
-    /// Cap on serialized JSON bytes returned by one `query` call.
+    /// Cap on serialized JSON bytes returned by one read call — the rows of
+    /// `query` and the `rows` of `leads`. Enforced per row as the response
+    /// is assembled: the row that would cross the cap stops the page, and
+    /// both tools report the budget and the bytes they spent.
     /// Env: `SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES` (usize).
     pub max_query_response_bytes: usize,
     /// Maximum SQL text length accepted by `query` (UTF-8 bytes).

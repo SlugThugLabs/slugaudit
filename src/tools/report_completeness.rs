@@ -25,6 +25,13 @@ pub struct FileKindCount {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+pub struct FileClassCount {
+    /// One of `authored`, `generated`, `vendored` — `files.file_class`.
+    pub class: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct SkipReasonCount {
     /// A short stable code from `files.skip_reason`: `oversize` (over the
     /// per-file import ceiling) or `unreadable` (the read failed). Empty when
@@ -50,6 +57,16 @@ pub struct CompletenessEnvelope {
     /// structural evidence; `binary` was sampled and deliberately not parsed;
     /// `skipped` was discovered but never read, so it has no content.
     pub file_kind_counts: Vec<FileKindCount>,
+    /// Every `files` row by `file_class` — where the code came from, derived
+    /// from the path alone (`sync::classify`): `authored` (the project's own
+    /// source), `generated` (a machine-written file: a `generated` path token
+    /// or a codegen suffix such as `.pb.go` / `.g.dart` / `.min.js`), or
+    /// `vendored` (a third-party tree: `vendor/`, `node_modules/`, …). A
+    /// mechanic whose rows are dominated by one class can be summarised in a
+    /// sentence instead of paged row by row. `vendored` subsumes `generated`
+    /// when a path matches both. A path heuristic, not a verdict: it says
+    /// where a file came from, never whether it matters.
+    pub file_class_counts: Vec<FileClassCount>,
     /// `files` rows with `file_kind = 'skipped'`, i.e. files that exist in the
     /// project but are not in the index.
     pub skipped_file_count: i64,
@@ -84,7 +101,7 @@ pub struct CompletenessEnvelope {
 ///
 /// # Errors
 ///
-/// Returns a database error if any of the three grouped counts fails.
+/// Returns a database error if any of the grouped counts fails.
 pub(super) fn build(connection: &Transaction<'_>) -> Result<CompletenessEnvelope, rusqlite::Error> {
     let mut kind_statement = connection
         .prepare("SELECT file_kind, count(*) FROM files GROUP BY file_kind ORDER BY file_kind")?;
@@ -97,6 +114,19 @@ pub(super) fn build(connection: &Transaction<'_>) -> Result<CompletenessEnvelope
         })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(kind_statement);
+
+    let mut class_statement = connection.prepare(
+        "SELECT file_class, count(*) FROM files GROUP BY file_class ORDER BY file_class",
+    )?;
+    let file_class_counts = class_statement
+        .query_map([], |row| {
+            Ok(FileClassCount {
+                class: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(class_statement);
 
     let mut reason_statement = connection.prepare(
         "SELECT skip_reason, count(*) FROM files WHERE file_kind = 'skipped' \
@@ -149,6 +179,7 @@ pub(super) fn build(connection: &Transaction<'_>) -> Result<CompletenessEnvelope
 
     Ok(CompletenessEnvelope {
         file_kind_counts,
+        file_class_counts,
         skipped_file_count,
         skipped_by_reason,
         extraction_completeness_counts,

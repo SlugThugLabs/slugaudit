@@ -366,7 +366,7 @@ planning docs go in `.planning/`; completed records go in
 | `src/server.rs`, `src/server_runner.rs` | MCP surface: tool contracts, `INSTRUCTIONS`, dispatch, blocking pool, progress |
 | `src/tools/` | Tool handlers: `report`, `query`, `structure`, `leads`, `finding`, `finding_read`, `project_control`, `health` |
 | `src/sync/` | Indexing: manager, orchestration, health, reconcile, publish/CAS, revision, sweep, discovery, ignore rules |
-| `src/store/` | The only SQLite boundary: connection guards, migrations, `schema.sql` (`CURRENT_SCHEMA_VERSION = 4`) |
+| `src/store/` | The only SQLite boundary: connection guards, migrations, `schema.sql` (`CURRENT_SCHEMA_VERSION = 6`) |
 | `src/watch/` | `notify` watcher, per-project `WatchState`, `WatcherHealth` |
 | `src/evidence/` | Tree-sitter evidence extraction + normalization |
 | `src/graph/` | Import resolution (Rust/Python/JS resolvers, `resolve_imports`) |
@@ -414,6 +414,7 @@ cargo fmt --all -- --check
 cargo run --quiet --bin check_source_limits --locked   # LoC ceilings + exception annotations
 cargo run --quiet --bin check_no_duplicates --locked   # duplicate commit subjects / test fn names
 cargo run --quiet --bin check_docs_drift --locked      # ARCHITECTURE module map, test count, canonical docs
+cargo run --quiet --bin check_producer_coverage --locked  # every evidence kind is constructed somewhere
 cargo check --all-targets --all-features --locked
 cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo test --lib --bins --tests --all-features --locked

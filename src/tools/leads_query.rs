@@ -1,186 +1,152 @@
-//! The `leads` mechanic catalogue, the SQL each family compiles to, and the
-//! two reads that execute it.
+//! The statements each `leads` family compiles to, and the reads that
+//! execute them.
 //!
-//! Split from `leads.rs` so that adding a mechanic stays a one-entry edit to a
-//! declarative table, while the tool contract — request/response shapes,
-//! paging, and the transaction envelope — lives in one place. Nothing here
-//! draws a conclusion: an entry says which shape to look for and which string
-//! to return, never whether the shape matters.
+//! Split from `leads.rs` so the tool contract — request/response shapes,
+//! paging, and the transaction envelope — lives in one place, and split from
+//! `leads_mechanics.rs` so the catalogue and each family's SQL shape stay a
+//! declarative table. Nothing here draws a conclusion about what a row
+//! means.
+//!
+//! Every read accepts the same optional `pattern`; it is compiled once by
+//! [`compile_pattern`] and bound as a SQL parameter, never interpolated.
 
-use super::leads::{LeadRow, MechanicCount};
-use crate::error_codes::{self, ErrorCode};
+use super::leads::{FileCount, LeadRow, MechanicCount, PageLimit, clip_detail};
+use super::leads_mechanics::{MECHANICS, Mechanic};
+use crate::util::serialized_len;
 use rmcp::ErrorData;
-use rusqlite::{Transaction, params};
+use rusqlite::types::Value;
+use rusqlite::{Transaction, params_from_iter};
 
-/// Where a mechanic's rows come from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Family {
-    /// `evidence` joined to `files`; the predicate may use `e` and `f`.
-    Evidence,
-    /// `files` directly; the predicate may use an unaliased `path`.
-    Files,
-}
-
-/// One mechanical observation surface.
-///
-/// `predicate` is a SQL fragment with no leading `WHERE`. `detail` is a SQL
-/// expression for the row's one string. Adding a mechanic is a new entry
-/// here — never a new table, and never a statement about what a match means.
-pub(super) struct Mechanic {
-    pub(super) id: &'static str,
-    pub(super) family: Family,
-    pub(super) predicate: &'static str,
-    pub(super) detail: &'static str,
-}
-
-/// Every mechanic, in declaration order. Call-site mechanics read `Call`
-/// evidence, which the Rust call walker (`src/evidence/calls.rs`) is the only
-/// producer of — they are empty for projects with no Rust files.
-pub(super) const MECHANICS: &[Mechanic] = &[
-    Mechanic {
-        id: "unwrap_calls",
-        family: Family::Evidence,
-        predicate: "e.kind = 'Call' AND json_extract(e.payload, '$.callee_name') = 'unwrap'",
-        detail: "json_extract(e.payload, '$.callee_text')",
-    },
-    Mechanic {
-        id: "expect_calls",
-        family: Family::Evidence,
-        predicate: "e.kind = 'Call' AND json_extract(e.payload, '$.callee_name') = 'expect'",
-        detail: "json_extract(e.payload, '$.callee_text')",
-    },
-    Mechanic {
-        id: "panic_calls",
-        family: Family::Evidence,
-        predicate: "e.kind = 'Call' AND json_extract(e.payload, '$.callee_name') \
-                    IN ('panic', 'unreachable')",
-        detail: "json_extract(e.payload, '$.callee_text')",
-    },
-    Mechanic {
-        id: "todo_calls",
-        family: Family::Evidence,
-        predicate: "e.kind = 'Call' AND json_extract(e.payload, '$.callee_name') \
-                    IN ('todo', 'unimplemented')",
-        detail: "json_extract(e.payload, '$.callee_text')",
-    },
-    Mechanic {
-        id: "assert_calls",
-        family: Family::Evidence,
-        predicate: "e.kind = 'Call' AND json_extract(e.payload, '$.callee_name') \
-                    IN ('assert', 'assert_eq', 'assert_ne', 'debug_assert', \
-                        'debug_assert_eq', 'debug_assert_ne')",
-        detail: "json_extract(e.payload, '$.callee_text')",
-    },
-    Mechanic {
-        id: "diagnostics",
-        family: Family::Evidence,
-        predicate: "e.kind = 'Diagnostic'",
-        detail: "json_extract(e.payload, '$.message')",
-    },
-    Mechanic {
-        id: "comment_markers",
-        family: Family::Evidence,
-        predicate: "e.kind = 'Comment' AND (\
-                    json_extract(e.payload, '$.text') LIKE '%TODO%' \
-                    OR json_extract(e.payload, '$.text') LIKE '%FIXME%' \
-                    OR json_extract(e.payload, '$.text') LIKE '%HACK%' \
-                    OR json_extract(e.payload, '$.text') LIKE '%XXX%')",
-        detail: "json_extract(e.payload, '$.text')",
-    },
-    Mechanic {
-        id: "credential_files",
-        family: Family::Files,
-        predicate: super::CREDENTIAL_PATH_PREDICATE,
-        detail: "''",
-    },
-];
-
-/// Resolves the requested mechanic id, or reports every valid id.
-pub(super) fn resolve_mechanic(
-    requested: Option<&str>,
-) -> Result<Option<&'static Mechanic>, ErrorData> {
-    let Some(id) = requested else {
-        return Ok(None);
-    };
-    MECHANICS
-        .iter()
-        .find(|mechanic| mechanic.id == id)
-        .map(Some)
-        .ok_or_else(|| {
-            let valid = MECHANICS
-                .iter()
-                .map(|mechanic| mechanic.id)
-                .collect::<Vec<_>>()
-                .join(", ");
-            ErrorData::invalid_params(
-                format!("unknown mechanic `{id}`; valid ids: {valid}"),
-                error_codes::payload(ErrorCode::UnknownMechanic),
-            )
-        })
-}
-
-/// `SELECT count(*)` for a mechanic's family. Counts are always complete,
-/// never paged, so they never carry `LIMIT`.
-fn count_sql(mechanic: &Mechanic) -> String {
-    match mechanic.family {
-        Family::Evidence => {
-            format!(
-                "SELECT count(*) FROM evidence e WHERE {}",
-                mechanic.predicate
-            )
+/// Compiles the caller's `pattern` exactly the way `structure` does — a
+/// GLOB over the project-relative path, with a pattern containing no `*` or
+/// `?` treated as a substring match. The result is always bound as a
+/// parameter, never spliced into SQL.
+fn compile_pattern(pattern: Option<&str>) -> Option<String> {
+    pattern.map(|pattern| {
+        if pattern.contains(['*', '?']) {
+            pattern.to_owned()
+        } else {
+            format!("*{pattern}*")
         }
-        Family::Files => format!("SELECT count(*) FROM files WHERE {}", mechanic.predicate),
-    }
+    })
+}
+
+/// `SELECT count(*), count(DISTINCT <file>)` for a mechanic's family, under
+/// the same `pattern` the row read uses. Counts are always complete, never
+/// paged, so they never carry `LIMIT` — `?` is the pattern when one is
+/// supplied.
+fn count_sql(mechanic: &Mechanic, matched: bool) -> String {
+    format!(
+        "SELECT count(*), count(DISTINCT {}) FROM {}{}",
+        mechanic.file_key_expr(),
+        mechanic.read_from(),
+        mechanic.where_clause(matched)
+    )
 }
 
 /// The paged row query for a mechanic, returning `(path, line, detail)`.
-/// `?1` is the limit and `?2` the offset, so both families page identically.
-fn rows_sql(mechanic: &Mechanic) -> String {
-    match mechanic.family {
-        Family::Evidence => format!(
-            "SELECT f.path, COALESCE(e.start_line, 0), COALESCE({}, '') \
-             FROM evidence e JOIN files f ON e.file_id = f.id \
-             WHERE {} ORDER BY f.path, e.start_line LIMIT ?1 OFFSET ?2",
-            mechanic.detail, mechanic.predicate
-        ),
-        Family::Files => format!(
-            "SELECT path, 0, '' FROM files WHERE {} ORDER BY path LIMIT ?1 OFFSET ?2",
-            mechanic.predicate
-        ),
-    }
+/// Placeholders bind in textual order: the pattern (when present), then the
+/// limit, then the offset.
+fn rows_sql(mechanic: &Mechanic, matched: bool) -> String {
+    format!(
+        "SELECT {}, {}, {} FROM {}{} ORDER BY {} LIMIT ? OFFSET ?",
+        mechanic.path_expr(),
+        mechanic.line_expr(),
+        mechanic.detail_expr(),
+        mechanic.read_from(),
+        mechanic.where_clause(matched),
+        mechanic.order_expr()
+    )
 }
 
-/// Counts for every mechanic, in `MECHANICS` order.
-pub(super) fn count_all(tx: &Transaction<'_>) -> Result<Vec<MechanicCount>, ErrorData> {
+/// Distinct files represented in the first `LIMIT` rows of the same ordered
+/// result `rows_sql` walks — the cumulative file count after a page.
+fn covered_sql(mechanic: &Mechanic, matched: bool) -> String {
+    format!(
+        "SELECT count(DISTINCT path) FROM (SELECT {} AS path FROM {}{} ORDER BY {} LIMIT ?)",
+        mechanic.path_expr(),
+        mechanic.read_from(),
+        mechanic.where_clause(matched),
+        mechanic.order_expr()
+    )
+}
+
+/// Binds a `usize` as SQLite's 64-bit integer; `None` becomes the largest
+/// value SQLite accepts, i.e. "no limit".
+fn int_bind(value: Option<usize>) -> i64 {
+    value.map_or(i64::MAX, |value| i64::try_from(value).unwrap_or(i64::MAX))
+}
+
+/// Counts for every mechanic, in `MECHANICS` order, under `pattern`.
+pub(super) fn count_all(
+    tx: &Transaction<'_>,
+    pattern: Option<&str>,
+) -> Result<Vec<MechanicCount>, ErrorData> {
+    let glob = compile_pattern(pattern);
     MECHANICS
         .iter()
         .map(|mechanic| {
-            let count: i64 = tx
-                .query_row(&count_sql(mechanic), [], |row| row.get(0))
-                .map_err(|error| super::context::internal_error("counting leads", error))?;
+            let (count, files): (i64, i64) = match glob.as_deref() {
+                Some(glob) => tx.query_row(&count_sql(mechanic, true), [glob], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                }),
+                None => tx.query_row(&count_sql(mechanic, false), [], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                }),
+            }
+            .map_err(|error| super::context::internal_error("counting leads", error))?;
             Ok(MechanicCount {
                 mechanic: mechanic.id.to_owned(),
                 count,
+                files,
+                covers: mechanic.covers,
             })
         })
         .collect()
 }
 
-/// One page of rows for a single mechanic. `detail` is the stored text,
-/// unclipped, so `detail_clipped` starts false; `leads` clips and flags.
+/// One page of rows for a single mechanic: the rows, their serialized JSON
+/// size, and what stopped the page.
+pub(super) struct Page {
+    pub(super) rows: Vec<LeadRow>,
+    /// Sum of each returned row's serialized JSON length — the same measure
+    /// `query` applies, so the two tools' byte budgets are comparable.
+    pub(super) bytes: usize,
+    pub(super) limited_by: PageLimit,
+}
+
+/// Reads one page of `mechanic`'s rows, in `order_expr` order.
+///
+/// `detail` is clipped to `MAX_DETAIL_CHARS` before the row is measured, so
+/// the budget is charged for exactly the bytes the caller receives. The
+/// first row is always returned even when it alone exceeds `max_bytes`;
+/// stopping at zero rows would make the budget indistinguishable from an
+/// empty mechanic.
 pub(super) fn rows_for(
     tx: &Transaction<'_>,
     mechanic: &Mechanic,
-    limit: usize,
+    pattern: Option<&str>,
+    limit: Option<usize>,
     offset: usize,
-) -> Result<Vec<LeadRow>, ErrorData> {
-    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-    let offset = i64::try_from(offset).unwrap_or(i64::MAX);
+    max_bytes: usize,
+) -> Result<Page, ErrorData> {
+    let glob = compile_pattern(pattern);
+    // One row past the caller's limit is fetched only to learn whether more
+    // exist (so `limited_by` can say `limit` rather than nothing); it is
+    // never returned.
+    let fetch = limit.map(|rows| rows.saturating_add(1));
+    let mut binds = Vec::new();
+    if let Some(glob) = glob.as_deref() {
+        binds.push(Value::Text(glob.to_owned()));
+    }
+    binds.push(Value::Integer(int_bind(fetch)));
+    binds.push(Value::Integer(int_bind(Some(offset))));
+
     let mut statement = tx
-        .prepare(&rows_sql(mechanic))
+        .prepare(&rows_sql(mechanic, glob.is_some()))
         .map_err(|error| super::context::internal_error("preparing leads rows", error))?;
-    let rows = statement
-        .query_map(params![limit, offset], |row| {
+    let mapped = statement
+        .query_map(params_from_iter(binds), |row| {
             Ok(LeadRow {
                 file: row.get(0)?,
                 line: row.get(1)?,
@@ -188,8 +154,66 @@ pub(super) fn rows_for(
                 detail_clipped: false,
             })
         })
-        .map_err(|error| super::context::internal_error("reading leads rows", error))?
-        .collect::<Result<Vec<_>, _>>()
         .map_err(|error| super::context::internal_error("reading leads rows", error))?;
-    Ok(rows)
+
+    let mut page = Page {
+        rows: Vec::new(),
+        bytes: 0,
+        limited_by: PageLimit::None,
+    };
+    for row in mapped {
+        if limit.is_some_and(|limit| page.rows.len() >= limit) {
+            page.limited_by = PageLimit::Limit;
+            break;
+        }
+        let mut row =
+            row.map_err(|error| super::context::internal_error("reading leads rows", error))?;
+        clip_detail(&mut row);
+        let row_bytes = serialized_len(&row);
+        if !page.rows.is_empty() && page.bytes.saturating_add(row_bytes) > max_bytes {
+            page.limited_by = PageLimit::Bytes;
+            break;
+        }
+        page.bytes = page.bytes.saturating_add(row_bytes);
+        page.rows.push(row);
+    }
+    Ok(page)
+}
+
+/// Distinct files represented in the first `through` rows of the mechanic's
+/// ordered result. `through = 0` is zero by construction.
+pub(super) fn files_covered(
+    tx: &Transaction<'_>,
+    mechanic: &Mechanic,
+    pattern: Option<&str>,
+    through: usize,
+) -> Result<i64, ErrorData> {
+    let glob = compile_pattern(pattern);
+    let mut binds = Vec::new();
+    if let Some(glob) = glob.as_deref() {
+        binds.push(Value::Text(glob.to_owned()));
+    }
+    binds.push(Value::Integer(int_bind(Some(through))));
+    tx.query_row(
+        &covered_sql(mechanic, glob.is_some()),
+        params_from_iter(binds),
+        |row| row.get(0),
+    )
+    .map_err(|error| super::context::internal_error("counting covered files", error))
+}
+
+/// The per-file histogram of one page, in first-appearance order. Rows come
+/// back ordered by path, so equal paths are adjacent.
+pub(super) fn page_file_counts(rows: &[LeadRow]) -> Vec<FileCount> {
+    let mut counts: Vec<FileCount> = Vec::new();
+    for row in rows {
+        match counts.last_mut() {
+            Some(last) if last.file == row.file => last.count += 1,
+            _ => counts.push(FileCount {
+                file: row.file.clone(),
+                count: 1,
+            }),
+        }
+    }
+    counts
 }

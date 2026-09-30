@@ -63,6 +63,13 @@ jobs:
       - name: Check docs drift (canonical doc set, module map, test counts)
         run: cargo run --quiet --bin check_docs_drift --locked
 
+      # Fails when an `EvidenceKind` variant has no producer, or an
+      # `ExtractionCompleteness` variant is unreachable — the class Phase 1
+      # found by hand (three dead evidence kinds, `ContentOnly` never
+      # constructed) and Phase 3 deleted ad hoc.
+      - name: Check producer coverage (every evidence kind is constructed)
+        run: cargo run --quiet --bin check_producer_coverage --locked
+
       - name: Check compilation
         run: cargo check --all-targets --all-features --locked
 

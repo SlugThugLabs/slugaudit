@@ -151,6 +151,26 @@ pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     hex
 }
 
+/// The serialized JSON length of `value` in bytes, measured without
+/// materializing the string. Both response-byte budgets (`query`'s rows,
+/// `leads`' rows) are enforced against what the caller actually receives,
+/// so they measure the serialized form rather than the in-memory one.
+pub(crate) fn serialized_len<T: serde::Serialize>(value: &T) -> usize {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(buf.len());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    let _ = serde_json::to_writer(&mut counter, value);
+    counter.0
+}
+
 /// The current Unix timestamp in seconds. Returns 0 if the system clock is
 /// before the epoch (defensive — not expected in practice).
 pub(crate) fn now_unix() -> i64 {

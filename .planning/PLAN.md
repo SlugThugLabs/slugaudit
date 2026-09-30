@@ -155,7 +155,7 @@ All four are in, each with a test that fails before the change.
 Found while auditing the surfaces, verified in the code, and **not yet fixed**. Each is
 independently small, and none is covered by the phases below.
 
-1. **`leads` with `limit: 0` can page forever.** `limit` is only floored at the maximum
+1. **`leads` with `limit: 0` can page forever — resolved 2026-09-30** (the row cap is gone; `limit` is clamped to `>= 1`, and the response reports `limited_by`/`complete`, so a resumed page always advances). `limit` is only floored at the maximum
    (`unwrap_or(100).min(500)`), so `LIMIT 0` returns an empty page while `truncated` stays
    `true` and `next_offset` equals the offset it was given — a caller following the
    documented paging contract loops on the same page forever. Clamp to `>= 1`, or reject
@@ -301,35 +301,60 @@ deliberately not implemented (see it).
 
 **DoD:** a cold agent's first two calls return something it didn't ask for and can use.
 
-## Phase 3 — Recall at scale (not started)
+## Phase 3 — Recall at scale (items 1–4, 6, 7 landed 2026-09-30; 5, 8, 9 not landed here)
 
 **Goal:** find what selective reading misses, and let the agent finish.
 
-1. **Complete-or-labeled enumeration.** `leads` rows: default 100, hard cap 500
+**Landed 2026-09-30 (uncommitted, dirty tree).** Items 1–4, 6, 7, and the `limit: 0`
+half of correctness follow-up 1. The `leads` row cap is gone: `DEFAULT_LEADS_ROWS` /
+`MAX_LEADS_ROWS` are deleted and a page is cut only by the caller's `limit` and by
+`max_query_response_bytes` (the same budget `query` spends), measured as the sum of each
+row's serialized JSON **after** the `detail` clip, with one row always returned. Every
+rows response carries `returned` / `total` / `complete`, the file denominators
+`files_total` / `files_covered`, `page_file_counts`, and `limited_by`
+(`none` / `limit` / `bytes`) with `row_budget_bytes` / `rows_bytes`. Each `MechanicCount`
+carries `files` (distinct files — the headline denominator) and `covers`
+(`rust_only` / `all_languages`). `LeadsRequest` gained `pattern` (GLOB over the path,
+compiled like `structure`'s — bound, never interpolated; the predicate is parenthesized
+before the glob is AND-ed in, because `credential_files` is an `OR` chain) and
+`optional expected_revision`. `query` gained `expected_revision` too; a mismatch is
+refused with the `stale_revision` code and a new `error_codes::stale_page_payload()`
+remedy that restarts the sweep from offset 0 rather than retrying the offset. The
+catalogue moved to `src/tools/leads_mechanics.rs` to stay under the 200-line production
+ceiling. Tests: 17 in `tools::leads` (including distinct-file denominators on an
+incomplete page, the byte budget, the pattern filter over an `OR`-chain predicate, and
+the stale-pin refusal) and a new stale-pin test in `tools::query`; the pre-change
+behaviour was captured by running the same probe against `HEAD` in a throwaway worktree
+(100-row default, `truncated` only, the pin accepted and ignored). **Still owed from
+this phase:** items 5 and 8–9 (generated/vendored classification and the producer gate)
+were carried by the parallel workstream; the completeness envelope across
+`report`/`leads`/`health` remains Phase 2's.
+
+1. **Complete-or-labeled enumeration — landed 2026-09-30.** `leads` rows: default 100, hard cap 500
    (`MAX_LEADS_ROWS`, `src/tools/leads.rs:25`), justified in-code only by "mirroring
    `query`'s `MAX_ROWS`" — a copy, not a derivation. Replace the row cap with a **byte
    budget** (mirror `max_query_response_bytes`), raise the ceiling, default to
    everything-that-fits, and always return `returned / total / complete`.
-2. **Denominators on every row response.** `count_all` is already complete
+2. **Denominators on every row response — landed 2026-09-30.** `count_all` is already complete
    (`leads_query.rs`) but `rows_sql` returns `(path, line, detail)` with no context. Add
    per-file and repo totals and the distinct-file count for the mechanic, so the next
    call is seeded.
-3. **Count completeness in files, not rows.** At 50k hits the useful number is
+3. **Count completeness in files, not rows — landed 2026-09-30.** At 50k hits the useful number is
    `distinct files containing ≥1` — that is a denominator an agent can exhaust.
-4. **Add a path filter to `leads`.** `LeadsRequest` is `{path, mechanic, limit, offset}`
+4. **Add a path filter to `leads` — landed 2026-09-30.** `LeadsRequest` is `{path, mechanic, limit, offset}`
    today, so an agent cannot ask for *unwraps under `src/auth/**`*. Without this, big
    mechanics are unusable.
 5. **Classify generated/vendored files.** `file_kind` is only `indexed|binary`. A 50k
    mechanic is usually 49,800 rows in `vendor/`, and saying so collapses the problem
    into one sentence. Pure fact, no verdict.
-6. **Revision guard on paging.** The index has no MVCC — `files`/`evidence` are replaced
+6. **Revision guard on paging — landed 2026-09-30.** The index has no MVCC — `files`/`evidence` are replaced
    in place, never per-revision — so pinning an older revision to page against is
    impossible; instead accept an optional `expected_revision` on paged reads and refuse a
    resumed page when it changed ("revision changed mid-sweep; restart from offset 0").
    This replaces the idea of a coverage ledger: fix the ambiguity at the source instead
    of reconstructing it afterward. (`src/tools/context.rs:79` already has this guard for
    the read path; `leads` does not.)
-7. **Declare the blind spots inline.** `Call` evidence has exactly one producer and it is
+7. **Declare the blind spots inline — landed 2026-09-30.** `Call` evidence has exactly one producer and it is
    the Rust walker, so on a non-Rust project call-site mechanics return **zero** — and
    zero reads as *clean*. The response must say *unchecked, not absent*, the way
    `report.import_resolution` already warns that traversal is a dead end.
@@ -564,7 +589,7 @@ development gates — and the repo's own `.planning/` development docs sit besid
 runtime namespace.
 
 - Convert to a workspace: `crates/slugaudit` (product) and `crates/slugaudit-gates` (the
-  five `check_*` bins); keep `Cargo.lock`, `deny.toml`, `rust-toolchain.toml` and any
+  six `check_*` bins); keep `Cargo.lock`, `deny.toml`, `rust-toolchain.toml` and any
   `.cargo/config` at the root; `release.yml` builds only the product crate. This renames
   every path — see *Sequencing*.
 - `scripts/fast-check.sh` was deleted on 2026-09-30 (it disagreed with the real gate on
@@ -615,8 +640,9 @@ and `leads`-vs-resources consolidation. Those change what the product does.
 ## Repo coupling (violating these fails CI)
 
 - Every phase ends with the full gate suite green: `cargo fmt --check`, `check`,
-  `clippy -D warnings`, `test`, and the five `check_*` bins (`check_source_limits`,
-  `check_no_duplicates`, `check_coverage`, `check_docs_drift`, `check_performance`).
+  `clippy -D warnings`, `test`, and the six `check_*` bins (`check_source_limits`,
+  `check_no_duplicates`, `check_docs_drift`, `check_producer_coverage`, `check_coverage`,
+  `check_performance`).
 - **Anything added, renamed, or removed under `src/` requires updating the fenced module
   map in `.planning/ARCHITECTURE.md`**, and adding or removing a `src/**/*_tests.rs` file
   requires updating the "*N* `*_tests.rs` files" sentence in that same file.

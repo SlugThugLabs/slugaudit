@@ -3,6 +3,7 @@
 //! does not decide how tools query the result.
 
 mod analyze;
+mod classify;
 mod discovery;
 mod hash;
 mod manager;

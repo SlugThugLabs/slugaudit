@@ -17,6 +17,7 @@ mod finding;
 mod finding_read;
 mod health;
 mod leads;
+mod leads_mechanics;
 mod leads_query;
 mod project_control;
 mod query;
@@ -37,12 +38,15 @@ pub use context::ensure_synced;
 pub use finding::{FindingRequest, FindingResponse, finding};
 pub use finding_read::{FindingReadEntry, FindingReadRequest, FindingReadResponse, finding_read};
 pub use health::{HealthRequest, HealthResponse, health};
-pub use leads::{LeadRow, LeadsRequest, LeadsResponse, MechanicCount, leads};
+pub use leads::{
+    FileCount, LeadRow, LeadsRequest, LeadsResponse, MechanicCount, MechanicCoverage, PageLimit,
+    leads,
+};
 pub use project_control::{ProjectControlRequest, ProjectControlResponse, project_control};
 pub use query::{QueryRequest, QueryResponse, query};
 pub use report::{ReportRequest, ReportResponse, report};
 pub use report_completeness::{
-    CompletenessCount, CompletenessEnvelope, FileKindCount, SkipReasonCount,
+    CompletenessCount, CompletenessEnvelope, FileClassCount, FileKindCount, SkipReasonCount,
 };
 pub use structure::{StructureRequest, StructureResponse, structure};
 

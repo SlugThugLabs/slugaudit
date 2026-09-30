@@ -184,6 +184,47 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
     );
 }
 
+/// The envelope carries where files came from as its own breakdown, so an
+/// agent looking at a mechanic dominated by third-party or machine-written
+/// rows can read the class counts off the report instead of re-deriving the
+/// classification in SQL.
+#[test]
+fn the_completeness_envelope_groups_files_by_class() {
+    let (_dir, mut connection) = database_with_one_revision();
+    for (path, class) in [
+        ("src/lib.rs", "authored"),
+        ("src/generated/api.rs", "generated"),
+        ("vendor/dep/lib.rs", "vendored"),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO files \
+                 (path, file_kind, file_class, content, content_hash, hash_algorithm, byte_len, \
+                  language_detected, parser_availability, parse_outcome, extraction_completeness, \
+                  last_revision_id) \
+                 VALUES (?1, 'indexed', ?2, '', 'h', 'blake3', 0, 0, 'Available', 'Succeeded', \
+                         'Full', 1)",
+                rusqlite::params![path, class],
+            )
+            .expect("insert file");
+    }
+
+    let tx = connection.transaction().expect("begin transaction");
+    let response = build_report(&tx, "r1".to_owned()).expect("build report");
+
+    let class_count = |class: &str| {
+        response
+            .completeness
+            .file_class_counts
+            .iter()
+            .find(|entry| entry.class == class)
+            .map(|entry| entry.count)
+    };
+    assert_eq!(class_count("authored"), Some(1));
+    assert_eq!(class_count("generated"), Some(1));
+    assert_eq!(class_count("vendored"), Some(1));
+}
+
 #[test]
 fn malformed_language_value_is_reported_instead_of_dropped() {
     use crate::store::open_read_write;

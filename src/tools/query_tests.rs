@@ -19,11 +19,20 @@ fn activated_project(files: &[(&str, &[u8])]) -> tempfile::TempDir {
 }
 
 fn ask(project: &tempfile::TempDir, sql: &str) -> Result<QueryResponse, ErrorData> {
+    ask_pinned(project, sql, None)
+}
+
+fn ask_pinned(
+    project: &tempfile::TempDir,
+    sql: &str,
+    expected_revision: Option<&str>,
+) -> Result<QueryResponse, ErrorData> {
     query(
         &Parameters(QueryRequest {
             path: project.path().to_string_lossy().into_owned(),
             sql: sql.to_owned(),
             offset: 0,
+            expected_revision: expected_revision.map(str::to_owned),
         }),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
@@ -41,6 +50,7 @@ fn ask_with_limits(
             path: project.path().to_string_lossy().into_owned(),
             sql: sql.to_owned(),
             offset: 0,
+            expected_revision: None,
         }),
         limits,
         &crate::progress::NoopProgressSink,
@@ -430,6 +440,45 @@ fn paging_across_a_revision_change_is_detectable_via_revision_id() {
         page_three.revision_id, page_one.revision_id,
         "a source change must produce a new revision, invalidating old offsets"
     );
+}
+
+/// The enforced half of the same contract: a resumed page that names the
+/// revision it is resuming is *refused* when the index moved on, rather
+/// than served from a different ordering. `stale_revision` is the code, and
+/// the remedy restarts the sweep instead of retrying the same offset.
+#[test]
+fn a_stale_expected_revision_refuses_a_resumed_query_page() {
+    let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
+    let sql = "SELECT path FROM files";
+
+    let first = ask(&project, sql).expect("the first page succeeds");
+    let again = ask_pinned(&project, sql, Some(&first.revision_id))
+        .expect("an unchanged revision accepts the pin");
+    assert_eq!(again.revision_id, first.revision_id);
+
+    fs::write(
+        project.path().join("lib.rs"),
+        b"pub fn a() {}\npub fn b() {}\n",
+    )
+    .expect("modify fixture");
+    let error = ask_pinned(&project, sql, Some(&first.revision_id))
+        .expect_err("a page pinned to a superseded revision is refused");
+    let data = error.data.expect("the refusal carries a payload");
+    assert_eq!(data["code"], "stale_revision");
+    let remedy = data["remedy"].as_str().expect("remedy is a string");
+    assert!(
+        remedy.contains("offset 0"),
+        "the remedy restarts the sweep: {remedy}"
+    );
+    assert!(
+        error.message.contains(&first.revision_id),
+        "the message names the pin it refused: {}",
+        error.message
+    );
+
+    // An unpinned read still works and reports the revision the pin missed.
+    let fresh = ask(&project, sql).expect("an unpinned read succeeds");
+    assert_ne!(fresh.revision_id, first.revision_id);
 }
 
 #[test]

@@ -1,9 +1,10 @@
 // slugaudit-line-exception: approved-by=slugthug; reason=one tool contract owns request/response types, the execution/budget path, and the single-statement separator scanner; splitting would fragment the query tool's validation order (empty → size → statement count → freshness → budget) that the tests assert against
-use super::context::{ensure_synced, with_verified_read};
+use super::context::{ensure_synced, guard_expected_revision, with_verified_read};
 use super::query_value::row_to_json;
 use crate::error_codes::{self, ErrorCode};
 use crate::model::{ResourceLimits, process_limits};
 use crate::sync;
+use crate::util::serialized_len;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rusqlite::Transaction;
@@ -32,6 +33,13 @@ pub struct QueryRequest {
     /// the revision id stays the same across pages (see [`QueryResponse`]).
     #[serde(default)]
     pub offset: usize,
+    /// Set to the previous page's `revision_id` when resuming a sweep. If
+    /// the index changed since that page, the call is refused with the
+    /// `stale_revision` code instead of returning a page whose ordering no
+    /// longer matches the offset: `files`/`evidence` hold only the current
+    /// revision, so a stored offset means nothing once the tree changes.
+    #[serde(default)]
+    pub expected_revision: Option<String>,
 }
 
 /// Arbitrary read-only query results: one JSON object per row, column
@@ -45,11 +53,15 @@ pub struct QueryRequest {
 /// between pages, row order can shift and `next_offset` paging may skip
 /// or duplicate rows; the AI detects that boundary by comparing the
 /// `revision_id` on each page and should restart paging (or accept the
-/// new revision's ordering) when it changes.
+/// new revision's ordering) when it changes. Passing the previous page's
+/// `revision_id` as `expected_revision` makes the server enforce that: the
+/// resumed page is refused with the `stale_revision` code instead of
+/// returning rows from a different ordering.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct QueryResponse {
     /// Revision id the page was read from. Compare across pages to detect
-    /// a revision change that invalidates `next_offset` paging.
+    /// a revision change that invalidates `next_offset` paging, or pass it
+    /// back as `expected_revision` to have the change refused.
     pub revision_id: String,
     pub rows: Vec<serde_json::Value>,
     pub truncated: bool,
@@ -93,7 +105,12 @@ fn query_with_limits(
     sink: &dyn crate::progress::ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<QueryResponse>, ErrorData> {
-    let QueryRequest { path, sql, offset } = &request.0;
+    let QueryRequest {
+        path,
+        sql,
+        offset,
+        expected_revision,
+    } = &request.0;
     let trimmed = sql.trim().trim_end_matches(';');
     if trimmed.is_empty() {
         return Err(ErrorData::invalid_params("sql must not be empty", None));
@@ -115,6 +132,7 @@ fn query_with_limits(
     }
 
     let synced = ensure_synced(path, sink, manager)?;
+    guard_expected_revision(&synced.revision_id, expected_revision.as_deref())?;
     let revision_id = synced.revision_id.clone();
     let (rows, truncated) =
         with_verified_read(&synced, |tx| run_query(tx, trimmed, *offset, limits))?;
@@ -210,7 +228,7 @@ fn execute_and_collect(
     let mut size_truncated = false;
     for row in mapped {
         let value = row.map_err(|error| describe_error(&error, abort_reason))?;
-        let row_bytes = json_value_len(&value);
+        let row_bytes = serialized_len(&value);
         if !rows.is_empty()
             && total_bytes.saturating_add(row_bytes) > limits.max_query_response_bytes
         {
@@ -223,23 +241,6 @@ fn execute_and_collect(
     let truncated = size_truncated || rows.len() > MAX_ROWS;
     rows.truncate(MAX_ROWS);
     Ok((rows, truncated))
-}
-
-fn json_value_len(value: &serde_json::Value) -> usize {
-    use std::io::Write;
-    struct Counter(usize);
-    impl Write for Counter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0 = self.0.saturating_add(buf.len());
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut counter = Counter(0);
-    let _ = serde_json::to_writer(&mut counter, value);
-    counter.0
 }
 
 /// Converts an aborted-query error into a message naming which budget was

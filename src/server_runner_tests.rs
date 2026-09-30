@@ -278,6 +278,7 @@ fn tool_call_logging_never_emits_the_calls_argument_or_result() {
         path: project.path().to_string_lossy().into_owned(),
         sql: format!("SELECT '{SENTINEL}' AS marker FROM files"),
         offset: 0,
+        expected_revision: None,
     };
 
     let (result, logs) = capture_at_level(

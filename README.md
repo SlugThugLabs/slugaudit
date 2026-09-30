@@ -161,6 +161,7 @@ cargo fmt --all -- --check
 cargo run --quiet --bin check_source_limits --locked
 cargo run --quiet --bin check_no_duplicates --locked
 cargo run --quiet --bin check_docs_drift --locked
+cargo run --quiet --bin check_producer_coverage --locked
 cargo check --all-targets --all-features --locked
 cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo test --lib --bins --tests --all-features --locked

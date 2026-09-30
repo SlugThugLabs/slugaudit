@@ -45,24 +45,35 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     path = '…', or `structure` when you want AST nodes rather than text; tracing imports by hand → \
     `dependency_edges` joined in a recursive CTE (see IMPORTS); notes you want back later → `finding` (see \
     OTHER TOOLS). grep and reading a file you already know remain the right tools for a literal lookup.\n\n\
-    LEADS: `leads` with only `path` returns every mechanic id with its count, in declaration order — call sites \
-    by callee (`unwrap`, `expect`, `panic`/`unreachable`, `todo`/`unimplemented`, \
-    `assert`/`assert_eq`/`assert_ne`/`debug_assert*`), diagnostics, TODO/FIXME/HACK/XXX comment markers, and \
-    credential-shaped file paths. Counts are complete regardless of `limit`/`offset` and carry no ordering by \
-    importance; call again with one `mechanic` id for file/line rows, paging with `limit`/`offset` and checking \
-    `truncated`/`next_offset`. Two limits to know. (1) The callee-based mechanics read Call evidence, which only \
-    the Rust call walker produces: on a project with no Rust files those counts are 0 because nothing was \
-    checked, not because nothing is there — diagnostics, comment markers, and credential paths cover every \
-    indexed language. (2) Each row's `detail` is clipped to 200 characters, and `detail_clipped` is true when \
-    characters were dropped; the remainder lives only in the file.\n\n\
+    LEADS: `leads` with only `path` returns every mechanic id with its row count, its distinct-file count \
+    (`files`), and `covers` — `rust_only` or `all_languages`, the machine-readable form of \"a zero here means \
+    unchecked, not absent\" — in declaration order: call sites by callee (`unwrap`, `expect`, \
+    `panic`/`unreachable`, `todo`/`unimplemented`, `assert`/`assert_eq`/`assert_ne`/`debug_assert*`), \
+    diagnostics, TODO/FIXME/HACK/XXX comment markers, and credential-shaped file paths. Counts are complete \
+    regardless of `limit`/`offset` and carry no ordering by importance. Call again with one `mechanic` id for \
+    file/line rows, optionally narrowed with `pattern` (a path GLOB like `src/auth/*`; without `*` or `?` it is \
+    a substring match) — it filters the counts and the rows alike. A rows response always carries \
+    `returned`/`total` and `complete`, plus the file denominators `files_total`/`files_covered`: at scale the \
+    number you can actually exhaust is the files containing the mechanic, not the rows. There is no row cap — a \
+    page is cut only by your `limit` (omit it for everything that fits) and by the response byte budget, \
+    reported as `row_budget_bytes`/`rows_bytes` with `limited_by` naming what stopped it. When `complete` is \
+    false, page with `offset` = `next_offset` and pass `expected_revision` = the first page's `revision_id`: if \
+    the index changed mid-sweep the call is refused with `stale_revision` and a remedy restarting the sweep from \
+    offset 0, instead of silently skipping or repeating rows. Two limits to know. (1) The callee-based mechanics \
+    read Call evidence, which only the Rust call walker produces: on a project with no Rust files those counts \
+    are 0 because nothing was checked, not because nothing is there — diagnostics, comment markers, and \
+    credential paths cover every indexed language. (2) Each row's `detail` is clipped to 200 characters, and \
+    `detail_clipped` is true when characters were dropped; the remainder lives only in the file.\n\n\
     QUERY SCHEMA: `files` (id, path, language, byte_len, content — full text of every indexed file, including \
     non-code files), `evidence` (id, file_id, kind, start_line, end_line, payload — JSON; kinds Structure, \
-    Import, Export, Comment, Docstring, Symbol, Diagnostic, Chunk, RawNode, Metric, Call), `dependency_edges` \
+    Import, Export, Comment, Docstring, Symbol, Diagnostic, Call), `dependency_edges` \
     (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled). One read-only \
-    SQL statement per call, capped at 500 rows (`truncated`/`next_offset`). Always JOIN evidence to files: \
-    SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND \
-    json_extract(e.payload, '$.name') = 'configure'. Discover the rest with SELECT name FROM sqlite_master \
-    WHERE type='table', and read `slugaudit://schema.sql`.\n\n\
+    SQL statement per call, cut by a 500-row cap and by the response byte budget (`truncated`/`next_offset`); \
+    when resuming an `offset`, pass the previous page's `revision_id` as `expected_revision` and a changed index \
+    is refused with `stale_revision` instead of returning rows from a different ordering. Always JOIN evidence \
+    to files: SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = \
+    'Symbol' AND json_extract(e.payload, '$.name') = 'configure'. Discover the rest with SELECT name FROM \
+    sqlite_master WHERE type='table', and read `slugaudit://schema.sql`.\n\n\
     PAYLOAD KEYS (evidence.payload holds JSON — always json_extract, never LIKE on payload text): Symbol \
     {name, kind, type_annotation, doc}; Structure {kind, name, visibility, decorators, signature}; Import \
     {source, items, alias, is_wildcard}; Export {name, kind}; Comment {text, kind, associated_node}; Docstring \
@@ -191,11 +202,17 @@ impl SlugAuditServer {
          call sites by callee name (unwrap, expect, panic, todo, unimplemented, assert), \
          diagnostics, TODO/FIXME/HACK comment markers, and credential-shaped files. Nothing here \
          is judged, ranked, scored, or ordered by importance: every item is a fact, and deciding \
-         which of them matter is entirely your call. Call with only `path` to get a count per \
-         mechanic, then call again with one `mechanic` id to get file/line rows, paging with \
-         `limit`/`offset`. Callee-based mechanics cover Rust only in this revision (the call \
-         walker is Rust-only); diagnostics, comment markers, and credential files cover every \
-         indexed language."
+         which of them matter is entirely your call. Call with only `path` to get every mechanic \
+         with its row count, its distinct-file count (`files`) and `covers` (`rust_only` means a \
+         zero count is unchecked, not absent), then call again with one `mechanic` id to get \
+         file/line rows, optionally narrowed with `pattern` (a path GLOB, e.g. `src/auth/*`; \
+         without `*`/`?` it is a substring match). A rows response always reports `returned`/`total` \
+         and `complete` plus the file denominators `files_total`/`files_covered`; there is no row \
+         cap, so a page is cut only by your `limit` (omit it for everything that fits) and by the \
+         response byte budget (`row_budget_bytes`/`rows_bytes`, with `limited_by` naming what \
+         stopped it). To page, pass `offset` = `next_offset` together with `expected_revision` = \
+         the previous page's `revision_id`: a changed index is then refused with `stale_revision` \
+         instead of silently skipping or repeating rows."
     )]
     async fn leads(
         &self,

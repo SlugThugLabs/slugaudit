@@ -8,6 +8,7 @@
 
 use super::FileRecord;
 use super::RevisionError;
+use super::classify::classify;
 use crate::evidence::{self, EvidenceRow};
 use rusqlite::params;
 
@@ -38,10 +39,12 @@ pub(super) fn upsert_file(
         "INSERT INTO files (\
             path, file_kind, content, content_hash, hash_algorithm, byte_len, \
             modified_unix_seconds, language, language_detected, parser_availability, \
-            parse_outcome, parse_error_reason, extraction_completeness, last_revision_id\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
+            parse_outcome, parse_error_reason, extraction_completeness, last_revision_id, \
+            file_class\
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
          ON CONFLICT(path) DO UPDATE SET \
             file_kind = excluded.file_kind, \
+            file_class = excluded.file_class, \
             skip_reason = NULL, \
             content = excluded.content, \
             content_hash = excluded.content_hash, \
@@ -70,6 +73,7 @@ pub(super) fn upsert_file(
             file.run.error_reason(),
             file.run.completeness.as_sql_text(),
             revision_db_id,
+            classify(&file.relative_path).as_sql_text(),
         ],
     )?;
 

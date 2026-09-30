@@ -33,6 +33,7 @@ fn query_logging_never_emits_sql_text() {
         path: project.path().to_string_lossy().into_owned(),
         sql,
         offset: 0,
+        expected_revision: None,
     };
     let (result, logs) = capture_at_level(
         || {
@@ -119,10 +120,11 @@ fn sync_and_report_logging_never_emits_source_content() {
 /// oversized SQL string.
 #[test]
 fn agent_supplied_input_never_reaches_the_error_payload() {
-    let error = match crate::tools::leads_query::resolve_mechanic(Some("SENTINEL_MECHANIC_9147")) {
-        Err(error) => error,
-        Ok(_) => panic!("an unknown mechanic must fail"),
-    };
+    let error =
+        match crate::tools::leads_mechanics::resolve_mechanic(Some("SENTINEL_MECHANIC_9147")) {
+            Err(error) => error,
+            Ok(_) => panic!("an unknown mechanic must fail"),
+        };
     assert!(
         error.message.contains("SENTINEL_MECHANIC_9147"),
         "the message still names what the caller asked for: {}",
