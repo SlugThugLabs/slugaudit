@@ -119,8 +119,47 @@ pub fn resolve_project(start: &Path) -> Result<(ProjectRoot, PathBuf), Activatio
 /// symlink, or if the directory can't be created.
 pub fn enable(root: &ProjectRoot) -> Result<PathBuf, ActivationError> {
     let activation = validated_activation_dir(root.as_path())?;
-    std::fs::create_dir_all(&activation)?;
+    create_private_dir(&activation)?;
     Ok(activation)
+}
+
+/// Owner-only access for the activation directory, which holds the index
+/// database and its sidecars — all of them containing source text.
+#[cfg(unix)]
+const PRIVATE_DIR_MODE: u32 = 0o700;
+
+/// Creates the activation directory with owner-only access.
+///
+/// `create_dir_all` alone honours the process umask, which is how a customer
+/// ends up with a world-readable copy of their own source. This is the one
+/// directory inside a user's project that SlugAudit owns, so it is created
+/// `0700` — and tightened when an earlier run (or a permissive umask) left it
+/// broader, matching the intent of the database file's own permission check.
+#[cfg(unix)]
+fn create_private_dir(path: &Path) -> Result<(), ActivationError> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(PRIVATE_DIR_MODE)
+        .create(path)?;
+    let current = std::fs::metadata(path)?.permissions().mode() & 0o777;
+    if current != PRIVATE_DIR_MODE {
+        tracing::warn!(
+            target: "slugaudit::project",
+            path = %path.display(),
+            mode = format!("{current:o}"),
+            reason = "tightening_activation_dir",
+            "activation directory was not owner-only; tightening it"
+        );
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(PRIVATE_DIR_MODE))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn create_private_dir(path: &Path) -> Result<(), ActivationError> {
+    std::fs::create_dir_all(path)?;
+    Ok(())
 }
 
 /// Removes `.planning/slugaudit` under `root` — the one action that turns

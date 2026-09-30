@@ -6,6 +6,42 @@ fn create_activation(root: &Path) {
         .expect("create activation dir");
 }
 
+#[cfg(unix)]
+#[test]
+fn enabling_a_project_creates_an_owner_only_activation_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().expect("temp dir");
+    let root = ProjectRoot::resolve(directory.path()).expect("valid root");
+
+    let activation = enable(&root).expect("enable");
+
+    let mode = fs::metadata(&activation)
+        .expect("stat activation dir")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o700, "the index directory holds source text");
+}
+
+/// `create_dir_all` honours the umask, so a project enabled on a machine with
+/// a permissive one — or enabled by an older build — can already exist wider
+/// than `0700`. Re-enabling must not leave it that way.
+#[cfg(unix)]
+#[test]
+fn enabling_a_project_tightens_a_pre_existing_wider_activation_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().expect("temp dir");
+    let activation = directory.path().join(PLANNING_DIR).join(ACTIVATION_DIR);
+    fs::create_dir_all(&activation).expect("pre-create wider");
+    fs::set_permissions(&activation, fs::Permissions::from_mode(0o755)).expect("widen");
+
+    let root = ProjectRoot::resolve(directory.path()).expect("valid root");
+    let enabled = enable(&root).expect("enable");
+
+    let mode = fs::metadata(&enabled).expect("stat").permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700, "a wider existing directory is tightened");
+}
+
 #[test]
 fn resolve_project_returns_root_and_database_path_together() {
     let directory = tempfile::tempdir().expect("temp dir");

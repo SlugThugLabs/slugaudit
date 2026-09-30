@@ -162,6 +162,33 @@ fn a_newly_created_database_gets_owner_only_permissions() {
     assert_eq!(mode, 0o600);
 }
 
+/// The `-wal` and `-shm` sidecars sit beside the database and can hold the same
+/// source-derived content, so they must be as private as the database itself.
+/// SQLite derives their mode from the database file's, which this crate pins to
+/// `0600`; this test fails if that derivation ever stops holding — the sidecars
+/// are created by SQLite, not by `create_with_private_permissions_if_missing`.
+#[cfg(unix)]
+#[test]
+fn the_wal_and_shm_sidecars_are_owner_only_like_the_database() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("project.db");
+    let connection = open_read_write(&path).expect("create database");
+    connection
+        .execute_batch("CREATE TABLE probe (v INTEGER); INSERT INTO probe VALUES (1);")
+        .expect("a write materialises the write-ahead log");
+
+    for name in ["project.db-wal", "project.db-shm"] {
+        let sidecar = directory.path().join(name);
+        let mode = std::fs::metadata(&sidecar)
+            .unwrap_or_else(|error| panic!("{name} must exist while the log is live: {error}"))
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "{name} must be owner-only, got {mode:o}");
+    }
+}
+
 /// The file is created with `O_CREAT | O_EXCL` and the private mode in
 /// one syscall (see `create_with_private_permissions_if_missing`), so
 /// there is no separate "create, then chmod" step for a single-threaded
