@@ -118,14 +118,14 @@ async fn the_semaphore_bounds_concurrent_blocking_work() {
     );
 }
 
-/// Phase 0's instrument is a log line, so it is pinned like one. These
-/// tests capture through `store::test_capture`, the same harness
-/// `tools::redaction_tests` uses: `capture_at_level` installs a
-/// thread-local subscriber, so only events emitted on the test thread are
-/// captured. That covers `run_blocking`'s own start and completion lines
-/// (the call id/session live on the span both are emitted under), not the
-/// internals a tool logs from inside `spawn_blocking` — which is exactly
-/// the boundary this phase adds to.
+// Phase 0's instrument is a log line, so it is pinned like one. These
+// tests capture through `store::test_capture`, the same harness
+// `tools::redaction_tests` uses: `capture_at_level` installs a
+// thread-local subscriber, so only events emitted on the test thread are
+// captured. That covers `run_blocking`'s own start and completion lines
+// (the call id/session live on the span both are emitted under), not the
+// internals a tool logs from inside `spawn_blocking` — which is exactly
+// the boundary this phase adds to.
 
 /// The runtime the capture closures block on. Using the current-thread
 /// flavor keeps every `run_blocking` line the tests assert on on the test
@@ -165,6 +165,10 @@ fn completion_lines(logs: &str) -> Vec<&str> {
 /// sequence cannot be recovered from the log at all.
 #[test]
 fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() {
+    // The span stamps the live `util::SESSION_ID`, and the tests that flip
+    // it (`sync::manager_meta_tests`) hold this lock while doing so — taking
+    // it keeps the session stable across the two calls asserted below.
+    let _session_guard = crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK);
     let (_, logs) = capture_at_level(
         || {
             current_thread_runtime().block_on(async {

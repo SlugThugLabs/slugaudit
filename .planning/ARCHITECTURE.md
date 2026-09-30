@@ -272,7 +272,8 @@ Caller                             SlugAudit server
          └─ Unavailable → full publish every call
    └─ tools::* handler             with_verified_read / with_verified_write
    └─ ToolCounters::record_call    bump call_count / error_count / total_ms
-   └─ tracing::info!|warn!         log completion (or failure) with counters in span
+   └─ tracing::info!|warn!         one completion line: session_id, call_id, tool,
+                                   elapsed_ms, outcome, ToolCounters deltas
    └─ Json<{…}>                    return
                                        <!-- mcp://progress: completed -->
 Caller receives JSON response
@@ -288,6 +289,38 @@ whether it succeeded or failed. Notifications are best-effort: a broken
 progress channel can never fail a successful tool call. Phases the sync layer
 reports through its own `ProgressEvent` stream (e.g. a reconcile stage between
 publishing and completed) appear as labels of the same shape.
+
+### The tool-call log
+
+`run_blocking` wraps every call in one `tool_call` span carrying `tool`,
+`call_id` (a process-local monotonic counter; `server_runner.rs`) and
+`session_id` (`util::SESSION_ID`), so **every** line a call emits — the start
+line, the `tools::*` lines inside it, and its completion line — shares one
+correlation pair that distinguishes it from the next call to the same tool.
+Each call emits exactly one completion event, the message `"tool call
+completed"` at INFO on success and WARN on failure, carrying `outcome`
+(`"success"` / `"error"`), `elapsed_ms`, and the process-wide `ToolCounters`
+deltas observed across the call. The counters cannot be reset and concurrent
+calls bump them too, so they are logged as deltas — never as absolutes or as
+this call's exclusive share; a delta can cover a sibling call running at the
+same time. Nothing else is logged: no tool arguments, no results (see the
+redaction contract in `tools/redaction_tests.rs`).
+
+A session's call sequence is recoverable by grepping one session id. With
+`SLUGAUDIT_LOG_FORMAT=json`:
+
+```
+grep -F "\"session_id\":\"<uuid>\"" audit.jsonl \
+  | jq -r 'select(.fields.message == "tool call completed")
+           | [.span.call_id, .span.tool, .fields.outcome, .fields.elapsed_ms] | @tsv'
+```
+
+With the default text format the span prefix carries the same fields
+(`tool_call{tool="report" call_id=1 session_id=<uuid>}: …`):
+
+```
+grep -F "session_id=<uuid>" audit.log | grep -F 'tool call completed'
+```
 
 ## Publish and revision model
 
