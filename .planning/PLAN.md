@@ -40,20 +40,32 @@ this file was written.
    as calls 1, 2, 3 with durations. The redaction invariant is re-tested: the new line carries
    no arguments and no results. Both recovery commands are in `ARCHITECTURE.md`.
 
-**Committed (2026-09-30).** Landed as four commits on `googlefi-code`, each leaving the gates
-green: `ec6a464` (the deviations log), `ecc25e7` (Phase 1), `9c0f77f` (the connect registry —
-its `ARCHITECTURE.md` rewrite lands there rather than here, because the module map names the new
-connect modules and the `*_tests.rs` count sentence is gate-checked against the new test file),
-`dca4910` (this documentation reset). **Not pushed** — the branch has no remote counterpart and
-publication is the owner's call. Work continues from here, one commit per workstream.
+5. **Phase 2 — the door.** All four items landed. Item 1 rewrote `INSTRUCTIONS` (above); item 2
+   gives every discovered file a row, so a skipped file is countable instead of invisible, and
+   `report` carries a completeness block with a partial-index flag; item 3 adds six
+   machine-readable error codes with static remedies, so a caller can branch — the sync-budget
+   failure no longer tells a caller to retry something permanent; item 4 makes the not-enabled
+   state one actionable instruction behind all eight tools, with `health` answering normally
+   when nothing is enabled.
 
-**Not started:** Phase 0's instrument; Phases 3–5; the *Correctness follow-ups* list; the
+**Committed (2026-09-30).** One commit per workstream, each leaving the full gate suite green:
+`ec6a464` (the deviations log), `ecc25e7` (Phase 1), `9c0f77f` (the connect registry — its
+`ARCHITECTURE.md` rewrite lands there rather than with the documentation reset, because the module
+map names the new connect modules and the `*_tests.rs` count sentence is gate-checked against the
+new test file), `dca4910` (the documentation reset), `5302bf0` (Phase 0's instrument), `9085f6c`
+(the plan/deviations bookkeeping), `b9bfb39` (Phase 2's index completeness — `fmt`, `clippy
+-D warnings`, 565 lib tests and the three cheap gates verified green on it), `fb6eea5` (Phase 2's
+error surface). **Not pushed** — the branch has no remote counterpart and publication is the
+owner's call.
+
+**Not started:** Phases 3–5 (Phase 3 is in flight); the *Correctness follow-ups* list; the
 *Connect surface* follow-up; and every item in the *Production-readiness backlog*.
 
-**Uncommitted:** Phase 2 items 2–4. Item 1 (the `INSTRUCTIONS` rewrite) and item 2 (the `report`
-completeness envelope plus file-existence rows) landed 2026-09-30; item 2 has not yet seen the
-full gate suite. Items 3–4 are implemented as written in their entries below, and item 4's
-optional tool-hiding half is deliberately *not* implemented — see that entry for why.
+Phase 2 is **committed**: item 1 in `9c0f77f`, item 2 in `b9bfb39`, items 3–4 in `fb6eea5`. Item
+4's optional tool-hiding half is deliberately *not* implemented — see that entry for why. Note for
+whoever edits this file next: several agents wrote to it concurrently on 2026-09-30 and the status
+block briefly contradicted itself as a result; treat the commit log as authoritative if the prose
+and the hashes disagree.
 
 ---
 
