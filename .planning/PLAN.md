@@ -205,13 +205,14 @@ settled it.
 
 **Goal:** an agent that was not going to use this tool uses it twice.
 
-**Items 1–2 are landed (2026-09-30).** `INSTRUCTIONS` was rewritten in this order — what it
-is and what it adds; the first-win rule as a trigger rather than a request; the replacement
-map; the operational facts (schema, payload keys, imports, structure, resources); then the
-no-judgment contract once, near the end — with the creed placement the owner resolved, and
-`report` gained the completeness envelope plus the file-existence rows behind it (item 2).
-Item 2 is uncommitted and has not yet seen the full gate suite. Items 3–4 are implemented and
-uncommitted; item 4's optional tool-hiding half is deliberately not implemented (see it).
+**Items 1–4 are landed and committed (2026-09-30).** `INSTRUCTIONS` was rewritten in this order —
+what it is and what it adds; the first-win rule as a trigger rather than a request; the
+replacement map; the operational facts (schema, payload keys, imports, structure, resources);
+then the no-judgment contract once, near the end — with the creed placement the owner resolved.
+`report` gained the completeness envelope plus the file-existence rows behind it (item 2), the
+tool errors gained machine-readable codes (item 3), and the not-enabled state became one
+actionable instruction behind every tool (item 4). Item 4's optional tool-hiding half is
+deliberately not implemented (see it).
 
 1. **`INSTRUCTIONS` rewrite — landed 2026-09-30.** Written in this order: (a) what it is
    and what it adds, in the agent's interest — budget as a consequence, not the pitch;
@@ -225,7 +226,7 @@ uncommitted; item 4's optional tool-hiding half is deliberately not implemented 
    callee-based `leads` mechanics are Rust-only (zero rows means *unchecked*, not
    *absent*), and `detail` is clipped at 200 chars and now flags it. Still owed from this
    item: moving the payload keys out of the briefing into a resource (Phase 4 item 1).
-2. **`report` returns surprises, not just counts — landed 2026-09-30 (uncommitted).**
+2. **`report` returns surprises, not just counts — landed 2026-09-30.**
    The completeness envelope: skipped files and why, unparsed files, binary files, files
    with no evidence, evidence caps hit. `ReportResponse` (`src/tools/report.rs:72`) now
    carries `completeness` (`src/tools/report_completeness.rs`): counts by `file_kind`
