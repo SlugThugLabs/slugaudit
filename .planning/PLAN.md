@@ -52,12 +52,14 @@ this file was written.
    `all_languages`) instead of letting a zero read as clean, filters by path, and refuses a
    resumed page pinned to a stale revision; three producer-less evidence kinds are deleted and a
    new gate refuses to let another appear; and `report` can name generated and vendored files.
-7. **Phase 4 — the contract (items 1–2).** Output schemas, titles and annotations on all eight
+7. **Phase 4 — the contract (items 1–3).** Output schemas, titles and annotations on all eight
    tools (annotations derived from the crate source, not guessed); the payload-key reference moved
    out of `INSTRUCTIONS` into a resource, shortening the briefing by 337 characters; a
    `check_mcp_surface` gate that derives the live surface in-process and refuses on drift unless
-   `--record` is passed; and blast radius as arithmetic in `report`. Item 3 — the compact
-   `mechanic, path, line` enumeration mode — is open.
+   `--record` is passed; blast radius as arithmetic in `report`; and an optional `mode:
+   full|compact` on `leads`, where `compact` without a mechanic returns the whole mechanical
+   surface as `mechanic, file, line` triples in one response — affordable precisely because the
+   `detail` text is what the page budget was mostly spent on.
 8. **Phase 5 — the loop (item 1).** `finding` dedupes a restated conclusion inside the session by
    (path, source_hash, line range, category, title), updating the row in place and keeping its id,
    while a restatement after the file changed correctly becomes a new finding. Items 2 and 3 are
@@ -72,13 +74,19 @@ new test file), `dca4910` (the documentation reset), `5302bf0` (Phase 0's instru
 -D warnings`, 565 lib tests and the three cheap gates verified green on it), `fb6eea5` (Phase 2's
 error surface), `9ec589b` (Phase 3), `6433b06` (the log-capture harness fix), `869c126` (the
 offset and `char_column` follow-ups), `2b64cc3` (store directory permissions), `ec10812` (the
-governance shell), `afe4128` (the hermetic connect suite), `d9cb506` (finding dedupe) and
-`8c03f9e` (the MCP surface contract). **Not pushed** — the branch has no remote counterpart and
-publication is the owner's call.
+governance shell), `afe4128` (the hermetic connect suite), `d9cb506` (finding dedupe),
+`8c03f9e` (the MCP surface contract), `5a59e69` (the install/update rollback), `210ecaa` (the
+adversarial `query` tests), `ca6c569` (the governance and version gates) and `a7f327c` (the
+compact `leads` mode). **Not pushed** — the branch has no remote counterpart and publication is
+the owner's call.
 
-**Not started:** Phase 4 item 3 (the compact `leads` enumeration mode); the *Connect surface*
-follow-up; and the rest of the *Production-readiness backlog* — every correctness follow-up is
-resolved, and Phase 5 items 2–3 are non-goals.
+**Not started:** the *Connect surface* follow-up, and the remainder of the
+*Production-readiness backlog* — auto-ignore on enable; the credential predicate (widen and
+tighten) and the credential-content policy it gates (an owner decision); supply-chain pinning, a
+dependency-update bot and scheduled advisories; PR-time dependency and secret scanning; SBOM,
+provenance and reproducibility; third-party notices; wiring `check_performance` into CI; the
+`fuzz/` targets; a large-repo soak test; wider mutation testing; and the workspace split. Every
+correctness follow-up is resolved, and Phase 5 items 2–3 are non-goals.
 
 Item 4's optional tool-hiding half is deliberately *not* implemented — see its entry for why. Note
 for whoever edits this file next: several agents wrote to it concurrently on 2026-09-30 and the
@@ -519,8 +527,9 @@ Folded from `PROD_READINESS_PLAN.md`. Items already landed are dropped; the evid
 phase of that plan is now Phases 1–3 above (its `known_paths` fix and its `ContentOnly`
 item are done, its report-completeness and dead-kind items live in Phase 2 item 2 and
 Phase 3 item 8). **Landed 2026-09-30:** store safety's directory/sidecar permissions
-(`2b64cc3`), the governance shell's five files (`ec10812`), and the exposure documentation
-(`SECURITY.md`). The rest is open.
+(`2b64cc3`), the governance shell's five files (`ec10812`) plus its `check_governance` gate,
+the exposure documentation (`SECURITY.md`), the install/update rollback (`5a59e69`), the
+adversarial `query` tests (`210ecaa`) and the version-consistency gate. The rest is open.
 
 **Store safety and secrets.**
 
@@ -560,22 +569,26 @@ advisories), `CODE_OF_CONDUCT.md` (Contributor Covenant v2.1, fetched and diffed
 contact placeholder is disclosed as the public issue tracker — see the owner decision
 above) and `CHANGELOG.md` (newest entry `1.0.10`, dated from the real tag).
 
-- `check_governance` — a pure-Rust bin that fails when a required file is missing or when
-  `CODEOWNERS` references a path that does not exist (same spirit as `check_docs_drift`).
-  Still open.
+- `check_governance` — **landed 2026-09-30** (`ca6c569`): fails when a required file is
+  missing or when a literal `CODEOWNERS` pattern names a path that does not exist (globs and
+  negations are skipped, not silently passed).
 
 **Release, versioning, supply chain.**
 
-- **`check_version_consistency` gate.** The version is hand-duplicated
-  (`Cargo.toml:3` = `lhm.plugin.json:5` = `1.0.10`) with nothing tying them together.
-  Assert equality across manifests, that the newest `CHANGELOG.md` entry matches, and that
-  `parse::PACK_VERSION` matches its exact manifest pin (currently a unit test — fold it
-  in).
+- **`check_version_consistency` gate — landed 2026-09-30** (`ca6c569`). The version is
+  hand-duplicated (`Cargo.toml` = `lhm.plugin.json` = `1.0.10` = the newest `CHANGELOG.md`
+  heading) and nothing tied them together. The gate asserts all of them agree and that
+  `parse::PACK_VERSION` matches an *exact* `tree-sitter-language-pack` pin; it folds in the
+  unit test that asserted half of that (the gate reads the manifest at a chosen root, so it
+  also runs against a fixture). This covers the version half of the CHANGELOG-discipline
+  item below; release-please is still open.
 - **CHANGELOG discipline** — release-please, or a gate requiring an entry for the tagged
   version.
-- **Rollback.** `slugaudit update` replaces the binary atomically but keeps no previous
-  copy. Retain `slugaudit.prev` and document a revert path (`src/update.rs`,
-  `src/install.rs`, `install.sh`).
+- **Rollback — landed 2026-09-30** (`5a59e69`). `slugaudit update`, `slugaudit install` and
+  both `install.sh` paths now copy the binary they displace to `slugaudit.prev` **before** the
+  replacement rename, so atomicity is preserved and reverting is one `cp` (the copy keeps the
+  mode bits). It fails closed: a retention copy that silently does not happen would leave the
+  operator believing a revert is possible. Documented in `docs/TROUBLESHOOTING.md` §7.
 - **Reproducibility** (`--remap-path-prefix` + a CI job that rebuilds a tag and compares
   hashes, best-effort and documented as such); **SBOM** (CycloneDX, attached to the
   release); **provenance/attestation** (`actions/attest-build-provenance`; note explicitly
@@ -628,7 +641,12 @@ Linux-only.
   workflow, not per-PR.
 - Adversarial authorizer tests as permanent unit tests (`ATTACH`, `PRAGMA`,
   `load_extension`, writes through CTEs/subqueries, comment/`;` splicing, multiple
-  statements) asserting rejection, not just "no rows".
+  statements) asserting rejection, not just "no rows". **Landed 2026-09-30** (`210ecaa`):
+  six tests over ~46 payloads in `src/tools/query_safety_tests.rs`, plus three
+  weakened-guard experiments proving they are not vacuous (with the wrapper and the
+  authorizer both removed, `ATTACH` returns `Ok([])` — the silent false pass — and every
+  query test but `store::connection`'s still passes, which is where the authorizer is
+  actually pinned).
 - Widen mutation testing or document why the narrower scope is intentional.
 - A synthetic large-repo soak test that stays inside `max_sync_wall_clock` (nothing
   exercises a 10k-file import except the budget that would abort it).
