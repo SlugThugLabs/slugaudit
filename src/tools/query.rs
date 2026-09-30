@@ -362,3 +362,7 @@ fn first_statement_separator(sql: &str) -> Option<usize> {
 #[cfg(test)]
 #[path = "query_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "query_safety_tests.rs"]
+mod safety_tests;

@@ -108,11 +108,51 @@ fn a_write_attempt_fails_and_changes_nothing() {
     assert_eq!(after.rows[0]["n"], 1);
 }
 
+/// A second database file is exactly what the wrapper and the connection's
+/// authorizer exist to keep out of reach. Both directions of the same
+/// authorizer decision are covered here (`ATTACH` and `DETACH`), together
+/// with the alias a refused `ATTACH` must never have created — a caller
+/// that only checked for rows would not notice a silently readable
+/// `other.secrets`.
 #[test]
 fn an_attached_database_attempt_fails() {
     let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
-    let result = ask(&project, "ATTACH DATABASE ':memory:' AS other");
-    assert!(result.is_err());
+    let foreign_dir = tempfile::tempdir().expect("foreign dir");
+    let foreign_path = foreign_dir.path().join("foreign.db");
+    let foreign = rusqlite::Connection::open(&foreign_path).expect("create foreign db");
+    foreign
+        .execute_batch(
+            "CREATE TABLE secrets (v TEXT); INSERT INTO secrets VALUES ('top-secret-value');",
+        )
+        .expect("seed foreign db");
+    drop(foreign);
+
+    let result = ask(
+        &project,
+        &format!("ATTACH DATABASE '{}' AS other", foreign_path.display()),
+    );
+    assert!(
+        result.is_err(),
+        "a foreign database must be refused, not attached: {:?}",
+        result.map(|response| response.rows)
+    );
+
+    for sql in [
+        "ATTACH DATABASE ':memory:' AS other",
+        "DETACH DATABASE main",
+        "SELECT v FROM other.secrets",
+    ] {
+        let result = ask(&project, sql);
+        assert!(
+            result.is_err(),
+            "`{sql}` must be refused, not answered with 0 rows: {:?}",
+            result.map(|response| response.rows)
+        );
+    }
+
+    // Re-read through the tool: the fixture row is still the only row.
+    let after = ask(&project, "SELECT path FROM files").expect("the index still reads");
+    assert_eq!(after.rows.len(), 1, "the index changed: {:?}", after.rows);
 }
 
 /// Multi-statement SQL can't be expressed by the subquery wrapper, but a
