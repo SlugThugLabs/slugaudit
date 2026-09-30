@@ -249,3 +249,80 @@ fn a_resync_after_a_session_change_drops_prior_session_findings() {
         "ensure_synced during a new session must drop the prior session's findings"
     );
 }
+
+/// Dedupe is scoped to the writing session. A row that carries the same
+/// identity fields — same file and content hash, same line range, same
+/// category and title — but *another* session's `session_id` must never be
+/// adopted as this session's conclusion. The first sync normally purges such
+/// rows, so this drives `insert_finding` directly, after the sync, with a
+/// foreign-session row pre-seeded: exactly the state the purge guards against.
+#[test]
+fn dedupe_is_scoped_to_the_writing_session() {
+    let _session_guard = SESSION_TEST_LOCK
+        .lock()
+        .expect("session test lock poisoned");
+    let project = activated_project("scoped.rs", b"pub fn s() {}\n");
+    crate::tools::context::ensure_synced_no_progress(
+        &project.path().to_string_lossy(),
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .expect("initial sync");
+
+    let db_path = project
+        .path()
+        .join(".planning")
+        .join("slugaudit")
+        .join("project.db");
+    let mut connection = crate::store::open_read_write(&db_path).expect("open db");
+    let source_hash: String = connection
+        .query_row(
+            "SELECT content_hash FROM files WHERE path = 'scoped.rs'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read the indexed content hash");
+    let foreign_session = Uuid::new_v4();
+    connection
+        .execute(
+            "INSERT INTO findings (\
+                path, source_hash, line_start, line_end, severity, category, title, \
+                description, created_at_unix, evidence_revision, status, session_id\
+             ) VALUES ('scoped.rs', ?1, 1, 1, 'low', 'correctness', 'Reviewed conclusion', \
+                'another session wrote this', 0, 'rev', 'current', ?2)",
+            rusqlite::params![source_hash, foreign_session.to_string()],
+        )
+        .expect("seed a foreign-session row with the same identity fields");
+    let foreign_id = connection.last_insert_rowid();
+
+    let request = base_request(&project, "scoped.rs");
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .expect("begin write transaction");
+    let created = insert_finding(&transaction, &request, "rev").expect("finding succeeds");
+    transaction.commit().expect("commit");
+
+    assert_ne!(
+        created.id, foreign_id,
+        "another session's row must not be adopted as this session's conclusion"
+    );
+    let sessions: Vec<String> = connection
+        .prepare("SELECT session_id FROM findings ORDER BY session_id")
+        .expect("prepare session read")
+        .query_map([], |row| row.get(0))
+        .expect("query sessions")
+        .collect::<Result<_, _>>()
+        .expect("collect sessions");
+    assert_eq!(
+        sessions.len(),
+        2,
+        "the foreign row survives and this session's row is inserted beside it"
+    );
+    assert!(
+        sessions.contains(&foreign_session.to_string()),
+        "the foreign session's row must be untouched"
+    );
+    assert!(
+        sessions.contains(&session_id().to_string()),
+        "the caller's row must carry the current session's id"
+    );
+}

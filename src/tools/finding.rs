@@ -4,7 +4,7 @@ use crate::sync;
 use crate::util;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rusqlite::{Transaction, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -95,34 +95,70 @@ fn insert_finding(
     let (source_hash, content) = fetch_file(tx, &request.file)?;
     validate_line_range(request, &content)?;
 
-    let persisted_time: Option<i64> = tx
-        .query_row("SELECT max(created_at_unix) FROM findings", [], |row| {
-            row.get(0)
-        })
+    // Restating a conclusion refreshes the row it already owns instead of
+    // appending a near-duplicate — the Python build's `identity_hash` dedupe,
+    // restored inside the session. Two calls are *the same finding* when they
+    // name the same file at the same content hash, the same line range, and
+    // the same `category` and `title`; `severity` and `description` are body,
+    // so the restatement replaces them. The match is scoped to the writing
+    // session: a conclusion is only ever merged into its author's notebook.
+    let restated: Option<i64> = tx
+        .query_row(
+            "SELECT id FROM findings \
+             WHERE session_id = ?1 AND path = ?2 AND source_hash = ?3 AND line_start = ?4 \
+               AND line_end = ?5 AND category = ?6 AND title = ?7 \
+             ORDER BY id LIMIT 1",
+            params![
+                session_id().to_string(),
+                request.file,
+                source_hash,
+                request.line_start,
+                request.line_end,
+                request.category,
+                request.title,
+            ],
+            |row| row.get(0),
+        )
+        .optional()
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    let created_at = util::at_least_timestamp(util::now_unix(), persisted_time);
-    tx.execute(
-        "INSERT INTO findings (\
-            path, source_hash, line_start, line_end, severity, category, title, description, \
-            created_at_unix, evidence_revision, status, session_id\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'current', ?11)",
-        params![
-            request.file,
-            source_hash,
-            request.line_start,
-            request.line_end,
-            request.severity,
-            request.category,
-            request.title,
-            request.description,
-            created_at,
-            revision_id,
-            session_id().to_string(),
-        ],
-    )
-    .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    let id = if let Some(id) = restated {
+        tx.execute(
+            "UPDATE findings SET severity = ?1, description = ?2, evidence_revision = ?3, \
+             status = 'current' WHERE id = ?4",
+            params![request.severity, request.description, revision_id, id],
+        )
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        id
+    } else {
+        let persisted_time: Option<i64> = tx
+            .query_row("SELECT max(created_at_unix) FROM findings", [], |row| {
+                row.get(0)
+            })
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        let created_at = util::at_least_timestamp(util::now_unix(), persisted_time);
+        tx.execute(
+            "INSERT INTO findings (\
+                path, source_hash, line_start, line_end, severity, category, title, description, \
+                created_at_unix, evidence_revision, status, session_id\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'current', ?11)",
+            params![
+                request.file,
+                source_hash,
+                request.line_start,
+                request.line_end,
+                request.severity,
+                request.category,
+                request.title,
+                request.description,
+                created_at,
+                revision_id,
+                session_id().to_string(),
+            ],
+        )
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        tx.last_insert_rowid()
+    };
 
-    let id = tx.last_insert_rowid();
     // File, line range, and id are structural metadata about *where* a
     // finding landed — never the title/description/severity/category
     // text, which is exactly the AI-authored judgment content that must
@@ -181,10 +217,8 @@ fn fetch_file(tx: &Transaction<'_>, file: &str) -> Result<(String, String), Erro
         )
         .map_err(|error| ErrorData::invalid_params(format!("{file}: {error}"), None))?;
     let content = content.ok_or_else(|| {
-        ErrorData::invalid_params(
-            format!("{file} has no indexed source content"),
-            error_codes::payload(ErrorCode::FileNotIndexed),
-        )
+        let payload = error_codes::payload(ErrorCode::FileNotIndexed);
+        ErrorData::invalid_params(format!("{file} has no indexed source content"), payload)
     })?;
     Ok((source_hash, content))
 }
