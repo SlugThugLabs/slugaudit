@@ -173,6 +173,8 @@ cargo run --quiet --bin check_no_duplicates --locked
 cargo run --quiet --bin check_docs_drift --locked
 cargo run --quiet --bin check_producer_coverage --locked
 cargo run --quiet --bin check_mcp_surface --locked
+cargo run --quiet --bin check_governance --locked
+cargo run --quiet --bin check_version_consistency --locked
 cargo check --all-targets --all-features --locked
 cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo test --lib --bins --tests --all-features --locked

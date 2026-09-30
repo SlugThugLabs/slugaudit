@@ -273,6 +273,15 @@ src/
     │   ├── surface.rs        the live surface, derived from the server
     │   ├── diff.rs           structural snapshot diff with paths
     │   └── tests.rs          diff rules + the annotation/title table
+    ├── check_governance/     governance-shell files + CODEOWNERS path gate
+    │   ├── main.rs           argv + failure printer + exit codes
+    │   ├── required_files.rs the fixed governance file set must exist
+    │   ├── codeowners.rs     CODEOWNERS must reference only real paths
+    │   └── tests.rs          the two checks' verdicts
+    ├── check_version_consistency/  manifests, CHANGELOG, and pack pin agree
+    │   ├── main.rs           argv + failure printer + exit codes
+    │   ├── manifests.rs      version parsing + the three checks
+    │   └── tests.rs          parser rules + the verdict on a fixture
     ├── check_coverage.rs     llvm-cov line-coverage gate
     └── check_performance/    criterion medians vs. the committed baseline
         ├── main.rs           run benches, compare, print verdict

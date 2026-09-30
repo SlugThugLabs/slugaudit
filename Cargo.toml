@@ -54,6 +54,14 @@ name = "check_mcp_surface"
 path = "src/bin/check_mcp_surface/main.rs"
 
 [[bin]]
+name = "check_governance"
+path = "src/bin/check_governance/main.rs"
+
+[[bin]]
+name = "check_version_consistency"
+path = "src/bin/check_version_consistency/main.rs"
+
+[[bin]]
 name = "check_performance"
 path = "src/bin/check_performance/main.rs"
 

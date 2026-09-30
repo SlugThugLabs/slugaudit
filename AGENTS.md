@@ -421,6 +421,8 @@ cargo run --quiet --bin check_no_duplicates --locked   # duplicate commit subjec
 cargo run --quiet --bin check_docs_drift --locked      # ARCHITECTURE module map, test count, canonical docs
 cargo run --quiet --bin check_producer_coverage --locked  # every evidence kind is constructed somewhere
 cargo run --quiet --bin check_mcp_surface --locked     # tools/list + resources/list match the committed snapshot
+cargo run --quiet --bin check_governance --locked      # governance files exist; CODEOWNERS paths resolve
+cargo run --quiet --bin check_version_consistency --locked  # Cargo.toml = lhm.plugin.json = CHANGELOG = PACK_VERSION
 cargo check --all-targets --all-features --locked
 cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo test --lib --bins --tests --all-features --locked
@@ -538,8 +540,8 @@ before replacing the binary (`src/update.rs`).
 - Dependencies: 16 runtime + 4 dev (`Cargo.toml`).
   `tree-sitter-language-pack = "=1.14.3"` is the only exact pin;
   `src/parse/PACK_VERSION` is a hand-duplicated string that
-  `src/parse/mod.rs::pack_version_matches_the_cargo_toml_pin` asserts against
-  the manifest pin — update both together.
+  the `check_version_consistency` gate asserts against the manifest pin —
+  update both together.
 - Supply chain (`deny.toml`): no advisories ignored, no wildcards, duplicate
   versions denied outside a reviewed skip list, sources restricted to crates.io,
   licenses allow-listed. A new dependency must clear `cargo deny`.

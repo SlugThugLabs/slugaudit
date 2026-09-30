@@ -78,6 +78,17 @@ jobs:
       - name: Check the MCP surface snapshot (tools/list + resources/list)
         run: cargo run --quiet --bin check_mcp_surface --locked
 
+      # Fails when the governance shell (CODEOWNERS, CONTRIBUTING.md,
+      # SECURITY.md, CODE_OF_CONDUCT.md, CHANGELOG.md) is missing a file, or
+      # when a CODEOWNERS rule references a path that does not exist.
+      - name: Check governance (required files + CODEOWNERS paths)
+        run: cargo run --quiet --bin check_governance --locked
+
+      # Fails when Cargo.toml, lhm.plugin.json, the newest CHANGELOG.md
+      # heading, or parse::PACK_VERSION disagree on a version.
+      - name: Check version consistency (manifests, CHANGELOG, pack pin)
+        run: cargo run --quiet --bin check_version_consistency --locked
+
       - name: Check compilation
         run: cargo check --all-targets --all-features --locked
 
