@@ -9,6 +9,20 @@ Newest first. Format: **what** / **why** / **where** / **reversible?**
 
 ---
 
+## Skipped files get a stat-derived identity, not a content hash (2026-09-30)
+
+- **What:** Phase 2 item 2 in the plan asks for a *streaming BLAKE3* identity on skipped
+  (oversize / unreadable) files. Implemented that way it would read the entire file on every
+  sync — precisely the cost that skipping exists to avoid. Skipped rows instead carry
+  `content_hash` = BLAKE3 over `(path, byte_len, modified_unix_seconds)` with
+  `hash_algorithm = 'stat-identity'`, so nothing can mistake it for a content hash.
+- **Why:** the identity is only needed to recognise "same skipped file as last time", and the
+  stat tuple already answers that for free. The consequence — a skipped file whose content
+  changes without changing size or mtime is not noticed — is the same blind spot the stat
+  sweep already documents, so no new uncertainty is introduced.
+- **Where:** `src/store/schema.sql` (`files.hash_algorithm`), the publish path.
+- **Reversible:** yes, at the cost of reading every skipped file on every sync.
+
 ## Commit and push policy (adopted 2026-09-30)
 
 - **What:** one commit per workstream rather than one giant commit or a commit per file; subjects

@@ -32,13 +32,24 @@ this file was written.
    `connect` no longer runs a client's `remove` before `add`; `docs/CLIENTS.md` is derived
    from the registry rather than hand-written.
 
-**Not committed.** The entire tree is uncommitted on `googlefi-code` (51 modified, 31
-deleted, 8 new). Landing it in logical commits is the first outstanding action.
+4. **Phase 0 — the instrument.** Every tool call now carries a process-local `call_id` in its
+   span alongside the session id, and emits one greppable completion line with the tool name,
+   duration, outcome, and the `ToolCounters` deltas for that call (deltas, never absolutes —
+   the counters are process-wide and cannot be reset). A session's call sequence is recoverable
+   from stderr, demonstrated against the real binary, which logged `report` → `report` → `query`
+   as calls 1, 2, 3 with durations. The redaction invariant is re-tested: the new line carries
+   no arguments and no results. Both recovery commands are in `ARCHITECTURE.md`.
 
-**Not started:** Phase 0's instrument; Phase 2 items 2–4 (item 1, the `INSTRUCTIONS`
-rewrite, landed with the owner's creed placement); Phases 3–5; the *Correctness follow-ups*
-list; the *Connect surface* follow-up; and every item in the *Production-readiness
-backlog*.
+**Committed (2026-09-30).** Landed as four commits on `googlefi-code`, each leaving the gates
+green: `ec6a464` (the deviations log), `ecc25e7` (Phase 1), `9c0f77f` (the connect registry —
+its `ARCHITECTURE.md` rewrite lands there rather than here, because the module map names the new
+connect modules and the `*_tests.rs` count sentence is gate-checked against the new test file),
+`dca4910` (this documentation reset). **Not pushed** — the branch has no remote counterpart and
+publication is the owner's call. Work continues from here, one commit per workstream.
+
+**Not started:** Phase 2 items 2–4 (item 1, the `INSTRUCTIONS` rewrite, landed with the owner's
+creed placement); Phases 3–5; the *Correctness follow-ups* list; the *Connect surface* follow-up;
+and every item in the *Production-readiness backlog*.
 
 ---
 
@@ -86,7 +97,7 @@ change below is judged against that rule.
 
 ---
 
-## Phase 0 — Baseline and instrument (not started)
+## Phase 0 — Baseline and instrument (landed 2026-09-30)
 
 **Goal:** know the current state and be able to see adoption move.
 
