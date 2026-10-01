@@ -142,9 +142,18 @@ change below is judged against that rule.
 
 **Goal:** know the current state and be able to see adoption move.
 
-1. Record the gate suite output so later regressions are attributable. There is no
-   committed baseline file for the gate run; `check_performance` has its own
-   (`.planning/archive/perf_baseline.json`, regenerated with `--record`).
+1. Record the gate suite output so later regressions are attributable. **Recorded 2026-09-30**,
+   on the 12-core Ryzen 9 5900X this plan's numbers come from: seven CI gates PASS
+   (`check_source_limits`, `check_no_duplicates`, `check_docs_drift`, `check_producer_coverage`,
+   `check_mcp_surface`, `check_governance`, `check_version_consistency`); 630 library tests and
+   every integration crate green (the six largest: 24, 11, 10, 8, 7, 7); `fmt` and
+   `clippy -D warnings` clean; 36 concurrent library-suite runs with zero failures (the harness
+   is deterministic under load — see the log-capture entry in `DEVIATIONS.md`);
+   `check_performance` and `check_coverage` are local-only, and the latter's threshold is 83
+   (line coverage was **not** re-measured — `cargo-llvm-cov` is not installed on this machine).
+   The two machine-readable halves of this baseline already live where a consumer reads them:
+   `.planning/archive/perf_baseline.json` (`check_performance`) and
+   `.planning/archive/mcp_surface.json` (`check_mcp_surface`).
 2. Add a per-call correlation id to the tracing span in `src/server_runner.rs` —
    `info_span!("tool_call", tool = …)` today, `src/server_runner.rs:59` — and log the
    session's call sequence: tool names, order, tool-call deltas from `ToolCounters`
@@ -313,7 +322,7 @@ deliberately not implemented (see it).
    `leads`' `credential_files` (a credential-shaped skipped file is now reported rather
    than hidden), and the reconcile pipeline (oversize paths are no longer hashed — their
    existence row is the stat identity, so a sweep stops re-reading them).
-3. **Branchable errors — landed 2026-09-30 (uncommitted).** `src/error_codes.rs` owns a
+3. **Branchable errors — landed 2026-09-30** (`fb6eea5`). `src/error_codes.rs` owns a
    closed set of six codes — `sync_budget_exhausted`, `project_not_enabled`,
    `stale_revision`, `unknown_mechanic`, `sql_too_large`, `file_not_indexed` — each a
    lowercase stable string with a doc comment and a static remedy, attached as
@@ -333,7 +342,7 @@ deliberately not implemented (see it).
    errors — it never wrapped the sync budget, whose message has always said "publish
    exceeded its wall-clock time budget". The remedy, not the message, is what makes the
    budget self-healing.
-4. **Disabled state must not be eight failures — (a) landed 2026-09-30 (uncommitted);
+4. **Disabled state must not be eight failures — (a) landed 2026-09-30** (`fb6eea5`);
    (b) deliberately not implemented.** (a) `manager_orchestration::map_activation_error`
    is the single funnel behind every tool, so a not-enabled project now yields one
    `project_not_enabled` payload with the `project_control {"action":"on","path":…}`
@@ -429,7 +438,15 @@ still indexed) lets `report` say which files those are. The completeness envelop
 
 **DoD:** an agent can enumerate any mechanic to completion, or be told it cannot and why.
 
-## Phase 4 — The surfaces that make it worth keeping (not started)
+## Phase 4 — The surfaces that make it worth keeping (landed 2026-09-30)
+
+**All three items landed** (`8c03f9e`, `a7f327c`): the payload-key reference moved into a
+`slugaudit://` resource and every tool gained an `outputSchema`, a `title` and annotations, with
+`check_mcp_surface` refusing any drift unless `--record` is passed; blast radius returned as
+inbound/outbound edge arithmetic in `report`, with the traversal shipped as a recipe resource
+rather than a ninth tool; and `leads` gained `mode: compact`, which returns the whole mechanical
+surface as `mechanic, file, line` triples in one response. `report` and `leads(path)` stayed
+zero-decision: `required` is still just `["path"]`.
 
 1. **Payload-shape resource + `outputSchema` on all 8 tools.** Per-kind payload keys
    already exist as prose inside `INSTRUCTIONS` — they cost context every session and
@@ -446,7 +463,15 @@ still indexed) lets `report` say which files those are. The completeness envelop
    keep them that way, and add a compact `mechanic, path, line` enumeration mode so the
    whole mechanical surface can be seen in one complete response.
 
-## Phase 5 — Close the loop (not started)
+## Phase 5 — Close the loop (item 1 landed 2026-09-30; item 3 conditional, not scheduled)
+
+**Item 1 landed** (`d9cb506`): `finding` dedupes a restated conclusion inside the session by
+(path, source_hash, line range, category, title), updating the row in place and keeping its id,
+while a restatement after the file changed becomes a new finding and the old row stays stale.
+**Item 2 is an instruction not to act**, honoured: session scoping is untouched.
+**Item 3 is conditional and stays unscheduled** — it is worth building only if Phase 0's sequence
+log shows agents losing their place, and there is no adoption data from real audits yet; Phase 3's
+revision guard already covers most of the value.
 
 1. **Finding dedupe.** `finding` unconditionally `INSERT`s (`src/tools/finding.rs:104`),
    so re-recording the same conclusion duplicates rows. Python deduped by
