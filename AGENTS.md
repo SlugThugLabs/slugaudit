@@ -432,7 +432,9 @@ cargo build --release --locked
 
 Then `cargo-deny` (`check advisories bans sources licenses`), `check_coverage`,
 and — Linux only, fails closed — `cargo mutants` over `src/sync/revision.rs`,
-`src/sync/publish.rs`, `src/sync/hash.rs`, `src/tools/context.rs`. The `advisories`
+`src/sync/publish.rs`, `src/sync/hash.rs`, `src/tools/context.rs` (a deliberate
+four-file scope, not an unfinished widening — see *Mutation testing* under
+*Testing and QA*). The `advisories`
 half of that cargo-deny run is the RustSec advisory-database (the RustSec
 `audit-check` action quality.yml used to add read the same database and could not
 run at all once Node 20 left GitHub-hosted runners, so it was removed on
@@ -546,6 +548,52 @@ before replacing the binary (`src/update.rs`).
   measured but **not** gated.
 - Property tests: only `src/graph/resolver/proptest.rs`; its seed corpus in
   `proptest-regressions/` is committed — never delete it.
+- Large-repo soak: `tests/large_repo_soak.rs` builds a synthetic 10k-file
+  project, syncs it through the real path (`SourceSyncManager::ensure_current`),
+  and asserts the import completed inside `max_sync_wall_clock` with the whole
+  file set indexed (row count, file kinds, parse outcomes, and the exact path
+  set). The 10k case is `#[ignore]`d and **not scheduled in CI**:
+  `cargo test --test large_repo_soak -- --ignored --nocapture` (~22 s of sync
+  for the 10k files on the 12-core Ryzen 9 5900X it was measured on, in the
+  unoptimized `test` profile; the budget is 1200 s). Run it when touching
+  discovery, hashing, parsing, or publish. Its non-`#[ignore]`d companion
+  (64 files, ~0.25 s) runs in the default suite and carries the same
+  assertions, so the checks themselves are not soak-only.
+
+### Mutation testing
+
+CI runs `cargo-mutants` (Linux only, fails closed) over exactly four files:
+`src/sync/revision.rs`, `src/sync/publish.rs`, `src/sync/hash.rs`,
+`src/tools/context.rs`. That narrow scope is a decision, not an unfinished
+widening — the plan's *Untrusted-input rigor* item asks for a wider scope **or**
+a written reason for this one, and this is the reason. Those four are the
+publish/revision/context correctness core: revision identity, atomic
+publication, CAS/change detection, and the freshness-verification entry point
+every state-bearing tool handler shares. A mutant that survives there means a
+revision was published wrong or a stale one was served, which is a class of
+defect no other file can produce.
+
+Widening the scope multiplies CI minutes rather than adding a fixed cost:
+`cargo-mutants` rebuilds the crate and re-runs the whole test suite once per
+mutant, so the step costs mutant count × suite time. Measured with
+`cargo mutants --list` (2026-09-30), the four files hold 23 of the crate's 2323
+mutants (~1 percent); all of `src/sync/**` is 310 and all of `src/tools/**` is
+484, so widening to either is a 13x / 21x multiplier. The mutants a wider scope
+would add sit in code the existing suites already drive end to end
+(`discovery_tests`, `sample_tests`, `sweep_tests`, `publish_*_tests`, the
+`tools/*_tests` suites), so that multiplier re-verifies behavior the tests
+already pin, while the four files above are where a mutation can slip past a
+green suite. The scope is defined in the step's comment in
+`.github/workflows/quality.yml`, which carries the same decision — a file that
+moves into the correctness core is added in both places, with the expectation
+that the step's runtime grows proportionally.
+
+Locally, one file at a time is the cheap way to iterate:
+
+```bash
+cargo install cargo-mutants
+cargo mutants --file src/sync/hash.rs
+```
 
 ---
 
