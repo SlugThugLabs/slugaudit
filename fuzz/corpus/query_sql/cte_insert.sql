@@ -1,0 +1,1 @@
+WITH x AS (INSERT INTO files(path, language) VALUES ('planted.rs', 'rust') RETURNING path) SELECT * FROM x

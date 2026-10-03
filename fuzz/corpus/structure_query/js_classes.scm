@@ -1,0 +1,1 @@
+(class_declaration name: (identifier) @cls)

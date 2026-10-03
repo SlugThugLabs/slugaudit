@@ -1,0 +1,1 @@
+WITH x AS (UPDATE files SET path = 'planted.rs' RETURNING path) SELECT * FROM x

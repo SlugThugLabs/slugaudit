@@ -1,0 +1,1 @@
+{"path":"/p","language":"rust","pattern":"src/**/*.rs","query":"(identifier) @id"}

@@ -1,0 +1,47 @@
+[package]
+name = "slugaudit-mcp-rust-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace on purpose. The fuzz crate compiles the product library
+# under nightly with a sanitizer, so it must not join the product package's
+# build: an empty `[workspace]` table makes this manifest the root of a
+# separate workspace, with its own lockfile (fuzz/Cargo.lock), leaving the
+# root package's Cargo.lock, its `[lints]`, and the 1.97.1 stable pin in
+# rust-toolchain.toml untouched. Nothing here builds unless someone runs
+# `cargo +nightly fuzz …` from this directory.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rmcp = { version = "3", default-features = false, features = ["server"] }
+serde_json = "1"
+tempfile = "3"
+
+[dependencies.slugaudit-mcp-rust]
+path = ".."
+
+[[bin]]
+name = "structure_query"
+path = "fuzz_targets/structure_query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "query_sql"
+path = "fuzz_targets/query_sql.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "request_arguments"
+path = "fuzz_targets/request_arguments.rs"
+test = false
+doc = false
+bench = false

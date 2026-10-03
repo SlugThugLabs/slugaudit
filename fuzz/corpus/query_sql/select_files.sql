@@ -1,0 +1,1 @@
+SELECT path, language, byte_len FROM files

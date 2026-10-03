@@ -1,0 +1,1 @@
+ATTACH DATABASE '/tmp/slugaudit-fuzz-attach.db' AS other

@@ -1,0 +1,1 @@
+SELECT load_extension('/tmp/slugaudit-fuzz-escape.so') AS x

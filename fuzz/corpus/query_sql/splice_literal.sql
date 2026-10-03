@@ -1,0 +1,1 @@
+SELECT 'literal;text' AS x; DELETE FROM files

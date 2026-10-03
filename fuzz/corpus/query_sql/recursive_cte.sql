@@ -1,0 +1,1 @@
+WITH RECURSIVE reachable(file_id) AS (SELECT id FROM files UNION SELECT e.to_file_id FROM dependency_edges e JOIN reachable r ON e.from_file_id = r.file_id WHERE e.to_file_id IS NOT NULL) SELECT f.path FROM reachable r JOIN files f ON f.id = r.file_id

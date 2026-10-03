@@ -1,0 +1,1 @@
+VACUUM INTO '/tmp/slugaudit-fuzz-vacuum.db'

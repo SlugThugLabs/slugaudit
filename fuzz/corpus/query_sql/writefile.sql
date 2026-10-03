@@ -1,0 +1,1 @@
+SELECT writefile('/tmp/slugaudit-fuzz-escape.txt', 'escaped') AS x

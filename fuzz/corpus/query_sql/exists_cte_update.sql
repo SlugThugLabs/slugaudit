@@ -1,0 +1,1 @@
+SELECT EXISTS (SELECT 1 FROM (WITH x AS (UPDATE files SET path = 'planted.rs' RETURNING path) SELECT path FROM x)) AS smuggled

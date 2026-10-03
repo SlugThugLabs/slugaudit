@@ -1,0 +1,2 @@
+SELECT 1 -- ;
+DELETE FROM files

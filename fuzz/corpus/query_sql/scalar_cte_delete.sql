@@ -1,0 +1,1 @@
+SELECT (WITH x AS (DELETE FROM files RETURNING path) SELECT path FROM x) AS smuggled

@@ -1,0 +1,145 @@
+name: Scheduled fuzzing
+
+# The three fuzz targets from the plan's *Untrusted-input rigor* item. They are
+# deliberately NOT a per-PR gate: a fuzzer that runs for a bounded minute on a
+# pull request buys a false sense of coverage, mostly re-executes the seeds, and
+# spends runner minutes on every push. They run on a cron instead, where a
+# regression is found within a day without costing anything on the PR path.
+#
+# `fuzz/` is a separate cargo workspace (its own lockfile, and an empty
+# `[workspace]` table) so nothing here touches the product package's build, its
+# `Cargo.lock`, or the 1.97.1 stable pin in `rust-toolchain.toml`. These targets
+# need nightly because cargo-fuzz builds with `-Zsanitizer=address`.
+#
+# Every third-party `uses:` is pinned to the full commit SHA behind its release
+# tag (or its branch, for `dtolnay/rust-toolchain`, which publishes no tags),
+# with the version kept as a trailing comment. A tag is a name its owner can
+# repoint; a SHA cannot. Resolved with `git ls-remote`; `.github/dependabot.yml`
+# proposes the next pin for the tagged ones.
+#
+# Corpus: the committed seeds under `fuzz/corpus/<target>/` are the floor, and
+# `actions/cache` carries each target's accumulated corpus between runs so a
+# night's coverage is not thrown away — a scheduled fuzzer that restarts from 20
+# seeds every night never gets past them.
+
+on:
+  schedule:
+    # 04:17 UTC daily — off the hour (every scheduled workflow on GitHub fires
+    # at the top of it) and clear of the 06:41 advisories job.
+    - cron: "17 4 * * *"
+  # Run on demand, without waiting for the next cron.
+  workflow_dispatch:
+    inputs:
+      max_total_time:
+        description: Seconds to fuzz each target
+        required: false
+        default: "300"
+
+# Least privilege: this job checks out the repository, builds, and runs the
+# fuzzers. It writes no check run, no comment, and no release; the crash
+# artifacts go through the workflow's own artifact token, not this one.
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # One target's crash must not cancel the other two: they are independent
+      # surfaces and the run that found something is the run worth keeping.
+      fail-fast: false
+      matrix:
+        include:
+          # `max_len` is each target's own request ceiling, so the fuzzer never
+          # spends an iteration on input the tool would refuse unread
+          # (`ResourceLimits`: 32 KB structure query, 50 KB SQL, no request-size
+          # limit at the decode boundary).
+          - target: structure_query
+            max_len: 32768
+          - target: query_sql
+            max_len: 50000
+          - target: request_arguments
+            max_len: 131072
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Nothing here reads history.
+          fetch-depth: 1
+
+      # dtolnay/rust-toolchain publishes no release tags — its versions *are*
+      # its branches — so this pins the commit the `nightly` branch pointed at
+      # when it was resolved. It moves: two `git ls-remote` calls twenty minutes
+      # apart returned different SHAs, which is exactly why this is a SHA and
+      # not `@nightly`. Dependabot cannot bump it (no tag to compare), so
+      # re-pinning is a deliberate manual act.
+      - name: Install nightly Rust toolchain
+        uses: dtolnay/rust-toolchain@0e28dd9a7764e5f83064112bb1f24025a14c313c # nightly (branch; no releases)
+        with:
+          toolchain: nightly
+
+      # Caches the `fuzz/target` tree, which is where `tree-sitter-language-
+      # pack`'s build script leaves its ~450 MB parser-sources download and
+      # where the sanitizer builds live. `fuzz` is a workspace of its own, so
+      # the workspace root has to be named.
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: "fuzz -> target"
+
+      - name: Restore this target's accumulated corpus
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          # A fresh key per run so the corpus written by this run is saved;
+          # the prefix restore pulls the most recent corpus first.
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+
+      # LeakSanitizer can only match `fuzz/lsan-suppressions.txt` against
+      # *symbolized* frames; without a symbolizer the file is silently
+      # ineffective and `structure_query` dies on the first malformed query,
+      # because tree-sitter 0.26.13 leaks 8 bytes on that error path (see the
+      # suppression file and the target's header for the minimized reproducer,
+      # which puts the allocation entirely inside the dependency).
+      - name: Provide a symbolizer for LeakSanitizer suppressions
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq llvm
+          symbolizer=$(ls /usr/lib/llvm-*/bin/llvm-symbolizer | sort -V | tail -n1)
+          echo "LSAN_OPTIONS=suppressions=$GITHUB_WORKSPACE/fuzz/lsan-suppressions.txt:external_symbolizer_path=$symbolizer" >> "$GITHUB_ENV"
+
+      - name: Build the target
+        working-directory: fuzz
+        run: cargo +nightly fuzz build ${{ matrix.target }}
+
+      - name: Fuzz ${{ matrix.target }}
+        working-directory: fuzz
+        env:
+          # 300 s by default; the dispatch input raises or lowers it.
+          MAX_TOTAL_TIME: ${{ inputs.max_total_time || '300' }}
+        run: |
+          cargo +nightly fuzz run ${{ matrix.target }} -- \
+            -max_total_time="$MAX_TOTAL_TIME" \
+            -max_len=${{ matrix.max_len }} \
+            -rss_limit_mb=2048 \
+            -print_final_stats=1
+
+      # cargo-fuzz writes crashes, hangs, leaks, and slow units under
+      # `fuzz/artifacts/<target>/`; upload them so the finding can be minimized
+      # without re-running the fuzzer. Uploaded on failure only — on a clean run
+      # there is usually nothing there.
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore
+          retention-days: 30

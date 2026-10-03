@@ -537,6 +537,26 @@ before replacing the binary (`src/update.rs`).
 
 ### Expectations
 
+- Fuzzing: `fuzz/` is a **separate cargo workspace** (its own manifest, lockfile and
+  `[workspace]` table), so nothing in it builds during `cargo build`, `cargo clippy` or
+  `cargo test` at the root — it needs nightly and a sanitizer. Three targets cover the
+  untrusted-input surfaces: `structure_query` (Tree-sitter query strings), `query_sql`
+  (agent SQL, including authorizer-bypass shapes) and `request_arguments` (the
+  `params.arguments` decode into the eight request types — this repository has **no frame
+  parser to fuzz**: `src/main.rs` hands stdio to `rmcp`, which owns framing). Run one with
+
+  ```sh
+  cd fuzz && cargo +nightly fuzz run structure_query -- -max_total_time=60
+  ```
+
+  `fuzz/corpus/` is committed — curated seeds plus inputs fuzzing has discovered — so a
+  scheduled run starts warm; `fuzz/target`, `fuzz/artifacts` and `fuzz/coverage` are
+  gitignored. `.github/workflows/fuzz.yml` runs them on a cron and on dispatch, never per
+  pull request. `fuzz/lsan-suppressions.txt` suppresses exactly one **dependency** leak;
+  read it before deleting it — it carries the minimal reproducer, why the frames prove the
+  allocation is not this crate's, and why the suppression is silently ineffective without
+  `llvm-symbolizer`.
+
 - Coverage: `cargo run --quiet --bin check_coverage --locked`, default gate
   **83** percent line coverage via `cargo llvm-cov` (requires
   `cargo-llvm-cov`). Override the threshold by passing a number on the command

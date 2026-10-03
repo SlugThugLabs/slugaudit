@@ -1,0 +1,1 @@
+WITH x AS (DELETE FROM files RETURNING path) SELECT * FROM x

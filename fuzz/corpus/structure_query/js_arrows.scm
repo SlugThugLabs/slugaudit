@@ -1,0 +1,1 @@
+(arrow_function body: (_) @body)

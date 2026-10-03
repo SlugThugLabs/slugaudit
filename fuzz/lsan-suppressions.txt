@@ -1,0 +1,48 @@
+# LeakSanitizer suppressions for this crate's fuzz targets.
+#
+# Known non-finding, in the dependency rather than in this repository.
+#
+# Tree-sitter 0.26.13's C query compiler leaks one 8-byte allocation when a
+# query names a real node kind with a field name that kind does not define.
+# Minimal reproducer, with no SlugAudit code in the process at all:
+#
+#     (identifier zzz: (identifier) @a)
+#
+# tree-sitter reports the expected error ("Invalid field name \"zzz\"") and
+# `Query::new` returns `Err`, so nothing is retained by this crate — the
+# allocation `ts_query_new` made while parsing the pattern is simply never
+# freed on that path. Verified with a probe target that calls only
+# `tree_sitter_language_pack::get_language` and `tree_sitter::Query::new`:
+# valid queries, `((((", and an unknown node kind (`(not_a_node_kind) @x`)
+# all leak nothing; only the unknown-field error does. The allocation stack is
+# wholly inside the dependency:
+#
+#     ___interceptor_malloc
+#     ts_malloc_default                       tree-sitter-0.26.13/src/alloc.c:6
+#     _array__reserve                         tree-sitter-0.26.13/src/array.h:220
+#     ts_query__parse_pattern                 tree-sitter-0.26.13/src/query.c:2745,2857
+#     ts_query_new                            tree-sitter-0.26.13/src/query.c:3069
+#     <tree_sitter::Query>::new_raw           tree-sitter-0.26.13/binding_rust/lib.rs:2361
+#     <tree_sitter::Query>::new               tree-sitter-0.26.13/binding_rust/lib.rs:2345
+#     slugaudit_mcp_rust::tools::structure    src/tools/structure.rs:150
+#
+# A `structure` call with a typo'd field name leaks 8 bytes; the process is a
+# one-shot MCP server, so the practical impact is bounded (8 bytes per bad
+# query, in a process that is not long-lived), and the fix belongs upstream.
+#
+# These patterns match any frame of the allocation stack, so they suppress only
+# allocations made *inside* the dependency's query compiler — a leak in this
+# crate cannot land inside `ts_query_new`. Verified both ways: with this file a
+# run prints `Suppressions used: count 1, bytes 8, template
+# ts_query__parse_pattern` and reports no leak; with a file whose only pattern
+# matches nothing, the same input reports the 8-byte leak as usual.
+#
+# LeakSanitizer can only match these patterns against *symbolized* frames, so
+# `LSAN_OPTIONS` must also name a symbolizer
+# (`external_symbolizer_path=/path/to/llvm-symbolizer`) — without one the
+# suppression file is silently ineffective and the leak is reported as
+# unsuppressed. `.github/workflows/fuzz.yml` provides one. Delete both lines
+# when the pinned tree-sitter stops leaking on that path, so the check is not
+# carried forward as folklore.
+leak:ts_query__parse_pattern
+leak:ts_query_new

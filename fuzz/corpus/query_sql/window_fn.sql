@@ -1,0 +1,1 @@
+SELECT path, row_number() OVER (ORDER BY path) AS n FROM files
