@@ -690,10 +690,54 @@ lines names its tool with a literal unique to it and filters the capture to that
 literal; a test whose capture assertion is absence-only first asserts the capture is
 live.
 
+A large-repo soak test lives in `tests/large_repo_soak.rs` (an integration crate,
+so `check_source_limits` does not count it). It builds 10,000 parseable modules and
+syncs them through `SourceSyncManager::ensure_current` — the real publish path, no
+shortcut — then asserts the sync completed inside `max_sync_wall_clock`, that all
+10,000 files are `indexed` and parsed, and that the stored path set equals the
+fixture's exactly. Measured on the 12-core Ryzen 9 5900X: 18.8 s against the
+adaptive profile's 1200 s budget, so the assertion records headroom rather than
+being tight — and it compares against the budget the sync actually enforced, so a
+`lean` profile run checks against 120 s instead of passing regardless. The 10k case
+is `#[ignore]`d (`cargo test --test large_repo_soak -- --ignored --nocapture`), and
+a 64-file companion runs in the default suite in 0.13 s, so the same assertions are
+guarded on every push and the shared runner's lines stay covered.
+
+Fuzzing lives in `fuzz/`, a separate cargo workspace (its own manifest, lockfile and
+`[workspace]` table), so nothing in it builds during `cargo build` / `cargo clippy` /
+`cargo test` at the root — it needs nightly and a sanitizer. Three targets cover the
+untrusted-input surfaces: `structure_query` (Tree-sitter query strings, which
+`structure` executes as supplied), `query_sql` (agent SQL, including authorizer-bypass
+shapes) and `request_arguments` (the `params.arguments` decode into the eight request
+types — this repository has no frame parser to fuzz, because `src/main.rs` hands stdio
+to `rmcp`, which owns framing). Bounded runs are clean at 219 / 316 / ~203k executions
+per second, with peak RSS inside the 2048 MB limit. `fuzz/corpus/` is committed so a
+scheduled run starts warm; `fuzz/target`, `fuzz/artifacts` and `fuzz/coverage` are
+gitignored; `.github/workflows/fuzz.yml` runs them on a cron and on dispatch, never per
+pull request. `fuzz/lsan-suppressions.txt` suppresses exactly one **dependency** leak
+(tree-sitter 0.26.13's query compiler, minimal reproducer
+`(identifier zzz: (identifier) @a)`); it is silently ineffective without
+`llvm-symbolizer` and should be deleted when that pin stops leaking — the reasoning,
+including why the frames prove the allocation is not this crate's, is in
+`DEVIATIONS.md`.
+
 ## Design decisions and rejected alternatives
 
 Each of these was considered and deliberately not done; the reason is part of
 the architecture so the next reviewer does not re-litigate it from scratch.
+
+- **The sync manager's split modules are its private children, not siblings.**
+  `manager.rs` owns `SourceSyncManager`, `SyncedProject`, `SyncError`,
+  constructors, counters, watcher registration and public observability;
+  `manager_orchestration.rs` owns the outer `ensure_current` workflow — project
+  resolution, database recovery, the shared rebuild tail — and `manager_health.rs`
+  owns the `WatcherHealth` state machine and incremental barrier reconciliation,
+  because those paths share health transitions, counters, progress signalling and
+  freshness invariants. Both are `mod` declarations inside `manager.rs` rather than
+  sibling public modules: that preserves private-field access, leaves the
+  `sync::SourceSyncManager` API unchanged, and avoids widening encapsulation with
+  `pub(crate)` state fields. A structural split only — the synchronization
+  behaviour and its tests are unchanged.
 
 - **No connection pooling.** A fresh connection per call is the correctness
   boundary: its read-only/read-write mode is set at open time and cannot
@@ -812,6 +856,11 @@ body, or file content into a code or a remedy (the redaction contract in
 surface).
 
 <!-- error-codes:begin -->
+<!-- Machine-read: `src/error_codes.rs::the_documented_table_matches_the_code_set_exactly`
+     parses this block and asserts the rows below are exactly `ErrorCode::ALL`, in
+     declaration order. Add, remove or reorder a code here in the same change that
+     changes the enum, or `cargo test` fails. The module map above and the
+     `*_tests.rs` count sentence are read the same way, by `check_docs_drift`. -->
 | code | meaning | attached where |
 | --- | --- | --- |
 | `sync_budget_exhausted` | the sync wall-clock budget (`max_sync_wall_clock`) was spent while discovering, hashing, parsing, or publishing; permanent on a tree too big for the budget, so the remedy names the knob | every sync map site: `manager_meta::map_publish_error`, `sweep_reconcile::sweep_tree` and `sweep_reconcile::apply_sweep_report`, both `manager_health` map sites |
