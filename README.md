@@ -59,6 +59,13 @@ The installer script and `slugaudit install` both place the binary at
 what `slugaudit connect` registers with your agent. `slugaudit update` downloads a
 newer release and atomically replaces that binary.
 
+Every release ships the material to check what you downloaded: `SHA256SUMS` for
+the binary, `LICENSE`, a CycloneDX SBOM, a third-party notices file, and a signed
+build-provenance attestation. [docs/RELEASING.md](docs/RELEASING.md) has the
+exact commands and states what each one proves — including why a `SHA256SUMS`
+published alongside the artifact is integrity rather than authenticity, and why
+the attestation is what closes that gap.
+
 ## Connect an agent
 
 `slugaudit connect` writes a `slugaudit` MCP server entry into an agent's or editor's
@@ -160,6 +167,7 @@ Logging goes to `stderr`; `stdout` carries JSON-RPC only. Set
 - [.planning/PLAN.md](.planning/PLAN.md) — the active plan
 - [.planning/archive/DECISIONS.md](.planning/archive/DECISIONS.md) — decision log (append-only history)
 - [docs/CLIENTS.md](docs/CLIENTS.md) — every `connect` target, its config path, and its scope
+- [docs/RELEASING.md](docs/RELEASING.md) — what a release publishes, and how to verify it (checksums, SBOM, attestation)
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — operator runbook
 
 ## Development

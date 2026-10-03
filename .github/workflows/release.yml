@@ -10,8 +10,8 @@ name: Release
 # cron; `.github/workflows/supply-chain.yml` gates the PR diff and scans for
 # secrets. `check_performance` is deliberately in none of them — it is a
 # local-only gate, and quality.yml carries the reason. This workflow only builds
-# the release artifact and attaches it to the GitHub Release, so it stays lean
-# and fast.
+# the release artifact, produces its supply-chain paperwork, and attaches it to
+# the GitHub Release, so it stays lean and fast.
 #
 # Every third-party `uses:` here is pinned to the full commit SHA behind its
 # release tag, with the version kept as a trailing comment so a human can still
@@ -27,9 +27,14 @@ name: Release
 # shipping binaries for them would be shipping unverified artifacts.
 #
 # Release hygiene: every artifact ships with a SHA256SUMS file so a
-# consumer can verify what they downloaded. The ~450 MB tree-sitter
-# parser-sources tarball is downloaded by the build script on cache miss,
-# hence the same Swatinem/rust-cache strategy quality.yml uses.
+# consumer can verify what they downloaded, plus the terms it is licensed
+# under (LICENSE + a generated third-party notices file), a CycloneDX SBOM,
+# and a signed build-provenance attestation. What each of those proves, and
+# what it does not, is written down for the consumer in docs/RELEASING.md;
+# a summary of the verification commands is also echoed into the release
+# body below. The ~450 MB tree-sitter parser-sources tarball is downloaded by
+# the build script on cache miss, hence the same Swatinem/rust-cache strategy
+# quality.yml uses.
 
 on:
   push:
@@ -41,17 +46,57 @@ on:
         description: "Tag to attach the binaries to (e.g. v1.0.0)"
         required: true
 
+# Least privilege: every job inherits read, and the one job that needs more asks
+# for it on itself below — a workflow-level grant is a grant to every job,
+# including any job added here later.
 permissions:
-  # Needed to attach the binary + checksums to the GitHub Release.
-  contents: write
+  contents: read
+
+env:
+  # The tag this run is for: the pushed tag, or the operator's input on a
+  # manual run. Defined once so the checkout, the release upload and the
+  # release body cannot disagree about which tag they are talking about.
+  RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag }}
+
+  # The one input a rebuild can neither derive nor be expected to reproduce on
+  # its own: the absolute paths a build records inside the binary. The released
+  # v1.0.10 asset carries 419 of them from the cargo registry
+  # (`/home/runner/.cargo/registry/src/…`) plus one under the workspace — a
+  # dependency's build-script output path — so they are both a build-machine
+  # fingerprint and a source of avoidable divergence. Mapping them to fixed
+  # prefixes makes the recorded paths a function of the source instead of a
+  # function of where the tree sat. Every job here that compiles inherits this
+  # exact value — the rebuild-and-compare job below depends on that — and
+  # docs/RELEASING.md hands a verifier the same two mappings.
+  #
+  # This is not what makes the artifact reproducible; nothing does. See the
+  # `rebuild-and-compare` job for what actually varies between two builds.
+  RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/slugaudit --remap-path-prefix=/home/runner/.cargo=/cargo"
 
 jobs:
   build-linux-x86_64:
     name: Build Linux x86_64
     runs-on: ubuntu-latest
+    # The only job that needs more than read: attach files to the GitHub
+    # Release, and mint + persist the provenance attestation. `id-token` is
+    # what lets the attestation action exchange this run's OIDC identity for a
+    # Sigstore certificate; `attestations` is what lets it store the signed
+    # result on the repository. Neither is needed by any other job here, so
+    # neither is granted at the workflow level.
+    permissions:
+      contents: write      # create the release and upload its assets
+      id-token: write      # OIDC token the attestation signature is minted for
+      attestations: write  # persist the signed attestation on the repository
     steps:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The artifact must be built from the tag it is published under. On a
+          # tag push that is already the default; on a manual run the default
+          # would be the branch the workflow was dispatched from, and the
+          # release would carry a binary no tag describes — with an attestation
+          # swearing to it.
+          ref: ${{ env.RELEASE_TAG }}
 
       # Same branch-pinned action as quality.yml — dtolnay/rust-toolchain
       # publishes no release tags, so this one is re-pinned by hand.
@@ -68,18 +113,335 @@ jobs:
         # the build fails instead of silently resolving differently.
         run: cargo build --release --locked --bin slugaudit
 
+      # Both tools arrive as prebuilt binaries from their own GitHub Releases,
+      # checksum-verified by the action, with the version pinned here the way
+      # the action itself is. `fallback: none` refuses the cargo-binstall
+      # fallback, exactly as the two supply-chain.yml installs do: a release
+      # job should not be compiling a tool generator.
+      - name: Install release-artifact tooling
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-cyclonedx@0.5.9, cargo-about@0.9.2
+          fallback: none
+
       - name: Stage artifacts
         run: |
           set -euo pipefail
           mkdir -p dist
           cp target/release/slugaudit dist/slugaudit-x86_64-unknown-linux-gnu
           chmod +x dist/slugaudit-x86_64-unknown-linux-gnu
+          # The terms travel with the binary. LICENSE's Notices clause requires
+          # that anyone who receives a copy also receives the terms (or their
+          # URL) and the `Required Notice:` lines; the release is the copy a
+          # user gets, so the file it lives in is attached rather than only
+          # linked. SHA256SUMS covers the binary alone and its format is
+          # unchanged — `install.sh` and `slugaudit update` both read this file.
+          cp LICENSE dist/LICENSE
           (cd dist && sha256sum slugaudit-x86_64-unknown-linux-gnu > SHA256SUMS)
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # The dependency graph the shipped binary was built from: the default
+          # feature set, `--locked` behaviour inherited from the resolved
+          # Cargo.lock, dev-dependencies absent because a release build never
+          # compiles them. Root component is the crate (`slugaudit-mcp-rust`);
+          # `slugaudit` is its only shipped product.
+          #
+          # `--override-filename` replaces the whole stem, so the `.cdx` here
+          # is what makes the output `…cdx.json`. 1.5 is stated rather than
+          # defaulted, because the default is the much older 1.3.
+          cargo cyclonedx --format json --spec-version 1.5 \
+            --override-filename slugaudit-x86_64-unknown-linux-gnu.cdx
+          mv slugaudit-x86_64-unknown-linux-gnu.cdx.json dist/
+          # The document carries a generation timestamp and the building
+          # machine's manifest path, so it is not itself reproducible; it is
+          # not part of the comparison in rebuild-and-compare below, and it is
+          # not attested. Say so in the docs rather than imply otherwise.
+
+      - name: Generate third-party notices
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Generated from this tag's own dependency graph — `.planning/archive/
+          # DEPENDENCIES.md` was deleted in the 2026-09-30 docs reset, so there is
+          # no stale file to copy. `--fail` turns an undeterminable licence into a
+          # failed release instead of a silently missing section.
+          cargo about generate --locked --fail -c docs/about.toml \
+            -o "$RUNNER_TEMP/notices.body" docs/third-party-notices.hbs
+          {
+            echo "THIRD-PARTY NOTICES"
+            echo "==================="
+            echo
+            echo "Release:   ${RELEASE_TAG}"
+            echo "Commit:    ${GITHUB_SHA}"
+            echo "Artifact:  slugaudit-x86_64-unknown-linux-gnu"
+            echo "Generated: cargo-about 0.9.2 from this release's Cargo.lock,"
+            echo "           with the config and template in docs/ (docs/RELEASING.md)"
+            echo
+            echo "SlugAudit itself is not third-party and is not listed below. Its own"
+            echo "terms are the LICENSE file attached beside this one: PolyForm"
+            echo "Noncommercial License 1.0.0"
+            echo "(<https://polyformproject.org/licenses/noncommercial/1.0.0>) plus the"
+            echo "SlugAudit Tool-Use Additional Permission in that same file. Its"
+            echo "required notice line, quoted verbatim from LICENSE:"
+            echo
+            # The first match is the licensor's own notice; the LICENSE text
+            # later quotes an illustrative one ("Yoyodyne"), so a bare grep
+            # would carry both.
+            grep -m1 '^Required Notice:' LICENSE | sed 's/^/  /'
+            echo
+            echo "Everything below is third-party: every crate a release build of"
+            echo "slugaudit compiles for x86_64-unknown-linux-gnu, with the licence"
+            echo "text each crate ships. Dev-dependencies are excluded (a release"
+            echo "build does not compile them) and so is anything only another"
+            echo "target pulls in."
+            echo
+            echo "================================================================================"
+            cat "$RUNNER_TEMP/notices.body"
+          } > dist/THIRD-PARTY-NOTICES.txt
+
+      # Before the upload, not after: a release that exists without an
+      # attestation is the failure mode this step is here to prevent, and a
+      # failed attestation is cheaper to notice than a published release.
+      #
+      # v4 is a thin wrapper over `actions/attest` that fixes the predicate to
+      # SLSA build provenance (`https://slsa.dev/provenance/v1`), which is
+      # exactly what `gh attestation verify` enforces by default. Attestations
+      # bind a digest to the workflow that produced it; they do not say the
+      # code is good, and they cover the binary only — the SBOM, the notices
+      # and LICENSE are documents, and nothing attests them.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/slugaudit-x86_64-unknown-linux-gnu
+          # Off explicitly rather than left at its default of true. A storage
+          # record associates an attestation with an OCI registry artifact;
+          # this release publishes a release asset, not an image, so the call
+          # has nothing to associate and would only need the
+          # `artifact-metadata: write` scope to fail softly. The action wraps
+          # that call in a try/catch precisely so this scope can be withheld
+          # (actions/attest `src/attest.ts`), and it stays withheld.
+          create-storage-record: false
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           # On a tag push, use the pushed tag; on a manual run, use the
           # operator-supplied tag input.
-          tag_name: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag }}
+          tag_name: ${{ env.RELEASE_TAG }}
           files: dist/*
+          # The release body is the one place a consumer is guaranteed to see
+          # this, so the verification commands live here as well as in
+          # docs/RELEASING.md. It replaces an empty body: nothing here is
+          # generated from the commit log, and `generate_release_notes` stays
+          # unset so adding this text did not turn that on.
+          body: |
+            ## Verifying this release
+
+            Four verification commands, and what each one actually buys you.
+            The long version — every limitation spelled out — is
+            [`docs/RELEASING.md`](https://github.com/SlugThugLabs/slugaudit/blob/${{ env.RELEASE_TAG }}/docs/RELEASING.md).
+
+            ```sh
+            # 1. Integrity: the bytes you have are the bytes this release published.
+            sha256sum --check --ignore-missing SHA256SUMS
+
+            # 2. Provenance: this binary was built by this repository's release
+            #    workflow, from this tag's source, on a GitHub-hosted runner.
+            #    (needs gh 2.49 or newer)
+            gh attestation verify slugaudit-x86_64-unknown-linux-gnu \
+              --repo SlugThugLabs/slugaudit \
+              --signer-workflow SlugThugLabs/slugaudit/.github/workflows/release.yml \
+              --deny-self-hosted-runners
+
+            # 3. The SBOM: the dependency graph the binary was built from.
+            jq -r '.metadata.component | "\(.name) \(.version)"' \
+              slugaudit-x86_64-unknown-linux-gnu.cdx.json
+
+            # 4. The terms it ships under.
+            less LICENSE THIRD-PARTY-NOTICES.txt
+            ```
+
+            **`SHA256SUMS` is integrity, not authenticity.** The manifest is
+            published from the same origin as the binary, so it proves your
+            download was not corrupted or truncated in transit and that it
+            matches what this release page lists. It cannot prove the artifact
+            is genuine: whoever could replace the binary on the release could
+            replace the manifest beside it just as easily. A checksum is what
+            makes a download *complete*, not what makes it *trustworthy*.
+
+            **The attestation is what carries authenticity.** It is a
+            Sigstore-signed statement binding this binary's SHA-256 digest to
+            the workflow and source commit that produced it, and `gh
+            attestation verify` checks that binding. It does not say the code
+            is correct, safe, or free of the vulnerabilities you care about,
+            and it does not cover the SBOM, the notices or `LICENSE` — those
+            are documents, and only the binary is attested.
+
+  # Best-effort, and named that way: this job rebuilds the released tag in a
+  # fresh environment and compares the result with the published asset. It is a
+  # *report*: the release job above does not depend on it, so nothing here
+  # blocks or unpublishes a release.
+  #
+  # What the two builds share, deliberately: the source tree at one commit, the
+  # pinned toolchain, the RUSTFLAGS above, the checkout path and the target
+  # directory (so the paths a build records are the same strings). What they do
+  # not share: the machine and the runner image.
+  #
+  # What it compares and what makes it fail is decided in the last step, from
+  # measurements rather than from an assumption: two builds of this graph are
+  # never byte-identical, because `ahash` is built with `compile-time-rng`
+  # (through `tree-sitter-language-pack`) and `const-random` embeds a random
+  # constant at compile time. The step therefore reports the whole-file digests
+  # and then compares sections, failing only when a *compiled-code* section
+  # differs. docs/RELEASING.md states that boundary in full, for the consumer.
+  rebuild-and-compare:
+    name: Rebuild and compare (best effort)
+    needs: build-linux-x86_64
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read   # download the asset that was just published
+    steps:
+      - name: Check out the released tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (branch; no releases)
+        with:
+          toolchain: 1.97.1
+
+      # No cache step, deliberately. `Swatinem/rust-cache` restores a whole
+      # archive by key, so a fallback key match could hand this job the other
+      # job's `target/` and turn the comparison into a comparison of one build
+      # with itself. Building cold costs a few minutes and buys the property
+      # this job exists for: everything below was compiled here, from scratch.
+
+      - name: Download the published asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/published"
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern slugaudit-x86_64-unknown-linux-gnu \
+            --dir "$RUNNER_TEMP/published"
+
+      - name: Rebuild from the tag
+        run: cargo build --release --locked --bin slugaudit
+
+      - name: Compare with the published asset
+        run: |
+          set -euo pipefail
+          published="$RUNNER_TEMP/published/slugaudit-x86_64-unknown-linux-gnu"
+          # The default target directory, i.e. the same path the build job
+          # built into. That is not incidental: a build script of a dependency
+          # embeds its `OUT_DIR` (which lives under `target/`) into the binary,
+          # so two *different* target paths would differ for a reason that has
+          # nothing to do with nondeterminism. Same path, empty directory, own
+          # compile — that is what this compares.
+          rebuilt="target/release/slugaudit"
+
+          echo "compared:  published asset of ${RELEASE_TAG} vs a rebuild from that tag"
+          echo "source:    ${GITHUB_SHA}"
+          echo "RUSTFLAGS: ${RUSTFLAGS}"
+          echo "runner:    ${ImageOS:-unknown} ${ImageVersion:-unknown}"
+          echo "toolchain: $(rustc -vV | tr '\n' ' ')"
+          echo
+
+          sha_published=$(sha256sum "$published" | cut -d' ' -f1)
+          sha_rebuilt=$(sha256sum "$rebuilt" | cut -d' ' -f1)
+          size_published=$(stat -c '%s' "$published")
+          size_rebuilt=$(stat -c '%s' "$rebuilt")
+
+          echo "published: ${sha_published} (${size_published} bytes)"
+          echo "rebuilt:   ${sha_rebuilt} (${size_rebuilt} bytes)"
+          echo
+
+          if [ "$sha_published" = "$sha_rebuilt" ]; then
+            echo "bit-identical: the two builds produced the same bytes."
+            exit 0
+          fi
+
+          echo "the two files are not identical; comparing section by section"
+
+          echo "first difference:"
+          cmp "$published" "$rebuilt" || true
+
+          if [ "$size_published" = "$size_rebuilt" ]; then
+            differing=$(cmp -l "$published" "$rebuilt" 2>/dev/null | wc -l) || true
+            echo "differing bytes: ${differing} of ${size_published}"
+          else
+            echo "the two files differ in length (${size_published} vs ${size_rebuilt} bytes)"
+          fi
+
+          # Two sets of sections, because this dependency graph is *known* to
+          # produce one of them differently on every build, and the whole point
+          # of the comparison is to tell that apart from real divergence:
+          #
+          #   `tree-sitter-language-pack` → `ahash` with the `compile-time-rng`
+          #   feature → `const-random`, which generates a random constant at
+          #   compile time and embeds it in `.rodata`. `.strtab` moves with it
+          #   (LLVM's internal `.llvm.<hash>` symbol suffixes for that crate),
+          #   and `.note.gnu.build-id` is a hash of the output, so it moves with
+          #   anything. No flag makes these stable; the random constant is the
+          #   feature working as designed.
+          #
+          # So the verdict is about the *compiled code*: `.text` and the data,
+          # relocation and unwind sections around it. Those are byte-identical
+          # across two builds of the same tag at the same path, which is what
+          # this job verifies; the volatile set is reported, not treated as a
+          # failure, and docs/RELEASING.md says so in the consumer's words.
+          volatile=".rodata .strtab .note.gnu.build-id"
+          code=".text .plt .data .data.rel.ro .eh_frame .gcc_except_table .rela.dyn .rela.plt .dynsym .dynstr .init_array .fini_array"
+
+          code_differs=0
+          if command -v objcopy >/dev/null 2>&1; then
+            for section in $code $volatile; do
+              from="$RUNNER_TEMP/published.${section}"
+              to="$RUNNER_TEMP/rebuilt.${section}"
+              rm -f "$from" "$to"
+              # `/dev/null` as the output file is load-bearing: `objcopy`
+              # rewrites its *input* in place when no output file is given
+              # ("creates a temporary file and renames it over infile"), which
+              # would mutate the very bytes this step is comparing.
+              if objcopy --dump-section "${section}=${from}" "$published" /dev/null 2>/dev/null \
+                && objcopy --dump-section "${section}=${to}" "$rebuilt" /dev/null 2>/dev/null; then
+                if cmp -s "$from" "$to"; then
+                  echo "  ${section}: identical"
+                else
+                  echo "  ${section}: DIFFERS"
+                  case " $code " in
+                    *" $section "*) code_differs=1 ;;
+                  esac
+                fi
+              else
+                echo "  ${section}: absent from one or both"
+              fi
+            done
+          else
+            echo "objcopy is unavailable, so code and metadata cannot be told apart"
+            code_differs=1
+          fi
+
+          if [ "$code_differs" = 0 ]; then
+            echo "::warning::the rebuild differs from the published asset only in the"
+            echo "::warning::sections this graph always produces differently (.rodata holds"
+            echo "::warning::a compile-time random constant from ahash's compile-time-rng)."
+            echo "::warning::Every compiled-code section is byte-identical. This is the"
+            echo "::warning::expected result, and the step passes; it is not a claim that"
+            echo "::warning::the artifact is bit-for-bit reproducible — it is not."
+            exit 0
+          fi
+
+          echo "::error::the rebuild and the published asset differ in compiled code."
+          echo "The release itself is unaffected: it is checksummed and attested, and"
+          echo "the attestation covers the published bytes. What this run did not"
+          echo "demonstrate is that those bytes are reproducible from the tag. Compare"
+          echo "the inputs printed above: a different runner image (linker), a toolchain"
+          echo "that was re-released, or a genuine nondeterminism all look like this."
+          exit 1

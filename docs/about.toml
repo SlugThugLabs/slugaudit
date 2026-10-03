@@ -1,0 +1,37 @@
+# cargo-about configuration for the release's third-party notices
+# (`cargo about generate -c docs/about.toml docs/third-party-notices.hbs`).
+#
+# The accepted list is deliberately the same set `deny.toml` allow-lists for
+# cargo-deny, so the release cannot ship a licence the PR gate would reject.
+# `cargo about` has no notion of deny.toml, so the two lists are duplicated
+# by hand; keep them in step.
+accepted = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+# The release ships exactly one platform (see `.github/workflows/release.yml`),
+# so the notices cover the graph that platform actually builds. Crates pulled in
+# only for another target (e.g. the `windows-*` bindings in Cargo.lock) are not
+# part of the shipped binary and are not listed.
+targets = ["x86_64-unknown-linux-gnu"]
+
+# `cargo build --release --bin slugaudit` never compiles a dev-dependency, so
+# criterion/proptest/tempfile/temp-env and their exclusive subtrees are not in
+# the shipped artifact. Build-time dependencies of dependencies are kept: they
+# are compiled and run by the release build.
+ignore-dev-dependencies = true
+
+# The crate is `publish = false` with a non-SPDX `license-file` (PolyForm
+# Noncommercial 1.0.0 plus the SlugAudit tool-use additional permission),
+# which cargo-about cannot evaluate against the accepted list. Same exemption,
+# and same reason, as `deny.toml`'s `private.ignore`.
+private = { ignore = true }
