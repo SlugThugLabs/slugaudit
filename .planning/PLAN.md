@@ -80,12 +80,11 @@ adversarial `query` tests), `ca6c569` (the governance and version gates) and `a7
 compact `leads` mode). **Not pushed** — the branch has no remote counterpart and publication is
 the owner's call.
 
-**Not started:** the *Connect surface* follow-up, and the remainder of the
-*Production-readiness backlog* — the credential-content policy (an owner decision); SBOM,
-provenance, reproducibility and third-party notices for a release; the `fuzz/` targets; a
-large-repo soak test; wider mutation testing; and the workspace split (which the *Sequencing*
-section puts last, because it renames every path). Every correctness follow-up is resolved, the
-credential predicate and auto-ignore landed, and Phase 5 items 2–3 are non-goals.
+**Not started:** the *Connect surface* follow-up; the credential-content policy and a private
+conduct/security contact (owner decisions); the workspace split (which *Sequencing* puts last,
+because it renames every path); and one thing that cannot be done from here — the release
+workflow has never executed, because that needs a tag push and publication is the owner's call.
+Everything else in this backlog has landed.
 
 Item 4's optional tool-hiding half is deliberately *not* implemented — see its entry for why. Note
 for whoever edits this file next: several agents wrote to it concurrently on 2026-09-30 and the
@@ -659,21 +658,42 @@ above) and `CHANGELOG.md` (newest entry `1.0.10`, dated from the real tag).
   `Required Notice:` lines. The per-crate inventory this used to be read from —
   `.planning/archive/DEPENDENCIES.md` — was deleted in the 2026-09-30 reset, so the list
   must be **regenerated from the dependency graph** (`cargo-about`/`cargo-deny` output)
-  rather than copied from a file that no longer exists.
-- **Done-condition.** A release dry-run produces the binary + `SHA256SUMS` + SBOM +
-  third-party notices + a build attestation; the release notes document **how a user
-  verifies that attestation**; new gates are visible in CI.
+  rather than copied from a file that no longer exists. **Landed 2026-10-03** (`7fe3e04`):
+  the release workflow generates the notices with `cargo-about` from that graph, using
+  `docs/about.toml` (whose accepted-licence list mirrors `deny.toml`, so the notices and the
+  licence gate cannot disagree) and `docs/third-party-notices.hbs`, and attaches them.
+- **Done-condition — met 2026-10-03, except the dry run.** The release produces the binary +
+  `SHA256SUMS` + a CycloneDX SBOM + the third-party notices + a build attestation, and
+  `docs/RELEASING.md` documents **how a user verifies each** — including that a same-origin
+  `SHA256SUMS` is integrity, not authenticity, which is what the attestation adds. The
+  remaining part is inherent: the workflow has never executed, because that needs a tag push
+  and publication is the owner's call. Two things were found and fixed while building it: a
+  manual dispatch used to build the dispatched branch and tag the result with the operator's
+  input (so the published binary need not have matched its tag, and would now have been
+  attested as if it did), and the reproducibility comparison's first version mutated the bytes
+  it was comparing. The reproducibility limit is measured rather than assumed —
+  `.rodata`/`.strtab`/`.note.gnu.build-id` differ because `ahash`'s `compile-time-rng` embeds
+  a random constant at compile time — and the job warns on exactly that instead of claiming a
+  bit-for-bit rebuild.
 
 **Untrusted-input rigor.** `structure` executes agent-supplied Tree-sitter queries;
 `query` executes agent SQL under a read-only connection, a subquery wrapper, and an
-authorizer hook. These are the most interesting surfaces in the threat model and neither
-has a fuzz target (there is no `fuzz/` crate). Mutation testing covers four files,
-Linux-only.
+authorizer hook. These are the most interesting surfaces in the threat model, and both now
+have fuzz targets (`aa594f1`). Mutation testing covers four files, Linux-only — deliberately,
+and the reason below is measured rather than asserted.
 
 - A `fuzz/` crate (cargo-fuzz) with three targets: Tree-sitter query strings fed to
   `structure`; SQL fed to `query`, including authorizer-bypass attempts; JSON-RPC frame
   parsing. Seed from `examples/queries/*` and `src/store/schema.sql`. Nightly/scheduled
-  workflow, not per-PR.
+  workflow, not per-PR. **Landed 2026-10-03** (`aa594f1`), with one honest correction: there
+  is no frame parser here to fuzz — `src/main.rs` hands stdio to `rmcp`, which owns framing —
+  so the third target fuzzes the `params.arguments` decode this repo *does* own, and says so
+  in its header rather than implying it covers a dependency's parser. Bounded runs were clean
+  (219 / 316 / ~203k execs per second; peak RSS well inside the 2048 MB limit) and produced
+  one finding: an **upstream** leak in tree-sitter 0.26.13 that nothing here can free,
+  suppressed precisely in `fuzz/lsan-suppressions.txt`. The leak, the evidence that it is not
+  this crate's, and the symbolizer trap that makes the suppression silently ineffective are
+  recorded in `DEVIATIONS.md`.
 - Adversarial authorizer tests as permanent unit tests (`ATTACH`, `PRAGMA`,
   `load_extension`, writes through CTEs/subqueries, comment/`;` splicing, multiple
   statements) asserting rejection, not just "no rows". **Landed 2026-09-30** (`210ecaa`):
@@ -682,12 +702,20 @@ Linux-only.
   authorizer both removed, `ATTACH` returns `Ok([])` — the silent false pass — and every
   query test but `store::connection`'s still passes, which is where the authorizer is
   actually pinned).
-- Widen mutation testing or document why the narrower scope is intentional.
+- Widen mutation testing or document why the narrower scope is intentional. **Documented
+  2026-09-30** (`f153158`), with the measurement rather than an assertion: the four files
+  hold 23 of the crate's 2323 mutants, while `src/sync/**` holds 310 and `src/tools/**` 484,
+  and cargo-mutants rebuilds and re-runs the whole suite per mutant.
 - A synthetic large-repo soak test that stays inside `max_sync_wall_clock` (nothing
-  exercises a 10k-file import except the budget that would abort it).
-- **Done-condition.** The fuzz targets build and run clean for a bounded time (scheduled,
-  not per-PR); the adversarial authorizer tests are green and assert rejection rather than
-  only "no rows"; the large-repo soak test completes inside `max_sync_wall_clock`.
+  exercises a 10k-file import except the budget that would abort it). **Landed 2026-09-30**
+  (`f153158`): `tests/large_repo_soak.rs` indexes 10,000 files through the real sync path in
+  18.8 s against a 1200 s budget, asserting the exact path set, not merely "no error". The
+  10k case is `#[ignore]`d and a 64-file companion guards the same assertions in the default
+  suite in 0.13 s.
+- **Done-condition — met 2026-10-03.** The fuzz targets build and run clean for a bounded
+  time on a schedule rather than per-PR; the adversarial authorizer tests are green and assert
+  rejection rather than only "no rows"; and the large-repo soak test completes well inside
+  `max_sync_wall_clock` (18.8 s against 1200 s).
 
 **Shipped/dev artifact split.** `Cargo.toml` declares six bins — one user-facing, five
 development gates — and the repo's own `.planning/` development docs sit beside the

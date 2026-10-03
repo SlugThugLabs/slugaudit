@@ -192,6 +192,32 @@ Newest first. Format: **what** / **why** / **where** / **reversible?**
   restores a silent loss of captured lines — which is worse than the flake, because the affected
   assertions then pass without observing anything.
 
+## A dependency's leak, suppressed precisely and written down
+
+- **What:** the fuzz targets reported LeakSanitizer finding 8 bytes per call in `structure`. It
+  is **not this crate's leak**: `structure` calls `tree_sitter::Query::new`, and tree-sitter
+  0.26.13 leaks one allocation when a query names a real node kind with a field that kind does
+  not define. Minimal reproducer, with no SlugAudit code in the process:
+  `(identifier zzz: (identifier) @a)`.
+- **Evidence, so this is not re-argued:** every frame but the call site
+  (`src/tools/structure.rs:150`) is inside the dependency's C query compiler (`ts_query_new` →
+  `ts_query__parse_pattern` → `_array__reserve` → `ts_malloc_default`), and a probe calling
+  only `get_language` + `Query::new` reproduces it, while a valid query, `((((`, and an unknown
+  node kind leak nothing. Nothing in `src/` can free it, so no fix was attempted there.
+- **Decision:** suppress it in `fuzz/lsan-suppressions.txt`, with the patterns limited to the
+  dependency's two frames (a leak in this crate cannot land inside `ts_query_new`), the
+  reproducer and stack in the comment, and an explicit instruction to delete the suppression
+  when the pin stops leaking.
+- **Trap recorded:** LeakSanitizer matches suppression patterns against *symbolized* frames, so
+  without `LSAN_OPTIONS=…external_symbolizer_path=…` the file is silently ineffective and the
+  leak is reported as unsuppressed. Verified in both directions; `.github/workflows/fuzz.yml`
+  installs llvm and derives the path itself.
+- **Impact:** 8 bytes per `structure` call that names an undefined field, in a one-shot server
+  process. Bounded, and the fix belongs upstream.
+- **Where:** `fuzz/lsan-suppressions.txt`; `AGENTS.md` (*Testing & QA* → Expectations); the fuzz
+  commit `aa594f1`.
+- **Reversible:** yes — delete the two suppression lines once the dependency stops leaking.
+
 ## Added a session-hygiene rule to AGENTS.md
 
 - **What:** a new early section requiring, before a session ends: *what did we decide, discover, or
