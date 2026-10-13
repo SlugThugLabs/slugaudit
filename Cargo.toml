@@ -84,7 +84,7 @@ uuid = { version = "1", default-features = false, features = ["v4"] }
 which = "8"
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = "0.8"
 proptest = "1"
 temp-env = "0.3.6"
 tempfile = "3"
