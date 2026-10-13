@@ -63,3 +63,42 @@ fn malformed_rust_does_not_panic() {
     let calls = extract_rust("fn run() { helper(\n");
     assert!(calls.len() <= 1);
 }
+
+#[test]
+fn extracts_method_calls_from_macro_arguments_without_duplicates() {
+    let source = r#"
+fn run(a: Option<u8>, b: Option<u8>) {
+    assert_eq!(a.unwrap(), b.unwrap());
+    assert!(Some(1).unwrap() == 1);
+    debug_assert!(Some(2).unwrap() > 0);
+    println!("{}", Some(3).unwrap());
+    let _ = vec![Some(4).unwrap(), Some(5).unwrap()];
+}
+"#;
+    let calls = extract_rust(source);
+    let unwraps: Vec<_> = calls.iter().filter(|item| item.payload["callee_name"] == "unwrap").collect();
+    assert_eq!(unwraps.len(), 6, "{calls:?}");
+    for call in unwraps {
+        assert_eq!(call.payload["caller"], "run");
+        assert!(matches!(call.span, crate::model::SpanAvailability::Present(_)));
+    }
+}
+
+#[test]
+fn macro_arguments_do_not_index_strings_or_comments_as_calls() {
+    let source = r#"
+fn run(value: Option<u8>) {
+    println!("fake.unwrap() {}", value.unwrap()); // ignored.unwrap()
+    assert!(value.is_some(), "text.unwrap()");
+}
+"#;
+    let calls = extract_rust(source);
+    assert_eq!(calls.iter().filter(|c| c.payload["callee_name"] == "unwrap").count(), 1, "{calls:?}");
+}
+
+#[test]
+fn nested_macros_do_not_duplicate_inner_method_calls() {
+    let source = "fn run(v: Option<u8>) { assert!(matches!(v.unwrap(), 1)); }";
+    let calls = extract_rust(source);
+    assert_eq!(calls.iter().filter(|c| c.payload["callee_name"] == "unwrap").count(), 1, "{calls:?}");
+}
