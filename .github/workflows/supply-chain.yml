@@ -63,7 +63,7 @@ jobs:
       # cargo-deny policy. Trade-off accepted: findings land in the job log and
       # summary instead of the Security tab.
       - name: Install osv-scanner
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: osv-scanner@2.6.0
           # Refuse the cargo-binstall fallback: this tool is covered by an
@@ -95,7 +95,7 @@ jobs:
       # no licence key, and install-action pins its version and verifies the
       # release's SHA256 checksum.
       - name: Install trivy
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: trivy@0.74.0
           fallback: none
