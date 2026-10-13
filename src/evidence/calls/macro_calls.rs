@@ -6,8 +6,8 @@
 //! back to the original source; the synthetic probe is never emitted.
 use super::{callee_node, enclosing_caller, named_children, simple_name};
 use crate::model::{
-    EvidenceItem, EvidenceKind, EvidenceOrigin, Position, Span, SpanAvailability,
-    char_column, saturating_u32,
+    EvidenceItem, EvidenceKind, EvidenceOrigin, Position, Span, SpanAvailability, char_column,
+    saturating_u32,
 };
 use serde_json::json;
 use tree_sitter_language_pack::{Node, get_parser};
@@ -32,8 +32,15 @@ pub(super) fn extract(macro_node: &Node, source: &str) -> Vec<(usize, usize, Evi
         return Vec::new();
     };
     let mut rows = Vec::new();
-    collect(tree.root_node(), &wrapped, source, start, end,
-        enclosing_caller(macro_node, source), &mut rows);
+    collect(
+        tree.root_node(),
+        &wrapped,
+        source,
+        start,
+        end,
+        enclosing_caller(macro_node, source),
+        &mut rows,
+    );
     rows
 }
 
@@ -60,34 +67,57 @@ fn collect(
                     let callee_text = &wrapped[callee.start_byte()..callee.end_byte()];
                     let name = simple_name(callee, wrapped)
                         .unwrap_or_else(|| callee_text.trim_end_matches('!').to_owned());
-                    let resolution = if macro_call { "macro" }
-                        else if callee_text.contains("::") { "qualified-syntactic" }
-                        else { "unresolved-syntactic" };
-                    let span = Span::new(start as u64, end as u64,
-                        position(source, start), position(source, end))
-                        .map_or_else(|_| SpanAvailability::NormalizerUnavailable {
-                            reason: "macro argument call span invalid".into()
-                        }, SpanAvailability::Present);
-                    rows.push((start, end, EvidenceItem {
-                        key: String::new(),
-                        kind: EvidenceKind::Call,
-                        origin: EvidenceOrigin::RustCallWalker,
-                        span,
-                        payload: json!({
-                            "language": "rust",
-                            "callee_text": callee_text,
-                            "callee_name": name,
-                            "caller": caller,
-                            "resolution": resolution,
-                            "confidence": if macro_call { "high" } else { "medium" },
-                        }),
-                    }));
+                    let resolution = if macro_call {
+                        "macro"
+                    } else if callee_text.contains("::") {
+                        "qualified-syntactic"
+                    } else {
+                        "unresolved-syntactic"
+                    };
+                    let span = Span::new(
+                        start as u64,
+                        end as u64,
+                        position(source, start),
+                        position(source, end),
+                    )
+                    .map_or_else(
+                        |_| SpanAvailability::NormalizerUnavailable {
+                            reason: "macro argument call span invalid".into(),
+                        },
+                        SpanAvailability::Present,
+                    );
+                    rows.push((
+                        start,
+                        end,
+                        EvidenceItem {
+                            key: String::new(),
+                            kind: EvidenceKind::Call,
+                            origin: EvidenceOrigin::RustCallWalker,
+                            span,
+                            payload: json!({
+                                "language": "rust",
+                                "callee_text": callee_text,
+                                "callee_name": name,
+                                "caller": caller,
+                                "resolution": resolution,
+                                "confidence": if macro_call { "high" } else { "medium" },
+                            }),
+                        },
+                    ));
                 }
             }
         }
     }
     for child in named_children(&node) {
-        collect(child, wrapped, source, source_start, source_end, caller.clone(), rows);
+        collect(
+            child,
+            wrapped,
+            source,
+            source_start,
+            source_end,
+            caller.clone(),
+            rows,
+        );
     }
 }
 
