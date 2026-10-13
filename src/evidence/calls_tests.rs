@@ -76,11 +76,17 @@ fn run(a: Option<u8>, b: Option<u8>) {
 }
 "#;
     let calls = extract_rust(source);
-    let unwraps: Vec<_> = calls.iter().filter(|item| item.payload["callee_name"] == "unwrap").collect();
+    let unwraps: Vec<_> = calls
+        .iter()
+        .filter(|item| item.payload["callee_name"] == "unwrap")
+        .collect();
     assert_eq!(unwraps.len(), 6, "{calls:?}");
     for call in unwraps {
         assert_eq!(call.payload["caller"], "run");
-        assert!(matches!(call.span, crate::model::SpanAvailability::Present(_)));
+        assert!(matches!(
+            call.span,
+            crate::model::SpanAvailability::Present(_)
+        ));
     }
 }
 
@@ -93,12 +99,26 @@ fn run(value: Option<u8>) {
 }
 "#;
     let calls = extract_rust(source);
-    assert_eq!(calls.iter().filter(|c| c.payload["callee_name"] == "unwrap").count(), 1, "{calls:?}");
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| c.payload["callee_name"] == "unwrap")
+            .count(),
+        1,
+        "{calls:?}"
+    );
 }
 
 #[test]
 fn nested_macros_do_not_duplicate_inner_method_calls() {
     let source = "fn run(v: Option<u8>) { assert!(matches!(v.unwrap(), 1)); }";
     let calls = extract_rust(source);
-    assert_eq!(calls.iter().filter(|c| c.payload["callee_name"] == "unwrap").count(), 1, "{calls:?}");
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| c.payload["callee_name"] == "unwrap")
+            .count(),
+        1,
+        "{calls:?}"
+    );
 }
