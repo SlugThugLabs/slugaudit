@@ -133,7 +133,7 @@ pub struct HealthResponse {
 ///   full-publish.
 /// - `NoActiveProject`: server has been initialized but no `ensure_current`
 ///   call has succeeded, so the watcher state can't be summarized.
-/// - `Disabled`: `request.path` resolved to no enabled project — the
+/// - `IndexedUnwatched`: the enabled project has a published revision in its\n///   database, but this server has no registered watcher for that path.\n///   Indexed evidence remains readable; no watcher health is implied.\n/// - `Disabled`: `request.path` resolved to no enabled project — the
 ///   activation marker is absent — so nothing can serve that path until
 ///   `project_control` enables it. `remedy` names that call. This is a
 ///   state, not an error: a diagnostic tool that fails when there is
@@ -146,6 +146,7 @@ pub enum HealthPhase {
     SteadyState,
     Unavailable,
     NoActiveProject,
+    IndexedUnwatched,
     Disabled,
 }
 
@@ -262,8 +263,9 @@ fn compute_project_state(
         ),
         // No watcher state: the project was never registered with this
         // server's watcher (or the server just started). DB fields, if
-        // any, are still surfaced; the phase honestly says the server
-        // has nothing active for this project.
+        // any, are still surfaced; distinguish a queryable indexed project
+        // from one that has never published a revision.
+        None if revision_id.is_some() => HealthPhase::IndexedUnwatched,
         None => HealthPhase::NoActiveProject,
     };
 
