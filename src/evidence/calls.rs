@@ -37,7 +37,13 @@ pub(crate) fn extract_rust(source: &str) -> Vec<EvidenceItem> {
     let mut items = Vec::new();
     let mut counter = 0usize;
     let mut seen = HashSet::new();
-    walk(tree.root_node(), source, &mut items, &mut counter, &mut seen);
+    walk(
+        tree.root_node(),
+        source,
+        &mut items,
+        &mut counter,
+        &mut seen,
+    );
     items
 }
 
@@ -69,20 +75,20 @@ fn walk(
         let key = format!("call:{counter}");
         *counter += 1;
         if seen.insert((node.start_byte(), node.end_byte())) {
-        items.push(EvidenceItem {
-            key,
-            kind: EvidenceKind::Call,
-            origin: EvidenceOrigin::RustCallWalker,
-            span: node_span(&node, source),
-            payload: json!({
-                "language": "rust",
-                "callee_text": callee_text,
-                "callee_name": callee_name,
-                "caller": caller,
-                "resolution": resolution,
-                "confidence": confidence,
-            }),
-        });
+            items.push(EvidenceItem {
+                key,
+                kind: EvidenceKind::Call,
+                origin: EvidenceOrigin::RustCallWalker,
+                span: node_span(&node, source),
+                payload: json!({
+                    "language": "rust",
+                    "callee_text": callee_text,
+                    "callee_name": callee_name,
+                    "caller": caller,
+                    "resolution": resolution,
+                    "confidence": confidence,
+                }),
+            });
         }
         if macro_call {
             for (start, end, mut item) in macro_calls::extract(&node, source) {
