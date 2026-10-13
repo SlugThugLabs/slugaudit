@@ -276,3 +276,19 @@ fn health_reports_no_remedy_for_an_active_project() {
     assert_eq!(response.0.remedy, None);
     assert!(response.0.revision_id.is_some());
 }
+
+#[test]
+fn published_project_without_watcher_is_reported_as_indexed_unwatched() {
+    let (project, path) = activated_temp_project();
+    synced_manager(&project, &path);
+    let fresh_server_manager = SourceSyncManager::new();
+
+    let fields = super::compute_project_state(&path, &fresh_server_manager)
+        .expect("read existing published database");
+
+    assert_eq!(fields.phase, super::HealthPhase::IndexedUnwatched);
+    assert!(fields.revision_id.is_some(), "indexed project retains revision");
+    assert_eq!(fields.file_count, 1);
+    assert_eq!(fields.watcher_health, None);
+    assert_eq!(fields.remedy, None);
+}
