@@ -22,7 +22,13 @@ pub(super) fn extract(macro_node: &Node, source: &str) -> Vec<(usize, usize, Evi
     let start = tokens.start_byte().saturating_add(1);
     let end = tokens.end_byte().saturating_sub(1);
     let mut rows = Vec::new();
-    scan_fragment(source, start, end, enclosing_caller(macro_node, source), &mut rows);
+    scan_fragment(
+        source,
+        start,
+        end,
+        enclosing_caller(macro_node, source),
+        &mut rows,
+    );
     rows
 }
 
