@@ -21,27 +21,29 @@ pub(super) fn extract(macro_node: &Node, source: &str) -> Vec<(usize, usize, Evi
     };
     let start = tokens.start_byte().saturating_add(1);
     let end = tokens.end_byte().saturating_sub(1);
+    let mut rows = Vec::new();
+    scan_fragment(source, start, end, enclosing_caller(macro_node, source), &mut rows);
+    rows
+}
+
+fn scan_fragment(
+    source: &str,
+    start: usize,
+    end: usize,
+    caller: Option<String>,
+    rows: &mut Vec<(usize, usize, EvidenceItem)>,
+) {
     let Some(body) = source.get(start..end) else {
-        return Vec::new();
+        return;
     };
     let wrapped = format!("{PREFIX}{body}{SUFFIX}");
     let Ok(mut parser) = get_parser("rust") else {
-        return Vec::new();
+        return;
     };
     let Some(tree) = parser.parse(&wrapped) else {
-        return Vec::new();
+        return;
     };
-    let mut rows = Vec::new();
-    collect(
-        tree.root_node(),
-        &wrapped,
-        source,
-        start,
-        end,
-        enclosing_caller(macro_node, source),
-        &mut rows,
-    );
-    rows
+    collect(tree.root_node(), &wrapped, source, start, end, caller, rows);
 }
 
 fn collect(
@@ -105,6 +107,21 @@ fn collect(
                         },
                     ));
                 }
+            }
+        }
+    }
+    // A nested macro still owns an opaque token tree after the outer
+    // fragment is reparsed. Recurse into its contents using absolute source
+    // coordinates, preserving the enclosing Rust function as caller.
+    if node.kind() == "macro_invocation"
+        && node.start_byte() >= PREFIX.len()
+        && node.end_byte() <= wrapped.len().saturating_sub(SUFFIX.len())
+    {
+        if let Some(tokens) = named_children(&node).find(|n| n.kind() == "token_tree") {
+            let start = source_start + tokens.start_byte() + 1 - PREFIX.len();
+            let end = source_start + tokens.end_byte().saturating_sub(1) - PREFIX.len();
+            if end <= source_end && start < end {
+                scan_fragment(source, start, end, caller.clone(), rows);
             }
         }
     }
