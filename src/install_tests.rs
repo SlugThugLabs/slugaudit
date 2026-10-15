@@ -311,3 +311,21 @@ fn add_to_path_is_idempotent() {
         },
     );
 }
+
+#[test]
+fn add_to_path_reports_unreadable_shell_config() {
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("temp dir");
+    std::fs::create_dir(temp.path().join(".bashrc")).expect("create config directory");
+    let bin_dir = temp.path().join("slugaudit");
+    temp_env::with_vars(
+        [
+            ("HOME", Some(temp.path().as_os_str())),
+            ("SHELL", Some(std::ffi::OsStr::new("/bin/bash"))),
+        ],
+        || {
+            let error = add_to_path(&bin_dir).expect_err("a directory cannot be read as config");
+            assert!(matches!(error, InstallError::Io(_)));
+        },
+    );
+}

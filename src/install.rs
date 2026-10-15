@@ -200,7 +200,11 @@ fn interactive_prompt(msg: &str) -> bool {
 /// file from `$SHELL` with a bash/zsh/profile fallback.
 fn add_to_path(bin_dir: &Path) -> Result<(), InstallError> {
     let (config_path, line) = path_config(bin_dir)?;
-    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let existing = match std::fs::read_to_string(&config_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(InstallError::Io(error)),
+    };
     if existing.lines().any(|l| l.trim() == line) {
         return Ok(());
     }

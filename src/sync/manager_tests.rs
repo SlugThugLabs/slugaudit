@@ -69,7 +69,7 @@ fn edit_file_immediately_returns_fresh_evidence() {
     write_file(&project, "lib.rs", b"pub fn a() {}\n");
 
     let synced = sync_project(&manager, &project);
-    let old_revision = synced.revision_id.clone();
+    let old_revision = synced.revision_id;
 
     write_file(&project, "lib.rs", b"pub fn a() { changed() }\n");
     thread::sleep(Duration::from_millis(200));
@@ -170,7 +170,7 @@ fn write_same_contents_does_not_create_new_revision() {
     write_file(&project, "lib.rs", content);
 
     let synced = sync_project(&manager, &project);
-    let revision = synced.revision_id.clone();
+    let revision = synced.revision_id;
 
     write_file(&project, "lib.rs", content);
     thread::sleep(Duration::from_millis(200));
@@ -186,7 +186,7 @@ fn multiple_rapid_edits_collapse_to_one_revision() {
     write_file(&project, "lib.rs", b"pub fn a() {}\n");
 
     let synced = sync_project(&manager, &project);
-    let old_revision = synced.revision_id.clone();
+    let old_revision = synced.revision_id;
 
     for i in 0..5 {
         write_file(
@@ -208,7 +208,7 @@ fn restart_after_offline_changes_detects_changes() {
 
     let manager1 = SourceSyncManager::with_watcher();
     let synced1 = sync_project(&manager1, &project);
-    let revision1 = synced1.revision_id.clone();
+    let revision1 = synced1.revision_id;
     drop(manager1);
 
     write_file(&project, "lib.rs", b"pub fn changed() {}\n");
@@ -264,7 +264,7 @@ fn unavailable_watcher_always_does_full_verification() {
     write_file(&project, "lib.rs", b"pub fn a() {}\n");
 
     let synced1 = sync_project(&manager, &project);
-    let revision1 = synced1.revision_id.clone();
+    let revision1 = synced1.revision_id;
 
     // Modify the file. Since the watcher is Unavailable, the dirty set
     // is never populated — but the next call must still do a full

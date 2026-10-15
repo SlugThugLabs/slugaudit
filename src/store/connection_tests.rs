@@ -213,6 +213,10 @@ fn a_database_created_with_wider_permissions_is_rejected_without_touching_permis
         .mode(0o644)
         .open(&path)
         .expect("simulate a concurrent creator");
+    // `OpenOptionsExt::mode` is filtered by the process umask (the managed
+    // runner uses 0077), so explicitly widen the fixture after creation.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+        .expect("widen simulated concurrent creator");
 
     assert!(matches!(
         open_read_write(&path),
@@ -303,6 +307,7 @@ fn a_symlinked_db_open_emits_a_warning_for_auditing() {
 #[test]
 fn an_insecure_permissions_rejection_emits_a_warning_for_auditing() {
     use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().expect("temp dir");
     let path = directory.path().join("project.db");
 
@@ -317,6 +322,10 @@ fn an_insecure_permissions_rejection_emits_a_warning_for_auditing() {
         .mode(0o644)
         .open(&path)
         .expect("create with wide mode");
+    // `OpenOptionsExt::mode` is filtered by the process umask; make the
+    // fixture's intended mode explicit so this test is portable across CI.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+        .expect("widen permissions fixture");
 
     let (result, logs) = capture_warns(|| open_read_write(&path));
     assert!(matches!(result, Err(StoreError::Permissions(_))));

@@ -146,7 +146,7 @@ fn a_finding_write_racing_a_real_publish_never_corrupts_state_whichever_wins() {
         with_verified_write(&synced, |tx| insert_finding(tx, &request, &revision_id))
     });
 
-    let publish_root = root.clone();
+    let publish_root = root;
     let publisher = std::thread::spawn(move || {
         fs::write(publish_root.join("other.rs"), b"pub fn b() {}\n").expect("add unrelated file");
         barrier.wait();

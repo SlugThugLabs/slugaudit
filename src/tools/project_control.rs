@@ -149,10 +149,10 @@ fn enable(
             .join("slugaudit")
             .join("config.json");
         let cfg = serde_json::json!({ "profile": profile });
-        let _ = std::fs::write(
-            &conf_path,
-            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-        );
+        let encoded = serde_json::to_string_pretty(&cfg)
+            .map_err(|e| err(format!("serialize profile config: {e}")))?;
+        std::fs::write(&conf_path, encoded)
+            .map_err(|e| err(format!("write profile config {}: {e}", conf_path.display())))?;
     }
     let db_path = project::database_path(root);
     let mut connection = match store::open_read_write(&db_path) {
