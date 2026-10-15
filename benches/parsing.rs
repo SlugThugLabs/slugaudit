@@ -15,8 +15,9 @@
 
 mod common;
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use slugaudit_mcp_rust::evidence::extract;
+use std::hint::black_box;
 use std::time::Instant;
 use tree_sitter_language_pack::get_parser;
 
