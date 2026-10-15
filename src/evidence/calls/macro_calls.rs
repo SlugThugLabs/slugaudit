@@ -70,49 +70,49 @@ fn collect(
         {
             let start = source_start + relative_start - PREFIX.len();
             let end = source_start + relative_end - PREFIX.len();
-            if end <= source_end {
-                if let Some(callee) = callee_node(&node, macro_call) {
-                    let callee_text = &wrapped[callee.start_byte()..callee.end_byte()];
-                    let name = simple_name(callee, wrapped)
-                        .unwrap_or_else(|| callee_text.trim_end_matches('!').to_owned());
-                    let resolution = if macro_call {
-                        "macro"
-                    } else if callee_text.contains("::") {
-                        "qualified-syntactic"
-                    } else {
-                        "unresolved-syntactic"
-                    };
-                    let span = Span::new(
-                        start as u64,
-                        end as u64,
-                        position(source, start),
-                        position(source, end),
-                    )
-                    .map_or_else(
-                        |_| SpanAvailability::NormalizerUnavailable {
-                            reason: "macro argument call span invalid".into(),
-                        },
-                        SpanAvailability::Present,
-                    );
-                    rows.push((
-                        start,
-                        end,
-                        EvidenceItem {
-                            key: String::new(),
-                            kind: EvidenceKind::Call,
-                            origin: EvidenceOrigin::RustCallWalker,
-                            span,
-                            payload: json!({
-                                "language": "rust",
-                                "callee_text": callee_text,
-                                "callee_name": name,
-                                "caller": caller,
-                                "resolution": resolution,
-                                "confidence": if macro_call { "high" } else { "medium" },
-                            }),
-                        },
-                    ));
-                }
+            if end <= source_end
+                && let Some(callee) = callee_node(&node, macro_call)
+            {
+                let callee_text = &wrapped[callee.start_byte()..callee.end_byte()];
+                let name = simple_name(callee, wrapped)
+                    .unwrap_or_else(|| callee_text.trim_end_matches('!').to_owned());
+                let resolution = if macro_call {
+                    "macro"
+                } else if callee_text.contains("::") {
+                    "qualified-syntactic"
+                } else {
+                    "unresolved-syntactic"
+                };
+                let span = Span::new(
+                    start as u64,
+                    end as u64,
+                    position(source, start),
+                    position(source, end),
+                )
+                .map_or_else(
+                    |_| SpanAvailability::NormalizerUnavailable {
+                        reason: "macro argument call span invalid".into(),
+                    },
+                    SpanAvailability::Present,
+                );
+                rows.push((
+                    start,
+                    end,
+                    EvidenceItem {
+                        key: String::new(),
+                        kind: EvidenceKind::Call,
+                        origin: EvidenceOrigin::RustCallWalker,
+                        span,
+                        payload: json!({
+                            "language": "rust",
+                            "callee_text": callee_text,
+                            "callee_name": name,
+                            "caller": caller,
+                            "resolution": resolution,
+                            "confidence": if macro_call { "high" } else { "medium" },
+                        }),
+                    },
+                ));
             }
         }
     }
@@ -122,13 +122,12 @@ fn collect(
     if node.kind() == "macro_invocation"
         && node.start_byte() >= PREFIX.len()
         && node.end_byte() <= wrapped.len().saturating_sub(SUFFIX.len())
+        && let Some(tokens) = named_children(&node).find(|n| n.kind() == "token_tree")
     {
-        if let Some(tokens) = named_children(&node).find(|n| n.kind() == "token_tree") {
-            let start = source_start + tokens.start_byte() + 1 - PREFIX.len();
-            let end = source_start + tokens.end_byte().saturating_sub(1) - PREFIX.len();
-            if end <= source_end && start < end {
-                scan_fragment(source, start, end, caller.clone(), rows);
-            }
+        let start = source_start + tokens.start_byte() + 1 - PREFIX.len();
+        let end = source_start + tokens.end_byte().saturating_sub(1) - PREFIX.len();
+        if end <= source_end && start < end {
+            scan_fragment(source, start, end, caller.clone(), rows);
         }
     }
     for child in named_children(&node) {

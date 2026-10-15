@@ -264,13 +264,14 @@
       "outputSchema": {
         "$defs": {
           "HealthPhase": {
-            "description": "Coarse-grained operational phase. Derived from existing state rather\nthan tracked separately so it can't drift.\n\n- `Importing`: no current revision — the first sync has never succeeded.\n- `Restoring`: watcher is `NeedsVerification` or `Desynced`; the next\n  call will do a full verification rather than incremental reconcile.\n- `SteadyState`: watcher `Healthy`, no unreconciled events, a current\n  revision exists, the project is fully served from disk.\n- `Unavailable`: watcher could not be initialized; every call will\n  full-publish.\n- `NoActiveProject`: server has been initialized but no `ensure_current`\n  call has succeeded, so the watcher state can't be summarized.\n- `Disabled`: `request.path` resolved to no enabled project — the\n  activation marker is absent — so nothing can serve that path until\n  `project_control` enables it. `remedy` names that call. This is a\n  state, not an error: a diagnostic tool that fails when there is\n  nothing to diagnose is useless.",
+            "description": "Coarse-grained operational phase. Derived from existing state rather\nthan tracked separately so it can't drift.\n\n- `Importing`: no current revision — the first sync has never succeeded.\n- `Restoring`: watcher is `NeedsVerification` or `Desynced`; the next\n  call will do a full verification rather than incremental reconcile.\n- `SteadyState`: watcher `Healthy`, no unreconciled events, a current\n  revision exists, the project is fully served from disk.\n- `Unavailable`: watcher could not be initialized; every call will\n  full-publish.\n- `NoActiveProject`: server has been initialized but no `ensure_current`\n  call has succeeded, so the watcher state can't be summarized.\n- `IndexedUnwatched`: the enabled project has a published revision in its\\n///   database, but this server has no registered watcher for that path.\\n///   Indexed evidence remains readable; no watcher health is implied.\\n/// - `Disabled`: `request.path` resolved to no enabled project — the\n  activation marker is absent — so nothing can serve that path until\n  `project_control` enables it. `remedy` names that call. This is a\n  state, not an error: a diagnostic tool that fails when there is\n  nothing to diagnose is useless.",
             "enum": [
               "importing",
               "restoring",
               "steady_state",
               "unavailable",
               "no_active_project",
+              "indexed_unwatched",
               "disabled"
             ],
             "type": "string"

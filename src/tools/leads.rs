@@ -325,7 +325,6 @@ fn leads_with_limits(
 
     tracing::info!(
         revision_id = response.0.revision_id,
-        mechanic = ?request.0.mechanic,
         row_count = response.0.returned,
         total = response.0.total,
         complete = response.0.complete,

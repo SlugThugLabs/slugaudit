@@ -80,7 +80,7 @@ fn run(a: Option<u8>, b: Option<u8>) {
         .iter()
         .filter(|item| item.payload["callee_name"] == "unwrap")
         .collect();
-    assert_eq!(unwraps.len(), 6, "{calls:?}");
+    assert_eq!(unwraps.len(), 7, "{calls:?}");
     for call in unwraps {
         assert_eq!(call.payload["caller"], "run");
         assert!(matches!(

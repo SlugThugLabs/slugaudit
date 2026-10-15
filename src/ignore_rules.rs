@@ -108,9 +108,9 @@ impl IgnoreRules {
                 let (gitignores, ignores) = files_by_dir.entry(parent.to_path_buf()).or_default();
                 let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if name == ".ignore" {
-                    ignores.push(file.to_path_buf());
+                    ignores.push(file.clone());
                 } else {
-                    gitignores.push(file.to_path_buf());
+                    gitignores.push(file.clone());
                 }
             }
         }

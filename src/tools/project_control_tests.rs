@@ -196,6 +196,31 @@ fn on_action_with_profile_writes_config_json() {
 }
 
 #[test]
+fn on_action_with_profile_reports_config_write_failure() {
+    let (project, path) = temp_project_with_source();
+    let config_path = activation_dir(&project).join("config.json");
+    fs::create_dir_all(&config_path).expect("create config parent");
+    let req = Parameters(ProjectControlRequest {
+        path: Some(path),
+        action: ProjectControlAction::On,
+        profile: Some("audit".to_string()),
+    });
+
+    let result = project_control(&req, &crate::progress::NoopProgressSink, None);
+    assert!(
+        result.is_err(),
+        "a failed profile write must fail the enable request"
+    );
+    if let Err(error) = result {
+        assert!(
+            error.message.contains("write profile config"),
+            "error must identify the failed config write: {}",
+            error.message
+        );
+    }
+}
+
+#[test]
 fn on_action_reports_the_gitignore_rule_it_added() {
     let (project, path) = temp_project_with_source();
     let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)

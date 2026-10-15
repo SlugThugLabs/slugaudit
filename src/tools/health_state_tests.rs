@@ -287,7 +287,10 @@ fn published_project_without_watcher_is_reported_as_indexed_unwatched() {
         .expect("read existing published database");
 
     assert_eq!(fields.phase, super::HealthPhase::IndexedUnwatched);
-    assert!(fields.revision_id.is_some(), "indexed project retains revision");
+    assert!(
+        fields.revision_id.is_some(),
+        "indexed project retains revision"
+    );
     assert_eq!(fields.file_count, 1);
     assert_eq!(fields.watcher_health, None);
     assert_eq!(fields.remedy, None);
