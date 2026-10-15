@@ -78,8 +78,10 @@ impl SourceSyncManager {
                 // One deadline spans the whole Healthy operation — the sweep
                 // walk, the event-driven reconcile, and applying the sweep's
                 // findings — so no step silently starts a fresh clock.
-                let options =
-                    ReconcileOptions::for_sync(self.watch_manager.rules_for(root.as_path()));
+                let options = ReconcileOptions::for_sync(
+                    root.as_path(),
+                    self.watch_manager.rules_for(root.as_path()),
+                );
                 // Walk exactly once: the report's `on_disk` serves the
                 // event-driven reconcile below, and its candidates/deletions
                 // are applied after it. A failed walk is as fatal as in the
@@ -210,7 +212,7 @@ impl SourceSyncManager {
         // event producer can't stall a tool call indefinitely. The
         // project's ignore rules make the incremental path index exactly
         // what a full publish would index.
-        let options = ReconcileOptions::for_sync(self.watch_manager.rules_for(root));
+        let options = ReconcileOptions::for_sync(root, self.watch_manager.rules_for(root));
         // Edge resolution must treat every path that exists as existing —
         // not just indexed rows. A file sampling skipped (oversize,
         // unreadable) has no `files` row, so resolving its importers

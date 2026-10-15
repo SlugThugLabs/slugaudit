@@ -853,11 +853,13 @@ does not rediscover them.
   the `known_paths` fix would silently do nothing. Deferred because releases are Linux
   x86_64 only (`release.yml`) and the pre-existing sweep comparison shares the same
   mismatch; fix both together if Windows ever becomes supported.
-- **End-to-end forced-skip test on the reconcile path is not achievable today** —
-  `ReconcileOptions::for_sync` reads the process-wide `process_limits()` `OnceLock`, so a
-  tiny `max_file_bytes` cannot be injected, and only the full-publish path applies
-  `ProjectConfig` overrides. This is independent confirmation that **project config is
-  ignored on the reconcile path** — a real asymmetry worth fixing (it is also why the
-  skip-aware reconcile test has to sit at the `sweep_tree`/`apply_sweep_report` seam).
+- **Project config was ignored on the reconcile path — resolved 2026-10-14.**
+  `ReconcileOptions::for_sync` now receives the project root and applies `ProjectConfig`
+  to the process limits exactly as full publish does. A watcher-backed behavioral test
+  grows an indexed file beyond the configured limit and verifies reconciliation replaces
+  it with an honest skipped row, so an edit can no longer be accepted or skipped solely
+  according to whether watcher reconciliation or full publication happened to run. The older
+  skip-aware reconcile test remains at the `sweep_tree`/`apply_sweep_report` seam because
+  it exercises that boundary directly.
 - **`extraction_completeness` is still read by no tool except `report`'s failure rows** —
   the completeness envelope across `report`/`leads`/`health` remains Phase 2.
