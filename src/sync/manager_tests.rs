@@ -80,6 +80,36 @@ fn edit_file_immediately_returns_fresh_evidence() {
 }
 
 #[test]
+fn watcher_reconcile_applies_the_projects_file_size_limit() {
+    let manager = SourceSyncManager::with_watcher();
+    let project = create_project();
+    write_file(
+        &project,
+        ".planning/slugaudit/config.json",
+        br#"{"max_file_bytes":50}"#,
+    );
+    write_file(&project, "lib.rs", b"pub fn initially_small() {}\n");
+    let first = sync_project(&manager, &project);
+
+    write_file(&project, "lib.rs", &[b'x'; 200]);
+    thread::sleep(Duration::from_millis(200));
+    let second = sync_project(&manager, &project);
+
+    assert_ne!(first.revision_id, second.revision_id);
+    let (kind, content): (String, Option<String>) = with_verified_read(&second, |tx| {
+        tx.query_row(
+            "SELECT file_kind, content FROM files WHERE path = 'lib.rs'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(db_error)
+    })
+    .expect("read reconciled file state");
+    assert_eq!(kind, "skipped", "the project limit must govern reconcile");
+    assert_eq!(content, None, "an oversized file must retain no content");
+}
+
+#[test]
 fn create_new_file_gets_indexed() {
     let manager = SourceSyncManager::with_watcher();
     let project = create_project();

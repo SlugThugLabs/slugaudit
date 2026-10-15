@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Reads the base/head dependency diff through the dependency-graph API and
       # fails when the PR adds a dependency with a known advisory. This is the
@@ -47,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # OSV-Scanner, not CodeQL — and the reason is scope and permissions, not
       # capability. CodeQL does support Rust (GA since October 2025) and would
@@ -63,7 +63,7 @@ jobs:
       # cargo-deny policy. Trade-off accepted: findings land in the job log and
       # summary instead of the Security tab.
       - name: Install osv-scanner
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: osv-scanner@2.6.0
           # Refuse the cargo-binstall fallback: this tool is covered by an
@@ -82,7 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Trivy, installed by the already-pinned install-action. The two obvious
       # alternatives were rejected for concrete reasons: gitleaks-action v3
@@ -95,7 +95,7 @@ jobs:
       # no licence key, and install-action pins its version and verifies the
       # release's SHA256 checksum.
       - name: Install trivy
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: trivy@0.74.0
           fallback: none

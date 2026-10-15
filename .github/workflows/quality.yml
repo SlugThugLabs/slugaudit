@@ -30,7 +30,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - name: Check out source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history so the no-duplicates check can scan every commit
           # subject (a shallow clone would only see the tip commit).
@@ -180,7 +180,7 @@ jobs:
       # Scheduled advisory runs live in `.github/workflows/advisories.yml`.
 
       - name: Install coverage tooling
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: cargo-llvm-cov
 
@@ -196,7 +196,7 @@ jobs:
         run: cargo run --quiet --bin check_coverage --locked
 
       - name: Install mutation testing tooling
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: cargo-mutants
 

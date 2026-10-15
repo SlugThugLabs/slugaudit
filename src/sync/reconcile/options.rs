@@ -7,6 +7,7 @@ use crate::ignore_rules::IgnoreRules;
 use crate::model::ResourceLimits;
 use crate::model::process_limits;
 use crate::util::Deadline;
+use std::path::Path;
 use std::sync::Arc;
 
 /// The reconciliation context every dirty path is checked against,
@@ -23,8 +24,12 @@ pub(crate) struct ReconcileOptions {
 impl ReconcileOptions {
     /// Options for a production sync pass: the standard resource budget
     /// and deadline, plus the project's current ignore rules.
-    pub(crate) fn for_sync(rules: Option<Arc<IgnoreRules>>) -> Self {
-        let limits = *process_limits();
+    pub(crate) fn for_sync(root: &Path, rules: Option<Arc<IgnoreRules>>) -> Self {
+        // Full publishes apply the project config before sampling. Reconcile
+        // must derive its limits the same way or an edit can be accepted or
+        // skipped solely according to which freshness path happened to run.
+        let limits =
+            crate::project::ProjectConfig::load_or_default(root).apply_to_limits(*process_limits());
         let deadline = Deadline::after(limits.max_sync_wall_clock);
         Self {
             limits,
