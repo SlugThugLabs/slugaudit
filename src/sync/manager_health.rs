@@ -3,6 +3,7 @@
 //! This module owns the health state machine and the incremental barrier
 //! reconcile. It is a child of `manager`, so it can coordinate the manager's
 //! private counters and watcher state without exposing implementation fields.
+// slugaudit-line-exception: approved-by=slugthug; reason=the watcher-health state machine — the dispatch, the per-branch paths, the shared event drain, and the post-sync revision read — must be read together because the health transitions and their failure semantics are the invariant; a sibling file would hide which arm owns which transition
 
 use super::super::manager_meta::current_revision_id;
 use super::super::reconcile::ReconcileOptions;
@@ -37,135 +38,14 @@ impl SourceSyncManager {
         let health = state.health();
         match health {
             WatcherHealth::NeedsVerification | WatcherHealth::Desynced => {
-                tracing::info!(
-                    ?health,
-                    root = %root.as_path().display(),
-                    "watcher untrusted; running full verification",
-                );
-                let report = super::super::manager_meta::publish_full(
-                    connection,
-                    root.as_path(),
-                    sink,
-                    "full publish failed",
-                )?;
-                // Drain any events that arrived during the full verification.
-                // `publish` walks the filesystem and parses files, which takes
-                // time — events can arrive while it runs. If we don't drain
-                // them here, they'd wait until the next MCP call to be
-                // reconciled, leaving the database stale in the interim.
-                self.reconcile(root.as_path(), state, connection)
-                    .map_err(|error| {
-                        tracing::warn!(
-                            root = %root.as_path().display(),
-                            error = %error,
-                            "post-verification drain failed; events remain unreconciled",
-                        );
-                        let data = error_codes::budget_payload(error.budget_elapsed_ms());
-                        ErrorData::internal_error(
-                            format!("draining events after verification: {error}"),
-                            data,
-                        )
-                    })?;
-                state.set_health(WatcherHealth::Healthy);
-                self.record_full_publish();
-                Ok(report.revision_id)
+                self.verify_and_drain(root, state, connection, sink)
             }
             WatcherHealth::Healthy => {
-                // An ignore file may have changed since the last pass:
-                // recompute the scope and the event-filtering rules before
-                // the reconcile reads them. A no-op when nothing changed.
-                self.watch_manager.refresh_scope(root.as_path());
-                // One deadline spans the whole Healthy operation — the sweep
-                // walk, the event-driven reconcile, and applying the sweep's
-                // findings — so no step silently starts a fresh clock.
-                let options = ReconcileOptions::for_sync(
-                    root.as_path(),
-                    self.watch_manager.rules_for(root.as_path()),
-                );
-                // Walk exactly once: the report's `on_disk` serves the
-                // event-driven reconcile below, and its candidates/deletions
-                // are applied after it. A failed walk is as fatal as in the
-                // sweep-driven reconcile — an unverified tree must not be
-                // published against.
-                let report = super::super::sweep_reconcile::sweep_tree(
-                    root.as_path(),
-                    connection,
-                    &options.deadline,
-                )
-                .map_err(|error| {
-                    super::super::sweep_reconcile::sweep_failed(root.as_path(), state, sink, error)
-                })?;
-                if state.has_unreconciled_events() {
-                    match reconcile_events(
-                        root.as_path(),
-                        state,
-                        connection,
-                        &options,
-                        &report.on_disk,
-                    ) {
-                        Ok(()) => self.record_incremental_reconcile(),
-                        Err(error) => {
-                            // `snapshot_dirty` cleared the dirty sets, but
-                            // reconciliation failed — the events are lost. Mark
-                            // the watcher untrusted so the next call does a full
-                            // verification rather than silently serving stale
-                            // evidence.
-                            tracing::warn!(
-                                root = %root.as_path().display(),
-                                error = %error,
-                                "incremental reconcile failed; marking watcher Desynced so next call re-verifies",
-                            );
-                            state.set_health(WatcherHealth::Desynced);
-                            sink.emit(ProgressEvent::Completed {
-                                phase: "ensuring_current",
-                            });
-                            let data = error_codes::budget_payload(error.budget_elapsed_ms());
-                            return Err(ErrorData::internal_error(
-                                format!("reconciling watcher events: {error}"),
-                                data,
-                            ));
-                        }
-                    }
-                }
-                // The sweep's findings, applied after the event-driven
-                // reconcile so the observable order is unchanged — only the
-                // walk moved earlier. Failure marks the watcher Desynced.
-                super::super::sweep_reconcile::sweep_and_reconcile(
-                    root.as_path(),
-                    report,
-                    &options,
-                    connection,
-                    state,
-                    sink,
-                )?;
-
-                Ok(current_revision_id(connection)
-                    .map_err(|error| {
-                        tracing::warn!(
-                            database_id = %crate::util::redacted_path(database_path),
-                            error = %error,
-                            "failed to read the current revision",
-                        );
-                        ErrorData::internal_error(
-                            format!("reading the current revision: {error}"),
-                            None,
-                        )
-                    })?
-                    .ok_or_else(|| {
-                        tracing::warn!(
-                            database_id = %crate::util::redacted_path(database_path),
-                            "no current revision found after sync",
-                        );
-                        ErrorData::internal_error(
-                            "no current revision found after sync — this is unexpected; \
-                         try disabling and re-enabling the project",
-                            None,
-                        )
-                    })?)
+                self.healthy_path(root, state, connection, database_path, sink)
             }
             WatcherHealth::Unavailable => {
                 tracing::info!(
-                    root = %root.as_path().display(),
+                    root_id = %crate::util::redacted_path(root.as_path()),
                     "watcher unavailable; running full publish",
                 );
                 let report = super::super::manager_meta::publish_full(
@@ -176,6 +56,138 @@ impl SourceSyncManager {
                 )?;
                 self.record_full_publish();
                 Ok(report.revision_id)
+            }
+        }
+    }
+
+    /// Full verification path (untrusted watcher): publish everything, then
+    /// drain any events that arrived while the publish was walking.
+    fn verify_and_drain(
+        &self,
+        root: &project::ProjectRoot,
+        state: &WatchState,
+        connection: &mut Connection,
+        sink: &dyn ProgressSink,
+    ) -> Result<String, ErrorData> {
+        tracing::info!(
+            health = ?state.health(),
+            root_id = %crate::util::redacted_path(root.as_path()),
+            "watcher untrusted; running full verification",
+        );
+        let report = super::super::manager_meta::publish_full(
+            connection,
+            root.as_path(),
+            sink,
+            "full publish failed",
+        )?;
+        // Drain any events that arrived during the full verification.
+        // `publish` walks the filesystem and parses files, which takes
+        // time — events can arrive while it runs. If we don't drain
+        // them here, they'd wait until the next MCP call to be
+        // reconciled, leaving the database stale in the interim.
+        self.reconcile(root.as_path(), state, connection)
+            .map_err(|error| {
+                tracing::warn!(
+                    root_id = %crate::util::redacted_path(root.as_path()),
+                    error = %error,
+                    "post-verification drain failed; events remain unreconciled",
+                );
+                let data = error_codes::budget_payload(error.budget_elapsed_ms());
+                ErrorData::internal_error(
+                    format!("draining events after verification: {error}"),
+                    data,
+                )
+            })?;
+        state.set_health(WatcherHealth::Healthy);
+        self.record_full_publish();
+        Ok(report.revision_id)
+    }
+
+    /// Healthy path: walk exactly once, reconcile the watcher's events
+    /// against that walk, apply the sweep's findings, and read the revision
+    /// the operation just converged on.
+    fn healthy_path(
+        &self,
+        root: &project::ProjectRoot,
+        state: &WatchState,
+        connection: &mut Connection,
+        database_path: &Path,
+        sink: &dyn ProgressSink,
+    ) -> Result<String, ErrorData> {
+        // An ignore file may have changed since the last pass: recompute
+        // the scope and the event-filtering rules before the reconcile
+        // reads them. A no-op when nothing changed.
+        self.watch_manager.refresh_scope(root.as_path());
+        // One deadline spans the whole Healthy operation — the sweep
+        // walk, the event-driven reconcile, and applying the sweep's
+        // findings — so no step silently starts a fresh clock.
+        let options = ReconcileOptions::for_sync(
+            root.as_path(),
+            self.watch_manager.rules_for(root.as_path()),
+        );
+        // Walk exactly once: the report's `on_disk` serves the
+        // event-driven reconcile below, and its candidates/deletions
+        // are applied after it. A failed walk is as fatal as in the
+        // sweep-driven reconcile — an unverified tree must not be
+        // published against.
+        let report = super::super::sweep_reconcile::sweep_tree(
+            root.as_path(),
+            connection,
+            &options.deadline,
+        )
+        .map_err(|error| {
+            super::super::sweep_reconcile::sweep_failed(root.as_path(), state, sink, error)
+        })?;
+        if state.has_unreconciled_events() {
+            self.drain_events(root, state, connection, &options, &report.on_disk, sink)?;
+        }
+        // The sweep's findings, applied after the event-driven
+        // reconcile so the observable order is unchanged — only the
+        // walk moved earlier. Failure marks the watcher Desynced.
+        super::super::sweep_reconcile::sweep_and_reconcile(
+            root.as_path(),
+            report,
+            &options,
+            connection,
+            state,
+            sink,
+        )?;
+        revision_after_sync(connection, database_path)
+    }
+
+    /// Drains the watcher's events under the operation's shared deadline.
+    /// On failure the dirty sets are already cleared — the events are lost —
+    /// so the watcher is marked `Desynced` and the next call re-verifies
+    /// rather than silently serving stale evidence.
+    fn drain_events(
+        &self,
+        root: &project::ProjectRoot,
+        state: &WatchState,
+        connection: &mut Connection,
+        options: &ReconcileOptions,
+        on_disk: &HashSet<String>,
+        sink: &dyn ProgressSink,
+    ) -> Result<(), ErrorData> {
+        match reconcile_events(root.as_path(), state, connection, options, on_disk) {
+            Ok(()) => {
+                self.record_incremental_reconcile();
+                Ok(())
+            }
+            Err(error) => {
+                tracing::warn!(
+                    root_id = %crate::util::redacted_path(root.as_path()),
+                    error = %error,
+                    "incremental reconcile failed; marking watcher Desynced so next call re-verifies",
+                );
+                state.set_health(WatcherHealth::Desynced);
+                sink.emit(ProgressEvent::Completed {
+                    phase: "ensuring_current",
+                });
+                let data = error_codes::budget_payload(error.budget_elapsed_ms());
+                Err(ErrorData::internal_error(
+                    format!("reconciling watcher events: {error}"),
+                    data,
+                ))
             }
         }
     }
@@ -226,6 +238,32 @@ impl SourceSyncManager {
     }
 }
 
+/// Reads the revision id the sync operation just converged on. Every field
+/// is present or the call errors with a named reason — a successful sync
+/// that cannot name its revision is a bug an operator must be able to see.
+fn revision_after_sync(connection: &Connection, database_path: &Path) -> Result<String, ErrorData> {
+    current_revision_id(connection)
+        .map_err(|error| {
+            tracing::warn!(
+                database_id = %crate::util::redacted_path(database_path),
+                error = %error,
+                "failed to read the current revision",
+            );
+            ErrorData::internal_error(format!("reading the current revision: {error}"), None)
+        })?
+        .ok_or_else(|| {
+            tracing::warn!(
+                database_id = %crate::util::redacted_path(database_path),
+                "no current revision found after sync",
+            );
+            ErrorData::internal_error(
+                "no current revision found after sync — this is unexpected; \
+                 try disabling and re-enabling the project",
+                None,
+            )
+        })
+}
+
 /// Reconciles watcher events under a caller-supplied deadline and on-disk
 /// path set. The `Healthy` path walks the tree once for the sweep and passes
 /// that report's `on_disk` here, so this never walks. The expected revision
@@ -268,7 +306,7 @@ fn reconcile_events(
     )?;
 
     tracing::debug!(
-        root = %root.display(),
+        root_id = %crate::util::redacted_path(root),
         elapsed_ms = started.elapsed().as_millis(),
         skipped = skipped_total,
         "incremental reconcile phase complete",

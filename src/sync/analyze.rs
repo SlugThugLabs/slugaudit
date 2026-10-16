@@ -83,88 +83,105 @@ pub(super) fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult
         return ParseResult::content_only(Some(language), true);
     }
     match crate::evidence::extract(&language, content) {
-        Ok((items, depth_capped)) => {
-            let diagnostic_count = items
-                .iter()
-                .filter(|item| item.kind == EvidenceKind::Diagnostic)
-                .count();
-            let outcome = if diagnostic_count > 0 {
-                ParseOutcome::SyntaxErrors {
-                    count: u32::try_from(diagnostic_count).unwrap_or(u32::MAX),
-                }
-            } else {
-                ParseOutcome::Succeeded
-            };
-            // Syntax-error diagnostics mean the walk covered a degraded tree;
-            // a run with none extracted everything the pack can see. A walk
-            // that stopped at `MAX_WALK_DEPTH` is the third case: the tree
-            // parsed cleanly but SlugAudit's own walkers did not reach the
-            // bottom of it, so the extraction is truncated even though the
-            // outcome is `Succeeded`. Reporting that as `Full` would claim a
-            // completeness the walk did not achieve.
-            let completeness = if diagnostic_count > 0 || depth_capped {
-                ExtractionCompleteness::Partial
-            } else {
-                ExtractionCompleteness::Full
-            };
-            tracing::debug!(
-                path = relative_path,
-                language = %language,
-                diagnostic_count,
-                outcome = ?outcome,
-                "parser load + extraction succeeded",
-            );
-            ParseResult {
-                language: Some(language),
-                language_detected: true,
-                run: ParserRun {
-                    availability: ParserAvailability::Available,
-                    outcome,
-                    completeness,
-                },
-                evidence: items,
-            }
-        }
+        Ok((items, depth_capped)) => succeeded_result(relative_path, language, items, depth_capped),
         Err(error) if is_load_failure(&error) => {
-            tracing::warn!(
-                path = relative_path,
-                language = %language,
-                error = %error,
-                "parser failed to load; recording LoadFailed",
-            );
-            ParseResult {
-                language: Some(language),
-                language_detected: true,
-                run: ParserRun {
-                    availability: ParserAvailability::LoadFailed {
-                        reason: error.to_string(),
-                    },
-                    outcome: ParseOutcome::NotAttempted,
-                    completeness: ExtractionCompleteness::ContentOnly,
-                },
-                evidence: Vec::new(),
-            }
+            load_failed_result(relative_path, language, &error)
         }
-        Err(error) => {
-            tracing::debug!(
-                path = relative_path,
-                language = %language,
-                error = %error,
-                "parser ran but extraction failed; recording Failed",
-            );
-            ParseResult {
-                language: Some(language),
-                language_detected: true,
-                run: ParserRun {
-                    availability: ParserAvailability::Available,
-                    outcome: ParseOutcome::Failed {
-                        reason: error.to_string(),
-                    },
-                    completeness: ExtractionCompleteness::ContentOnly,
-                },
-                evidence: Vec::new(),
-            }
+        Err(error) => parse_failed_result(relative_path, language, &error),
+    }
+}
+
+/// A run that extracted. Diagnostics make the tree degraded
+/// (`SyntaxErrors` + `Partial`). A walk that stopped at `MAX_WALK_DEPTH` is
+/// the third case — the tree parsed cleanly but SlugAudit's own walkers did
+/// not reach the bottom of it, so the extraction is truncated even though
+/// the outcome is `Succeeded`. Reporting that as `Full` would claim a
+/// completeness the walk did not achieve.
+fn succeeded_result(
+    relative_path: &str,
+    language: String,
+    items: Vec<EvidenceItem>,
+    depth_capped: bool,
+) -> ParseResult {
+    let diagnostic_count = items
+        .iter()
+        .filter(|item| item.kind == EvidenceKind::Diagnostic)
+        .count();
+    let outcome = if diagnostic_count > 0 {
+        ParseOutcome::SyntaxErrors {
+            count: u32::try_from(diagnostic_count).unwrap_or(u32::MAX),
         }
+    } else {
+        ParseOutcome::Succeeded
+    };
+    let completeness = if diagnostic_count > 0 || depth_capped {
+        ExtractionCompleteness::Partial
+    } else {
+        ExtractionCompleteness::Full
+    };
+    tracing::debug!(
+        path = relative_path,
+        language = %language,
+        diagnostic_count,
+        outcome = ?outcome,
+        "parser load + extraction succeeded",
+    );
+    ParseResult {
+        language: Some(language),
+        language_detected: true,
+        run: ParserRun {
+            availability: ParserAvailability::Available,
+            outcome,
+            completeness,
+        },
+        evidence: items,
+    }
+}
+
+/// A parser that failed to *load*: the run never attempted a parse, so the
+/// text is still `ContentOnly`-indexed and the availability carries the
+/// reason (see [`is_load_failure`] on why this stays distinct from `Failed`).
+fn load_failed_result(relative_path: &str, language: String, error: &PackError) -> ParseResult {
+    tracing::warn!(
+        path = relative_path,
+        language = %language,
+        error = %error,
+        "parser failed to load; recording LoadFailed",
+    );
+    ParseResult {
+        language: Some(language),
+        language_detected: true,
+        run: ParserRun {
+            availability: ParserAvailability::LoadFailed {
+                reason: error.to_string(),
+            },
+            outcome: ParseOutcome::NotAttempted,
+            completeness: ExtractionCompleteness::ContentOnly,
+        },
+        evidence: Vec::new(),
+    }
+}
+
+/// A parser that loaded, ran, and failed extraction — availability stays
+/// `Available`; the outcome carries the failure.
+fn parse_failed_result(relative_path: &str, language: String, error: &PackError) -> ParseResult {
+    tracing::debug!(
+        path = relative_path,
+        language = %language,
+        error = %error,
+        "parser ran but extraction failed; recording Failed",
+    );
+    ParseResult {
+        language: Some(language),
+        language_detected: true,
+        run: ParserRun {
+            availability: ParserAvailability::Available,
+            outcome: ParseOutcome::Failed {
+                reason: error.to_string(),
+            },
+            completeness: ExtractionCompleteness::ContentOnly,
+        },
+        evidence: Vec::new(),
     }
 }
 

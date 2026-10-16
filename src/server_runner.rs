@@ -102,35 +102,9 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
     // visible instead of silent.
     notify_progress(&progress, 0.0, format!("{tool_name} ensuring_current")).await;
 
-    let result = async {
-        tracing::info!("tool call started");
-        // `acquire_owned` returns an `OwnedSemaphorePermit` that holds an
-        // `Arc` clone of the semaphore, so the permit is `'static` and can
-        // be moved into `spawn_blocking`. This matters for cancellation:
-        // if the outer tool-call future is cancelled, the permit stays
-        // held inside the (still-running) blocking task instead of being
-        // returned to the pool prematurely — keeping the semaphore's bound
-        // honest for the full duration of the work.
-        let permit = semaphore
-            .acquire_owned()
-            .await
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-
-        // Now that we hold a permit, the call is actively running on a
-        // blocking thread; per-file emissions from the tool-specific
-        // progress sink overwrite this with the actual i/N ratio.
-        notify_progress(&progress, 0.5, format!("{tool_name} publishing")).await;
-
-        tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            let _guard = blocking_span.enter();
-            work()
-        })
-        .await
-        .map_err(|error| ErrorData::internal_error(format!("tool task failed: {error}"), None))?
-    }
-    .instrument(span.clone())
-    .await;
+    let result = acquire_and_run(semaphore, tool_name, work, &progress, blocking_span)
+        .instrument(span.clone())
+        .await;
 
     // Final progress notification: the work is done and the response is
     // about to be returned. Progress reaches 1.0 whether the work succeeded
@@ -138,8 +112,57 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
     // outcome.
     notify_progress(&progress, 1.0, format!("{tool_name} completed")).await;
 
+    log_completion(&span, counters_before, started, result.as_ref().err());
+    result
+}
+
+/// Waits for a permit, then runs `work` on a blocking thread with the
+/// permit and the tool-call span moved into the closure.
+async fn acquire_and_run<T: Send + 'static>(
+    semaphore: Arc<Semaphore>,
+    tool_name: &str,
+    work: impl FnOnce() -> Result<T, ErrorData> + Send + 'static,
+    progress: &Option<(Peer<RoleServer>, ProgressToken)>,
+    blocking_span: tracing::Span,
+) -> Result<T, ErrorData> {
+    tracing::info!("tool call started");
+    // `acquire_owned` returns an `OwnedSemaphorePermit` that holds an
+    // `Arc` clone of the semaphore, so the permit is `'static` and can
+    // be moved into `spawn_blocking`. This matters for cancellation:
+    // if the outer tool-call future is cancelled, the permit stays
+    // held inside the (still-running) blocking task instead of being
+    // returned to the pool prematurely — keeping the semaphore's bound
+    // honest for the full duration of the work.
+    let permit = semaphore
+        .acquire_owned()
+        .await
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+
+    // Now that we hold a permit, the call is actively running on a
+    // blocking thread; per-file emissions from the tool-specific
+    // progress sink overwrite this with the actual i/N ratio.
+    notify_progress(progress, 0.5, format!("{tool_name} publishing")).await;
+
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let _guard = blocking_span.enter();
+        work()
+    })
+    .await
+    .map_err(|error| ErrorData::internal_error(format!("tool task failed: {error}"), None))?
+}
+
+/// One completion line per call, both outcomes: a failure keeps WARN (and
+/// keeps the error message), a success stays INFO, and `outcome` makes the
+/// single marker greppable for the sequence log.
+fn log_completion(
+    span: &tracing::Span,
+    counters_before: crate::tools::ToolCounters,
+    started: std::time::Instant,
+    error: Option<&ErrorData>,
+) {
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let succeeded = result.is_ok();
+    let succeeded = error.is_none();
     // `record_call` bumps the process-wide counters and returns the
     // post-bump snapshot; `counters_before` was taken before the work
     // started. The difference is the movement observed across this call's
@@ -154,18 +177,15 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
         .saturating_sub(counters_before.error_count);
     let outcome = if succeeded { "success" } else { "error" };
     let _guard = span.enter();
-    // One completion line per call, both outcomes: a failure keeps WARN
-    // (and keeps the error message), a success stays INFO, and `outcome`
-    // makes the single marker greppable for the sequence log.
-    match &result {
-        Ok(_) => tracing::info!(
+    match error {
+        None => tracing::info!(
             elapsed_ms,
             outcome,
             calls_delta,
             errors_delta,
             "tool call completed",
         ),
-        Err(error) => tracing::warn!(
+        Some(error) => tracing::warn!(
             elapsed_ms,
             outcome,
             error = %error.message,
@@ -174,7 +194,6 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
             "tool call completed",
         ),
     }
-    result
 }
 
 /// Sends one MCP `/notifications/progress` notification when the caller

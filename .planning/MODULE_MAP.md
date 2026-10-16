@@ -15,6 +15,8 @@ src/
 ├── resources.rs              static MCP resources (cookbook, payload keys, schema)
 ├── progress.rs               ProgressEvent/ProgressSink bridge from sync to a renderer
 ├── ignore_rules.rs           single source of truth for excluded paths
+├── ignore_rules/             submodule directory of the file module above
+│   └── build.rs              per-directory matcher assembly for IgnoreRules::build
 ├── error_codes.rs            stable machine-readable failure codes + remedies
 ├── util.rs                   cross-module helpers (lock_or_recover, Deadline, SESSION_ID)
 ├── menu.rs                   interactive setup menu

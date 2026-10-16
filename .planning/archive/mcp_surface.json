@@ -1190,6 +1190,7 @@
             "type": "object"
           },
           "EvidenceKindCount": {
+            "description": "How many evidence rows the current revision holds for one kind.",
             "properties": {
               "count": {
                 "format": "int64",
@@ -1258,6 +1259,7 @@
             "type": "object"
           },
           "LanguageCount": {
+            "description": "How many discovered files the last revision attributed to one detected\nlanguage.",
             "properties": {
               "file_count": {
                 "format": "int64",

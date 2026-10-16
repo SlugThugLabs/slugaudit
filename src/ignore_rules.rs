@@ -21,7 +21,7 @@
 //! before `.gitignore` matchers; within each class, deeper directories win.
 
 use ignore::Match;
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use ignore::gitignore::Gitignore;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -91,6 +91,8 @@ pub struct IgnoreRules {
     global: Gitignore,
 }
 
+mod build;
+
 impl IgnoreRules {
     /// Builds rules for `root` from `.gitignore`/`.ignore` files under it
     /// (typically collected from the same walk that enumerated the
@@ -98,104 +100,11 @@ impl IgnoreRules {
     /// within a directory, `.ignore` overrides `.gitignore` because the
     /// crate resolves the last matching pattern and the files are added
     /// `.gitignore`-first.
+    ///
+    /// Matcher assembly lives in [`build`]; this is the thin constructor.
     pub fn build(root: &Path, ignore_files: &[PathBuf]) -> IgnoreRules {
-        // Group by parent directory and by file type so each directory gets
-        // one `.ignore` matcher and one `.gitignore` matcher — the two
-        // precedence classes the walker keeps apart.
-        let mut files_by_dir: HashMap<PathBuf, (Vec<PathBuf>, Vec<PathBuf>)> = HashMap::new();
-        for file in ignore_files {
-            if let Some(parent) = file.parent() {
-                let (gitignores, ignores) = files_by_dir.entry(parent.to_path_buf()).or_default();
-                let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if name == ".ignore" {
-                    ignores.push(file.clone());
-                } else {
-                    gitignores.push(file.clone());
-                }
-            }
-        }
-        let mut ignore_by_dir: HashMap<PathBuf, Gitignore> = HashMap::new();
-        let mut gitignore_by_dir: HashMap<PathBuf, Gitignore> = HashMap::new();
-        for (dir, (gitignores, ignores)) in files_by_dir {
-            if !ignores.is_empty() {
-                let mut builder = GitignoreBuilder::new(&dir);
-                for file in &ignores {
-                    if let Some(err) = builder.add(file) {
-                        tracing::warn!(
-                            path = %file.display(),
-                            error = %err,
-                            "failed to add .ignore file to matcher",
-                        );
-                    }
-                }
-                match builder.build() {
-                    Ok(matcher) => {
-                        ignore_by_dir.insert(dir.clone(), matcher);
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            dir = %dir.display(),
-                            error = %err,
-                            "failed to compile .ignore matcher",
-                        );
-                    }
-                }
-            }
-            // The root `.gitignore` matcher additionally carries
-            // `.git/info/exclude`, lowest-precedence within its class per
-            // git semantics.
-            let mut builder = GitignoreBuilder::new(&dir);
-            if dir == root {
-                let exclude = root.join(".git/info/exclude");
-                if exclude.is_file()
-                    && let Some(err) = builder.add(&exclude)
-                {
-                    tracing::warn!(
-                        path = %exclude.display(),
-                        error = %err,
-                        "failed to add .git/info/exclude to matcher",
-                    );
-                }
-            }
-            for file in &gitignores {
-                if let Some(err) = builder.add(file) {
-                    tracing::warn!(
-                        path = %file.display(),
-                        error = %err,
-                        "failed to add .gitignore file to matcher",
-                    );
-                }
-            }
-            match builder.build() {
-                Ok(matcher) => {
-                    gitignore_by_dir.insert(dir, matcher);
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        dir = %dir.display(),
-                        error = %err,
-                        "failed to compile .gitignore matcher",
-                    );
-                }
-            }
-        }
-        // Ensure root entries exist even without ignore files, so the
-        // root is always matched against (empty matchers match nothing).
-        ignore_by_dir
-            .entry(root.to_path_buf())
-            .or_insert_with(Gitignore::empty);
-        gitignore_by_dir
-            .entry(root.to_path_buf())
-            .or_insert_with(Gitignore::empty);
-
-        let (global, error) = GitignoreBuilder::new(root).build_global();
-        if let Some(error) = error {
-            tracing::warn!(
-                error = %error,
-                "failed to load the global gitignore; continuing without it",
-            );
-        }
-
+        let (ignore_by_dir, gitignore_by_dir, global) =
+            build::assemble_matchers(root, ignore_files);
         IgnoreRules {
             root: root.to_path_buf(),
             ignore_by_dir,

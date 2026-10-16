@@ -73,78 +73,30 @@ fn collect(
     rows: &mut Vec<(usize, usize, EvidenceItem)>,
     depth: u32,
 ) -> bool {
+    // The depth guard bounds descent within THIS synthetic tree only;
+    // nested macros re-enter `scan_fragment` at depth 0 by design (see
+    // `recurse_into_nested_macro`) — the macro-nesting chain is separately
+    // bounded by the token trees it reparses.
     if depth >= crate::evidence::MAX_WALK_DEPTH {
         return true;
     }
-    if matches!(node.kind().as_str(), "call_expression" | "macro_invocation") {
-        let macro_call = node.kind() == "macro_invocation";
-        let relative_start = node.start_byte();
-        let relative_end = node.end_byte();
-        if relative_start >= PREFIX.len()
-            && relative_end <= wrapped.len().saturating_sub(SUFFIX.len())
-        {
-            let start = source_start + relative_start - PREFIX.len();
-            let end = source_start + relative_end - PREFIX.len();
-            if end <= source_end
-                && let Some(callee) = callee_node(&node, macro_call)
-            {
-                let callee_text = &wrapped[callee.start_byte()..callee.end_byte()];
-                let name = simple_name(callee, wrapped)
-                    .unwrap_or_else(|| callee_text.trim_end_matches('!').to_owned());
-                let resolution = if macro_call {
-                    "macro"
-                } else if callee_text.contains("::") {
-                    "qualified-syntactic"
-                } else {
-                    "unresolved-syntactic"
-                };
-                let span = Span::new(
-                    start as u64,
-                    end as u64,
-                    position(source, start),
-                    position(source, end),
-                )
-                .map_or_else(
-                    |_| SpanAvailability::NormalizerUnavailable {
-                        reason: "macro argument call span invalid".into(),
-                    },
-                    SpanAvailability::Present,
-                );
-                rows.push((
-                    start,
-                    end,
-                    EvidenceItem {
-                        key: String::new(),
-                        kind: EvidenceKind::Call,
-                        origin: EvidenceOrigin::RustCallWalker,
-                        span,
-                        payload: json!({
-                            "language": "rust",
-                            "callee_text": callee_text,
-                            "callee_name": name,
-                            "caller": caller,
-                            "resolution": resolution,
-                            "confidence": if macro_call { "high" } else { "medium" },
-                        }),
-                    },
-                ));
-            }
-        }
-    }
-    // A nested macro still owns an opaque token tree after the outer
-    // fragment is reparsed. Recurse into its contents using absolute source
-    // coordinates, preserving the enclosing Rust function as caller.
-    if node.kind() == "macro_invocation"
-        && node.start_byte() >= PREFIX.len()
-        && node.end_byte() <= wrapped.len().saturating_sub(SUFFIX.len())
-        && let Some(tokens) = named_children(&node).find(|n| n.kind() == "token_tree")
+    // Emit the node's own row *before* descending, so `calls::walk`'s
+    // first-wins dedup keeps the outermost row.
+    if matches!(node.kind().as_str(), "call_expression" | "macro_invocation")
+        && within_synthetic_frame(&node, wrapped)
+        && let Some(row) = emit_call_row(&node, wrapped, source, source_start, source_end, &caller)
     {
-        let start = source_start + tokens.start_byte() + 1 - PREFIX.len();
-        let end = source_start + tokens.end_byte().saturating_sub(1) - PREFIX.len();
-        if end <= source_end && start < end {
-            scan_fragment(source, start, end, caller.clone(), rows);
-        }
+        rows.push(row);
     }
+    recurse_into_nested_macro(
+        &node,
+        wrapped,
+        source,
+        source_start,
+        source_end,
+        &caller,
+        rows,
+    );
     let mut capped = false;
     for child in named_children(&node) {
         capped |= collect(
@@ -158,6 +110,98 @@ fn collect(
         );
     }
     capped
+}
+
+/// True when the node's byte range sits inside the probe body of the
+/// synthetic frame (not in the `PREFIX`/`SUFFIX` scaffolding itself).
+fn within_synthetic_frame(node: &Node, wrapped: &str) -> bool {
+    node.start_byte() >= PREFIX.len()
+        && node.end_byte() <= wrapped.len().saturating_sub(SUFFIX.len())
+}
+
+/// Builds one call row for a `call_expression`/`macro_invocation` node mapped
+/// back to original-source coordinates, or `None` when the node is the probe
+/// wrapper itself, has no callee, or falls outside the fragment.
+fn emit_call_row(
+    node: &Node,
+    wrapped: &str,
+    source: &str,
+    source_start: usize,
+    source_end: usize,
+    caller: &Option<String>,
+) -> Option<(usize, usize, EvidenceItem)> {
+    let macro_call = node.kind() == "macro_invocation";
+    let start = source_start + node.start_byte() - PREFIX.len();
+    let end = source_start + node.end_byte() - PREFIX.len();
+    if end > source_end {
+        return None;
+    }
+    let callee = callee_node(node, macro_call)?;
+    let callee_text = &wrapped[callee.start_byte()..callee.end_byte()];
+    let name = simple_name(callee, wrapped)
+        .unwrap_or_else(|| callee_text.trim_end_matches('!').to_owned());
+    let resolution = if macro_call {
+        "macro"
+    } else if callee_text.contains("::") {
+        "qualified-syntactic"
+    } else {
+        "unresolved-syntactic"
+    };
+    let span = Span::new(
+        start as u64,
+        end as u64,
+        position(source, start),
+        position(source, end),
+    )
+    .map_or_else(
+        |_| SpanAvailability::NormalizerUnavailable {
+            reason: "macro argument call span invalid".into(),
+        },
+        SpanAvailability::Present,
+    );
+    Some((
+        start,
+        end,
+        EvidenceItem {
+            key: String::new(),
+            kind: EvidenceKind::Call,
+            origin: EvidenceOrigin::RustCallWalker,
+            span,
+            payload: json!({
+                "language": "rust",
+                "callee_text": callee_text,
+                "callee_name": name,
+                "caller": caller,
+                "resolution": resolution,
+                "confidence": if macro_call { "high" } else { "medium" },
+            }),
+        },
+    ))
+}
+
+/// A nested macro still owns an opaque token tree after the outer fragment is
+/// reparsed. Recurse into its contents using absolute source coordinates,
+/// preserving the enclosing Rust function as caller.
+fn recurse_into_nested_macro(
+    node: &Node,
+    wrapped: &str,
+    source: &str,
+    source_start: usize,
+    source_end: usize,
+    caller: &Option<String>,
+    rows: &mut Vec<(usize, usize, EvidenceItem)>,
+) {
+    if node.kind() != "macro_invocation" || !within_synthetic_frame(node, wrapped) {
+        return;
+    }
+    let Some(tokens) = named_children(node).find(|n| n.kind() == "token_tree") else {
+        return;
+    };
+    let start = source_start + tokens.start_byte() + 1 - PREFIX.len();
+    let end = source_start + tokens.end_byte().saturating_sub(1) - PREFIX.len();
+    if end <= source_end && start < end {
+        scan_fragment(source, start, end, caller.clone(), rows);
+    }
 }
 
 fn position(source: &str, byte: usize) -> Position {

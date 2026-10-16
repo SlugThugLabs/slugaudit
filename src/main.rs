@@ -21,57 +21,87 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args_os()
         .skip(1)
         .map(|arg| arg.to_string_lossy().into_owned());
-    match cli::parse_args(args) {
-        Ok(cmd) => match cmd {
-            Command::Connect { agent } => {
-                if let Err(error) = connect::run_connect(agent.as_deref()) {
-                    eprintln!("Error: {error}");
-                    std::process::exit(1);
-                }
-                return Ok(());
-            }
-            Command::Disconnect { agent } => {
-                if let Err(error) = connect::run_disconnect(agent.as_deref()) {
-                    eprintln!("Error: {error}");
-                    std::process::exit(1);
-                }
-                return Ok(());
-            }
-            Command::Install => {
-                if let Err(error) = install::run_install() {
-                    eprintln!("Error: {error}");
-                    std::process::exit(1);
-                }
-                return Ok(());
-            }
-            Command::Update => {
-                if let Err(error) = update::run_update() {
-                    eprintln!("Error: {error}");
-                    std::process::exit(1);
-                }
-                return Ok(());
-            }
-            Command::Help => {
-                print!("{}", cli::usage());
-                return Ok(());
-            }
-            Command::Version => {
-                println!("slugaudit {}", env!("CARGO_PKG_VERSION"));
-                return Ok(());
-            }
-            Command::Menu => {
-                if !menu::run_menu()? {
-                    return Ok(());
-                }
-            }
-            Command::Serve => {}
-        },
+    let command = match cli::parse_args(args) {
+        Ok(cmd) => cmd,
         Err(error) => {
             eprintln!("Error: {error}");
             std::process::exit(1);
         }
+    };
+    // `std::process::exit` is deliberate here and confined to `main` (the
+    // one place the denied `clippy::exit` lint permits it): the four
+    // side-effecting CLI commands report `Error: {reason}` and exit 1.
+    match run_command(command) {
+        CommandOutcome::Serve => {}
+        CommandOutcome::Done => return Ok(()),
+        CommandOutcome::Reported(error) => {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+        CommandOutcome::Propagated(error) => return Err(error),
     }
+    init_logging();
+    SlugAuditServer::new()
+        .serve(stdio())
+        .await?
+        .waiting()
+        .await?;
+    Ok(())
+}
 
+/// What `main` should do after running one CLI command.
+enum CommandOutcome {
+    /// Fall through to serving the MCP server on stdio (`serve`, and
+    /// `menu` when the user chose to start it).
+    Serve,
+    /// The command finished; exit 0.
+    Done,
+    /// The command failed with a human-reportable error: print
+    /// `Error: {0}` and exit 1.
+    Reported(String),
+    /// The `menu` path failed with a boxed error; propagate out of `main`
+    /// exactly as the old `run_menu()?` did.
+    Propagated(Box<dyn std::error::Error>),
+}
+
+/// Runs one parsed command and reports how `main` should terminate. The
+/// arms are a decision table — no side effects beyond the command's own.
+fn run_command(command: Command) -> CommandOutcome {
+    match command {
+        Command::Connect { agent } => reported(connect::run_connect(agent.as_deref())),
+        Command::Disconnect { agent } => reported(connect::run_disconnect(agent.as_deref())),
+        Command::Install => reported(install::run_install()),
+        Command::Update => reported(update::run_update()),
+        Command::Help => {
+            print!("{}", cli::usage());
+            CommandOutcome::Done
+        }
+        Command::Version => {
+            println!("slugaudit {}", env!("CARGO_PKG_VERSION"));
+            CommandOutcome::Done
+        }
+        Command::Menu => match menu::run_menu() {
+            Ok(true) => CommandOutcome::Serve,
+            Ok(false) => CommandOutcome::Done,
+            Err(error) => CommandOutcome::Propagated(error),
+        },
+        Command::Serve => CommandOutcome::Serve,
+    }
+}
+
+/// Maps a side-effecting command's `Result` onto its exit contract.
+fn reported(result: Result<(), impl std::fmt::Display>) -> CommandOutcome {
+    match result {
+        Ok(()) => CommandOutcome::Done,
+        Err(error) => CommandOutcome::Reported(error.to_string()),
+    }
+}
+
+/// Installs the stderr tracing subscriber for `serve`. Logs go to stderr
+/// only — stdout is the JSON-RPC transport. `SLUGAUDIT_LOG_FORMAT=json`
+/// switches the formatter to JSON; anything else stays the plain writer
+/// with ANSI off (stderr may be a captured file, not a terminal).
+fn init_logging() {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let is_json = std::env::var("SLUGAUDIT_LOG_FORMAT")
         .map(|v| v.eq_ignore_ascii_case("json"))
@@ -89,10 +119,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_env_filter(env_filter)
             .init();
     }
-    SlugAuditServer::new()
-        .serve(stdio())
-        .await?
-        .waiting()
-        .await?;
-    Ok(())
 }

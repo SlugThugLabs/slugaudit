@@ -82,17 +82,7 @@ pub(super) fn sweep(
     deadline: &Deadline,
 ) -> Result<SweepReport, SweepError> {
     note_walk(root);
-    let mut statement =
-        connection.prepare("SELECT path, modified_unix_seconds, byte_len FROM files")?;
-    let stored: HashMap<String, (Option<i64>, i64)> = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                (row.get::<_, Option<i64>>(1)?, row.get::<_, i64>(2)?),
-            ))
-        })?
-        .collect::<Result<_, _>>()?;
-    drop(statement);
+    let stored = stored_signatures(connection)?;
 
     // Every file the walk could stat successfully, by relative path. The
     // deleted set is then `stored.keys() - on_disk`: a database row whose
@@ -108,64 +98,21 @@ pub(super) fn sweep(
                 elapsed_ms: elapsed.as_millis(),
             });
         }
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                // Discovery turns these into skipped rows; the sweep has no
-                // row to write, so the log is the only place the gap shows.
-                tracing::warn!(
-                    error = %error,
-                    "sweep could not read a directory entry; its subtree is not part of \
-                     this comparison and files under it cannot be verified",
-                );
-                continue;
-            }
-        };
-        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-            continue;
-        }
-        let absolute_path = entry.path();
-        let Ok(relative) = absolute_path.strip_prefix(root) else {
+        let Some((relative, metadata)) = walked_file(root, entry) else {
             continue;
         };
-        if is_excluded_path(&relative.to_string_lossy()) {
-            continue;
-        }
-        // Non-UTF-8 paths are never in the database (discovery rejects
-        // them), so there is nothing to compare and nothing to delete.
-        let Some(relative) = relative.to_str() else {
-            continue;
-        };
-
-        // A stat that fails with NotFound means the file vanished between
-        // the walk and the stat: leaving it out of `on_disk` classifies it
-        // as deleted. Any other stat error means the file can't be verified
-        // — skipping it matches discovery, which skips unreadable files and
-        // would not index them on a full publish either.
-        let Ok(metadata) = std::fs::metadata(absolute_path) else {
-            // Leaving the path out of `on_disk` classifies it as deleted, so
-            // a stat failure here removes a file from the index. That is worth
-            // a line: a file that cannot be stat'd is not a file that is gone.
-            tracing::warn!(
-                path_id = %crate::util::redacted_path(absolute_path),
-                "sweep could not stat a file it walked; it will be reported as deleted",
-            );
-            continue;
-        };
-        on_disk.insert(relative.to_owned());
-
         let mtime = crate::util::mtime_unix_seconds(&metadata);
         let byte_len = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
-        match stored.get(relative) {
-            Some((stored_mtime, stored_len))
-                if *stored_mtime == mtime && *stored_len == byte_len =>
-            {
-                unchanged += 1;
-            }
-            _ => {
-                candidates.insert(relative.to_owned());
-            }
+        let unchanged_match = matches!(
+            stored.get(&relative),
+            Some((stored_mtime, stored_len)) if *stored_mtime == mtime && *stored_len == byte_len
+        );
+        if unchanged_match {
+            unchanged += 1;
+        } else {
+            candidates.insert(relative.clone());
         }
+        on_disk.insert(relative);
     }
 
     let deleted: HashSet<String> = stored
@@ -180,6 +127,81 @@ pub(super) fn sweep(
         on_disk,
         unchanged,
     })
+}
+
+/// `(mtime, byte_len)` per stored path — the two signals a stat can
+/// disprove without reading the file.
+fn stored_signatures(
+    connection: &Connection,
+) -> Result<HashMap<String, (Option<i64>, i64)>, rusqlite::Error> {
+    let mut statement =
+        connection.prepare("SELECT path, modified_unix_seconds, byte_len FROM files")?;
+    let stored = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (row.get::<_, Option<i64>>(1)?, row.get::<_, i64>(2)?),
+            ))
+        })?
+        .collect::<Result<_, _>>()?;
+    drop(statement);
+    Ok(stored)
+}
+
+/// One walked entry, reduced to the pair the comparison needs — `None`
+/// (after warning where the gap is invisible otherwise) for anything the
+/// sweep must not compare: unreadable directories, non-files, excluded or
+/// non-UTF-8 paths, and un-stat-able files.
+fn walked_file(
+    root: &Path,
+    entry: Result<ignore::DirEntry, ignore::Error>,
+) -> Option<(String, std::fs::Metadata)> {
+    let entry = match entry {
+        Ok(entry) => entry,
+        Err(error) => {
+            // Discovery turns these into skipped rows; the sweep has no
+            // row to write, so the log is the only place the gap shows.
+            tracing::warn!(
+                error = %error,
+                "sweep could not read a directory entry; its subtree is not part of \
+                 this comparison and files under it cannot be verified",
+            );
+            return None;
+        }
+    };
+    if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+        return None;
+    }
+    let absolute_path = entry.path();
+    let Ok(relative) = absolute_path.strip_prefix(root) else {
+        return None;
+    };
+    if is_excluded_path(&relative.to_string_lossy()) {
+        return None;
+    }
+    // Non-UTF-8 paths are never in the database (discovery rejects
+    // them), so there is nothing to compare and nothing to delete.
+    let relative = relative.to_str()?.to_owned();
+
+    // A stat that fails with NotFound means the file vanished between
+    // the walk and the stat: leaving it out of `on_disk` classifies it
+    // as deleted. Any other stat error means the file can't be verified
+    // — skipping it matches discovery, which skips unreadable files and
+    // would not index them on a full publish either.
+    let metadata = match std::fs::metadata(absolute_path) {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            // Leaving the path out of `on_disk` classifies it as deleted, so
+            // a stat failure here removes a file from the index. That is worth
+            // a line: a file that cannot be stat'd is not a file that is gone.
+            tracing::warn!(
+                path_id = %crate::util::redacted_path(absolute_path),
+                "sweep could not stat a file it walked; it will be reported as deleted",
+            );
+            return None;
+        }
+    };
+    Some((relative, metadata))
 }
 
 /// Test-only per-root walk counters, so the Healthy-path regression can
