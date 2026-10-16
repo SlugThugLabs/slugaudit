@@ -7,6 +7,7 @@ use rmcp::handler::server::wrapper::{Json, Parameters};
 use rusqlite::{OptionalExtension, Transaction, params};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+// slugaudit-line-exception: approved-by=slugthug; reason=one concern - the finding tool's write path: the request/response contract, the input caps that bound every field the agent supplies, and the insert that stores agent-authored text verbatim by design
 
 const MAX_TITLE_CHARS: usize = 200;
 const MAX_DESCRIPTION_CHARS: usize = 10_000;
