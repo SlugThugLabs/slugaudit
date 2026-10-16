@@ -17,37 +17,21 @@
 //! invoked through `std::process::Command`; the test-name scan reads
 //! each Rust file with stdlib only.
 
+#[path = "gate_common/args.rs"]
+mod gate_args;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 fn main() -> ExitCode {
-    let mut args = std::env::args_os()
-        .skip(1)
-        .map(|arg| arg.to_string_lossy().into_owned());
-    let Ok(mut project_root) = std::env::current_dir() else {
-        eprintln!("cannot determine the current directory");
-        return ExitCode::from(2);
+    let project_root = match gate_args::parse(
+        "no-duplicates",
+        "Checks for duplicated commit subjects and duplicated test names.",
+        &mut [],
+    ) {
+        Ok(root) => root,
+        Err(code) => return code,
     };
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--help" => {
-                println!("Checks for duplicated commit subjects and duplicated test names.");
-                return ExitCode::SUCCESS;
-            }
-            "--root" => {
-                let Some(value) = args.next() else {
-                    eprintln!("--root requires a project directory");
-                    return ExitCode::from(2);
-                };
-                project_root = PathBuf::from(value);
-            }
-            other => {
-                eprintln!("unknown argument: {other}");
-                return ExitCode::from(2);
-            }
-        }
-    }
 
     let mut failures: Vec<String> = Vec::new();
 

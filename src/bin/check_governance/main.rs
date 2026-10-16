@@ -21,51 +21,29 @@
 //! here; the shape is fixed and small).
 
 mod codeowners;
+#[path = "../gate_common/args.rs"]
+mod gate_args;
 mod required_files;
 
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
 
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use codeowners::check_codeowners;
 use required_files::check_required_files;
 
 fn main() -> ExitCode {
-    let mut args = std::env::args_os()
-        .skip(1)
-        .map(|arg| arg.to_string_lossy().into_owned());
-    let mut root = match std::env::current_dir() {
-        Ok(dir) => dir,
-        Err(error) => {
-            eprintln!("governance: cannot determine project root: {error}");
-            return ExitCode::from(2);
-        }
+    let root = match gate_args::parse(
+        "governance",
+        "Checks that the governance shell files exist and that CODEOWNERS references \
+                     only paths that exist.",
+        &mut [],
+    ) {
+        Ok(root) => root,
+        Err(code) => return code,
     };
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--help" => {
-                println!(
-                    "Checks that the governance shell files exist and that CODEOWNERS references \
-                     only paths that exist."
-                );
-                return ExitCode::SUCCESS;
-            }
-            "--root" => {
-                let Some(value) = args.next() else {
-                    eprintln!("--root requires a project directory");
-                    return ExitCode::from(2);
-                };
-                root = PathBuf::from(value);
-            }
-            other => {
-                eprintln!("unknown argument: {other}");
-                return ExitCode::from(2);
-            }
-        }
-    }
 
     let mut failures: Vec<String> = Vec::new();
 

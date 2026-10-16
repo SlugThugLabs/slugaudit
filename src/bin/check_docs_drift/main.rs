@@ -24,11 +24,13 @@
 //! Pure-Rust: no Python, no shell. stdlib only.
 
 mod canonical_docs;
+#[path = "../gate_common/args.rs"]
+mod gate_args;
 mod module_map;
 mod test_file_count;
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 
 use canonical_docs::check_canonical_docs;
@@ -36,35 +38,15 @@ use module_map::check_module_map;
 use test_file_count::check_test_file_count;
 
 fn main() -> ExitCode {
-    let mut args = std::env::args_os()
-        .skip(1)
-        .map(|arg| arg.to_string_lossy().into_owned());
-    let Ok(mut project_root) = std::env::current_dir() else {
-        eprintln!("docs-drift: cannot determine project root");
-        return ExitCode::from(2);
+    let project_root = match gate_args::parse(
+        "docs-drift",
+        "Checks that the canonical doc set exists and that ARCHITECTURE.md's module \
+                     map and test-count claims match the codebase.",
+        &mut [],
+    ) {
+        Ok(root) => root,
+        Err(code) => return code,
     };
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--help" => {
-                println!(
-                    "Checks that the canonical doc set exists and that ARCHITECTURE.md's module \
-                     map and test-count claims match the codebase."
-                );
-                return ExitCode::SUCCESS;
-            }
-            "--root" => {
-                let Some(value) = args.next() else {
-                    eprintln!("--root requires a project directory");
-                    return ExitCode::from(2);
-                };
-                project_root = PathBuf::from(value);
-            }
-            other => {
-                eprintln!("unknown argument: {other}");
-                return ExitCode::from(2);
-            }
-        }
-    }
 
     let mut failures: Vec<String> = Vec::new();
 

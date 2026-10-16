@@ -24,6 +24,8 @@
 //! Pure-Rust: no Python, no shell. stdlib + `serde_json` only.
 
 mod diff;
+#[path = "../gate_common/args.rs"]
+mod gate_args;
 mod surface;
 
 #[cfg(test)]
@@ -41,44 +43,20 @@ const SNAPSHOT_PATH: &str = ".planning/archive/mcp_surface.json";
 const MAX_REPORTED_DIFFERENCES: usize = 40;
 
 fn main() -> std::process::ExitCode {
-    use std::path::PathBuf;
-
-    let mut root = match std::env::current_dir() {
-        Ok(directory) => directory,
-        Err(error) => {
-            eprintln!("mcp-surface: cannot determine the project root: {error}");
-            return std::process::ExitCode::from(2);
-        }
-    };
     let mut should_record = false;
-    let mut args = std::env::args_os()
-        .skip(1)
-        .map(|arg| arg.to_string_lossy().into_owned());
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--help" => {
-                println!(
-                    "Compares the live MCP surface (tools/list + resources/list) against the \
+    let root = match gate_args::parse(
+        "mcp-surface",
+        &format!(
+            "Compares the live MCP surface (tools/list + resources/list) against the \
                      committed snapshot and fails on drift.\n\
                      Usage: check_mcp_surface [--record] [--root <dir>]\n\
                      --record: rewrite {SNAPSHOT_PATH} from the live surface."
-                );
-                return std::process::ExitCode::SUCCESS;
-            }
-            "--record" => should_record = true,
-            "--root" => {
-                let Some(value) = args.next() else {
-                    eprintln!("--root requires a project directory");
-                    return std::process::ExitCode::from(2);
-                };
-                root = PathBuf::from(value);
-            }
-            other => {
-                eprintln!("unknown argument: {other}");
-                return std::process::ExitCode::from(2);
-            }
-        }
-    }
+        ),
+        &mut [("--record", &mut should_record)],
+    ) {
+        Ok(root) => root,
+        Err(code) => return code,
+    };
 
     let live = match surface::build() {
         Ok(live) => live,

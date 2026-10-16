@@ -24,13 +24,15 @@
 
 mod approval;
 mod counter;
+#[path = "../gate_common/args.rs"]
+mod gate_args;
 mod scanner;
 
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 
 /// A file is a test file when its name follows this repo's test-module
@@ -45,38 +47,21 @@ fn is_test_file(path: &Path) -> bool {
 }
 
 fn main() -> ExitCode {
-    let mut args = std::env::args_os()
-        .skip(1)
-        .map(|arg| arg.to_string_lossy().into_owned());
-    let Ok(mut project_root) = std::env::current_dir() else {
-        eprintln!("cannot determine the current directory");
-        return ExitCode::from(2);
+    let project_root = match gate_args::parse(
+        "source-limit",
+        "Checks production Rust code-line limits under src/.",
+        &mut [],
+    ) {
+        Ok(root) => root,
+        Err(code) => return code,
     };
 
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--help" => {
-                println!("Checks production Rust code-line limits under src/.");
-                return ExitCode::SUCCESS;
-            }
-            "--root" => {
-                let Some(value) = args.next() else {
-                    eprintln!("--root requires a project directory");
-                    return ExitCode::from(2);
-                };
-                project_root = PathBuf::from(value);
-            }
-            other => {
-                eprintln!("unknown argument: {other}");
-                return ExitCode::from(2);
-            }
-        }
-    }
-
     let src_root = project_root.join("src");
+    // Fail closed: a root with nothing to measure is a mistyped `--root`
+    // or a wrong working directory, never a project that passes.
     if !src_root.is_dir() {
-        println!("source-limit: no production Rust files found under src/");
-        return ExitCode::SUCCESS;
+        eprintln!("source-limit: {} is not a directory", src_root.display());
+        return ExitCode::from(2);
     }
 
     let files = match counter::walk_rs_files(&src_root) {
@@ -87,8 +72,11 @@ fn main() -> ExitCode {
         }
     };
     if files.is_empty() {
-        println!("source-limit: no production Rust files found under src/");
-        return ExitCode::SUCCESS;
+        eprintln!(
+            "source-limit: no production Rust files found under {}",
+            src_root.display()
+        );
+        return ExitCode::from(2);
     }
 
     let mut failures: Vec<String> = Vec::new();

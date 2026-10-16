@@ -27,48 +27,26 @@
 //! TOML parser is a dependency); `lhm.plugin.json` is parsed with
 //! `serde_json`, already a dependency.
 
+#[path = "../gate_common/args.rs"]
+mod gate_args;
 mod manifests;
 
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
 
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let mut args = std::env::args_os()
-        .skip(1)
-        .map(|arg| arg.to_string_lossy().into_owned());
-    let mut root = match std::env::current_dir() {
-        Ok(dir) => dir,
-        Err(error) => {
-            eprintln!("version-consistency: cannot determine project root: {error}");
-            return ExitCode::from(2);
-        }
+    let root = match gate_args::parse(
+        "version-consistency",
+        "Checks that Cargo.toml, lhm.plugin.json, CHANGELOG.md and parse::PACK_VERSION \
+                     all agree on the version.",
+        &mut [],
+    ) {
+        Ok(root) => root,
+        Err(code) => return code,
     };
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--help" => {
-                println!(
-                    "Checks that Cargo.toml, lhm.plugin.json, CHANGELOG.md and parse::PACK_VERSION \
-                     all agree on the version."
-                );
-                return ExitCode::SUCCESS;
-            }
-            "--root" => {
-                let Some(value) = args.next() else {
-                    eprintln!("--root requires a project directory");
-                    return ExitCode::from(2);
-                };
-                root = PathBuf::from(value);
-            }
-            other => {
-                eprintln!("unknown argument: {other}");
-                return ExitCode::from(2);
-            }
-        }
-    }
 
     let failures = match manifests::check(&root) {
         Ok(failures) => failures,

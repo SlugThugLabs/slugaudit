@@ -33,6 +33,8 @@
 //!
 //! Pure-Rust: no Python, no shell. stdlib only.
 
+#[path = "../gate_common/args.rs"]
+mod gate_args;
 mod scan;
 
 #[cfg(test)]
@@ -40,7 +42,7 @@ mod scan;
 mod tests;
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 
 /// An enum the gate requires producer coverage for: its name, and the file
@@ -70,35 +72,15 @@ pub(crate) struct EnumReport {
 }
 
 fn main() -> ExitCode {
-    let mut args = std::env::args_os()
-        .skip(1)
-        .map(|arg| arg.to_string_lossy().into_owned());
-    let mut root = std::env::current_dir().unwrap_or_else(|error| {
-        eprintln!("producer-coverage: cannot determine project root: {error}");
-        PathBuf::from(".")
-    });
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--help" => {
-                println!(
-                    "Checks that every evidence kind and extraction-completeness variant has a \
-                     producer in src/."
-                );
-                return ExitCode::SUCCESS;
-            }
-            "--root" => {
-                let Some(value) = args.next() else {
-                    eprintln!("--root requires a project directory");
-                    return ExitCode::from(2);
-                };
-                root = PathBuf::from(value);
-            }
-            other => {
-                eprintln!("unknown argument: {other}");
-                return ExitCode::from(2);
-            }
-        }
-    }
+    let root = match gate_args::parse(
+        "producer-coverage",
+        "Checks that every evidence kind and extraction-completeness variant has a \
+                     producer in src/.",
+        &mut [],
+    ) {
+        Ok(root) => root,
+        Err(code) => return code,
+    };
 
     let reports = match check(&root) {
         Ok(reports) => reports,
