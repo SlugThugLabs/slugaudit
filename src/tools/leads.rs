@@ -36,6 +36,9 @@ use serde::{Deserialize, Serialize};
 /// Longest `detail` string returned per row. Callee text and comment lines
 /// can be arbitrarily long; the caller can always read the file itself.
 pub(super) const MAX_DETAIL_CHARS: usize = 200;
+const MAX_PATH_BYTES: usize = 32 * 1024;
+const MAX_FILTER_BYTES: usize = 8 * 1024;
+const MAX_REVISION_BYTES: usize = 256;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LeadsRequest {
@@ -304,6 +307,29 @@ fn leads_with_limits(
         expected_revision,
         mode,
     } = &request.0;
+    if crate::util::exceeds_input_bytes(path, MAX_PATH_BYTES) {
+        return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
+    }
+    for (name, value) in [
+        ("mechanic", mechanic.as_deref()),
+        ("pattern", pattern.as_deref()),
+    ] {
+        if value.is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_FILTER_BYTES)) {
+            return Err(ErrorData::invalid_params(
+                format!("{name} exceeds 8192 bytes"),
+                None,
+            ));
+        }
+    }
+    if expected_revision
+        .as_deref()
+        .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_REVISION_BYTES))
+    {
+        return Err(ErrorData::invalid_params(
+            "expected_revision exceeds 256 bytes",
+            None,
+        ));
+    }
     let synced = ensure_synced(path, sink, manager)?;
     guard_expected_revision(&synced.revision_id, expected_revision.as_deref())?;
     let selected = resolve_mechanic(mechanic.as_deref())?;

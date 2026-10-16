@@ -66,6 +66,7 @@ pub struct ParserFailureFile {
 /// to surface the pattern (e.g. "all failures are scratch files") without
 /// letting a project with thousands of broken files bloat the response.
 const MAX_PARSER_FAILURE_FILES: usize = 20;
+const MAX_PATH_BYTES: usize = 32 * 1024;
 
 /// Automatic project snapshot: what evidence exists, not what's suspicious
 /// about it. No score, no risk leads, no safe/unsafe claim.
@@ -136,6 +137,9 @@ pub fn report(
     sink: &dyn ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<ReportResponse>, ErrorData> {
+    if crate::util::exceeds_input_bytes(&request.0.path, MAX_PATH_BYTES) {
+        return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
+    }
     let synced = ensure_synced(&request.0.path, sink, manager)?;
     let revision_id = synced.revision_id.clone();
     let response = with_verified_read(&synced, |tx| {

@@ -15,6 +15,26 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static LAST_UNIX_TIME: AtomicI64 = AtomicI64::new(0);
 
+/// Returns whether an externally supplied UTF-8 string exceeds its byte cap.
+/// Tool request validation uses bytes because the transport and storage
+/// budgets are byte-based, and this avoids allocating a copy of the input.
+pub(crate) fn exceeds_input_bytes(value: &str, max_bytes: usize) -> bool {
+    value.len() > max_bytes
+}
+
+/// Returns a stable, non-reversible identifier for a value that must be
+/// correlated in logs without disclosing user-controlled data.
+pub(crate) fn redacted_log_id(value: impl AsRef<[u8]>) -> String {
+    blake3::hash(value.as_ref()).to_hex().to_string()
+}
+
+/// Returns a stable, non-reversible identifier for a filesystem path.
+/// Paths can contain usernames, repository names, and other private data, so
+/// they must not be emitted verbatim in server logs.
+pub(crate) fn redacted_path(path: &std::path::Path) -> String {
+    redacted_log_id(path.to_string_lossy().as_bytes())
+}
+
 /// Minimal ANSI styling for the human-facing CLI surface (`menu`, `help`).
 ///
 /// Detects once, at construction, whether stdout is a real terminal. When

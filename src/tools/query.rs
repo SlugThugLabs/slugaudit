@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
 
 const MAX_ROWS: usize = 500;
+const MAX_PATH_BYTES: usize = 32 * 1024;
+const MAX_REVISION_BYTES: usize = 256;
 const ABORT_NONE: u8 = 0;
 const ABORT_STEP_BUDGET: u8 = 1;
 const ABORT_WALL_CLOCK: u8 = 2;
@@ -111,6 +113,18 @@ fn query_with_limits(
         offset,
         expected_revision,
     } = &request.0;
+    if crate::util::exceeds_input_bytes(path, MAX_PATH_BYTES) {
+        return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
+    }
+    if expected_revision
+        .as_deref()
+        .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_REVISION_BYTES))
+    {
+        return Err(ErrorData::invalid_params(
+            "expected_revision exceeds 256 bytes",
+            None,
+        ));
+    }
     let trimmed = sql.trim().trim_end_matches(';');
     if trimmed.is_empty() {
         return Err(ErrorData::invalid_params("sql must not be empty", None));

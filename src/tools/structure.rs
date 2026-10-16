@@ -13,6 +13,9 @@ use tree_sitter::{
     Parser, Query, QueryCursor, QueryCursorOptions, QueryCursorState, StreamingIterator,
 };
 
+const MAX_PATH_BYTES: usize = 32 * 1024;
+const MAX_FILTER_BYTES: usize = 8 * 1024;
+
 #[cfg(test)]
 pub(super) use super::structure_source::MAX_TEXT_BYTES;
 use super::structure_source::{
@@ -107,6 +110,21 @@ fn structure_with_limits(
         query,
         full_text,
     } = &request.0;
+    if crate::util::exceeds_input_bytes(path, MAX_PATH_BYTES) {
+        return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
+    }
+    for (name, value) in [
+        ("file", file.as_deref()),
+        ("language", language.as_deref()),
+        ("pattern", pattern.as_deref()),
+    ] {
+        if value.is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_FILTER_BYTES)) {
+            return Err(ErrorData::invalid_params(
+                format!("{name} exceeds 8192 bytes"),
+                None,
+            ));
+        }
+    }
     if query.trim().is_empty() {
         return Err(ErrorData::invalid_params(
             "structure query must not be empty",

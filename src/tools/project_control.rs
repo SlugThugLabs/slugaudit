@@ -12,6 +12,9 @@ use rmcp::handler::server::wrapper::{Json, Parameters};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+const MAX_PATH_BYTES: usize = 32 * 1024;
+const MAX_PROFILE_BYTES: usize = 64;
+
 /// Request for the `project_control` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ProjectControlRequest {
@@ -119,6 +122,16 @@ pub fn project_control(
 ) -> Result<Json<ProjectControlResponse>, ErrorData> {
     let inner = &request.0;
     let path_str = inner.path.as_deref().unwrap_or(".").to_string();
+    if crate::util::exceeds_input_bytes(&path_str, MAX_PATH_BYTES) {
+        return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
+    }
+    if inner
+        .profile
+        .as_deref()
+        .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_PROFILE_BYTES))
+    {
+        return Err(ErrorData::invalid_params("profile exceeds 64 bytes", None));
+    }
     let path = std::path::PathBuf::from(&path_str);
     // `ProjectRoot::resolve`, not `project::resolve_project`: enabling a
     // project must work *before* the activation marker exists, so there

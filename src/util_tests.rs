@@ -8,7 +8,9 @@
 //! `watch::state::tests` because it verifies the recovery in the context
 //! where the helper is actually used.
 
-use crate::util::{Style, at_least_timestamp, hex_encode, lock_or_recover, now_unix};
+use crate::util::{
+    Style, at_least_timestamp, exceeds_input_bytes, hex_encode, lock_or_recover, now_unix,
+};
 use std::sync::{Arc, Mutex};
 
 /// A panic inside a critical section poisons the underlying Mutex; the
@@ -177,4 +179,22 @@ fn style_uses_the_documented_sgr_codes() {
             assert_eq!(output, "x");
         }
     }
+}
+
+#[test]
+fn input_byte_bound_check_is_utf8_safe_and_exact() {
+    assert!(!exceeds_input_bytes("é", 2));
+    assert!(exceeds_input_bytes("é", 1));
+    assert!(!exceeds_input_bytes("abc", 3));
+    assert!(exceeds_input_bytes("abcd", 3));
+}
+
+#[test]
+fn redacted_log_ids_are_stable_without_containing_input() {
+    let secret = "/home/alice/private-project";
+    let first = crate::util::redacted_log_id(secret.as_bytes());
+    let second = crate::util::redacted_path(std::path::Path::new(secret));
+    assert_eq!(first, second);
+    assert_ne!(first, secret);
+    assert_eq!(first.len(), 64);
 }

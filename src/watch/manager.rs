@@ -16,7 +16,7 @@ use super::scope::WatchScope;
 use super::state::WatchState;
 use super::types::WatcherHealth;
 use crate::ignore_rules::{IgnoreRules, is_excluded_path};
-use crate::util::lock_or_recover;
+use crate::util::{lock_or_recover, redacted_path};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -134,11 +134,11 @@ impl WatchManager {
         if let Some(ref mut watcher) = guard.watcher {
             match watcher.watch(&canonical, RecursiveMode::Recursive) {
                 Ok(()) => {
-                    tracing::info!(root = %canonical.display(), "watching project");
+                    tracing::info!(root_id = %redacted_path(&canonical), "watching project");
                 }
                 Err(error) => {
                     tracing::warn!(
-                        root = %canonical.display(),
+                        root_id = %redacted_path(&canonical),
                         error = %error,
                         "failed to watch project root; using Unavailable health"
                     );
@@ -305,12 +305,12 @@ impl WatchManager {
         if let Some(watcher) = guard.watcher.as_mut() {
             for dir in &removed_watches {
                 if watcher.unwatch(dir).is_ok() {
-                    tracing::debug!(dir = %dir.display(), "unwatched excluded directory");
+                    tracing::debug!(dir_id = %redacted_path(dir), "unwatched excluded directory");
                 }
             }
             for dir in &new_watches {
                 if watcher.watch(dir, RecursiveMode::Recursive).is_ok() {
-                    tracing::debug!(dir = %dir.display(), "watching indexable directory");
+                    tracing::debug!(dir_id = %redacted_path(dir), "watching indexable directory");
                 }
             }
         } else {
@@ -402,7 +402,7 @@ impl WatchManager {
         // sync layer calls from a tool thread, never from the event loop.
         for root in &deleted_roots {
             guard.projects.remove(root);
-            tracing::info!(root = %root.display(), "removed watch for deleted project root");
+            tracing::info!(root_id = %redacted_path(root), "removed watch for deleted project root");
         }
     }
 }
