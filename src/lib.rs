@@ -28,6 +28,7 @@ pub mod evidence;
 pub mod graph;
 pub mod ignore_rules;
 pub mod install;
+pub(crate) mod install_place;
 pub mod menu;
 pub(crate) mod menu_render;
 pub mod model;

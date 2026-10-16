@@ -51,6 +51,8 @@ pub enum InstallError {
     #[error("could not copy the binary to {path}: {inner}")]
     Copy { path: String, inner: std::io::Error },
     #[error(transparent)]
+    Place(#[from] crate::install_place::PlaceError),
+    #[error(transparent)]
     Io(#[from] std::io::Error),
 }
 
@@ -114,30 +116,14 @@ pub fn run_install() -> Result<(), InstallError> {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos())
     ));
-    std::fs::copy(&source, &temporary).map_err(|inner| InstallError::Copy {
-        path: temporary.display().to_string(),
-        inner,
+    std::fs::copy(&source, &temporary).map_err(|inner| {
+        crate::install_place::remove_leftover(&temporary, "could not remove staged binary");
+        InstallError::Copy {
+            path: temporary.display().to_string(),
+            inner,
+        }
     })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = std::fs::metadata(&temporary)?.permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&temporary, permissions)?;
-    }
-    retain_previous_binary(&target).map_err(|inner| InstallError::Copy {
-        path: target.display().to_string(),
-        inner,
-    })?;
-    std::fs::rename(&temporary, &target).map_err(|inner| InstallError::Copy {
-        path: target.display().to_string(),
-        inner,
-    })?;
-
-    remove_stale_binary(&bin_dir.join("slugaudit-mcp"));
-    if let Some(home) = slugthug_home() {
-        remove_stale_binary(&home.join("bin").join("slugaudit-mcp"));
-    }
+    crate::install_place::place_staged_binary(&temporary, &target)?;
 
     println!("Installed slugaudit to {}", target.display());
     // `install` is human-facing; `connect` follows naturally after PATH has
@@ -163,17 +149,6 @@ pub fn run_install() -> Result<(), InstallError> {
         );
     }
     Ok(())
-}
-
-fn remove_stale_binary(path: &Path) {
-    // Deliberate raw path: one-shot cleanup diagnostic beside the install
-    // directory; naming the leftover file is what an operator needs. The
-    // redaction rule (`util::redacted_path`) is for correlation-heavy server logs.
-    if let Err(error) = std::fs::remove_file(path)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::warn!(path = %path.display(), error = %error, "could not remove stale binary");
-    }
 }
 
 /// True when `dir` is already on `PATH` (as a canonicalized entry).

@@ -329,3 +329,71 @@ fn add_to_path_reports_unreadable_shell_config() {
         },
     );
 }
+
+/// With neither `SLUGTHUG_HOME` nor `HOME` there is no install location to
+/// guess; the install names both variables instead of writing somewhere odd.
+#[test]
+fn an_install_without_any_home_variable_reports_no_home() {
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+
+    let result = temp_env::with_vars_unset(["SLUGTHUG_HOME", "HOME"], run_install);
+
+    assert!(
+        matches!(result, Err(InstallError::NoHome)),
+        "expected NoHome, got {result:?}"
+    );
+}
+
+/// An install directory that cannot be created is reported with its path.
+#[test]
+fn an_install_home_that_is_a_file_reports_the_directory_it_could_not_create() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let home = directory.path().join("not-a-directory");
+    std::fs::write(&home, b"a file where the home should be").expect("plant file");
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+
+    let result = temp_env::with_var("SLUGTHUG_HOME", Some(home.as_os_str()), run_install);
+
+    let Err(InstallError::Mkdir { path, .. }) = result else {
+        panic!("expected Mkdir, got {result:?}");
+    };
+    assert!(
+        path.ends_with("slugaudit"),
+        "the path names the install dir: {path}"
+    );
+}
+
+/// A target that cannot be replaced fails the placement step — naming it —
+/// and leaves what was there untouched, with no staged copy left behind.
+#[test]
+fn an_install_target_that_is_a_directory_reports_the_failed_step_and_cleans_up() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let target = directory.path().join("slugaudit").join("slugaudit");
+    std::fs::create_dir_all(&target).expect("plant a directory at the target");
+    std::fs::write(target.join("keep"), b"kept").expect("make it non-empty");
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+
+    let result = temp_env::with_var(
+        "SLUGTHUG_HOME",
+        Some(directory.path().as_os_str()),
+        run_install,
+    );
+
+    let Err(InstallError::Place(error)) = result else {
+        panic!("expected Place, got {result:?}");
+    };
+    assert_eq!(error.action, "retain the previous binary at");
+    assert!(
+        target.join("keep").exists(),
+        "the target must be left in place"
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(directory.path().join("slugaudit"))
+        .expect("list install dir")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "the staged copy must not be left behind: {leftovers:?}"
+    );
+}

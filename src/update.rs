@@ -137,51 +137,20 @@ fn apply_update(latest: &LatestRelease, target: &Path) -> Result<(), UpdateError
 
         verify_checksum(&temp_exe, &temp_sums)?;
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut permissions = std::fs::metadata(&temp_exe)?.permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&temp_exe, permissions)?;
-        }
-
-        crate::install::retain_previous_binary(target).map_err(|error| UpdateError::Stage {
-            action: "retaining the previous binary at",
-            path: dir.join(crate::install::PREVIOUS_BINARY_NAME),
-            source: error,
+        crate::install_place::place_staged_binary(&temp_exe, target).map_err(|error| {
+            UpdateError::Stage {
+                action: error.action,
+                path: error.path,
+                source: error.source,
+            }
         })?;
-        std::fs::rename(&temp_exe, target)?;
-        remove_stale_binary(&dir.join("slugaudit-mcp"));
-        if let Some(home) = crate::install::slugthug_home() {
-            remove_stale_binary(&home.join("bin").join("slugaudit-mcp"));
-        }
         Ok(())
     })();
 
     // Best-effort cleanup of temp files whether or not we succeeded.
-    remove_temp_file(&temp_exe);
-    remove_temp_file(&temp_sums);
+    crate::install_place::remove_leftover(&temp_exe, "could not remove update temporary file");
+    crate::install_place::remove_leftover(&temp_sums, "could not remove update temporary file");
     result
-}
-
-// Deliberate raw paths below: one-shot cleanup diagnostics beside the
-// installed binary — naming the file the operator can see is the point.
-// (The redaction rule is for correlation-heavy server logs.)
-
-fn remove_temp_file(path: &Path) {
-    if let Err(error) = std::fs::remove_file(path)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::warn!(path = %path.display(), error = %error, "could not remove update temporary file");
-    }
-}
-
-fn remove_stale_binary(path: &Path) {
-    if let Err(error) = std::fs::remove_file(path)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::warn!(path = %path.display(), error = %error, "could not remove stale binary");
-    }
 }
 
 /// Verifies `binary_path` against the `ASSET` entry in the SHA256SUMS text
