@@ -1285,3 +1285,116 @@ Format: date — title; status; context; decision; rationale; consequences.
   tracks 1.0.0. Future versions follow semver: 1.x.y for
   backward-compatible changes, 2.0.0 for breaking tool-contract or
   schema changes.
+
+## 2026-10-16 — Coverage gate scope: shipped runtime only
+
+- **Status**: decided
+- **Context**: the external code-quality audit re-run at `4de8e9b` found
+  `check_coverage` failing (81.84% vs the 83 floor). Analysis showed 892
+  uncovered instrumented lines — ~8 points of the metric — sit in the
+  dev-only `src/bin/check_*` entry code that AGENTS.md's "Shipped artifact vs
+  development-only" section says must not be counted as end-user runtime
+  code; their own test files are already excluded by llvm-cov, so six gate
+  mains sat at 0% inside the denominator permanently.
+- **Decision**: the gate keeps its 83% floor and gains
+  `--ignore-filename-regex=.*src/bin/.*`, plus `--locked` on the inner
+  `cargo llvm-cov` call. Measured shipped-runtime coverage on the day:
+  87.89% before the audit fixes, 88.32% after.
+- **Rationale**: scope correction, not ratcheting — the threshold was never
+  lowered, and the excluded code is excluded by a written project rule, not
+  by convenience.
+- **Consequences**: gate binaries are measured by their own unit tests and by
+  CI actually running them; the floor tracks product coverage only. AGENTS.md
+  coverage bullet updated to state the scope.
+
+## 2026-10-16 — Fuzz workspace brought under the deny policy
+
+- **Status**: decided
+- **Context**: `fuzz/` is a separate cargo workspace with its own lockfile and
+  was invisible to CI's `cargo deny`. It carried rustls 0.23.45
+  (RUSTSEC-2026-0349 — fixed in 0.23.46, which the root lock already had), a
+  wildcard path dependency on the product crate, and libfuzzer-sys's NCSA
+  license, failing advisories/bans/licenses.
+- **Decision**: version the path dependency (`version = "1"` — a deliberate
+  lockfile update for rustls to 0.23.46 was made in the same pass), add a
+  deny.toml license *exception* naming exactly `libfuzzer-sys`/NCSA (never
+  shipped, never widened), and add second cargo-deny invocations with
+  `manifest-path: fuzz/Cargo.toml` to `quality.yml` (all checks, PR path)
+  and `advisories.yml` (weekly advisories).
+- **Rationale**: a green dependency gate should mean the whole workspace is
+  green; the exception is narrower than adding NCSA to the allow list.
+- **Consequences**: fuzz lockfile drift now fails CI; the weekly advisory
+  job covers both lockfiles.
+
+## 2026-10-16 — Path logging rule: hash correlation ids, keep one-shot diagnostics raw
+
+- **Status**: decided
+- **Context**: the audit found the crate inconsistent — 23 sites hash paths
+  via `util::redacted_path` while 17 print `%…display()` — with conflicting
+  intent (util's doc says never verbatim in server logs; store sites carry
+  comments demanding the exact path for operator diagnosis).
+- **Decision**: the rule is now written: (a) correlation-bearing sync/watch/
+  tool logs record `*_id = redacted_path(...)` (watcher roots and
+  `ensure_current` info/debug lines converted to this form); (b) one-shot
+  rejection and cleanup diagnostics — store guard refusals, stale-binary/
+  temp-file removal warnings, activation-dir tightening — keep the raw path
+  and carry a comment saying so; (c) ignore-file matcher diagnostics log
+  *project-relative* paths (identified without leaking the home prefix).
+- **Rationale**: stderr is local; the privacy cost concentrates in
+  always-on server logs, while a refusal whose file cannot be named is
+  undebuggable. Making the trade-off explicit ends the drift.
+- **Consequences**: new log sites pick (a) or (b) deliberately; the
+  `finding` content rule (`redacted_log_id`) is unchanged.
+
+## 2026-10-16 — External audit brief vs test house style (R1): style upheld
+
+- **Status**: decided
+- **Context**: the external brief's R1 target counts every `.expect()`/
+  `unwrap()` in tests as a violation (1,436 sites). AGENTS.md states the
+  opposite: "Tests are exempt: there a panic *is* the failure signal", and
+  the `unwrap_used`/`expect_used` denies are scoped `cfg(not(test))`
+  deliberately.
+- **Decision**: production R1 stays compiler-enforced at zero
+  (`clippy --all-targets -D warnings` green); test-area style is unchanged;
+  the conflict is recorded here rather than re-litigated per audit.
+- **Consequences**: external audits scored against the brief will keep
+  flagging test sites; this entry is the standing answer.
+
+## 2026-10-16 — R4 scope: file-exception system upheld; function refactors targeted
+
+- **Status**: decided
+- **Context**: the brief caps files at 200 code lines with no exceptions; the
+  repo runs a human-approved 200–300 exception system (12 runtime files
+  annotated) and a 500-line test-file cap. For functions the brief's ≤50
+  lines/CC ≤15 found 49 shipped functions over length and 6 over complexity.
+- **Decision**: files keep the exception system (splitting annotated files
+  would fragment documented cohesion decisions — three new annotations were
+  added where refactors legitimately tipped a file over:
+  `manager_health.rs`, `report.rs`, `publish_attempt.rs`). Functions: all six
+  CC>15 shipped offenders and the >100-line ones were decomposed
+  (`first_statement_separator`, `build_report`, `main`, `publish_revision`
+  — split into *private in-file* steps so the cargo-mutants scope over
+  `sync/revision.rs` still covers the whole publish path —
+  `IgnoreRules::build` via the new `ignore_rules/build.rs`,
+  `macro_calls::collect`, `sample_all_with_deadline` → `Batch`,
+  `sync_by_health` → per-branch methods, `try_publish` → attempt halves,
+  `sweep`, `analyze`, `run_blocking`); mid-size (51–100) functions are
+  listed as known debt in PLAN.md rather than churned in one sweep.
+- **Consequences**: `build_report`'s 167-line/CC-21 and `publish_revision`'s
+  CAS ordering are the two highest-risk decompositions; both are pinned by
+  the pre-existing suites (offsets, races, ordering) and stayed green.
+
+## 2026-10-16 — Gate-bin duplicated scaffolding (R10) accepted
+
+- **Status**: decided
+- **Context**: the audit's clone scan found one real ≥11-line duplication:
+  the four gate bins repeat their lint-attribute header + `fn main`
+  args/`ExitCode` prologue.
+- **Decision**: accepted, not shared. Bins are separate crates; a shared
+  module under `src/bin/` is possible via `#[path]`, but the product lib
+  must not gain dev-only code (its lint posture — `forbid(unsafe_code)`,
+  denied `print_stdout`, size ceiling — differs from the gate bins by
+  design), and three files of argv boilerplate do not justify a fourth
+  special-cased module.
+- **Consequences**: R10 is closed as reviewed; a future `check_*` that grows
+  real shared logic should start a `src/bin/_common/` module then, not now.

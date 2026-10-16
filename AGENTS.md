@@ -311,10 +311,12 @@ caught in `src/server_runner.rs`: `spawn_blocking(..)`'s `JoinError` becomes an
    what makes a surface change a deliberate, reviewable one.
 3. Open data through `ensure_synced` + `with_verified_read`/`with_verified_write`.
 4. Follow the `leads` shape: module-level consts for caps, complete
-   `mechanic_counts` regardless of paging, rows capped (mirrors `query`'s
-   `MAX_ROWS = 500`), `detail` clipped on a char boundary and flagged with
-   `detail_clipped`, `next_offset` only when more remain, and a completion
-   `tracing::info!`.
+   `mechanic_counts` regardless of paging, rows cut by the response byte
+   budget rather than any row ceiling (the old copy of `query`'s
+   `MAX_ROWS = 500` was deliberately removed 2026-10-16; `INSTRUCTIONS`
+   says "no row cap" and that is now true), `detail` clipped on a char
+   boundary and flagged with `detail_clipped`, `next_offset` only when more
+   remain, and a completion `tracing::info!`.
 5. Adding a `leads` mechanic is **one new entry** in the `MECHANICS` table
    (`src/tools/leads_query.rs`) — never a new table, and never a statement about
    what a match means. Shared predicates such as `CREDENTIAL_PATH_PREDICATE`
@@ -559,7 +561,10 @@ before replacing the binary (`src/update.rs`).
 
 - Coverage: `cargo run --quiet --bin check_coverage --locked`, default gate
   **83** percent line coverage via `cargo llvm-cov` (requires
-  `cargo-llvm-cov`). Override the threshold by passing a number on the command
+  `cargo-llvm-cov`). The measurement covers the shipped runtime; the dev-only
+  `src/bin/check_*` binaries are excluded by `--ignore-filename-regex`, per the
+  "Shipped artifact vs development-only" rule (see DECISIONS 2026-10-16).
+  Override the threshold by passing a number on the command
   line for a single run. The gate tracks measurement — it catches regressions,
   it is not an aspirational target — so document any raise in
   `.planning/archive/DECISIONS.md`.
@@ -622,7 +627,9 @@ cargo mutants --file src/sync/hash.rs
 - **Rust 1.97.1** pinned in `rust-toolchain.toml` (minimal profile + rustfmt +
   clippy); edition 2024. There is **no declared MSRV** — do not invent one.
 - Dependencies: 16 runtime + 4 dev (`Cargo.toml`).
-  `tree-sitter-language-pack = "=1.14.3"` is the only exact pin;
+  `tree-sitter-language-pack = "=1.18.0"` is the only exact pin (number verified
+  against `Cargo.toml` on 2026-10-16; this sentence has drifted before — re-check
+  it whenever the pack moves);
   `src/parse/PACK_VERSION` is a hand-duplicated string that
   the `check_version_consistency` gate asserts against the manifest pin —
   update both together.
