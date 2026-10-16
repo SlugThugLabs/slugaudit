@@ -126,6 +126,16 @@ mod tests {
     }
 
     #[test]
+    fn a_span_whose_end_position_precedes_its_start_is_rejected() {
+        let start = Position { line: 3, column: 5 };
+        let end = Position { line: 3, column: 4 };
+
+        let result = Span::new(10, 12, start, end);
+
+        assert_eq!(result, Err(SpanError::ReversedPosition));
+    }
+
+    #[test]
     fn a_mid_codepoint_offset_floors_to_the_character_boundary() {
         // `é` occupies bytes 0..2, so byte 1 is inside it: the column must be
         // measured from the boundary before it rather than panicking.

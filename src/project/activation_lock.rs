@@ -72,4 +72,28 @@ mod tests {
         assert!(matches!(io, ActivationError::DatabaseLock(_)), "{io:?}");
         assert!(!io.to_string().contains("another connection"), "{io}");
     }
+
+    #[test]
+    fn a_reader_holding_a_wal_snapshot_makes_the_disable_lock_report_an_incomplete_checkpoint() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let root = ProjectRoot::resolve(directory.path()).expect("resolve root");
+        super::super::activation::enable(&root).expect("enable");
+        let db_path = database_path(&root);
+        let writer = open_read_write(&db_path).expect("open writer");
+        writer
+            .execute_batch("CREATE TABLE wal_probe(x); INSERT INTO wal_probe VALUES (1);")
+            .expect("leave frames in the WAL");
+        let reader = open_read_write(&db_path).expect("open reader");
+        reader.execute_batch("BEGIN").expect("begin read");
+        let _: i64 = reader
+            .query_row("SELECT count(*) FROM wal_probe", [], |row| row.get(0))
+            .expect("pin a read snapshot on the WAL");
+
+        let result = acquire_database_lock(&root);
+
+        assert!(
+            matches!(result, Err(ActivationError::CheckpointIncomplete)),
+            "a pinned WAL snapshot must refuse the disable lock, got {result:?}"
+        );
+    }
 }

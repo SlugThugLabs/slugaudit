@@ -106,6 +106,22 @@ fn rejects_a_project_with_no_activation_marker() {
     ));
 }
 
+#[test]
+fn a_start_path_that_does_not_exist_is_an_unresolvable_root_not_an_inactive_project() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let missing = directory.path().join("no-such-dir");
+
+    let result = find_project_root(&missing);
+
+    assert!(
+        matches!(
+            result,
+            Err(ActivationError::Root(RootError::Unresolvable(_)))
+        ),
+        "a missing path must say it cannot be resolved, got {result:?}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn rejects_a_symlinked_activation_directory() {
