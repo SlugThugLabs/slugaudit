@@ -24,6 +24,7 @@
 
 mod approval;
 mod counter;
+mod scanner;
 
 #[cfg(test)]
 #[path = "tests.rs"]

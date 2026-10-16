@@ -260,6 +260,7 @@ src/
     ├── check_source_limits/  per-file code-line ceilings
     │   ├── main.rs           check loop + verdict printer
     │   ├── counter.rs        token-aware Rust code-line counter
+    │   ├── scanner.rs        token scanner state machine
     │   └── approval.rs       exception-comment parser
     ├── check_no_duplicates.rs   duplicate commit subjects / test names
     ├── check_docs_drift/     documentation drift gate
