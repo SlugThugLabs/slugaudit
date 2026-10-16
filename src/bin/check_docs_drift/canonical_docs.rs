@@ -19,10 +19,11 @@ use std::path::Path;
 
 /// The canonical doc set, project-root relative. The order is presentation
 /// order in failure messages only; membership is what is checked.
-pub(super) const CANONICAL_DOCS: [&str; 7] = [
+pub(super) const CANONICAL_DOCS: [&str; 8] = [
     "README.md",
     "AGENTS.md",
     ".planning/ARCHITECTURE.md",
+    ".planning/MODULE_MAP.md",
     ".planning/PLAN.md",
     ".planning/archive/DECISIONS.md",
     "docs/CLIENTS.md",

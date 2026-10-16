@@ -345,13 +345,13 @@ above — an unrecognized `approved-by=` value is rejected, not ignored.
 The gate enforces three things:
 
 - Renaming/adding/removing anything under `src/` requires updating the fenced
-  module-map block in `.planning/ARCHITECTURE.md` (every listed path must
+  module-map block in `.planning/MODULE_MAP.md` (every listed path must
   exist).
 - Adding/removing a `src/**/*_tests.rs` file requires updating the
   “N `*_tests.rs` files share this pattern” sentence in `.planning/ARCHITECTURE.md`
   (the gate compares the claimed number against the real count).
 - The canonical doc set exists: `README.md`, `AGENTS.md`,
-  `.planning/ARCHITECTURE.md`, `.planning/PLAN.md`,
+  `.planning/ARCHITECTURE.md`, `.planning/MODULE_MAP.md`, `.planning/PLAN.md`,
   `.planning/archive/DECISIONS.md`, `docs/CLIENTS.md`,
   `docs/TROUBLESHOOTING.md`.
 

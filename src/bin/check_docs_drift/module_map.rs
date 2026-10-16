@@ -8,8 +8,14 @@ use std::path::{Path, PathBuf};
 use super::read;
 
 pub(super) fn check_module_map(root: &Path, failures: &mut Vec<String>) {
-    let architecture = read(root, "ARCHITECTURE.md");
-    let lines: Vec<&str> = architecture.lines().collect();
+    let module_map_path = root.join(".planning").join("MODULE_MAP.md");
+    let doc_name = if module_map_path.is_file() {
+        "MODULE_MAP.md"
+    } else {
+        "ARCHITECTURE.md"
+    };
+    let content = read(root, doc_name);
+    let lines: Vec<&str> = content.lines().collect();
 
     // Find the module map: a fenced block whose first content line is `src/`.
     let mut map_start = None;
@@ -22,7 +28,7 @@ pub(super) fn check_module_map(root: &Path, failures: &mut Vec<String>) {
         i += 1;
     }
     let Some(map_start) = map_start else {
-        failures.push("ARCHITECTURE.md module-map block (```src/ ... ```) not found".to_owned());
+        failures.push(format!("{doc_name} module-map block (```src/ ... ```) not found"));
         return;
     };
     let mut map_end = map_start + 1;
@@ -74,7 +80,7 @@ pub(super) fn check_module_map(root: &Path, failures: &mut Vec<String>) {
         if is_dir {
             if !checked.is_dir() {
                 failures.push(format!(
-                    "ARCHITECTURE.md line {line_no}: module map references directory `{}` which \
+                    "{doc_name} line {line_no}: module map references directory `{}` which \
                      does not exist",
                     rel.display()
                 ));
@@ -82,7 +88,7 @@ pub(super) fn check_module_map(root: &Path, failures: &mut Vec<String>) {
             stack.push((name.to_owned(), depth));
         } else if !checked.is_file() {
             failures.push(format!(
-                "ARCHITECTURE.md line {line_no}: module map references file `{}` which does not \
+                "{doc_name} line {line_no}: module map references file `{}` which does not \
                  exist",
                 rel.display()
             ));

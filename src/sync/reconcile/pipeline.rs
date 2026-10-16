@@ -8,7 +8,7 @@ use super::queries::{query_current_parser_pack_version, query_existing_hashes};
 use super::{ReconcileError, ReconcileOptions, ReconcileReport};
 use crate::sync::discovery::{DiscoveredFile, sniff_kind};
 use crate::sync::revision_skipped::{SKIP_REASON_OVERSIZE, SkippedRecord};
-use crate::sync::{hash, manifest, revision, sample};
+use crate::sync::{FileRecord, hash, manifest, revision, sample};
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -84,7 +84,7 @@ enum DirtyOutcome {
     Ignored,
     Skipped,
     Unchanged,
-    Upsert(crate::model::FileRecord),
+    Upsert(FileRecord),
 }
 
 fn reconcile_single_dirty_path(
@@ -234,7 +234,7 @@ fn commit_reconcile_changes(
     connection: &mut Connection,
     expected_revision: Option<&str>,
     discovered_paths: &HashSet<String>,
-    upserts: &[crate::model::FileRecord],
+    upserts: &[FileRecord],
     deletions: &[String],
     skipped_records: &[SkippedRecord],
 ) -> Result<(), ReconcileError> {
