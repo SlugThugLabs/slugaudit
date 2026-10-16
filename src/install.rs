@@ -131,9 +131,9 @@ pub fn run_install() -> Result<(), InstallError> {
         inner,
     })?;
 
-    let _ = std::fs::remove_file(bin_dir.join("slugaudit-mcp"));
+    remove_stale_binary(&bin_dir.join("slugaudit-mcp"));
     if let Some(home) = slugthug_home() {
-        let _ = std::fs::remove_file(home.join("bin").join("slugaudit-mcp"));
+        remove_stale_binary(&home.join("bin").join("slugaudit-mcp"));
     }
 
     println!("Installed slugaudit to {}", target.display());
@@ -160,6 +160,14 @@ pub fn run_install() -> Result<(), InstallError> {
         );
     }
     Ok(())
+}
+
+fn remove_stale_binary(path: &Path) {
+    if let Err(error) = std::fs::remove_file(path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(path = %path.display(), error = %error, "could not remove stale binary");
+    }
 }
 
 /// True when `dir` is already on `PATH` (as a canonicalized entry).
