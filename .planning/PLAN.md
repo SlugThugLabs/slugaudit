@@ -234,9 +234,10 @@ Found while auditing the surfaces and verified in the code. **All five are resol
 ## Audit follow-ups (identified 2026-10-16)
 
 From a full code-quality audit of all 227 `.rs` files (run against `57c3caa`).
-The audit's working ledger — every site with its quoted source line — was a
-scratch file and is gone; what survives is this list and the commit messages of
-the ten commits that closed the first tranche. Items here carry a state.
+The full ledger — every site with its quoted source line, plus the detector
+commands and their exact counts — is `.planning/audit_2026-10-16.txt`. It is the
+evidence behind the items below; this section is the list. Items here carry a
+state.
 
 ### Resolved 2026-10-16
 
