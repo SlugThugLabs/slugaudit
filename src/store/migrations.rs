@@ -10,6 +10,8 @@ pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 6;
 const SCHEMA_DDL: &str = include_str!("schema.sql");
 
 #[derive(Debug, Error)]
+/// Schema setup failures: applying `schema.sql`/migrations or reading
+/// `user_version`.
 pub enum MigrationError {
     #[error("failed to read schema version: {0}")]
     ReadVersion(#[source] rusqlite::Error),
@@ -24,6 +26,8 @@ pub enum MigrationError {
 
 impl MigrationError {
     #[must_use]
+    /// True when a migration failure means the file itself is corrupt (not
+    /// merely an older schema).
     pub fn is_corruption(&self) -> bool {
         match self {
             Self::ReadVersion(error) | Self::Apply(error) => super::is_rusqlite_corruption(error),

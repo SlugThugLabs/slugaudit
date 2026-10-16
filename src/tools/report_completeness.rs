@@ -18,6 +18,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 #[derive(Debug, Serialize, JsonSchema)]
+/// Row count for one `files.file_kind` value.
 pub struct FileKindCount {
     /// One of `indexed`, `binary`, `skipped` — `files.file_kind`.
     pub kind: String,
@@ -25,6 +26,7 @@ pub struct FileKindCount {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+/// Row count for one `files.file_class` value.
 pub struct FileClassCount {
     /// One of `authored`, `generated`, `vendored` — `files.file_class`.
     pub class: String,
@@ -32,6 +34,7 @@ pub struct FileClassCount {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+/// Row count for one recorded skip reason.
 pub struct SkipReasonCount {
     /// A short stable code from `files.skip_reason`: `oversize` (over the
     /// per-file import ceiling) or `unreadable` (the read failed). Empty when
@@ -41,6 +44,7 @@ pub struct SkipReasonCount {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+/// Row count for one extraction-completeness value.
 pub struct CompletenessCount {
     /// One of `Full`, `Partial`, `ContentOnly`, `Unavailable`. `ContentOnly`
     /// means the file's text is in `files.content` but no parser ran over it

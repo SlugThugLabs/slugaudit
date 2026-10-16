@@ -27,6 +27,8 @@ pub(super) use crate::model::ResourceLimits;
 pub(super) use rusqlite::Connection;
 
 #[derive(Debug, Error)]
+/// Publish-path failures. `TimeBudgetExceeded` carries the elapsed budget so
+/// the tool response can name the knob rather than advise a blind retry.
 pub enum PublishError {
     #[error(transparent)]
     Discovery(#[from] discovery::DiscoveryError),
@@ -78,6 +80,8 @@ impl PublishError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// What one publish attempt changed — added/modified/deleted/unchanged counts
+/// and the per-file skips, ordered deterministically.
 pub struct PublishReport {
     pub revision_id: String,
     /// Counts describe the project's *file set* — every discovered file,

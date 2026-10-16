@@ -17,6 +17,8 @@ const MAX_PATH_BYTES: usize = 32 * 1024;
 const MAX_FILE_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Deserialize, JsonSchema)]
+/// One AI-authored finding to store verbatim. SlugAudit validates shape and
+/// bounds only; every judgment-bearing field is the caller's text.
 pub struct FindingRequest {
     /// Any path inside the active project — used to select which project's
     /// database to write to. Must be a path inside an enabled project.

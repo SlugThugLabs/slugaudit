@@ -112,6 +112,8 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     not judgment.";
 
 #[derive(Clone)]
+/// The MCP server: generated tool router, blocking-pool semaphore, and the
+/// per-server `SourceSyncManager` it serves evidence from.
 pub struct SlugAuditServer {
     tool_router: ToolRouter<Self>,
     blocking_ops: Arc<Semaphore>,

@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Whether an evidence item's span was computed — or the honest reason it
+/// was not. An absent span is reported as absence, never invented.
 pub enum SpanAvailability {
     Present(Span),
     PackOmitted,
@@ -17,6 +19,8 @@ pub enum SpanAvailability {
 // needs the impl, so the crate's public API does not gain one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
+/// The categories of evidence SlugAudit extracts from parsed source.
+/// Observed syntax only — no category carries a judgment.
 pub enum EvidenceKind {
     Structure,
     Import,
@@ -29,6 +33,8 @@ pub enum EvidenceKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One extracted evidence item before SQL conversion: kind, extraction origin,
+/// span availability, and the JSON payload the `evidence` table stores.
 pub struct EvidenceItem {
     pub key: String,
     pub kind: EvidenceKind,

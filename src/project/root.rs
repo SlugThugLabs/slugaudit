@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
+/// Why a path could not be resolved to an enabled project root.
 pub enum RootError {
     #[error("failed to resolve project root: {0}")]
     Unresolvable(String),
@@ -29,6 +30,7 @@ impl ProjectRoot {
     }
 
     #[must_use]
+    /// The resolved, canonical project root.
     pub fn as_path(&self) -> &Path {
         &self.0
     }

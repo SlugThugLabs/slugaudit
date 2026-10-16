@@ -23,6 +23,8 @@ use super::structure_source::{
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
+/// A Tree-sitter query to run against one indexed file, or every indexed
+/// file of one language.
 pub struct StructureRequest {
     /// Any path inside the active project.
     pub path: String,
@@ -47,6 +49,8 @@ pub struct StructureRequest {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+/// One capture match mapped back to source coordinates, with the
+/// clipping/extraction flags that bound its `text`.
 pub struct StructureMatch {
     pub file: String,
     pub capture_name: String,
@@ -63,6 +67,8 @@ pub struct StructureMatch {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+/// The matches for one structure call, the revision they were read from,
+/// and whether the match cap or the deadline cut them short.
 pub struct StructureResponse {
     pub revision_id: String,
     pub language: String,

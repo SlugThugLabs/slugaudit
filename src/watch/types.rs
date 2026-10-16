@@ -57,6 +57,7 @@ pub struct ProjectWatchState {
 }
 
 impl ProjectWatchState {
+    /// A blank per-project watch record before any event or scope is recorded.
     pub fn new() -> Self {
         Self::default()
     }

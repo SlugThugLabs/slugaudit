@@ -16,6 +16,8 @@ const MAX_PATH_BYTES: usize = 32 * 1024;
 const MAX_FILE_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Deserialize, JsonSchema)]
+/// Read request for the calling session's findings: the project, and
+/// optionally one file within it.
 pub struct FindingReadRequest {
     /// Any path inside the active project — used to select the database.
     #[schemars(description = "Any path inside the active project")]
@@ -45,6 +47,8 @@ pub struct FindingReadEntry {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+/// The findings the current session stored, read against the current
+/// revision.
 pub struct FindingReadResponse {
     pub revision_id: String,
     pub findings: Vec<FindingReadEntry>,

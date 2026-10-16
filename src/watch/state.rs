@@ -26,6 +26,7 @@ pub struct WatchState {
 }
 
 impl WatchState {
+    /// An empty state: no dirty paths, no deleted paths.
     pub fn new() -> Self {
         Self::default()
     }

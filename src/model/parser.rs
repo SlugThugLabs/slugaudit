@@ -69,6 +69,8 @@ pub enum ExtractionCompleteness {
 
 impl ExtractionCompleteness {
     #[must_use]
+    /// The canonical `files`/`evidence` TEXT token for this value — the same
+    /// strings the store's CHECK constraints enumerate.
     pub fn as_sql_text(&self) -> &'static str {
         match self {
             Self::Full => "Full",

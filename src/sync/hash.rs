@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+/// File-identity read failures (gone, unreadable, over-cap) — always
+/// surfaced to the caller, never swallowed.
 pub enum HashError {
     #[error("failed to read {path} for hashing: {source}")]
     Read {
@@ -24,6 +26,8 @@ pub fn hash_file(relative_path: &str, absolute_path: &Path) -> Result<SourceIden
 }
 
 #[must_use]
+/// The content hash of `bytes` in the same form `files.content_hash` stores,
+/// so an in-memory digest can be compared against a published row.
 pub fn hash_bytes(relative_path: &str, bytes: &[u8]) -> SourceIdentity {
     let digest = blake3::hash(bytes);
     SourceIdentity::new(relative_path.to_owned(), digest.to_string())

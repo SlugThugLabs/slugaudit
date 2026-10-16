@@ -12,6 +12,7 @@ use super::revision;
 use super::revision_skipped::SkippedRecord;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How a path differs between the walked tree and the stored revision.
 pub enum ChangeStatus {
     Added,
     Modified,
@@ -19,6 +20,7 @@ pub enum ChangeStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// One path's classification in the manifest diff.
 pub struct FileChange {
     pub relative_path: String,
     pub status: ChangeStatus,

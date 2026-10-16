@@ -21,6 +21,8 @@ use thiserror::Error;
 pub(super) use super::sample_batch::sample_all_with_deadline;
 
 #[derive(Debug, Error)]
+/// Per-file sampling failures. `TooLarge` skips that file with a reported
+/// reason; read/hash failures abort the publish.
 pub enum SampleError {
     #[error("failed to read {path}: {source}")]
     Read {

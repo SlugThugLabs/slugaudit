@@ -41,6 +41,8 @@ const MAX_FILTER_BYTES: usize = 8 * 1024;
 const MAX_REVISION_BYTES: usize = 256;
 
 #[derive(Debug, Deserialize, JsonSchema)]
+/// Which mechanical counts to run, optional pattern narrowing, the page to
+/// read, and the row mode.
 pub struct LeadsRequest {
     /// Any path inside the active project — selects which project's database
     /// to read. Must be a path inside an enabled project.
@@ -114,6 +116,8 @@ pub enum MechanicCoverage {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+/// One mechanic's complete counts under the request's pattern — complete
+/// regardless of paging, with no ordering by importance.
 pub struct MechanicCount {
     /// Stable id — pass it back as `mechanic` to get this mechanic's rows.
     pub mechanic: String,
@@ -130,6 +134,8 @@ pub struct MechanicCount {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+/// One lead observation: file, line (0 when the evidence carries no span),
+/// and the mechanic's own clipped detail text.
 pub struct LeadRow {
     /// Project-relative path of the file the observation is in.
     pub file: String,
@@ -196,6 +202,8 @@ pub enum PageLimit {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+/// One leads call: complete counts, the page's rows, and the paging/budget
+/// truth that makes them quotable as-is.
 pub struct LeadsResponse {
     /// Revision the counts and rows were read from. Pass it as
     /// `expected_revision` on the next page to have a changed index refused

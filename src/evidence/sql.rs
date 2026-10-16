@@ -18,6 +18,8 @@ pub struct EvidenceRow {
 }
 
 #[must_use]
+/// Maps one normalized `EvidenceItem` onto an `evidence` table row: key, kind,
+/// origin, span columns (NULL when no span is available), and the payload JSON.
 pub fn to_row(item: &EvidenceItem) -> EvidenceRow {
     // SQLite has no unsigned 64-bit column type; byte offsets past i64::MAX
     // are not a real file size, so saturating here is a documented choice,

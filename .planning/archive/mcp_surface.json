@@ -632,6 +632,7 @@
             "type": "object"
           },
           "LeadRow": {
+            "description": "One lead observation: file, line (0 when the evidence carries no span),\nand the mechanic's own clipped detail text.",
             "properties": {
               "detail": {
                 "description": "The mechanic's own text: callee text, diagnostic message, or comment\ntext. Empty for path-shaped mechanics. Clipped to `MAX_DETAIL_CHARS`\ncharacters when longer — check `detail_clipped`.",
@@ -677,6 +678,7 @@
             "description": "The rows of a page, shaped by the request's `mode`; one response carries\none variant, never a mix. `full` (the default) is [`LeadRow`] with its\n`detail` text; `compact` is [`CompactLeadRow`] with no per-row text. All\nthe envelope's completeness fields mean the same thing either way."
           },
           "MechanicCount": {
+            "description": "One mechanic's complete counts under the request's pattern — complete\nregardless of paging, with no ordering by importance.",
             "properties": {
               "count": {
                 "description": "How many observations this mechanic has in the current revision\nunder the same `pattern`. Complete, never paged.",
@@ -1078,6 +1080,7 @@
       "outputSchema": {
         "$defs": {
           "CompletenessCount": {
+            "description": "Row count for one extraction-completeness value.",
             "properties": {
               "count": {
                 "format": "int64",
@@ -1207,6 +1210,7 @@
             "type": "object"
           },
           "FileClassCount": {
+            "description": "Row count for one `files.file_class` value.",
             "properties": {
               "class": {
                 "description": "One of `authored`, `generated`, `vendored` — `files.file_class`.",
@@ -1224,6 +1228,7 @@
             "type": "object"
           },
           "FileKindCount": {
+            "description": "Row count for one `files.file_kind` value.",
             "properties": {
               "count": {
                 "format": "int64",
@@ -1309,6 +1314,7 @@
             "type": "object"
           },
           "SkipReasonCount": {
+            "description": "Row count for one recorded skip reason.",
             "properties": {
               "count": {
                 "format": "int64",
@@ -1479,6 +1485,7 @@
       "outputSchema": {
         "$defs": {
           "StructureMatch": {
+            "description": "One capture match mapped back to source coordinates, with the\nclipping/extraction flags that bound its `text`.",
             "properties": {
               "capture_name": {
                 "type": "string"

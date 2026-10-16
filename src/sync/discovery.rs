@@ -9,12 +9,16 @@ use thiserror::Error;
 const BINARY_SNIFF_BYTES: usize = 8_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What the walk concluded about a file before sampling: to be indexed,
+/// binary (content not retained), or skipped with a reason.
 pub enum FileKind {
     Indexed,
     Binary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// One file yielded by the discovery walk: relative and absolute paths, kind,
+/// and the size/mtime signals the sample stage re-checks.
 pub struct DiscoveredFile {
     pub relative_path: String,
     pub absolute_path: PathBuf,
@@ -32,6 +36,8 @@ pub struct SkippedFile {
 }
 
 #[derive(Debug, Error)]
+/// Walk-level failures. Unrepresentable or unreadable paths become reported
+/// `skipped` entries; a failed root read aborts discovery with the reason.
 pub enum DiscoveryError {
     #[error("failed to walk project files: {0}")]
     Walk(#[from] ignore::Error),

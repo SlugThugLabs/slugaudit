@@ -9,6 +9,8 @@ use crate::sync::sample::SampleError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+/// Reconcile-path failures (budget spent, database error, bad path). Events
+/// stay unacknowledged until the reconcile commits.
 pub enum ReconcileError {
     #[error(transparent)]
     Discovery(#[from] DiscoveryError),

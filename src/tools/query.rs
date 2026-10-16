@@ -24,6 +24,8 @@ const ABORT_STEP_BUDGET: u8 = 1;
 const ABORT_WALL_CLOCK: u8 = 2;
 
 #[derive(Debug, Deserialize, JsonSchema)]
+/// A read-only SQL question over the project's own database, with stable
+/// paging via `revision_id`/`expected_revision`.
 pub struct QueryRequest {
     /// Any path inside the active project.
     pub path: String,

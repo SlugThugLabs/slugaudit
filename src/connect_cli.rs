@@ -86,6 +86,11 @@ pub fn display_command(cli: &str, args: &[String]) -> String {
     format!("{cli} {}", args.join(" "))
 }
 
+/// Runs the client's own `mcp add` command line for one agent registration.
+///
+/// # Errors
+///
+/// Returns the client's recorded failure text as a `ConnectError`.
 pub fn run_add(cli: &str, args: &[String]) -> Result<(), ConnectError> {
     let output = Command::new(cli)
         .args(args)
@@ -108,6 +113,11 @@ pub fn run_add(cli: &str, args: &[String]) -> Result<(), ConnectError> {
     Ok(())
 }
 
+/// Runs the client's own `mcp remove` command for a best-effort disconnect.
+///
+/// # Errors
+///
+/// Returns the client's recorded failure text; the file fallback may still succeed.
 pub fn run_remove(agent: &AgentDef, cli: &str) -> Result<(), ConnectError> {
     let status = Command::new(cli)
         .args(remove_args(agent))
