@@ -199,9 +199,7 @@ fn node_span(node: &Node, source: &str) -> SpanAvailability {
     };
     match Span::new(start_byte as u64, end_byte as u64, start, end) {
         Ok(span) => SpanAvailability::Present(span),
-        Err(_) => SpanAvailability::NormalizerUnavailable {
-            reason: "generic import span failed local range validation".into(),
-        },
+        Err(error) => super::span_unavailable("generic import", error),
     }
 }
 

@@ -309,9 +309,7 @@ fn node_span(node: &tree_sitter_language_pack::Node, source: &str) -> SpanAvaila
     };
     match Span::new(start_byte as u64, end_byte as u64, start, end) {
         Ok(span) => SpanAvailability::Present(span),
-        Err(_) => SpanAvailability::NormalizerUnavailable {
-            reason: "binding span failed local range validation".into(),
-        },
+        Err(error) => super::span_unavailable("binding", error),
     }
 }
 
@@ -326,9 +324,7 @@ pub(super) fn convert_span(span: &PackSpan, source: &str) -> SpanAvailability {
     };
     match Span::new(span.start_byte as u64, span.end_byte as u64, start, end) {
         Ok(converted) => SpanAvailability::Present(converted),
-        Err(_) => SpanAvailability::NormalizerUnavailable {
-            reason: "pack span failed local range validation".into(),
-        },
+        Err(error) => super::span_unavailable("pack", error),
     }
 }
 

@@ -168,9 +168,7 @@ fn node_span(node: &Node, source: &str) -> SpanAvailability {
         column: char_column(source, node.end_byte()),
     };
     Span::new(node.start_byte() as u64, node.end_byte() as u64, start, end).map_or_else(
-        |_| SpanAvailability::NormalizerUnavailable {
-            reason: "Rust call span failed local range validation".into(),
-        },
+        |error| super::span_unavailable("Rust call", error),
         SpanAvailability::Present,
     )
 }

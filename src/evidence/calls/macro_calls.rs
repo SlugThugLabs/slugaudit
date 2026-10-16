@@ -154,9 +154,7 @@ fn emit_call_row(
         position(source, end),
     )
     .map_or_else(
-        |_| SpanAvailability::NormalizerUnavailable {
-            reason: "macro argument call span invalid".into(),
-        },
+        |error| crate::evidence::span_unavailable("macro argument call", error),
         SpanAvailability::Present,
     );
     Some((
