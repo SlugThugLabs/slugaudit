@@ -336,7 +336,20 @@ state.
    measurement; a new bench whose estimates file is unreadable is silently
    absent from the gate forever; `check_governance` treats a present-but-
    unreadable CODEOWNERS as absent.
-8. **Function and file length — deferred by the owner**, to be discussed as a
+8. **`path:line` citations in the docs rot on every edit — no gate covers
+   them.** The docs carry 91 citations of the form `src/x.rs:NNN`. All 91 were
+   in range after this session's changes, but six were pointing at the wrong
+   line — four in `health.rs`, whose restructure moved them, and the runbook
+   also named two health fields by paths the regroup had renamed
+   (`health.watcher_health`, `health.revision_id`). An operator following §2
+   would have looked for a field that no longer exists. Both are fixed, but
+   nothing will catch the next occurrence. Options: a gate that at least
+   range-checks every citation (cheap, and it would have caught none of these
+   six — they were in range but wrong), a gate that requires each citation to
+   carry a short quoted anchor so drift is visible, or dropping line numbers in
+   favour of symbol names, which cannot rot. **Owner decision** — the third is
+   the only one that removes the failure mode rather than detecting it.
+9. **Function and file length — deferred by the owner**, to be discussed as a
    policy question first. 52 production functions are over 50 lines and 9 are
    over cyclomatic 15. Worth knowing before deciding: splitting a function
    usually *grows* its file (an extracted fn costs a signature and its own doc),

@@ -8,7 +8,7 @@ decides what matters.
 Signals come from two places: the `health` MCP tool and the error text of a
 failing tool call. `health` is strictly read-only — it never syncs, never
 registers a watch, and never writes, so a health read cannot perturb the state
-it reports (`src/tools/health.rs:170-176`).
+it reports (`src/tools/health.rs:265-275`).
 
 ## 1. Every call is slow: a full publish on every call
 
@@ -62,13 +62,13 @@ sysctl fs.inotify.max_user_watches
 
 ## 2. Watcher unavailable
 
-**Signal.** `health.watcher_health` is `unavailable` and `health.phase` is
-`unavailable` (`src/watch/types.rs:32-34`, `src/tools/health.rs:120`).
+**Signal.** `health.watcher.health` is `unavailable` and `health.phase` is
+`unavailable` (`src/watch/types.rs:32-34`, `src/tools/health.rs:459`).
 
 **Cause.** The platform does not support filesystem watching, or a `notify`
 watcher could not be created for the process. SlugAudit logs
 `filesystem watcher unavailable; SlugAudit will use full verification`
-(`src/watch/manager.rs:108-110`). With `watcher_health = unavailable`,
+(`src/watch/manager.rs:108-110`). With `health.watcher.health = unavailable`,
 `ensure_current` takes the full-publish branch on every call
 (`src/sync/manager_health.rs:160-172`).
 
@@ -161,8 +161,8 @@ this happens on the first import, no revision is ever published, so every
 subsequent call repeats the same full publish and the same failure.
 
 **Signal.** `health.phase` is `importing` (documented as "no current revision
-— the first sync has never succeeded", `src/tools/health.rs:105`) and
-`health.revision_id` is null (`src/tools/health.rs:75-76`), on a repo whose
+— the first sync has never succeeded", `src/tools/health.rs:169`) and
+`health.database.revision_id` is null (`src/tools/health.rs:105-108`), on a repo whose
 size does not justify it — or on a repo that is genuinely large.
 
 **Remedies**, in order of least disruption:
