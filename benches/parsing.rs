@@ -29,7 +29,8 @@ fn bench_extract<'a>(
 ) {
     group.bench_function(name, |b| {
         b.iter(|| {
-            let items = extract(black_box(language), black_box(sample)).expect("extract");
+            let (items, _depth_capped) =
+                extract(black_box(language), black_box(sample)).expect("extract");
             black_box(items.len());
         });
     });

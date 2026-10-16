@@ -83,7 +83,7 @@ pub(super) fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult
         return ParseResult::content_only(Some(language), true);
     }
     match crate::evidence::extract(&language, content) {
-        Ok(items) => {
+        Ok((items, depth_capped)) => {
             let diagnostic_count = items
                 .iter()
                 .filter(|item| item.kind == EvidenceKind::Diagnostic)
@@ -96,8 +96,13 @@ pub(super) fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult
                 ParseOutcome::Succeeded
             };
             // Syntax-error diagnostics mean the walk covered a degraded tree;
-            // a run with none extracted everything the pack can see.
-            let completeness = if diagnostic_count > 0 {
+            // a run with none extracted everything the pack can see. A walk
+            // that stopped at `MAX_WALK_DEPTH` is the third case: the tree
+            // parsed cleanly but SlugAudit's own walkers did not reach the
+            // bottom of it, so the extraction is truncated even though the
+            // outcome is `Succeeded`. Reporting that as `Full` would claim a
+            // completeness the walk did not achieve.
+            let completeness = if diagnostic_count > 0 || depth_capped {
                 ExtractionCompleteness::Partial
             } else {
                 ExtractionCompleteness::Full

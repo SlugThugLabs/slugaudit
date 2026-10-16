@@ -37,12 +37,13 @@ pub(crate) fn extract_rust(source: &str) -> Vec<EvidenceItem> {
     let mut items = Vec::new();
     let mut counter = 0usize;
     let mut seen = HashSet::new();
-    walk(
+    let _depth_capped = walk(
         tree.root_node(),
         source,
         &mut items,
         &mut counter,
         &mut seen,
+        0,
     );
     items
 }
@@ -53,7 +54,11 @@ fn walk(
     items: &mut Vec<EvidenceItem>,
     counter: &mut usize,
     seen: &mut HashSet<(usize, usize)>,
-) {
+    depth: u32,
+) -> bool {
+    if depth >= crate::evidence::MAX_WALK_DEPTH {
+        return true;
+    }
     if RUST_CALL_KINDS.contains(&node.kind().as_str()) {
         let macro_call = node.kind() == "macro_invocation";
         let callee = callee_node(&node, macro_call);
@@ -100,9 +105,11 @@ fn walk(
             }
         }
     }
+    let mut capped = false;
     for child in named_children(&node) {
-        walk(child, source, items, counter, seen);
+        capped |= walk(child, source, items, counter, seen, depth + 1);
     }
+    capped
 }
 
 fn callee_node(node: &Node, macro_call: bool) -> Option<Node> {

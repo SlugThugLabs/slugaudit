@@ -25,7 +25,7 @@ use super::normalize_builders::{
 /// Returns an error if `language` is not known to the pack or parsing
 /// fails outright; a tree with syntax-error nodes is not an error here, it
 /// surfaces as `Diagnostic` evidence instead.
-pub fn extract(language: &str, source: &str) -> Result<Vec<EvidenceItem>, PackError> {
+pub fn extract(language: &str, source: &str) -> Result<(Vec<EvidenceItem>, bool), PackError> {
     let config = ProcessConfig::new(language).all();
     let result = process(source, &config)?;
 
@@ -79,16 +79,14 @@ pub fn extract(language: &str, source: &str) -> Result<Vec<EvidenceItem>, PackEr
     // pack's `process` parse is unavoidable — `tree-sitter-language-pack`
     // exposes no `process_with_tree(source, tree)` overload — but the
     // two extra ones collapse to one.
-    items.extend(extract_extra_walkers(
-        language,
-        source,
-        result.imports.is_empty(),
-    ));
+    let (walker_items, depth_capped) =
+        extract_extra_walkers(language, source, result.imports.is_empty());
+    items.extend(walker_items);
     if language == "rust" {
         items.extend(super::calls::extract_rust(source));
     }
 
-    Ok(items)
+    Ok((items, depth_capped))
 }
 
 /// Parses `source` once and runs both the variable-binding walker and
@@ -97,26 +95,31 @@ pub fn extract(language: &str, source: &str) -> Result<Vec<EvidenceItem>, PackEr
 /// or the source doesn't parse — same contract as the two individual
 /// extractors this replaces, so callers see the same emptiness on the
 /// same failure modes.
+/// Returns the items and whether any walker stopped early at
+/// [`crate::evidence::MAX_WALK_DEPTH`]. The flag is the whole reason this
+/// returns a pair: a depth-capped walk is a truncated extraction, and a
+/// caller that cannot tell it apart from a complete one would claim
+/// completeness it does not have.
 fn extract_extra_walkers(
     language: &str,
     source: &str,
     pack_imports_was_empty: bool,
-) -> Vec<EvidenceItem> {
+) -> (Vec<EvidenceItem>, bool) {
     let Ok(mut parser) = get_parser(language) else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
     let Some(tree) = parser.parse(source) else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
     let root = tree.root_node();
 
     let mut items = Vec::new();
     let mut counter = 0usize;
-    walk_bindings(&root, source, &mut items, &mut counter);
+    let mut capped = walk_bindings(&root, source, &mut items, &mut counter, 0);
     if pack_imports_was_empty {
-        super::generic_imports::walk_imports(&root, source, &mut items, &mut counter);
+        capped |= super::generic_imports::walk_imports(&root, source, &mut items, &mut counter, 0);
     }
-    items
+    (items, capped)
 }
 
 /// Node-type patterns that indicate an individual binding. These names are
@@ -165,7 +168,11 @@ fn walk_bindings(
     source: &str,
     items: &mut Vec<EvidenceItem>,
     counter: &mut usize,
-) {
+    depth: u32,
+) -> bool {
+    if depth >= crate::evidence::MAX_WALK_DEPTH {
+        return true;
+    }
     let kind = node.kind();
     if let Some(name) = identifier_name(node, source) {
         let (sym_kind, origin_kind) = if is_field_declaration(&kind) {
@@ -178,10 +185,11 @@ fn walk_bindings(
             }
         } else {
             // Not a binding we care about — still recurse in case a child is.
+            let mut capped = false;
             for child in named_children(node) {
-                walk_bindings(&child, source, items, counter);
+                capped |= walk_bindings(&child, source, items, counter, depth + 1);
             }
-            return;
+            return capped;
         };
 
         let key = format!("{}:{counter}", origin_kind);
@@ -201,9 +209,11 @@ fn walk_bindings(
     }
     // Recurse into children regardless — a function body contains let
     // bindings, a struct body contains field declarations, etc.
+    let mut capped = false;
     for child in named_children(node) {
-        walk_bindings(&child, source, items, counter);
+        capped |= walk_bindings(&child, source, items, counter, depth + 1);
     }
+    capped
 }
 
 /// Returns the text of the first identifier-flavored named child of `node`,

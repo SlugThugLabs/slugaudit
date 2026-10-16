@@ -49,18 +49,33 @@ fn scan_fragment(
     let Some(tree) = parser.parse(&wrapped) else {
         return;
     };
-    collect(tree.root_node(), &wrapped, source, start, end, caller, rows);
+    collect(
+        tree.root_node(),
+        &wrapped,
+        source,
+        (start, end),
+        caller,
+        rows,
+        0,
+    );
 }
 
+/// `source_start`/`source_end` arrive as one tuple: they are the fragment's
+/// coordinate frame within `source`, meaningless apart, and grouping them is
+/// what keeps `depth` from pushing the parameter list past the limit the
+/// lint — and a reader — can hold.
 fn collect(
     node: Node,
     wrapped: &str,
     source: &str,
-    source_start: usize,
-    source_end: usize,
+    (source_start, source_end): (usize, usize),
     caller: Option<String>,
     rows: &mut Vec<(usize, usize, EvidenceItem)>,
-) {
+    depth: u32,
+) -> bool {
+    if depth >= crate::evidence::MAX_WALK_DEPTH {
+        return true;
+    }
     if matches!(node.kind().as_str(), "call_expression" | "macro_invocation") {
         let macro_call = node.kind() == "macro_invocation";
         let relative_start = node.start_byte();
@@ -130,17 +145,19 @@ fn collect(
             scan_fragment(source, start, end, caller.clone(), rows);
         }
     }
+    let mut capped = false;
     for child in named_children(&node) {
-        collect(
+        capped |= collect(
             child,
             wrapped,
             source,
-            source_start,
-            source_end,
+            (source_start, source_end),
             caller.clone(),
             rows,
+            depth + 1,
         );
     }
+    capped
 }
 
 fn position(source: &str, byte: usize) -> Position {

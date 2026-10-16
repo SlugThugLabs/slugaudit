@@ -84,7 +84,7 @@ pub(super) fn extract_generic_imports(language: &str, source: &str) -> Vec<Evide
     };
     let mut items = Vec::new();
     let mut counter = 0usize;
-    walk_imports(&tree.root_node(), source, &mut items, &mut counter);
+    walk_imports(&tree.root_node(), source, &mut items, &mut counter, 0);
     items
 }
 
@@ -110,7 +110,11 @@ pub(super) fn walk_imports(
     source: &str,
     items: &mut Vec<EvidenceItem>,
     counter: &mut usize,
-) {
+    depth: u32,
+) -> bool {
+    if depth >= crate::evidence::MAX_WALK_DEPTH {
+        return true;
+    }
     let kind = node.kind();
     let is_import = is_import_statement_kind(&kind);
     if is_import {
@@ -132,17 +136,19 @@ pub(super) fn walk_imports(
             }),
         });
     }
+    let mut capped = false;
     for child in named_children(node) {
-        if is_import && is_import_statement_kind(&child.kind()) {
+        capped |= if is_import && is_import_statement_kind(&child.kind()) {
             // Nested import-shaped container: walk past it for further
             // nesting, but don't re-emit the same statement. Guarded by
             // the explicit `child.kind()` check so a non-import child
             // (e.g. a string literal) is never skipped.
-            walk_imports_past(&child, source, items, counter);
+            walk_imports_past(&child, source, items, counter, depth + 1)
         } else {
-            walk_imports(&child, source, items, counter);
-        }
+            walk_imports(&child, source, items, counter, depth + 1)
+        };
     }
+    capped
 }
 
 /// Walks `node`'s subtree without emitting for `node` itself or any
@@ -156,16 +162,22 @@ fn walk_imports_past(
     source: &str,
     items: &mut Vec<EvidenceItem>,
     counter: &mut usize,
-) {
+    depth: u32,
+) -> bool {
+    if depth >= crate::evidence::MAX_WALK_DEPTH {
+        return true;
+    }
+    let mut capped = false;
     for child in named_children(node) {
-        if is_import_statement_kind(&child.kind()) {
+        capped |= if is_import_statement_kind(&child.kind()) {
             // Another level of nesting under the suppressed parent — skip
             // this immediate match too, but keep descending.
-            walk_imports_past(&child, source, items, counter);
+            walk_imports_past(&child, source, items, counter, depth + 1)
         } else {
-            walk_imports(&child, source, items, counter);
-        }
+            walk_imports(&child, source, items, counter, depth + 1)
+        };
     }
+    capped
 }
 
 /// Iterator helper over a node's named children (the pack exposes only

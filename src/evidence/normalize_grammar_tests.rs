@@ -23,6 +23,11 @@ use super::*;
 // old substring match produced). The sources are deliberately minimal so
 // the expected member set is unambiguous.
 
+/// `extract` also reports the depth cap; these tests are about items.
+fn extract_items(language: &str, source: &str) -> Vec<EvidenceItem> {
+    extract(language, source).expect("extract").0
+}
+
 fn field_names(items: &[EvidenceItem]) -> Vec<&str> {
     items
         .iter()
@@ -37,7 +42,7 @@ fn field_names(items: &[EvidenceItem]) -> Vec<&str> {
 #[test]
 fn c7_field_declaration_kinds_surface_exactly_the_members_in_rust() {
     let source = "struct S { a: i32, b: String }\n";
-    let items = extract("rust", source).expect("process rust");
+    let items = extract_items("rust", source);
     let names = field_names(&items);
     assert_eq!(
         names,
@@ -56,8 +61,7 @@ fn c7_field_declaration_kinds_surface_exactly_the_members_in_go_and_c_family() {
         ("csharp", "class C { public int a; private string b; }\n"),
         ("ocaml", "type t = { a : int; b : string }\n"),
     ] {
-        let items =
-            extract(language, source).unwrap_or_else(|e| panic!("{language}: process failed: {e}"));
+        let items = extract_items(language, source);
         let names = field_names(&items);
         assert_eq!(
             names,
@@ -73,8 +77,7 @@ fn c7_property_declaration_kinds_surface_exactly_the_members_in_swift_and_kotlin
         ("swift", "struct S { let a: Int; var b: String }\n"),
         ("kotlin", "class C { val a: Int; var b: String }\n"),
     ] {
-        let items =
-            extract(language, source).unwrap_or_else(|e| panic!("{language}: process failed: {e}"));
+        let items = extract_items(language, source);
         let names = field_names(&items);
         assert_eq!(
             names,
@@ -93,8 +96,7 @@ fn c7_field_definition_kinds_surface_exactly_the_members_in_javascript_and_types
             "class C { a: number = 1; b: string = 'x'; }\n",
         ),
     ] {
-        let items =
-            extract(language, source).unwrap_or_else(|e| panic!("{language}: process failed: {e}"));
+        let items = extract_items(language, source);
         let names = field_names(&items);
         assert_eq!(
             names,
@@ -118,8 +120,7 @@ fn c7_languages_without_field_declaration_kinds_produce_no_field_symbols() {
         ("julia", "struct S\n  a::Int\nend\n"),
         ("perl", "my $a = 1;\n"),
     ] {
-        let items =
-            extract(language, source).unwrap_or_else(|e| panic!("{language}: process failed: {e}"));
+        let items = extract_items(language, source);
         assert_eq!(
             field_names(&items),
             Vec::<&str>::new(),
@@ -153,8 +154,7 @@ fn c7_plain_function_source_produces_no_field_symbols_in_any_matrix_language() {
         ("ruby", "def f\n  1\nend\n"),
         ("java", "int f() { return 1; }\n"),
     ] {
-        let items =
-            extract(language, source).unwrap_or_else(|e| panic!("{language}: process failed: {e}"));
+        let items = extract_items(language, source);
         assert_eq!(
             field_names(&items),
             Vec::<&str>::new(),
