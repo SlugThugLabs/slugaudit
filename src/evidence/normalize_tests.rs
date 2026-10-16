@@ -101,7 +101,14 @@ fn every_item_carries_a_span_or_an_explicit_missing_reason() {
 #[test]
 fn unknown_language_is_a_typed_error_not_a_panic() {
     let result = extract("not-a-real-language", "irrelevant");
-    assert!(result.is_err());
+    let err = match result {
+        Ok(_) => panic!("unknown language should fail"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(err, PackError::Download(_) | PackError::LanguageNotFound(_)),
+        "expected Download or LanguageNotFound error, got: {err:?}"
+    );
 }
 
 // --- generic variable/field extraction (extract_bindings) ---

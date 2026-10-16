@@ -89,23 +89,21 @@ pub(crate) fn verdict(code_lines: usize, exception: Option<String>, test_file: b
     Verdict::Pass
 }
 
-pub(crate) fn walk_rs_files(src_root: &Path) -> Vec<PathBuf> {
+pub(crate) fn walk_rs_files(src_root: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
     let mut out = Vec::new();
-    walk_rs(src_root, &mut out);
+    walk_rs(src_root, &mut out)?;
     out.sort();
-    out
+    Ok(out)
 }
 
-fn walk_rs(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
+fn walk_rs(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
         if path.is_dir() {
-            walk_rs(&path, out);
+            walk_rs(&path, out)?;
         } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
             out.push(path);
         }
     }
+    Ok(())
 }

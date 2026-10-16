@@ -5,31 +5,47 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+/// Errors encountered while loading or parsing `.planning/slugaudit/config.json`.
 #[derive(Debug, Error)]
 pub enum ConfigError {
+    /// Failed to read the config file from disk.
     #[error("failed to read config file at '{path}': {source}")]
     Io {
+        /// Path to the configuration file.
         path: PathBuf,
+        /// Underlying I/O error.
         source: std::io::Error,
     },
+    /// Failed to deserialize configuration JSON.
     #[error("failed to parse config JSON at '{path}': {source}")]
     Parse {
+        /// Path to the configuration file.
         path: PathBuf,
+        /// Underlying JSON parse error.
         source: serde_json::Error,
     },
 }
 
+/// Optional per-project configuration overrides.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProjectConfig {
+    /// Desired audit resource profile (`default`, `audit`, or `lean`).
     #[serde(default)]
     pub profile: Option<AuditProfile>,
+    /// Maximum individual file size in bytes to index.
     #[serde(default)]
     pub max_file_bytes: Option<u64>,
+    /// Maximum cumulative size in bytes across all imported files.
     #[serde(default)]
     pub max_total_import_bytes: Option<u64>,
 }
 
 impl ProjectConfig {
+    /// Attempts to load and parse `.planning/slugaudit/config.json` relative to `project_root`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] if the file exists but cannot be read or parsed.
     pub fn load(project_root: &Path) -> Result<Option<Self>, ConfigError> {
         let config_path = project_root
             .join(".planning")
@@ -49,6 +65,7 @@ impl ProjectConfig {
         Ok(Some(cfg))
     }
 
+    /// Loads project config if present and valid; falls back to default on error or absence.
     #[must_use]
     pub fn load_or_default(project_root: &Path) -> Self {
         match Self::load(project_root) {
@@ -61,6 +78,7 @@ impl ProjectConfig {
         }
     }
 
+    /// Overrides fields in `limits` with any explicitly specified options.
     #[must_use]
     pub fn apply_to_limits(&self, mut limits: ResourceLimits) -> ResourceLimits {
         if let Some(profile) = self.profile {

@@ -102,7 +102,14 @@ fn joins_and_ctes_work_unlike_the_old_single_table_restriction() {
 fn a_write_attempt_fails_and_changes_nothing() {
     let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
     let result = ask(&project, "DELETE FROM files");
-    assert!(result.is_err());
+    let err = result.expect_err("write attempt on read-only query must fail");
+    assert!(
+        err.message.to_lowercase().contains("syntax")
+            || err.message.to_lowercase().contains("readonly")
+            || err.message.to_lowercase().contains("not authorized"),
+        "unexpected error message: {}",
+        err.message
+    );
 
     let after = ask(&project, "SELECT count(*) AS n FROM files").expect("count still works");
     assert_eq!(after.rows[0]["n"], 1);
@@ -326,7 +333,12 @@ fn multibyte_content_never_confuses_the_statement_separator_scanner() {
 fn empty_sql_is_a_typed_error() {
     let project = activated_project(&[]);
     let result = ask(&project, "   ");
-    assert!(result.is_err());
+    let err = result.expect_err("empty sql must return ErrorData");
+    assert!(
+        err.message.contains("must not be empty"),
+        "unexpected error message: {}",
+        err.message
+    );
 }
 
 /// An oversized statement is a contract error a caller can act on: it

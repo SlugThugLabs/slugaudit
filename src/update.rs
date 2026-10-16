@@ -93,9 +93,15 @@ fn apply_update(latest: &LatestRelease, target: &Path) -> Result<(), UpdateError
 
     let download = |url: &str, dest: &Path| -> Result<(), UpdateError> {
         let output = std::process::Command::new("curl")
-            .arg("-fsSL")
-            .arg(url)
-            .arg("-o")
+            .args([
+                "-fsSL",
+                "--max-time",
+                "300",
+                "--max-filesize",
+                "150000000",
+                url,
+                "-o",
+            ])
             .arg(dest)
             .output()
             .map_err(|_| UpdateError::CurlMissing)?;

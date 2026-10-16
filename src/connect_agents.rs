@@ -261,6 +261,7 @@ pub enum Dialect {
     GeminiScope,
 }
 
+/// A specification for an AI agent or editor client supported by `slugaudit connect`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentDef {
     pub id: &'static str,
@@ -337,6 +338,7 @@ impl AgentDef {
         self.cli.into_iter().chain(self.verify_cli)
     }
 
+    /// Returns true if this agent appears to be installed on the machine.
     pub fn is_installed(&self, home: Option<&Path>) -> bool {
         if self.executables().any(|cli| which::which(cli).is_ok()) {
             return true;
@@ -351,6 +353,7 @@ impl AgentDef {
         path.parent().is_some_and(|p| p.exists() && p != home)
     }
 
+    /// Returns true if this agent already has SlugAudit configured.
     pub fn is_connected(&self, home: Option<&Path>) -> bool {
         if let Some(home) = home
             && self.config_has_slugaudit(home)
@@ -376,6 +379,7 @@ impl AgentDef {
     }
 }
 
+/// Static catalog of known AI coding agents and MCP clients.
 #[rustfmt::skip]
 pub const AGENTS: &[AgentDef] = &[
     AgentDef { id: "agy", display_name: "Antigravity (agy)", strategy: Strategy::CliDirect, cli: Some("agy"), verify_cli: None, config: ConfigPath::Unverified, shape: ConfigShape::Unknown, dialect: Dialect::Plain, evidence: Evidence::VerifiedByProbe, file_fallback: false, manual_steps: false, remedy: "", reference: "agy 1.2.14 (probed 2026-09-30)", docs_url: "https://antigravity.google/docs/mcp/", note: "`agy mcp add|remove|list|enable|disable` all exist (probed on the installed binary).", },
@@ -406,6 +410,7 @@ pub const AGENTS: &[AgentDef] = &[
     AgentDef { id: "zed", display_name: "Zed Editor", strategy: Strategy::ConfigFile, cli: None, verify_cli: None, config: ConfigPath::Home(".config/zed/settings.json"), shape: ConfigShape::ZedContextServer, dialect: Dialect::Plain, evidence: Evidence::VerifiedFromSource, file_fallback: false, manual_steps: false, remedy: "", reference: "Zed source, as of 2026-09-30", docs_url: "https://zed.dev/docs/ai/mcp", note: "Zed's source: `command` is a string with a sibling `args` array (nested `{path,args}` is the legacy shape).", },
 ];
 
+/// Looks up an agent definition by identifier or display name, supporting common aliases.
 pub fn find_agent(name: &str) -> Option<AgentDef> {
     let n = name.trim().to_ascii_lowercase();
     let n = match n.as_str() {
@@ -421,6 +426,7 @@ pub fn find_agent(name: &str) -> Option<AgentDef> {
         .find(|a| a.id == n || a.display_name.eq_ignore_ascii_case(n))
 }
 
+/// Returns all agents in [`AGENTS`] that appear to be installed on the machine.
 pub fn detected_agents(home: Option<&Path>) -> Vec<AgentDef> {
     AGENTS
         .iter()

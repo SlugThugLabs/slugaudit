@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Zero-based line and character column position within a source file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Position {
+    /// Zero-based line index.
     pub line: u32,
     /// A **character** offset from the start of the line (counting Unicode
     /// scalar values, i.e. `str::chars()`), not a byte offset. Tree-sitter's
@@ -45,18 +47,26 @@ pub fn char_column(source: &str, byte_offset: usize) -> u32 {
     saturating_u32(source[line_start..offset].chars().count())
 }
 
+/// Half-open range of source text spanning byte offsets and line/column positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
+    /// Zero-based start byte offset (inclusive).
     pub start_byte: u64,
+    /// Zero-based end byte offset (exclusive).
     pub end_byte: u64,
+    /// Start position in line and column coordinates.
     pub start: Position,
+    /// End position in line and column coordinates.
     pub end: Position,
 }
 
+/// Validation errors when constructing a [`Span`].
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SpanError {
+    /// End byte offset is strictly smaller than start byte offset.
     #[error("span end byte precedes start byte")]
     ReversedBytes,
+    /// End line/column position precedes start position.
     #[error("span end position precedes start position")]
     ReversedPosition,
 }
@@ -88,6 +98,7 @@ impl Span {
         })
     }
 
+    /// Length of the span in bytes.
     #[must_use]
     pub fn byte_len(self) -> u64 {
         self.end_byte - self.start_byte

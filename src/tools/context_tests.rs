@@ -186,7 +186,12 @@ fn verified_read_write_has_the_same_protection() {
         )
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))
     });
-    assert!(result.is_err(), "a stale write handle must be rejected");
+    let error = result.expect_err("a stale write handle must be rejected");
+    assert!(
+        error.message.contains("concurrent publish") || error.message.contains("revision"),
+        "unexpected error message: {}",
+        error.message
+    );
 
     // Confirm the rejected write really never landed, through a fresh,
     // correctly-revisioned handle rather than trusting the error alone.

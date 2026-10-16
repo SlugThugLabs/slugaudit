@@ -7,7 +7,10 @@ use std::path::Path;
 use super::read;
 
 pub(super) fn check_test_file_count(root: &Path, failures: &mut Vec<String>) {
-    let architecture = read(root, "ARCHITECTURE.md");
+    let Ok(architecture) = read(root, "ARCHITECTURE.md") else {
+        failures.push("failed to read ARCHITECTURE.md".to_owned());
+        return;
+    };
     // "The 31 `*_tests.rs` files share this pattern; ..."
     let Some(marker) = architecture.find("`*_tests.rs` files share") else {
         // Returning here made the check pass vacuously the moment the prose

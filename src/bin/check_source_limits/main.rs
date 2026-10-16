@@ -79,7 +79,13 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let files = counter::walk_rs_files(&src_root);
+    let files = match counter::walk_rs_files(&src_root) {
+        Ok(f) => f,
+        Err(err) => {
+            eprintln!("source-limit: cannot scan {}: {err}", src_root.display());
+            return ExitCode::from(1);
+        }
+    };
     if files.is_empty() {
         println!("source-limit: no production Rust files found under src/");
         return ExitCode::SUCCESS;
@@ -87,14 +93,19 @@ fn main() -> ExitCode {
 
     let mut failures: Vec<String> = Vec::new();
     for path in &files {
-        let source = std::fs::read_to_string(path)
-            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
-        let n = counter::code_lines(&source);
         let rel = path
             .strip_prefix(&project_root)
             .unwrap_or(path)
             .display()
             .to_string();
+        let source = match std::fs::read_to_string(path) {
+            Ok(src) => src,
+            Err(err) => {
+                failures.push(format!("{rel}: read error: {err}"));
+                continue;
+            }
+        };
+        let n = counter::code_lines(&source);
         match counter::verdict(n, approval::reason(&source), is_test_file(path)) {
             counter::Verdict::Pass => {
                 println!("source-limit: {rel}: {n} code lines; pass");

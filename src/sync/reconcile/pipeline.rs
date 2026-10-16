@@ -114,16 +114,14 @@ fn reconcile_single_dirty_path(
         return Ok(DirtyOutcome::Ignored);
     }
 
-    let pre_read_stat = std::fs::metadata(&absolute_path).ok().map(|metadata| {
-        (
-            crate::util::mtime_unix_seconds(&metadata),
-            i64::try_from(metadata.len()).unwrap_or(i64::MAX),
-        )
-    });
+    let metadata = std::fs::metadata(&absolute_path).map_err(|source| hash::HashError::Read {
+        path: absolute_path.clone(),
+        source,
+    })?;
+    let mtime = crate::util::mtime_unix_seconds(&metadata);
+    let byte_len = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
 
-    if let Some((_, byte_len)) = pre_read_stat
-        && u64::try_from(byte_len).unwrap_or(u64::MAX) > limits.max_file_bytes
-    {
+    if u64::try_from(byte_len).unwrap_or(u64::MAX) > limits.max_file_bytes {
         push_skipped_record(skipped_records, existing_hashes, &path, &absolute_path);
         return Ok(DirtyOutcome::Skipped);
     }
@@ -133,12 +131,10 @@ fn reconcile_single_dirty_path(
     if let Some(existing_hash) = existing_hashes.get(&path)
         && existing_hash == &identity.content_hash
     {
-        if let Some((mtime, byte_len)) = pre_read_stat {
-            connection.execute(
-                "UPDATE files SET modified_unix_seconds = ?1, byte_len = ?2 WHERE path = ?3",
-                rusqlite::params![mtime, byte_len, path],
-            )?;
-        }
+        connection.execute(
+            "UPDATE files SET modified_unix_seconds = ?1, byte_len = ?2 WHERE path = ?3",
+            rusqlite::params![mtime, byte_len, path],
+        )?;
         return Ok(DirtyOutcome::Unchanged);
     }
 

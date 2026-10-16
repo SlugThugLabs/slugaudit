@@ -120,10 +120,25 @@ impl IgnoreRules {
             if !ignores.is_empty() {
                 let mut builder = GitignoreBuilder::new(&dir);
                 for file in &ignores {
-                    let _ = builder.add(file);
+                    if let Some(err) = builder.add(file) {
+                        tracing::warn!(
+                            path = %file.display(),
+                            error = %err,
+                            "failed to add .ignore file to matcher",
+                        );
+                    }
                 }
-                if let Ok(matcher) = builder.build() {
-                    ignore_by_dir.insert(dir.clone(), matcher);
+                match builder.build() {
+                    Ok(matcher) => {
+                        ignore_by_dir.insert(dir.clone(), matcher);
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            dir = %dir.display(),
+                            error = %err,
+                            "failed to compile .ignore matcher",
+                        );
+                    }
                 }
             }
             // The root `.gitignore` matcher additionally carries
@@ -132,15 +147,36 @@ impl IgnoreRules {
             let mut builder = GitignoreBuilder::new(&dir);
             if dir == root {
                 let exclude = root.join(".git/info/exclude");
-                if exclude.is_file() {
-                    let _ = builder.add(&exclude);
+                if exclude.is_file()
+                    && let Some(err) = builder.add(&exclude)
+                {
+                    tracing::warn!(
+                        path = %exclude.display(),
+                        error = %err,
+                        "failed to add .git/info/exclude to matcher",
+                    );
                 }
             }
             for file in &gitignores {
-                let _ = builder.add(file);
+                if let Some(err) = builder.add(file) {
+                    tracing::warn!(
+                        path = %file.display(),
+                        error = %err,
+                        "failed to add .gitignore file to matcher",
+                    );
+                }
             }
-            if let Ok(matcher) = builder.build() {
-                gitignore_by_dir.insert(dir, matcher);
+            match builder.build() {
+                Ok(matcher) => {
+                    gitignore_by_dir.insert(dir, matcher);
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        dir = %dir.display(),
+                        error = %err,
+                        "failed to compile .gitignore matcher",
+                    );
+                }
             }
         }
         // Ensure root entries exist even without ignore files, so the

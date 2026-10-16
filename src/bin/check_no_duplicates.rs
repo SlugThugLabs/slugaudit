@@ -17,7 +17,7 @@
 //! invoked through `std::process::Command`; the test-name scan reads
 //! each Rust file with stdlib only.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
@@ -58,31 +58,22 @@ fn main() -> ExitCode {
 
     let test_files = collect_test_files(&project_root);
     let names = test_names_by_file(&test_files);
-    let mut by_name: BTreeMap<&str, Vec<&PathBuf>> = BTreeMap::new();
-    for (name, files) in &names {
-        by_name.insert(name.as_str(), files.iter().collect());
-    }
-    for (name, files) in by_name {
-        if files.len() > 1 {
-            let joined = files
-                .iter()
-                .map(|p| {
-                    p.strip_prefix(&project_root)
-                        .unwrap_or(p)
-                        .display()
-                        .to_string()
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            failures.push(format!(
-                "test {name:?} defined in {} files: {joined}",
-                files.len()
-            ));
-            println!(
-                "no-duplicates: test {name:?} defined in {} files: {joined}",
-                files.len()
-            );
-        }
+    let mut sorted_names: Vec<_> = names.iter().filter(|(_, files)| files.len() > 1).collect();
+    sorted_names.sort_by_key(|(name, _)| *name);
+    for (name, files) in sorted_names {
+        let joined = files
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&project_root)
+                    .unwrap_or(p)
+                    .display()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let msg = format!("test {name:?} defined in {} files: {joined}", files.len());
+        println!("no-duplicates: {msg}");
+        failures.push(msg);
     }
 
     if !failures.is_empty() {
@@ -99,9 +90,25 @@ fn main() -> ExitCode {
 /// silently unrun on any checkout where git did not answer, which is the one
 /// situation where the check cannot be trusted to have happened.
 fn duplicate_commit_subjects(root: &Path, failures: &mut Vec<String>) -> Vec<(String, usize)> {
+    let range = std::env::var("SLUGAUDIT_CHECK_COMMITS_BASE")
+        .map(|b| format!("{b}..HEAD"))
+        .unwrap_or_else(|_| {
+            let ok = Command::new("git")
+                .args(["rev-parse", "--verify", "origin/main"])
+                .current_dir(root)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                "origin/main..HEAD".to_owned()
+            } else {
+                "HEAD".to_owned()
+            }
+        });
     let output = match Command::new("git")
-        .arg("log")
-        .arg("--format=%s")
+        .args(["log", &range, "--format=%s"])
         .current_dir(root)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -120,9 +127,6 @@ fn duplicate_commit_subjects(root: &Path, failures: &mut Vec<String>) -> Vec<(St
         }
     };
     if !output.status.success() {
-        // Any non-zero exit lands here, so the message names what is known
-        // (git refused) rather than asserting a cause it did not verify —
-        // dubious ownership and a stale index.lock are not "not a repository".
         failures.push(format!(
             "git log exited with {}; cannot check commit subjects",
             output.status

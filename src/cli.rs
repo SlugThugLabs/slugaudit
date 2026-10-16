@@ -7,18 +7,30 @@
 use crate::util::Style;
 use thiserror::Error;
 
+/// The subcommand selected by the user from CLI arguments.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
+    /// Start the MCP server over stdio.
     Serve,
+    /// Connect SlugAudit to an AI agent or editor.
     Connect { agent: Option<String> },
+    /// Disconnect SlugAudit from an AI agent or editor.
     Disconnect { agent: Option<String> },
+    /// Install the binary to the standard local binary path.
     Install,
+    /// Open the interactive setup menu.
     Menu,
+    /// Check for and apply self-updates.
     Update,
+    /// Print version information.
     Version,
+    /// Print help and usage instructions.
     Help,
 }
 
+/// Parses command-line arguments into a high-level [`Command`].
+///
+/// Returns `Ok(Command::Serve)` if no arguments were provided.
 #[must_use = "the returned Command must be dispatched by the caller"]
 pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
     let Some(first) = args.next() else {
@@ -40,6 +52,7 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
     }
 }
 
+/// The raw usage and help text printed for `--help`.
 pub const USAGE: &str = "\
 slugaudit — searchable, trustworthy codebase evidence over MCP
 
@@ -91,6 +104,7 @@ EXAMPLES:
     slugaudit                        Run the server for your AI agent
 ";
 
+/// Formats the usage text, applying ANSI terminal styling when stdout is a terminal.
 pub fn usage() -> String {
     let style = Style::stdout();
     if !style.enabled() {
@@ -112,6 +126,7 @@ pub fn usage() -> String {
     out
 }
 
+/// Errors encountered while connecting or disconnecting an agent client.
 #[derive(Debug, Error)]
 pub enum ConnectError {
     #[error("invalid agent choice; choose one of the listed options")]

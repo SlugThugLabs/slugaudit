@@ -39,9 +39,12 @@ fn an_empty_query_is_a_typed_error_not_a_silent_noop() {
 fn a_file_without_indexed_content_is_a_typed_error() {
     let project = activated_project("logo.bin", b"\x89PNG\x00\x01\x02\x00\x00");
     let result = ask(&project, "logo.bin", "(identifier) @x");
+    let error =
+        result.expect_err("a binary file with no indexed source content must not be queried");
     assert!(
-        result.is_err(),
-        "a binary file with no indexed source content must not be queried"
+        error.message.contains("no indexed source content") || error.message.contains("logo.bin"),
+        "unexpected error message: {}",
+        error.message
     );
 }
 

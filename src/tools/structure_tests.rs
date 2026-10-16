@@ -94,14 +94,25 @@ fn an_invalid_query_is_a_typed_error_not_a_panic() {
         "lib.rs",
         "(this is not valid tree-sitter query syntax",
     );
-    assert!(result.is_err());
+    let error = result.expect_err("invalid query must return ErrorData");
+    assert!(
+        error.message.to_lowercase().contains("syntax")
+            || error.message.to_lowercase().contains("query"),
+        "unexpected error message: {}",
+        error.message
+    );
 }
 
 #[test]
 fn a_missing_file_is_a_typed_error() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let result = ask(&project, "does_not_exist.rs", "(function_item) @f");
-    assert!(result.is_err());
+    let error = result.expect_err("missing file must return ErrorData");
+    assert!(
+        error.message.contains("not indexed") || error.message.contains("does_not_exist.rs"),
+        "unexpected error message: {}",
+        error.message
+    );
 }
 
 #[test]
@@ -144,7 +155,14 @@ fn an_oversized_query_is_a_typed_error() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let huge_query = "x".repeat(ResourceLimits::default().max_structure_query_bytes + 1);
     let result = ask(&project, "lib.rs", &huge_query);
-    assert!(result.is_err());
+    let error = result.expect_err("oversized query must return ErrorData");
+    assert!(
+        error.message.to_lowercase().contains("bytes")
+            || error.message.to_lowercase().contains("large")
+            || error.message.to_lowercase().contains("exceed"),
+        "unexpected error message: {}",
+        error.message
+    );
 }
 
 #[test]

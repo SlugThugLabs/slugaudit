@@ -167,14 +167,15 @@ fn empty_title_is_a_typed_error() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let mut request = base_request(&project, "lib.rs");
     request.title = String::new();
-    assert!(
-        finding(
-            &Parameters(request),
-            &crate::progress::NoopProgressSink,
-            &crate::sync::SourceSyncManager::default()
-        )
-        .is_err()
-    );
+    let err = match finding(
+        &Parameters(request),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    ) {
+        Ok(_) => panic!("empty title must error"),
+        Err(err) => err,
+    };
+    assert!(err.message.contains("title"));
 }
 
 #[test]
@@ -183,28 +184,30 @@ fn reversed_line_range_is_a_typed_error() {
     let mut request = base_request(&project, "lib.rs");
     request.line_start = 10;
     request.line_end = 1;
-    assert!(
-        finding(
-            &Parameters(request),
-            &crate::progress::NoopProgressSink,
-            &crate::sync::SourceSyncManager::default()
-        )
-        .is_err()
-    );
+    let err = match finding(
+        &Parameters(request),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    ) {
+        Ok(_) => panic!("reversed line range must error"),
+        Err(err) => err,
+    };
+    assert!(err.message.contains("line_end"));
 }
 
 #[test]
 fn a_finding_against_an_unindexed_file_is_a_typed_error() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let request = base_request(&project, "does_not_exist.rs");
-    assert!(
-        finding(
-            &Parameters(request),
-            &crate::progress::NoopProgressSink,
-            &crate::sync::SourceSyncManager::default()
-        )
-        .is_err()
-    );
+    let err = match finding(
+        &Parameters(request),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    ) {
+        Ok(_) => panic!("unindexed file must error"),
+        Err(err) => err,
+    };
+    assert!(err.message.contains("not indexed") || err.message.contains("does_not_exist.rs"));
 }
 
 #[test]
@@ -213,14 +216,15 @@ fn a_line_number_past_the_files_real_length_is_a_typed_error() {
     let mut request = base_request(&project, "lib.rs");
     request.line_start = 1;
     request.line_end = 9_999;
-    assert!(
-        finding(
-            &Parameters(request),
-            &crate::progress::NoopProgressSink,
-            &crate::sync::SourceSyncManager::default()
-        )
-        .is_err()
-    );
+    let err = match finding(
+        &Parameters(request),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    ) {
+        Ok(_) => panic!("line number past length must error"),
+        Err(err) => err,
+    };
+    assert!(err.message.contains("exceeds file line count") || err.message.contains("line_end"));
 }
 
 #[test]
@@ -233,7 +237,7 @@ fn a_line_number_within_the_files_real_length_succeeds() {
         finding(
             &Parameters(request),
             &crate::progress::NoopProgressSink,
-            &crate::sync::SourceSyncManager::default()
+            &crate::sync::SourceSyncManager::default(),
         )
         .is_ok()
     );
@@ -244,27 +248,29 @@ fn an_oversized_description_is_a_typed_error() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let mut request = base_request(&project, "lib.rs");
     request.description = "x".repeat(MAX_DESCRIPTION_CHARS + 1);
-    assert!(
-        finding(
-            &Parameters(request),
-            &crate::progress::NoopProgressSink,
-            &crate::sync::SourceSyncManager::default()
-        )
-        .is_err()
-    );
+    let err = match finding(
+        &Parameters(request),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    ) {
+        Ok(_) => panic!("oversized description must error"),
+        Err(err) => err,
+    };
+    assert!(err.message.contains("description") || err.message.contains("character"));
 }
 #[test]
 fn an_empty_file_cannot_have_a_finding() {
     let project = activated_project("empty.rs", b"");
     let request = base_request(&project, "empty.rs");
-    assert!(
-        finding(
-            &Parameters(request),
-            &crate::progress::NoopProgressSink,
-            &crate::sync::SourceSyncManager::default()
-        )
-        .is_err()
-    );
+    let err = match finding(
+        &Parameters(request),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    ) {
+        Ok(_) => panic!("empty file finding must error"),
+        Err(err) => err,
+    };
+    assert!(err.message.contains("empty"));
 }
 
 /// The session-scoped dedupe's core contract. Two calls that agree on the

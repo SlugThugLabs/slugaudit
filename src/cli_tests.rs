@@ -48,7 +48,9 @@ fn explicit_help_command_parses_as_help() {
 #[test]
 fn case_mismatched_known_command_is_an_error() {
     let result = parse_args(vec!["SErve".to_owned()].into_iter());
-    assert!(result.is_err());
+    let err = result.expect_err("case mismatched command should fail");
+    assert!(err.contains("unknown command"));
+    assert!(err.contains("SErve"));
 }
 
 #[test]

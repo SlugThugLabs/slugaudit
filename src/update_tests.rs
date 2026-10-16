@@ -97,10 +97,16 @@ fn verify_checksum_rejects_a_mismatching_file() {
     )
     .expect("write sha256sums");
 
-    assert!(
-        verify_checksum(&binary, &sums_file).is_err(),
-        "a mismatch must be rejected"
-    );
+    let err = verify_checksum(&binary, &sums_file).expect_err("a mismatch must be rejected");
+    match err {
+        UpdateError::Checksum(msg) => {
+            assert!(
+                msg.contains("checksum mismatch"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("expected Checksum error, got: {other:?}"),
+    }
 }
 
 #[test]

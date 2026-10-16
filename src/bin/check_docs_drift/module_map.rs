@@ -14,7 +14,10 @@ pub(super) fn check_module_map(root: &Path, failures: &mut Vec<String>) {
     } else {
         "ARCHITECTURE.md"
     };
-    let content = read(root, doc_name);
+    let Ok(content) = read(root, doc_name) else {
+        failures.push(format!("failed to read {doc_name}"));
+        return;
+    };
     let lines: Vec<&str> = content.lines().collect();
 
     // Find the module map: a fenced block whose first content line is `src/`.

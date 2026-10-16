@@ -3,6 +3,7 @@ use rmcp::ErrorData;
 
 pub(super) const MAX_TEXT_BYTES: usize = 1_000_000;
 pub(super) const MAX_SNIPPET_BYTES: usize = 120;
+pub(super) const MAX_MULTI_FILE_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 
 pub(super) fn fetch_source(
     connection: &rusqlite::Connection,
@@ -62,6 +63,7 @@ pub(super) fn fetch_sources_for_language(
         .query(params)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     let mut result = Vec::new();
+    let mut total_bytes: usize = 0;
     while let Some(row) = rows
         .next()
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
@@ -72,7 +74,11 @@ pub(super) fn fetch_sources_for_language(
         let content: String = row
             .get(1)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        total_bytes = total_bytes.saturating_add(content.len());
         result.push((path, content));
+        if total_bytes >= MAX_MULTI_FILE_TOTAL_BYTES {
+            break;
+        }
     }
     Ok(result)
 }

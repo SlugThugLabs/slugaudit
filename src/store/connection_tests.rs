@@ -28,7 +28,11 @@ fn a_read_only_connection_cannot_write() {
 
     let read_only = open_read_only(&path).expect("open read-only");
     let result = read_only.execute("DELETE FROM findings", []);
-    assert!(result.is_err());
+    let err = result.expect_err("read-only connection must reject writes");
+    assert!(
+        err.to_string().to_lowercase().contains("readonly"),
+        "expected readonly error, got: {err}"
+    );
 }
 
 #[test]
@@ -495,9 +499,11 @@ fn evidence_kind_check_rejects_an_unmodeled_kind() {
         [file_id],
     );
 
+    let err =
+        result.expect_err("an unmodeled evidence kind must be rejected by the CHECK constraint");
     assert!(
-        result.is_err(),
-        "an unmodeled evidence kind must be rejected by the CHECK constraint, got {result:?}"
+        err.to_string().to_lowercase().contains("constraint"),
+        "expected constraint error, got: {err}"
     );
 }
 

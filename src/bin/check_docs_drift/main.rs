@@ -3,7 +3,6 @@
 // Same production panic ban as the library root; see `lib.rs` for why
 // `expect` is denied alongside `unwrap`.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
-#![allow(clippy::exit)]
 
 //! Docs-drift gate.
 //!
@@ -40,10 +39,10 @@ fn main() -> ExitCode {
     let mut args = std::env::args_os()
         .skip(1)
         .map(|arg| arg.to_string_lossy().into_owned());
-    let mut project_root = std::env::current_dir().unwrap_or_else(|error| {
-        eprintln!("docs-drift: cannot determine project root: {error}");
-        std::process::exit(2);
-    });
+    let Ok(mut project_root) = std::env::current_dir() else {
+        eprintln!("docs-drift: cannot determine project root");
+        return ExitCode::from(2);
+    };
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--help" => {
@@ -98,7 +97,7 @@ fn main() -> ExitCode {
 /// must verify cannot produce a verdict. This path is *not* used by the
 /// canonical-doc-set check, whose whole verdict is presence/absence; see
 /// [`canonical_docs`].
-fn read(root: &Path, relative: &str) -> String {
+fn read(root: &Path, relative: &str) -> Result<String, ()> {
     let candidates = [
         root.join(relative),
         root.join(".planning").join(relative),
@@ -111,11 +110,10 @@ fn read(root: &Path, relative: &str) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         eprintln!("docs-drift: cannot find {relative}; tried: {tried}");
-        std::process::exit(2);
+        return Err(());
     };
-    fs::read_to_string(path).unwrap_or_else(|err| {
+    fs::read_to_string(path).map_err(|err| {
         eprintln!("docs-drift: cannot read {}: {err}", path.display());
-        std::process::exit(2);
     })
 }
 

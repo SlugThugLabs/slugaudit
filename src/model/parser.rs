@@ -1,9 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+/// Availability status of a language parser for a file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ParserAvailability {
+    /// A parser is installed and ready for this file type.
     Available,
+    /// No parser exists for this file type.
     Unavailable,
+    /// A parser exists for this file type but failed to initialize or load.
     LoadFailed { reason: String },
 }
 
@@ -21,11 +25,16 @@ impl ParserAvailability {
     }
 }
 
+/// The result of attempting to parse a source file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ParseOutcome {
+    /// Parsing was not attempted (e.g. parser unavailable or file skipped).
     NotAttempted,
+    /// Parsing succeeded with no syntax errors.
     Succeeded,
+    /// Parsing produced syntax errors.
     SyntaxErrors { count: u32 },
+    /// Parsing failed catastrophically.
     Failed { reason: String },
 }
 
@@ -45,11 +54,16 @@ impl ParseOutcome {
     }
 }
 
+/// The completeness degree of structural evidence extracted from a source file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExtractionCompleteness {
+    /// All structural and symbol evidence was extracted.
     Full,
+    /// Extraction succeeded partially (e.g. truncated due to size or partial syntax errors).
     Partial,
+    /// Only file content/hash was recorded; no AST evidence extracted.
     ContentOnly,
+    /// Extraction was unavailable (no parser).
     Unavailable,
 }
 
@@ -65,25 +79,36 @@ impl ExtractionCompleteness {
     }
 }
 
+/// The origin or generator of an evidence record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EvidenceOrigin {
+    /// Structural AST evidence from a language pack.
     PackStructure,
+    /// Symbol definition/reference evidence from a language pack.
     PackSymbol,
+    /// Direct raw tree-sitter AST capture.
     RawTree,
+    /// Plain source file content evidence.
     SourceContent,
+    /// Relationship derived across files or entities.
     DerivedRelationship,
     /// Evidence produced by SlugAudit's own generic tree-walk
     /// (e.g. `evidence::generic_imports`), not by the language pack's
     /// `process()`. Distinct from `PackStructure` so consumers can tell
     /// "the pack found this" from "our generic walker found this".
     GenericWalker,
+    /// Evidence produced by the Rust call-graph walker.
     RustCallWalker,
 }
 
+/// Recorded outcome of executing a parser on a single file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParserRun {
+    /// Parser availability status when the file was processed.
     pub availability: ParserAvailability,
+    /// Result outcome of the parse attempt.
     pub outcome: ParseOutcome,
+    /// Degree of completeness of evidence extraction.
     pub completeness: ExtractionCompleteness,
 }
 

@@ -13,9 +13,14 @@ use std::path::Path;
 pub(super) fn check_codeowners(root: &Path, failures: &mut Vec<String>) {
     let path = root.join(".github/CODEOWNERS");
     // An absent file is check 1's verdict; this check must not double-report
-    // it as a path failure.
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return;
+    // it as a path failure, but must report read errors if present.
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) => {
+            failures.push(format!(".github/CODEOWNERS is unreadable: {err}"));
+            return;
+        }
     };
     for (offset, raw) in text.lines().enumerate() {
         let line_no = offset + 1;

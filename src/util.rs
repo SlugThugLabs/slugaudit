@@ -187,8 +187,10 @@ pub(crate) fn serialized_len<T: serde::Serialize>(value: &T) -> usize {
         }
     }
     let mut counter = Counter(0);
-    let _ = serde_json::to_writer(&mut counter, value);
-    counter.0
+    match serde_json::to_writer(&mut counter, value) {
+        Ok(()) => counter.0,
+        Err(_) => usize::MAX,
+    }
 }
 
 /// The current Unix timestamp in seconds. Returns 0 if the system clock is

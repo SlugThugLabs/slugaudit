@@ -77,7 +77,14 @@ pub(crate) fn fetch_latest_release() -> Result<LatestRelease, UpdateError> {
 /// meter so the download body or error text is clean to read.
 fn curl_get(url: &str) -> Result<String, UpdateError> {
     let output = std::process::Command::new("curl")
-        .args(["-fsSL", url])
+        .args([
+            "-fsSL",
+            "--max-time",
+            "30",
+            "--max-filesize",
+            "10000000",
+            url,
+        ])
         .output()
         .map_err(|_| UpdateError::CurlMissing)?;
     if !output.status.success() {

@@ -8,6 +8,7 @@ use crate::install::{config_home, running_binary, slugaudit_dir};
 use std::io::{BufRead as _, Write as _};
 use std::path::{Path, PathBuf};
 
+/// Registers SlugAudit as an MCP server for the named agent, or prompts interactively.
 pub fn run_connect(agent_name: Option<&str>) -> Result<(), ConnectError> {
     match agent_name {
         Some(name) => {
@@ -19,6 +20,7 @@ pub fn run_connect(agent_name: Option<&str>) -> Result<(), ConnectError> {
     }
 }
 
+/// Disconnects SlugAudit from the named agent, or prompts interactively.
 pub fn run_disconnect(agent_name: Option<&str>) -> Result<(), ConnectError> {
     match agent_name {
         Some(name) => {
@@ -68,6 +70,7 @@ fn disconnect_one(agent: AgentDef) -> Result<(), ConnectError> {
     Ok(())
 }
 
+/// Runs the interactive terminal prompt to choose and connect a detected agent.
 pub fn run_connect_interactive() -> Result<(), ConnectError> {
     let home = config_home();
     let detected = detected_agents(home.as_deref());
@@ -115,6 +118,7 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
     connect_one(agent)
 }
 
+/// Runs the interactive terminal prompt to choose and disconnect an active agent connection.
 pub fn run_disconnect_interactive() -> Result<(), ConnectError> {
     let home = config_home();
     let connected: Vec<_> = crate::connect_agents::AGENTS

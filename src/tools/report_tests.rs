@@ -262,24 +262,12 @@ fn malformed_language_value_is_reported_instead_of_dropped() {
     let db_dir = tempfile::tempdir().expect("db dir");
     let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
     connection
-        .execute(
-            "INSERT INTO revisions \
-             (revision_id, manifest_hash, parser_pack_version, created_at_unix, is_current) \
-             VALUES ('r1', 'h', '1.0.0', 0, 1)",
-            [],
+        .execute_batch(
+            "INSERT INTO revisions (revision_id, manifest_hash, parser_pack_version, created_at_unix, is_current) VALUES ('r1', 'h', '1.0.0', 0, 1);\
+             INSERT INTO files (path, file_kind, content, content_hash, hash_algorithm, byte_len, language, language_detected, parser_availability, parse_outcome, extraction_completeness, last_revision_id) \
+             VALUES ('broken.bin', 'indexed', '', 'h', 'blake3', 0, CAST(X'FF' AS BLOB), 1, 'Unavailable', 'Failed', 'Unavailable', 1);"
         )
-        .expect("insert revision");
-    connection
-        .execute(
-            "INSERT INTO files \
-             (path, file_kind, content, content_hash, hash_algorithm, byte_len, language, \
-              language_detected, parser_availability, parse_outcome, extraction_completeness, \
-              last_revision_id) \
-             VALUES ('broken.bin', 'indexed', '', 'h', 'blake3', 0, CAST(X'FF' AS BLOB), \
-                     1, 'Unavailable', 'Failed', 'Unavailable', 1)",
-            [],
-        )
-        .expect("insert malformed language");
+        .expect("insert revision and file");
 
     let tx = connection.transaction().expect("begin transaction");
     assert!(build_report(&tx, "r1".to_owned()).is_err());
@@ -288,14 +276,21 @@ fn malformed_language_value_is_reported_instead_of_dropped() {
 #[test]
 fn report_on_an_inactive_project_is_a_typed_error_not_a_panic() {
     let project = tempfile::tempdir().expect("project dir");
-    let result = report(
-        &Parameters(ReportRequest {
-            path: project.path().to_string_lossy().into_owned(),
-        }),
+    let req = ReportRequest {
+        path: project.path().to_string_lossy().into_owned(),
+    };
+    let err = report(
+        &Parameters(req),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
+    )
+    .err()
+    .expect("report on inactive project must return ErrorData");
+    assert!(
+        err.message.contains("not enabled")
+            || err.message.contains("inactive")
+            || err.message.contains("activate")
     );
-    assert!(result.is_err());
 }
 
 /// A project DB with one revision and no files, ready for direct `files`
