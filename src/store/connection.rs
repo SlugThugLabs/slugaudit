@@ -107,6 +107,21 @@ fn reject_symlink(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Resolves symlinks in the *parent directory* only, so `SQLITE_OPEN_NOFOLLOW`
+/// (which rejects a symlink in any path component, `SQLITE_CANTOPEN_SYMLINK`)
+/// keeps guarding the database file itself without refusing a project under a
+/// symlinked ancestor — on macOS `/var` and `/tmp` are links into `/private`
+/// (verified on macos-latest CI, 2026-10-16). Falls back to the path as given
+/// when the parent cannot be resolved; the open then fails on its own terms.
+fn resolve_parent_dir(path: &Path) -> std::path::PathBuf {
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => parent
+            .canonicalize()
+            .map_or_else(|_| path.to_path_buf(), |real| real.join(name)),
+        _ => path.to_path_buf(),
+    }
+}
+
 fn open_flags(read_write: bool) -> OpenFlags {
     let mut flags = OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_NOFOLLOW;
     if read_write {
@@ -230,6 +245,8 @@ fn reject_insecure_permissions(_path: &Path) -> Result<(), StoreError> {
 /// if the database path resides on a network filesystem (NFS/CIFS/SMB)
 /// where SQLite WAL mode is unreliable.
 pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
+    let resolved = resolve_parent_dir(path);
+    let path = resolved.as_path();
     reject_symlink(path)?;
     reject_network_filesystem(path)?;
     create_with_private_permissions_if_missing(path)?;
@@ -254,6 +271,8 @@ pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
 /// on a network filesystem (NFS/CIFS/SMB) where SQLite WAL mode is
 /// unreliable.
 pub fn open_read_only(path: &Path) -> Result<Connection, StoreError> {
+    let resolved = resolve_parent_dir(path);
+    let path = resolved.as_path();
     reject_symlink(path)?;
     reject_network_filesystem(path)?;
     reject_insecure_permissions(path)?;

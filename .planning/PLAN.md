@@ -270,6 +270,19 @@ existing canonical ancestor), as the pure `is_mount_table_network_filesystem`, w
 tested on every platform. State: **landed**; verified only by macOS CI, since the
 macOS-only glue cannot compile on the Linux dev host.
 
+### Symlinked parent directory refused every open — resolved 2026-10-16
+
+`SQLITE_OPEN_NOFOLLOW` rejects a symlink in *any* path component
+(`SQLITE_CANTOPEN_SYMLINK`, extended code 1550), not only the database file, so a
+database path under a symlinked ancestor could not be opened. On macOS `/var` and `/tmp`
+are links into `/private`, which failed 107 lib tests on macos-latest (run on `4085f5b`)
+once the netfs fix above let them reach SQLite. Production roots are canonicalized at
+activation, so real projects were probably unaffected; any non-canonical caller was not.
+`src/store/connection.rs::resolve_parent_dir` now canonicalizes the parent before both
+opens; the file itself stays guarded by `reject_symlink` and `NOFOLLOW`. Pinned on every
+Unix by `a_database_under_a_symlinked_parent_directory_opens_for_both_modes`. State:
+**landed**.
+
 ### Resolved 2026-10-16
 
 1. **A deeply nested file aborted the whole server — resolved** (`a492f25`). The

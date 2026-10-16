@@ -558,3 +558,29 @@ fn every_evidence_kind_text_passes_the_kind_check() {
          exactly these strings"
     );
 }
+
+/// A symlinked *ancestor* directory is not a reason to refuse the open: on
+/// macOS every temp and `/var` path runs through `/var -> /private/var`.
+/// Only the database file itself being a symlink is rejected.
+#[cfg(unix)]
+#[test]
+fn a_database_under_a_symlinked_parent_directory_opens_for_both_modes() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let real = directory.path().join("real");
+    std::fs::create_dir(&real).expect("real dir");
+    let linked = directory.path().join("linked");
+    std::os::unix::fs::symlink(&real, &linked).expect("dir symlink");
+    let path = linked.join("project.db");
+
+    drop(open_read_write(&path).expect("read-write open through a symlinked parent"));
+    let read_only = open_read_only(&path);
+
+    assert!(
+        read_only.is_ok(),
+        "read-only open through a symlinked parent: {read_only:?}"
+    );
+    assert!(
+        real.join("project.db").is_file(),
+        "the database lands in the real directory"
+    );
+}
