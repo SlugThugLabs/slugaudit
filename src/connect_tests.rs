@@ -421,3 +421,104 @@ fn connect_falls_back_to_the_config_file_when_the_executable_is_absent_or_fails(
         "a CLI that rejects `mcp add` must still fall back to the config file"
     );
 }
+
+/// A config whose top level is not an object has nowhere to hold an MCP
+/// section; the refusal names the file, not an unrelated missing home.
+#[test]
+fn a_json_config_whose_top_level_is_not_an_object_is_refused_by_path() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let agent = find_agent("cursor").expect("cursor agent");
+    let cfg_path = temp.path().join(".cursor/mcp.json");
+    fs::create_dir_all(cfg_path.parent().expect("parent")).expect("mkdir");
+    fs::write(&cfg_path, "[]").expect("write array config");
+
+    let result = connect_agent(&agent, Path::new("/bin/slugaudit"), Some(temp.path()));
+
+    let Err(ConnectError::RootNotAnObject { path }) = result else {
+        panic!("expected RootNotAnObject, got {result:?}");
+    };
+    assert_eq!(path, cfg_path, "the refusal names the config file");
+    assert_eq!(
+        fs::read_to_string(&cfg_path).expect("read"),
+        "[]",
+        "file untouched"
+    );
+}
+
+/// A section key holding a non-object is refused rather than rewritten
+/// unchanged under a "Wrote" message.
+#[test]
+fn a_json_config_whose_server_section_is_not_an_object_is_refused_by_section() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let agent = find_agent("cursor").expect("cursor agent");
+    let cfg_path = temp.path().join(".cursor/mcp.json");
+    fs::create_dir_all(cfg_path.parent().expect("parent")).expect("mkdir");
+    fs::write(&cfg_path, r#"{"mcpServers": []}"#).expect("write config");
+
+    let result = connect_agent(&agent, Path::new("/bin/slugaudit"), Some(temp.path()));
+
+    let Err(ConnectError::SectionNotAnObject { section }) = result else {
+        panic!("expected SectionNotAnObject, got {result:?}");
+    };
+    assert_eq!(section, "mcpServers");
+}
+
+#[test]
+fn an_unknown_agent_name_is_rejected_by_connect_and_disconnect() {
+    let connect = run_connect(Some("no-such-agent"));
+    let disconnect = run_disconnect(Some("no-such-agent"));
+
+    for result in [connect, disconnect] {
+        assert!(
+            matches!(&result, Err(ConnectError::UnknownAgent(name)) if name == "no-such-agent"),
+            "expected UnknownAgent, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn a_menu_answer_is_valid_only_when_it_is_a_listed_number() {
+    let valid = [("1", 0), (" 3\n", 2)];
+    let invalid = ["0", "4", "", "two", "-1"];
+
+    for (answer, index) in valid {
+        assert_eq!(
+            parse_choice(answer, 3).expect(answer),
+            index,
+            "answer {answer:?}"
+        );
+    }
+    for answer in invalid {
+        assert!(
+            matches!(parse_choice(answer, 3), Err(ConnectError::InvalidChoice)),
+            "answer {answer:?} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn disconnect_surfaces_a_remove_failure_from_the_agent_cli() {
+    let bin_dir = fake_agent_cli("claude", 1);
+    let agent = find_agent("claude").expect("claude agent");
+
+    let result = with_fake_clis_on_path(bin_dir.path(), || {
+        crate::connect_cli::run_remove(&agent, "claude")
+    });
+
+    let Err(ConnectError::RemoveFailed { cli, .. }) = result else {
+        panic!("expected RemoveFailed, got {result:?}");
+    };
+    assert_eq!(cli, "claude");
+}
+
+#[test]
+fn an_agent_cli_that_cannot_be_executed_is_reported_as_a_command_failure() {
+    let agent = find_agent("claude").expect("claude agent");
+
+    let result = with_no_cli_on_path(|| crate::connect_cli::run_remove(&agent, "claude"));
+
+    let Err(ConnectError::AgentCommand { cli, .. }) = result else {
+        panic!("expected AgentCommand, got {result:?}");
+    };
+    assert_eq!(cli, "claude");
+}

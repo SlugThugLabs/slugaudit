@@ -137,8 +137,6 @@ pub enum ConnectError {
     HomeUnavailable,
     #[error("unknown agent {0:?}; run `slugaudit connect` to see detected agents")]
     UnknownAgent(String),
-    #[error("{agent} CLI ({cli}) not found on PATH — install it first")]
-    AgentMissing { agent: String, cli: String },
     #[error("failed to run `{cli}`: {inner}")]
     AgentCommand { cli: String, inner: std::io::Error },
     #[error("`{cli} mcp remove` exited with {status}")]
@@ -152,6 +150,11 @@ pub enum ConnectError {
          nowhere to write the slugaudit entry. Fix or remove that key, then retry"
     )]
     SectionNotAnObject { section: String },
+    #[error(
+        "cannot connect: {path} does not hold a JSON object at its top level, so there is \
+         nowhere to write the slugaudit entry. Fix or remove the file, then retry"
+    )]
+    RootNotAnObject { path: std::path::PathBuf },
     #[error(
         "cannot modify {path}: configuration file exists but contains invalid JSON: {source} (fix syntax/comments or remove the file to reset, then retry)"
     )]

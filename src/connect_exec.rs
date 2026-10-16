@@ -223,7 +223,11 @@ fn write_json_server(
         fs::create_dir_all(p)?;
     }
     let mut root = load_json_or_empty(path)?;
-    let map = root.as_object_mut().ok_or(ConnectError::HomeUnavailable)?;
+    let map = root
+        .as_object_mut()
+        .ok_or_else(|| ConnectError::RootNotAnObject {
+            path: path.to_path_buf(),
+        })?;
     let s = map.entry(section).or_insert_with(|| serde_json::json!({}));
     // An `if let` here meant a section key holding a non-object silently
     // skipped the insert, the file was rewritten unchanged, and the caller

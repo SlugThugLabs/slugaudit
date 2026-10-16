@@ -93,14 +93,8 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
     std::io::stdout().flush()?;
 
     let choice = crate::prompt::read_prompt_line()?.unwrap_or_default();
-    let idx: usize = choice
-        .trim()
-        .parse()
-        .map_err(|_| ConnectError::InvalidChoice)?;
-    if idx == 0 || idx > detected.len() {
-        return Err(ConnectError::InvalidChoice);
-    }
-    let agent = detected[idx - 1];
+    let index = parse_choice(&choice, detected.len())?;
+    let agent = detected[index];
     if agent.is_connected(home.as_deref()) {
         print!(
             "{} is already connected. Re-connect / update path? [y/N]: ",
@@ -137,14 +131,17 @@ pub fn run_disconnect_interactive() -> Result<(), ConnectError> {
     std::io::stdout().flush()?;
 
     let choice = crate::prompt::read_prompt_line()?.unwrap_or_default();
-    let idx: usize = choice
-        .trim()
-        .parse()
-        .map_err(|_| ConnectError::InvalidChoice)?;
-    if idx == 0 || idx > connected.len() {
-        return Err(ConnectError::InvalidChoice);
+    let index = parse_choice(&choice, connected.len())?;
+    disconnect_one(connected[index])
+}
+
+/// The zero-based index of a 1-based menu answer among `count` options, or
+/// `InvalidChoice` for anything that is not one of the listed numbers.
+fn parse_choice(answer: &str, count: usize) -> Result<usize, ConnectError> {
+    match answer.trim().parse::<usize>() {
+        Ok(choice) if (1..=count).contains(&choice) => Ok(choice - 1),
+        _ => Err(ConnectError::InvalidChoice),
     }
-    disconnect_one(connected[idx - 1])
 }
 
 #[cfg(test)]
