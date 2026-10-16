@@ -209,8 +209,9 @@ mod tests {
             g.dirty_paths.insert("before-panic".to_owned());
             // Hold the guard through a deliberate panic so the mutex
             // ends up poisoned after this closure returns.
-            panic!("simulated panic inside WatchState's critical section");
+            std::panic::panic_any("simulated panic inside WatchState's critical section");
         }));
+
         assert!(panic_result.is_err());
 
         // A std `lock()` would now fail with PoisonError. The

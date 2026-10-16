@@ -258,6 +258,7 @@ fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() 
 /// not silently skip the calls that errored.
 #[test]
 fn a_failed_tool_call_logs_one_completion_line_marked_error() {
+    let _session_guard = crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK);
     // Scoped to this test's own tool name, so the single completion line it
     // counts can only be the one its own call emitted.
     const TOOL: &str = "probe_failed_call";
@@ -297,7 +298,9 @@ fn a_failed_tool_call_logs_one_completion_line_marked_error() {
 /// vacuously.
 #[test]
 fn tool_call_logging_never_emits_the_calls_argument_or_result() {
+    let _session_guard = crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK);
     const SENTINEL: &str = "SENTINEL_TOOLCALL_9147";
+
     // Scoped to this test's own tool name, so the completion line it counts
     // can only be the one its own call emitted.
     const TOOL: &str = "query_tool_call_logging";

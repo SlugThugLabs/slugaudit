@@ -18,11 +18,10 @@ use rmcp::handler::server::wrapper::Parameters;
 /// for the whole write→sync→read cycle keeps the session stable and
 /// keeps the purge from ever targeting these rows.
 fn with_stable_session<T>(f: impl FnOnce() -> T) -> T {
-    let _guard = SESSION_TEST_LOCK
-        .lock()
-        .expect("session test lock poisoned");
+    let _guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
     f()
 }
+
 
 fn request(path: &str, file: Option<&str>) -> FindingReadRequest {
     FindingReadRequest {

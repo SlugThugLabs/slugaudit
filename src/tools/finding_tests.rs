@@ -274,10 +274,9 @@ fn an_empty_file_cannot_have_a_finding() {
 /// appending a near-duplicate the way the unconditionally-`INSERT` build did.
 #[test]
 fn restating_a_conclusion_refreshes_one_row_with_the_latest_body() {
-    let _session_guard = SESSION_TEST_LOCK
-        .lock()
-        .expect("session test lock poisoned");
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
     let project = activated_project("lib.rs", b"line one\nline two\n");
+
     let manager = crate::sync::SourceSyncManager::default();
     let first = finding(
         &Parameters(base_request(&project, "lib.rs")),
@@ -331,9 +330,7 @@ fn restating_a_conclusion_refreshes_one_row_with_the_latest_body() {
 /// id — dedupe must not collapse distinct subjects onto one row.
 #[test]
 fn distinct_targets_leave_distinct_rows() {
-    let _session_guard = SESSION_TEST_LOCK
-        .lock()
-        .expect("session test lock poisoned");
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
     let project = activated_project("lib.rs", b"line one\nline two\n");
     let manager = crate::sync::SourceSyncManager::default();
     let first = finding(
@@ -374,10 +371,9 @@ fn distinct_targets_leave_distinct_rows() {
 /// restatement is a new row. Dedupe must not silently revive a stale row.
 #[test]
 fn a_restatement_after_the_file_changed_is_a_new_row() {
-    let _session_guard = SESSION_TEST_LOCK
-        .lock()
-        .expect("session test lock poisoned");
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
+
     let manager = crate::sync::SourceSyncManager::default();
     let first = finding(
         &Parameters(base_request(&project, "lib.rs")),

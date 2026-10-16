@@ -58,10 +58,9 @@ fn count_findings(db_path: &std::path::Path) -> i64 {
 /// next `ensure_current` is the cleanup path.
 #[test]
 fn finding_carries_the_current_session_id() {
-    let _session_guard = SESSION_TEST_LOCK
-        .lock()
-        .expect("session test lock poisoned");
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
     let project = activated_project("tagged.rs", b"pub fn t() {}\n");
+
     let response = finding(
         &Parameters(base_request(&project, "tagged.rs")),
         &crate::progress::NoopProgressSink,
@@ -103,10 +102,9 @@ fn finding_carries_the_current_session_id() {
 /// inheriting a prior session's audit conclusions.
 #[test]
 fn a_new_session_drops_prior_session_findings_but_keeps_its_own() {
-    let _session_guard = SESSION_TEST_LOCK
-        .lock()
-        .expect("session test lock poisoned");
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
     let project = activated_project("cross.rs", b"pub fn x() {}\n");
+
 
     let prior_session = Uuid::new_v4();
     override_session_id_for_test(prior_session);
@@ -199,10 +197,9 @@ fn a_new_session_drops_prior_session_findings_but_keeps_its_own() {
 /// also runs the cleanup — not just a no-op read tool trigger.
 #[test]
 fn a_resync_after_a_session_change_drops_prior_session_findings() {
-    let _session_guard = SESSION_TEST_LOCK
-        .lock()
-        .expect("session test lock poisoned");
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
     let project = activated_project("resync.rs", b"pub fn r() {}\n");
+
 
     let first_session = Uuid::new_v4();
     override_session_id_for_test(first_session);
@@ -258,10 +255,9 @@ fn a_resync_after_a_session_change_drops_prior_session_findings() {
 /// foreign-session row pre-seeded: exactly the state the purge guards against.
 #[test]
 fn dedupe_is_scoped_to_the_writing_session() {
-    let _session_guard = SESSION_TEST_LOCK
-        .lock()
-        .expect("session test lock poisoned");
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
     let project = activated_project("scoped.rs", b"pub fn s() {}\n");
+
     crate::tools::context::ensure_synced_no_progress(
         &project.path().to_string_lossy(),
         &crate::sync::SourceSyncManager::default(),

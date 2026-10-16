@@ -188,10 +188,13 @@ fn write_atomic(path: &Path, content: &[u8]) -> Result<(), ConnectError> {
     let temp = parent.join(format!(".slugaudit-tmp-{}-{}", std::process::id(), count));
     fs::write(&temp, content)?;
     if let Err(err) = fs::rename(&temp, path) {
-        let _ = fs::remove_file(&temp);
+        if let Err(remove_err) = fs::remove_file(&temp) {
+            tracing::warn!(error = %remove_err, path = %temp.display(), "failed to remove temporary file after rename error");
+        }
         return Err(ConnectError::Io(err));
     }
     Ok(())
+
 }
 
 fn load_json_or_empty(path: &Path) -> Result<serde_json::Value, ConnectError> {

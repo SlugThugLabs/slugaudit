@@ -178,10 +178,9 @@ fn purge_deletes_only_prior_session_rows() {
 /// "is the project row new?" check.
 #[test]
 fn ensure_project_row_purges_findings_on_a_warm_cache_too() {
-    let _session_guard = SESSION_TEST_LOCK
-        .lock()
-        .expect("session test lock poisoned");
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
     let (_dir, mut connection) = open_temp_db();
+
     let root = Path::new("/tmp/warm-example");
     ensure_project_row(&mut connection, root).expect("first ensure");
 

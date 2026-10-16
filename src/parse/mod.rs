@@ -10,10 +10,11 @@ pub use language::{detect_language, language_available};
 ///
 /// `tree-sitter-language-pack` exposes no runtime `VERSION` constant, so
 /// this string is manually duplicated from the exact pin
-/// (`tree-sitter-language-pack = "=1.14.3"`) in `Cargo.toml`. Bumping the
+/// (`tree-sitter-language-pack = "=1.18.0"`) in `Cargo.toml`. Bumping the
 /// dependency requires updating both together; the repo-level
 /// `check_version_consistency` gate fails loudly if they ever drift apart
 /// (it replaced the unit test that used to guard this next to the const, so
 /// the check reads the manifest at a chosen root instead of only this
 /// crate's own compile-time `include_str!`).
-pub const PACK_VERSION: &str = "1.14.3";
+pub const PACK_VERSION: &str = "1.18.0";
+
