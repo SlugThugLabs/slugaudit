@@ -231,6 +231,118 @@ Found while auditing the surfaces and verified in the code. **All five are resol
    scoping alone (insufficient), 0/108 and 0/48 after both. The harness contract is now written
    down in `AGENTS.md` and `.planning/ARCHITECTURE.md`.
 
+## Audit follow-ups (identified 2026-10-16)
+
+From a full code-quality audit of all 227 `.rs` files (run against `57c3caa`).
+The audit's working ledger — every site with its quoted source line — was a
+scratch file and is gone; what survives is this list and the commit messages of
+the ten commits that closed the first tranche. Items here carry a state.
+
+### Resolved 2026-10-16
+
+1. **A deeply nested file aborted the whole server — resolved** (`a492f25`). The
+   evidence walkers recursed once per parse-tree level, and tree depth is a
+   property of file content, so a 12 KB Python file of 6 000 nested parens ran
+   the thread stack out. A stack overflow is not a catchable panic: the process
+   aborts and the caller's session dies. `MAX_WALK_DEPTH = 512` now bounds
+   `walk_bindings`, `walk_imports`/`walk_imports_past`, `walk` and `collect` —
+   the same bound the language pack applies to its own traversal. The cap is
+   **reported**, not silent: `extract` returns whether a walker stopped early
+   and `analyze` maps it to `ExtractionCompleteness::Partial`. Verified by
+   re-running the reproducer: exit 134 → exit 0 with a normal report.
+2. **`env::args()` panicked on a non-UTF-8 argument — resolved** (`3aca963`).
+   argv is bytes on Linux, so a path completed from a Latin-1 filename reached
+   `main` and exited 101 with a Rust panic — in the default `serve` entry point
+   the MCP host launches, and in all nine `check_*` binaries. `args_os()` with a
+   lossy conversion makes it a rejected command instead.
+3. **JS/TS import edges were wrong — resolved** (`5208a94`). `f2c454b` gave
+   `extract_python_reference` an `import` branch and dispatched it before the JS
+   branch, so it claimed every `import` statement: `import x from 'foo.js'`
+   extracted the binding `x`, and `import { b } from './b.js'` extracted `{`.
+   `dependency_edges` for JS/TS resolved to nothing or to a name matching no
+   file. Six tests failed on it.
+4. **The suite's verdict depended on `NO_COLOR` — resolved** (`9d78d25`). The
+   capture formatter coloured by default and emits escapes between a field's
+   name, `=` and value, so `logs.contains("tool=\"probe\"")` matched nothing and
+   three tests passed only with `NO_COLOR` set — green locally, red in CI.
+   `with_ansi(false)`, plus a test asserting a control line IS present before
+   asserting no escape byte.
+5. **CI could not be green — resolved** (`1d64894`, `a539438`). Ten rustfmt
+   hunks, two clippy warnings promoted by `-D warnings`, and two files over the
+   line floor. The suite is now 643 passed / 0 failed with no environment
+   variables set.
+6. **`health`'s response and DB read — resolved** (`63434b7`). Four queries each
+   degraded independently, so a response could carry a revision beside
+   `file_count: -1`; `.optional().ok().flatten()` reported a broken database as
+   an unpublished one. One `read_database()` now answers every field or none,
+   and the response is grouped into `watcher`/`database`/`server` — the three
+   categories the module doc already declared — so `-1` has nothing left to
+   mean and `required` drops 10 → 3. `health.rs` 305 → 260 code lines.
+7. **Invisible failures and unredacted paths — resolved** (`681eafd`,
+   `2e3334d`). Failures that reached neither the caller nor a log: the watcher
+   watch/unwatch logs sat *inside* the success branch; a sweep stat failure
+   silently classified a file as deleted; an invalid `SLUGAUDIT_*` override was
+   indistinguishable from unset; six sites printed absolute paths where
+   `util::redacted_path` exists. Three messages asserted outcomes the code never
+   established (`Wrote mcpServers.slugaudit` after a silently-skipped insert; a
+   failed `mcp remove` reported as `mcp add`; "a newer release is available" on
+   the arm where the comparison failed).
+8. **Two gates passed having verified nothing — resolved** (`6763382`).
+   `check_no_duplicates` turned every git failure into "skipping" and `main`
+   still printed PASS; `check_docs_drift` check 3 returned silently if the prose
+   claim moved. Both fail closed now.
+
+### Open — not started, in priority order
+
+1. **`check_no_duplicates` cannot pass, and no code change fixes it.** The
+   duplicate commit subject (`style: apply rustfmt changes from CI`, twice) is
+   already in history. Needs either a history rewrite — destructive, and the
+   subject is published — or for the gate to scope itself to commits after a
+   base revision. **Owner decision.**
+2. **`structure`'s multi-file path loads every matching file unbounded.**
+   `src/tools/structure_source.rs:32-77` selects `path, content` for every file
+   of a language with no `LIMIT` and no total-byte cap, into one `Vec`;
+   `truncate_text`'s 1 MB cap applies per node *after* the load. `query` and
+   `leads` bound their responses; this path does not.
+3. **Unbounded external reads.** `curl` with no `--max-time`/`--max-filesize`
+   and unbounded `.output()` buffering (`src/update_fetch.rs:79-88`,
+   `src/update.rs:95-100,175,190-193`, `src/connect_cli.rs:16-20,25-29,90-93`);
+   interactive stdin with no `is_terminal` check and no length cap
+   (`src/connect.rs:93,109,138`, `src/menu.rs:40,89` — `src/install.rs:191` does
+   check).
+4. **Remaining silent failures.** `src/util.rs:190` returns a *partial* byte
+   count if `serde_json::to_writer` fails partway, and both response-byte
+   budgets use it. `src/sync/reconcile/pipeline.rs:111` discards a stat error
+   with `.ok()`, skipping the oversize guard so `hash_file` reads the whole file
+   unbounded. `src/ignore_rules.rs:123,125,136,140,142` silently drops a
+   directory's rules for an unreadable ignore file while warning for the global
+   gitignore at `:157`. `src/model/system_ram.rs:37` falls back to a hardcoded
+   8 GiB/4 GiB that sizes the adaptive import budget. The five
+   `NormalizerUnavailable` arms replace the real `SpanError` with a static
+   reason and `src/evidence/sql.rs:81` stores only the tag — `src/model/` and
+   `src/evidence/` contain no `tracing::` call at all.
+5. **Remaining false messages.** `src/project/activation.rs:29` asserts
+   "another connection is using the database" for *every* locking-mode failure;
+   `:320` fabricates a rusqlite payload; `src/store/migrations.rs:20` promises
+   "database will be discarded and rebuilt" on paths that do not discard.
+6. **Test gaps.** `file_not_indexed` has no test at either producer; 17
+   assertions are `is_err()`-only where 42 name a specific code or message;
+   ~25 error variants no test names; no test spawns a `check_*` binary.
+7. **Gates that still pass vacuously.** `check_source_limits` returns SUCCESS on
+   an unreadable `src/` because `walk_rs` drops unreadable directories silently
+   (`main.rs:75-83`, `counter.rs:113-117`); `check_performance` discards a
+   failed criterion cleanup and can read stale `estimates.json` as its own
+   measurement; a new bench whose estimates file is unreadable is silently
+   absent from the gate forever; `check_governance` treats a present-but-
+   unreadable CODEOWNERS as absent.
+8. **Function and file length — deferred by the owner**, to be discussed as a
+   policy question first. 52 production functions are over 50 lines and 9 are
+   over cyclomatic 15. Worth knowing before deciding: splitting a function
+   usually *grows* its file (an extracted fn costs a signature and its own doc),
+   and this audit had to trim three files back under their ceilings to pay for
+   added structure — the counter charges for structure, not for comments or
+   string literals, so rationale belongs in a comment.
+
 ## Connect surface: what is verified, and what is left
 
 The registry no longer asserts anything nobody has run — that is what its `Evidence` tier,
