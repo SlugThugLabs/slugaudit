@@ -120,7 +120,10 @@ pub fn run_remove(agent: &AgentDef, cli: &str) -> Result<(), ConnectError> {
             inner,
         })?;
     if !status.success() {
-        return Err(ConnectError::AddFailed {
+        // `RemoveFailed`, not `AddFailed`: the latter names the wrong command
+        // and tells the user to "see the output above" while this call nulls
+        // both streams, so there is no output above to see.
+        return Err(ConnectError::RemoveFailed {
             cli: cli.to_string(),
             status: status.to_string(),
         });

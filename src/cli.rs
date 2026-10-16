@@ -133,6 +133,11 @@ pub enum ConnectError {
     #[error("{agent} cannot be connected automatically: {reason}")]
     UnsupportedAgent { agent: String, reason: String },
     #[error(
+        "cannot connect: \"{section}\" in the configuration is not an object, so there is \
+         nowhere to write the slugaudit entry. Fix or remove that key, then retry"
+    )]
+    SectionNotAnObject { section: String },
+    #[error(
         "cannot modify {path}: configuration file exists but contains invalid JSON: {source} (fix syntax/comments or remove the file to reset, then retry)"
     )]
     InvalidConfig {

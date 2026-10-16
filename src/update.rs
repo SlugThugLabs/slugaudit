@@ -231,10 +231,22 @@ pub fn run_update() -> Result<(), UpdateError> {
             println!("slugaudit is already up to date (v{current}).");
             return Ok(());
         }
-        Ok(std::cmp::Ordering::Less) | Err(()) => {
+        Ok(std::cmp::Ordering::Less) => {
             println!(
                 "A newer release (tag {}) is available; fetching...",
                 latest.tag
+            );
+        }
+        Err(()) => {
+            // The comparison could not be made — one side is not a plain
+            // dotted number, which a dev build is not. Falling back to
+            // fetching is deliberate (the comment above records that), but
+            // saying "a newer release is available" would assert a comparison
+            // that never happened.
+            println!(
+                "This build's version ({current}) could not be compared with the \
+                 published {tag}; fetching it as though it were newer.",
+                tag = latest.tag
             );
         }
     }

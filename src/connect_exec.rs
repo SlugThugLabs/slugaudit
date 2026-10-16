@@ -219,9 +219,15 @@ fn write_json_server(
     let mut root = load_json_or_empty(path)?;
     let map = root.as_object_mut().ok_or(ConnectError::HomeUnavailable)?;
     let s = map.entry(section).or_insert_with(|| serde_json::json!({}));
-    if let Some(s_map) = s.as_object_mut() {
-        s_map.insert("slugaudit".into(), val);
-    }
+    // An `if let` here meant a section key holding a non-object silently
+    // skipped the insert, the file was rewritten unchanged, and the caller
+    // still printed "Wrote {section}.slugaudit to {path}". Refusing is the
+    // honest answer.
+    s.as_object_mut()
+        .ok_or_else(|| ConnectError::SectionNotAnObject {
+            section: section.to_owned(),
+        })?
+        .insert("slugaudit".into(), val);
     write_atomic(path, serde_json::to_string_pretty(&root)?.as_bytes())
 }
 
