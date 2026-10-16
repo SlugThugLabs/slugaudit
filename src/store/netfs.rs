@@ -20,7 +20,7 @@ use std::path::Path;
 /// transient contention rather than a fundamental incompatibility.
 ///
 /// On Linux, the filesystem type is determined from `/proc/self/mountinfo`.
-/// macOS uses its native filesystem inspection command. Other platforms are
+/// macOS parses the `mount` table the same way. Other platforms are
 /// unsupported by the product and fail closed rather than silently accepting
 /// an unknown mount.
 /// Emits the operational warning that a network-filesystem rejection
@@ -61,7 +61,7 @@ pub(super) fn log_rejected_network_filesystem(path: &Path) {
 /// transient contention rather than a fundamental incompatibility.
 ///
 /// On Linux, the filesystem type is determined from `/proc/self/mountinfo`.
-/// macOS uses its native filesystem inspection command. Other platforms are
+/// macOS parses the `mount` table the same way. Other platforms are
 /// unsupported by the product and fail closed rather than silently accepting
 /// an unknown mount.
 pub(super) fn reject_network_filesystem(path: &Path) -> Result<(), StoreError> {
@@ -133,32 +133,91 @@ fn is_mountpoint_network_filesystem(mountinfo: &str, path_str: &str) -> bool {
     )
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn is_on_network_filesystem(path: &Path) -> Result<bool, StoreError> {
-    #[cfg(target_os = "macos")]
-    let output = std::process::Command::new("stat")
-        .args(["-f", "%T"])
-        .arg(path)
+    // `mount` lists every mount with its filesystem type, and works before
+    // the database file exists — the first open creates it, so inspecting
+    // the path itself (`stat`) would fail on every fresh project. BSD
+    // `stat -f %T` also reports the *file* type, not the filesystem type.
+    let output = std::process::Command::new("/sbin/mount")
         .output()
         .map_err(StoreError::NetworkFilesystemCheck)?;
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = path;
-        return Err(StoreError::NetworkFilesystemCheck(std::io::Error::other(
-            "this target is unsupported; SlugAudit supports Linux and macOS",
-        )));
-    }
-
     if !output.status.success() {
         return Err(StoreError::NetworkFilesystemCheck(std::io::Error::other(
             "filesystem inspection command failed",
         )));
     }
-    let text = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
-    Ok(["nfs", "nfs4", "cifs", "smb", "smb3", "ncp", "ncpfs"]
-        .iter()
-        .any(|kind| text.contains(kind)))
+    let table = String::from_utf8_lossy(&output.stdout);
+    let resolved = resolve_existing_ancestor(path);
+    let Some(path_str) = resolved.to_str() else {
+        return Ok(false);
+    };
+    Ok(is_mount_table_network_filesystem(&table, path_str))
+}
+
+/// Canonicalizes the nearest existing ancestor of `path` and re-appends the
+/// missing tail, so `/var/folders/...` matches its real mount under
+/// `/private/var`. Falls back to the path as given.
+#[cfg(target_os = "macos")]
+fn resolve_existing_ancestor(path: &Path) -> std::path::PathBuf {
+    let mut tail = Vec::new();
+    let mut current = path;
+    loop {
+        if let Ok(real) = current.canonicalize() {
+            return tail.iter().rev().fold(real, |acc, part| acc.join(part));
+        }
+        match (current.parent(), current.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_os_string());
+                current = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
+/// Given macOS `mount` output (`<device> on <mount point> (<fstype>, ...)`)
+/// and a target path, returns true if the most specific mount point
+/// covering the path is a network filesystem. Pure, so it is tested on
+/// every platform.
+#[cfg(any(target_os = "macos", test))]
+fn is_mount_table_network_filesystem(table: &str, path_str: &str) -> bool {
+    let mut best: Option<(usize, &str)> = None;
+    for line in table.lines() {
+        let Some((_, rest)) = line.split_once(" on ") else {
+            continue;
+        };
+        let Some(paren) = rest.rfind(" (") else {
+            continue;
+        };
+        let mount_point = &rest[..paren];
+        let fs_type = rest[paren + 2..]
+            .split([',', ')'])
+            .next()
+            .unwrap_or("")
+            .trim();
+        let under_mount = mount_point == "/"
+            || path_str
+                .strip_prefix(mount_point)
+                .is_some_and(|tail| tail.is_empty() || tail.starts_with('/'));
+        if under_mount && best.is_none_or(|(len, _)| mount_point.len() > len) {
+            best = Some((mount_point.len(), fs_type));
+        }
+    }
+    best.is_some_and(|(_, fs_type)| {
+        matches!(
+            fs_type,
+            "nfs" | "smbfs" | "afpfs" | "webdav" | "cifs" | "ftp"
+        )
+    })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn is_on_network_filesystem(path: &Path) -> Result<bool, StoreError> {
+    let _ = path;
+    Err(StoreError::NetworkFilesystemCheck(std::io::Error::other(
+        "this target is unsupported; SlugAudit supports Linux and macOS",
+    )))
 }
 #[cfg(test)]
 #[path = "netfs_tests.rs"]

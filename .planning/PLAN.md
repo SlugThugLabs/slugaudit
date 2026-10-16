@@ -239,7 +239,7 @@ commands and their exact counts — is `.planning/audit_2026-10-16.txt`. It is t
 evidence behind the items below; this section is the list. Items here carry a
 state.
 
-### Re-audit at `4de8e9b` (same day) — full-rerun ledger; repaired 2026-10-16 (working tree, uncommitted)
+### Re-audit at `4de8e9b` (same day) — full-rerun ledger; repaired 2026-10-16 (committed `a37113e`..`75e0fb6`)
 
 Re-ran the complete audit (227 of 227 files; detectors plus context reads of every
 flagged site) against the post-fix HEAD. Ledger: `.planning/audit_2026-10-16_HEAD.txt`
@@ -256,6 +256,19 @@ flagged site) against the post-fix HEAD. Ledger: `.planning/audit_2026-10-16_HEA
 8. Unbounded foreign-file reads — **resolved**: `util::read_file_capped` (1 MiB, sample.rs pre-check + post-read re-check) at connect_exec ×2, connect_agents, install, and project/config.json (5th site found during the pass).
 9. AGENTS.md stale lines — **resolved**: pack pin sentence now `=1.18.0` with a re-check note; leads shape rewritten to byte-budget (no row cap); coverage bullet states its scope.
 10. R12 path-logging inconsistency — **resolved by rule** (DECISIONS 2026-10-16): redacted correlation ids, raw one-shot diagnostics with comments, project-relative ignore-file diagnostics.
+
+### macOS: every database open was refused — resolved 2026-10-16
+
+`src/store/netfs.rs`'s macOS branch ran `stat -f %T <db path>` before the database
+existed, so the command failed on every first open and the guard failed closed: no
+project could be indexed on macOS. BSD `stat -f %T` also prints the *file* type, not the
+filesystem type, so the check never detected a network mount even when it ran. Every
+`Rust quality` run on `main` failed on macos-latest (222 of 645 lib tests on run
+38939256071), and that red was masked by the earlier clippy/coverage failures. Replaced
+with a parse of `/sbin/mount` output (longest mount-point match over the nearest
+existing canonical ancestor), as the pure `is_mount_table_network_filesystem`, which is
+tested on every platform. State: **landed**; verified only by macOS CI, since the
+macOS-only glue cannot compile on the Linux dev host.
 
 ### Resolved 2026-10-16
 

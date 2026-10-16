@@ -176,3 +176,44 @@ fn a_local_filesystem_open_does_not_emit_the_network_filesystem_warning() {
         "a local-filesystem open must not emit the network-filesystem warn, captured logs: {logs}"
     );
 }
+
+const MACOS_MOUNT_TABLE: &str = "\
+/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)
+/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled, nobrowse)
+map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)
+//user@nas/share on /Volumes/share (smbfs, nodev, nosuid, mounted by user)
+nas:/export on /Volumes/share/nfs (nfs, nodev, nosuid)
+";
+
+#[test]
+fn the_macos_mount_table_treats_a_local_apfs_path_as_local() {
+    assert!(!is_mount_table_network_filesystem(
+        MACOS_MOUNT_TABLE,
+        "/System/Volumes/Data/Users/dev/project/.planning/slugaudit/project.db"
+    ));
+    assert!(!is_mount_table_network_filesystem(
+        MACOS_MOUNT_TABLE,
+        "/private/var/folders/n6/T/project.db"
+    ));
+}
+
+#[test]
+fn the_macos_mount_table_recognizes_smbfs_and_the_most_specific_nfs_mount() {
+    assert!(is_mount_table_network_filesystem(
+        MACOS_MOUNT_TABLE,
+        "/Volumes/share/project.db"
+    ));
+    assert!(is_mount_table_network_filesystem(
+        MACOS_MOUNT_TABLE,
+        "/Volumes/share/nfs/project.db"
+    ));
+}
+
+#[test]
+fn the_macos_mount_table_respects_path_boundaries_and_skips_malformed_lines() {
+    let table = format!("{MACOS_MOUNT_TABLE}garbage line\non without parens\n");
+    assert!(!is_mount_table_network_filesystem(
+        &table,
+        "/Volumes/share2/project.db"
+    ));
+}
