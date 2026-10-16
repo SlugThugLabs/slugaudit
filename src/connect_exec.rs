@@ -194,7 +194,6 @@ fn write_atomic(path: &Path, content: &[u8]) -> Result<(), ConnectError> {
         return Err(ConnectError::Io(err));
     }
     Ok(())
-
 }
 
 fn load_json_or_empty(path: &Path) -> Result<serde_json::Value, ConnectError> {

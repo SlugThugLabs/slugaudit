@@ -155,4 +155,3 @@ fn extract_bare_package(config: &GenericResolverConfig, trimmed: &str) -> Option
     }
     None
 }
-

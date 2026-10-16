@@ -17,4 +17,3 @@ pub use language::{detect_language, language_available};
 /// the check reads the manifest at a chosen root instead of only this
 /// crate's own compile-time `include_str!`).
 pub const PACK_VERSION: &str = "1.18.0";
-

@@ -84,7 +84,13 @@ enum DirtyOutcome {
     Ignored,
     Skipped,
     Unchanged,
-    Upsert(FileRecord),
+    /// Boxed: `FileRecord` carries the file's content and evidence, so an
+    /// inline variant made every `DirtyOutcome` — including the four empty
+    /// ones returned for a deleted, ignored, skipped or unchanged path —
+    /// 256 bytes to move. Most dirty paths in a walk take one of those four,
+    /// so the box pays for itself on the common case and costs one small
+    /// allocation on the rare one.
+    Upsert(Box<FileRecord>),
 }
 
 fn reconcile_single_dirty_path(
@@ -151,7 +157,7 @@ fn reconcile_single_dirty_path(
         Err(error) => return Err(error.into()),
     };
     let record = sample::to_file_record(sample, limits);
-    Ok(DirtyOutcome::Upsert(record))
+    Ok(DirtyOutcome::Upsert(Box::new(record)))
 }
 
 pub(crate) fn reconcile_dirty_paths_with_deadline(
@@ -193,12 +199,11 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
             DirtyOutcome::Skipped => skipped += 1,
             DirtyOutcome::Unchanged => unchanged += 1,
             DirtyOutcome::Upsert(record) => {
-                upserts.push(record);
+                upserts.push(*record);
                 reconciled += 1;
             }
         }
     }
-
 
     deletions.extend(deleted);
 
@@ -256,4 +261,3 @@ fn commit_reconcile_changes(
     )?;
     Ok(())
 }
-

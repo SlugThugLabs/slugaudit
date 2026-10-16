@@ -300,4 +300,3 @@ mod tests;
 #[cfg(test)]
 #[path = "query_safety_tests.rs"]
 mod safety_tests;
-

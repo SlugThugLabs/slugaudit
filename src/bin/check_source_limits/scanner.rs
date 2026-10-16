@@ -1,6 +1,8 @@
 //! Token scanner state machine for source limit checking.
 
+#[derive(Default)]
 pub(crate) enum State {
+    #[default]
     Normal,
     LineComment,
     BlockComment,
@@ -9,16 +11,39 @@ pub(crate) enum State {
     RawString,
 }
 
-pub(crate) fn scan_step(
-    bytes: &[u8],
-    source: &str,
-    index: &mut usize,
-    state: &mut State,
-    has_code: &mut bool,
-    count: &mut usize,
-    block_depth: &mut usize,
-    raw_hashes: &mut usize,
-) {
+/// The scanner's mutable cursor: every value a step advances or accumulates.
+///
+/// Grouped because the six only ever travel together — each step reads and
+/// writes all of them — so as six separate `&mut` parameters one call with
+/// two arguments transposed would compile and silently miscount. As one
+/// struct the caller cannot get the order wrong.
+#[derive(Default)]
+pub(crate) struct ScanCursor {
+    /// Byte offset into the source; where the next step resumes.
+    pub(crate) index: usize,
+    /// Lexer state at `index`.
+    pub(crate) state: State,
+    /// Whether the current line has already seen a non-comment token.
+    pub(crate) has_code: bool,
+    /// Completed code lines so far.
+    pub(crate) count: usize,
+    /// `/*` nesting depth while inside a block comment.
+    pub(crate) block_depth: usize,
+    /// Hash count of the open raw string while inside one.
+    pub(crate) raw_hashes: usize,
+}
+
+pub(crate) fn scan_step(bytes: &[u8], source: &str, cursor: &mut ScanCursor) {
+    // Destructured so the body below reads exactly as it did when these were
+    // six separate parameters; binding modes hand back one `&mut` per field.
+    let ScanCursor {
+        index,
+        state,
+        has_code,
+        count,
+        block_depth,
+        raw_hashes,
+    } = cursor;
     let len = bytes.len();
     match state {
         State::LineComment => {

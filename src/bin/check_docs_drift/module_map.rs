@@ -28,7 +28,9 @@ pub(super) fn check_module_map(root: &Path, failures: &mut Vec<String>) {
         i += 1;
     }
     let Some(map_start) = map_start else {
-        failures.push(format!("{doc_name} module-map block (```src/ ... ```) not found"));
+        failures.push(format!(
+            "{doc_name} module-map block (```src/ ... ```) not found"
+        ));
         return;
     };
     let mut map_end = map_start + 1;

@@ -22,7 +22,6 @@ fn with_stable_session<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
-
 fn request(path: &str, file: Option<&str>) -> FindingReadRequest {
     FindingReadRequest {
         path: path.to_owned(),

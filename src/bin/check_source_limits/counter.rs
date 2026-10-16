@@ -16,34 +16,20 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::scanner::{self, State};
+use crate::scanner::{self, ScanCursor};
 
 pub(crate) fn code_lines(source: &str) -> usize {
     let bytes = source.as_bytes();
     let len = bytes.len();
-    let mut count: usize = 0;
-    let mut has_code = false;
-    let mut index: usize = 0;
-    let mut block_depth: usize = 0;
-    let mut raw_hashes: usize = 0;
-    let mut state = State::Normal;
+    let mut cursor = ScanCursor::default();
 
-    while index < len {
-        scanner::scan_step(
-            bytes,
-            source,
-            &mut index,
-            &mut state,
-            &mut has_code,
-            &mut count,
-            &mut block_depth,
-            &mut raw_hashes,
-        );
+    while cursor.index < len {
+        scanner::scan_step(bytes, source, &mut cursor);
     }
-    if has_code {
-        count += 1;
+    if cursor.has_code {
+        cursor.count += 1;
     }
-    count
+    cursor.count
 }
 
 /// The gate's line ceilings. Test files get a higher ceiling because each

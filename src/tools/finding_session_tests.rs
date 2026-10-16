@@ -105,7 +105,6 @@ fn a_new_session_drops_prior_session_findings_but_keeps_its_own() {
     let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
     let project = activated_project("cross.rs", b"pub fn x() {}\n");
 
-
     let prior_session = Uuid::new_v4();
     override_session_id_for_test(prior_session);
     let prior_response = finding(
@@ -199,7 +198,6 @@ fn a_new_session_drops_prior_session_findings_but_keeps_its_own() {
 fn a_resync_after_a_session_change_drops_prior_session_findings() {
     let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
     let project = activated_project("resync.rs", b"pub fn r() {}\n");
-
 
     let first_session = Uuid::new_v4();
     override_session_id_for_test(first_session);
