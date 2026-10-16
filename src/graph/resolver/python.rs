@@ -13,8 +13,9 @@
 use std::collections::HashSet;
 
 use super::generic::GenericResolverConfig;
-use super::path_helpers::candidate_paths;
+use super::path_helpers::{candidate_paths, starts_with_python_dot_prefix};
 use super::types::{Resolution, ResolutionKind, unresolved};
+use crate::graph::reference::ImportReference;
 
 /// Resolves a Python-style relative import — leading dots tell how many
 /// packages to walk up, the rest of the text is a dot-separated module
@@ -74,4 +75,45 @@ pub(crate) fn resolve_python_relative(
     } else {
         candidate_paths(&path, config, known_paths)
     }
+}
+
+pub(crate) fn extract_python_reference(trimmed: &str) -> Option<ImportReference> {
+    if trimmed == "." {
+        return Some(ImportReference {
+            text: ".".to_owned(),
+        });
+    }
+    if starts_with_python_dot_prefix(trimmed) {
+        return Some(ImportReference {
+            text: trimmed.to_owned(),
+        });
+    }
+    if let Some(after_from) = strip_keyword(trimmed, "from") {
+        let module = after_from.split_whitespace().next()?;
+        if !module.starts_with('"') && !module.starts_with('\'') {
+            return Some(ImportReference {
+                text: module.to_owned(),
+            });
+        }
+        return None;
+    }
+    if let Some(after_import) = strip_keyword(trimmed, "import") {
+        let module = after_import.split_whitespace().next()?;
+        if !module.starts_with('"') && !module.starts_with('\'') {
+            return Some(ImportReference {
+                text: module.to_owned(),
+            });
+        }
+        return None;
+    }
+    None
+}
+
+fn strip_keyword<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
+    let after = text.strip_prefix(keyword)?;
+    after
+        .chars()
+        .next()
+        .is_some_and(char::is_whitespace)
+        .then_some(after)
 }
