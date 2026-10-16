@@ -337,50 +337,47 @@ Unix by `a_database_under_a_symlinked_parent_directory_opens_for_both_modes`. St
    still printed PASS; `check_docs_drift` check 3 returned silently if the prose
    claim moved. Both fail closed now.
 
-### Open — not started, in priority order
+### Re-verified 2026-10-16 against `850b09d` — items closed with evidence
+
+The open list below was re-checked line by line against the code. Former items:
+
+- **`structure` multi-file load unbounded — resolved** (already in code):
+  `src/tools/structure_source.rs` stops at `MAX_MULTI_FILE_TOTAL_BYTES`.
+- **Unbounded external reads — resolved.** `curl` carries `--max-time`/`--max-filesize`
+  in `src/update.rs` and `src/update_fetch.rs` (already in code); interactive prompts
+  read through `src/prompt.rs::read_prompt_line`, capped at 256 bytes with the rest of
+  the line discarded (`ce50f97`). No `is_terminal` check was added, deliberately:
+  `tests/menu_tests.rs` drives the menu over piped stdin, and piped input is a
+  supported use.
+- **Remaining silent failures — resolved.** `util::serialized_len` returns `usize::MAX` on a
+  serializer error, not a partial count; the reconcile stat error propagates
+  (`src/sync/reconcile/pipeline.rs`); unreadable ignore files and the RAM fallback warn
+  (already in code). The five `NormalizerUnavailable` arms now go through
+  `src/evidence/mod.rs::span_unavailable`, which keeps the real `SpanError` in the
+  reason and warns (`621da84`).
+- **Remaining false messages — resolved** (`ce50f97`). `disable`'s lock step maps only
+  SQLite busy/locked codes to `DatabaseBusy` (`src/project/activation_lock.rs::lock_error`),
+  reports a non-zero checkpoint as `CheckpointIncomplete` instead of a fabricated
+  rusqlite payload, and the `UnsupportedVersion` message no longer promises a rebuild
+  only the sync path performs.
+- **Gates that pass vacuously — resolved.** `check_source_limits` propagates unreadable
+  directories; `check_governance` reports an unreadable CODEOWNERS (both already in
+  code); `check_performance` fails on a failed criterion cleanup and on an unreadable,
+  malformed or median-less estimates file instead of dropping that bench (`d7068e1`).
+- **Test gaps — partly resolved** (`850b09d`): `file_not_indexed` is pinned at both
+  producers (binary file → `structure` and `finding`); the remaining non-panic
+  `is_err()`-only assertions now name the error. Still open: see item 2 below.
+
+### Open — in priority order
 
 1. **`check_no_duplicates` cannot pass, and no code change fixes it.** The
    duplicate commit subject (`style: apply rustfmt changes from CI`, twice) is
    already in history. Needs either a history rewrite — destructive, and the
    subject is published — or for the gate to scope itself to commits after a
    base revision. **Owner decision.**
-2. **`structure`'s multi-file path loads every matching file unbounded.**
-   `src/tools/structure_source.rs:32-77` selects `path, content` for every file
-   of a language with no `LIMIT` and no total-byte cap, into one `Vec`;
-   `truncate_text`'s 1 MB cap applies per node *after* the load. `query` and
-   `leads` bound their responses; this path does not.
-3. **Unbounded external reads.** `curl` with no `--max-time`/`--max-filesize`
-   and unbounded `.output()` buffering (`src/update_fetch.rs:79-88`,
-   `src/update.rs:95-100,175,190-193`, `src/connect_cli.rs:16-20,25-29,90-93`);
-   interactive stdin with no `is_terminal` check and no length cap
-   (`src/connect.rs:93,109,138`, `src/menu.rs:40,89` — `src/install.rs:191` does
-   check).
-4. **Remaining silent failures.** `src/util.rs:190` returns a *partial* byte
-   count if `serde_json::to_writer` fails partway, and both response-byte
-   budgets use it. `src/sync/reconcile/pipeline.rs:111` discards a stat error
-   with `.ok()`, skipping the oversize guard so `hash_file` reads the whole file
-   unbounded. `src/ignore_rules.rs:123,125,136,140,142` silently drops a
-   directory's rules for an unreadable ignore file while warning for the global
-   gitignore at `:157`. `src/model/system_ram.rs:37` falls back to a hardcoded
-   8 GiB/4 GiB that sizes the adaptive import budget. The five
-   `NormalizerUnavailable` arms replace the real `SpanError` with a static
-   reason and `src/evidence/sql.rs:81` stores only the tag — `src/model/` and
-   `src/evidence/` contain no `tracing::` call at all.
-5. **Remaining false messages.** `src/project/activation.rs:29` asserts
-   "another connection is using the database" for *every* locking-mode failure;
-   `:320` fabricates a rusqlite payload; `src/store/migrations.rs:20` promises
-   "database will be discarded and rebuilt" on paths that do not discard.
-6. **Test gaps.** `file_not_indexed` has no test at either producer; 17
-   assertions are `is_err()`-only where 42 name a specific code or message;
-   ~25 error variants no test names; no test spawns a `check_*` binary.
-7. **Gates that still pass vacuously.** `check_source_limits` returns SUCCESS on
-   an unreadable `src/` because `walk_rs` drops unreadable directories silently
-   (`main.rs:75-83`, `counter.rs:113-117`); `check_performance` discards a
-   failed criterion cleanup and can read stale `estimates.json` as its own
-   measurement; a new bench whose estimates file is unreadable is silently
-   absent from the gate forever; `check_governance` treats a present-but-
-   unreadable CODEOWNERS as absent.
-8. **`path:line` citations in the docs rot on every edit — no gate covers
+2. **Test gaps — still open.** ~25 error variants no test names (count from the
+   2026-10-16 audit, not re-counted); no test spawns a `check_*` binary. Not started.
+3. **`path:line` citations in the docs rot on every edit — no gate covers
    them.** The docs carry 91 citations of the form `src/x.rs:NNN`. All 91 were
    in range after this session's changes, but six were pointing at the wrong
    line — four in `health.rs`, whose restructure moved them, and the runbook
@@ -393,7 +390,7 @@ Unix by `a_database_under_a_symlinked_parent_directory_opens_for_both_modes`. St
    carry a short quoted anchor so drift is visible, or dropping line numbers in
    favour of symbol names, which cannot rot. **Owner decision** — the third is
    the only one that removes the failure mode rather than detecting it.
-9. **Function and file length — deferred by the owner**, to be discussed as a
+4. **Function and file length — deferred by the owner**, to be discussed as a
    policy question first. 52 production functions are over 50 lines and 9 are
    over cyclomatic 15. Worth knowing before deciding: splitting a function
    usually *grows* its file (an extracted fn costs a signature and its own doc),
