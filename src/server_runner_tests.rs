@@ -175,6 +175,31 @@ fn completion_lines<'a>(logs: &'a str, tool: &str) -> Vec<&'a str> {
         .collect()
 }
 
+/// Every test below probes a capture with `contains`, so one escape sequence
+/// anywhere in the text silently defeats all of them. The formatter colours
+/// by default and interleaves escapes between a field's name, `=` and value;
+/// that is what made three of these tests pass only when the ambient
+/// `NO_COLOR` happened to be set — green locally, red in CI.
+///
+/// The control assertion comes first on purpose: an absence-only check on a
+/// capture that went blind would pass while proving nothing.
+#[test]
+fn captured_text_carries_no_ansi_escapes() {
+    let (_, logs) = capture_at_level(
+        || tracing::info!(tool = "probe_ansi_escapes", "tool call completed"),
+        Level::INFO,
+    );
+    assert!(
+        logs.contains("tool=\"probe_ansi_escapes\""),
+        "the field must be probeable as a plain substring, or every capture \
+         assertion in this file is blind:\n{logs:?}"
+    );
+    assert!(
+        !logs.contains('\u{1b}'),
+        "an escape sequence anywhere defeats substring probes:\n{logs:?}"
+    );
+}
+
 /// Two consecutive calls to the same tool must be distinguishable, and each
 /// must carry the session it belongs to — otherwise a session's call
 /// sequence cannot be recovered from the log at all.

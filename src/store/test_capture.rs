@@ -89,11 +89,22 @@ where
 {
     LazyLock::force(&PERMISSIVE_BACKSTOP);
     let buf = SharedBuf::default();
+    // `with_ansi(false)` is load-bearing, not cosmetic. The formatter colours
+    // by default and emits escape sequences *between* a field's name, its
+    // `=` and its value, so captured text reads
+    // `tool\x1b[0m\x1b[2m=\x1b[0m"probe"` and every test that probes the
+    // capture with `logs.contains("tool=\"probe\"")` silently matches
+    // nothing. That made three `server_runner` tests pass only when the
+    // ambient `NO_COLOR` happened to be set — green locally, red in CI.
+    // `without_time` was added for the same reason; a new formatting default
+    // must not be allowed to reintroduce the problem, which is why
+    // `captured_text_carries_no_ansi_escapes` asserts it.
     let subscriber = tracing_subscriber::fmt()
         .with_writer(buf.clone())
         .with_max_level(min_level)
         .without_time()
         .with_target(true)
+        .with_ansi(false)
         .finish();
     let result = tracing::subscriber::with_default(subscriber, f);
     let logs = String::from_utf8_lossy(&buf.0.lock().expect("capture buffer poisoned")).to_string();
