@@ -23,6 +23,7 @@ src/
 ├── prompt.rs                 bounded line input for the setup prompts
 ├── menu_render.rs            ANSI rendering helpers for the setup menu
 ├── install.rs                stable binary installation into ~/.slugthug
+├── install_place.rs          staged-binary placement shared by install and update
 ├── update.rs                 self-update: fetch release, atomically replace the binary
 ├── update_fetch.rs           network + version helpers for self-update
 ├── connect.rs                register/remove this binary with a target agent
@@ -41,7 +42,8 @@ src/
 │   ├── query.rs              arbitrary read-only SQL with budgets
 │   ├── query_sql_scanner.rs  SQLite statement boundary scanner
 │   ├── query_value.rs        SQLite row/value → JSON with a per-value cap
-│   ├── structure.rs          tree-sitter pattern match
+│   ├── structure.rs          tree-sitter pattern match: contract, validation, targets
+│   ├── structure_exec.rs     query execution under match cap + time budget
 │   ├── structure_source.rs   source loading + multi-file and snippet helpers
 │   ├── leads.rs              unranked mechanical observations
 │   ├── leads_mechanics.rs    the leads mechanic catalogue
@@ -156,6 +158,8 @@ src/
     │   ├── scanner.rs        token scanner state machine
     │   └── approval.rs       exception-comment parser
     ├── check_no_duplicates.rs   duplicate commit subjects / test names
+    ├── gate_common/          shared by the rooted gates via #[path]; not a binary
+    │   └── args.rs           --help / --root / switches argv contract, exit 2 on usage error
     ├── check_docs_drift/     documentation drift gate
     │   ├── main.rs           argv + failure printer + exit codes
     │   ├── canonical_docs.rs the canonical doc set must exist

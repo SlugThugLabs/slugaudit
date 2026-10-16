@@ -1398,3 +1398,43 @@ Format: date — title; status; context; decision; rationale; consequences.
   special-cased module.
 - **Consequences**: R10 is closed as reviewed; a future `check_*` that grows
   real shared logic should start a `src/bin/_common/` module then, not now.
+
+## 2026-10-16 — Three audit smells kept as designed
+
+- **Status**: decided
+- **Context**: the 2026-10-16 audit listed ten smells; seven were fixed (see PLAN.md).
+  These three were reviewed and left in place.
+- **Decision**:
+  - *Line-exception annotations*: they are the size policy working as written. Merging
+    the split `publish*`/`revision*` files would break the 350-line hard ceiling, and
+    changing the measure (complexity rather than lines) is PLAN.md open item 4, which
+    is the owner's call.
+  - *Watcher `try_lock` drops events*: blocking the `notify` thread on the sync lock
+    would stall event delivery for the whole sync. The stat sweep is the freshness
+    guarantee and runs every call; the same-size, same-second blind spot belongs to
+    the sweep, and blocking would not close it.
+  - *Hand-duplicated `src/parse/PACK_VERSION`*: removing it needs a build script that
+    reads `Cargo.lock`, which adds build machinery to remove a duplicate that
+    `check_version_consistency` already holds equal to the manifest pin.
+- **Consequences**: revisit the first only through PLAN.md item 4. Revisit the second
+  only with a design that closes the sweep's blind spot.
+
+## 2026-10-16 — Gate-bin argument parsing shared
+
+- **Status**: decided (supersedes the "accepted, not shared" half of R10 above)
+- **Context**: seven rooted gates each carried the same ~25-line argv loop (`--help`,
+  `--root <dir>`, unknown argument → exit 2), and one of them (`check_producer_coverage`)
+  had already drifted: it fell back to `.` when the working directory was unreadable
+  instead of failing.
+- **Decision**: one parser, `src/bin/gate_common/args.rs` (`parse(prefix, help, switches)`),
+  pulled into each gate with `#[path = "../gate_common/args.rs"] mod gate_args;`. This
+  keeps R10's constraint: the product library gains no dev-only code. It lives in a
+  subdirectory with no `main.rs`, so Cargo's autobins does not treat it as a binary.
+  Gate-specific switches (`check_mcp_surface --record`) are passed in as
+  `(name, &mut bool)` pairs.
+- **Not shared**: the verdict printers. Their output formats differ on purpose (counts,
+  indented lists, the snapshot gate's re-record hint), and CI logs are read by those
+  formats.
+- **Consequences**: `tests/gate_binaries.rs` pins the shared contract at process level;
+  the parser's unit tests sit beside it.
+

@@ -368,6 +368,51 @@ The open list below was re-checked line by line against the code. Former items:
   producers (binary file → `structure` and `finding`); the remaining non-panic
   `is_err()`-only assertions now name the error. Still open: see item 2 below.
 
+### A `mkdir` in a watched project failed the next tool call — resolved 2026-10-16 (uncommitted)
+
+The watcher marks `Create(Folder)` dirty like any file (`src/watch/manager.rs`,
+`handle_event`), and `reconcile_single_dirty_path` (`src/sync/reconcile/pipeline.rs`)
+stat'ed with `std::fs::metadata` and then hashed the path. A directory failed the hash
+with `Hash(Read { .. IsADirectory })`, so `drain_events` (`src/sync/manager_health.rs`)
+returned an internal error and marked the watcher `Desynced` — every `mkdir` under
+`serve` cost one failed call plus a full publish. The same `metadata` call followed
+symlinks, so a symlink the watcher reported had its target indexed (even one outside
+the project) although discovery never follows symlinks. Fix: the dirty path is
+classified by `discovery::regular_file_metadata` (`symlink_metadata`; regular files
+only), and a non-file path drops its stale row like a deletion or is ignored. Pinned
+by `a_directory_in_the_dirty_set_does_not_fail_the_reconcile`,
+`a_symlink_in_the_dirty_set_is_never_dereferenced` and
+`a_file_replaced_by_a_directory_loses_its_row` (`src/sync/reconcile/reconcile_tests.rs`),
+all three failing before the fix. `a_failed_incremental_reconcile_marks_the_watcher_desynced`
+had used exactly this file-to-directory swap as its failure trigger; it now injects a
+failure with a `RAISE(ABORT)` trigger on `files`, which the stat sweep (read-only) never hits.
+
+### A failed `slugaudit install` left a full binary copy behind — resolved 2026-10-16 (uncommitted)
+
+`run_install` (`src/install.rs`) staged the running binary as `.slugaudit.<pid>.<nanos>.tmp`
+in the install directory and returned on the first failing step (chmod, retain, rename)
+without removing it; nothing ever reclaimed the file. `apply_update` (`src/update.rs`)
+cleaned up its own staged file, but carried a second copy of the same chmod → retain →
+rename → stale-`slugaudit-mcp` sequence and of the cleanup helpers. Both now call
+`install_place::place_staged_binary` (`src/install_place.rs`), which removes the staged file
+on any failure and reports the failing step as `PlaceError { action, path, source }`
+(`InstallError::Place`; `UpdateError::Stage` keeps its shape). Pinned by
+`an_install_target_that_is_a_directory_reports_the_failed_step_and_cleans_up`
+(`src/install_tests.rs`), which failed before the fix with the `.tmp` file listed.
+
+### `slugaudit connect` blamed a missing home for a malformed config — resolved 2026-10-16 (uncommitted)
+
+`write_json_server` (`src/connect_exec.rs`) mapped a config whose top level is not a JSON
+object (e.g. `[]`) to `ConnectError::HomeUnavailable`, so the user was told their home
+directory was unavailable. It now returns `ConnectError::RootNotAnObject { path }`
+naming the file (`src/cli.rs`). `ConnectError::AgentMissing` was never constructed and
+is removed (the R8-5 note in `.planning/audit_2026-10-16.txt` also called
+`RemoveFailed` dead; it is constructed by `connect_cli::run_remove`). The duplicated
+menu-answer parsing in `run_connect_interactive`/`run_disconnect_interactive` is one
+`parse_choice` (`src/connect.rs`). Pinned by six tests appended to `src/connect_tests.rs`
+(`a_json_config_whose_top_level_is_not_an_object_is_refused_by_path` and five siblings
+covering `SectionNotAnObject`, `UnknownAgent`, `InvalidChoice`, `RemoveFailed`, `AgentCommand`).
+
 ### Open — in priority order
 
 1. **`check_no_duplicates` cannot pass, and no code change fixes it.** The
@@ -375,8 +420,20 @@ The open list below was re-checked line by line against the code. Former items:
    already in history. Needs either a history rewrite — destructive, and the
    subject is published — or for the gate to scope itself to commits after a
    base revision. **Owner decision.**
-2. **Test gaps — still open.** ~25 error variants no test names (count from the
-   2026-10-16 audit, not re-counted); no test spawns a `check_*` binary. Not started.
+2. **Test gaps — resolved 2026-10-16 (uncommitted).** The error-variant survey
+   (enums named `*Error` under `src/`, non-bin, variant names grepped in tests) was
+   re-run; every `ErrorCode` turned out tested through its wire string. Tests now name
+   `SpanError::ReversedPosition`, `MigrationError::{ReadVersion, Apply}`,
+   `ActivationError::{Root, CheckpointIncomplete}`, `InstallError::{NoHome, Mkdir,
+   Place}` and every reachable `ConnectError`. Writing them found three bugs (the
+   `mkdir`, staged-binary and connect-misreport entries above). Left untested,
+   deliberately: `DiscoveryError::NotRelative` (the walker only yields paths under the
+   root — defensive), `DiscoveryError::Walk` and `InstallError::CurrentExe` (no
+   portable way to provoke them as root). `tests/gate_binaries.rs` now spawns every
+   `check_*` binary: unknown argument → exit 2, empty `--root` → failure, and the
+   source-limit verdict reaching its exit code. That last test found a fourth bug:
+   `check_source_limits` passed a root with no `src/` (exit 0) where every other gate
+   fails closed; it now exits 2.
 3. **`path:line` citations in the docs rot on every edit — no gate covers
    them.** The docs carry 91 citations of the form `src/x.rs:NNN`. All 91 were
    in range after this session's changes, but six were pointing at the wrong
@@ -397,6 +454,12 @@ The open list below was re-checked line by line against the code. Former items:
    and this audit had to trim three files back under their ceilings to pay for
    added structure — the counter charges for structure, not for comments or
    string literals, so rationale belongs in a comment.
+   **2026-10-16 (uncommitted):** splits were made only where a function did several
+   jobs — `check_source_limits`' `scan_step` (one `ScanCursor` method per token state),
+   `check_performance`'s `main` (args/bench/compare/record/format modules),
+   `structure_with_limits`/`run_query` (new `src/tools/structure_exec.rs`) and
+   `report_completeness::build` (one `grouped_counts` helper). Three line-exception
+   annotations went away with them. The length policy itself is still the owner's.
 
 ## Connect surface: what is verified, and what is left
 
