@@ -17,9 +17,10 @@ pub enum MigrationError {
     ReadVersion(#[source] rusqlite::Error),
     #[error("failed to apply schema: {0}")]
     Apply(#[source] rusqlite::Error),
+    // The message names the mismatch only: the sync path discards and rebuilds
+    // on `is_corruption()`, but other callers of `open_*` surface this as-is.
     #[error(
-        "database schema version {found} is incompatible with this build (supported: {supported}); \
-         database will be discarded and rebuilt"
+        "database schema version {found} is incompatible with this build (supported: {supported})"
     )]
     UnsupportedVersion { found: i64, supported: i64 },
 }

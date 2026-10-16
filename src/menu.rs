@@ -7,7 +7,7 @@ use crate::connect;
 use crate::install;
 use crate::menu_render::{other_agent_instructions, render_menu};
 use crate::util::Style;
-use std::io::{BufRead as _, Write as _};
+use std::io::Write as _;
 
 /// Interactive setup menu. Returns `Ok(true)` when the user chooses to start
 /// the MCP server, `Ok(false)` to exit without serving; input problems are
@@ -43,11 +43,9 @@ pub fn run_menu() -> Result<bool, Box<dyn std::error::Error>> {
 }
 
 fn read_choice() -> Result<usize, Box<dyn std::error::Error>> {
-    let mut line = String::new();
-    let bytes_read = std::io::stdin().lock().read_line(&mut line)?;
-    if bytes_read == 0 {
+    let Some(line) = crate::prompt::read_prompt_line()? else {
         return Ok(6);
-    }
+    };
     match line.trim().parse::<usize>() {
         Ok(choice) => Ok(choice),
         Err(_) => Ok(0),
@@ -94,8 +92,7 @@ fn confirm_serve() -> Result<bool, Box<dyn std::error::Error>> {
     println!("The MCP server (`serve`) is normally started automatically by your AI agent.");
     print!("Start the server now? [y/N]: ");
     std::io::stdout().flush()?;
-    let mut line = String::new();
-    std::io::stdin().lock().read_line(&mut line)?;
+    let line = crate::prompt::read_prompt_line()?.unwrap_or_default();
     Ok(matches!(
         line.trim().to_ascii_lowercase().as_str(),
         "y" | "yes"

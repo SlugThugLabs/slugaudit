@@ -34,6 +34,7 @@ pub mod model;
 pub mod parse;
 pub mod progress;
 pub mod project;
+pub(crate) mod prompt;
 pub mod resources;
 pub mod server;
 mod server_runner;

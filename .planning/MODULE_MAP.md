@@ -20,6 +20,7 @@ src/
 ├── error_codes.rs            stable machine-readable failure codes + remedies
 ├── util.rs                   cross-module helpers (lock_or_recover, Deadline, SESSION_ID)
 ├── menu.rs                   interactive setup menu
+├── prompt.rs                 bounded line input for the setup prompts
 ├── menu_render.rs            ANSI rendering helpers for the setup menu
 ├── install.rs                stable binary installation into ~/.slugthug
 ├── update.rs                 self-update: fetch release, atomically replace the binary
@@ -122,6 +123,7 @@ src/
 │   ├── mod.rs                exports: resolve_project, enable/disable
 │   ├── root.rs               ProjectRoot
 │   ├── activation.rs         activation-directory marker read/write
+│   ├── activation_lock.rs    exclusive database lock held while disable removes it
 │   ├── database_path.rs      where this project's project.db lives
 │   └── config.rs             in-repo config (.planning/slugaudit/config.json)
 │

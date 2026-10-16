@@ -1,8 +1,7 @@
+use super::activation_lock::acquire_database_lock;
 use super::database_path::database_path;
 use super::root::{ProjectRoot, RootError};
 use crate::ignore_rules::ACTIVATION_RELATIVE_DIR;
-use crate::store::open_read_write;
-use rusqlite::Connection;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -32,6 +31,14 @@ pub enum ActivationError {
          database ({0}). Wait for other SlugAudit tool calls to finish and retry."
     )]
     DatabaseBusy(#[source] rusqlite::Error),
+    #[error(
+        "could not safely disable: another connection still holds the database open, \
+         so its write-ahead log could not be checkpointed. Wait for other SlugAudit \
+         tool calls to finish and retry."
+    )]
+    CheckpointIncomplete,
+    #[error("could not take an exclusive lock on the database while disabling: {0}")]
+    DatabaseLock(#[source] rusqlite::Error),
 }
 
 /// The SlugAudit-owned runtime directory under a resolved user project:
@@ -294,38 +301,6 @@ pub fn disable(root: &ProjectRoot) -> Result<bool, ActivationError> {
     std::fs::remove_dir_all(&activation)?;
     drop(database_lock);
     Ok(true)
-}
-
-/// Acquires an exclusive database connection before removal. The connection
-/// remains alive through `remove_dir_all`, so a concurrent SQLite session
-/// cannot publish while the activation directory and its WAL sidecars are
-/// being removed.
-fn acquire_database_lock(root: &ProjectRoot) -> Result<Option<Connection>, ActivationError> {
-    let db_path = database_path(root);
-    if !db_path.exists() {
-        return Ok(None);
-    }
-    let connection = open_read_write(&db_path).map_err(ActivationError::Database)?;
-    // EXCLUSIVE locking is held by this connection until it is dropped. It
-    // therefore covers the database lock and removal as one guarded window.
-    connection
-        .pragma_update(None, "locking_mode", "EXCLUSIVE")
-        .map_err(ActivationError::DatabaseBusy)?;
-    connection
-        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
-            let busy: i64 = row.get(0)?;
-            Ok(busy)
-        })
-        .map_err(ActivationError::DatabaseBusy)
-        .and_then(|busy| {
-            if busy == 0 {
-                Ok(Some(connection))
-            } else {
-                Err(ActivationError::DatabaseBusy(
-                    rusqlite::Error::ExecuteReturnedResults,
-                ))
-            }
-        })
 }
 
 #[cfg(test)]

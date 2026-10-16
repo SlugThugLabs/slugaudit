@@ -5,7 +5,7 @@ use crate::cli::ConnectError;
 use crate::connect_agents::{AgentDef, detected_agents, find_agent};
 use crate::connect_exec::{connect_agent, disconnect_agent};
 use crate::install::{config_home, running_binary, slugaudit_dir};
-use std::io::{BufRead as _, Write as _};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 /// Registers SlugAudit as an MCP server for the named agent, or prompts interactively.
@@ -92,8 +92,7 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
     print!("Choose an agent [1-{}]: ", detected.len());
     std::io::stdout().flush()?;
 
-    let mut choice = String::new();
-    std::io::stdin().lock().read_line(&mut choice)?;
+    let choice = crate::prompt::read_prompt_line()?.unwrap_or_default();
     let idx: usize = choice
         .trim()
         .parse()
@@ -108,8 +107,7 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
             agent.display_name
         );
         std::io::stdout().flush()?;
-        let mut confirm = String::new();
-        std::io::stdin().lock().read_line(&mut confirm)?;
+        let confirm = crate::prompt::read_prompt_line()?.unwrap_or_default();
         if !matches!(confirm.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
             println!("Skipped.");
             return Ok(());
@@ -138,8 +136,7 @@ pub fn run_disconnect_interactive() -> Result<(), ConnectError> {
     print!("Choose an agent to disconnect [1-{}]: ", connected.len());
     std::io::stdout().flush()?;
 
-    let mut choice = String::new();
-    std::io::stdin().lock().read_line(&mut choice)?;
+    let choice = crate::prompt::read_prompt_line()?.unwrap_or_default();
     let idx: usize = choice
         .trim()
         .parse()
