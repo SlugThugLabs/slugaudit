@@ -30,13 +30,28 @@ pub(super) fn extract_reference(
         });
     }
 
-    if let Some(reference) = extract_python_reference(trimmed) {
-        return Some(reference);
+    // JS/TS `import ... from 'path'`. This must be dispatched before the
+    // Python branch below, which claims every statement beginning with
+    // `import`: JavaScript's `import x from 'p'` and Python's `import x`
+    // share that prefix, and only the quoted path tells them apart. Ordering
+    // it after the Python branch let `extract_python_reference` return the
+    // local binding name — `import { b } from './b.js'` extracted `{`.
+    //
+    // Gating on the `import` prefix as well as the `from` token is what keeps
+    // Python's `from X import Y`, which contains a bare `from` token, out of
+    // this branch so it still reaches the Python handling that owns relative
+    // imports.
+    //
+    // A `from` token with no quoted path returns `None` deliberately: falling
+    // through would hand `import x from broken` to the bare-package branch,
+    // which would lift the impossible binding `x` out as a module name and
+    // label it External — worse than an honest `None`.
+    if trimmed.starts_with("import") && trimmed.split_whitespace().any(|token| token == "from") {
+        return extract_js_reference(trimmed);
     }
 
-    // JS/TS `import ... from 'path'`
-    if trimmed.split_whitespace().any(|token| token == "from") {
-        return extract_js_reference(trimmed);
+    if let Some(reference) = extract_python_reference(trimmed) {
+        return Some(reference);
     }
 
     if let Some(reference) = extract_quoted_import(trimmed) {
