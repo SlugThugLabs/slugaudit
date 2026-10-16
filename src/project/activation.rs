@@ -14,6 +14,8 @@ const PLANNING_DIR: &str = ".planning";
 const ACTIVATION_DIR: &str = "slugaudit";
 
 #[derive(Debug, Error)]
+/// Failures from enabling or disabling a project: the activation marker, its
+/// directory mode, and `.gitignore` maintenance.
 pub enum ActivationError {
     #[error(transparent)]
     Root(#[from] RootError),
@@ -146,6 +148,9 @@ fn create_private_dir(path: &Path) -> Result<(), ActivationError> {
         .create(path)?;
     let current = std::fs::metadata(path)?.permissions().mode() & 0o777;
     if current != PRIVATE_DIR_MODE {
+        // Deliberate raw path: a one-shot security-repair diagnostic — the
+        // operator must see *which* directory was world-readable to fix the
+        // umask or mount that caused it. Correlation logs use `redacted_path`.
         tracing::warn!(
             target: "slugaudit::project",
             path = %path.display(),

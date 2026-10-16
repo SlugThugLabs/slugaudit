@@ -104,6 +104,8 @@ pub struct SourceSyncManager {
 }
 
 impl SourceSyncManager {
+    /// Creates a manager with **no** filesystem watcher running — the default
+    /// for tests; the MCP server uses `with_watcher`.
     pub fn new() -> Self {
         Self::default()
     }
@@ -196,7 +198,7 @@ impl SourceSyncManager {
     /// the project is being watched on this connection should use
     /// `activate`.
     pub fn watch_state_for(&self, root: &Path) -> Option<WatchState> {
-        let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let canonical = crate::util::canonical_or_self(root);
         self.watch_manager.get(&canonical)
     }
 

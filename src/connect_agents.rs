@@ -373,7 +373,8 @@ impl AgentDef {
         if self.shape == ConfigShape::GooseExtensions {
             // Goose reads YAML; only a textual scan is safe for the written
             // JSON-as-YAML (and it also catches a hand-written block entry).
-            return std::fs::read_to_string(&path).is_ok_and(|c| c.contains("slugaudit"));
+            return crate::util::read_file_capped(&path, crate::util::MAX_FOREIGN_TEXT_BYTES)
+                .is_ok_and(|c| c.contains("slugaudit"));
         }
         crate::connect_exec::has_slugaudit(&path, self.shape.sections())
     }

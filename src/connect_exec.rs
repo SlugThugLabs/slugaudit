@@ -10,16 +10,13 @@ use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub fn json_contains_slugaudit(path: &Path) -> bool {
-    has_slugaudit(path, &["mcpServers", "mcp"])
-}
-
-pub fn zed_contains_slugaudit(path: &Path) -> bool {
-    has_slugaudit(path, &["context_servers"])
-}
-
+/// True when the JSON config at `path` carries a `slugaudit` entry under any
+/// of `sections`.
 pub fn has_slugaudit(path: &Path, keys: &[&str]) -> bool {
-    fs::read_to_string(path).is_ok_and(|c| {
+    // Advisory probe: an oversized or unreadable config reads as "not
+    // registered" here; the write path bounds the same file again and fails
+    // explicitly if the cap blocks a real edit (util::read_file_capped).
+    crate::util::read_file_capped(path, crate::util::MAX_FOREIGN_TEXT_BYTES).is_ok_and(|c| {
         serde_json::from_str::<serde_json::Value>(&c).is_ok_and(|v| {
             keys.iter()
                 .any(|k| v.get(*k).and_then(|s| s.get("slugaudit")).is_some())
@@ -27,6 +24,13 @@ pub fn has_slugaudit(path: &Path, keys: &[&str]) -> bool {
     })
 }
 
+/// Registers SlugAudit with one agent: its CLI when verified to have one, its
+/// config file when the written shape is established, otherwise an actionable
+/// refusal — never a guessed write.
+///
+/// # Errors
+///
+/// Every refusal names what was tried and the manual step that works.
 pub fn connect_agent(
     agent: &AgentDef,
     binary: &Path,
@@ -189,6 +193,8 @@ fn write_atomic(path: &Path, content: &[u8]) -> Result<(), ConnectError> {
     fs::write(&temp, content)?;
     if let Err(err) = fs::rename(&temp, path) {
         if let Err(remove_err) = fs::remove_file(&temp) {
+            // Deliberate raw path: one-shot diagnostic naming the leftover
+            // temp file beside the config it was meant to replace.
             tracing::warn!(error = %remove_err, path = %temp.display(), "failed to remove temporary file after rename error");
         }
         return Err(ConnectError::Io(err));
@@ -197,7 +203,7 @@ fn write_atomic(path: &Path, content: &[u8]) -> Result<(), ConnectError> {
 }
 
 fn load_json_or_empty(path: &Path) -> Result<serde_json::Value, ConnectError> {
-    match fs::read_to_string(path) {
+    match crate::util::read_file_capped(path, crate::util::MAX_FOREIGN_TEXT_BYTES) {
         Ok(c) if c.trim().is_empty() => Ok(serde_json::json!({})),
         Ok(c) => serde_json::from_str(&c).map_err(|source| ConnectError::InvalidConfig {
             path: path.to_path_buf(),
@@ -231,6 +237,8 @@ fn write_json_server(
     write_atomic(path, serde_json::to_string_pretty(&root)?.as_bytes())
 }
 
+/// Removes SlugAudit from one agent: the CLI route when its binary is present,
+/// and the file entry only for configs this tool writes.
 pub fn disconnect_agent(agent: &AgentDef, home: Option<&Path>) -> Result<(), ConnectError> {
     let Some(home) = home else { return Ok(()) };
     // Only entries slugaudit actually writes to carry a removable file entry,

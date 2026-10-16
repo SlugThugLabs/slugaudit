@@ -198,3 +198,68 @@ fn redacted_log_ids_are_stable_without_containing_input() {
     assert_ne!(first, secret);
     assert_eq!(first.len(), 64);
 }
+
+#[test]
+fn canonicalize_failure_falls_back_with_a_warning() {
+    let missing = std::path::Path::new("/nonexistent-slugaudit-canonical-probe");
+
+    let (result, logs) =
+        crate::store::test_capture::capture_warns(|| crate::util::canonical_or_self(missing));
+
+    assert_eq!(result, missing, "the fallback is the path as given");
+    assert!(
+        logs.contains("could not canonicalize"),
+        "a silent watch-key fallback is what this helper exists to prevent:\n{logs}"
+    );
+}
+
+#[test]
+fn canonicalize_of_an_existing_path_does_not_warn() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let canonical = directory
+        .path()
+        .canonicalize()
+        .expect("canonicalize tempdir");
+
+    let (result, logs) = crate::store::test_capture::capture_warns(|| {
+        tracing::warn!("control-line-probe-canonical");
+        crate::util::canonical_or_self(directory.path())
+    });
+
+    assert_eq!(result, canonical);
+    assert!(
+        logs.contains("control-line-probe-canonical"),
+        "capture liveness control"
+    );
+    assert!(
+        !logs.contains("could not canonicalize"),
+        "existing paths must canonicalize silently:\n{logs}"
+    );
+}
+
+#[test]
+fn a_capped_read_refuses_an_oversized_file() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let big = directory.path().join("big.json");
+    std::fs::write(&big, vec![b'x'; 2048]).expect("write oversized file");
+
+    let error =
+        crate::util::read_file_capped(&big, 1024).expect_err("an over-cap file must fail closed");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(
+        error.to_string().contains("over the 1024-byte cap"),
+        "the message must name the cap that refused: {error}"
+    );
+}
+
+#[test]
+fn a_capped_read_accepts_a_file_exactly_at_the_cap() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let at_cap = directory.path().join("ok.json");
+    std::fs::write(&at_cap, vec![b'y'; 1024]).expect("write at-cap file");
+
+    let text = crate::util::read_file_capped(&at_cap, 1024).expect("a file at the cap reads");
+
+    assert_eq!(text.len(), 1024, "the cap is inclusive");
+}

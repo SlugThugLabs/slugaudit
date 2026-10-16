@@ -39,6 +39,8 @@ pub fn config_home() -> Option<PathBuf> {
 }
 
 #[derive(Debug, Error)]
+/// Failures reported by `slugaudit install`, each carrying the path or cause
+/// an operator needs.
 pub enum InstallError {
     #[error("could not locate the running binary: {0}")]
     CurrentExe(std::io::Error),
@@ -164,6 +166,9 @@ pub fn run_install() -> Result<(), InstallError> {
 }
 
 fn remove_stale_binary(path: &Path) {
+    // Deliberate raw path: one-shot cleanup diagnostic beside the install
+    // directory; naming the leftover file is what an operator needs. The
+    // redaction rule (`util::redacted_path`) is for correlation-heavy server logs.
     if let Err(error) = std::fs::remove_file(path)
         && error.kind() != std::io::ErrorKind::NotFound
     {
@@ -173,7 +178,10 @@ fn remove_stale_binary(path: &Path) {
 
 /// True when `dir` is already on `PATH` (as a canonicalized entry).
 fn on_path(dir: &Path) -> bool {
-    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let canonical = crate::util::canonical_or_self(dir);
+    // PATH entries are compared as-written when they cannot be canonicalized;
+    // warning per entry would be noise, and a missed match only re-offers the
+    // (idempotent) PATH-add prompt.
     std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .any(|entry| std::fs::canonicalize(&entry).unwrap_or(entry) == canonical)
 }
@@ -209,11 +217,12 @@ fn interactive_prompt(msg: &str) -> bool {
 /// file from `$SHELL` with a bash/zsh/profile fallback.
 fn add_to_path(bin_dir: &Path) -> Result<(), InstallError> {
     let (config_path, line) = path_config(bin_dir)?;
-    let existing = match std::fs::read_to_string(&config_path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(InstallError::Io(error)),
-    };
+    let existing =
+        match crate::util::read_file_capped(&config_path, crate::util::MAX_FOREIGN_TEXT_BYTES) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(InstallError::Io(error)),
+        };
     if existing.lines().any(|l| l.trim() == line) {
         return Ok(());
     }

@@ -360,13 +360,16 @@
             "type": "object"
           },
           "SystemMemoryInfo": {
+            "description": "Host memory as measured at startup (or the conservative fallback,\nreported by `detect_system_memory` when it could not be measured).\nSurfaced in the `health` response because it sizes the Adaptive\nprofile's import budget.",
             "properties": {
               "available_bytes": {
+                "description": "Memory available to this process for import budgets, in bytes.",
                 "format": "uint64",
                 "minimum": 0,
                 "type": "integer"
               },
               "total_bytes": {
+                "description": "Total physical memory in bytes.",
                 "format": "uint64",
                 "minimum": 0,
                 "type": "integer"

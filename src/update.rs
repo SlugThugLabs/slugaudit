@@ -37,11 +37,18 @@ use update_fetch::{ASSET, LatestRelease, compare_versions, fetch_latest_release}
 mod update_fetch;
 
 #[derive(Debug, Error)]
+/// Self-update failures. Each names the real cause (spawn, network, checksum,
+/// filesystem) rather than a guessed one.
 pub enum UpdateError {
     #[error(
-        "curl is required to self-update but was not found on PATH; download the release manually from GitHub"
+        "could not run {tool} (required to self-update): {source}; \
+         if {tool} is genuinely missing, download the release manually from GitHub"
     )]
-    CurlMissing,
+    ToolSpawn {
+        tool: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("could not determine the binary to update: {0}")]
     Target(std::io::Error),
     #[error("network request failed: {0}")]
@@ -104,7 +111,10 @@ fn apply_update(latest: &LatestRelease, target: &Path) -> Result<(), UpdateError
             ])
             .arg(dest)
             .output()
-            .map_err(|_| UpdateError::CurlMissing)?;
+            .map_err(|error| UpdateError::ToolSpawn {
+                tool: "curl",
+                source: error,
+            })?;
         if !output.status.success() {
             return Err(UpdateError::Network(
                 String::from_utf8_lossy(&output.stderr).trim().to_string(),
@@ -154,6 +164,10 @@ fn apply_update(latest: &LatestRelease, target: &Path) -> Result<(), UpdateError
     result
 }
 
+// Deliberate raw paths below: one-shot cleanup diagnostics beside the
+// installed binary — naming the file the operator can see is the point.
+// (The redaction rule is for correlation-heavy server logs.)
+
 fn remove_temp_file(path: &Path) {
     if let Err(error) = std::fs::remove_file(path)
         && error.kind() != std::io::ErrorKind::NotFound
@@ -196,7 +210,10 @@ fn verify_checksum(binary_path: &Path, sums_path: &Path) -> Result<(), UpdateErr
     let output = std::process::Command::new("sha256sum")
         .arg(binary_path)
         .output()
-        .map_err(|_| UpdateError::Checksum("sha256sum command unavailable".into()))?;
+        .map_err(|error| UpdateError::ToolSpawn {
+            tool: "sha256sum",
+            source: error,
+        })?;
     if !output.status.success() {
         return Err(UpdateError::Checksum(
             String::from_utf8_lossy(&output.stderr).trim().to_string(),

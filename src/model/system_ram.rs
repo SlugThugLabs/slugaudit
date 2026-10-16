@@ -3,12 +3,25 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Host memory as measured at startup (or the conservative fallback,
+/// reported by `detect_system_memory` when it could not be measured).
+/// Surfaced in the `health` response because it sizes the Adaptive
+/// profile's import budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SystemMemoryInfo {
+    /// Total physical memory in bytes.
     pub total_bytes: u64,
+    /// Memory available to this process for import budgets, in bytes.
     pub available_bytes: u64,
 }
 
+/// Detects host physical and available memory.
+///
+/// Tries `/proc/meminfo` (Linux) and `sysctl hw.memsize` (macOS) in turn.
+/// When neither yields a value, the conservative 8 GiB / 4 GiB floor is
+/// returned — small enough to be safe on any host, and **warned**, because
+/// sizing the Adaptive profile off a guessed value is exactly the kind of
+/// silent operator-visible effect this project reports rather than swallows.
 #[must_use]
 pub fn detect_system_memory() -> SystemMemoryInfo {
     if let Ok(content) = std::fs::read_to_string("/proc/meminfo")
@@ -34,6 +47,9 @@ pub fn detect_system_memory() -> SystemMemoryInfo {
         }
     }
 
+    tracing::warn!(
+        "could not detect system memory; sizing the adaptive profile from the conservative 8 GiB default"
+    );
     SystemMemoryInfo {
         total_bytes: 8 * 1024 * 1024 * 1024,
         available_bytes: 4 * 1024 * 1024 * 1024,

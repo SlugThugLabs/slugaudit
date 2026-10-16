@@ -86,7 +86,10 @@ fn curl_get(url: &str) -> Result<String, UpdateError> {
             url,
         ])
         .output()
-        .map_err(|_| UpdateError::CurlMissing)?;
+        .map_err(|error| UpdateError::ToolSpawn {
+            tool: "curl",
+            source: error,
+        })?;
     if !output.status.success() {
         return Err(UpdateError::Network(
             String::from_utf8_lossy(&output.stderr).trim().to_string(),

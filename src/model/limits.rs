@@ -112,11 +112,9 @@ impl ResourceLimits {
     /// `ResourceLimits::from_env()`.
     #[must_use]
     pub fn from_env() -> Self {
-        let mut limits = match std::env::var("SLUGAUDIT_PROFILE")
-            .ok()
-            .as_deref()
-            .and_then(super::profile::AuditProfile::parse_str)
-        {
+        // A set-but-invalid SLUGAUDIT_PROFILE warns inside profile_from_env
+        // rather than silently falling back, matching the numeric overrides.
+        let mut limits = match super::profile::profile_from_env() {
             Some(profile) => super::profile::limits_for_profile(profile),
             None => Self::default(),
         };
@@ -218,6 +216,7 @@ mod tests {
 
     #[test]
     fn from_env_uses_defaults_when_no_vars_are_set() {
+        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
         temp_env::with_var_unset("SLUGAUDIT_MAX_FILE_BYTES", || {
             let limits = ResourceLimits::from_env();
             assert_eq!(
@@ -229,6 +228,7 @@ mod tests {
 
     #[test]
     fn from_env_overrides_u64_fields() {
+        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
         temp_env::with_vars(
             [
                 ("SLUGAUDIT_PROFILE", Some("lean")),
@@ -245,6 +245,7 @@ mod tests {
 
     #[test]
     fn from_env_overrides_duration_fields() {
+        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
         temp_env::with_var("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS", Some("120"), || {
             let limits = ResourceLimits::from_env();
             assert_eq!(limits.max_sync_wall_clock, Duration::from_secs(120));
@@ -253,6 +254,7 @@ mod tests {
 
     #[test]
     fn an_unparseable_override_falls_back_to_the_default_and_says_so() {
+        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
         temp_env::with_var("SLUGAUDIT_MAX_FILE_BYTES", Some("not-a-number"), || {
             let (limits, logs) =
                 crate::store::test_capture::capture_warns(ResourceLimits::from_env);
@@ -271,6 +273,7 @@ mod tests {
 
     #[test]
     fn multiple_overrides_compose() {
+        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
         temp_env::with_vars(
             [
                 ("SLUGAUDIT_MAX_FILE_BYTES", Some("1048576")),

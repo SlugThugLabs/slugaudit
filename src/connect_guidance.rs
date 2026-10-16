@@ -27,13 +27,13 @@ pub fn target(agent: &AgentDef, home: Option<&Path>) -> String {
 
 /// `Reference: <version/date>` — always printed, so a probed registration is
 /// distinguishable from a documentation-based one.
-pub fn reference_line(agent: &AgentDef) -> String {
+fn reference_line(agent: &AgentDef) -> String {
     format!("Reference: {}", agent.reference)
 }
 
 /// `Docs: <url>` — printed whenever we acted on documentation rather than a
 /// probed binary.
-pub fn docs_line(agent: &AgentDef) -> String {
+fn docs_line(agent: &AgentDef) -> String {
     format!("Docs: {}", agent.docs_url)
 }
 

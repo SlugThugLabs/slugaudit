@@ -11,6 +11,9 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const PRIVATE_MODE: u32 = 0o600;
 
 #[derive(Debug, Error)]
+/// Database-boundary failures. Corruption is recoverable (callers discard and
+/// rebuild); guard rejections — symlink, network filesystem, group-readable
+/// mode — are deliberate refusals that name the offending path.
 pub enum StoreError {
     #[error("failed to open database: {0}")]
     Open(#[source] rusqlite::Error),
@@ -43,6 +46,8 @@ pub enum StoreError {
 
 impl StoreError {
     #[must_use]
+    /// True for SQLite errors that mean the database file is damaged beyond use —
+    /// the signal to discard and rebuild rather than retry.
     pub fn is_corruption(&self) -> bool {
         match self {
             Self::Open(error) | Self::Configure(error) => super::is_rusqlite_corruption(error),
@@ -187,6 +192,10 @@ fn reject_insecure_permissions(path: &Path) -> Result<(), StoreError> {
     };
     let mode = metadata.permissions().mode();
     if mode & 0o077 != 0 {
+        // Deliberately the raw path, not redacted_path(): a rejection that
+        // cannot say which file it rejected leaves the operator stuck. The
+        // hash convention is for correlation-heavy sync logs; one-shot
+        // security rejections are diagnostics, and stderr stays local.
         tracing::warn!(
             target: "slugaudit::store",
             path = %path.display(),

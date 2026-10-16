@@ -161,9 +161,12 @@ fn verify_checksum_fails_when_binary_file_missing() {
 #[test]
 fn update_error_display_covers_all_variants() {
     assert!(
-        UpdateError::CurlMissing
-            .to_string()
-            .contains("curl is required")
+        UpdateError::ToolSpawn {
+            tool: "curl",
+            source: std::io::Error::other("Permission denied (os error 13)"),
+        }
+        .to_string()
+        .contains("could not run curl (required to self-update): Permission denied")
     );
     assert!(
         UpdateError::Target(std::io::Error::other("fail"))

@@ -9,6 +9,13 @@ use crate::menu_render::{other_agent_instructions, render_menu};
 use crate::util::Style;
 use std::io::{BufRead as _, Write as _};
 
+/// Interactive setup menu. Returns `Ok(true)` when the user chooses to start
+/// the MCP server, `Ok(false)` to exit without serving; input problems are
+/// reported by the menu itself.
+///
+/// # Errors
+///
+/// Returns an error only when reading the menu's stdin fails outright.
 pub fn run_menu() -> Result<bool, Box<dyn std::error::Error>> {
     loop {
         let style = Style::stdout();
@@ -77,7 +84,9 @@ fn other_client_step() {
         .map(|current| connect::prefer_slugthug_binary(&current))
         .unwrap_or_else(|_| std::path::PathBuf::from("slugaudit"));
     print!("{}", other_agent_instructions(&binary));
-    std::io::stdout().flush().ok();
+    if let Err(error) = std::io::stdout().flush() {
+        eprintln!("could not flush instructions to stdout: {error}");
+    }
 }
 
 fn confirm_serve() -> Result<bool, Box<dyn std::error::Error>> {

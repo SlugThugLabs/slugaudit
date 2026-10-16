@@ -54,10 +54,12 @@ impl ProjectConfig {
         if !config_path.exists() {
             return Ok(None);
         }
-        let content = std::fs::read_to_string(&config_path).map_err(|source| ConfigError::Io {
-            path: config_path.clone(),
-            source,
-        })?;
+        let content =
+            crate::util::read_file_capped(&config_path, crate::util::MAX_FOREIGN_TEXT_BYTES)
+                .map_err(|source| ConfigError::Io {
+                    path: config_path.clone(),
+                    source,
+                })?;
         let cfg = serde_json::from_str::<Self>(&content).map_err(|source| ConfigError::Parse {
             path: config_path,
             source,

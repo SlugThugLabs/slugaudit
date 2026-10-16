@@ -35,6 +35,56 @@ pub(crate) fn redacted_path(path: &std::path::Path) -> String {
     redacted_log_id(path.to_string_lossy().as_bytes())
 }
 
+/// Canonicalizes `path` for use as a stable identity key, falling back to
+/// the path as given when canonicalization fails.
+///
+/// Watch-state keys and PATH comparisons depend on the canonical form. The
+/// fallback is deliberate — the caller keeps working — but it must not be
+/// silent: if canonicalization fails while a watcher registered under a
+/// different spelling, the mismatch is invisible unless this says so.
+#[must_use]
+pub(crate) fn canonical_or_self(path: &std::path::Path) -> std::path::PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|error| {
+        tracing::warn!(
+            path = %redacted_path(path),
+            error = %error,
+            "could not canonicalize; continuing with the path as given",
+        );
+        path.to_path_buf()
+    })
+}
+
+/// Cap for foreign text files the CLI reads to edit them: other tools'
+/// configs and the user's shell rc. None of them has a prior that they are
+/// small, so reads are bounded like everything else in this crate.
+pub(crate) const MAX_FOREIGN_TEXT_BYTES: u64 = 1024 * 1024;
+
+/// Reads a UTF-8 file whose size must not exceed `max_bytes`.
+///
+/// Mirrors `sync::sample`'s discipline for untrusted-size files: pre-check
+/// the metadata, re-check after the read for the stat/read window, and
+/// fail closed rather than load an unbounded buffer.
+pub(crate) fn read_file_capped(path: &std::path::Path, max_bytes: u64) -> std::io::Result<String> {
+    let metadata = std::fs::metadata(path)?;
+    if metadata.len() > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "file is {} bytes, over the {max_bytes}-byte cap",
+                metadata.len()
+            ),
+        ));
+    }
+    let text = std::fs::read_to_string(path)?;
+    if text.len() as u64 > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("file grew past the {max_bytes}-byte cap while being read"),
+        ));
+    }
+    Ok(text)
+}
+
 /// Minimal ANSI styling for the human-facing CLI surface (`menu`, `help`).
 ///
 /// Detects once, at construction, whether stdout is a real terminal. When

@@ -57,6 +57,8 @@ struct ProjectWatchInfo {
 }
 
 impl WatchManager {
+    /// Creates a `WatchManager` with **no** `notify` watcher running — the
+    /// default for tests; `with_watcher` opts in.
     pub fn new() -> Self {
         Self::default()
     }
@@ -123,7 +125,7 @@ impl WatchManager {
     /// health. Computes the watch scope immediately and prunes watches on
     /// ignored/excluded directories.
     pub fn watch(&self, root: &Path) -> WatchState {
-        let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let canonical = crate::util::canonical_or_self(root);
 
         let mut guard = lock_or_recover(&self.inner);
 
@@ -179,7 +181,7 @@ impl WatchManager {
 
     /// Stop watching `root` and remove its state.
     pub fn unwatch(&self, root: &Path) {
-        let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let canonical = crate::util::canonical_or_self(root);
 
         let mut guard = lock_or_recover(&self.inner);
 
@@ -197,7 +199,7 @@ impl WatchManager {
 
     /// Get the `WatchState` for `root`, if it exists.
     pub fn get(&self, root: &Path) -> Option<WatchState> {
-        let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let canonical = crate::util::canonical_or_self(root);
         let guard = lock_or_recover(&self.inner);
         guard
             .projects
@@ -240,7 +242,7 @@ impl WatchManager {
     /// run on the notify callback thread. The sync layer calls this
     /// before reconciling.
     pub fn refresh_scope(&self, root: &Path) {
-        let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let canonical = crate::util::canonical_or_self(root);
         let mut guard = lock_or_recover(&self.inner);
         let needs = guard
             .projects
@@ -256,7 +258,7 @@ impl WatchManager {
     /// is registered. Used by the sync layer to filter dirty paths before
     /// indexing them.
     pub fn rules_for(&self, root: &Path) -> Option<Arc<IgnoreRules>> {
-        let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let canonical = crate::util::canonical_or_self(root);
         let guard = lock_or_recover(&self.inner);
         guard
             .projects
