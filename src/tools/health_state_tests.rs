@@ -40,19 +40,19 @@ fn project_state_populates_database_fields_for_an_active_project() {
 
     let fields = super::compute_project_state(&path, &manager).expect("project state");
 
-    assert_eq!(fields.watcher_health, Some(WatcherHealth::Unavailable));
+    let watcher = fields.watcher.as_ref().expect("watcher group");
+    assert_eq!(watcher.health, WatcherHealth::Unavailable);
     assert_eq!(fields.phase, super::HealthPhase::Unavailable);
+    assert_eq!(watcher.pending_dirty, 0);
+    assert_eq!(watcher.pending_deleted, 0);
+    let database = fields.database.as_ref().expect("database group");
     assert!(
-        fields.revision_id.is_some(),
+        database.revision_id.is_some(),
         "a revision must exist after sync"
     );
-    assert!(fields.parser_pack_version.is_some());
-    assert_eq!(fields.file_count, 1, "one indexed source file");
-    assert_eq!(fields.skipped_file_count, 0, "nothing was skipped");
-    assert_eq!(fields.pending_dirty, Some(0));
-    assert_eq!(fields.pending_deleted, Some(0));
-    assert!(fields.watcher_sequence.is_some());
-    assert!(fields.last_verified_sequence.is_some());
+    assert!(database.parser_pack_version.is_some());
+    assert_eq!(database.file_count, 1, "one indexed source file");
+    assert_eq!(database.skipped_file_count, 0, "nothing was skipped");
 }
 
 #[test]
@@ -60,14 +60,14 @@ fn global_only_state_is_no_active_project_when_the_manager_is_empty() {
     let manager = SourceSyncManager::new();
     let fields = super::compute_global_only_state(&manager);
     assert_eq!(fields.phase, super::HealthPhase::NoActiveProject);
-    assert_eq!(fields.watcher_health, None);
-    assert_eq!(fields.pending_dirty, None);
-    assert_eq!(fields.pending_deleted, None);
-    assert_eq!(fields.watcher_sequence, None);
-    assert_eq!(fields.last_verified_sequence, None);
-    assert_eq!(fields.revision_id, None);
-    assert_eq!(fields.parser_pack_version, None);
-    assert_eq!(fields.file_count, -1);
+    assert_eq!(
+        fields.watcher, None,
+        "no project registered means no watcher group at all"
+    );
+    assert_eq!(
+        fields.database, None,
+        "the global path never opens a database"
+    );
 }
 
 #[test]
@@ -77,13 +77,12 @@ fn global_only_state_reports_watcher_fields_when_a_project_is_registered() {
 
     let fields = super::compute_global_only_state(&manager);
     assert_eq!(fields.phase, super::HealthPhase::Unavailable);
-    assert_eq!(fields.watcher_health, Some(WatcherHealth::Unavailable));
-    assert_eq!(fields.pending_dirty, Some(0));
-    assert_eq!(fields.pending_deleted, Some(0));
+    let watcher = fields.watcher.as_ref().expect("watcher group");
+    assert_eq!(watcher.health, WatcherHealth::Unavailable);
+    assert_eq!(watcher.pending_dirty, 0);
+    assert_eq!(watcher.pending_deleted, 0);
     // The global-only path never opens the database:
-    assert_eq!(fields.revision_id, None);
-    assert_eq!(fields.parser_pack_version, None);
-    assert_eq!(fields.file_count, -1);
+    assert_eq!(fields.database, None);
 }
 
 #[test]
@@ -93,13 +92,27 @@ fn revision_helpers_reflect_the_published_database() {
     let database = project.path().join(".planning/slugaudit/project.db");
     let mut connection = store::open_read_only(&database).expect("open");
 
-    let revision = super::current_revision_id(&mut connection);
+    let (revision, version) =
+        super::read_revision_fields(&mut connection).expect("read revision fields");
     assert!(revision.is_some(), "a published revision must be visible");
-
-    let version = super::current_parser_pack_version(&mut connection);
     assert_eq!(version.as_deref(), Some(crate::parse::PACK_VERSION));
 
     assert_eq!(super::count_files(&mut connection).expect("file count"), 1);
+}
+
+/// The behaviour the two helpers this replaced got wrong: they ended in
+/// `.ok().flatten()`, so a query error and "nothing published yet" both
+/// arrived as `None` and `health` reported a broken database as an
+/// unpublished one. A missing table must reach the caller as an error.
+#[test]
+fn a_failed_revision_query_is_an_error_not_a_missing_revision() {
+    let mut connection = rusqlite::Connection::open_in_memory().expect("in-memory db");
+    let error = super::read_revision_fields(&mut connection)
+        .expect_err("a missing revisions table must error, not read as no revision");
+    assert!(
+        error.to_string().contains("no such table"),
+        "the underlying cause must survive: {error}"
+    );
 }
 
 #[test]
@@ -108,18 +121,17 @@ fn revision_helpers_return_none_on_a_fresh_database() {
     let mut connection =
         store::open_read_write(&directory.path().join("project.db")).expect("open fresh db");
     assert_eq!(
-        super::current_revision_id(&mut connection),
-        None,
+        super::read_revision_fields(&mut connection).expect("read revision fields"),
+        (None, None),
         "no revision before any publish"
     );
-    assert_eq!(super::current_parser_pack_version(&mut connection), None);
     assert_eq!(super::count_files(&mut connection).expect("query"), 0);
 }
 
 /// A project that is enabled (marker exists) but has never been synced
-/// must degrade gracefully: no error, watcher fields None, DB fields
-/// None/-1, phase `NoActiveProject` — the marker exists but this server
-/// has nothing active for it.
+/// must degrade gracefully: no error, both per-project groups absent, phase
+/// `NoActiveProject` — the marker exists but this server has nothing active
+/// for it.
 #[test]
 fn an_enabled_but_never_synced_project_degrades_gracefully() {
     let project = tempfile::tempdir().expect("project dir");
@@ -131,11 +143,8 @@ fn an_enabled_but_never_synced_project_degrades_gracefully() {
     let fields = super::compute_project_state(&path, &manager).expect("no error");
 
     assert_eq!(fields.phase, super::HealthPhase::NoActiveProject);
-    assert_eq!(fields.watcher_health, None);
-    assert_eq!(fields.pending_dirty, None);
-    assert_eq!(fields.revision_id, None);
-    assert_eq!(fields.parser_pack_version, None);
-    assert_eq!(fields.file_count, -1);
+    assert_eq!(fields.watcher, None, "no watcher was ever registered");
+    assert_eq!(fields.database, None, "nothing was ever published");
 }
 
 /// The core read-only guarantee: calling `health` with a path must never
@@ -201,11 +210,12 @@ fn health_with_an_active_project_path_reports_db_fields() {
     .expect("health with a path succeeds");
 
     let inner = response.0;
-    assert!(inner.revision_id.is_some());
-    assert!(inner.parser_pack_version.is_some());
-    assert_eq!(inner.file_count, 1);
+    let database = inner.database.as_ref().expect("database group");
+    assert!(database.revision_id.is_some());
+    assert!(database.parser_pack_version.is_some());
+    assert_eq!(database.file_count, 1);
     assert!(
-        inner.last_sync_unix_seconds > 0,
+        inner.server.last_sync_unix_seconds > 0,
         "ensure_current must stamp the last-sync timestamp"
     );
     let _ = project;
@@ -230,10 +240,8 @@ fn health_with_a_path_outside_any_enabled_project_reports_disabled() {
     .expect("a disabled path is an answer, not an error");
 
     assert_eq!(response.0.phase, super::HealthPhase::Disabled);
-    assert_eq!(response.0.watcher_health, None);
-    assert_eq!(response.0.pending_dirty, None);
-    assert_eq!(response.0.revision_id, None);
-    assert_eq!(response.0.file_count, -1);
+    assert_eq!(response.0.watcher, None);
+    assert_eq!(response.0.database, None);
     let remedy = response
         .0
         .remedy
@@ -274,7 +282,15 @@ fn health_reports_no_remedy_for_an_active_project() {
     .expect("health succeeds for an active project");
 
     assert_eq!(response.0.remedy, None);
-    assert!(response.0.revision_id.is_some());
+    assert!(
+        response
+            .0
+            .database
+            .as_ref()
+            .expect("database group")
+            .revision_id
+            .is_some()
+    );
 }
 
 #[test]
@@ -287,11 +303,12 @@ fn published_project_without_watcher_is_reported_as_indexed_unwatched() {
         .expect("read existing published database");
 
     assert_eq!(fields.phase, super::HealthPhase::IndexedUnwatched);
+    let database = fields.database.as_ref().expect("database group");
     assert!(
-        fields.revision_id.is_some(),
+        database.revision_id.is_some(),
         "indexed project retains revision"
     );
-    assert_eq!(fields.file_count, 1);
-    assert_eq!(fields.watcher_health, None);
+    assert_eq!(database.file_count, 1);
+    assert_eq!(fields.watcher, None, "no watcher was registered");
     assert_eq!(fields.remedy, None);
 }

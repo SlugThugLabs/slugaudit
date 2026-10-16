@@ -60,8 +60,14 @@ The server exposes eight tools (`src/server.rs`):
 - **`finding_read`** — returns findings scoped to the calling agent session.
 - **`project_control`** — enable or disable a project (create or remove the
   activation directory and run the initial import).
-- **`health`** — operational snapshot: watcher health, unreconciled counts,
-  cumulative tool-call counters, last-sync timestamp and duration.
+- **`health`** — what state is this in and what should the caller do next.
+  Answers with three groups, each present or `null` as a unit so absence
+  reads as absence: `watcher` (health, unreconciled counts, sequences),
+  `database` (revision id, parser pack version, file and skipped-file
+  counts), and `server` (tool-call counters, last-sync timestamp and
+  duration, consecutive full publishes). `phase` and `remedy` summarize the
+  first two; `system_memory` reports host state because it sizes the
+  adaptive import budget.
 
 Only `finding` and `project_control` mutate state. Every state-bearing tool
 first brings the project current (see *Data flow*); if the watcher reports

@@ -144,11 +144,11 @@ fn health_no_path_response_carries_counter_consistency() {
     let inner = resp.0;
     let snap_after = ToolCounters::snapshot();
     assert!(
-        inner.tool_call_count >= snap_before.call_count,
+        inner.server.tool_call_count >= snap_before.call_count,
         "response counter can't precede the snapshot taken before the call"
     );
     assert!(
-        inner.tool_call_count <= snap_after.call_count,
+        inner.server.tool_call_count <= snap_after.call_count,
         "response counter can't exceed the snapshot taken after"
     );
 }
@@ -172,22 +172,30 @@ fn health_with_an_unrelated_path_returns_an_error() {
 
 #[test]
 #[cfg(unix)]
-fn read_database_fields_degrades_to_empty_when_the_database_cannot_be_opened() {
+fn read_database_is_absent_when_the_database_cannot_be_opened() {
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().expect("temp dir");
     let db = directory.path().join("project.db");
     crate::store::open_read_write(&db).expect("create the project database");
     // The connection layer refuses databases whose permissions were
     // broadened past owner-only (group/world bits set) — exactly the open
-    // failure `read_database_fields` must degrade on, not propagate: the
-    // health payload stays actionable (-1/None) and the failure is logged
-    // rather than surfacing as an error.
+    // failure `read_database` must degrade on, not propagate: the health
+    // payload stays actionable (the whole `database` group goes absent)
+    // and the failure is logged rather than surfacing as an error.
     std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o644))
         .expect("widen database permissions");
-    let (revision_id, parser_pack_version, file_count, skipped_file_count) =
-        crate::tools::health::read_database_fields(&db);
-    assert_eq!(revision_id, None);
-    assert_eq!(parser_pack_version, None);
-    assert_eq!(file_count, -1);
-    assert_eq!(skipped_file_count, -1);
+    assert_eq!(
+        crate::tools::health::read_database(&db),
+        None,
+        "an unopenable database is absent, never a half-filled group"
+    );
+}
+
+#[test]
+fn read_database_is_absent_when_no_database_exists_yet() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    assert_eq!(
+        crate::tools::health::read_database(&directory.path().join("never-synced.db")),
+        None
+    );
 }

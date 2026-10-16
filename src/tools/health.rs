@@ -1,28 +1,35 @@
-//! `health` MCP tool — operational snapshot for operators and external
-//! monitors.
+//! `health` MCP tool — what state is this in, and what should the caller
+//! do next.
 //!
-//! Returns every number an external health check might want without
-//! making it write through to the database or run another Tree-sitter
-//! parse. The intent is that calling `health` should never cause a
-//! sync, never emit MCP progress, and never fail transiently — every
-//! failure mode degrades to "field is null/0" rather than an error, so
-//! a stale health read is still actionable. The state a cold caller is
-//! most likely to hit — a `path` that is not an enabled project — is one
-//! of those states too: the answer is `phase: "disabled"` plus a
-//! `remedy` naming the call that enables it, never an error. A
-//! diagnostic tool that fails when there is nothing to diagnose is
-//! useless.
+//! Answers without writing through to the database or running another
+//! Tree-sitter parse, so a caller can ask at any point — including when
+//! nothing else seems to work. Calling `health` never causes a sync, never
+//! emits MCP progress, and never fails transiently: every failure mode
+//! degrades to an absent field rather than an error, because a diagnostic
+//! tool that fails when there is nothing to diagnose is useless. The state
+//! a cold caller is most likely to hit — a `path` that is not an enabled
+//! project — is one of those: the answer is `phase: "disabled"` plus a
+//! `remedy` naming the call that enables it, never an error.
 //!
-//! Three categories of data are surfaced:
+//! The response is grouped by where each fact comes from, so that absence
+//! reads as absence. A group is either wholly present or `null` — there is
+//! no state in which half of one is knowable:
 //!
-//! 1. **Watcher state** for the active project (or the most recently
-//!    touched project when no path is supplied): health enum,
-//!    unreconciled counts, watcher sequence / verified sequence.
-//! 2. **Database state** for the supervised project: current revision
-//!    id, file count, parser pack version. Falls back to zeros/None
-//!    when no project is currently active or the DB can't be opened.
-//! 3. **Process counters**: total tool calls, error calls, total wall-
-//!    clock milliseconds across every tool call since process start.
+//! 1. **`watcher`** — what the filesystem watcher knows about the
+//!    supervised project: health enum, unreconciled dirty and deleted
+//!    counts, watcher sequence, last verified sequence. `null` when no
+//!    project is registered with this server.
+//! 2. **`database`** — what the project database holds: current revision
+//!    id, parser pack version, file count, skipped-file count. `null` when
+//!    the project has never been synced or the database could not be read.
+//! 3. **`server`** — what this process has done since it started: tool
+//!    call counts and total milliseconds, last sync time and duration, and
+//!    the consecutive-full-publish counter that signals an untrusted
+//!    watcher. Instrumentation, present so the tool can be measured over
+//!    time; nothing here drives `phase` or `remedy`.
+//!
+//! `phase` and `remedy` summarize the first two groups. `system_memory` is
+//! host state, reported because it sizes the adaptive import budget.
 // slugaudit-line-exception: approved-by=slugthug; reason=health is the schema-defining tool; Request+Response+phase+derivation live together so the schema isn't split from its only consumer
 
 use crate::error_codes::ErrorCode;
@@ -68,51 +75,84 @@ pub struct HealthResponse {
     /// when no `path` was supplied and this server has no project at all;
     /// `None` whenever a project is actually being served.
     pub remedy: Option<String>,
-    /// Watcher health for the supervised project. `None` only if no
-    /// project is currently registered with the server.
-    pub watcher_health: Option<watch::WatcherHealth>,
-    /// Number of unreconciled dirty paths (modified or created since
-    /// the last successful reconcile). `None` if no project is active.
-    pub pending_dirty: Option<usize>,
-    /// Number of unreconciled deleted paths. `None` if no project is active.
-    pub pending_deleted: Option<usize>,
-    /// Watcher's monotonic event sequence. `None` if no project is active.
-    pub watcher_sequence: Option<u64>,
-    /// Sequence acknowledged by the most recent reconcile. `None` if no
-    /// project is active.
-    pub last_verified_sequence: Option<u64>,
-    /// Unix-epoch seconds of the most recent successful `ensure_current`
-    /// across the entire server's lifetime. Zero before the first sync.
-    pub last_sync_unix_seconds: i64,
-    /// Duration of the most recent successful `ensure_current`, in
-    /// milliseconds. Zero before the first sync.
-    pub last_sync_duration_ms: u64,
-    /// `revision_id` of the active project's current revision. `None`
-    /// if no project is active or the database hasn't been published to.
+    /// What the filesystem watcher knows about the supervised project.
+    /// `None` only if no project is currently registered with the server.
+    /// The fields are one object because they become unknowable together —
+    /// there is no state in which half of them exist.
+    pub watcher: Option<WatcherState>,
+    /// What the project database holds. `None` if the project has never
+    /// been synced, or if the database could not be read. Either every
+    /// field inside is present or the whole object is absent: a partial
+    /// read is not representable, so no number here is ever a placeholder.
+    pub database: Option<DatabaseState>,
+    /// What this server process has done since it started.
+    pub server: ServerCounters,
+    /// Host physical and available memory. Reported because it sets the
+    /// adaptive profile's import budget (`src/model/profile.rs`), so a
+    /// caller that trips `max_total_import_bytes` can see what sized it.
+    pub system_memory: crate::model::SystemMemoryInfo,
+}
+
+/// What the project database holds.
+///
+/// Read as one unit: one failed query leaves the whole object absent rather
+/// than producing a revision alongside a count that didn't come back, so a
+/// caller never has to detect a half-read answer — there isn't one to
+/// detect. That is also why no field here is a sentinel: absence is the
+/// `None` on [`HealthResponse::database`], not a magic number inside it.
+#[derive(Debug, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct DatabaseState {
+    /// `revision_id` of the current revision. `None` if nothing has been
+    /// published yet.
     pub revision_id: Option<String>,
     /// Parser pack version stored on the current revision. `None` if no
     /// revision has been published yet.
     pub parser_pack_version: Option<String>,
-    /// File count in the active project's database. `-1` if no project is
-    /// active or the count query failed (use this rather than
-    /// `Option<i64>` so consumers can render a single JSON number). Counts
-    /// every discovered file, including rows with `file_kind = 'skipped'` —
-    /// `skipped_file_count` breaks those out.
+    /// Files in the database — every discovered file, including rows with
+    /// `file_kind = 'skipped'`; `skipped_file_count` breaks those out.
     pub file_count: i64,
     /// Of `file_count`, how many rows were discovered but never read
     /// (`file_kind = 'skipped'`: oversize or unreadable), so they hold no
-    /// content. `-1` when the count is unavailable for the same reasons as
-    /// `file_count`. `file_count - skipped_file_count` is the number of
-    /// files that were actually read.
+    /// content. `file_count - skipped_file_count` is the number of files
+    /// that were actually read.
     pub skipped_file_count: i64,
+}
+
+/// The watcher's view of the supervised project.
+#[derive(Debug, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct WatcherState {
+    /// Current watcher health.
+    pub health: watch::WatcherHealth,
+    /// Unreconciled dirty paths — modified or created since the last
+    /// successful reconcile.
+    pub pending_dirty: usize,
+    /// Unreconciled deleted paths.
+    pub pending_deleted: usize,
+    /// The watcher's monotonic event sequence.
+    pub sequence: u64,
+    /// The sequence acknowledged by the most recent reconcile.
+    pub last_verified_sequence: u64,
+}
+
+/// Counters for this server process since it started.
+///
+/// Operational instrumentation: these exist so the tool's own behaviour can
+/// be measured over time. Nothing here is something a caller acts on, which
+/// is why they share one object and drive no `phase` or `remedy`.
+#[derive(Debug, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct ServerCounters {
     /// Total tool calls served since process start.
     pub tool_call_count: u64,
     /// Total tool calls that returned any `ErrorData` since process start.
     pub tool_call_error_count: u64,
     /// Sum of every tool call's work duration, in milliseconds.
     pub tool_call_total_ms: u64,
-    /// Host physical and available memory info.
-    pub system_memory: crate::model::SystemMemoryInfo,
+    /// Unix-epoch seconds of the most recent successful `ensure_current`
+    /// across the entire server's lifetime. Zero before the first sync.
+    pub last_sync_unix_seconds: i64,
+    /// Duration of the most recent successful `ensure_current`, in
+    /// milliseconds. Zero before the first sync.
+    pub last_sync_duration_ms: u64,
     /// How many consecutive full publishes (untrusted-watcher or
     /// Unavailable-path verifications) have run since the last successful
     /// incremental reconcile. A value that persists at 1+ across calls
@@ -135,7 +175,10 @@ pub struct HealthResponse {
 ///   full-publish.
 /// - `NoActiveProject`: server has been initialized but no `ensure_current`
 ///   call has succeeded, so the watcher state can't be summarized.
-/// - `IndexedUnwatched`: the enabled project has a published revision in its\n///   database, but this server has no registered watcher for that path.\n///   Indexed evidence remains readable; no watcher health is implied.\n/// - `Disabled`: `request.path` resolved to no enabled project — the
+/// - `IndexedUnwatched`: the enabled project has a published revision in
+///   its database, but this server has no registered watcher for that path.
+///   Indexed evidence remains readable; no watcher health is implied.
+/// - `Disabled`: `request.path` resolved to no enabled project — the
 ///   activation marker is absent — so nothing can serve that path until
 ///   `project_control` enables it. `remedy` names that call. This is a
 ///   state, not an error: a diagnostic tool that fails when there is
@@ -193,23 +236,30 @@ pub fn health(
     Ok(Json(HealthResponse {
         phase: fields.phase,
         remedy: fields.remedy,
-        watcher_health: fields.watcher_health,
-        pending_dirty: fields.pending_dirty,
-        pending_deleted: fields.pending_deleted,
-        watcher_sequence: fields.watcher_sequence,
-        last_verified_sequence: fields.last_verified_sequence,
-        last_sync_unix_seconds: last_sync,
-        last_sync_duration_ms,
-        revision_id: fields.revision_id,
-        parser_pack_version: fields.parser_pack_version,
-        file_count: fields.file_count,
-        skipped_file_count: fields.skipped_file_count,
-        tool_call_count: counters.call_count,
-        tool_call_error_count: counters.error_count,
-        tool_call_total_ms: counters.total_ms,
+        watcher: fields.watcher,
+        database: fields.database,
+        server: ServerCounters {
+            tool_call_count: counters.call_count,
+            tool_call_error_count: counters.error_count,
+            tool_call_total_ms: counters.total_ms,
+            last_sync_unix_seconds: last_sync,
+            last_sync_duration_ms,
+            consecutive_full_publishes: manager.consecutive_full_publishes(),
+        },
         system_memory: crate::model::detect_system_memory(),
-        consecutive_full_publishes: manager.consecutive_full_publishes(),
     }))
+}
+
+/// The per-project half of a [`HealthResponse`]: everything that depends on
+/// which project is being served. The two builders below return one of
+/// these and `health` fills in the process-wide remainder, so neither
+/// builder has to know about counters or host memory.
+#[derive(Debug, PartialEq, Eq)]
+struct ProjectHealthFields {
+    phase: HealthPhase,
+    remedy: Option<String>,
+    watcher: Option<WatcherState>,
+    database: Option<DatabaseState>,
 }
 
 /// Computes every per-project field of the health response **without any
@@ -218,27 +268,7 @@ pub fn health(
 /// it exists. It never calls `ensure_current`, so a health call can never
 /// trigger a publish, register a watch, or change watcher health — the
 /// snapshot is whatever the last real tool call left behind, which is
-/// exactly what an operator wants from a health check.
-/// Per-project fields of [`HealthResponse`], grouped so callers can
-/// destructure a single tuple-shaped return rather than threading
-/// nine outputs through the call site. The fields are intentionally
-/// `pub` so `compute_global_only_state` can construct the same shape.
-#[allow(clippy::type_complexity)]
-#[derive(Debug, PartialEq, Eq)]
-struct ProjectHealthFields {
-    phase: HealthPhase,
-    remedy: Option<String>,
-    watcher_health: Option<watch::WatcherHealth>,
-    pending_dirty: Option<usize>,
-    pending_deleted: Option<usize>,
-    watcher_sequence: Option<u64>,
-    last_verified_sequence: Option<u64>,
-    revision_id: Option<String>,
-    parser_pack_version: Option<String>,
-    file_count: i64,
-    skipped_file_count: i64,
-}
-
+/// exactly what a caller wants from a health check.
 fn compute_project_state(
     path: &str,
     manager: &sync::SourceSyncManager,
@@ -253,7 +283,7 @@ fn compute_project_state(
         // activation component) stays an error: enabling the project would
         // not fix it.
         Err(crate::project::ActivationError::NotActive) => {
-            return Ok(disabled_project_fields());
+            return Ok(inactive_fields(HealthPhase::Disabled));
         }
         Err(error) => return Err(ErrorData::invalid_params(error.to_string(), None)),
     };
@@ -263,8 +293,10 @@ fn compute_project_state(
         .watch_state_for(root.as_path())
         .map(|state| state.snapshot());
 
-    let (revision_id, parser_pack_version, file_count, skipped_file_count) =
-        read_database_fields(&database_path);
+    let database = read_database(&database_path);
+    let revision_id = database
+        .as_ref()
+        .and_then(|state| state.revision_id.clone());
 
     let phase = match snapshot.as_ref() {
         Some(snapshot) => derive_phase(
@@ -273,9 +305,9 @@ fn compute_project_state(
             snapshot.has_unreconciled_events(),
         ),
         // No watcher state: the project was never registered with this
-        // server's watcher (or the server just started). DB fields, if
-        // any, are still surfaced; distinguish a queryable indexed project
-        // from one that has never published a revision.
+        // server's watcher (or the server just started). Database fields,
+        // if any, are still surfaced; distinguish a queryable indexed
+        // project from one that has never published a revision.
         None if revision_id.is_some() => HealthPhase::IndexedUnwatched,
         None => HealthPhase::NoActiveProject,
     };
@@ -283,123 +315,109 @@ fn compute_project_state(
     Ok(ProjectHealthFields {
         phase,
         remedy: None,
-        watcher_health: snapshot.as_ref().map(|s| s.health),
-        pending_dirty: snapshot.as_ref().map(|s| s.dirty_paths.len()),
-        pending_deleted: snapshot.as_ref().map(|s| s.deleted_paths.len()),
-        watcher_sequence: snapshot.as_ref().map(|s| s.watcher_sequence),
-        last_verified_sequence: snapshot.as_ref().map(|s| s.last_verified_sequence),
-        revision_id,
-        parser_pack_version,
-        file_count,
-        skipped_file_count,
+        watcher: snapshot.as_ref().map(|s| WatcherState {
+            health: s.health,
+            pending_dirty: s.dirty_paths.len(),
+            pending_deleted: s.deleted_paths.len(),
+            sequence: s.watcher_sequence,
+            last_verified_sequence: s.last_verified_sequence,
+        }),
+        database,
     })
 }
 
-/// The field set for a `path` with no activation marker: nothing to
-/// report but the phase and the way out of it. Every other slot is
-/// `None`/`-1` for the same reason it is on the never-synced path — this
-/// server has no database to open for that path.
-fn disabled_project_fields() -> ProjectHealthFields {
+/// The field set for a project this server is not serving: nothing to
+/// report but the phase and the way out of it. Both per-project groups are
+/// absent for the same reason — there is no watcher to ask and no database
+/// to open.
+///
+/// The two callers reach this with the same absence and differ only in
+/// which phase names it: `Disabled` when the path has no activation
+/// marker, `NoActiveProject` when no path was supplied and nothing is
+/// registered. The remedy is the same either way.
+fn inactive_fields(phase: HealthPhase) -> ProjectHealthFields {
     ProjectHealthFields {
-        phase: HealthPhase::Disabled,
+        phase,
         remedy: Some(ErrorCode::ProjectNotEnabled.remedy().to_owned()),
-        watcher_health: None,
-        pending_dirty: None,
-        pending_deleted: None,
-        watcher_sequence: None,
-        last_verified_sequence: None,
-        revision_id: None,
-        parser_pack_version: None,
-        file_count: -1,
-        skipped_file_count: -1,
+        watcher: None,
+        database: None,
     }
 }
 
-/// The field set when the caller supplied no `path` and this server has no
-/// project registered at all: nothing is active, and the same remedy the
-/// not-enabled errors carry tells the caller how to start one.
-fn no_active_project_fields() -> ProjectHealthFields {
-    ProjectHealthFields {
-        phase: HealthPhase::NoActiveProject,
-        remedy: Some(ErrorCode::ProjectNotEnabled.remedy().to_owned()),
-        watcher_health: None,
-        pending_dirty: None,
-        pending_deleted: None,
-        watcher_sequence: None,
-        last_verified_sequence: None,
-        revision_id: None,
-        parser_pack_version: None,
-        file_count: -1,
-        skipped_file_count: -1,
-    }
-}
-
-/// Reads the DB-derived health fields read-only, degrading gracefully when
-/// the database doesn't exist yet (project enabled but never synced) or
-/// can't be opened — a health check must never fail on transient DB state.
-/// The open failure is logged (unlike the never-synced case, which is an
-/// expected, silent `-1`/`None`), so an operator investigating a health
-/// payload full of empty fields can distinguish "not synced yet" from
-/// "the database is unreadable" (permissions, corruption, symlink, NFS).
-fn read_database_fields(
-    database_path: &std::path::Path,
-) -> (Option<String>, Option<String>, i64, i64) {
+/// Reads the database state read-only, degrading gracefully when the
+/// database doesn't exist yet (project enabled but never synced) or can't
+/// be read — a health check must never fail on transient DB state.
+///
+/// A read failure is logged (unlike the never-synced case, which is an
+/// expected, silent absence), so an operator looking at a payload full of
+/// empty fields can tell "not synced yet" from "the database is unreadable"
+/// (permissions, corruption, symlink, NFS).
+fn read_database(database_path: &std::path::Path) -> Option<DatabaseState> {
     if !database_path.exists() {
-        return (None, None, -1, -1);
+        return None;
     }
     let mut connection = match store::open_read_only(database_path) {
         Ok(connection) => connection,
         Err(error) => {
             tracing::warn!(
-                database_path = %database_path.display(),
+                database_id = %crate::util::redacted_path(database_path),
                 error = %error,
                 "health: failed to open the project database read-only; \
                  reporting empty database fields",
             );
-            return (None, None, -1, -1);
+            return None;
         }
     };
-    let revision_id = current_revision_id(&mut connection);
-    let parser_pack_version = current_parser_pack_version(&mut connection);
-    let file_count = match count_files(&mut connection) {
-        Ok(count) => count,
+    match query_database_state(&mut connection) {
+        Ok(state) => Some(state),
         Err(error) => {
             tracing::warn!(
-                database_path = %database_path.display(),
+                database_id = %crate::util::redacted_path(database_path),
                 error = %error,
-                "health: file count query failed",
+                "health: failed to read the project database; \
+                 reporting empty database fields",
             );
-            -1
+            None
         }
-    };
-    let skipped_file_count = match count_skipped_files(&mut connection) {
-        Ok(count) => count,
-        Err(error) => {
-            tracing::warn!(
-                database_path = %database_path.display(),
-                error = %error,
-                "health: skipped file count query failed",
-            );
-            -1
-        }
-    };
-    (
+    }
+}
+
+/// Runs every query a health read needs, propagating errors instead of
+/// swallowing them. `read_database` turns any one failure into a single
+/// absent state, so an unreadable table can't yield a partial answer.
+fn query_database_state(connection: &mut rusqlite::Connection) -> rusqlite::Result<DatabaseState> {
+    let (revision_id, parser_pack_version) = read_revision_fields(connection)?;
+    Ok(DatabaseState {
         revision_id,
         parser_pack_version,
-        file_count,
-        skipped_file_count,
-    )
+        file_count: count_files(connection)?,
+        skipped_file_count: count_skipped_files(connection)?,
+    })
+}
+
+/// The two revision columns `health` reports, from the single row the
+/// schema guarantees (`idx_revisions_single_current`). `None` when nothing
+/// has been published yet; a query error propagates to the caller.
+fn read_revision_fields(
+    connection: &mut rusqlite::Connection,
+) -> rusqlite::Result<(Option<String>, Option<String>)> {
+    Ok(connection
+        .query_row(
+            "SELECT revision_id, parser_pack_version FROM revisions WHERE is_current = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .unwrap_or((None, None)))
 }
 
 /// Builds a per-project field set from the global state only — no
 /// `ensure_synced`, no database call. Used when the caller passed no
-/// `path`. Snapshot shape matches `compute_project_state`; the
-/// revision/parser-pack/file-count slots are `None` / `-1` because
-/// we never opened the database in this codepath.
+/// `path`. `database` is absent because this codepath never opens one.
 fn compute_global_only_state(manager: &sync::SourceSyncManager) -> ProjectHealthFields {
     let snapshots = manager.watch_states_snapshot();
     if snapshots.is_empty() {
-        return no_active_project_fields();
+        return inactive_fields(HealthPhase::NoActiveProject);
     }
     // In the current single-active-project model, snapshots has one
     // entry; reduce it to the reported fields. Future multi-project
@@ -411,21 +429,20 @@ fn compute_global_only_state(manager: &sync::SourceSyncManager) -> ProjectHealth
     // panic in production code" invariant literal rather than relying
     // on the guard staying in place.
     let Some(snapshot) = snapshots.into_iter().next() else {
-        return no_active_project_fields();
+        return inactive_fields(HealthPhase::NoActiveProject);
     };
     let phase = derive_phase(snapshot.health, &None, snapshot.has_unreconciled_events());
     ProjectHealthFields {
         phase,
         remedy: None,
-        watcher_health: Some(snapshot.health),
-        pending_dirty: Some(snapshot.dirty_paths.len()),
-        pending_deleted: Some(snapshot.deleted_paths.len()),
-        watcher_sequence: Some(snapshot.watcher_sequence),
-        last_verified_sequence: Some(snapshot.last_verified_sequence),
-        revision_id: None,
-        parser_pack_version: None,
-        file_count: -1,
-        skipped_file_count: -1,
+        watcher: Some(WatcherState {
+            health: snapshot.health,
+            pending_dirty: snapshot.dirty_paths.len(),
+            pending_deleted: snapshot.deleted_paths.len(),
+            sequence: snapshot.watcher_sequence,
+            last_verified_sequence: snapshot.last_verified_sequence,
+        }),
+        database: None,
     }
 }
 
@@ -453,30 +470,6 @@ fn derive_phase(
             }
         }
     }
-}
-
-fn current_revision_id(connection: &mut rusqlite::Connection) -> Option<String> {
-    connection
-        .query_row(
-            "SELECT revision_id FROM revisions WHERE is_current = 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .ok()
-        .flatten()
-}
-
-fn current_parser_pack_version(connection: &mut rusqlite::Connection) -> Option<String> {
-    connection
-        .query_row(
-            "SELECT parser_pack_version FROM revisions WHERE is_current = 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .ok()
-        .flatten()
 }
 
 /// `count(*)` over every row in `files`, including skipped rows.

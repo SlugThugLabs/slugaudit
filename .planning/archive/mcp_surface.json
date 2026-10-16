@@ -263,8 +263,42 @@
       "name": "health",
       "outputSchema": {
         "$defs": {
+          "DatabaseState": {
+            "description": "What the project database holds.\n\nRead as one unit: one failed query leaves the whole object absent rather\nthan producing a revision alongside a count that didn't come back, so a\ncaller never has to detect a half-read answer — there isn't one to\ndetect. That is also why no field here is a sentinel: absence is the\n`None` on [`HealthResponse::database`], not a magic number inside it.",
+            "properties": {
+              "file_count": {
+                "description": "Files in the database — every discovered file, including rows with\n`file_kind = 'skipped'`; `skipped_file_count` breaks those out.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "parser_pack_version": {
+                "description": "Parser pack version stored on the current revision. `None` if no\nrevision has been published yet.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "revision_id": {
+                "description": "`revision_id` of the current revision. `None` if nothing has been\npublished yet.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "skipped_file_count": {
+                "description": "Of `file_count`, how many rows were discovered but never read\n(`file_kind = 'skipped'`: oversize or unreadable), so they hold no\ncontent. `file_count - skipped_file_count` is the number of files\nthat were actually read.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "file_count",
+              "skipped_file_count"
+            ],
+            "type": "object"
+          },
           "HealthPhase": {
-            "description": "Coarse-grained operational phase. Derived from existing state rather\nthan tracked separately so it can't drift.\n\n- `Importing`: no current revision — the first sync has never succeeded.\n- `Restoring`: watcher is `NeedsVerification` or `Desynced`; the next\n  call will do a full verification rather than incremental reconcile.\n- `SteadyState`: watcher `Healthy`, no unreconciled events, a current\n  revision exists, the project is fully served from disk.\n- `Unavailable`: watcher could not be initialized; every call will\n  full-publish.\n- `NoActiveProject`: server has been initialized but no `ensure_current`\n  call has succeeded, so the watcher state can't be summarized.\n- `IndexedUnwatched`: the enabled project has a published revision in its\\n///   database, but this server has no registered watcher for that path.\\n///   Indexed evidence remains readable; no watcher health is implied.\\n/// - `Disabled`: `request.path` resolved to no enabled project — the\n  activation marker is absent — so nothing can serve that path until\n  `project_control` enables it. `remedy` names that call. This is a\n  state, not an error: a diagnostic tool that fails when there is\n  nothing to diagnose is useless.",
+            "description": "Coarse-grained operational phase. Derived from existing state rather\nthan tracked separately so it can't drift.\n\n- `Importing`: no current revision — the first sync has never succeeded.\n- `Restoring`: watcher is `NeedsVerification` or `Desynced`; the next\n  call will do a full verification rather than incremental reconcile.\n- `SteadyState`: watcher `Healthy`, no unreconciled events, a current\n  revision exists, the project is fully served from disk.\n- `Unavailable`: watcher could not be initialized; every call will\n  full-publish.\n- `NoActiveProject`: server has been initialized but no `ensure_current`\n  call has succeeded, so the watcher state can't be summarized.\n- `IndexedUnwatched`: the enabled project has a published revision in\n  its database, but this server has no registered watcher for that path.\n  Indexed evidence remains readable; no watcher health is implied.\n- `Disabled`: `request.path` resolved to no enabled project — the\n  activation marker is absent — so nothing can serve that path until\n  `project_control` enables it. `remedy` names that call. This is a\n  state, not an error: a diagnostic tool that fails when there is\n  nothing to diagnose is useless.",
             "enum": [
               "importing",
               "restoring",
@@ -275,6 +309,55 @@
               "disabled"
             ],
             "type": "string"
+          },
+          "ServerCounters": {
+            "description": "Counters for this server process since it started.\n\nOperational instrumentation: these exist so the tool's own behaviour can\nbe measured over time. Nothing here is something a caller acts on, which\nis why they share one object and drive no `phase` or `remedy`.",
+            "properties": {
+              "consecutive_full_publishes": {
+                "description": "How many consecutive full publishes (untrusted-watcher or\nUnavailable-path verifications) have run since the last successful\nincremental reconcile. A value that persists at 1+ across calls\nmeans the watcher is not being trusted — e.g. Linux inotify\n`fs.inotify.max_user_watches` overflow forcing `Desynced` — so\nevery tool call full-publishes. See the full-publish runbook\nin `docs/TROUBLESHOOTING.md`.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "last_sync_duration_ms": {
+                "description": "Duration of the most recent successful `ensure_current`, in\nmilliseconds. Zero before the first sync.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "last_sync_unix_seconds": {
+                "description": "Unix-epoch seconds of the most recent successful `ensure_current`\nacross the entire server's lifetime. Zero before the first sync.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "tool_call_count": {
+                "description": "Total tool calls served since process start.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "tool_call_error_count": {
+                "description": "Total tool calls that returned any `ErrorData` since process start.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "tool_call_total_ms": {
+                "description": "Sum of every tool call's work duration, in milliseconds.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "tool_call_count",
+              "tool_call_error_count",
+              "tool_call_total_ms",
+              "last_sync_unix_seconds",
+              "last_sync_duration_ms",
+              "consecutive_full_publishes"
+            ],
+            "type": "object"
           },
           "SystemMemoryInfo": {
             "properties": {
@@ -319,65 +402,61 @@
                 "type": "string"
               }
             ]
+          },
+          "WatcherState": {
+            "description": "The watcher's view of the supervised project.",
+            "properties": {
+              "health": {
+                "$ref": "#/$defs/WatcherHealth",
+                "description": "Current watcher health."
+              },
+              "last_verified_sequence": {
+                "description": "The sequence acknowledged by the most recent reconcile.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "pending_deleted": {
+                "description": "Unreconciled deleted paths.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "pending_dirty": {
+                "description": "Unreconciled dirty paths — modified or created since the last\nsuccessful reconcile.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "sequence": {
+                "description": "The watcher's monotonic event sequence.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "health",
+              "pending_dirty",
+              "pending_deleted",
+              "sequence",
+              "last_verified_sequence"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
-          "consecutive_full_publishes": {
-            "description": "How many consecutive full publishes (untrusted-watcher or\nUnavailable-path verifications) have run since the last successful\nincremental reconcile. A value that persists at 1+ across calls\nmeans the watcher is not being trusted — e.g. Linux inotify\n`fs.inotify.max_user_watches` overflow forcing `Desynced` — so\nevery tool call full-publishes. See the full-publish runbook\nin `docs/TROUBLESHOOTING.md`.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "file_count": {
-            "description": "File count in the active project's database. `-1` if no project is\nactive or the count query failed (use this rather than\n`Option<i64>` so consumers can render a single JSON number). Counts\nevery discovered file, including rows with `file_kind = 'skipped'` —\n`skipped_file_count` breaks those out.",
-            "format": "int64",
-            "type": "integer"
-          },
-          "last_sync_duration_ms": {
-            "description": "Duration of the most recent successful `ensure_current`, in\nmilliseconds. Zero before the first sync.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "last_sync_unix_seconds": {
-            "description": "Unix-epoch seconds of the most recent successful `ensure_current`\nacross the entire server's lifetime. Zero before the first sync.",
-            "format": "int64",
-            "type": "integer"
-          },
-          "last_verified_sequence": {
-            "description": "Sequence acknowledged by the most recent reconcile. `None` if no\nproject is active.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "parser_pack_version": {
-            "description": "Parser pack version stored on the current revision. `None` if no\nrevision has been published yet.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "pending_deleted": {
-            "description": "Number of unreconciled deleted paths. `None` if no project is active.",
-            "format": "uint",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "pending_dirty": {
-            "description": "Number of unreconciled dirty paths (modified or created since\nthe last successful reconcile). `None` if no project is active.",
-            "format": "uint",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
+          "database": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DatabaseState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the project database holds. `None` if the project has never\nbeen synced, or if the database could not be read. Either every\nfield inside is present or the whole object is absent: a partial\nread is not representable, so no number here is ever a placeholder."
           },
           "phase": {
             "$ref": "#/$defs/HealthPhase",
@@ -390,72 +469,30 @@
               "null"
             ]
           },
-          "revision_id": {
-            "description": "`revision_id` of the active project's current revision. `None`\nif no project is active or the database hasn't been published to.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "skipped_file_count": {
-            "description": "Of `file_count`, how many rows were discovered but never read\n(`file_kind = 'skipped'`: oversize or unreadable), so they hold no\ncontent. `-1` when the count is unavailable for the same reasons as\n`file_count`. `file_count - skipped_file_count` is the number of\nfiles that were actually read.",
-            "format": "int64",
-            "type": "integer"
+          "server": {
+            "$ref": "#/$defs/ServerCounters",
+            "description": "What this server process has done since it started."
           },
           "system_memory": {
             "$ref": "#/$defs/SystemMemoryInfo",
-            "description": "Host physical and available memory info."
+            "description": "Host physical and available memory. Reported because it sets the\nadaptive profile's import budget (`src/model/profile.rs`), so a\ncaller that trips `max_total_import_bytes` can see what sized it."
           },
-          "tool_call_count": {
-            "description": "Total tool calls served since process start.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "tool_call_error_count": {
-            "description": "Total tool calls that returned any `ErrorData` since process start.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "tool_call_total_ms": {
-            "description": "Sum of every tool call's work duration, in milliseconds.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "watcher_health": {
+          "watcher": {
             "anyOf": [
               {
-                "$ref": "#/$defs/WatcherHealth"
+                "$ref": "#/$defs/WatcherState"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "Watcher health for the supervised project. `None` only if no\nproject is currently registered with the server."
-          },
-          "watcher_sequence": {
-            "description": "Watcher's monotonic event sequence. `None` if no project is active.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
+            "description": "What the filesystem watcher knows about the supervised project.\n`None` only if no project is currently registered with the server.\nThe fields are one object because they become unknowable together —\nthere is no state in which half of them exist."
           }
         },
         "required": [
           "phase",
-          "last_sync_unix_seconds",
-          "last_sync_duration_ms",
-          "file_count",
-          "skipped_file_count",
-          "tool_call_count",
-          "tool_call_error_count",
-          "tool_call_total_ms",
-          "system_memory",
-          "consecutive_full_publishes"
+          "server",
+          "system_memory"
         ],
         "type": "object"
       },

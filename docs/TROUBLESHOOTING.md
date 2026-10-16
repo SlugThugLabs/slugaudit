@@ -25,13 +25,13 @@ it reports (`src/tools/health.rs:170-176`).
 So a call that walks the whole tree when nothing or little changed means the
 watcher is not being trusted, or does not exist.
 
-**Signal.** The `health` response's `consecutive_full_publishes` field. It
+**Signal.** The `health` response's `server.consecutive_full_publishes` field. It
 increments on every full publish and resets to 0 on a successful incremental
-reconcile (`src/sync/manager.rs:71-80`, `:117-134`;
-`src/tools/health.rs:97-99`). **A value that stays at 1 or more across calls,
+reconcile (`src/sync/manager.rs:140-148`;
+`src/tools/health.rs:163`). **A value that stays at 1 or more across calls,
 instead of returning to 0, means every call is paying the full-publish cost.**
-`watcher_health` and `phase` in the same response tell you which state caused
-it (`src/tools/health.rs:54-57`, `:116-121`): `desynced` maps to phase
+`watcher.health` and `phase` in the same response tell you which state caused
+it (`src/tools/health.rs:82`, `:459-467`): `desynced` maps to phase
 `restoring`, `unavailable` to phase `unavailable`.
 
 ### Inotify watch exhaustion (Linux)
