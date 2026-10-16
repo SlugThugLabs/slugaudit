@@ -14,11 +14,12 @@
 
 mod common;
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use slugaudit_mcp_rust::progress::NoopProgressSink;
 use slugaudit_mcp_rust::project::{ProjectRoot, database_path};
 use slugaudit_mcp_rust::store;
 use slugaudit_mcp_rust::sync::SourceSyncManager;
+use std::hint::black_box;
 use std::path::PathBuf;
 
 /// A synced fixture whose temp dir is kept alive for the whole group.

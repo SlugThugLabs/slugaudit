@@ -547,7 +547,7 @@ fn compact_paging_reports_a_cumulative_file_denominator() {
 
     let mut rest = compact_request(project.path(), None);
     rest.offset = first.next_offset;
-    rest.expected_revision = Some(first.revision_id.clone());
+    rest.expected_revision = Some(first.revision_id);
     let rest = run(rest);
     assert_eq!((rest.returned, rest.complete), (2, true));
     assert_eq!((rest.files_covered, rest.files_total), (2, 2));

@@ -18,9 +18,9 @@ use crate::tools;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{
-    Implementation, ListResourcesResult, PaginatedRequestParams, ProtocolVersion,
+    Implementation, InitializeResult, ListResourcesResult, PaginatedRequestParams, ProtocolVersion,
     ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, RequestMetaObject,
-    ServerCapabilities, ServerInfo,
+    ServerCapabilities,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, Peer, RoleServer, ServerHandler, tool, tool_handler, tool_router};
@@ -395,8 +395,8 @@ impl SlugAuditServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for SlugAuditServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
+    fn get_info(&self) -> InitializeResult {
+        InitializeResult::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()

@@ -40,7 +40,7 @@ fn verified_read_fails_cleanly_on_a_corrupt_database() {
     let database_path = directory.path().join("project.db");
     std::fs::write(&database_path, b"this is not a sqlite database").expect("write corrupt db");
     let handle = SyncedProject {
-        database_path: database_path.clone(),
+        database_path,
         revision_id: "rev-1".to_owned(),
     };
 

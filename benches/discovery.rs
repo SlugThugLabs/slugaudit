@@ -7,8 +7,9 @@
 
 mod common;
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use slugaudit_mcp_rust::sync::{FileKind, discover, hash_file};
+use std::hint::black_box;
 
 fn walk(root: &std::path::Path) -> usize {
     let (files, skipped) = discover(root).expect("discover");

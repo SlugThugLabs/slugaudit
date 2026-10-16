@@ -233,7 +233,7 @@ fn a_stale_project_root_is_discarded_and_rebuilt_on_the_next_sync() {
         let conn = crate::store::open_read_write(&database).expect("open db");
         conn.execute(
             "UPDATE project SET root_path = ?1 WHERE id = 1",
-            [stale_root.clone()],
+            [stale_root],
         )
         .expect("rewrite stored root");
     }

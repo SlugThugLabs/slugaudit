@@ -152,9 +152,7 @@ pub(super) fn extract_reference(
         // exists; bare names (`use strict;`) are untouched and stay
         // External.
         let module = module.replace("::", ".").replace('\\', ".");
-        return Some(ImportReference {
-            text: module.to_owned(),
-        });
+        return Some(ImportReference { text: module });
     }
 
     // OCaml `open Printf` / `open Util`.

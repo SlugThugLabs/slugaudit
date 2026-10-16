@@ -10,6 +10,9 @@ use crate::model::{
     saturating_u32,
 };
 use serde_json::json;
+use std::collections::HashSet;
+
+mod macro_calls;
 use tree_sitter_language_pack::Node;
 
 const RUST_CALL_KINDS: &[&str] = &["call_expression", "macro_invocation"];
@@ -33,11 +36,24 @@ pub(crate) fn extract_rust(source: &str) -> Vec<EvidenceItem> {
     };
     let mut items = Vec::new();
     let mut counter = 0usize;
-    walk(tree.root_node(), source, &mut items, &mut counter);
+    let mut seen = HashSet::new();
+    walk(
+        tree.root_node(),
+        source,
+        &mut items,
+        &mut counter,
+        &mut seen,
+    );
     items
 }
 
-fn walk(node: Node, source: &str, items: &mut Vec<EvidenceItem>, counter: &mut usize) {
+fn walk(
+    node: Node,
+    source: &str,
+    items: &mut Vec<EvidenceItem>,
+    counter: &mut usize,
+    seen: &mut HashSet<(usize, usize)>,
+) {
     if RUST_CALL_KINDS.contains(&node.kind().as_str()) {
         let macro_call = node.kind() == "macro_invocation";
         let callee = callee_node(&node, macro_call);
@@ -58,23 +74,34 @@ fn walk(node: Node, source: &str, items: &mut Vec<EvidenceItem>, counter: &mut u
         };
         let key = format!("call:{counter}");
         *counter += 1;
-        items.push(EvidenceItem {
-            key,
-            kind: EvidenceKind::Call,
-            origin: EvidenceOrigin::RustCallWalker,
-            span: node_span(&node, source),
-            payload: json!({
-                "language": "rust",
-                "callee_text": callee_text,
-                "callee_name": callee_name,
-                "caller": caller,
-                "resolution": resolution,
-                "confidence": confidence,
-            }),
-        });
+        if seen.insert((node.start_byte(), node.end_byte())) {
+            items.push(EvidenceItem {
+                key,
+                kind: EvidenceKind::Call,
+                origin: EvidenceOrigin::RustCallWalker,
+                span: node_span(&node, source),
+                payload: json!({
+                    "language": "rust",
+                    "callee_text": callee_text,
+                    "callee_name": callee_name,
+                    "caller": caller,
+                    "resolution": resolution,
+                    "confidence": confidence,
+                }),
+            });
+        }
+        if macro_call {
+            for (start, end, mut item) in macro_calls::extract(&node, source) {
+                if seen.insert((start, end)) {
+                    item.key = format!("call:{counter}");
+                    *counter += 1;
+                    items.push(item);
+                }
+            }
+        }
     }
     for child in named_children(&node) {
-        walk(child, source, items, counter);
+        walk(child, source, items, counter, seen);
     }
 }
 
