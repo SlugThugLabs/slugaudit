@@ -22,7 +22,9 @@
 use std::process::{Command, ExitCode};
 
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned());
     // Default threshold is the measured line coverage as of the
     // 2026-08-12 /coverage-gate-recalibrated decision. The gate's intent
     // is "catch coverage regressions, not block on them", so it tracks

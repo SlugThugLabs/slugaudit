@@ -40,7 +40,10 @@ const DEFAULT_THRESHOLD_PCT: f64 = 20.0;
 fn main() -> std::process::ExitCode {
     let mut record = false;
     let mut threshold_pct = DEFAULT_THRESHOLD_PCT;
-    for arg in std::env::args().skip(1) {
+    for arg in std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+    {
         match arg.as_str() {
             "--record" => record = true,
             "--help" => {

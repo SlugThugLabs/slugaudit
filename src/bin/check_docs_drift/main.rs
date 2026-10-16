@@ -37,7 +37,9 @@ use module_map::check_module_map;
 use test_file_count::check_test_file_count;
 
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned());
     let mut project_root = std::env::current_dir().unwrap_or_else(|error| {
         eprintln!("docs-drift: cannot determine project root: {error}");
         std::process::exit(2);

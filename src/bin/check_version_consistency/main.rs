@@ -37,7 +37,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned());
     let mut root = match std::env::current_dir() {
         Ok(dir) => dir,
         Err(error) => {

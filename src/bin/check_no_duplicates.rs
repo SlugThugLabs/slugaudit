@@ -22,7 +22,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned());
     let Ok(mut project_root) = std::env::current_dir() else {
         eprintln!("cannot determine the current directory");
         return ExitCode::from(2);

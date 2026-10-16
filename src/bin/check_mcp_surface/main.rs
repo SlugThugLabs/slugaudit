@@ -51,7 +51,9 @@ fn main() -> std::process::ExitCode {
         }
     };
     let mut should_record = false;
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned());
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--help" => {
