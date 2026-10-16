@@ -83,6 +83,18 @@ fn unterminated_char_literal_falls_through() {
 }
 
 #[test]
+fn non_ascii_code_is_scanned_without_slicing_inside_a_char() {
+    let source = "let tree = \"├──\"; let x = 'é'; // ├\nfn r() {}\n";
+
+    let lines = code_lines(source);
+
+    assert_eq!(
+        lines, 2,
+        "multi-byte chars must not split or panic the scan"
+    );
+}
+
+#[test]
 fn code_after_end_of_line_comment_counts() {
     assert_eq!(code_lines("// hdr\nfn x() {}\n"), 1);
 }

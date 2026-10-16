@@ -5,7 +5,6 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 //! Performance regression gate.
-// slugaudit-line-exception: approved-by=slugthug; reason=criterion invocation argv, per-row regression comparison with budget tracking, and the verdict/warning/failure printer share one process so the bin's single user-visible CLI output stays coherent; extracting the comparison loop would force cross-module state for the baseline-entry budget fields and duplicate the threshold + record-mode arg parsing
 //!
 //! Replaces `tools/check_performance.sh`. Runs the discovery, parsing,
 //! and search criterion benches with a reduced sample size (fast enough
@@ -22,285 +21,107 @@
 //! bench` is invoked through `std::process::Command`; estimate JSONs
 //! are parsed with `serde_json` (already a dependency).
 //!
+//! Module split: `args` (CLI), `bench` (produce measurements), `estimates`
+//! (read criterion output and the baseline), `compare` (pure verdicts),
+//! `record` (rewrite the baseline), `format` (print).
+//!
 //! Usage: `cargo run --bin check_performance --locked [--record] [threshold-percent]`
 //!   --record: regenerate `.planning/archive/perf_baseline.json` from this run.
 //!   threshold: regression threshold percent (default 20).
 
+mod args;
+mod bench;
+mod compare;
 mod estimates;
 mod format;
+mod record;
 
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
 
+use std::path::Path;
+use std::process::ExitCode;
+
+use args::{Command, Options};
+
 const BASELINE_PATH: &str = ".planning/archive/perf_baseline.json";
 const CRITERION_DIR: &str = "target/criterion";
 const DEFAULT_THRESHOLD_PCT: f64 = 20.0;
 
-fn main() -> std::process::ExitCode {
-    let mut record = false;
-    let mut threshold_pct = DEFAULT_THRESHOLD_PCT;
-    for arg in std::env::args_os()
-        .skip(1)
-        .map(|arg| arg.to_string_lossy().into_owned())
-    {
-        match arg.as_str() {
-            "--record" => record = true,
-            "--help" => {
-                println!(
-                    "Performance regression gate. Usage: check_performance [--record] [threshold_percent]"
-                );
-                return std::process::ExitCode::SUCCESS;
-            }
-            other => match other.parse::<f64>() {
-                Ok(n) => threshold_pct = n,
-                Err(err) => {
-                    eprintln!("threshold {other:?} is not a number: {err}");
-                    return std::process::ExitCode::from(2);
-                }
-            },
+fn main() -> ExitCode {
+    let options = match args::parse(
+        std::env::args_os()
+            .skip(1)
+            .map(|arg| arg.to_string_lossy().into_owned()),
+    ) {
+        Ok(Command::Run(options)) => options,
+        Ok(Command::Help) => {
+            println!(
+                "Performance regression gate. Usage: check_performance [--record] [threshold_percent]"
+            );
+            return ExitCode::SUCCESS;
         }
-    }
-
-    use std::path::PathBuf;
-    let baseline_path = PathBuf::from(BASELINE_PATH);
-    if !record && !baseline_path.exists() {
-        eprintln!(
-            "FAIL: no baseline at {BASELINE_PATH}; run 'cargo run --bin check_performance -- --record' first"
-        );
-        return std::process::ExitCode::from(1);
-    }
-
-    // Clean stale criterion outputs — never trust the previous run's
-    // numbers; only the freshly produced `new/estimates.json` files.
-    // A failed cleanup must stop the run: a leftover `new/estimates.json`
-    // would otherwise be harvested as this run's measurement.
-    match std::fs::remove_dir_all(CRITERION_DIR) {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => {
-            eprintln!("FAIL: could not clear stale criterion output {CRITERION_DIR}: {err}");
-            return std::process::ExitCode::from(1);
-        }
-    }
-
-    let status = std::process::Command::new("cargo")
-        .args([
-            "bench",
-            "--locked",
-            "--bench",
-            "discovery",
-            "--bench",
-            "parsing",
-            "--bench",
-            "search",
-            "--",
-            "--sample-size",
-            "15",
-            "--warm-up-time",
-            "0.5",
-            "--measurement-time",
-            "3",
-        ])
-        .status();
-    let status = match status {
-        Ok(s) => s,
-        Err(err) => {
-            eprintln!("FAIL: failed to invoke cargo bench: {err}");
-            return std::process::ExitCode::from(1);
+        Err(usage) => {
+            eprintln!("{usage}");
+            return ExitCode::from(2);
         }
     };
-    if !status.success() {
-        eprintln!("FAIL: cargo bench did not complete: {status}");
-        return std::process::ExitCode::from(1);
-    }
-
-    let new_benches = match estimates::collect_new_benches() {
-        Ok(m) => m,
+    match run(&options) {
+        Ok(code) => code,
         Err(err) => {
             eprintln!("FAIL: {err}");
-            return std::process::ExitCode::from(1);
+            ExitCode::from(1)
         }
-    };
-    if new_benches.is_empty() {
-        eprintln!("FAIL: no criterion estimates found under {CRITERION_DIR}");
-        return std::process::ExitCode::from(1);
     }
+}
 
-    let old_benches = if baseline_path.exists() {
-        match estimates::load_baseline(&baseline_path) {
-            Ok(m) => m,
-            Err(err) => {
-                eprintln!("FAIL: {err}");
-                return std::process::ExitCode::from(1);
-            }
-        }
+/// Measures, then either records the baseline or gates against it.
+fn run(options: &Options) -> Result<ExitCode, String> {
+    let baseline_path = Path::new(BASELINE_PATH);
+    if !options.record && !baseline_path.exists() {
+        return Err(format!(
+            "no baseline at {BASELINE_PATH}; run 'cargo run --bin check_performance -- --record' first"
+        ));
+    }
+    bench::run_fresh()?;
+    let measured = estimates::collect_new_benches().map_err(|err| err.to_string())?;
+    if measured.is_empty() {
+        return Err(format!(
+            "no criterion estimates found under {CRITERION_DIR}"
+        ));
+    }
+    let baseline = if baseline_path.exists() {
+        estimates::load_baseline(baseline_path)?
     } else {
         Default::default()
     };
 
-    if record {
-        let mut benches_map = serde_json::Map::new();
-        for (key, median_ns) in &new_benches {
-            let budget_ns = old_benches.get(key).and_then(|e| e.budget_ns);
-            benches_map.insert(
-                key.clone(),
-                serde_json::json!({ "median_ns": median_ns, "budget_ns": budget_ns }),
-            );
-        }
-        let out = serde_json::json!({
-            "machine": format!(
-                "current run (re-recorded {})",
-                std::env::current_dir()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default()
-            ),
-            "threshold_percent": threshold_pct,
-            "benches": serde_json::Value::Object(benches_map),
-        });
-        let serialised = match serde_json::to_string_pretty(&out) {
-            Ok(s) => s,
-            Err(err) => {
-                eprintln!("FAIL: could not serialise baseline JSON: {err}");
-                return std::process::ExitCode::from(1);
-            }
-        };
-        if let Some(parent) = baseline_path.parent()
-            && let Err(err) = std::fs::create_dir_all(parent)
-        {
-            eprintln!("FAIL: could not create {}: {err}", parent.display());
-            return std::process::ExitCode::from(1);
-        }
-        if let Err(err) = std::fs::write(&baseline_path, format!("{serialised}\n")) {
-            eprintln!(
-                "FAIL: could not write baseline {}: {err}",
-                baseline_path.display()
-            );
-            return std::process::ExitCode::from(1);
-        }
+    if options.record {
+        let machine = format!(
+            "current run (re-recorded {})",
+            std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        );
+        let json = record::baseline_json(&measured, &baseline, options.threshold_pct, &machine);
+        record::write(baseline_path, &json)?;
         println!(
             "recorded {} benchmarks to {}",
-            new_benches.len(),
+            measured.len(),
             baseline_path.display()
         );
-        return std::process::ExitCode::SUCCESS;
+        return Ok(ExitCode::SUCCESS);
     }
 
-    let mut failures: Vec<String> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
-    let mut rows: Vec<Row> = Vec::new();
-
-    for key in new_benches.keys() {
-        if !old_benches.contains_key(key) {
-            warnings.push(format!(
-                "bench {key} is not in the baseline -- run 'check_performance --record' to add it"
-            ));
-        }
-    }
-    for key in old_benches.keys() {
-        if !new_benches.contains_key(key) {
-            failures.push(format!(
-                "{key}: produced no measurements this run (did it skip?) -- the gate cannot check a bench that did not run"
-            ));
-        }
-    }
-    for (key, new_median) in &new_benches {
-        let Some(old_entry) = old_benches.get(key) else {
-            rows.push(Row {
-                key: key.clone(),
-                baseline_ns: None,
-                new_ns: *new_median,
-                ratio: None,
-                verdict: "new".to_string(),
-            });
-            continue;
-        };
-        let old_median = old_entry.median_ns;
-        let ratio = if old_median == 0 {
-            f64::INFINITY
-        } else {
-            (*new_median as f64) / (old_median as f64)
-        };
-        let mut verdict = "ok".to_string();
-        if ratio > 1.0 + threshold_pct / 100.0 {
-            verdict = "REGRESSED".to_string();
-            failures.push(format!(
-                "{key}: {:.1}% slower than baseline",
-                (ratio - 1.0) * 100.0
-            ));
-        }
-        if let Some(budget) = old_entry.budget_ns
-            && *new_median > budget
-        {
-            verdict = "OVER BUDGET".to_string();
-            failures.push(format!(
-                "{key}: {:.1} ms exceeds the {:.0} ms budget",
-                *new_median as f64 / 1e6,
-                budget as f64 / 1e6
-            ));
-        }
-        rows.push(Row {
-            key: key.clone(),
-            baseline_ns: Some(old_median),
-            new_ns: *new_median,
-            ratio: Some(ratio),
-            verdict,
-        });
-    }
-    rows.sort_by(|a, b| a.key.cmp(&b.key));
-
-    println!(
-        "perf regression check (threshold {:.0}%, baseline: {})",
-        threshold_pct,
-        baseline_path.display()
-    );
-    println!(
-        "{:<32} {:>12} {:>12} {:>7}  verdict",
-        "bench", "baseline", "measured", "ratio"
-    );
-    for row in &rows {
-        match (row.baseline_ns, row.ratio) {
-            (None, _) => println!(
-                "{:<32} {:>12} {:>12} {:>7}  {}",
-                row.key,
-                "-",
-                format::fmt_ns(row.new_ns),
-                "-",
-                row.verdict
-            ),
-            (Some(baseline), Some(ratio)) => println!(
-                "{:<32} {:>12} {:>12} {:>6.2}x  {}",
-                row.key,
-                format::fmt_ns(baseline),
-                format::fmt_ns(row.new_ns),
-                ratio,
-                row.verdict
-            ),
-            _ => {}
-        }
-    }
-
-    for warning in &warnings {
-        println!("WARN: {warning}");
-    }
-    if !failures.is_empty() {
-        for failure in &failures {
-            println!("FAIL: {failure}");
-        }
-        return std::process::ExitCode::from(1);
+    let comparison = compare::compare(&measured, &baseline, options.threshold_pct);
+    format::print_report(&comparison, options.threshold_pct, baseline_path);
+    if !comparison.failures.is_empty() {
+        return Ok(ExitCode::from(1));
     }
     println!(
         "PASS: no benchmark regressed more than {:.0}%",
-        threshold_pct
+        options.threshold_pct
     );
-    std::process::ExitCode::SUCCESS
-}
-
-#[derive(Debug, Clone)]
-struct Row {
-    key: String,
-    baseline_ns: Option<u64>,
-    new_ns: u64,
-    ratio: Option<f64>,
-    verdict: String,
+    Ok(ExitCode::SUCCESS)
 }
