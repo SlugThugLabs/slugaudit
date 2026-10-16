@@ -15,6 +15,17 @@
 //! before, and that printed table is not what the exit check compares
 //! against.
 //!
+//! Scope: the gate measures the shipped product runtime. The dev-only
+//! `src/bin/check_*` gate binaries are excluded via
+//! `--ignore-filename-regex` — AGENTS.md's "Shipped artifact vs
+//! development-only" section says a coverage audit must "not count
+//! development-only check binaries as end-user runtime code", and
+//! measuring them here while their own test files are excluded from the
+//! report left six gate mains permanently at 0% inside the denominator
+//! (892 lines, ~8 points of measured coverage). Measured product
+//! coverage at the 2026-10-16 scope change: 87.89%; the 83 floor is
+//! unchanged (measured-minus-margin). See DECISIONS 2026-10-16.
+//!
 //! Pure-Rust replacement: no Python interpreter, no shell. `cargo
 //! llvm-cov` is invoked through `std::process::Command`; the JSON
 //! report is parsed with `serde_json` (already a dependency).
@@ -48,7 +59,14 @@ fn main() -> ExitCode {
     let _ = std::fs::remove_file(&report_path);
 
     let status = Command::new("cargo")
-        .args(["llvm-cov", "--all-targets", "--all-features", "--json"])
+        .args([
+            "llvm-cov",
+            "--all-targets",
+            "--all-features",
+            "--locked",
+            "--json",
+        ])
+        .arg("--ignore-filename-regex=.*src/bin/.*")
         .arg(format!("--output-path={}", report_path.display()))
         .status();
     let status = match status {
