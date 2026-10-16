@@ -39,8 +39,12 @@ fn compare_versions_orders_numeric_releases() {
 
 #[test]
 fn compare_versions_rejects_non_numeric_local_versions() {
-    assert!(compare_versions("dev", "1.0.3").is_err());
-    assert!(compare_versions("1.0.3", "abc").is_err());
+    assert_eq!(compare_versions("dev", "1.0.3"), Err(()));
+    assert_eq!(compare_versions("1.0.3", "abc"), Err(()));
+    assert_eq!(
+        compare_versions("1.0.3", "1.0.3"),
+        Ok(std::cmp::Ordering::Equal)
+    );
 }
 
 #[test]

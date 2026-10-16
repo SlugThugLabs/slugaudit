@@ -301,7 +301,11 @@ fn a_failed_tool_call_logs_one_completion_line_marked_error() {
         },
         Level::INFO,
     );
-    assert!(result.is_err(), "the tool's error must propagate");
+    let error = result.expect_err("the tool's error must propagate");
+    assert_eq!(
+        error.message, "bad request",
+        "the tool's own error, not a wrapper"
+    );
 
     let completions = completion_lines(&logs, TOOL);
     assert_eq!(

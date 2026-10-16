@@ -270,7 +270,11 @@ fn malformed_language_value_is_reported_instead_of_dropped() {
         .expect("insert revision and file");
 
     let tx = connection.transaction().expect("begin transaction");
-    assert!(build_report(&tx, "r1".to_owned()).is_err());
+    let error = build_report(&tx, "r1".to_owned()).expect_err("malformed language");
+    let rusqlite::Error::InvalidColumnType(_, column, _) = &error else {
+        panic!("the malformed language column is named, not dropped: {error:?}");
+    };
+    assert_eq!(column, "language");
 }
 
 #[test]

@@ -290,3 +290,15 @@ fn pattern_filters_files_in_multi_file_query() {
     assert_eq!(response.matches[0].file, "src/auth/jwt.rs");
     assert_eq!(response.matches[0].text, "verify");
 }
+
+#[test]
+fn a_structure_query_against_a_binary_file_carries_the_file_not_indexed_code() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    fs::write(project.path().join("blob.dat"), b"\0\x01binary\n").expect("binary file");
+
+    let result = ask(&project, "blob.dat", "(function_item) @f");
+
+    let error = result.expect_err("a binary file has no indexed content");
+    let data = error.data.expect("a binary file carries a payload");
+    assert_eq!(data["code"], "file_not_indexed", "{}", error.message);
+}

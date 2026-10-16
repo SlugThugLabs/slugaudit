@@ -417,3 +417,22 @@ fn a_restatement_after_the_file_changed_is_a_new_row() {
     assert_eq!(finding_status(&connection, first.0.id), "stale");
     assert_eq!(finding_status(&connection, second.0.id), "current");
 }
+
+#[test]
+fn a_finding_against_a_binary_file_carries_the_file_not_indexed_code() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    fs::write(project.path().join("blob.dat"), b"\0\x01binary\n").expect("binary file");
+    let request = base_request(&project, "blob.dat");
+
+    let result = finding(
+        &Parameters(request),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    );
+
+    let Err(error) = result else {
+        panic!("a binary file has no indexed content");
+    };
+    let data = error.data.expect("a binary file carries a payload");
+    assert_eq!(data["code"], "file_not_indexed", "{}", error.message);
+}

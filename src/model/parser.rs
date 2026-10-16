@@ -172,7 +172,10 @@ mod tests {
             outcome: ParseOutcome::Succeeded,
             completeness: ExtractionCompleteness::Full,
         };
-        assert!(run.validate().is_err());
+        assert_eq!(
+            run.validate(),
+            Err("an unavailable parser cannot report a parse outcome")
+        );
     }
 
     #[test]
