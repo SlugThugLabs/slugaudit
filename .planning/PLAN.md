@@ -415,11 +415,10 @@ covering `SectionNotAnObject`, `UnknownAgent`, `InvalidChoice`, `RemoveFailed`, 
 
 ### Open — in priority order
 
-1. **`check_no_duplicates` cannot pass, and no code change fixes it.** The
-   duplicate commit subject (`style: apply rustfmt changes from CI`, twice) is
-   already in history. Needs either a history rewrite — destructive, and the
-   subject is published — or for the gate to scope itself to commits after a
-   base revision. **Owner decision.**
+1. **`check_no_duplicates` cannot pass — resolved (stale).** The gate scopes the
+   commit-subject check to `origin/main..HEAD` (or `SLUGAUDIT_CHECK_COMMITS_BASE..HEAD`)
+   since `4de8e9b`, so the published duplicate `style: apply rustfmt changes from CI`
+   is outside its range; it passes on `main` as of 2026-10-16. No history rewrite needed.
 2. **Test gaps — resolved 2026-10-16 (uncommitted).** The error-variant survey
    (enums named `*Error` under `src/`, non-bin, variant names grepped in tests) was
    re-run; every `ErrorCode` turned out tested through its wire string. Tests now name
