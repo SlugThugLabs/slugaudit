@@ -107,58 +107,31 @@ pub struct CompletenessEnvelope {
 ///
 /// Returns a database error if any of the grouped counts fails.
 pub(super) fn build(connection: &Transaction<'_>) -> Result<CompletenessEnvelope, rusqlite::Error> {
-    let mut kind_statement = connection
-        .prepare("SELECT file_kind, count(*) FROM files GROUP BY file_kind ORDER BY file_kind")?;
-    let file_kind_counts = kind_statement
-        .query_map([], |row| {
-            Ok(FileKindCount {
-                kind: row.get(0)?,
-                count: row.get(1)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(kind_statement);
-
-    let mut class_statement = connection.prepare(
-        "SELECT file_class, count(*) FROM files GROUP BY file_class ORDER BY file_class",
+    let file_kind_counts = grouped_counts(
+        connection,
+        "SELECT file_kind, count(*) FROM files GROUP BY file_kind ORDER BY file_kind",
+        |kind, count| FileKindCount { kind, count },
     )?;
-    let file_class_counts = class_statement
-        .query_map([], |row| {
-            Ok(FileClassCount {
-                class: row.get(0)?,
-                count: row.get(1)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(class_statement);
-
-    let mut reason_statement = connection.prepare(
+    let file_class_counts = grouped_counts(
+        connection,
+        "SELECT file_class, count(*) FROM files GROUP BY file_class ORDER BY file_class",
+        |class, count| FileClassCount { class, count },
+    )?;
+    let skipped_by_reason = grouped_counts(
+        connection,
         "SELECT skip_reason, count(*) FROM files WHERE file_kind = 'skipped' \
          GROUP BY skip_reason ORDER BY skip_reason",
+        |reason, count| SkipReasonCount { reason, count },
     )?;
-    let skipped_by_reason = reason_statement
-        .query_map([], |row| {
-            Ok(SkipReasonCount {
-                reason: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                count: row.get(1)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(reason_statement);
-
-    let mut completeness_statement = connection.prepare(
+    let extraction_completeness_counts = grouped_counts(
+        connection,
         "SELECT extraction_completeness, count(*) FROM files \
          GROUP BY extraction_completeness ORDER BY extraction_completeness",
+        |extraction_completeness, count| CompletenessCount {
+            extraction_completeness,
+            count,
+        },
     )?;
-    let extraction_completeness_counts = completeness_statement
-        .query_map([], |row| {
-            Ok(CompletenessCount {
-                extraction_completeness: row.get(0)?,
-                count: row.get(1)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(completeness_statement);
 
     let skipped_file_count = file_kind_counts
         .iter()
@@ -191,4 +164,22 @@ pub(super) fn build(connection: &Transaction<'_>) -> Result<CompletenessEnvelope
         evidence_capped_file_count,
         indexed_files_without_evidence,
     })
+}
+
+/// Runs a `SELECT <value>, count(*) … GROUP BY <value>` and maps each row
+/// through `make`. A NULL group value (e.g. a skipped row with no recorded
+/// `skip_reason`) becomes the empty string rather than being dropped, so the
+/// counts always sum to the rows they group.
+fn grouped_counts<T>(
+    connection: &Transaction<'_>,
+    sql: &str,
+    make: impl Fn(String, i64) -> T,
+) -> Result<Vec<T>, rusqlite::Error> {
+    let mut statement = connection.prepare(sql)?;
+    statement
+        .query_map([], |row| {
+            let value: Option<String> = row.get(0)?;
+            Ok(make(value.unwrap_or_default(), row.get(1)?))
+        })?
+        .collect()
 }

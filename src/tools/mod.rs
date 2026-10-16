@@ -30,6 +30,7 @@ mod report;
 mod report_completeness;
 mod report_edges;
 mod structure;
+mod structure_exec;
 mod structure_source;
 
 #[cfg(test)]

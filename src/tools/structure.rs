@@ -1,26 +1,23 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=the structure tool's query handling (input validation, single- and multi-file dispatch, capture execution with progress abort, and node conversion) is one cohesive concern; splitting would fragment the contract that bare no-capture queries are rejected with guidance
+//! The `structure` tool contract: request/response types, input
+//! validation, and target loading. Query execution lives in
+//! `structure_exec`.
 
-use super::context::{ensure_synced, with_verified_read};
-use crate::model::{ResourceLimits, char_column, process_limits, saturating_u32};
+use super::context::{SyncedProject, ensure_synced, with_verified_read};
+use super::structure_exec::{OutputMode, run_query};
+use crate::model::{ResourceLimits, process_limits};
 use crate::sync;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::ops::ControlFlow;
-use std::time::Instant;
-use tree_sitter::{
-    Parser, Query, QueryCursor, QueryCursorOptions, QueryCursorState, StreamingIterator,
-};
+use tree_sitter::Query;
 
 const MAX_PATH_BYTES: usize = 32 * 1024;
 const MAX_FILTER_BYTES: usize = 8 * 1024;
 
 #[cfg(test)]
 pub(super) use super::structure_source::MAX_TEXT_BYTES;
-use super::structure_source::{
-    MAX_SNIPPET_BYTES, fetch_source, fetch_sources_for_language, truncate_snippet, truncate_text,
-};
+use super::structure_source::{fetch_source, fetch_sources_for_language};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 /// A Tree-sitter query to run against one indexed file, or every indexed
@@ -108,21 +105,42 @@ fn structure_with_limits(
     sink: &dyn crate::progress::ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<StructureResponse>, ErrorData> {
-    let StructureRequest {
-        path,
-        file,
-        language,
-        pattern,
-        query,
-        full_text,
-    } = &request.0;
-    if crate::util::exceeds_input_bytes(path, MAX_PATH_BYTES) {
+    let request = &request.0;
+    validate_request(request, limits)?;
+
+    let synced = ensure_synced(&request.path, sink, manager)?;
+    let (target_language, files_to_scan) = load_targets(&synced, request)?;
+
+    let ts_language = tree_sitter_language_pack::get_language(&target_language)
+        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+    let compiled_query = Query::new(&ts_language, &request.query)
+        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+
+    let single_file = request.file.is_some();
+    let mode = OutputMode {
+        full_text: request.full_text.unwrap_or(single_file),
+        single_file,
+    };
+    let (matches, truncated) =
+        run_query(&compiled_query, &ts_language, &files_to_scan, limits, &mode)?;
+
+    Ok(Json(StructureResponse {
+        revision_id: synced.revision_id,
+        language: target_language,
+        matches,
+        truncated,
+    }))
+}
+
+/// Rejects oversized or empty inputs before any sync or parse work.
+fn validate_request(request: &StructureRequest, limits: &ResourceLimits) -> Result<(), ErrorData> {
+    if crate::util::exceeds_input_bytes(&request.path, MAX_PATH_BYTES) {
         return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
     }
     for (name, value) in [
-        ("file", file.as_deref()),
-        ("language", language.as_deref()),
-        ("pattern", pattern.as_deref()),
+        ("file", request.file.as_deref()),
+        ("language", request.language.as_deref()),
+        ("pattern", request.pattern.as_deref()),
     ] {
         if value.is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_FILTER_BYTES)) {
             return Err(ErrorData::invalid_params(
@@ -131,13 +149,13 @@ fn structure_with_limits(
             ));
         }
     }
-    if query.trim().is_empty() {
+    if request.query.trim().is_empty() {
         return Err(ErrorData::invalid_params(
             "structure query must not be empty",
             None,
         ));
     }
-    if query.len() > limits.max_structure_query_bytes {
+    if request.query.len() > limits.max_structure_query_bytes {
         return Err(ErrorData::invalid_params(
             format!(
                 "structure query exceeds {} bytes",
@@ -146,185 +164,30 @@ fn structure_with_limits(
             None,
         ));
     }
-
-    let synced = ensure_synced(path, sink, manager)?;
-    let revision_id = synced.revision_id.clone();
-
-    let (target_language, files_to_scan) = match file {
-        Some(f) => {
-            let (content, detected) = with_verified_read(&synced, |tx| fetch_source(tx, f))?;
-            (detected, vec![(f.clone(), content)])
-        }
-        None => {
-            let lang = language.as_deref().ok_or_else(|| {
-                ErrorData::invalid_params(
-                    "structure request without 'file' must specify 'language'",
-                    None,
-                )
-            })?;
-            let sources = with_verified_read(&synced, |tx| {
-                fetch_sources_for_language(tx, lang, pattern.as_deref())
-            })?;
-            (lang.to_owned(), sources)
-        }
-    };
-
-    let ts_language = tree_sitter_language_pack::get_language(&target_language)
-        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-    let compiled_query = Query::new(&ts_language, query)
-        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-
-    let is_single_file = file.is_some();
-    let want_full_text = full_text.unwrap_or(is_single_file);
-
-    let (matches, truncated) = run_query(
-        &compiled_query,
-        &ts_language,
-        &files_to_scan,
-        limits,
-        want_full_text,
-        is_single_file,
-    )?;
-
-    Ok(Json(StructureResponse {
-        revision_id,
-        language: target_language,
-        matches,
-        truncated,
-    }))
+    Ok(())
 }
 
-fn run_query(
-    compiled_query: &Query,
-    ts_language: &tree_sitter::Language,
-    files: &[(String, String)],
-    limits: &ResourceLimits,
-    want_full_text: bool,
-    is_single_file: bool,
-) -> Result<(Vec<StructureMatch>, bool), ErrorData> {
-    let capture_names = compiled_query.capture_names();
-    if capture_names.is_empty() {
-        return Err(ErrorData::invalid_params(
-            "structure query declares no @capture, so it can never return any node; add "
-                .to_owned()
-                + "one, e.g. `(function_item name: (identifier) @name)` for Rust or "
-                + "`(function_definition) @node` for Python/JS",
+/// The grammar to use and the `(path, content)` pairs to scan: the one
+/// named file (language detected from the index), or every indexed file of
+/// the requested language that matches `pattern`.
+fn load_targets(
+    synced: &SyncedProject,
+    request: &StructureRequest,
+) -> Result<(String, Vec<(String, String)>), ErrorData> {
+    if let Some(file) = &request.file {
+        let (content, detected) = with_verified_read(synced, |tx| fetch_source(tx, file))?;
+        return Ok((detected, vec![(file.clone(), content)]));
+    }
+    let language = request.language.as_deref().ok_or_else(|| {
+        ErrorData::invalid_params(
+            "structure request without 'file' must specify 'language'",
             None,
-        ));
-    }
-
-    let mut parser = Parser::new();
-    parser
-        .set_language(ts_language)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-
-    let deadline = Instant::now() + limits.max_structure_execution_time;
-    let mut timed_out = false;
-    let mut cursor = QueryCursor::new();
-    let mut matches = Vec::new();
-    let mut truncated = false;
-
-    for (file_path, content) in files {
-        if matches.len() >= limits.max_structure_matches || Instant::now() >= deadline {
-            if Instant::now() >= deadline {
-                timed_out = true;
-            }
-            truncated = true;
-            break;
-        }
-
-        let Some(tree) = parser.parse(content, None) else {
-            if is_single_file {
-                return Err(ErrorData::internal_error(
-                    "parser returned no syntax tree",
-                    None,
-                ));
-            }
-            continue;
-        };
-
-        let mut check_deadline = |_state: &QueryCursorState| -> ControlFlow<()> {
-            if Instant::now() >= deadline {
-                timed_out = true;
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        };
-        let options = QueryCursorOptions::new().progress_callback(&mut check_deadline);
-
-        let mut captures = cursor.captures_with_options(
-            compiled_query,
-            tree.root_node(),
-            content.as_bytes(),
-            options,
-        );
-        while matches.len() < limits.max_structure_matches
-            && let Some((query_match, capture_index)) = captures.next()
-        {
-            let capture = query_match.captures[*capture_index];
-            matches.push(node_to_match(
-                file_path,
-                capture.node,
-                content,
-                capture_names,
-                capture.index as usize,
-                want_full_text,
-            ));
-        }
-        if captures.next().is_some() {
-            truncated = true;
-            break;
-        }
-        if timed_out {
-            break;
-        }
-    }
-
-    if timed_out {
-        return Err(ErrorData::invalid_params(
-            "structure query exceeded its execution time budget",
-            None,
-        ));
-    }
-    Ok((matches, truncated))
-}
-
-fn node_to_match(
-    file: &str,
-    node: tree_sitter::Node<'_>,
-    content: &str,
-    capture_names: &[&str],
-    capture_ix: usize,
-    want_full_text: bool,
-) -> StructureMatch {
-    let (node_text, text_extraction_failed) = match node.utf8_text(content.as_bytes()) {
-        Ok(text) => (text, false),
-        Err(_) => ("", true),
-    };
-    let (text, text_truncated) = if want_full_text {
-        truncate_text(node_text)
-    } else {
-        truncate_snippet(node_text, MAX_SNIPPET_BYTES)
-    };
-    let (capture_name, capture_name_missing) = match capture_names.get(capture_ix) {
-        Some(name) => ((*name).to_owned(), false),
-        None => (String::new(), true),
-    };
-    StructureMatch {
-        file: file.to_owned(),
-        capture_name,
-        node_kind: node.kind().to_owned(),
-        start_byte: node.start_byte() as u64,
-        end_byte: node.end_byte() as u64,
-        start_line: saturating_u32(node.start_position().row),
-        start_column: char_column(content, node.start_byte()),
-        end_line: saturating_u32(node.end_position().row),
-        end_column: char_column(content, node.end_byte()),
-        text,
-        text_truncated,
-        extraction_failed: text_extraction_failed || capture_name_missing,
-    }
+        )
+    })?;
+    let sources = with_verified_read(synced, |tx| {
+        fetch_sources_for_language(tx, language, request.pattern.as_deref())
+    })?;
+    Ok((language.to_owned(), sources))
 }
 
 #[cfg(test)]
