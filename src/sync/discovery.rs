@@ -215,6 +215,23 @@ pub(crate) fn discover_with_deadline(
     Ok((discovered, skipped))
 }
 
+/// The metadata of `absolute_path` when it is a regular file, `None` when it
+/// is missing or anything else. `symlink_metadata`, not `metadata`: discovery
+/// never follows symlinks, so an incremental re-index must not either, or it
+/// would index a target — possibly outside the project — a full publish skips.
+pub(crate) fn regular_file_metadata(
+    absolute_path: &Path,
+) -> Result<Option<std::fs::Metadata>, super::hash::HashError> {
+    match std::fs::symlink_metadata(absolute_path) {
+        Ok(metadata) => Ok(metadata.is_file().then_some(metadata)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(super::hash::HashError::Read {
+            path: absolute_path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
 #[cfg(test)]
 #[path = "discovery_tests.rs"]
 mod tests;

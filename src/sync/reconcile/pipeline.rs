@@ -6,7 +6,7 @@
 
 use super::queries::{query_current_parser_pack_version, query_existing_hashes};
 use super::{ReconcileError, ReconcileOptions, ReconcileReport};
-use crate::sync::discovery::{DiscoveredFile, sniff_kind};
+use crate::sync::discovery::{self, DiscoveredFile, sniff_kind};
 use crate::sync::revision_skipped::{SKIP_REASON_OVERSIZE, SkippedRecord};
 use crate::sync::{FileRecord, hash, manifest, revision, sample};
 use rusqlite::Connection;
@@ -104,9 +104,15 @@ fn reconcile_single_dirty_path(
     let ReconcileOptions { limits, rules, .. } = options;
     let absolute_path = root.join(&path);
 
-    if !absolute_path.exists() {
-        return Ok(DirtyOutcome::Deleted(path));
-    }
+    let Some(metadata) = discovery::regular_file_metadata(&absolute_path)? else {
+        // Gone, a directory (the watcher reports `mkdir` as a create), or a
+        // symlink: nothing indexable lives here, so any row is stale.
+        return Ok(if existing_hashes.contains_key(&path) {
+            DirtyOutcome::Deleted(path)
+        } else {
+            DirtyOutcome::Ignored
+        });
+    };
 
     if let Some(rules) = rules
         && rules.should_ignore(&path)
@@ -114,10 +120,6 @@ fn reconcile_single_dirty_path(
         return Ok(DirtyOutcome::Ignored);
     }
 
-    let metadata = std::fs::metadata(&absolute_path).map_err(|source| hash::HashError::Read {
-        path: absolute_path.clone(),
-        source,
-    })?;
     let mtime = crate::util::mtime_unix_seconds(&metadata);
     let byte_len = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
 

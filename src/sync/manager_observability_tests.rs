@@ -344,18 +344,25 @@ fn an_unopenable_database_surfaces_as_an_error_not_a_panic() {
 /// When the watcher is Healthy and incremental reconcile fails, the
 /// watcher must be marked `Desynced` (so the next call does a full
 /// verification) and the failure surfaced — never a silent serve of stale
-/// evidence. A path that turns into a directory between syncs makes the
-/// re-hash fail deterministically without watcher-timing sleeps.
+/// evidence. A trigger that aborts every write to `files` makes the
+/// reconcile's publish fail deterministically, while the stat sweep before
+/// it only reads, so the failure lands in the drain and nowhere earlier.
 #[test]
 fn a_failed_incremental_reconcile_marks_the_watcher_desynced() {
     let manager = SourceSyncManager::with_watcher();
     let project = create_project();
     write_file(&project, "lib.rs", b"pub fn a() {}\n");
-    sync_project(&manager, &project);
-
-    let file = project.path().join("lib.rs");
-    fs::remove_file(&file).expect("remove file");
-    fs::create_dir(&file).expect("replace lib.rs with a directory");
+    let synced = sync_project(&manager, &project);
+    rusqlite::Connection::open(&synced.database_path)
+        .expect("open database")
+        .execute_batch(
+            "CREATE TRIGGER abort_file_insert BEFORE INSERT ON files \
+             BEGIN SELECT RAISE(ABORT, 'injected reconcile failure'); END; \
+             CREATE TRIGGER abort_file_update BEFORE UPDATE ON files \
+             BEGIN SELECT RAISE(ABORT, 'injected reconcile failure'); END;",
+        )
+        .expect("install failing triggers");
+    write_file(&project, "lib.rs", b"pub fn a_changed() {}\n");
 
     let state = manager.active_watch_state().expect("registered state");
     state.mark_dirty("lib.rs".to_owned());

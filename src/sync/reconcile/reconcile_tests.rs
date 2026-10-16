@@ -433,3 +433,82 @@ fn reconcile_resolves_imports_against_the_discovered_set_not_indexed_rows_alone(
         "a reconcile must not turn an export of a discovered-but-skipped file into Unresolved"
     );
 }
+
+/// `mkdir` inside a watched project raises `Create(Folder)`, which the
+/// watcher marks dirty like any file. A directory has no content to index,
+/// so it must not fail the reconcile that carries the real edits with it.
+#[test]
+fn a_directory_in_the_dirty_set_does_not_fail_the_reconcile() {
+    let (project, _db_dir, mut connection, revision) = setup_project();
+    fs::create_dir(project.path().join("newdir")).expect("create dir");
+    write(project.path(), "a.rs", b"fn a_after_mkdir() {}");
+    let dirty = ["newdir", "a.rs"].iter().map(|s| s.to_string()).collect();
+
+    let report = reconcile_dirty_paths(
+        &mut connection,
+        project.path(),
+        dirty,
+        HashSet::new(),
+        Some(&revision),
+    )
+    .expect("a dirty directory must not fail the reconcile");
+
+    assert_eq!(report.reconciled, 1, "the edited file is still re-indexed");
+}
+
+/// Discovery never follows symlinks, so the incremental path must not
+/// either: a symlink the watcher reports would otherwise index its target —
+/// possibly a file outside the project — that a full publish skips.
+#[cfg(unix)]
+#[test]
+fn a_symlink_in_the_dirty_set_is_never_dereferenced() {
+    let (project, _db_dir, mut connection, revision) = setup_project();
+    let outside = tempfile::tempdir().expect("outside dir");
+    fs::write(outside.path().join("secret.rs"), b"fn outside() {}").expect("write target");
+    std::os::unix::fs::symlink(
+        outside.path().join("secret.rs"),
+        project.path().join("link.rs"),
+    )
+    .expect("create symlink");
+    let dirty = ["link.rs"].iter().map(|s| s.to_string()).collect();
+
+    let report = reconcile_dirty_paths(
+        &mut connection,
+        project.path(),
+        dirty,
+        HashSet::new(),
+        Some(&revision),
+    )
+    .expect("reconcile");
+
+    assert_eq!(report.reconciled, 0, "a symlink target must not be indexed");
+    let indexed: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM files WHERE path = 'link.rs'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count link rows");
+    assert_eq!(indexed, 0, "no row may exist for the symlink path");
+}
+
+/// A path that was an indexed file and is now a directory no longer holds
+/// indexable content, so its row must go — exactly as if it were deleted.
+#[test]
+fn a_file_replaced_by_a_directory_loses_its_row() {
+    let (project, _db_dir, mut connection, revision) = setup_project();
+    fs::remove_file(project.path().join("a.rs")).expect("remove file");
+    fs::create_dir(project.path().join("a.rs")).expect("create dir in its place");
+    let dirty = ["a.rs"].iter().map(|s| s.to_string()).collect();
+
+    let report = reconcile_dirty_paths(
+        &mut connection,
+        project.path(),
+        dirty,
+        HashSet::new(),
+        Some(&revision),
+    )
+    .expect("reconcile");
+
+    assert_eq!(report.deleted, 1, "the stale file row must be removed");
+}
