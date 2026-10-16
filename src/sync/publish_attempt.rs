@@ -117,7 +117,7 @@ pub(super) fn try_publish(
     );
     for file in &discovery_skips {
         tracing::warn!(
-            path = %file.absolute_path.display(),
+            path_id = %crate::util::redacted_path(&file.absolute_path),
             reason = %file.reason,
             "skipping unreadable/invalid file during discovery"
         );
@@ -125,7 +125,7 @@ pub(super) fn try_publish(
     let (samples, sampling_skips) = sample_all_with_deadline(&discovered, limits, sink, deadline)?;
     for file in &sampling_skips {
         tracing::warn!(
-            path = %file.absolute_path.display(),
+            path_id = %crate::util::redacted_path(&file.absolute_path),
             reason = %file.reason,
             "skipping oversized file during sampling"
         );

@@ -70,7 +70,7 @@ impl SourceSyncManager {
             Ok(connection) => Ok(Ok(connection)),
             Err(error) if error.is_corruption() => {
                 tracing::warn!(
-                    database_path = %database_path.display(),
+                    database_id = %crate::util::redacted_path(database_path),
                     error = %error,
                     "database is corrupt or outdated; discarding and re-publishing from scratch",
                 );
@@ -85,7 +85,7 @@ impl SourceSyncManager {
             }
             Err(error) => {
                 tracing::warn!(
-                    database_path = %database_path.display(),
+                    database_id = %crate::util::redacted_path(database_path),
                     error = %error,
                     "failed to open project database for sync",
                 );
@@ -123,7 +123,7 @@ impl SourceSyncManager {
             };
             if let Some(reason) = stale_reason {
                 tracing::warn!(
-                    database_path = %database_path.display(),
+                    database_id = %crate::util::redacted_path(database_path),
                     reason = %reason,
                     "project database is stale; discarding and rebuilding from source",
                 );

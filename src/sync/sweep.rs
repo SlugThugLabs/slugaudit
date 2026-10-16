@@ -108,8 +108,18 @@ pub(super) fn sweep(
                 elapsed_ms: elapsed.as_millis(),
             });
         }
-        let Ok(entry) = entry else {
-            continue; // per-entry walk errors: discovery skips these too
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                // Discovery turns these into skipped rows; the sweep has no
+                // row to write, so the log is the only place the gap shows.
+                tracing::warn!(
+                    error = %error,
+                    "sweep could not read a directory entry; its subtree is not part of \
+                     this comparison and files under it cannot be verified",
+                );
+                continue;
+            }
         };
         if !entry.file_type().is_some_and(|kind| kind.is_file()) {
             continue;
@@ -133,6 +143,13 @@ pub(super) fn sweep(
         // — skipping it matches discovery, which skips unreadable files and
         // would not index them on a full publish either.
         let Ok(metadata) = std::fs::metadata(absolute_path) else {
+            // Leaving the path out of `on_disk` classifies it as deleted, so
+            // a stat failure here removes a file from the index. That is worth
+            // a line: a file that cannot be stat'd is not a file that is gone.
+            tracing::warn!(
+                path_id = %crate::util::redacted_path(absolute_path),
+                "sweep could not stat a file it walked; it will be reported as deleted",
+            );
             continue;
         };
         on_disk.insert(relative.to_owned());

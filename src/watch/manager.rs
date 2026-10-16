@@ -104,8 +104,12 @@ impl WatchManager {
                 let mut guard = lock_or_recover(&manager.inner);
                 guard.watcher = Some(watcher);
             }
-            Err(_) => {
+            Err(error) => {
+                // The cause is carried, not just the consequence: inotify
+                // exhaustion, a permissions problem and a missing kernel
+                // feature are indistinguishable without it.
                 tracing::warn!(
+                    error = %error,
                     "filesystem watcher unavailable; SlugAudit will use full verification"
                 );
             }
@@ -179,8 +183,13 @@ impl WatchManager {
 
         let mut guard = lock_or_recover(&self.inner);
 
-        if let Some(ref mut watcher) = guard.watcher {
-            let _ = watcher.unwatch(&canonical);
+        // The project is dropped from `projects` either way, so a failed
+        // unwatch leaves the watcher delivering events for a project this
+        // manager no longer tracks.
+        if let Some(ref mut watcher) = guard.watcher
+            && let Err(error) = watcher.unwatch(&canonical)
+        {
+            tracing::warn!(root_id = %redacted_path(&canonical), error = %error, "unwatch failed");
         }
 
         guard.projects.remove(&canonical);
@@ -303,21 +312,31 @@ impl WatchManager {
 
         let scope_changed = !new_watches.is_empty() || !removed_watches.is_empty();
         if let Some(watcher) = guard.watcher.as_mut() {
+            // Both arms log. A failure here was previously invisible: the
+            // debug line sat inside the `is_ok()` branch, so a watch that
+            // could not be established left no trace at any level while the
+            // project was still marked `NeedsVerification` below as though
+            // the watch set had been applied.
+            // A failed unwatch leaves the watcher delivering events for files
+            // the scope no longer includes.
             for dir in &removed_watches {
-                if watcher.unwatch(dir).is_ok() {
-                    tracing::debug!(dir_id = %redacted_path(dir), "unwatched excluded directory");
+                if let Err(error) = watcher.unwatch(dir) {
+                    tracing::warn!(
+                        dir_id = %redacted_path(dir), error = %error, "unwatch failed"
+                    );
                 }
             }
+            // A failed watch means changes under that directory go unnoticed
+            // until a full verification.
             for dir in &new_watches {
-                if watcher.watch(dir, RecursiveMode::Recursive).is_ok() {
-                    tracing::debug!(dir_id = %redacted_path(dir), "watching indexable directory");
+                if let Err(error) = watcher.watch(dir, RecursiveMode::Recursive) {
+                    tracing::warn!(dir_id = %redacted_path(dir), error = %error, "watch failed");
                 }
             }
-        } else {
-            // No notify watcher (unsupported platform or tests): the scope
-            // and rules are still recorded so event filtering and
-            // reconcile use them.
         }
+        // With no notify watcher (unsupported platform or tests) there is
+        // nothing to apply here, but the scope and rules are recorded above
+        // either way so event filtering and reconcile can use them.
 
         if let Some(info) = guard.projects.get_mut(root) {
             info.scope = Some(scope);

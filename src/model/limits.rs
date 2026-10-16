@@ -120,58 +120,74 @@ impl ResourceLimits {
             Some(profile) => super::profile::limits_for_profile(profile),
             None => Self::default(),
         };
-        if let Some(val) = parse_u64("SLUGAUDIT_MAX_FILE_BYTES") {
+        if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_FILE_BYTES") {
             limits.max_file_bytes = val;
         }
-        if let Some(val) = parse_u64("SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES") {
+        if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES") {
             limits.max_total_import_bytes = val;
         }
-        if let Some(val) = parse_usize("SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES") {
+        if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES") {
             limits.max_query_response_bytes = val;
         }
-        if let Some(val) = parse_usize("SLUGAUDIT_MAX_QUERY_SQL_BYTES") {
+        if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_QUERY_SQL_BYTES") {
             limits.max_query_sql_bytes = val;
         }
-        if let Some(val) = parse_u32("SLUGAUDIT_MAX_QUERY_VM_STEPS") {
+        if let Some(val) = parse_override::<u32>("SLUGAUDIT_MAX_QUERY_VM_STEPS") {
             limits.max_query_vm_steps = val;
         }
-        if let Some(val) = parse_duration_secs("SLUGAUDIT_MAX_QUERY_WALL_CLOCK_SECS") {
-            limits.max_query_wall_clock = val;
+        if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_QUERY_WALL_CLOCK_SECS") {
+            limits.max_query_wall_clock = Duration::from_secs(val);
         }
-        if let Some(val) = parse_usize("SLUGAUDIT_MAX_QUERY_VALUE_BYTES") {
+        if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_QUERY_VALUE_BYTES") {
             limits.max_query_value_bytes = val;
         }
-        if let Some(val) = parse_usize("SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES") {
+        if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES") {
             limits.max_structure_query_bytes = val;
         }
-        if let Some(val) = parse_usize("SLUGAUDIT_MAX_STRUCTURE_MATCHES") {
+        if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_STRUCTURE_MATCHES") {
             limits.max_structure_matches = val;
         }
-        if let Some(val) = parse_duration_secs("SLUGAUDIT_MAX_STRUCTURE_EXECUTION_TIME_SECS") {
-            limits.max_structure_execution_time = val;
+        if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_STRUCTURE_EXECUTION_TIME_SECS") {
+            limits.max_structure_execution_time = Duration::from_secs(val);
         }
-        if let Some(val) = parse_duration_secs("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS") {
-            limits.max_sync_wall_clock = val;
+        if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS") {
+            limits.max_sync_wall_clock = Duration::from_secs(val);
         }
         limits
     }
 }
 
-fn parse_u64(name: &str) -> Option<u64> {
-    std::env::var(name).ok()?.parse().ok()
-}
-
-fn parse_u32(name: &str) -> Option<u32> {
-    std::env::var(name).ok()?.parse().ok()
-}
-
-fn parse_usize(name: &str) -> Option<usize> {
-    std::env::var(name).ok()?.parse().ok()
-}
-
-fn parse_duration_secs(name: &str) -> Option<Duration> {
-    let secs: u64 = std::env::var(name).ok()?.parse().ok()?;
-    Some(Duration::from_secs(secs))
+/// Parses one `SLUGAUDIT_<FIELD>` override.
+///
+/// An unset variable is not a failure — the caller keeps the default, and
+/// that is the documented meaning of "only explicitly-set variables
+/// override". A variable that IS set but does not parse is a different case,
+/// and it used to be indistinguishable from unset: the operator's intended
+/// limit was silently discarded. That is now logged. The fallback itself is
+/// unchanged and deliberate; what changed is that it can be seen.
+fn parse_override<T: std::str::FromStr>(name: &str) -> Option<T> {
+    let Ok(raw) = std::env::var(name) else {
+        // NotPresent is the documented "no override" case; anything else is a
+        // variable the operator set that could not be read, which is not the
+        // same thing and is reported.
+        if !matches!(std::env::var(name), Err(std::env::VarError::NotPresent)) {
+            tracing::warn!(
+                variable = name,
+                "could not read a limit override; using the default"
+            );
+        }
+        return None;
+    };
+    match raw.parse::<T>() {
+        Ok(value) => Some(value),
+        Err(_) => {
+            tracing::warn!(
+                variable = name,
+                "limit override is not a valid value and was ignored; the default applies",
+            );
+            None
+        }
+    }
 }
 
 impl Default for ResourceLimits {
@@ -236,12 +252,19 @@ mod tests {
     }
 
     #[test]
-    fn unparseable_env_vars_are_silently_ignored() {
+    fn an_unparseable_override_falls_back_to_the_default_and_says_so() {
         temp_env::with_var("SLUGAUDIT_MAX_FILE_BYTES", Some("not-a-number"), || {
-            let limits = ResourceLimits::from_env();
+            let (limits, logs) =
+                crate::store::test_capture::capture_warns(ResourceLimits::from_env);
             assert_eq!(
                 limits.max_file_bytes,
-                ResourceLimits::default().max_file_bytes
+                ResourceLimits::default().max_file_bytes,
+                "the default still applies"
+            );
+            assert!(
+                logs.contains("not a valid value and was ignored"),
+                "the operator's discarded setting must be visible, or an intended \
+                 limit silently does nothing:\n{logs}"
             );
         });
     }

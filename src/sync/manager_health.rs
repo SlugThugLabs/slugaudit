@@ -142,7 +142,7 @@ impl SourceSyncManager {
                 Ok(current_revision_id(connection)
                     .map_err(|error| {
                         tracing::warn!(
-                            database_path = %database_path.display(),
+                            database_id = %crate::util::redacted_path(database_path),
                             error = %error,
                             "failed to read the current revision",
                         );
@@ -153,7 +153,7 @@ impl SourceSyncManager {
                     })?
                     .ok_or_else(|| {
                         tracing::warn!(
-                            database_path = %database_path.display(),
+                            database_id = %crate::util::redacted_path(database_path),
                             "no current revision found after sync",
                         );
                         ErrorData::internal_error(

@@ -37,7 +37,21 @@ impl WatchScope {
     pub fn compute(root: &Path) -> WatchScope {
         let mut scope = WatchScope::default();
         for entry in indexable_walker(root) {
-            let Ok(entry) = entry else { continue };
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    // The doc above covers only "the root can't be walked at
+                    // all". A failing subtree under-registers watches, which
+                    // means changes under it are not seen until a full
+                    // verification — worth a line rather than silence.
+                    tracing::warn!(
+                        error = %error,
+                        "watch scope could not read a directory entry; that subtree is \
+                         unwatched until the next scope refresh",
+                    );
+                    continue;
+                }
+            };
             let Some(relative) = entry.path().strip_prefix(root).ok() else {
                 continue;
             };
