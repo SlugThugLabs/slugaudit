@@ -21,7 +21,15 @@ allow = [
     "Unicode-3.0",
     "Zlib",
 ]
-exceptions = []
+exceptions = [
+    # libfuzzer-sys (reached only by the development-only fuzz workspace) is
+    # "(MIT OR Apache-2.0) AND NCSA". The NCSA clause ships with the crate's
+    # LLVM-derived C shim and cannot be removed from the expression; the crate
+    # is never shipped and never built by the product. The exception names
+    # exactly this crate and license so NCSA does not open the allow list.
+    # Reviewed 2026-10-16 against libfuzzer-sys 0.4.13.
+    { name = "libfuzzer-sys", version = "0.4", allow = ["NCSA"] },
+]
 # The root crate's license is a non-SPDX PolyForm Noncommercial 1.0.0 plus
 # the SlugAudit tool-use additional permission (see LICENSE), expressed only
 # via `license-file` — cargo-deny cannot evaluate it against the allow list

@@ -51,3 +51,12 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check advisories
+
+      # The fuzz workspace locks its own Cargo.lock, so an advisory published
+      # against a version pinned only there is equally invisible to a push.
+      # Same reason this job exists at all, second lockfile.
+      - name: Check fuzz workspace advisories
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: fuzz/Cargo.toml
+          command: check advisories

@@ -153,6 +153,17 @@ jobs:
         with:
           command: check advisories bans sources licenses
 
+      # The fuzz/ directory is a separate cargo workspace with its own
+      # lockfile, so the root check above cannot see it. Without this step a
+      # rustsec-pinned version can sit in fuzz/Cargo.lock unnoticed while the
+      # dependency gate reports green — exactly how rustls 0.23.45 (RUSTSEC-2026-0349)
+      # survived there. Same deny.toml policy, second workspace.
+      - name: Check fuzz workspace dependencies
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: fuzz/Cargo.toml
+          command: check advisories bans sources licenses
+
       # cargo-geiger transitive-unsafe review policy (see README.md's
       # "Unsafe code policy" section): `#![forbid(unsafe_code)]` gives a
       # hard, compiler-enforced 0/0 guarantee for slugaudit-mcp-rust's own

@@ -24,6 +24,11 @@ tempfile = "3"
 
 [dependencies.slugaudit-mcp-rust]
 path = ".."
+# A bare path dependency is a wildcard (`*`) version requirement, which
+# `deny.toml`'s `[bans] wildcards = "deny"` correctly refuses. `1` states the
+# real relationship — this harness tracks the product's 1.x line — without
+# pinning a number that every release bump would stale.
+version = "1"
 
 [[bin]]
 name = "structure_query"
