@@ -16,7 +16,8 @@ type Hooks = std::collections::HashMap<std::path::PathBuf, Box<dyn FnOnce() + Se
 static HOOKS: std::sync::Mutex<Option<Hooks>> = std::sync::Mutex::new(None);
 
 /// Arms a one-shot hook that fires the next time [`fire`] is called for the
-/// same `root`.
+/// same `root`. Keyed by the canonical root, because that is what the sync
+/// path passes to [`fire`]; a test's temp path is not canonical on macOS.
 #[cfg(test)]
 pub(crate) fn set(root: &Path, hook: impl FnOnce() + Send + 'static) {
     let mut guard = HOOKS
@@ -24,7 +25,7 @@ pub(crate) fn set(root: &Path, hook: impl FnOnce() + Send + 'static) {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     guard
         .get_or_insert_with(std::collections::HashMap::new)
-        .insert(root.to_path_buf(), Box::new(hook));
+        .insert(crate::util::canonical_or_self(root), Box::new(hook));
 }
 
 /// A no-op outside tests (this module is `cfg(test)`-only besides this one

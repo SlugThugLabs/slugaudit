@@ -165,7 +165,10 @@ fn retry_gives_up_after_exactly_max_cas_retries_and_never_hangs() {
 /// `PublishReport::skipped` instead of aborting discovery outright. Uses a
 /// non-UTF8 name rather than permission bits so the test is meaningful
 /// when run as root (which bypasses permission checks entirely).
-#[cfg(unix)]
+// APFS, macOS's default filesystem, refuses a non-UTF-8 file name outright
+// (`EILSEQ`, "Illegal byte sequence"; verified on macos-latest CI 2026-10-16),
+// so this input cannot arise there and the test cannot construct it.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn one_bad_file_does_not_block_publishing_the_rest_of_the_project() {
     use std::ffi::OsString;

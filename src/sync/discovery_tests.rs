@@ -91,7 +91,10 @@ fn honors_gitignore_content() {
 /// file in that project unqueryable). Unix filenames are just bytes (no
 /// NUL, no `/`), so a lone `0xFF` byte is real and filesystem-legal here
 /// even though it can never be valid UTF-8.
-#[cfg(unix)]
+// APFS, macOS's default filesystem, refuses a non-UTF-8 file name outright
+// (`EILSEQ`, "Illegal byte sequence"; verified on macos-latest CI 2026-10-16),
+// so this input cannot arise there and the test cannot construct it.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn a_non_utf8_filename_is_skipped_not_a_panic_or_a_whole_walk_failure() {
     use std::ffi::OsString;

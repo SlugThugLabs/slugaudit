@@ -7,8 +7,14 @@
 use super::*;
 use notify::event::{AccessKind, CreateKind, ModifyKind, RemoveKind};
 
+/// Created under the canonical temp directory: `watch` keys a project by its
+/// canonical root and real watcher events carry canonical paths, while on
+/// macOS the default temp dir runs through the `/var -> /private/var` link.
 fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("project dir");
+    let base = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonical temp dir");
+    let dir = tempfile::tempdir_in(base).expect("project dir");
     std::fs::create_dir_all(dir.path().join(".planning").join("slugaudit"))
         .expect("activation dir");
     dir
