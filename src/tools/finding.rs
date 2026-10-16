@@ -12,6 +12,8 @@ const MAX_TITLE_CHARS: usize = 200;
 const MAX_DESCRIPTION_CHARS: usize = 10_000;
 const MAX_SEVERITY_CHARS: usize = 100;
 const MAX_CATEGORY_CHARS: usize = 100;
+const MAX_PATH_BYTES: usize = 32 * 1024;
+const MAX_FILE_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FindingRequest {
@@ -163,7 +165,12 @@ fn insert_finding(
     // finding landed — never the title/description/severity/category
     // text, which is exactly the AI-authored judgment content that must
     // stay out of logs.
-    tracing::info!(revision_id, file = request.file, id, "finding recorded");
+    tracing::info!(
+        revision_id,
+        file_id = %crate::util::redacted_log_id(request.file.as_bytes()),
+        id,
+        "finding recorded"
+    );
     Ok(FindingResponse {
         id,
         revision_id: revision_id.to_owned(),
@@ -173,6 +180,12 @@ fn insert_finding(
 }
 
 fn validate_text_fields(request: &FindingRequest) -> Result<(), ErrorData> {
+    if crate::util::exceeds_input_bytes(&request.path, MAX_PATH_BYTES) {
+        return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
+    }
+    if crate::util::exceeds_input_bytes(&request.file, MAX_FILE_BYTES) {
+        return Err(ErrorData::invalid_params("file exceeds 8192 bytes", None));
+    }
     check_field("title", &request.title, MAX_TITLE_CHARS)?;
     check_field("description", &request.description, MAX_DESCRIPTION_CHARS)?;
     check_field("severity", &request.severity, MAX_SEVERITY_CHARS)?;

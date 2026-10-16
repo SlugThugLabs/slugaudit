@@ -135,17 +135,33 @@ fn apply_update(latest: &LatestRelease, target: &Path) -> Result<(), UpdateError
             source: error,
         })?;
         std::fs::rename(&temp_exe, target)?;
-        let _ = std::fs::remove_file(dir.join("slugaudit-mcp"));
+        remove_stale_binary(&dir.join("slugaudit-mcp"));
         if let Some(home) = crate::install::slugthug_home() {
-            let _ = std::fs::remove_file(home.join("bin").join("slugaudit-mcp"));
+            remove_stale_binary(&home.join("bin").join("slugaudit-mcp"));
         }
         Ok(())
     })();
 
     // Best-effort cleanup of temp files whether or not we succeeded.
-    let _ = std::fs::remove_file(&temp_exe);
-    let _ = std::fs::remove_file(&temp_sums);
+    remove_temp_file(&temp_exe);
+    remove_temp_file(&temp_sums);
     result
+}
+
+fn remove_temp_file(path: &Path) {
+    if let Err(error) = std::fs::remove_file(path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(path = %path.display(), error = %error, "could not remove update temporary file");
+    }
+}
+
+fn remove_stale_binary(path: &Path) {
+    if let Err(error) = std::fs::remove_file(path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(path = %path.display(), error = %error, "could not remove stale binary");
+    }
 }
 
 /// Verifies `binary_path` against the `ASSET` entry in the SHA256SUMS text

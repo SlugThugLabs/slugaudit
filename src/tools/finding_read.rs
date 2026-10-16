@@ -12,6 +12,9 @@ use rmcp::handler::server::wrapper::{Json, Parameters};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+const MAX_PATH_BYTES: usize = 32 * 1024;
+const MAX_FILE_BYTES: usize = 8 * 1024;
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FindingReadRequest {
     /// Any path inside the active project — used to select the database.
@@ -57,6 +60,17 @@ pub fn finding_read(
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<FindingReadResponse>, ErrorData> {
     let request = &request.0;
+    if crate::util::exceeds_input_bytes(&request.path, MAX_PATH_BYTES)
+        || request
+            .file
+            .as_deref()
+            .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_FILE_BYTES))
+    {
+        return Err(ErrorData::invalid_params(
+            "path or file exceeds its input size limit",
+            None,
+        ));
+    }
     let synced = ensure_synced(&request.path, sink, manager)?;
     let revision_id = synced.revision_id.clone();
     let current_session = session_id().to_string();

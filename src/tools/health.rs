@@ -35,6 +35,8 @@ use rusqlite::OptionalExtension;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+const MAX_PATH_BYTES: usize = 32 * 1024;
+
 use super::ToolCounters;
 
 /// Request for the `health` tool.
@@ -169,6 +171,15 @@ pub fn health(
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<HealthResponse>, ErrorData> {
     let HealthRequest { path } = &request.0;
+    if path
+        .as_deref()
+        .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_PATH_BYTES))
+    {
+        return Err(rmcp::ErrorData::invalid_params(
+            "path exceeds 32768 bytes",
+            None,
+        ));
+    }
 
     let counters = ToolCounters::snapshot();
     let last_sync = manager.last_sync_unix_seconds();

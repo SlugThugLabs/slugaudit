@@ -188,14 +188,16 @@ async fn notify_progress(
     fraction: f64,
     message: String,
 ) {
-    if let Some((peer, token)) = progress {
-        let _ = peer
+    if let Some((peer, token)) = progress
+        && let Err(error) = peer
             .notify_progress(
                 ProgressNotificationParam::new(token.clone(), fraction)
                     .with_total(1.0)
                     .with_message(message),
             )
-            .await;
+            .await
+    {
+        tracing::warn!(error = %error, "could not send tool progress notification");
     }
 }
 

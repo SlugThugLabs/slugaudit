@@ -14,7 +14,7 @@ use super::reconcile::{ReconcileOptions, reconcile_dirty_paths_with_deadline};
 use super::sweep::{SweepError, SweepReport, sweep};
 use crate::error_codes;
 use crate::progress::{ProgressEvent, ProgressSink};
-use crate::util::Deadline;
+use crate::util::{Deadline, redacted_path};
 use crate::watch::{WatchState, WatcherHealth};
 use rmcp::ErrorData;
 use rusqlite::Connection;
@@ -54,7 +54,7 @@ pub(super) fn sweep_failed(
     error: ErrorData,
 ) -> ErrorData {
     tracing::warn!(
-        root = %root.display(),
+        root_id = %redacted_path(root),
         error = %error,
         "stat sweep failed; marking watcher Desynced so the next call re-verifies",
     );
@@ -148,7 +148,7 @@ pub(super) fn log_sweep_findings(root: &Path, candidates: usize, deleted: usize,
         return;
     }
     tracing::debug!(
-        root = %root.display(),
+        root_id = %redacted_path(root),
         candidates,
         deleted,
         unchanged,

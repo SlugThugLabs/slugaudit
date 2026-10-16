@@ -109,11 +109,21 @@ pub fn run_add(cli: &str, args: &[String]) -> Result<(), ConnectError> {
 }
 
 pub fn run_remove(agent: &AgentDef, cli: &str) -> Result<(), ConnectError> {
-    let _ = Command::new(cli)
+    let status = Command::new(cli)
         .args(remove_args(agent))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
+        .status()
+        .map_err(|inner| ConnectError::AgentCommand {
+            cli: cli.to_string(),
+            inner,
+        })?;
+    if !status.success() {
+        return Err(ConnectError::AddFailed {
+            cli: cli.to_string(),
+            status: status.to_string(),
+        });
+    }
     Ok(())
 }

@@ -13,7 +13,7 @@ use crate::error_codes::{self, ErrorCode};
 use crate::parse;
 use crate::project;
 use crate::store;
-use crate::util::session_id;
+use crate::util::{redacted_path, session_id};
 use rmcp::ErrorData;
 use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
@@ -234,7 +234,7 @@ pub(crate) fn map_publish_error(
     error: publish::PublishError,
     warn_message: &str,
 ) -> ErrorData {
-    tracing::warn!(root = %root.display(), error = %error, "{warn_message}");
+    tracing::warn!(root_id = %redacted_path(root), error = %error, "{warn_message}");
     // The two publish failures a caller would do something different about.
     // A spent budget is permanent on a repo too big for the limit, so its
     // remedy names the knob rather than advising the retry that fails
