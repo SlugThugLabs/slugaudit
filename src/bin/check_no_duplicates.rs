@@ -51,7 +51,7 @@ fn main() -> ExitCode {
 
     let mut failures: Vec<String> = Vec::new();
 
-    for (subject, count) in duplicate_commit_subjects(&project_root) {
+    for (subject, count) in duplicate_commit_subjects(&project_root, &mut failures) {
         failures.push(format!("commit subject {subject:?} used {count} times"));
         println!("no-duplicates: commit subject {subject:?} used {count} times");
     }
@@ -93,7 +93,12 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn duplicate_commit_subjects(root: &Path) -> Vec<(String, usize)> {
+/// A git failure is a FAILURE, not a skip. Every branch below used to print
+/// "skipping commit-subject check" and return empty, which `main` then counted
+/// as a clean run and printed `no-duplicates: PASS` for — half the gate
+/// silently unrun on any checkout where git did not answer, which is the one
+/// situation where the check cannot be trusted to have happened.
+fn duplicate_commit_subjects(root: &Path, failures: &mut Vec<String>) -> Vec<(String, usize)> {
     let output = match Command::new("git")
         .arg("log")
         .arg("--format=%s")
@@ -104,16 +109,24 @@ fn duplicate_commit_subjects(root: &Path) -> Vec<(String, usize)> {
     {
         Ok(proc) => proc,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            println!("no-duplicates: git not found; skipping commit-subject check");
+            failures.push("git not found; cannot check commit subjects".to_owned());
             return Vec::new();
         }
         Err(err) => {
-            println!("no-duplicates: git invocation failed: {err}; skipping commit-subject check");
+            failures.push(format!(
+                "git invocation failed: {err}; cannot check commit subjects"
+            ));
             return Vec::new();
         }
     };
     if !output.status.success() {
-        println!("no-duplicates: not a git repository; skipping commit-subject check");
+        // Any non-zero exit lands here, so the message names what is known
+        // (git refused) rather than asserting a cause it did not verify —
+        // dubious ownership and a stale index.lock are not "not a repository".
+        failures.push(format!(
+            "git log exited with {}; cannot check commit subjects",
+            output.status
+        ));
         return Vec::new();
     }
     let stdout = String::from_utf8_lossy(&output.stdout);

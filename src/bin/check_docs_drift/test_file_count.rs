@@ -10,7 +10,16 @@ pub(super) fn check_test_file_count(root: &Path, failures: &mut Vec<String>) {
     let architecture = read(root, "ARCHITECTURE.md");
     // "The 31 `*_tests.rs` files share this pattern; ..."
     let Some(marker) = architecture.find("`*_tests.rs` files share") else {
-        return; // claim not present — nothing to verify
+        // Returning here made the check pass vacuously the moment the prose
+        // was reworded: `main` still printed `docs-drift: PASS` while this
+        // third of the gate verified nothing. If the claim is gone there is
+        // nothing to check against, and that is a failure of the gate, not a
+        // reason to skip it.
+        failures.push(
+            "ARCHITECTURE.md no longer states the `*_tests.rs` files-share count, so the              count this check exists to verify is unverified — restore the sentence or              remove this check"
+                .to_owned(),
+        );
+        return;
     };
     let before = &architecture[..marker];
     let number = before
