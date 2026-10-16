@@ -73,7 +73,16 @@ fn main() -> std::process::ExitCode {
 
     // Clean stale criterion outputs — never trust the previous run's
     // numbers; only the freshly produced `new/estimates.json` files.
-    let _ = std::fs::remove_dir_all(CRITERION_DIR);
+    // A failed cleanup must stop the run: a leftover `new/estimates.json`
+    // would otherwise be harvested as this run's measurement.
+    match std::fs::remove_dir_all(CRITERION_DIR) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            eprintln!("FAIL: could not clear stale criterion output {CRITERION_DIR}: {err}");
+            return std::process::ExitCode::from(1);
+        }
+    }
 
     let status = std::process::Command::new("cargo")
         .args([
@@ -156,8 +165,11 @@ fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::from(1);
             }
         };
-        if let Some(parent) = baseline_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        if let Some(parent) = baseline_path.parent()
+            && let Err(err) = std::fs::create_dir_all(parent)
+        {
+            eprintln!("FAIL: could not create {}: {err}", parent.display());
+            return std::process::ExitCode::from(1);
         }
         if let Err(err) = std::fs::write(&baseline_path, format!("{serialised}\n")) {
             eprintln!(

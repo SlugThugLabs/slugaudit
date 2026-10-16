@@ -17,51 +17,61 @@ pub(crate) fn collect_new_benches() -> std::io::Result<BTreeMap<String, u64>> {
             format!("{CRITERION_DIR} directory does not exist after cargo bench"),
         ));
     }
+    collect_benches_in(dir)
+}
+
+/// Every `new/estimates.json` under `dir`, keyed `group/func`. Strict on
+/// purpose: an unreadable directory, an unreadable or malformed estimates
+/// file, or one without a median is an error naming the path — a bench that
+/// silently drops out of the harvest would be absent from the gate forever.
+pub(crate) fn collect_benches_in(dir: &Path) -> std::io::Result<BTreeMap<String, u64>> {
+    let mut paths = Vec::new();
+    walk(dir, &mut paths)?;
     let mut out: BTreeMap<String, u64> = Default::default();
-    walk(dir, &mut |estimates_path| {
+    for estimates_path in paths {
         let func_dir = estimates_path.parent().and_then(Path::parent);
-        let group_dir = func_dir.and_then(Path::parent);
-        let Some(func_name) = func_dir
-            .and_then(|p| p.file_name())
-            .and_then(|s| s.to_str())
-        else {
-            return;
+        let names = (
+            func_dir.and_then(Path::file_name).and_then(|s| s.to_str()),
+            func_dir
+                .and_then(Path::parent)
+                .and_then(Path::file_name)
+                .and_then(|s| s.to_str()),
+        );
+        let (Some(func_name), Some(group_name)) = names else {
+            return Err(invalid(
+                &estimates_path,
+                "bench directory names are not UTF-8",
+            ));
         };
-        let Some(group_name) = group_dir
-            .and_then(|p| p.file_name())
-            .and_then(|s| s.to_str())
-        else {
-            return;
-        };
-        let key = format!("{group_name}/{func_name}");
-        let raw = match std::fs::read_to_string(estimates_path) {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        let value: serde_json::Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => return,
-        };
+        let raw = std::fs::read_to_string(&estimates_path).map_err(|err| {
+            std::io::Error::new(err.kind(), format!("{}: {err}", estimates_path.display()))
+        })?;
+        let value: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|err| invalid(&estimates_path, &format!("not valid JSON: {err}")))?;
         let median = value
             .get("median")
             .and_then(|m| m.get("point_estimate"))
             .and_then(serde_json::Value::as_f64)
-            .map(|points| points as u64);
-        if let Some(median) = median {
-            out.insert(key, median);
-        }
-    });
+            .ok_or_else(|| invalid(&estimates_path, "no median.point_estimate"))?;
+        out.insert(format!("{group_name}/{func_name}"), median as u64);
+    }
     Ok(out)
 }
 
-fn walk(dir: &Path, on_estimates: &mut dyn FnMut(&Path)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
+fn invalid(path: &Path, what: &str) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("{}: {what}", path.display()),
+    )
+}
+
+fn walk(dir: &Path, found: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|err| std::io::Error::new(err.kind(), format!("{}: {err}", dir.display())))?;
+    for entry in entries {
+        let path = entry?.path();
         if path.is_dir() {
-            walk(&path, on_estimates);
+            walk(&path, found)?;
         } else if path.file_name().and_then(|s| s.to_str()) == Some("estimates.json")
             && path
                 .parent()
@@ -69,9 +79,10 @@ fn walk(dir: &Path, on_estimates: &mut dyn FnMut(&Path)) {
                 .and_then(|s| s.to_str())
                 == Some("new")
         {
-            on_estimates(&path);
+            found.push(path);
         }
     }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default)]
