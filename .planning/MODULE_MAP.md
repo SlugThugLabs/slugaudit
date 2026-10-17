@@ -157,7 +157,10 @@ src/
     │   ├── counter.rs        token-aware Rust code-line counter
     │   ├── scanner.rs        token scanner state machine
     │   └── approval.rs       exception-comment parser
-    ├── check_no_duplicates.rs   duplicate commit subjects / test names
+    ├── check_no_duplicates/      duplicate commit subjects / test names
+    │   ├── main.rs              args, verdict
+    │   ├── commit_subjects.rs   git log subject dedupe
+    │   └── test_names.rs        #[test] fn-name dedupe
     ├── gate_common/          shared by the rooted gates via #[path]; not a binary
     │   └── args.rs           --help / --root / switches argv contract, exit 2 on usage error
     ├── check_docs_drift/     documentation drift gate

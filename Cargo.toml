@@ -35,7 +35,7 @@ path = "src/bin/check_source_limits/main.rs"
 
 [[bin]]
 name = "check_no_duplicates"
-path = "src/bin/check_no_duplicates.rs"
+path = "src/bin/check_no_duplicates/main.rs"
 
 [[bin]]
 name = "check_coverage"
