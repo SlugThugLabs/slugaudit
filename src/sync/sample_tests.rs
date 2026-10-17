@@ -1,4 +1,3 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=parallel-sampling tests for sample_all_with_deadline intentionally construct synthetic DiscoveredFile trees and exercise ordering, byte-cap, and deadline branches in isolation; collapsing this back into sample_tests would mix the synthetic-fixture scaffolding with the discoverer-driven integration tests that already live there
 use super::*;
 use crate::model::{EvidenceLimits, ExtractionCompleteness};
 use crate::sync::publish::PublishError;

@@ -1,6 +1,5 @@
 //! Stable binary installation and executable-path discovery.
 #![allow(clippy::print_stdout)]
-// slugaudit-line-exception: approved-by=slugthug; reason=one concern - install the running binary by atomic rename, retain the previous one for rollback, and offer the PATH edit - plus the slugthug home/dir resolution that install, update, menu and connect all read from this one place so they cannot disagree about where the binary lives
 
 use std::path::{Path, PathBuf};
 use thiserror::Error;

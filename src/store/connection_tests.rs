@@ -3,7 +3,6 @@
 // still has room to grow. The `evidence.kind` CHECK tests live here too:
 // this is the store's only test surface that opens a migrated connection,
 // and the constraint is only observable through one.
-// slugaudit-line-exception: approved-by=slugthug; reason=audit-trail tests covering each rejection guard, paired with their happy-path negative; keeping them co-located lets future regressions cross-compare symlink / permissions / network paths at a glance
 
 use crate::evidence::to_row;
 use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, SpanAvailability};
