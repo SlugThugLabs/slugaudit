@@ -210,3 +210,21 @@ fn io_from_string_helper_creates_error() {
     let err = io_from_string("network err".into());
     assert_eq!(err.to_string(), "network err");
 }
+
+#[test]
+fn update_fetches_only_a_newer_or_incomparable_release() {
+    let cases = [
+        ("1.0.10", "1.0.10", UpdateDecision::UpToDate),
+        ("1.1.0", "1.0.10", UpdateDecision::UpToDate),
+        ("1.0.9", "1.0.10", UpdateDecision::Newer),
+        ("1.0.10-dev", "1.0.10", UpdateDecision::Incomparable),
+    ];
+
+    for (current, latest, expected) in cases {
+        assert_eq!(
+            update_decision(current, latest),
+            expected,
+            "{current} vs {latest}"
+        );
+    }
+}

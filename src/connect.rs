@@ -102,7 +102,7 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
         );
         std::io::stdout().flush()?;
         let confirm = crate::prompt::read_prompt_line()?.unwrap_or_default();
-        if !matches!(confirm.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        if !crate::prompt::is_yes(&confirm) {
             println!("Skipped.");
             return Ok(());
         }

@@ -183,7 +183,7 @@ fn interactive_prompt(msg: &str) -> bool {
         if std::io::stdin().lock().read_line(&mut line).is_err() {
             return false;
         }
-        matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+        crate::prompt::is_yes(&line)
     }
 }
 

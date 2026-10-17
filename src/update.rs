@@ -208,6 +208,26 @@ fn io_from_string(message: String) -> std::io::Error {
     std::io::Error::other(message)
 }
 
+/// What `update` does after comparing this build with the published release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateDecision {
+    /// This build is the published version or newer: nothing to fetch.
+    UpToDate,
+    /// The published release is newer: fetch it.
+    Newer,
+    /// One side is not a plain dotted version (a dev build): fetch it anyway,
+    /// without claiming it is newer.
+    Incomparable,
+}
+
+fn update_decision(current: &str, latest: &str) -> UpdateDecision {
+    match compare_versions(current, latest) {
+        Ok(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal) => UpdateDecision::UpToDate,
+        Ok(std::cmp::Ordering::Less) => UpdateDecision::Newer,
+        Err(()) => UpdateDecision::Incomparable,
+    }
+}
+
 /// Entry point for `slugaudit update`. Prints human-facing progress to
 /// stdout; never touches the MCP transport.
 pub fn run_update() -> Result<(), UpdateError> {
@@ -218,18 +238,18 @@ pub fn run_update() -> Result<(), UpdateError> {
     // Compare by version when the local build carries a numeric version; if
     // it doesn't parse (e.g. a dev build), assume the published latest is
     // what we want and proceed to fetch it.
-    match compare_versions(current, &latest.version) {
-        Ok(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal) => {
+    match update_decision(current, &latest.version) {
+        UpdateDecision::UpToDate => {
             println!("slugaudit is already up to date (v{current}).");
             return Ok(());
         }
-        Ok(std::cmp::Ordering::Less) => {
+        UpdateDecision::Newer => {
             println!(
                 "A newer release (tag {}) is available; fetching...",
                 latest.tag
             );
         }
-        Err(()) => {
+        UpdateDecision::Incomparable => {
             // The comparison could not be made — one side is not a plain
             // dotted number, which a dev build is not. Falling back to
             // fetching is deliberate (the comment above records that), but

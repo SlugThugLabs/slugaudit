@@ -16,6 +16,12 @@ pub(crate) fn read_prompt_line() -> std::io::Result<Option<String>> {
     read_capped_line(&mut std::io::stdin().lock())
 }
 
+/// Whether a `[y/N]` answer accepts: `y` or `yes`, any case, surrounding
+/// whitespace ignored. Anything else — including an empty answer — declines.
+pub(crate) fn is_yes(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
 fn read_capped_line(input: &mut impl std::io::BufRead) -> std::io::Result<Option<String>> {
     use std::io::{BufRead as _, Read as _};
     let mut bytes = Vec::new();
@@ -34,6 +40,19 @@ fn read_capped_line(input: &mut impl std::io::BufRead) -> std::io::Result<Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_y_or_yes_in_any_case_accepts_a_confirmation() {
+        let accepted = ["y", "Y", "yes", " YES\n"];
+        let declined = ["", "n", "no", "yep", "y es"];
+
+        for answer in accepted {
+            assert!(is_yes(answer), "{answer:?} must accept");
+        }
+        for answer in declined {
+            assert!(!is_yes(answer), "{answer:?} must decline");
+        }
+    }
 
     #[test]
     fn a_prompt_answer_is_read_one_line_at_a_time_and_none_at_end_of_input() {

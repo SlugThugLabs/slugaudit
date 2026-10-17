@@ -21,19 +21,19 @@ pub fn run_menu() -> Result<bool, Box<dyn std::error::Error>> {
         let style = Style::stdout();
         print!("{}", render_menu(&style));
         std::io::stdout().flush()?;
-        let choice = read_choice()?;
-        match choice {
-            1 => install_step(),
-            2 => connect_step(),
-            3 => disconnect_step(),
-            4 => other_client_step(),
-            5 => {
+        let line = crate::prompt::read_prompt_line()?;
+        match menu_choice(line.as_deref()) {
+            MenuChoice::Install => install_step(),
+            MenuChoice::Connect => connect_step(),
+            MenuChoice::Disconnect => disconnect_step(),
+            MenuChoice::OtherClient => other_client_step(),
+            MenuChoice::Serve => {
                 if confirm_serve()? {
                     return Ok(true);
                 }
             }
-            6 => return Ok(false),
-            _ => {
+            MenuChoice::Exit => return Ok(false),
+            MenuChoice::Invalid => {
                 println!("\nInvalid choice; pick a number from the list.");
                 continue;
             }
@@ -42,13 +42,32 @@ pub fn run_menu() -> Result<bool, Box<dyn std::error::Error>> {
     }
 }
 
-fn read_choice() -> Result<usize, Box<dyn std::error::Error>> {
-    let Some(line) = crate::prompt::read_prompt_line()? else {
-        return Ok(6);
+/// One menu answer, decided apart from the terminal that read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuChoice {
+    Install,
+    Connect,
+    Disconnect,
+    OtherClient,
+    Serve,
+    Exit,
+    Invalid,
+}
+
+/// Maps a menu line to its choice. End of input (`None`) exits, so a closed
+/// stdin can never spin the menu loop.
+fn menu_choice(line: Option<&str>) -> MenuChoice {
+    let Some(line) = line else {
+        return MenuChoice::Exit;
     };
     match line.trim().parse::<usize>() {
-        Ok(choice) => Ok(choice),
-        Err(_) => Ok(0),
+        Ok(1) => MenuChoice::Install,
+        Ok(2) => MenuChoice::Connect,
+        Ok(3) => MenuChoice::Disconnect,
+        Ok(4) => MenuChoice::OtherClient,
+        Ok(5) => MenuChoice::Serve,
+        Ok(6) => MenuChoice::Exit,
+        _ => MenuChoice::Invalid,
     }
 }
 
@@ -93,10 +112,7 @@ fn confirm_serve() -> Result<bool, Box<dyn std::error::Error>> {
     print!("Start the server now? [y/N]: ");
     std::io::stdout().flush()?;
     let line = crate::prompt::read_prompt_line()?.unwrap_or_default();
-    Ok(matches!(
-        line.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
+    Ok(crate::prompt::is_yes(&line))
 }
 
 #[cfg(test)]
@@ -104,6 +120,32 @@ mod tests {
     use super::*;
     use crate::menu_render::{MENU, section_label};
     use std::path::Path;
+
+    #[test]
+    fn each_listed_number_selects_its_step_and_end_of_input_exits() {
+        let cases = [
+            (Some("1"), MenuChoice::Install),
+            (Some(" 2\n"), MenuChoice::Connect),
+            (Some("3"), MenuChoice::Disconnect),
+            (Some("4"), MenuChoice::OtherClient),
+            (Some("5"), MenuChoice::Serve),
+            (Some("6"), MenuChoice::Exit),
+            (None, MenuChoice::Exit),
+        ];
+
+        for (line, expected) in cases {
+            assert_eq!(menu_choice(line), expected, "line {line:?}");
+        }
+    }
+
+    #[test]
+    fn an_unlisted_or_non_numeric_menu_answer_is_invalid() {
+        let answers = ["0", "7", "", "install", "-1"];
+
+        for answer in answers {
+            assert_eq!(menu_choice(Some(answer)), MenuChoice::Invalid, "{answer:?}");
+        }
+    }
 
     #[test]
     fn plain_style_renders_the_byte_exact_plain_menu() {
