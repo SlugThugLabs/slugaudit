@@ -20,6 +20,44 @@ pub(super) enum Family {
     Files,
 }
 
+/// Every SQL fragment that differs by family, kept together so a family's
+/// shape is read — and a new family is written — in one place.
+pub(super) struct FamilySql {
+    from: &'static str,
+    path: &'static str,
+    line: &'static str,
+    order: &'static str,
+    file_key: &'static str,
+    pattern: &'static str,
+}
+
+const EVIDENCE_SQL: FamilySql = FamilySql {
+    from: "evidence e JOIN files f ON e.file_id = f.id",
+    path: "f.path",
+    line: "COALESCE(e.start_line, 0)",
+    order: "f.path, e.start_line",
+    file_key: "e.file_id",
+    pattern: "f.path GLOB ?",
+};
+
+const FILES_SQL: FamilySql = FamilySql {
+    from: "files",
+    path: "path",
+    line: "0",
+    order: "path",
+    file_key: "path",
+    pattern: "path GLOB ?",
+};
+
+impl Family {
+    fn sql(self) -> &'static FamilySql {
+        match self {
+            Family::Evidence => &EVIDENCE_SQL,
+            Family::Files => &FILES_SQL,
+        }
+    }
+}
+
 /// One mechanical observation surface.
 ///
 /// `predicate` is a SQL fragment with no leading `WHERE`. `detail` is a SQL
@@ -135,52 +173,34 @@ impl Mechanic {
     /// The `FROM` clause: `files` alone for path-shaped mechanics, the
     /// `evidence`/`files` join for evidence-shaped ones.
     pub(super) fn read_from(&self) -> &'static str {
-        match self.family {
-            Family::Evidence => "evidence e JOIN files f ON e.file_id = f.id",
-            Family::Files => "files",
-        }
+        self.family.sql().from
     }
 
     /// The project-relative path expression, used both as the returned
     /// `file` column and as the thing `pattern` is matched against.
     pub(super) fn path_expr(&self) -> &'static str {
-        match self.family {
-            Family::Evidence => "f.path",
-            Family::Files => "path",
-        }
+        self.family.sql().path
     }
 
     pub(super) fn line_expr(&self) -> &'static str {
-        match self.family {
-            Family::Evidence => "COALESCE(e.start_line, 0)",
-            Family::Files => "0",
-        }
+        self.family.sql().line
     }
 
     /// The stable row order every read shares: by file, then by line. A page
     /// boundary can split a file but never reorder the files, which is what
     /// makes `files_covered` cumulative for a sweep at one revision.
     pub(super) fn order_expr(&self) -> &'static str {
-        match self.family {
-            Family::Evidence => "f.path, e.start_line",
-            Family::Files => "path",
-        }
+        self.family.sql().order
     }
 
     /// The column identifying the file a row belongs to — the key the
     /// per-mechanic distinct-file denominator counts.
     pub(super) fn file_key_expr(&self) -> &'static str {
-        match self.family {
-            Family::Evidence => "e.file_id",
-            Family::Files => "path",
-        }
+        self.family.sql().file_key
     }
 
     pub(super) fn pattern_clause(&self) -> &'static str {
-        match self.family {
-            Family::Evidence => "f.path GLOB ?",
-            Family::Files => "path GLOB ?",
-        }
+        self.family.sql().pattern
     }
 
     pub(super) fn detail_expr(&self) -> String {
