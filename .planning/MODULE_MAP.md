@@ -53,7 +53,8 @@ src/
 │   ├── finding.rs            the single write tool
 │   ├── finding_read.rs       session-gated finding query
 │   ├── project_control.rs    enable/disable a project
-│   └── health.rs             operational snapshot
+│   ├── health.rs             operational snapshot
+│   └── health_database.rs    health's read-only database read
 │
 ├── sync/                     detection and persistence of what changed on disk
 │   ├── mod.rs                public exports

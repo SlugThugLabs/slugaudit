@@ -16,6 +16,7 @@ pub(crate) mod context;
 mod finding;
 mod finding_read;
 mod health;
+mod health_database;
 mod leads;
 mod leads_compact;
 mod leads_mechanics;
