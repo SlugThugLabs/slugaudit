@@ -4,11 +4,18 @@
 //! compares versions — all unit-testable without a network call.
 
 use super::UpdateError;
+use std::path::Path;
 
 /// Default repo owner/name and the single published Linux x86_64 asset.
 const OWNER: &str = "SlugThugLabs";
 const REPO: &str = "slugaudit";
 pub(crate) const ASSET: &str = "slugaudit-x86_64-unknown-linux-gnu";
+/// The `std::env::consts` OS and architecture [`ASSET`] runs on.
+pub(crate) const ASSET_OS: &str = "linux";
+pub(crate) const ASSET_ARCH: &str = "x86_64";
+
+/// curl flags that refuse any non-HTTPS URL, including a redirect target.
+pub(crate) const HTTPS_ONLY: [&str; 4] = ["--proto", "=https", "--proto-redir", "=https"];
 
 const GITHUB_API: &str = "https://api.github.com";
 const GITHUB_DL: &str = "https://github.com";
@@ -77,14 +84,9 @@ pub(crate) fn fetch_latest_release() -> Result<LatestRelease, UpdateError> {
 /// meter so the download body or error text is clean to read.
 fn curl_get(url: &str) -> Result<String, UpdateError> {
     let output = std::process::Command::new("curl")
-        .args([
-            "-fsSL",
-            "--max-time",
-            "30",
-            "--max-filesize",
-            "10000000",
-            url,
-        ])
+        .args(["-fsSL", "--max-time", "30", "--max-filesize", "10000000"])
+        .args(HTTPS_ONLY)
+        .arg(url)
         .output()
         .map_err(|error| UpdateError::ToolSpawn {
             tool: "curl",
@@ -96,6 +98,40 @@ fn curl_get(url: &str) -> Result<String, UpdateError> {
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Fetches `url` into `dest` over HTTPS only (a redirect off HTTPS is refused
+/// too). A failure keeps its typed cause under the `action` that was attempted.
+pub(crate) fn download(url: &str, dest: &Path, action: &'static str) -> Result<(), UpdateError> {
+    let wrap = |cause: UpdateError| UpdateError::Download {
+        action,
+        path: dest.to_path_buf(),
+        source: Box::new(cause),
+    };
+    let output = std::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "300", "--max-filesize", "150000000"])
+        .args(HTTPS_ONLY)
+        .arg(url)
+        .arg("-o")
+        .arg(dest)
+        .output()
+        .map_err(|error| {
+            wrap(UpdateError::ToolSpawn {
+                tool: "curl",
+                source: error,
+            })
+        })?;
+    if !output.status.success() {
+        return Err(wrap(UpdateError::Network(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        )));
+    }
+    Ok(())
+}
+
+/// Whether the one published asset can run on `os`/`arch`.
+pub(crate) fn platform_supported(os: &str, arch: &str) -> bool {
+    os == ASSET_OS && arch == ASSET_ARCH
 }
 
 /// Compares two dot-separated numeric versions. Only the (major.minor.patch)

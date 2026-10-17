@@ -206,9 +206,42 @@ fn update_error_display_covers_all_variants() {
 }
 
 #[test]
-fn io_from_string_helper_creates_error() {
-    let err = io_from_string("network err".into());
-    assert_eq!(err.to_string(), "network err");
+fn a_download_failure_keeps_its_typed_cause() {
+    let err = UpdateError::Download {
+        action: "download binary to",
+        path: PathBuf::from("/test"),
+        source: Box::new(UpdateError::Network("conn reset".into())),
+    };
+
+    assert!(
+        err.to_string()
+            .contains("could not download binary to /test")
+    );
+    assert!(
+        std::error::Error::source(&err)
+            .is_some_and(|cause| cause.to_string().contains("network request failed")),
+        "the cause must stay reachable through source()"
+    );
+}
+
+#[test]
+fn only_the_published_platform_may_self_update() {
+    assert!(platform_supported("linux", "x86_64"));
+    assert!(!platform_supported("linux", "aarch64"));
+    assert!(!platform_supported("macos", "x86_64"));
+    assert!(!platform_supported("macos", "aarch64"));
+}
+
+#[test]
+fn the_unsupported_platform_error_names_both_sides() {
+    let message = UpdateError::UnsupportedPlatform {
+        os: "macos",
+        arch: "aarch64",
+    }
+    .to_string();
+
+    assert!(message.contains("linux/x86_64"), "{message}");
+    assert!(message.contains("macos/aarch64"), "{message}");
 }
 
 #[test]

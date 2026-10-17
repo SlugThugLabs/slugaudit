@@ -31,7 +31,10 @@
 
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-use update_fetch::{ASSET, LatestRelease, compare_versions, fetch_latest_release};
+use update_fetch::{
+    ASSET, ASSET_ARCH, ASSET_OS, LatestRelease, compare_versions, download, fetch_latest_release,
+    platform_supported,
+};
 
 #[path = "update_fetch.rs"]
 mod update_fetch;
@@ -59,8 +62,24 @@ pub enum UpdateError {
     NoTag,
     #[error("checksum verification failed: {0}")]
     Checksum(String),
+    #[error(
+        "slugaudit update only fetches the {ASSET_OS}/{ASSET_ARCH} release, and this machine \
+         is {os}/{arch}; replacing the binary with it would leave it unable to start. \
+         Install a build for this platform instead"
+    )]
+    UnsupportedPlatform {
+        os: &'static str,
+        arch: &'static str,
+    },
     #[error("could not operate on the filesystem: {0}")]
     Io(#[from] std::io::Error),
+    #[error("could not {action} {path}: {source}")]
+    Download {
+        action: &'static str,
+        path: PathBuf,
+        #[source]
+        source: Box<UpdateError>,
+    },
     #[error("could not {action} {path}: {source}")]
     Stage {
         action: &'static str,
@@ -98,42 +117,9 @@ fn apply_update(latest: &LatestRelease, target: &Path) -> Result<(), UpdateError
     let temp_exe = dir.join(format!(".slugaudit-update-{}-{ASSET}", std::process::id()));
     let temp_sums = dir.join(format!("{ASSET}-{}-SHA256SUMS", std::process::id()));
 
-    let download = |url: &str, dest: &Path| -> Result<(), UpdateError> {
-        let output = std::process::Command::new("curl")
-            .args([
-                "-fsSL",
-                "--max-time",
-                "300",
-                "--max-filesize",
-                "150000000",
-                url,
-                "-o",
-            ])
-            .arg(dest)
-            .output()
-            .map_err(|error| UpdateError::ToolSpawn {
-                tool: "curl",
-                source: error,
-            })?;
-        if !output.status.success() {
-            return Err(UpdateError::Network(
-                String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            ));
-        }
-        Ok(())
-    };
-
     let result = (|| -> Result<(), UpdateError> {
-        download(&latest.asset_url, &temp_exe).map_err(|error| UpdateError::Stage {
-            action: "download binary to",
-            path: temp_exe.clone(),
-            source: io_from_string(error.to_string()),
-        })?;
-        download(&latest.checksums_url, &temp_sums).map_err(|error| UpdateError::Stage {
-            action: "download checksums to",
-            path: temp_sums.clone(),
-            source: io_from_string(error.to_string()),
-        })?;
+        download(&latest.asset_url, &temp_exe, "download binary to")?;
+        download(&latest.checksums_url, &temp_sums, "download checksums to")?;
 
         verify_checksum(&temp_exe, &temp_sums)?;
 
@@ -201,13 +187,6 @@ fn verify_checksum(binary_path: &Path, sums_path: &Path) -> Result<(), UpdateErr
     Ok(())
 }
 
-/// Converts an `UpdateError` message into an `std::io::Error` so nested
-/// failure paths can still be reported through the typed error. Used only
-/// where a sub-failure would otherwise have no `io::Error` source.
-fn io_from_string(message: String) -> std::io::Error {
-    std::io::Error::other(message)
-}
-
 /// What `update` does after comparing this build with the published release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UpdateDecision {
@@ -232,6 +211,15 @@ fn update_decision(current: &str, latest: &str) -> UpdateDecision {
 /// stdout; never touches the MCP transport.
 pub fn run_update() -> Result<(), UpdateError> {
     let current = env!("CARGO_PKG_VERSION");
+
+    // Refused before any network call: the only published asset is for one
+    // platform, and its checksum would pass on any other.
+    if !platform_supported(std::env::consts::OS, std::env::consts::ARCH) {
+        return Err(UpdateError::UnsupportedPlatform {
+            os: std::env::consts::OS,
+            arch: std::env::consts::ARCH,
+        });
+    }
 
     let latest = fetch_latest_release()?;
 
