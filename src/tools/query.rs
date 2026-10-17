@@ -289,12 +289,6 @@ fn describe_error(error: &rusqlite::Error, abort_reason: &Arc<AtomicU8>) -> Erro
     ErrorData::invalid_params(message, None)
 }
 
-/// Returns the byte offset of the first top-level `;` in `sql`, or `None`.
-/// "Top-level" means outside single-quoted strings, double-quoted
-/// identifiers, backtick/bracket identifiers, and line/block comments — so
-/// `SELECT ';'` and `SELECT 1 -- ;` are not mistaken for multiple
-/// statements, and neither are `SELECT '--' AS x; SELECT 2` (comment
-/// markers inside a literal are ordinary characters). Used only to produce
 #[cfg(test)]
 #[path = "query_tests.rs"]
 mod tests;
