@@ -1438,3 +1438,13 @@ Format: date — title; status; context; decision; rationale; consequences.
 - **Consequences**: `tests/gate_binaries.rs` pins the shared contract at process level;
   the parser's unit tests sit beside it.
 
+
+## 2026-10-17 — The line limit is a justification checkpoint, not a size cap
+
+- **Decision**: keep `check_source_limits` and its exception tiers unchanged; close PLAN
+  open item 4 (function and file length).
+- **Rationale** (owner): the limit exists so that a larger file forces a conversation in
+  which the author must justify it to the owner. If a file with more lines is truly
+  justified, the exception is added; otherwise the code is restructured.
+- **Rejected**: replacing the line limit with a cyclomatic-complexity/CRAP gate — it
+  measures the code but never makes anyone justify it to the owner.

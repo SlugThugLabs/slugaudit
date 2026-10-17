@@ -446,19 +446,13 @@ covering `SectionNotAnObject`, `UnknownAgent`, `InvalidChoice`, `RemoveFailed`, 
    carry a short quoted anchor so drift is visible, or dropping line numbers in
    favour of symbol names, which cannot rot. **Owner decision** — the third is
    the only one that removes the failure mode rather than detecting it.
-4. **Function and file length — deferred by the owner**, to be discussed as a
-   policy question first. 52 production functions are over 50 lines and 9 are
-   over cyclomatic 15. Worth knowing before deciding: splitting a function
-   usually *grows* its file (an extracted fn costs a signature and its own doc),
-   and this audit had to trim three files back under their ceilings to pay for
-   added structure — the counter charges for structure, not for comments or
-   string literals, so rationale belongs in a comment.
-   **2026-10-16 (uncommitted):** splits were made only where a function did several
-   jobs — `check_source_limits`' `scan_step` (one `ScanCursor` method per token state),
-   `check_performance`'s `main` (args/bench/compare/record/format modules),
-   `structure_with_limits`/`run_query` (new `src/tools/structure_exec.rs`) and
-   `report_completeness::build` (one `grouped_counts` helper). Three line-exception
-   annotations went away with them. The length policy itself is still the owner's.
+4. **Function and file length — resolved 2026-10-17: kept as designed.** The owner
+   decided the line limit stays. Its purpose is not to cap size but to force a
+   conversation: a file past the floor needs a `slugaudit-line-exception` the owner
+   accepts only when the extra lines are truly justified. A complexity gate was
+   proposed as a replacement and declined, because it never makes anyone justify the
+   code to the owner. Splits made on 2026-10-16 (`scan_step`, `check_performance`'s
+   `main`, `structure_exec.rs`, `grouped_counts`) were by responsibility, not length.
 
 ## Connect surface: what is verified, and what is left
 
