@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=one file owns the notify watcher lifecycle, per-project watch states, scope/rule maintenance, and the event filter; splitting would fragment the manager's lock discipline and the tool-thread-vs-event-thread unwatch rule across modules
+// slugaudit-line-exception: approved-by=slugthug; reason=the notify watcher lifecycle, per-project watch states and scope refresh all run under one manager lock, and the rule that unwatch happens only on a tool thread (never inside the notify callback, which deadlocks) is enforced by keeping every lock holder in this file; the pure scope diff and event classification live in event_filter.rs
 //!
 //! Filesystem watcher manager. Owns the `notify` watcher and dispatches
 //! events to per-project `WatchState`. Runs on a dedicated background
@@ -11,11 +11,12 @@
 //! ignores — a gitignored `target/` must not be watched, and must never
 //! mark anything dirty.
 
+use super::event_filter::{PathClass, classify_path, watch_dir_changes};
 use super::path::normalize_relative_path;
 use super::scope::WatchScope;
 use super::state::WatchState;
 use super::types::WatcherHealth;
-use crate::ignore_rules::{IgnoreRules, is_excluded_path};
+use crate::ignore_rules::IgnoreRules;
 use crate::util::{lock_or_recover, redacted_path};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
@@ -287,30 +288,7 @@ impl WatchManager {
             (info.scope.clone(), scope, rules)
         };
 
-        let (new_watches, removed_watches) = match &old_scope {
-            Some(old) => (
-                scope
-                    .watch_dirs
-                    .difference(&old.watch_dirs)
-                    .cloned()
-                    .collect::<Vec<_>>(),
-                old.watch_dirs
-                    .difference(&scope.watch_dirs)
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            ),
-            // First scope: the recursive root watch registered above is
-            // the only thing to prune down to the indexable set.
-            None => (
-                scope
-                    .watch_dirs
-                    .iter()
-                    .filter(|dir| *dir != root)
-                    .cloned()
-                    .collect::<Vec<_>>(),
-                Vec::new(),
-            ),
-        };
+        let (new_watches, removed_watches) = watch_dir_changes(old_scope.as_ref(), &scope, root);
 
         let scope_changed = !new_watches.is_empty() || !removed_watches.is_empty();
         if let Some(watcher) = guard.watcher.as_mut() {
@@ -378,24 +356,10 @@ impl WatchManager {
         for path in &paths {
             for (project_root, info) in guard.projects.iter_mut() {
                 if let Some(relative) = normalize_relative_path(project_root, path) {
-                    if is_excluded_path(&relative) {
-                        continue;
-                    }
-                    if is_ignore_file(&relative) {
-                        // Ignore files change the watch scope itself
-                        // (directories can become indexable or not). Flag
-                        // the project so the next tool-thread pass
-                        // recomputes the scope and rules before
-                        // reconciling anything.
-                        info.needs_scope_refresh = true;
-                    } else if let Some(rules) = &info.rules
-                        && rules.should_ignore(&relative)
-                    {
-                        // A gitignored path: never mark dirty. Reconcile
-                        // applies the same filter, so this is belt and
-                        // braces — but a full publish skips these files,
-                        // so the incremental path must too.
-                        continue;
+                    match classify_path(&relative, info.rules.as_deref()) {
+                        PathClass::Excluded | PathClass::Ignored => continue,
+                        PathClass::IgnoreFile => info.needs_scope_refresh = true,
+                        PathClass::Tracked => {}
                     }
                     match event.kind {
                         EventKind::Remove(_) => {
@@ -428,39 +392,6 @@ impl WatchManager {
     }
 }
 
-/// True if `relative` names a `.gitignore` or `.ignore` file — an event
-/// on these must trigger a scope refresh, since the rules they carry can
-/// change which directories are watched and indexed.
-fn is_ignore_file(relative: &str) -> bool {
-    let name = relative.rsplit('/').next().unwrap_or(relative);
-    name == ".gitignore" || name == ".ignore"
-}
-
 #[cfg(test)]
 #[path = "manager_event_tests.rs"]
 mod event_tests;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn is_excluded_path_filters_slugaudit_and_scratch_files() {
-        assert!(is_excluded_path(".planning/slugaudit/project.db"));
-        assert!(is_excluded_path(".git/config"));
-        assert!(is_excluded_path("src/lib.rs~"));
-        assert!(is_excluded_path("notes.tmp"));
-        assert!(!is_excluded_path("src/lib.rs"));
-        assert!(!is_excluded_path("README.md"));
-    }
-
-    #[test]
-    fn is_ignore_file_detects_ignore_files_at_any_depth() {
-        assert!(is_ignore_file(".gitignore"));
-        assert!(is_ignore_file("sub/.gitignore"));
-        assert!(is_ignore_file(".ignore"));
-        assert!(is_ignore_file("sub/deep/.ignore"));
-        assert!(!is_ignore_file("src/lib.rs"));
-        assert!(!is_ignore_file("gitignore"));
-    }
-}

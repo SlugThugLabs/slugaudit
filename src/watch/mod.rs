@@ -25,6 +25,7 @@
 //! reconciliation). If so, it takes another barrier and reconciles again.
 //! This loops until the watcher sequence stabilizes.
 
+mod event_filter;
 mod manager;
 mod path;
 mod scope;

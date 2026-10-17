@@ -116,6 +116,7 @@ src/
 ├── watch/                    filesystem watching
 │   ├── mod.rs                public exports
 │   ├── manager.rs            WatchManager: notify lifecycle + event dispatch
+│   ├── event_filter.rs       scope watch-dir diff + per-path event class
 │   ├── state.rs              WatchState — thread-safe per-project state
 │   ├── types.rs              WatcherHealth + ProjectWatchState
 │   ├── scope.rs              which directories are watched
