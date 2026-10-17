@@ -16,8 +16,11 @@ type Hooks = std::collections::HashMap<std::path::PathBuf, Box<dyn FnOnce() + Se
 static HOOKS: std::sync::Mutex<Option<Hooks>> = std::sync::Mutex::new(None);
 
 /// Arms a one-shot hook that fires the next time [`fire`] is called for the
-/// same `root`. Keyed by the canonical root, because that is what the sync
-/// path passes to [`fire`]; a test's temp path is not canonical on macOS.
+/// same `root`. Both sides key by the canonical root: the sync path passes
+/// [`fire`] a canonical root while `publish()` callers pass the test's temp
+/// path, which is not canonical on macOS (`/var` → `/private/var`). Keying
+/// only one side made the publish race tests wait forever on macOS CI
+/// (run 38949456424, 2026-10-16, cancelled at the 6-hour job limit).
 #[cfg(test)]
 pub(crate) fn set(root: &Path, hook: impl FnOnce() + Send + 'static) {
     let mut guard = HOOKS
@@ -39,9 +42,40 @@ pub(crate) fn fire(root: &Path) {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_mut()
-            .and_then(|hooks| hooks.remove(root));
+            .and_then(|hooks| hooks.remove(&crate::util::canonical_or_self(root)));
         if let Some(hook) = hook {
             hook();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hook_armed_through_a_symlinked_root_fires_for_either_spelling() {
+        let real = tempfile::tempdir().expect("real root");
+        let links = tempfile::tempdir().expect("link dir");
+        let link = links.path().join("root");
+        std::os::unix::fs::symlink(real.path(), &link).expect("symlink root");
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let first = std::sync::Arc::clone(&fired);
+        set(&link, move || {
+            first.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        fire(real.path());
+        let second = std::sync::Arc::clone(&fired);
+        set(real.path(), move || {
+            second.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        fire(&link);
+
+        assert_eq!(
+            fired.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "set and fire must agree on the root whichever spelling each side uses"
+        );
     }
 }
