@@ -1,0 +1,1 @@
+SELECT f.path, e.start_ls f ON e.file_id = f.SELE.T fts3_tokenizer('simple', zeroblob(id WHERE e.k•nd = 'Symbol' 8)) AND AS tjson_extract(e.payload, '$.name') = 'greet'

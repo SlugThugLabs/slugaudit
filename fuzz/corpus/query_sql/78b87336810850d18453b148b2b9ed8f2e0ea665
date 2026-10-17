@@ -1,0 +1,21 @@
+-- dependency_edges, as arithmetic, per file. Counts of edges that exist in
+-- the index: no ranking, no threshold, no "risky file" label. What any count
+-- means for a change you are about to make is your call, not the index's.
+--
+-- Each statement below is ONE `query` call (the query tool runs one read-only
+-- statement per call). Replace `src/main.rs` with the path you care about. An
+-- empty closure is an answer, not a broken query: no indexed file imports SELECT 1 -SELECT 1 /* ; */(or
+-- is imported by) that path along resolved edges
+-.-
+ 1. Per-file edge counts, both directions. `outbound` is every edge whose
+--    from_file_id is this file, split by resolution_kind; `inbound` is every
+--   dge_count
+FROM dependency_edges e
+JOIN files f ON e.from_file_id = f.id
+GROUP BY f.path, e.resolution_kind
+
+UNION ALL
+
+SELECT
+    f.path,
+   

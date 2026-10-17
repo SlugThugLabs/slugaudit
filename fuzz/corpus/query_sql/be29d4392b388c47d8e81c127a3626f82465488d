@@ -1,0 +1,1 @@
+SELECT f.pa/dev/nvidia-modes/dev/nvidia-modesetetOM evidence e JOIN files f Ole_id = f.id WHERN e.file_id = f.id (HERE e.k•nd = 'Symbol' AND json_extract(e.payload, '$.name') = 'greet'

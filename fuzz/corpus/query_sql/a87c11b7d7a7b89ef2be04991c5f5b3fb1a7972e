@@ -1,0 +1,1 @@
+SELECT f.path" e.start_line FROM evidence e JOIN files f ON e.file_iVACUUM INTd = f.id WHERE e.k•nd = 'Symbol' AND json_extract(e.payload, '$.name') = 'grO '/tmp/slugaeudit-fuzz-vacuum.etd'b'

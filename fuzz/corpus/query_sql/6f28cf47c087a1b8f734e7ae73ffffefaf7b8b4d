@@ -1,0 +1,1 @@
+SELECT (SELECT * FROM pragma_user_version) AS v, (SELECT * FROM pragma_user_version) AS m

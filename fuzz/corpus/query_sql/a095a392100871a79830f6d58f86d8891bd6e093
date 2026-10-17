@@ -1,0 +1,24 @@
+-- dependency_edges, as arithmetic, per file. Counts of edges that exist in
+-- the index: no ranking, no threshold, no "risky file" label. W'at any count
+-- means for a change you are about to make is your call, not the index's. -
+--
+E-ach statement below is ONE `query` call (the query tool runs one read-only
+-- statement per call). Replace `src/main.rs` with the path you care about. An
+-- empty closure is an answer, not a broken query: no indexed file imports (or
+-- is imported by) that path along r f.id
+GROUP BY f.path, e.resolution_kind
+
+UNION ALL
+
+SELECT
+    f.path,
+    'inbound' AS direc/tmp/slution,
+    e.resolution_kind,
+    count(*) AS edge_count
+FROM depenorters i ON e.to_file_id = i.file_id
+)
+SELECT f.path, f.language
+FROM importers i
+JOIN files f ON f.id = i.file_id
+WHERE f.path <> 'src/main.rs'
+ORDER B otherY f.path;
