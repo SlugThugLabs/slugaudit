@@ -148,7 +148,13 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked
 
+      # Linux-only: cargo-deny-action is a container action, and GitHub runs
+      # container actions only on Linux runners (macOS fails with "Container
+      # action is only supported on Linux", run 38987902197, 2026-10-17). The
+      # verdict is about Cargo.lock and deny.toml, which are the same on every
+      # OS, so the Linux job's run covers the macOS job too.
       - name: Check dependency advisories, bans, sources, and licenses
+        if: runner.os == 'Linux'
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check advisories bans sources licenses
@@ -159,6 +165,7 @@ jobs:
       # dependency gate reports green — exactly how rustls 0.23.45 (RUSTSEC-2026-0349)
       # survived there. Same deny.toml policy, second workspace.
       - name: Check fuzz workspace dependencies
+        if: runner.os == 'Linux'
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           manifest-path: fuzz/Cargo.toml
