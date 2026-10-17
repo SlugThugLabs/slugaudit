@@ -66,32 +66,50 @@ fn connect_via_cli(
     binary: &Path,
     home: Option<&Path>,
 ) -> Result<(), ConnectError> {
-    let installed = agent.cli.filter(|cli| which::which(cli).is_ok());
-    let Some(cli) = installed else {
-        // No binary to drive. With a documented file path we can still write
-        // the config; otherwise the user gets instructions.
-        return match (agent.file_fallback, agent.cli) {
-            (true, Some(cli)) if guidance::config_writable(agent) => {
-                let note = guidance::fallback_note(agent, home, cli, "not found on PATH");
-                write_agent_config(agent, binary, home, Some(&note)).inspect_err(|err| {
-                    report_failure(
-                        agent,
-                        binary,
-                        &write_action(agent, home),
-                        None,
-                        &err.to_string(),
-                    );
-                })
-            }
-            (_, Some(cli)) => Err(guidance::cli_absent(
-                agent,
-                binary,
-                cli,
-                &connect_cli::display_command(cli, &connect_cli::add_args(agent, binary)),
-            )),
-            (_, None) => Err(guidance::refusal(agent, binary, home)),
-        };
-    };
+    match agent.cli.filter(|cli| which::which(cli).is_ok()) {
+        Some(cli) => run_installed_cli(agent, binary, home, cli),
+        None => connect_without_cli(agent, binary, home),
+    }
+}
+
+/// The client's binary is not on `PATH`. With a documented file path we can
+/// still write the config; otherwise the user gets instructions.
+fn connect_without_cli(
+    agent: &AgentDef,
+    binary: &Path,
+    home: Option<&Path>,
+) -> Result<(), ConnectError> {
+    match (agent.file_fallback, agent.cli) {
+        (true, Some(cli)) if guidance::config_writable(agent) => {
+            let note = guidance::fallback_note(agent, home, cli, "not found on PATH");
+            write_agent_config(agent, binary, home, Some(&note)).inspect_err(|err| {
+                report_failure(
+                    agent,
+                    binary,
+                    &write_action(agent, home),
+                    None,
+                    &err.to_string(),
+                );
+            })
+        }
+        (_, Some(cli)) => Err(guidance::cli_absent(
+            agent,
+            binary,
+            cli,
+            &connect_cli::display_command(cli, &connect_cli::add_args(agent, binary)),
+        )),
+        (_, None) => Err(guidance::refusal(agent, binary, home)),
+    }
+}
+
+/// Drives the installed client's `mcp add`, falling back to the config file
+/// when the entry allows it and the CLI rejects the call.
+fn run_installed_cli(
+    agent: &AgentDef,
+    binary: &Path,
+    home: Option<&Path>,
+    cli: &str,
+) -> Result<(), ConnectError> {
     let args = connect_cli::add_args(agent, binary);
     let attempted = connect_cli::display_command(cli, &args);
     if agent.evidence != Evidence::VerifiedByProbe && !connect_cli::supports_add(cli) {
