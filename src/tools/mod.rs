@@ -24,7 +24,6 @@ mod leads_page;
 mod leads_query;
 mod project_control;
 mod query;
-mod query_sql_scanner;
 mod query_value;
 
 mod report;

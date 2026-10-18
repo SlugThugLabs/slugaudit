@@ -2,7 +2,7 @@
 //! Target 2 — SQL fed to `query`, including authorizer-bypass attempts.
 //!
 //! `query` executes agent-supplied SQL against the project's own database.
-//! Four guards stand between the text and the store, and all four are
+//! Three guards stand between the text and the store, and all three are
 //! downstream of this one public function:
 //!
 //! 1. the read-only connection (`store::connection::open_read_only`, opened
@@ -11,10 +11,11 @@
 //!    `ATTACH`/`DETACH` (`store::connection::guard_against_attach`),
 //! 3. the subquery wrapper (`SELECT * FROM (\n…\n) LIMIT … OFFSET …`), which
 //!    is what refuses a statement that is not a `SELECT`,
-//! 4. the single-statement separator scanner (`first_statement_separator`),
-//!    a UX hint whose job is to say *which* byte spliced a second statement.
 //!
-//! This target attacks all four from outside: the corpus carries the payload
+//! A second statement is refused by SQLite's own parser (rusqlite's
+//! `MultipleStatement`), not by any lexer in this crate.
+//!
+//! This target attacks all three from outside: the corpus carries the payload
 //! tables from `src/tools/query_safety_tests.rs` (`ATTACH`/`DETACH`,
 //! `PRAGMA` write forms, `VACUUM INTO`, `load_extension`, filesystem
 //! functions, data-modifying CTEs, `;` splices past string literals and
@@ -42,9 +43,6 @@ mod support;
 /// refused before the wrapper is built.
 const MAX_SQL_BYTES: usize = 50_000;
 
-/// `src/tools/query.rs`'s `MAX_ROWS`: the hard per-page row cap.
-const MAX_ROWS: usize = 500;
-
 fuzz_target!(|data: &[u8]| {
     if data.len() > MAX_SQL_BYTES {
         return;
@@ -58,14 +56,15 @@ fuzz_target!(|data: &[u8]| {
     });
 
     // A refusal is the expected outcome for most hostile inputs and is not
-    // the target's subject; what a success must satisfy is the documented row
-    // cap (`MAX_ROWS`), because a page larger than it would mean the cap
-    // stopped being enforced rather than that the query was unusual.
+    // the target's subject; what a success must satisfy is the paging
+    // contract: `truncated` and `next_offset` always travel together. (No
+    // row or byte ceiling is asserted: the first row is always kept, even
+    // over the byte budget.)
     if let Ok(Json(response)) = query(&request, &NoopProgressSink, &fixture.manager) {
-        assert!(
-            response.rows.len() <= MAX_ROWS,
-            "a page carried {} rows, past the {MAX_ROWS}-row cap",
-            response.rows.len()
+        assert_eq!(
+            response.truncated,
+            response.next_offset.is_some(),
+            "truncated and next_offset disagree"
         );
     }
 });

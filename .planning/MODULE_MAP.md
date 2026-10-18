@@ -40,7 +40,6 @@ src/
 │   ├── report_completeness.rs  the report's index-completeness block
 │   ├── report_edges.rs       the report's inbound/outbound edge totals
 │   ├── query.rs              arbitrary read-only SQL with budgets
-│   ├── query_sql_scanner.rs  SQLite statement boundary scanner
 │   ├── query_value.rs        SQLite row/value → JSON with a per-value cap
 │   ├── structure.rs          tree-sitter pattern match: contract, validation, targets
 │   ├── structure_exec.rs     query execution under match cap + time budget

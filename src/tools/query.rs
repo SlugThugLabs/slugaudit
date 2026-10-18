@@ -1,6 +1,5 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=one tool contract owns request/response types, the execution/budget path, and the single-statement separator scanner; splitting would fragment the query tool's validation order (empty → size → statement count → freshness → budget) that the tests assert against
+// slugaudit-line-exception: approved-by=slugthug; reason=one tool contract owns request/response types and the execution/budget path (single-statement check, wrapper, byte budget); splitting would fragment the query tool's validation order (empty → size → freshness → statement count → budget) that the tests assert against
 use super::context::{ensure_synced, guard_expected_revision, internal_error, with_verified_read};
-use super::query_sql_scanner::first_statement_separator;
 use super::query_value::row_to_json;
 
 use crate::error_codes::{self, ErrorCode};
@@ -16,7 +15,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
 
-const MAX_ROWS: usize = 500;
 const MAX_PATH_BYTES: usize = 32 * 1024;
 const MAX_REVISION_BYTES: usize = 256;
 const ABORT_NONE: u8 = 0;
@@ -147,15 +145,6 @@ fn query_with_limits(
             None,
         ));
     }
-    if let Some(position) = first_statement_separator(trimmed) {
-        return Err(ErrorData::invalid_params(
-            format!(
-                "sql contains more than one statement (separator at byte {position}); \
-                 only a single read-only statement is supported"
-            ),
-            None,
-        ));
-    }
 
     let synced = ensure_synced(path, sink, manager)?;
     guard_expected_revision(&synced.revision_id, expected_revision.as_deref())?;
@@ -180,8 +169,8 @@ fn query_with_limits(
     }))
 }
 
-/// Executes `trimmed` under a VM-step and wall-clock budget, returning at
-/// most `MAX_ROWS + 1` rows so the caller can detect row-count truncation.
+/// Executes `trimmed` under a VM-step and wall-clock budget, returning the
+/// rows that fit `max_query_response_bytes` and whether the page was cut.
 fn run_query(
     tx: &Transaction<'_>,
     trimmed: &str,
@@ -230,13 +219,13 @@ fn execute_and_collect(
     limits: &ResourceLimits,
     abort_reason: &Arc<AtomicU8>,
 ) -> Result<(Vec<serde_json::Value>, bool), ErrorData> {
+    let body = single_statement_body(tx, trimmed, abort_reason)?;
     // The user SQL is wrapped on its own line so a trailing `-- line comment`
     // terminates at the newline rather than swallowing the closing `)` and
     // `LIMIT` clause, which would otherwise produce a confusing parse error.
-    let wrapped = format!(
-        "SELECT * FROM (\n{trimmed}\n) LIMIT {} OFFSET {offset}",
-        MAX_ROWS + 1
-    );
+    // `LIMIT -1` is "no limit": SQLite requires a LIMIT before OFFSET, and the
+    // page is cut only by the response byte budget below.
+    let wrapped = format!("SELECT * FROM (\n{body}\n) LIMIT -1 OFFSET {offset}");
     let mut statement = tx
         .prepare(&wrapped)
         .map_err(|error| describe_error(&error, abort_reason))?;
@@ -265,9 +254,37 @@ fn execute_and_collect(
         total_bytes = total_bytes.saturating_add(row_bytes);
         rows.push(value);
     }
-    let truncated = size_truncated || rows.len() > MAX_ROWS;
-    rows.truncate(MAX_ROWS);
-    Ok((rows, truncated))
+    Ok((rows, size_truncated))
+}
+
+/// Proves `sql` is exactly one statement and returns its text without the
+/// terminating `;`, so it can sit inside the wrapper's parentheses.
+///
+/// SQLite's own parser decides: `Connection::prepare` compiles the first
+/// statement and, when input remains after it, prepares that remainder and
+/// fails with `Error::MultipleStatement` only if the remainder holds a real
+/// statement (rusqlite 0.37.0 `src/lib.rs:770-775`). Whitespace, comments and
+/// bare `;` after the first statement are therefore accepted, and a `;`
+/// inside a literal, quoted identifier or comment never counts. No SQL is
+/// lexed here. `expanded_sql` (no parameters are bound) is the statement text
+/// SQLite consumed, which excludes any trailing comment after the `;`.
+fn single_statement_body(
+    tx: &Transaction<'_>,
+    sql: &str,
+    abort_reason: &Arc<AtomicU8>,
+) -> Result<String, ErrorData> {
+    let statement = tx.prepare(sql).map_err(|error| match error {
+        rusqlite::Error::MultipleStatement => ErrorData::invalid_params(
+            "sql contains more than one statement; \
+             only a single read-only statement is supported",
+            None,
+        ),
+        other => describe_error(&other, abort_reason),
+    })?;
+    let text = statement.expanded_sql().ok_or_else(|| {
+        ErrorData::invalid_params("sql must contain a statement, not only comments", None)
+    })?;
+    Ok(text.trim_end().trim_end_matches(';').to_owned())
 }
 
 /// Converts an aborted-query error into a message naming which budget was

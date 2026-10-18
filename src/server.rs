@@ -70,7 +70,7 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     non-code files), `evidence` (id, file_id, kind, start_line, end_line, payload — JSON; kinds Structure, \
     Import, Export, Comment, Docstring, Symbol, Diagnostic, Call), `dependency_edges` \
     (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled). One read-only \
-    SQL statement per call, cut by a 500-row cap and by the response byte budget (`truncated`/`next_offset`); \
+    SQL statement per call, with no row cap (add your own LIMIT), cut only by the response byte budget (`truncated`/`next_offset`); \
     when resuming an `offset`, pass the previous page's `revision_id` as `expected_revision` and a changed index \
     is refused with `stale_revision` instead of returning rows from a different ordering. Always JOIN evidence \
     to files: SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = \

@@ -1164,8 +1164,17 @@ maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by rea
   value. Tests: `an_unparseable_override_warning_carries_the_parse_error`,
   `a_non_unicode_override_warns_without_logging_its_value`,
   `a_non_unicode_profile_warns_without_logging_its_value`.
-- **Still open, unverified (auditor-reported):** `query_sql_scanner` rejects `SELECT 1; -- c`
-  as multi-statement and may be replaceable by SQLite's own prepare error;
+- **SQL scanner deleted and `query` row cap removed — landed (uncommitted, 2026-10-18).**
+  `src/tools/query_sql_scanner.rs` (hand-rolled lexer, no recorded reason) is gone: single-statement
+  detection is rusqlite's `Error::MultipleStatement` (SQLite's own tail check, rusqlite 0.37.0
+  `src/lib.rs:770-775`), mapped to `invalid_params`; it now runs after sync, inside the read
+  transaction. `MAX_ROWS = 500` is gone: the wrapper uses `LIMIT -1`, and a page is cut only by
+  `max_query_response_bytes` (agents write their own `LIMIT`; the unit is bytes, not rows).
+  Resolved by the deletion: the auditor's "`query_sql_scanner` rejects `SELECT 1; -- c`" item.
+  Tests: `more_than_one_statement_is_refused_with_the_single_statement_message`,
+  `a_single_statement_with_semicolons_or_trailing_trivia_is_accepted`,
+  `more_than_500_rows_come_back_in_one_page_when_the_byte_budget_allows`.
+- **Still open, unverified (auditor-reported):**
   `update_fetch::compare_versions` treats `1.0` < `1.0.0`; `graph/resolve.rs::normalize_join`
   drops `..` past the root; `ignore_rules::is_excluded_dir` string-prefix match excludes
   `.planning/slugaudit-notes/`; `netfs` mountinfo ignores `\040` escapes; nested-macro

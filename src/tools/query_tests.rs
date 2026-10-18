@@ -162,140 +162,66 @@ fn an_attached_database_attempt_fails() {
 }
 
 /// Multi-statement SQL can't be expressed by the subquery wrapper, but a
-/// raw SQLite "near \";\": syntax error" is confusing — the caller should
-/// be told plainly that only one statement is allowed. The separator
-/// scanner must not misfire on `;` inside string literals, quoted
-/// identifiers, or comments.
+/// raw SQLite syntax error is confusing, so the caller is told plainly that
+/// only one statement is allowed. SQLite's own parser (via rusqlite's
+/// `MultipleStatement`) decides what counts as a second statement.
 #[test]
-fn multi_statement_sql_gets_a_friendly_typed_error() {
+fn more_than_one_statement_is_refused_with_the_single_statement_message() {
     let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
-    let error = ask(&project, "SELECT 1; SELECT 2")
-        .expect_err("multi-statement sql is rejected with a typed error");
-    assert!(
-        error.message.contains("more than one statement"),
-        "unexpected message: {}",
-        error.message
-    );
 
-    // A semicolon inside a string literal is one statement and must work.
+    for sql in [
+        "SELECT 1; SELECT 2",
+        "SELECT 1; DROP TABLE files",
+        "SELECT 'a;b'; SELECT 2",
+        "SELECT 1 /* c */; SELECT 2",
+        "SELECT '--x'; SELECT 2",
+    ] {
+        let error = ask(&project, sql).expect_err("a second statement must be refused");
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{sql}");
+        assert!(
+            error
+                .message
+                .contains("only a single read-only statement is supported"),
+            "{sql}: unexpected message: {}",
+            error.message
+        );
+    }
+
+    let files = ask(&project, "SELECT path FROM files").expect("the index is untouched");
+    assert_eq!(files.rows.len(), 1, "{:?}", files.rows);
+}
+
+#[test]
+fn a_single_statement_with_semicolons_or_trailing_trivia_is_accepted() {
+    let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
+
+    for sql in [
+        "SELECT 1;",
+        "SELECT 1;\n",
+        "SELECT 1; -- done",
+        "SELECT 1 -- note",
+        "SELECT ';' AS x",
+        "SELECT 1 /* ; */",
+        "SELECT 1;;",
+        "SELECT 1; /* done */",
+        "SELECT 1 AS \"a;b\"",
+        "SELECT 'it''s; fine' AS x",
+        "SELECT 1 AS [a;b]",
+    ] {
+        let response = ask(&project, sql).unwrap_or_else(|e| panic!("{sql}: {}", e.message));
+        assert_eq!(response.rows.len(), 1, "{sql}");
+        assert!(!response.truncated, "{sql}");
+    }
     let response = ask(&project, "SELECT ';' AS x").expect("string semicolon is fine");
     assert_eq!(response.rows[0]["x"], ";");
-
-    // A semicolon inside a quoted identifier is one statement.
-    let response = ask(&project, "SELECT 1 AS \"a;b\"").expect("quoted identifier is fine");
-    assert_eq!(response.rows[0]["a;b"], 1);
-
-    // A semicolon inside a comment is one statement.
-    let response = ask(&project, "SELECT 1 -- ; trailing").expect("comment semicolon is fine");
-    assert_eq!(
-        response.rows[0]
-            .as_object()
-            .expect("row is an object")
-            .len(),
-        1
-    );
-
-    // A single trailing semicolon is stripped, not treated as a separator.
-    ask(&project, "SELECT 1;").expect("trailing semicolon is fine");
-
-    // Escaped quotes must not confuse the scanner ('' inside a string).
-    ask(&project, "SELECT 'it''s; fine' AS x").expect("escaped quote is fine");
-
-    // A semicolon inside a block comment is one statement.
-    let response = ask(&project, "SELECT 1 /* ; */ AS x").expect("block comment is fine");
-    assert_eq!(response.rows[0]["x"], 1);
-
-    // A semicolon inside backtick/bracket identifiers is one statement.
-    let response = ask(&project, "SELECT 1 AS `a;b`").expect("backtick identifier is fine");
-    assert_eq!(response.rows[0]["a;b"], 1);
-    let response = ask(&project, "SELECT 1 AS [a;b]").expect("bracket identifier is fine");
-    assert_eq!(response.rows[0]["a;b"], 1);
-
-    // A separator after a closed block comment is still detected.
-    let error = ask(&project, "SELECT 1 /* c */; SELECT 2")
-        .expect_err("semicolon after a block comment is a real separator");
-    assert!(error.message.contains("more than one statement"));
-
-    // Comment markers inside a literal are ordinary characters: the old
-    // scanner checked comments *before* string state, so `--` inside a
-    // string skipped to end-of-line and hid the real separator, replacing
-    // the friendly error with SQLite's raw `near \";\"` error.
-    for sql in [
-        "SELECT '--x'; SELECT 2",
-        "SELECT '/*' AS x; SELECT 2",
-        "SELECT 1 AS \"a--b\"; SELECT 2",
-    ] {
-        let error = ask(&project, sql)
-            .expect_err("a comment marker inside a literal must not hide the real separator");
-        assert!(error.message.contains("more than one statement"));
-    }
-    for sql in [
-        "SELECT '--x' AS x",
-        "SELECT '/*' AS x",
-        "SELECT 1 AS \"a--b\"",
-    ] {
-        ask(&project, sql).expect("a single statement with a comment marker in a literal works");
-    }
 }
 
-/// Scanner-level pinning of the comment-vs-string ordering: `--`/`/*`
-/// inside a literal or quoted identifier are ordinary characters, and the
-/// offsets are the first *top-level* `;`. (End-to-end behavior is covered
-/// by `multi_statement_sql_gets_a_friendly_typed_error`.)
-#[test]
-fn separator_scanner_ignores_comment_markers_inside_literals() {
-    assert_eq!(
-        first_statement_separator("SELECT '--' AS x; SELECT 2"),
-        Some(16)
-    );
-    assert_eq!(
-        first_statement_separator("SELECT '--x'; SELECT 2"),
-        Some(12)
-    );
-    assert_eq!(
-        first_statement_separator("SELECT '/*' AS x; SELECT 2"),
-        Some(16)
-    );
-    assert_eq!(
-        first_statement_separator("SELECT 'a' || '/*'; SELECT 2"),
-        Some(18)
-    );
-    assert_eq!(
-        first_statement_separator("SELECT 1 AS \"a--b\"; SELECT 2"),
-        Some(18)
-    );
-    assert_eq!(
-        first_statement_separator("SELECT 1 AS `a--b`; SELECT 2"),
-        Some(18)
-    );
-    assert_eq!(
-        first_statement_separator("SELECT 1 AS [a--b]; SELECT 2"),
-        Some(18)
-    );
-    assert_eq!(
-        first_statement_separator("SELECT ';--' AS x; SELECT 2"),
-        Some(17)
-    );
-    assert_eq!(first_statement_separator("SELECT '--' AS x"), None);
-    assert_eq!(first_statement_separator("SELECT 1 AS \"a--b\""), None);
-    assert_eq!(first_statement_separator("SELECT 1 -- ;\nSELECT 2"), None);
-    assert_eq!(
-        first_statement_separator("SELECT 1 /* ; */; SELECT 2"),
-        Some(16)
-    );
-}
-
-/// The separator scanner walks bytes (`sql.as_bytes()`), which is correct
-/// for UTF-8 by construction: no multibyte character's encoding ever
-/// contains an ASCII byte (leading bytes are ≥ 0xC0, continuation bytes are
-/// 0x80–0xBF), so the ASCII delimiters the scanner looks for (`;`, `'`,
-/// `"`, `-`, `/`, `*`, backtick, bracket) can never appear inside a
-/// multibyte character. This test pins that property end-to-end: a
+/// Multibyte text around a `;` must not confuse statement counting: a
 /// multibyte string literal containing a semicolon, a multibyte quoted
-/// identifier, and a semicolon inside a multibyte line comment must all be
-/// treated as one statement.
+/// identifier, and a semicolon inside a multibyte line comment are all one
+/// statement, while a real separator after multibyte content still counts.
 #[test]
-fn multibyte_content_never_confuses_the_statement_separator_scanner() {
+fn multibyte_content_never_confuses_statement_counting() {
     let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
 
     // A multibyte string literal with a semicolon inside is one statement.
@@ -325,7 +251,7 @@ fn multibyte_content_never_confuses_the_statement_separator_scanner() {
     // A real separator still counts even when multibyte text precedes it.
     let error = ask(&project, "SELECT '終わり'; SELECT 2")
         .expect_err("a separator after multibyte content is still a separator");
-    assert!(error.message.contains("more than one statement"));
+    assert!(error.message.contains("single read-only statement"));
 }
 
 #[test]
@@ -377,15 +303,46 @@ fn oversized_sql_carries_its_code_and_never_the_sql_text() {
     );
 }
 
+const COUNT_TO_900: &str = "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL \
+    SELECT x + 1 FROM cnt WHERE x < 900) SELECT x FROM cnt";
+
 #[test]
-fn results_are_capped_and_truncation_is_reported() {
+fn more_than_500_rows_come_back_in_one_page_when_the_byte_budget_allows() {
     let project = activated_project(&[]);
-    let response = ask(
-        &project,
-        "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 600) SELECT x FROM cnt")
-    .expect("recursive CTE query succeeds");
-    assert_eq!(response.rows.len(), MAX_ROWS);
-    assert!(response.truncated);
+
+    let response = ask(&project, COUNT_TO_900).expect("recursive CTE query succeeds");
+
+    assert_eq!(response.rows.len(), 900);
+    assert!(!response.truncated);
+    assert_eq!(response.next_offset, None);
+}
+
+#[test]
+fn a_page_is_cut_by_the_byte_budget_and_resumes_at_next_offset() {
+    let project = activated_project(&[]);
+    let limits = ResourceLimits {
+        max_query_response_bytes: 200,
+        ..ResourceLimits::default()
+    };
+
+    let first = ask_with_limits(&project, COUNT_TO_900, &limits).expect("first page");
+
+    assert!(first.truncated);
+    assert!(first.rows.len() > 1 && first.rows.len() < 900);
+    assert_eq!(first.next_offset, Some(first.rows.len()));
+    assert_eq!(first.rows[0]["x"], 1);
+}
+
+#[test]
+fn an_agent_limit_and_offset_still_work_inside_the_subquery() {
+    let project = activated_project(&[]);
+
+    let response = ask(&project, &format!("{COUNT_TO_900} LIMIT 3 OFFSET 10;"))
+        .expect("the agent's own LIMIT/OFFSET is honored");
+
+    let xs: Vec<_> = response.rows.iter().map(|r| r["x"].clone()).collect();
+    assert_eq!(xs, [11, 12, 13]);
+    assert!(!response.truncated);
 }
 
 #[test]
@@ -463,14 +420,16 @@ fn a_pathological_query_is_aborted_by_the_step_budget() {
 fn paging_across_a_revision_change_is_detectable_via_revision_id() {
     let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
 
-    // Generate more than MAX_ROWS rows so paging is real (offset + next).
-    let sql = "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL \
-               SELECT x + 1 FROM cnt WHERE x < 900) SELECT x FROM cnt";
-    let page_one = ask(&project, sql).expect("page one succeeds");
+    // A small byte budget makes paging real (offset + next).
+    let limits = ResourceLimits {
+        max_query_response_bytes: 200,
+        ..ResourceLimits::default()
+    };
+    let sql = COUNT_TO_900;
+    let page_one = ask_with_limits(&project, sql, &limits).expect("page one succeeds");
     assert!(page_one.truncated);
-    assert_eq!(page_one.rows.len(), MAX_ROWS);
     let next_offset = page_one.next_offset.expect("truncated query has next");
-    assert_eq!(next_offset, MAX_ROWS);
+    assert_eq!(next_offset, page_one.rows.len());
 
     let page_two = ask(&project, sql).expect("page two succeeds");
     assert_eq!(

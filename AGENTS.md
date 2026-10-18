@@ -219,9 +219,9 @@ caught in `src/server_runner.rs`: `spawn_blocking(..)`'s `JoinError` becomes an
 3. Open data through `ensure_synced` + `with_verified_read`/`with_verified_write`.
 4. Follow the `leads` shape: module-level consts for caps, complete
    `mechanic_counts` regardless of paging, rows cut by the response byte
-   budget rather than any row ceiling (the old copy of `query`'s
-   `MAX_ROWS = 500` was deliberately removed 2026-10-16; `INSTRUCTIONS`
-   says "no row cap" and that is now true), `detail` clipped on a char
+   budget rather than any row ceiling (`query`'s 500-row cap was
+   removed 2026-10-18; a page is cut only by `max_query_response_bytes`,
+   and the agent writes its own `LIMIT`), `detail` clipped on a char
    boundary and flagged with `detail_clipped`, `next_offset` only when more
    remain, and a completion `tracing::info!`.
 5. Adding a `leads` mechanic is **one new entry** in the `MECHANICS` table
