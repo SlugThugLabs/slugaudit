@@ -3,6 +3,9 @@
 const NEEDLE: &str = "slugaudit-line-exception:";
 const AGENT: &str = "approved-by=slugthug;";
 const HUMAN: &str = "approved-by=human-user;";
+/// Start of every reason `reason` returns for a human approval; the
+/// line-limit policy keys on it to admit the 301–350 band.
+pub(super) const HUMAN_APPROVED_PREFIX: &str = "[human-approved ";
 
 /// Returns the exception reason. Legacy agent approvals remain valid for
 /// files within the original ceiling; dated human approvals may authorize
@@ -23,7 +26,7 @@ pub(super) fn reason(source: &str) -> Option<String> {
                 continue;
             }
             let reason = parse_reason(rest, true)?;
-            return Some(format!("[human-approved {date}] {reason}"));
+            return Some(format!("{HUMAN_APPROVED_PREFIX}{date}] {reason}"));
         }
     }
     None

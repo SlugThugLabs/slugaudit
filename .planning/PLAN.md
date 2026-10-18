@@ -235,14 +235,14 @@ Found while auditing the surfaces and verified in the code. **All five are resol
 
 From a full code-quality audit of all 227 `.rs` files (run against `57c3caa`).
 The full ledger — every site with its quoted source line, plus the detector
-commands and their exact counts — is `.planning/audit_2026-10-16.txt`. It is the
+commands and their exact counts — is `.planning/archive/audit_2026-10-16.txt`. It is the
 evidence behind the items below; this section is the list. Items here carry a
 state.
 
 ### Re-audit at `4de8e9b` (same day) — full-rerun ledger; repaired 2026-10-16 (committed `a37113e`..`75e0fb6`)
 
 Re-ran the complete audit (227 of 227 files; detectors plus context reads of every
-flagged site) against the post-fix HEAD. Ledger: `.planning/audit_2026-10-16_HEAD.txt`
+flagged site) against the post-fix HEAD. Ledger: `.planning/archive/audit_2026-10-16_HEAD.txt`
 (now carries its `# Disposition` block). The root `violation_ledger.txt` was archived as
 `.planning/archive/violation_ledger_57c3caa_superseded.txt`.
 
@@ -367,6 +367,18 @@ The open list below was re-checked line by line against the code. Former items:
 - **Test gaps — partly resolved** (`850b09d`): `file_not_indexed` is pinned at both
   producers (binary file → `structure` and `finding`); the remaining non-panic
   `is_err()`-only assertions now name the error. Still open: see item 2 below.
+- **R4-0 (`verdict()` doc comment ambiguous) — resolved** (uncommitted, 2026-10-18): the
+  comment in `src/bin/check_source_limits/counter.rs` now states each band (0–199, 200–300,
+  301–`HUMAN_APPROVED_CEILING` with a dated human exception only, above it always fail).
+- **R4-1 (301–350 band untested; `"[human-approved "` duplicated) — resolved** (uncommitted,
+  2026-10-18): four tests in `src/bin/check_source_limits/tests.rs` pin 301 and 350 passing with
+  a human annotation, failing with an agent one, and 351 failing even with a human one. The
+  prefix is one const, `approval::HUMAN_APPROVED_PREFIX`, used by both the producer
+  (`approval.rs`) and the policy (`counter.rs`).
+- **D-13 (52 production functions over 50 lines, 9 over cyclomatic 15) — dropped as a rule**
+  (owner decision 2026-10-18): no function-length gate. Splitting tends to grow files, and the
+  350-line file ceiling already bounds size; functions over cyclomatic 15 are handled case by
+  case in normal review, not by a gate.
 
 ### A `mkdir` in a watched project failed the next tool call — resolved 2026-10-16 (uncommitted)
 
@@ -406,7 +418,7 @@ on any failure and reports the failing step as `PlaceError { action, path, sourc
 object (e.g. `[]`) to `ConnectError::HomeUnavailable`, so the user was told their home
 directory was unavailable. It now returns `ConnectError::RootNotAnObject { path }`
 naming the file (`src/cli.rs`). `ConnectError::AgentMissing` was never constructed and
-is removed (the R8-5 note in `.planning/audit_2026-10-16.txt` also called
+is removed (the R8-5 note in `.planning/archive/audit_2026-10-16.txt` also called
 `RemoveFailed` dead; it is constructed by `connect_cli::run_remove`). The duplicated
 menu-answer parsing in `run_connect_interactive`/`run_disconnect_interactive` is one
 `parse_choice` (`src/connect.rs`). Pinned by six tests appended to `src/connect_tests.rs`

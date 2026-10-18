@@ -177,3 +177,51 @@ fn production_files_over_300_hard_fail_even_with_an_exception() {
         }
     );
 }
+
+const HUMAN_ANNOTATION: &str =
+    "// slugaudit-line-exception: approved-by=human-user; date=2026-10-18; reason=cohesive\n";
+const AGENT_ANNOTATION: &str =
+    "// slugaudit-line-exception: approved-by=slugthug; reason=cohesive\n";
+
+#[test]
+fn a_dated_human_exception_passes_a_production_file_at_301_lines() {
+    let reason = exception_reason(HUMAN_ANNOTATION).expect("human annotation parses");
+
+    assert_eq!(
+        verdict(301, Some(reason.clone()), false),
+        Verdict::PassWithException { reason }
+    );
+}
+
+#[test]
+fn a_dated_human_exception_passes_a_production_file_at_350_lines() {
+    let reason = exception_reason(HUMAN_ANNOTATION).expect("human annotation parses");
+
+    assert_eq!(
+        verdict(350, Some(reason.clone()), false),
+        Verdict::PassWithException { reason }
+    );
+}
+
+#[test]
+fn an_agent_exception_fails_hard_at_301_and_350_lines() {
+    let reason = exception_reason(AGENT_ANNOTATION).expect("agent annotation parses");
+    let expected = Verdict::FailHard {
+        ceiling: PRODUCTION_CEILING,
+    };
+
+    assert_eq!(verdict(301, Some(reason.clone()), false), expected);
+    assert_eq!(verdict(350, Some(reason), false), expected);
+}
+
+#[test]
+fn a_dated_human_exception_does_not_rescue_351_lines() {
+    let reason = exception_reason(HUMAN_ANNOTATION).expect("human annotation parses");
+
+    assert_eq!(
+        verdict(351, Some(reason), false),
+        Verdict::FailHard {
+            ceiling: PRODUCTION_CEILING
+        }
+    );
+}

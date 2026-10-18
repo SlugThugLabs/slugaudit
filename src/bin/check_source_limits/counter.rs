@@ -16,6 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::approval::HUMAN_APPROVED_PREFIX;
 use crate::scanner::{self, ScanCursor};
 
 pub(crate) fn code_lines(source: &str) -> usize {
@@ -57,9 +58,11 @@ pub(crate) enum Verdict {
 
 /// The gate's policy. Test files (`*_tests.rs`, `tests.rs`) auto-pass up
 /// to [`TEST_FILE_CEILING`] with no exception requirement; above it they
-/// hard-fail. Production files keep the 0–199 auto-pass / 200–300
-/// approved-exception / >300 hard-fail rule, and an exception never
-/// rescues a file past [`PRODUCTION_CEILING`].
+/// hard-fail. Production files: 0–199 auto-pass; 200–300 pass only with
+/// any parsed exception; 301–[`HUMAN_APPROVED_CEILING`] pass only with a
+/// dated human exception (reason starting with [`HUMAN_APPROVED_PREFIX`]),
+/// otherwise fail with the [`PRODUCTION_CEILING`]; above
+/// [`HUMAN_APPROVED_CEILING`] always fail, whatever the exception.
 pub(crate) fn verdict(code_lines: usize, exception: Option<String>, test_file: bool) -> Verdict {
     if test_file {
         if code_lines > TEST_FILE_CEILING {
@@ -72,7 +75,7 @@ pub(crate) fn verdict(code_lines: usize, exception: Option<String>, test_file: b
     if code_lines > PRODUCTION_CEILING {
         if let Some(reason) = exception
             && code_lines <= HUMAN_APPROVED_CEILING
-            && reason.starts_with("[human-approved ")
+            && reason.starts_with(HUMAN_APPROVED_PREFIX)
         {
             return Verdict::PassWithException { reason };
         }

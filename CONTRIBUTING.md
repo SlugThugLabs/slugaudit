@@ -35,6 +35,8 @@ cargo run --quiet --bin check_no_duplicates --locked      # duplicate commit sub
 cargo run --quiet --bin check_docs_drift --locked         # ARCHITECTURE module map, test count, canonical docs
 cargo run --quiet --bin check_producer_coverage --locked  # every evidence kind is constructed somewhere
 cargo run --quiet --bin check_governance --locked         # governance files exist; CODEOWNERS paths resolve
+cargo run --quiet --bin check_mcp_surface --locked        # tools/list + resources/list match the snapshot
+# after a deliberate surface change: cargo run --bin check_mcp_surface -- --record
 cargo run --quiet --bin check_version_consistency --locked # Cargo.toml = lhm.plugin.json = CHANGELOG = PACK_VERSION
 cargo check --all-targets --all-features --locked
 cargo clippy --all-targets --all-features --locked -- -D warnings
