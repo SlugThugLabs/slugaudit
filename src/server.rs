@@ -82,7 +82,8 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     `files.content`, a `group_concat`) is not returned whole: its TEXT/BLOB cells are clipped to fit and each cut is \
     listed in `clipped_cells` with `row`, `column`, `returned` and `total` (characters for text, bytes for a blob: \
     `substr`'s own units) and `continue_with`, a ready `substr(\"<column>\", start, len)` for the rest; nothing is lost, \
-    and a larger `page_bytes` avoids the cut. To read a file by lines, `line_count(text)` and \
+    and a larger `page_bytes` avoids the cut. JSON has no infinity, so an infinite REAL is `null` in `rows` and \
+    listed in `non_finite_cells` (`row`, `column`, `value`). To read a file by lines, `line_count(text)` and \
     `line_range(text, start, end)` (1-based, inclusive, source line endings kept, NULL in gives NULL): SELECT \
     line_count(content), line_range(content, 400, 600) FROM files WHERE path = 'src/big.rs'. When resuming an `offset`, pass the previous page's `revision_id` as `expected_revision` and a changed index \
     is refused with `stale_revision` instead of returning rows from a different ordering. Always JOIN evidence \

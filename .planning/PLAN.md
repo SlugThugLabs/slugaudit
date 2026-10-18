@@ -1266,3 +1266,29 @@ size informational per D-13). Report: `.planning/audit_2026-10-18_report.md`; le
 Dev-only: `check_coverage NaN` / `check_performance NaN` pass; fuzz fixture sync failure discarded
 (`fuzz/fuzz_targets/support.rs:200`); `check_docs_drift` does not require new files in the module map;
 AGENTS.md cites a nonexistent `src/parse/PACK_VERSION` (the value is in `src/parse/mod.rs:19`).
+
+### Audit R1/R2/R3 fix round (2026-10-18) — landed (`5b35572`, `f3f7d25`, `563745b`, `6eda70f`, `345f390`)
+
+All 141 R1/R2/R3 ledger rows in `.planning/audit_2026-10-18_ledger.tsv` were verified and handled;
+the 12 R1 panics are fixed. Top-10 items closed: #4 (`Instant + Duration` overflow → `checked_add`,
+an unrepresentable budget means no wall-clock deadline), #5 (only NotFound means deleted in the sweep),
+#6 (parser/parse failure marks extraction Partial), #10 (`disconnect` fails instead of "Done." when the
+config can't be checked; an unknown `profile` is refused). Behavior changes: unknown `config.json` keys
+are a parse error (fall back to defaults with a warn); non-UTF-8 project paths fail the network-filesystem
+check; a leads `offset` above `i64::MAX` is refused; `query` reports infinite REALs in `non_finite_cells`;
+watcher events are deferred instead of dropped (cap 4096, then Desynced).
+Still open from this round:
+- `connect_agents.rs:367` `#[rustfmt::skip]` kept: removing it puts the file at 632 code lines (over 350);
+  it is a formatter directive, not a lint waiver. Owner decision pending (split the table or accept).
+- `manager_health.rs::verify_and_drain` returns `report.revision_id` even when the drain then publishes
+  a newer revision, so the caller pins a stale revision and `with_verified_read` fails. Pre-existing,
+  found 2026-10-18. Not started.
+- `ignore_rules/build.rs`: `.git/info/exclude` is applied only when the root has a `.gitignore`;
+  in a linked worktree or submodule (`.git` is a file) the exclude stat now warns on every build.
+  Pre-existing. Not started.
+- CLI commands never initialise logging (R12, `main.rs:43`), so the new warns in connect/install/update
+  are invisible there. Not started.
+- `9p`/`virtiofs` are left out of the network-filesystem list (WSL2 `/mnt/c`, Docker Desktop):
+  owner decision pending.
+- `tests/stdio_protocol.rs` `Drop` still has `let _ = child.kill()/wait()`. Not started.
+- New tests were not yet proven to fail on the old code; a verification run is in progress (2026-10-18).

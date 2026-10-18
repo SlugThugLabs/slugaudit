@@ -1115,6 +1115,31 @@
               "continue_with"
             ],
             "type": "object"
+          },
+          "NonFiniteCell": {
+            "description": "One REAL cell whose value JSON cannot carry (an infinity; SQLite turns NaN\ninto NULL itself). JSON has no such number, so the cell is `null` in `rows`;\nthis entry says it was not SQL NULL and what it really was.",
+            "properties": {
+              "column": {
+                "description": "Result column name of the cell.",
+                "type": "string"
+              },
+              "row": {
+                "description": "Zero-based index of the row in the whole result (`offset` plus its\nposition on the page), the same numbering `offset` uses.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "value": {
+                "description": "The real value: `\"Infinity\"`, `\"-Infinity\"` or `\"NaN\"`.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "row",
+              "column",
+              "value"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1134,6 +1159,13 @@
               "integer",
               "null"
             ]
+          },
+          "non_finite_cells": {
+            "description": "REAL cells that are `null` in `rows` only because JSON cannot carry an\ninfinity: each entry gives the absolute `row`, the `column` and the real\n`value` (`\"Infinity\"`, `\"-Infinity\"` or `\"NaN\"`). A `null` that is not\nlisted here is SQL NULL. Empty when every REAL is finite.",
+            "items": {
+              "$ref": "#/$defs/NonFiniteCell"
+            },
+            "type": "array"
           },
           "page_bytes": {
             "description": "The page size that applied to this call, in serialized JSON bytes: the\nrequest's `page_bytes` or the server default, clamped to the ceiling.",
@@ -1189,7 +1221,8 @@
           "truncated",
           "page_bytes",
           "rows_bytes",
-          "clipped_cells"
+          "clipped_cells",
+          "non_finite_cells"
         ],
         "type": "object"
       },

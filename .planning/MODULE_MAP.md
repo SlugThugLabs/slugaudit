@@ -19,6 +19,8 @@ src/
 │   └── build.rs              per-directory matcher assembly for IgnoreRules::build
 ├── error_codes.rs            stable machine-readable failure codes + remedies
 ├── util.rs                   cross-module helpers (lock_or_recover, Deadline, SESSION_ID)
+├── clock.rs                  wall-clock reads that log instead of silently zeroing (unix seconds, saturating millis)
+├── probe.rs                  client-detection probes: path existence and CLI-on-PATH, logging every non-not-found failure
 ├── menu.rs                   interactive setup menu
 ├── prompt.rs                 bounded line input for the setup prompts
 ├── menu_render.rs            ANSI rendering helpers for the setup menu
@@ -80,6 +82,7 @@ src/
 │   ├── hash.rs               BLAKE3 content hashing
 │   ├── sample.rs             read-file-with-budgets
 │   ├── sample_batch.rs       parallel batch sampling loop
+│   ├── sample_batch_tests.rs undeliverable-result abort for the batch loop
 │   ├── publish.rs            drive a single publish
 │   ├── publish_attempt.rs    one attempt: discover → sample → diff → commit
 │   ├── publish_cas.rs        compare-and-swap retry primitive
