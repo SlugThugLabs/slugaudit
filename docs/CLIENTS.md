@@ -189,6 +189,28 @@ Notes on individual rows:
   `~/.config/Claude/claude_desktop_config.json`. The Linux path is convention,
   not vendor-documented (`src/connect_agents.rs`).
 
+## Large tool results (checked 2026-10-18)
+
+How each of the 23 targets above handles a large MCP tool result, from a
+source-read survey of the clients (classifications are copied from the survey
+recorded in `.planning/PLAN.md`, "Client handling of large query/leads
+results"; four rows were checked by source reading only, and Cursor's is from
+forum reports, 2026-08):
+
+| Handling | Targets |
+|---|---|
+| file + notice (result saved to a file, the model gets a notice) | `claude`, `opencode`, `gemini`, `goose`, `copilot`, `kimi`, `omp`, `hermes`, `bob` |
+| cut + notice (result cut, the model gets a notice) | `codex`, `openhands`, `pi`, `grok` |
+| passed whole (no bound before the model; risky) | `zed`, `crush`, `q` |
+| spilled to a workspace file the model can only partly read back (~100k characters; forum reports only; risky) | `cursor` |
+| unknown | `agy`, `windsurf`, `claude-desktop`, `droid`, `amp`, `warp` |
+
+SlugAudit pages `query` and `leads` at 64 KiB by default so that a client in
+the third or fourth row is not handed a result it cannot survive; the server
+default is `default_page_bytes` (`SLUGAUDIT_DEFAULT_PAGE_BYTES`, or
+`default_page_bytes` in `.planning/slugaudit/config.json`), and a request's
+`page_bytes` overrides it up to the hard ceiling `max_query_response_bytes`.
+
 ## What a config write produces
 
 The written `slugaudit` value depends on the row's `ConfigShape`

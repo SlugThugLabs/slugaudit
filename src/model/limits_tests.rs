@@ -128,3 +128,15 @@ fn multiple_overrides_compose() {
         },
     );
 }
+
+#[test]
+fn the_default_page_size_is_64_kib_and_the_env_var_overrides_it() {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    temp_env::with_var_unset("SLUGAUDIT_DEFAULT_PAGE_BYTES", || {
+        assert_eq!(ResourceLimits::from_env().default_page_bytes, 65_536);
+    });
+
+    temp_env::with_var("SLUGAUDIT_DEFAULT_PAGE_BYTES", Some("1234"), || {
+        assert_eq!(ResourceLimits::from_env().default_page_bytes, 1_234);
+    });
+}

@@ -22,6 +22,8 @@ pub(super) struct Paging {
     pub(super) limit: Option<usize>,
     pub(super) offset: usize,
     pub(super) budget_bytes: usize,
+    /// The larger page size that the ceiling clamped, when it did.
+    pub(super) clamped_from: Option<usize>,
 }
 
 /// Everything one page contributes to the envelope; `complete` and
@@ -54,7 +56,7 @@ pub(super) fn build(
     let mechanic_counts = count_all(tx, pattern)?;
     let prepared = match (mode, selected) {
         (LeadMode::Full, None) => {
-            let response = counts_only(revision_id, mechanic_counts, paging.budget_bytes);
+            let response = counts_only(revision_id, mechanic_counts, paging);
             return Ok(Json(response));
         }
         (LeadMode::Full, Some(mechanic)) => full(tx, mechanic, pattern, paging, &mechanic_counts)?,
@@ -158,7 +160,7 @@ fn compact(
 fn counts_only(
     revision_id: &str,
     mechanic_counts: Vec<MechanicCount>,
-    budget_bytes: usize,
+    paging: Paging,
 ) -> LeadsResponse {
     LeadsResponse {
         revision_id: revision_id.to_owned(),
@@ -171,7 +173,9 @@ fn counts_only(
         files_covered: 0,
         page_file_counts: Vec::new(),
         limited_by: PageLimit::None,
-        row_budget_bytes: budget_bytes,
+        row_budget_bytes: paging.budget_bytes,
+        page_bytes_clamped_from: paging.clamped_from,
+        oversized_row: false,
         rows_bytes: 0,
         next_offset: None,
     }
@@ -199,6 +203,8 @@ fn envelope(
         page_file_counts: prepared.page_file_counts,
         limited_by: prepared.limited_by,
         row_budget_bytes: paging.budget_bytes,
+        page_bytes_clamped_from: paging.clamped_from,
+        oversized_row: prepared.rows_bytes > paging.budget_bytes,
         rows_bytes: prepared.rows_bytes,
         next_offset: (!complete).then_some(through),
     }

@@ -34,6 +34,7 @@ fn query_logging_never_emits_sql_text() {
         sql,
         offset: 0,
         expected_revision: None,
+        page_bytes: None,
     };
     let (result, logs) = capture_at_level(
         || {

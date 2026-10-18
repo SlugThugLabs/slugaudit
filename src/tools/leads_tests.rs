@@ -18,6 +18,7 @@ fn request(path: &Path, mechanic: Option<&str>) -> LeadsRequest {
         offset: None,
         expected_revision: None,
         mode: LeadMode::Full,
+        page_bytes: None,
     }
 }
 
@@ -599,3 +600,6 @@ fn both_modes_report_the_same_completeness_for_one_mechanic() {
     let (cbytes, fbytes) = (compact.rows_bytes, full.rows_bytes);
     assert!(cbytes < fbytes, "{cbytes} vs {fbytes}");
 }
+
+#[path = "leads_page_tests.rs"]
+mod leads_page_tests;

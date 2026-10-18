@@ -53,6 +53,7 @@ fuzz_target!(|data: &[u8]| {
         sql: String::from_utf8_lossy(data).into_owned(),
         offset: 0,
         expected_revision: None,
+        page_bytes: None,
     });
 
     // A refusal is the expected outcome for most hostile inputs and is not

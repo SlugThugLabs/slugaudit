@@ -70,6 +70,11 @@ pub(crate) fn profile_from_env() -> Option<AuditProfile> {
     }
 }
 
+/// Default `query`/`leads` page size in every profile: small enough that a
+/// client which passes a tool result to the model unbounded is not flooded,
+/// large enough for a useful page. Clamped to `max_query_response_bytes`.
+pub(crate) const DEFAULT_PAGE_BYTES: usize = 64 * 1024;
+
 #[must_use]
 /// The complete limit set for one profile. `Adaptive` scales the import
 /// budget from detected host memory.
@@ -79,6 +84,7 @@ pub fn limits_for_profile(profile: AuditProfile) -> ResourceLimits {
             max_file_bytes: 32 * 1024 * 1024,
             max_total_import_bytes: 2 * 1024 * 1024 * 1024,
             max_query_response_bytes: 32 * 1024 * 1024,
+            default_page_bytes: DEFAULT_PAGE_BYTES,
             max_query_sql_bytes: 50_000,
             max_query_vm_steps: 5_000_000,
             max_query_wall_clock: Duration::from_secs(10),
@@ -97,6 +103,7 @@ pub fn limits_for_profile(profile: AuditProfile) -> ResourceLimits {
             max_file_bytes: 256 * 1024 * 1024,
             max_total_import_bytes: 32 * 1024 * 1024 * 1024,
             max_query_response_bytes: 256 * 1024 * 1024,
+            default_page_bytes: DEFAULT_PAGE_BYTES,
             max_query_sql_bytes: 200_000,
             max_query_vm_steps: 50_000_000,
             max_query_wall_clock: Duration::from_secs(60),
@@ -119,6 +126,7 @@ pub fn limits_for_profile(profile: AuditProfile) -> ResourceLimits {
                 max_file_bytes: max_file,
                 max_total_import_bytes: import_budget,
                 max_query_response_bytes: max_file as usize,
+                default_page_bytes: DEFAULT_PAGE_BYTES,
                 max_query_sql_bytes: 200_000,
                 max_query_vm_steps: 50_000_000,
                 max_query_wall_clock: Duration::from_secs(60),

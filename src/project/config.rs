@@ -38,6 +38,10 @@ pub struct ProjectConfig {
     /// Maximum cumulative size in bytes across all imported files.
     #[serde(default)]
     pub max_total_import_bytes: Option<u64>,
+    /// Default `query`/`leads` page size in serialized JSON bytes; a request's
+    /// `page_bytes` still overrides it, and the ceiling still clamps it.
+    #[serde(default)]
+    pub default_page_bytes: Option<usize>,
 }
 
 impl ProjectConfig {
@@ -100,6 +104,9 @@ impl ProjectConfig {
         if let Some(import_bytes) = self.max_total_import_bytes {
             limits.max_total_import_bytes = import_bytes;
         }
+        if let Some(page_bytes) = self.default_page_bytes {
+            limits.default_page_bytes = page_bytes;
+        }
         limits
     }
 }
@@ -161,5 +168,23 @@ mod tests {
         };
         let applied = custom.apply_to_limits(ResourceLimits::default());
         assert_eq!(applied.max_total_import_bytes, 1024);
+    }
+
+    #[test]
+    fn a_configured_default_page_size_overrides_the_profile_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf_dir = dir.path().join(".planning").join("slugaudit");
+        std::fs::create_dir_all(&conf_dir).expect("create dir");
+        std::fs::write(
+            conf_dir.join("config.json"),
+            r#"{"profile": "lean", "default_page_bytes": 4096}"#,
+        )
+        .expect("write");
+
+        let cfg = ProjectConfig::load_or_default(dir.path());
+        let applied = cfg.apply_to_limits(ResourceLimits::default());
+
+        assert_eq!(applied.default_page_bytes, 4_096);
+        assert_eq!(applied.max_query_response_bytes, 32 * 1024 * 1024);
     }
 }

@@ -23,6 +23,7 @@ fn ask(project: &tempfile::TempDir, sql: &str) -> Result<QueryResponse, ErrorDat
             sql: sql.to_owned(),
             offset: 0,
             expected_revision: None,
+            page_bytes: None,
         }),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),

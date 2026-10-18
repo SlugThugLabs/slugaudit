@@ -57,8 +57,11 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     surface in one response, under the same paging fields. A rows response always carries \
     `returned`/`total` and `complete`, plus the file denominators `files_total`/`files_covered`: at scale the \
     number you can actually exhaust is the files containing the mechanic, not the rows. There is no row cap — a \
-    page is cut only by your `limit` (omit it for everything that fits) and by the response byte budget, \
-    reported as `row_budget_bytes`/`rows_bytes` with `limited_by` naming what stopped it. When `complete` is \
+    page is cut only by your `limit` (omit it for everything that fits) and by the page byte size \
+    (64 KiB by default; pass `page_bytes` for more, up to the server ceiling — a larger request is clamped and \
+    reported as `page_bytes_clamped_from`), reported as `row_budget_bytes`/`rows_bytes` with `limited_by` naming \
+    what stopped it; `mechanic_counts` and `total` are the complete size up front, and a first row bigger than \
+    the page is still returned and flagged `oversized_row`. When `complete` is \
     false, page with `offset` = `next_offset` and pass `expected_revision` = the first page's `revision_id`: if \
     the index changed mid-sweep the call is refused with `stale_revision` and a remedy restarting the sweep from \
     offset 0, instead of silently skipping or repeating rows. Two limits to know. (1) The callee-based mechanics \
@@ -70,8 +73,13 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     non-code files), `evidence` (id, file_id, kind, start_line, end_line, payload — JSON; kinds Structure, \
     Import, Export, Comment, Docstring, Symbol, Diagnostic, Call), `dependency_edges` \
     (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled). One read-only \
-    SQL statement per call, with no row cap (add your own LIMIT), cut only by the response byte budget (`truncated`/`next_offset`); \
-    when resuming an `offset`, pass the previous page's `revision_id` as `expected_revision` and a changed index \
+    SQL statement per call, with no row cap, cut only by the page byte size: 64 KiB by default, `page_bytes` \
+    overrides it up to the server ceiling (a larger request is clamped and reported as `page_bytes_clamped_from`). \
+    Every response carries `total_rows`, the exact size of the whole result, so you see how large it is before \
+    you read it (if counting ran out of budget it is absent and `total_rows_unavailable` says why). Add `LIMIT` \
+    to exploratory queries, page with `next_offset`, or narrow the query: some MCP clients pass a large tool \
+    result to the model unbounded, which fails the turn. A first row bigger than the page is still returned and \
+    flagged `oversized_row`; when resuming an `offset`, pass the previous page's `revision_id` as `expected_revision` and a changed index \
     is refused with `stale_revision` instead of returning rows from a different ordering. Always JOIN evidence \
     to files: SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = \
     'Symbol' AND json_extract(e.payload, '$.name') = 'configure'. Discover the rest with SELECT name FROM \
@@ -234,8 +242,8 @@ impl SlugAuditServer {
          without `*`/`?` it is a substring match). A rows response always reports `returned`/`total` \
          and `complete` plus the file denominators `files_total`/`files_covered`; there is no row \
          cap, so a page is cut only by your `limit` (omit it for everything that fits) and by the \
-         response byte budget (`row_budget_bytes`/`rows_bytes`, with `limited_by` naming what \
-         stopped it). To page, pass `offset` = `next_offset` together with `expected_revision` = \
+         page byte size (64 KiB by default; `page_bytes` raises it up to the server ceiling, \
+         reported as `row_budget_bytes`/`rows_bytes`, with `limited_by` naming what stopped it). To page, pass `offset` = `next_offset` together with `expected_revision` = \
          the previous page's `revision_id`: a changed index is then refused with `stale_revision` \
          instead of silently skipping or repeating rows. For `mechanic`/`file`/`line` triples \
          with no per-row text, pass `mode: compact`; with only `path` it then enumerates every \

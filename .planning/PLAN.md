@@ -1180,7 +1180,22 @@ maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by rea
   `.planning/slugaudit-notes/`; `netfs` mountinfo ignores `\040` escapes; nested-macro
   re-parse depth is uncapped; `util::hex_encode` formats per byte; `query` always keeps an
   over-budget first row.
-- **Client handling of large `query`/`leads` results — owner decision pending (2026-10-18).**
+- **Client handling of large `query`/`leads` results — landed (2026-10-18, commit "feat(query,leads): page at 64 KiB by default…").**
+  Owner decision 2026-10-18: never limit what the agent cannot change or get past; lose no
+  information; show size up front. Landed: new limit `default_page_bytes` (64 KiB in every
+  profile; env `SLUGAUDIT_DEFAULT_PAGE_BYTES`; config.json `default_page_bytes`), with
+  `max_query_response_bytes` unchanged as the hard ceiling; optional `page_bytes` request
+  parameter on `query` and `leads` (effective page = request or default, clamped to the ceiling,
+  reported as `page_bytes_clamped_from`; `0` is refused); `query` responses carry exact
+  `total_rows` (SQLite `count(*)` over the same statement under its own fresh VM-step and
+  wall-clock budget; derived for free when the page ends the result; when the count overruns,
+  `total_rows` is null and `total_rows_unavailable` names the budget) plus `page_bytes`,
+  `rows_bytes`, `oversized_row`; `leads` gained `page_bytes_clamped_from` and `oversized_row`
+  (its `mechanic_counts` and `total` are already complete regardless of paging, so they are its
+  up-front size signal); a first row larger than the page is still returned and flagged.
+  `docs/CLIENTS.md` has the per-client table. Code: `src/tools/page_size.rs`,
+  `src/tools/query_exec.rs`. Still open: Cursor's classification rests on forum reports; six
+  clients are unclassified. Background survey:
   With `MAX_ROWS` gone a page is cut only by `max_query_response_bytes` (32 MB lean,
   256 MB audit/adaptive). Source-read survey of MCP clients (clones of each repo, 2026-10-16..18):
   saved-to-file with a notice — Claude Code (>25k tokens, code.claude.com/docs/en/mcp),

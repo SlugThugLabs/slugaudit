@@ -32,6 +32,7 @@ fn ask_pinned(
             sql: sql.to_owned(),
             offset: 0,
             expected_revision: expected_revision.map(str::to_owned),
+            page_bytes: None,
         }),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
@@ -50,6 +51,7 @@ fn ask_with_limits(
             sql: sql.to_owned(),
             offset: 0,
             expected_revision: None,
+            page_bytes: None,
         }),
         limits,
         &crate::progress::NoopProgressSink,
@@ -504,6 +506,7 @@ fn an_offset_past_the_supported_maximum_is_refused_as_a_contract_error() {
                 sql: "SELECT path FROM files".to_owned(),
                 offset,
                 expected_revision: None,
+                page_bytes: None,
             }),
             &crate::progress::NoopProgressSink,
             &crate::sync::SourceSyncManager::default(),
@@ -566,3 +569,6 @@ fn results_exceeding_response_bytes_are_truncated() {
     assert!(!response.rows.is_empty());
     assert!(response.rows.len() < 50);
 }
+
+#[path = "query_page_tests.rs"]
+mod query_page_tests;

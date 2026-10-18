@@ -506,7 +506,7 @@
         "destructiveHint": false,
         "readOnlyHint": true
       },
-      "description": "Want somewhere to start? Mechanical facts extracted from the index — call sites by callee name (unwrap, expect, panic, todo, unimplemented, assert), diagnostics, TODO/FIXME/HACK comment markers, and credential-shaped files. Nothing here is judged, ranked, scored, or ordered by importance: every item is a fact, and deciding which of them matter is entirely your call. Call with only `path` to get every mechanic with its row count, its distinct-file count (`files`) and `covers` (`rust_only` means a zero count is unchecked, not absent), then call again with one `mechanic` id to get file/line rows, optionally narrowed with `pattern` (a path GLOB, e.g. `src/auth/*`; without `*`/`?` it is a substring match). A rows response always reports `returned`/`total` and `complete` plus the file denominators `files_total`/`files_covered`; there is no row cap, so a page is cut only by your `limit` (omit it for everything that fits) and by the response byte budget (`row_budget_bytes`/`rows_bytes`, with `limited_by` naming what stopped it). To page, pass `offset` = `next_offset` together with `expected_revision` = the previous page's `revision_id`: a changed index is then refused with `stale_revision` instead of silently skipping or repeating rows. For `mechanic`/`file`/`line` triples with no per-row text, pass `mode: compact`; with only `path` it then enumerates every mechanic in one response under the same completeness fields — the cheap way to see the whole surface.",
+      "description": "Want somewhere to start? Mechanical facts extracted from the index — call sites by callee name (unwrap, expect, panic, todo, unimplemented, assert), diagnostics, TODO/FIXME/HACK comment markers, and credential-shaped files. Nothing here is judged, ranked, scored, or ordered by importance: every item is a fact, and deciding which of them matter is entirely your call. Call with only `path` to get every mechanic with its row count, its distinct-file count (`files`) and `covers` (`rust_only` means a zero count is unchecked, not absent), then call again with one `mechanic` id to get file/line rows, optionally narrowed with `pattern` (a path GLOB, e.g. `src/auth/*`; without `*`/`?` it is a substring match). A rows response always reports `returned`/`total` and `complete` plus the file denominators `files_total`/`files_covered`; there is no row cap, so a page is cut only by your `limit` (omit it for everything that fits) and by the page byte size (64 KiB by default; `page_bytes` raises it up to the server ceiling, reported as `row_budget_bytes`/`rows_bytes`, with `limited_by` naming what stopped it). To page, pass `offset` = `next_offset` together with `expected_revision` = the previous page's `revision_id`: a changed index is then refused with `stale_revision` instead of silently skipping or repeating rows. For `mechanic`/`file`/`line` triples with no per-row text, pass `mode: compact`; with only `path` it then enumerates every mechanic in one response under the same completeness fields — the cheap way to see the whole surface.",
       "inputSchema": {
         "$defs": {
           "LeadMode": {
@@ -560,6 +560,16 @@
           "offset": {
             "default": null,
             "description": "Rows to skip when paging",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "page_bytes": {
+            "default": null,
+            "description": "Page size in bytes of serialized rows; omit for the server default, clamped to the ceiling (reported)",
             "format": "uint",
             "minimum": 0,
             "type": [
@@ -779,6 +789,19 @@
               "null"
             ]
           },
+          "oversized_row": {
+            "description": "True when `rows_bytes` exceeds `row_budget_bytes` because the first\nrow alone is larger than the page. It is returned whole so paging\nmakes progress and nothing is lost.",
+            "type": "boolean"
+          },
+          "page_bytes_clamped_from": {
+            "description": "Non-null when the requested (or configured default) page size exceeded\n`max_query_response_bytes` and was clamped: the size that was asked\nfor. `row_budget_bytes` is then the ceiling.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "page_file_counts": {
             "description": "Rows grouped per file for this page only.",
             "items": {
@@ -797,7 +820,7 @@
             "type": "string"
           },
           "row_budget_bytes": {
-            "description": "Serialized-JSON byte ceiling applied to `rows` this call — the value\nof `max_query_response_bytes`\n(`SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES`), the same budget `query`\nspends. One row is always returned even if it alone exceeds it.",
+            "description": "Serialized-JSON byte budget applied to `rows` this call: the\nrequest's `page_bytes` or the server default\n(`SLUGAUDIT_DEFAULT_PAGE_BYTES`), clamped to the ceiling\n`max_query_response_bytes`, the same page size `query` spends. One row\nis always returned even if it alone exceeds it (see `oversized_row`).",
             "format": "uint",
             "minimum": 0,
             "type": "integer"
@@ -830,6 +853,7 @@
           "page_file_counts",
           "limited_by",
           "row_budget_bytes",
+          "oversized_row",
           "rows_bytes"
         ],
         "type": "object"
@@ -1008,6 +1032,16 @@
             "minimum": 0,
             "type": "integer"
           },
+          "page_bytes": {
+            "default": null,
+            "description": "Page size in serialized JSON bytes. Omit it for the server default\n(64 KiB unless configured otherwise; the response's `page_bytes` says\nwhat applied). A larger value returns a larger page, up to the hard\nceiling `max_query_response_bytes`: a value above the ceiling is\nclamped and the response reports `page_bytes_clamped_from`. Pages are\ncut on a row boundary; a single row larger than the page is still\nreturned whole and flagged with `oversized_row`.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "path": {
             "description": "Any path inside the active project.",
             "type": "string"
@@ -1036,6 +1070,25 @@
               "null"
             ]
           },
+          "oversized_row": {
+            "description": "True when the page is larger than `page_bytes` because its first row\nalone is. That row is returned whole so paging makes progress and\nnothing is lost.",
+            "type": "boolean"
+          },
+          "page_bytes": {
+            "description": "The page size that applied to this call, in serialized JSON bytes: the\nrequest's `page_bytes` or the server default, clamped to the ceiling.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "page_bytes_clamped_from": {
+            "description": "Non-null when the requested (or configured default) page size exceeded\n`max_query_response_bytes` and was clamped: the size that was asked\nfor. `page_bytes` is then the ceiling.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "revision_id": {
             "description": "Revision id the page was read from. Compare across pages to detect\na revision change that invalidates `next_offset` paging, or pass it\nback as `expected_revision` to have the change refused.",
             "type": "string"
@@ -1044,6 +1097,27 @@
             "items": true,
             "type": "array"
           },
+          "rows_bytes": {
+            "description": "Serialized JSON bytes of the returned `rows`, measured per row.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_rows": {
+            "description": "Exact row count of the whole result, ignoring `offset` and the page\ncut, computed by SQLite over the same statement. Null only when\ncounting exhausted its budget; `total_rows_unavailable` then says why.\nNever an estimate.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total_rows_unavailable": {
+            "description": "Why `total_rows` is null (the budget that stopped the count); null\nwhenever `total_rows` is present.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "truncated": {
             "type": "boolean"
           }
@@ -1051,7 +1125,10 @@
         "required": [
           "revision_id",
           "rows",
-          "truncated"
+          "truncated",
+          "page_bytes",
+          "rows_bytes",
+          "oversized_row"
         ],
         "type": "object"
       },

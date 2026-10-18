@@ -1,25 +1,17 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=one tool contract owns request/response types and the execution/budget path (single-statement check, wrapper, byte budget); splitting would fragment the query tool's validation order (empty → size → freshness → statement count → budget) that the tests assert against
-use super::context::{ensure_synced, guard_expected_revision, internal_error, with_verified_read};
-use super::query_value::row_to_json;
+use super::context::{ensure_synced, guard_expected_revision, with_verified_read};
+use super::page_size;
+use super::query_exec::{RowTotal, run_query};
 
 use crate::error_codes::{self, ErrorCode};
 use crate::model::ResourceLimits;
 use crate::sync;
-use crate::util::serialized_len;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rusqlite::Transaction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::time::Instant;
 
 const MAX_PATH_BYTES: usize = 32 * 1024;
 const MAX_REVISION_BYTES: usize = 256;
-const ABORT_NONE: u8 = 0;
-const ABORT_STEP_BUDGET: u8 = 1;
-const ABORT_WALL_CLOCK: u8 = 2;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 /// A read-only SQL question over the project's own database, with stable
@@ -44,6 +36,15 @@ pub struct QueryRequest {
     /// revision, so a stored offset means nothing once the tree changes.
     #[serde(default)]
     pub expected_revision: Option<String>,
+    /// Page size in serialized JSON bytes. Omit it for the server default
+    /// (64 KiB unless configured otherwise; the response's `page_bytes` says
+    /// what applied). A larger value returns a larger page, up to the hard
+    /// ceiling `max_query_response_bytes`: a value above the ceiling is
+    /// clamped and the response reports `page_bytes_clamped_from`. Pages are
+    /// cut on a row boundary; a single row larger than the page is still
+    /// returned whole and flagged with `oversized_row`.
+    #[serde(default)]
+    pub page_bytes: Option<usize>,
 }
 
 /// Arbitrary read-only query results: one JSON object per row, column
@@ -72,6 +73,27 @@ pub struct QueryResponse {
     /// Use this as the next request's `offset` when present. Only valid
     /// while `revision_id` is unchanged (see the paging contract above).
     pub next_offset: Option<usize>,
+    /// Exact row count of the whole result, ignoring `offset` and the page
+    /// cut, computed by SQLite over the same statement. Null only when
+    /// counting exhausted its budget; `total_rows_unavailable` then says why.
+    /// Never an estimate.
+    pub total_rows: Option<i64>,
+    /// Why `total_rows` is null (the budget that stopped the count); null
+    /// whenever `total_rows` is present.
+    pub total_rows_unavailable: Option<String>,
+    /// The page size that applied to this call, in serialized JSON bytes: the
+    /// request's `page_bytes` or the server default, clamped to the ceiling.
+    pub page_bytes: usize,
+    /// Non-null when the requested (or configured default) page size exceeded
+    /// `max_query_response_bytes` and was clamped: the size that was asked
+    /// for. `page_bytes` is then the ceiling.
+    pub page_bytes_clamped_from: Option<usize>,
+    /// Serialized JSON bytes of the returned `rows`, measured per row.
+    pub rows_bytes: usize,
+    /// True when the page is larger than `page_bytes` because its first row
+    /// alone is. That row is returned whole so paging makes progress and
+    /// nothing is lost.
+    pub oversized_row: bool,
 }
 
 /// # Errors
@@ -106,6 +128,7 @@ fn query_with_limits(
         sql,
         offset,
         expected_revision,
+        page_bytes,
     } = &request.0;
     if crate::util::exceeds_input_bytes(path, MAX_PATH_BYTES) {
         return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
@@ -146,19 +169,30 @@ fn query_with_limits(
         ));
     }
 
+    let page = page_size::resolve(*page_bytes, limits)?;
+
     let synced = ensure_synced(path, sink, manager)?;
     guard_expected_revision(&synced.revision_id, expected_revision.as_deref())?;
     let revision_id = synced.revision_id.clone();
-    let (rows, truncated) =
-        with_verified_read(&synced, |tx| run_query(tx, trimmed, *offset, limits))?;
-
+    let collected = with_verified_read(&synced, |tx| {
+        run_query(tx, trimmed, *offset, page.bytes, limits)
+    })?;
+    let rows = collected.rows;
+    let truncated = collected.truncated;
     let next_offset = truncated.then_some(offset.saturating_add(rows.len()));
+    let (total_rows, total_rows_unavailable) = match collected.total {
+        RowTotal::Exact(total) => (Some(total), None),
+        RowTotal::Unavailable(reason) => (None, Some(reason.to_owned())),
+    };
 
     // Row count and truncation, never the SQL text or the rows themselves.
     tracing::info!(
         revision_id,
         row_count = rows.len(),
         truncated,
+        total_rows,
+        page_bytes = page.bytes,
+        clamped = page.clamped_from.is_some(),
         "query executed"
     );
     Ok(Json(QueryResponse {
@@ -166,137 +200,13 @@ fn query_with_limits(
         rows,
         truncated,
         next_offset,
+        total_rows,
+        total_rows_unavailable,
+        page_bytes: page.bytes,
+        page_bytes_clamped_from: page.clamped_from,
+        rows_bytes: collected.rows_bytes,
+        oversized_row: collected.rows_bytes > page.bytes,
     }))
-}
-
-/// Executes `trimmed` under a VM-step and wall-clock budget, returning the
-/// rows that fit `max_query_response_bytes` and whether the page was cut.
-fn run_query(
-    tx: &Transaction<'_>,
-    trimmed: &str,
-    offset: usize,
-    limits: &ResourceLimits,
-) -> Result<(Vec<serde_json::Value>, bool), ErrorData> {
-    // Progress handler aborts runaway queries after a fixed VM-step budget,
-    // or after a wall-clock deadline — a query can do relatively few steps
-    // that are each individually slow (disk I/O stalls), which the step
-    // count alone would not catch quickly.
-    let abort_reason = Arc::new(AtomicU8::new(ABORT_NONE));
-    let handler_reason = Arc::clone(&abort_reason);
-    let mut steps = 0_u32;
-    let max_steps = limits.max_query_vm_steps;
-    let deadline = Instant::now() + limits.max_query_wall_clock;
-    tx.progress_handler(
-        1000,
-        Some(move || {
-            steps = steps.saturating_add(1000);
-            if steps > max_steps {
-                handler_reason.store(ABORT_STEP_BUDGET, Ordering::Relaxed);
-                return true;
-            }
-            if Instant::now() >= deadline {
-                handler_reason.store(ABORT_WALL_CLOCK, Ordering::Relaxed);
-                return true;
-            }
-            false
-        }),
-    );
-
-    let result = execute_and_collect(tx, trimmed, offset, limits, &abort_reason);
-
-    // Clear the handler so it does not outlive this call on a pooled
-    // connection (we drop the connection, but be explicit).
-    tx.progress_handler(0, None::<fn() -> bool>);
-    result
-}
-
-/// Runs the wrapped `SELECT`, mapping each row while tagging any error with
-/// the abort reason the progress handler may have already recorded.
-fn execute_and_collect(
-    tx: &Transaction<'_>,
-    trimmed: &str,
-    offset: usize,
-    limits: &ResourceLimits,
-    abort_reason: &Arc<AtomicU8>,
-) -> Result<(Vec<serde_json::Value>, bool), ErrorData> {
-    let body = single_statement_body(tx, trimmed, abort_reason)?;
-    // The user SQL is wrapped on its own line so a trailing `-- line comment`
-    // terminates at the newline rather than swallowing the closing `)` and
-    // `LIMIT` clause, which would otherwise produce a confusing parse error.
-    // `LIMIT -1` is "no limit": SQLite requires a LIMIT before OFFSET, and the
-    // page is cut only by the response byte budget below.
-    let wrapped = format!("SELECT * FROM (\n{body}\n) LIMIT -1 OFFSET {offset}");
-    let mut statement = tx
-        .prepare(&wrapped)
-        .map_err(|error| describe_error(&error, abort_reason))?;
-    let column_names: Vec<String> = statement
-        .column_names()
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
-    let value_cap = limits.max_query_value_bytes;
-    let mapped = statement
-        .query_map([], move |row| row_to_json(row, &column_names, value_cap))
-        .map_err(|error| describe_error(&error, abort_reason))?;
-    let mut rows = Vec::new();
-    let mut total_bytes = 0usize;
-    let mut size_truncated = false;
-    for row in mapped {
-        let value = row.map_err(|error| describe_error(&error, abort_reason))?;
-        let row_bytes = serialized_len(&value)
-            .map_err(|error| internal_error("measuring query row size", error))?;
-        if !rows.is_empty()
-            && total_bytes.saturating_add(row_bytes) > limits.max_query_response_bytes
-        {
-            size_truncated = true;
-            break;
-        }
-        total_bytes = total_bytes.saturating_add(row_bytes);
-        rows.push(value);
-    }
-    Ok((rows, size_truncated))
-}
-
-/// Proves `sql` is exactly one statement and returns its text without the
-/// terminating `;`, so it can sit inside the wrapper's parentheses.
-///
-/// SQLite's own parser decides: `Connection::prepare` compiles the first
-/// statement and, when input remains after it, prepares that remainder and
-/// fails with `Error::MultipleStatement` only if the remainder holds a real
-/// statement (rusqlite 0.37.0 `src/lib.rs:770-775`). Whitespace, comments and
-/// bare `;` after the first statement are therefore accepted, and a `;`
-/// inside a literal, quoted identifier or comment never counts. No SQL is
-/// lexed here. `expanded_sql` (no parameters are bound) is the statement text
-/// SQLite consumed, which excludes any trailing comment after the `;`.
-fn single_statement_body(
-    tx: &Transaction<'_>,
-    sql: &str,
-    abort_reason: &Arc<AtomicU8>,
-) -> Result<String, ErrorData> {
-    let statement = tx.prepare(sql).map_err(|error| match error {
-        rusqlite::Error::MultipleStatement => ErrorData::invalid_params(
-            "sql contains more than one statement; \
-             only a single read-only statement is supported",
-            None,
-        ),
-        other => describe_error(&other, abort_reason),
-    })?;
-    let text = statement.expanded_sql().ok_or_else(|| {
-        ErrorData::invalid_params("sql must contain a statement, not only comments", None)
-    })?;
-    Ok(text.trim_end().trim_end_matches(';').to_owned())
-}
-
-/// Converts an aborted-query error into a message naming which budget was
-/// hit, rather than surfacing SQLite's generic "interrupted" text as if it
-/// were always the step budget.
-fn describe_error(error: &rusqlite::Error, abort_reason: &Arc<AtomicU8>) -> ErrorData {
-    let message = match abort_reason.load(Ordering::Relaxed) {
-        ABORT_STEP_BUDGET => format!("query exceeded its virtual-machine step budget: {error}"),
-        ABORT_WALL_CLOCK => format!("query exceeded its wall-clock time budget: {error}"),
-        _ => error.to_string(),
-    };
-    ErrorData::invalid_params(message, None)
 }
 
 #[cfg(test)]

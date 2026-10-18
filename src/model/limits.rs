@@ -46,6 +46,15 @@ pub struct ResourceLimits {
     /// both tools report the budget and the bytes they spent.
     /// Env: `SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES` (usize).
     pub max_query_response_bytes: usize,
+    /// Default page size, in serialized JSON bytes, for one `query` or
+    /// `leads` call that does not pass its own `page_bytes`. A page is cut at
+    /// this size on a row boundary and resumed with `next_offset`; a request's
+    /// `page_bytes` overrides it, and the effective page is always clamped to
+    /// `max_query_response_bytes` (the hard ceiling), with the clamp reported
+    /// in the response. A single row larger than the page is still returned
+    /// whole. Env: `SLUGAUDIT_DEFAULT_PAGE_BYTES` (usize); project
+    /// `config.json` key `default_page_bytes`.
+    pub default_page_bytes: usize,
     /// Maximum SQL text length accepted by `query` (UTF-8 bytes).
     /// Env: `SLUGAUDIT_MAX_QUERY_SQL_BYTES` (usize).
     pub max_query_sql_bytes: usize,
@@ -126,6 +135,9 @@ impl ResourceLimits {
         }
         if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES") {
             limits.max_query_response_bytes = val;
+        }
+        if let Some(val) = parse_override::<usize>("SLUGAUDIT_DEFAULT_PAGE_BYTES") {
+            limits.default_page_bytes = val;
         }
         if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_QUERY_SQL_BYTES") {
             limits.max_query_sql_bytes = val;

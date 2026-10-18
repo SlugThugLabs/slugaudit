@@ -339,6 +339,7 @@ fn tool_call_logging_never_emits_the_calls_argument_or_result() {
         sql: format!("SELECT '{SENTINEL}' AS marker FROM files"),
         offset: 0,
         expected_revision: None,
+        page_bytes: None,
     };
 
     let (result, logs) = capture_at_level(

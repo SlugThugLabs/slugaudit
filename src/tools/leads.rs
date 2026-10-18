@@ -12,10 +12,10 @@
 //!
 //! # Paging
 //!
-//! A page is cut by the caller's `limit` and by the response byte budget
-//! (`ResourceLimits::max_query_response_bytes`, the same budget `query`
-//! spends), never by a row ceiling: the only row cap was a copy of `query`'s
-//! and it made the tool that exists for accuracy the one that truncated
+//! A page is cut by the caller's `limit` and by the page byte budget (the
+//! request's `page_bytes` or `ResourceLimits::default_page_bytes`, clamped to
+//! `max_query_response_bytes`, the same page size `query` spends), never by a
+//! row ceiling: the only row cap was a copy of `query`'s and it made the tool that exists for accuracy the one that truncated
 //! silently. Every rows response therefore carries `returned` / `total` /
 //! `complete`, the file denominators (`files_total` / `files_covered` — at
 //! scale the number an agent can actually exhaust is *files containing at
@@ -90,6 +90,18 @@ pub struct LeadsRequest {
     #[schemars(description = "Row shape: `full` (default) carries `detail`; `compact` drops it")]
     #[serde(default)]
     pub mode: LeadMode,
+    /// Page size in serialized JSON bytes for `rows`. Omit it for the server
+    /// default (64 KiB unless configured otherwise; the response's
+    /// `row_budget_bytes` says what applied). A larger value returns a larger
+    /// page, up to the hard ceiling `max_query_response_bytes`: a value above
+    /// the ceiling is clamped and the response reports
+    /// `page_bytes_clamped_from`. A single row larger than the page is still
+    /// returned and flagged with `oversized_row`.
+    #[schemars(
+        description = "Page size in bytes of serialized rows; omit for the server default, clamped to the ceiling (reported)"
+    )]
+    #[serde(default)]
+    pub page_bytes: Option<usize>,
 }
 
 /// How a response renders its rows. See [`LeadsResponse::rows`].
@@ -243,11 +255,20 @@ pub struct LeadsResponse {
     /// What stopped the page: the scope ended, the caller's `limit`, or the
     /// byte budget.
     pub limited_by: PageLimit,
-    /// Serialized-JSON byte ceiling applied to `rows` this call — the value
-    /// of `max_query_response_bytes`
-    /// (`SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES`), the same budget `query`
-    /// spends. One row is always returned even if it alone exceeds it.
+    /// Serialized-JSON byte budget applied to `rows` this call: the
+    /// request's `page_bytes` or the server default
+    /// (`SLUGAUDIT_DEFAULT_PAGE_BYTES`), clamped to the ceiling
+    /// `max_query_response_bytes`, the same page size `query` spends. One row
+    /// is always returned even if it alone exceeds it (see `oversized_row`).
     pub row_budget_bytes: usize,
+    /// Non-null when the requested (or configured default) page size exceeded
+    /// `max_query_response_bytes` and was clamped: the size that was asked
+    /// for. `row_budget_bytes` is then the ceiling.
+    pub page_bytes_clamped_from: Option<usize>,
+    /// True when `rows_bytes` exceeds `row_budget_bytes` because the first
+    /// row alone is larger than the page. It is returned whole so paging
+    /// makes progress and nothing is lost.
+    pub oversized_row: bool,
     /// Serialized-JSON bytes of the returned `rows`, measured per row
     /// exactly as `query` measures its values. The rest of this envelope
     /// (`mechanic_counts` — at most one entry per mechanic — and
@@ -304,6 +325,7 @@ fn leads_with_limits(
         offset,
         expected_revision,
         mode,
+        page_bytes,
     } = &request.0;
     if crate::util::exceeds_input_bytes(path, MAX_PATH_BYTES) {
         return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
@@ -328,13 +350,15 @@ fn leads_with_limits(
             None,
         ));
     }
+    let page = super::page_size::resolve(*page_bytes, limits)?;
     let synced = ensure_synced(path, sink, manager)?;
     guard_expected_revision(&synced.revision_id, expected_revision.as_deref())?;
     let selected = resolve_mechanic(mechanic.as_deref())?;
     let paging = Paging {
         limit: limit.map(|rows| rows.max(1)),
         offset: offset.unwrap_or(0),
-        budget_bytes: limits.max_query_response_bytes,
+        budget_bytes: page.bytes,
+        clamped_from: page.clamped_from,
     };
     let response = with_verified_read(&synced, |tx| {
         leads_page::build(

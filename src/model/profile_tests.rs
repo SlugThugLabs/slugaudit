@@ -100,3 +100,17 @@ fn a_known_profile_resolves_without_warning() {
         );
     });
 }
+
+#[test]
+fn every_profile_defaults_to_a_64_kib_page_under_its_ceiling() {
+    for profile in [
+        AuditProfile::Lean,
+        AuditProfile::Audit,
+        AuditProfile::Adaptive,
+    ] {
+        let limits = limits_for_profile(profile);
+
+        assert_eq!(limits.default_page_bytes, 65_536, "{profile:?}");
+        assert!(limits.default_page_bytes <= limits.max_query_response_bytes);
+    }
+}
