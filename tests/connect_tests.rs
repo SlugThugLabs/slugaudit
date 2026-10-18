@@ -254,3 +254,33 @@ fn connect_emits_the_documented_argv_for_every_client_dialect() {
         }
     }
 }
+
+/// A closed stdin during the interactive agent choice is "input ended", not an
+/// empty answer that surfaces as "invalid agent choice".
+#[test]
+fn interactive_connect_reports_end_of_input_instead_of_an_invalid_choice() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    // A `.cursor` directory is enough for Cursor to be detected as installed.
+    fs::create_dir_all(home.join(".cursor")).expect("mkdir cursor");
+    fs::create_dir_all(&bin_dir).expect("mkdir bin");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_slugaudit"))
+        .arg("connect")
+        .env("HOME", &home)
+        .env("SLUGTHUG_HOME", home.join(".slugthug"))
+        .env("SLUGTHUG_CONFIG_HOME", &home)
+        .env("PATH", &bin_dir)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("spawn slugaudit");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "end of input must fail the command"
+    );
+    assert!(stderr.contains("input ended"), "stderr: {stderr}");
+    assert!(!stderr.contains("invalid agent choice"), "stderr: {stderr}");
+}

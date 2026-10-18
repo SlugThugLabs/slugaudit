@@ -13,15 +13,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// True when the JSON config at `path` carries a `slugaudit` entry under any
 /// of `sections`.
 pub fn has_slugaudit(path: &Path, keys: &[&str]) -> bool {
-    // Advisory probe: an oversized or unreadable config reads as "not
-    // registered" here; the write path bounds the same file again and fails
-    // explicitly if the cap blocks a real edit (util::read_file_capped).
-    crate::util::read_file_capped(path, crate::util::MAX_FOREIGN_TEXT_BYTES).is_ok_and(|c| {
-        serde_json::from_str::<serde_json::Value>(&c).is_ok_and(|v| {
-            keys.iter()
-                .any(|k| v.get(*k).and_then(|s| s.get("slugaudit")).is_some())
-        })
-    })
+    // Advisory probe: an oversized, unreadable or malformed config reads as
+    // "not registered", logged with the cause by `read_config_or_warn` / below;
+    // the write path bounds the same file again and fails explicitly.
+    let Some(contents) = crate::probe::read_config_or_warn(path) else {
+        return false;
+    };
+    match serde_json::from_str::<serde_json::Value>(&contents) {
+        Ok(value) => keys
+            .iter()
+            .any(|k| value.get(*k).and_then(|s| s.get("slugaudit")).is_some()),
+        Err(error) => {
+            tracing::warn!(
+                path = %crate::util::redacted_path(path),
+                error = %error,
+                "client config is not valid JSON; treating it as not registered",
+            );
+            false
+        }
+    }
 }
 
 /// Registers SlugAudit with one agent: its CLI when verified to have one, its
@@ -66,7 +76,7 @@ fn connect_via_cli(
     binary: &Path,
     home: Option<&Path>,
 ) -> Result<(), ConnectError> {
-    match agent.cli.filter(|cli| which::which(cli).is_ok()) {
+    match agent.cli.filter(|cli| crate::probe::cli_on_path(cli)) {
         Some(cli) => run_installed_cli(agent, binary, home, cli),
         None => connect_without_cli(agent, binary, home),
     }
@@ -271,7 +281,7 @@ pub fn disconnect_agent(agent: &AgentDef, home: Option<&Path>) -> Result<(), Con
     }
     if matches!(agent.strategy, Strategy::CliDirect)
         && let Some(cli) = agent.cli
-        && which::which(cli).is_ok()
+        && crate::probe::cli_on_path(cli)
     {
         connect_cli::run_remove(agent, cli)?;
     }
@@ -279,7 +289,9 @@ pub fn disconnect_agent(agent: &AgentDef, home: Option<&Path>) -> Result<(), Con
 }
 
 fn remove_json_slugaudit(path: &Path, keys: &[&str]) -> Result<(), ConnectError> {
-    if path.exists() {
+    // A stat failure (e.g. an unreadable parent directory) fails the
+    // disconnect instead of skipping the file and reporting success.
+    if path.try_exists()? {
         let mut root = load_json_or_empty(path)?;
         for key in keys {
             if let Some(s) = root.get_mut(*key).and_then(|s| s.as_object_mut()) {

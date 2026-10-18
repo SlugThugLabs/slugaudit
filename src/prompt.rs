@@ -22,6 +22,46 @@ pub(crate) fn is_yes(answer: &str) -> bool {
     matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
+/// Asks a `[y/N]` question on a terminal and reports whether it was accepted.
+/// Non-interactive (piped) stdin declines immediately, so an unattended run
+/// never waits; a failure to ask or to read the answer is reported on stderr
+/// and declines.
+pub(crate) fn confirm(msg: &str) -> bool {
+    #[cfg(test)]
+    {
+        let _ = msg;
+        false
+    }
+    #[cfg(not(test))]
+    {
+        use std::io::IsTerminal as _;
+        if !std::io::stdin().is_terminal() {
+            return false;
+        }
+        match ask_yes_no(&mut std::io::stdout(), &mut std::io::stdin().lock(), msg) {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                eprintln!("could not read your answer: {error}");
+                false
+            }
+        }
+    }
+}
+
+/// Writes `msg`, reads one line, and reports whether it accepts. Split from
+/// [`confirm`] so the failure paths are testable.
+fn ask_yes_no(
+    output: &mut impl std::io::Write,
+    input: &mut impl std::io::BufRead,
+    msg: &str,
+) -> std::io::Result<bool> {
+    write!(output, "{msg}")?;
+    output.flush()?;
+    let mut line = String::new();
+    input.read_line(&mut line)?;
+    Ok(is_yes(&line))
+}
+
 fn read_capped_line(input: &mut impl std::io::BufRead) -> std::io::Result<Option<String>> {
     use std::io::{BufRead as _, Read as _};
     let mut bytes = Vec::new();
@@ -86,5 +126,36 @@ mod tests {
         let line = read_capped_line(&mut input).expect("lossy, not an error");
 
         assert!(line.is_some_and(|text| text.starts_with(&"a".repeat(255))));
+    }
+
+    struct FailingReader;
+
+    impl std::io::Read for FailingReader {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("stdin closed under us"))
+        }
+    }
+
+    #[test]
+    fn a_failed_answer_read_is_an_error_not_a_no() {
+        let mut output = Vec::new();
+        let mut input = std::io::BufReader::new(FailingReader);
+
+        let error = ask_yes_no(&mut output, &mut input, "Add to PATH? ")
+            .expect_err("a read failure must surface");
+
+        assert!(error.to_string().contains("stdin closed under us"));
+        assert_eq!(output, b"Add to PATH? ", "the question was still asked");
+    }
+
+    #[test]
+    fn a_yes_answer_is_accepted_and_anything_else_declines() {
+        let mut output = Vec::new();
+
+        let yes = ask_yes_no(&mut output, &mut std::io::Cursor::new(b"y\n"), "q ").expect("reads");
+        let no = ask_yes_no(&mut output, &mut std::io::Cursor::new(b"n\n"), "q ").expect("reads");
+
+        assert!(yes);
+        assert!(!no);
     }
 }

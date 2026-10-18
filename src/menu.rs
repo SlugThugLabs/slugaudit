@@ -97,9 +97,15 @@ fn disconnect_step() {
 
 fn other_client_step() {
     println!();
-    let binary = install::running_binary()
-        .map(|current| connect::prefer_slugthug_binary(&current))
-        .unwrap_or_else(|_| std::path::PathBuf::from("slugaudit"));
+    let binary = match install::running_binary()
+        .and_then(|current| connect::prefer_slugthug_binary(&current))
+    {
+        Ok(binary) => binary,
+        Err(error) => {
+            eprintln!("could not locate the slugaudit binary: {error}");
+            return;
+        }
+    };
     print!("{}", other_agent_instructions(&binary));
     if let Err(error) = std::io::stdout().flush() {
         eprintln!("could not flush instructions to stdout: {error}");
@@ -111,8 +117,9 @@ fn confirm_serve() -> Result<bool, Box<dyn std::error::Error>> {
     println!("The MCP server (`serve`) is normally started automatically by your AI agent.");
     print!("Start the server now? [y/N]: ");
     std::io::stdout().flush()?;
-    let line = crate::prompt::read_prompt_line()?.unwrap_or_default();
-    Ok(crate::prompt::is_yes(&line))
+    // End of input declines: `[y/N]` defaults to no, and the menu loop exits on
+    // the same end of input at its next read.
+    Ok(crate::prompt::read_prompt_line()?.is_some_and(|line| crate::prompt::is_yes(&line)))
 }
 
 #[cfg(test)]

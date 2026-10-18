@@ -11,12 +11,31 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 /// True when the client's own `mcp list` reports slugaudit.
+///
+/// Advisory: a spawn failure reads as "not connected" and a non-zero exit
+/// still has its stdout scanned; both are logged with the cause.
 pub fn check_connected(cli: &str) -> bool {
-    Command::new(cli)
+    let output = match Command::new(cli)
         .args(["mcp", "list"])
         .stdin(Stdio::null())
         .output()
-        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("slugaudit"))
+    {
+        Ok(output) => output,
+        Err(error) => {
+            tracing::warn!(cli, error = %error, "could not run `mcp list`; treating the client as not connected");
+            return false;
+        }
+    };
+    list_shows_slugaudit(cli, &output)
+}
+
+/// Scans an `mcp list` result for the server; an unsuccessful exit is logged
+/// and its output is still scanned.
+pub(crate) fn list_shows_slugaudit(cli: &str, output: &std::process::Output) -> bool {
+    if !output.status.success() {
+        tracing::warn!(cli, status = %output.status, "`mcp list` exited unsuccessfully; its output is still scanned");
+    }
+    String::from_utf8_lossy(&output.stdout).contains("slugaudit")
 }
 
 /// The `mcp add` argv for this client's grammar, matching its own usage line.
@@ -129,4 +148,36 @@ pub fn run_remove(agent: &AgentDef, cli: &str) -> Result<(), ConnectError> {
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cli_that_cannot_be_spawned_is_not_connected_and_says_why() {
+        let (connected, logs) = crate::store::test_capture::capture_warns(|| {
+            check_connected("/nonexistent/slugaudit-fake-cli")
+        });
+
+        assert!(!connected);
+        assert!(logs.contains("could not run `mcp list`"), "{logs}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_list_that_shows_slugaudit_but_exits_nonzero_is_connected_and_logged() {
+        use std::os::unix::process::ExitStatusExt as _;
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(3 << 8),
+            stdout: b"slugaudit\n".to_vec(),
+            stderr: Vec::new(),
+        };
+
+        let (connected, logs) =
+            crate::store::test_capture::capture_warns(|| list_shows_slugaudit("fake-cli", &output));
+
+        assert!(connected);
+        assert!(logs.contains("exited unsuccessfully"), "{logs}");
+    }
 }

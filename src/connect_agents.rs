@@ -323,17 +323,18 @@ impl AgentDef {
 
     /// Returns true if this agent appears to be installed on the machine.
     pub fn is_installed(&self, home: Option<&Path>) -> bool {
-        if self.executables().any(|cli| which::which(cli).is_ok()) {
+        if self.executables().any(crate::probe::cli_on_path) {
             return true;
         }
         let Some(home) = home else { return false };
         let Some(path) = self.config.resolve(home) else {
             return false;
         };
-        if path.exists() {
+        if crate::probe::exists_or_warn(&path) {
             return true;
         }
-        path.parent().is_some_and(|p| p.exists() && p != home)
+        path.parent()
+            .is_some_and(|p| p != home && crate::probe::exists_or_warn(p))
     }
 
     /// Returns true if this agent already has SlugAudit configured.
@@ -343,7 +344,10 @@ impl AgentDef {
         {
             return true;
         }
-        if let Some(cli) = self.executables().find(|cli| which::which(cli).is_ok()) {
+        if let Some(cli) = self
+            .executables()
+            .find(|cli| crate::probe::cli_on_path(cli))
+        {
             return crate::connect_cli::check_connected(cli);
         }
         false
@@ -356,8 +360,8 @@ impl AgentDef {
         if self.shape == ConfigShape::GooseExtensions {
             // Goose reads YAML; only a textual scan is safe for the written
             // JSON-as-YAML (and it also catches a hand-written block entry).
-            return crate::util::read_file_capped(&path, crate::util::MAX_FOREIGN_TEXT_BYTES)
-                .is_ok_and(|c| c.contains("slugaudit"));
+            return crate::probe::read_config_or_warn(&path)
+                .is_some_and(|c| c.contains("slugaudit"));
         }
         crate::connect_exec::has_slugaudit(&path, self.shape.sections())
     }

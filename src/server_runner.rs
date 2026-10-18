@@ -161,7 +161,7 @@ fn log_completion(
     started: std::time::Instant,
     error: Option<&ErrorData>,
 ) {
-    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let elapsed_ms = crate::clock::saturating_millis(started.elapsed());
     let succeeded = error.is_none();
     // `record_call` bumps the process-wide counters and returns the
     // post-bump snapshot; `counters_before` was taken before the work

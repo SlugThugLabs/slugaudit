@@ -252,3 +252,29 @@ fn a_planning_sibling_sharing_the_runtime_dir_prefix_stays_indexed() {
         assert!(!is_excluded_path(included), "{included} must be indexed");
     }
 }
+
+#[test]
+fn an_ignore_file_without_a_parent_is_skipped_with_a_warning() {
+    let (grouped, logs) = crate::store::test_capture::capture_warns(|| {
+        build::group_files_by_dir(&[PathBuf::from("/")])
+    });
+
+    assert!(grouped.is_empty());
+    assert!(logs.contains("has no parent directory"), "{logs}");
+}
+
+#[test]
+fn an_unstattable_git_exclude_is_reported_not_skipped_silently() {
+    let project = project();
+    fs::write(project.path().join(".gitignore"), "*.tmp\n").expect("gitignore");
+    // A linked worktree or submodule has `.git` as a file, so
+    // `.git/info/exclude` fails to stat with "not a directory".
+    fs::write(project.path().join(".git"), "gitdir: elsewhere\n").expect("git file");
+
+    let (_rules, logs) = crate::store::test_capture::capture_warns(|| rules_for(project.path()));
+
+    assert!(
+        logs.contains("could not stat .git/info/exclude"),
+        "stat failure must be logged:\n{logs}"
+    );
+}

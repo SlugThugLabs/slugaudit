@@ -32,19 +32,31 @@ pub fn run_disconnect(agent_name: Option<&str>) -> Result<(), ConnectError> {
     }
 }
 
-pub(crate) fn prefer_slugthug_binary(current: &Path) -> PathBuf {
+/// The stable installed binary when one exists, else `current`.
+///
+/// # Errors
+///
+/// A stat failure on the installed path is returned rather than read as
+/// "not installed", which would register a possibly temporary `current`.
+pub(crate) fn prefer_slugthug_binary(current: &Path) -> Result<PathBuf, std::io::Error> {
     if let Some(slugaudit) = slugaudit_dir() {
         let candidate = slugaudit.join("slugaudit");
-        if candidate.exists() {
-            return candidate;
+        if candidate.try_exists()? {
+            return Ok(candidate);
         }
     }
-    current.to_path_buf()
+    Ok(current.to_path_buf())
+}
+
+/// The answer to an interactive prompt; end of input is an error, not an
+/// empty answer.
+fn read_answer() -> Result<String, ConnectError> {
+    crate::prompt::read_prompt_line()?.ok_or(ConnectError::EndOfInput)
 }
 
 fn connect_one(agent: AgentDef) -> Result<(), ConnectError> {
     let binary = running_binary().map_err(ConnectError::BinaryPath)?;
-    let binary = prefer_slugthug_binary(&binary);
+    let binary = prefer_slugthug_binary(&binary)?;
     let home = config_home();
     if agent.is_connected(home.as_deref()) {
         println!(
@@ -92,7 +104,7 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
     print!("Choose an agent [1-{}]: ", detected.len());
     std::io::stdout().flush()?;
 
-    let choice = crate::prompt::read_prompt_line()?.unwrap_or_default();
+    let choice = read_answer()?;
     let index = parse_choice(&choice, detected.len())?;
     let agent = detected
         .get(index)
@@ -104,7 +116,7 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
             agent.display_name
         );
         std::io::stdout().flush()?;
-        let confirm = crate::prompt::read_prompt_line()?.unwrap_or_default();
+        let confirm = read_answer()?;
         if !crate::prompt::is_yes(&confirm) {
             println!("Skipped.");
             return Ok(());
@@ -133,7 +145,7 @@ pub fn run_disconnect_interactive() -> Result<(), ConnectError> {
     print!("Choose an agent to disconnect [1-{}]: ", connected.len());
     std::io::stdout().flush()?;
 
-    let choice = crate::prompt::read_prompt_line()?.unwrap_or_default();
+    let choice = read_answer()?;
     let index = parse_choice(&choice, connected.len())?;
     let agent = connected
         .get(index)

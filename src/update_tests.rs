@@ -4,14 +4,20 @@
 
 use super::*;
 
+/// The checksum tests drive a real `sha256sum`; a machine without it must fail
+/// them, not report green for tests that ran nothing.
+fn require_sha256sum() {
+    assert!(
+        which::which("sha256sum").is_ok(),
+        "sha256sum (coreutils) is required to run the checksum tests"
+    );
+}
+
 /// Verifies a real (mock) binary against a SHA256SUMS file by invoking
-/// `sha256sum`. Skipped when `sha256sum` isn't on PATH.
+/// `sha256sum`.
 #[test]
 fn verify_checksum_accepts_a_matching_file() {
-    if which::which("sha256sum").is_err() {
-        eprintln!("skipping: sha256sum not available");
-        return;
-    }
+    require_sha256sum();
     let dir = tempfile::tempdir().expect("temp dir");
     let binary = dir.path().join("slugaudit-x86_64-unknown-linux-gnu");
     let contents = b"#!/bin/sh\necho fake binary\n";
@@ -46,10 +52,7 @@ fn verify_checksum_accepts_a_matching_file() {
 /// for Task 17.5.
 #[test]
 fn verify_checksum_accepts_a_unique_temporary_file_path() {
-    if which::which("sha256sum").is_err() {
-        eprintln!("skipping: sha256sum not available");
-        return;
-    }
+    require_sha256sum();
     let dir = tempfile::tempdir().expect("temp dir");
     // Deliberately NOT named the asset — a unique `.update-<pid>` name.
     let binary = dir
@@ -82,10 +85,7 @@ fn verify_checksum_accepts_a_unique_temporary_file_path() {
 /// is never replaced with a corrupt download.
 #[test]
 fn verify_checksum_rejects_a_mismatching_file() {
-    if which::which("sha256sum").is_err() {
-        eprintln!("skipping: sha256sum not available");
-        return;
-    }
+    require_sha256sum();
     let dir = tempfile::tempdir().expect("temp dir");
     let binary = dir.path().join("slugaudit-x86_64-unknown-linux-gnu");
     std::fs::write(&binary, b"different bytes\n").expect("write fake binary");
@@ -147,9 +147,7 @@ fn verify_checksum_fails_when_asset_entry_missing() {
 
 #[test]
 fn verify_checksum_fails_when_binary_file_missing() {
-    if which::which("sha256sum").is_err() {
-        return;
-    }
+    require_sha256sum();
     let dir = tempfile::tempdir().expect("temp dir");
     let missing_binary = dir.path().join("missing_bin");
     let sums_file = dir.path().join("SHA256SUMS");
@@ -260,4 +258,18 @@ fn update_fetches_only_a_newer_or_incomparable_release() {
             "{current} vs {latest}"
         );
     }
+}
+
+/// A `sha256sum` that exits 0 but prints nothing must be named as a parse
+/// failure, not surface as a mismatch against an empty digest.
+#[test]
+fn an_empty_sha256sum_output_is_a_named_parse_failure() {
+    let error = parse_digest("  \n").expect_err("no token is no digest");
+
+    assert!(error.to_string().contains("printed no digest"), "{error}");
+}
+
+#[test]
+fn the_first_sha256sum_token_is_the_lowercase_digest() {
+    assert_eq!(parse_digest("ABCDEF  file\n").expect("digest"), "abcdef");
 }

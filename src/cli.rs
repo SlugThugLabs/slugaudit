@@ -106,7 +106,12 @@ EXAMPLES:
 
 /// Formats the usage text, applying ANSI terminal styling when stdout is a terminal.
 pub fn usage() -> String {
-    let style = Style::stdout();
+    render_usage(&Style::stdout())
+}
+
+/// Renders [`USAGE`] with `style`. Split from [`usage`] so both branches can be
+/// driven with a fixed style instead of whatever stdout happens to be.
+fn render_usage(style: &Style) -> String {
     if !style.enabled() {
         return USAGE.to_owned();
     }
@@ -131,6 +136,8 @@ pub fn usage() -> String {
 pub enum ConnectError {
     #[error("invalid agent choice; choose one of the listed options")]
     InvalidChoice,
+    #[error("input ended before an answer was given")]
+    EndOfInput,
     #[error("binary path unavailable: {0}")]
     BinaryPath(std::io::Error),
     #[error("home directory is unavailable")]

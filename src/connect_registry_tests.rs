@@ -446,3 +446,82 @@ fn success_and_failure_reports_always_name_their_source() {
         );
     }
 }
+
+#[test]
+fn a_malformed_client_config_is_not_registered_and_says_why() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let config = directory.path().join("mcp.json");
+    std::fs::write(&config, "{ not json").expect("write config");
+
+    let (registered, logs) = crate::store::test_capture::capture_warns(|| {
+        crate::connect_exec::has_slugaudit(&config, &["mcpServers"])
+    });
+
+    assert!(!registered);
+    assert!(logs.contains("not valid JSON"), "{logs}");
+}
+
+#[test]
+fn a_well_formed_client_config_with_the_entry_is_registered_silently() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let config = directory.path().join("mcp.json");
+    std::fs::write(&config, r#"{"mcpServers":{"slugaudit":{}}}"#).expect("write config");
+
+    let (registered, logs) = crate::store::test_capture::capture_warns(|| {
+        tracing::warn!("control-line-probe-has-slugaudit");
+        crate::connect_exec::has_slugaudit(&config, &["mcpServers"])
+    });
+
+    assert!(registered);
+    assert!(logs.contains("control-line-probe-has-slugaudit"));
+    assert!(!logs.contains("not valid JSON"), "{logs}");
+}
+
+#[test]
+fn an_unreadable_goose_config_is_not_connected_and_says_why() {
+    let home = tempfile::tempdir().expect("temp dir");
+    let goose = find_agent("goose").expect("goose is registered");
+    let config = goose
+        .config
+        .resolve(home.path())
+        .expect("goose config path");
+    std::fs::create_dir_all(config.parent().expect("config parent")).expect("mkdir");
+    let over_cap = usize::try_from(crate::util::MAX_FOREIGN_TEXT_BYTES).expect("cap fits") + 1;
+    std::fs::write(&config, vec![b' '; over_cap]).expect("write oversized config");
+
+    let (connected, logs) =
+        crate::store::test_capture::capture_warns(|| goose.config_has_slugaudit(home.path()));
+
+    assert!(!connected);
+    assert!(logs.contains("could not read client config"), "{logs}");
+}
+
+#[test]
+fn disconnect_fails_when_the_client_config_cannot_be_stat_ed() {
+    let home = tempfile::tempdir().expect("temp dir");
+    // `.cursor` is a file, so `.cursor/mcp.json` fails to stat with "not a
+    // directory" instead of reporting "absent".
+    std::fs::write(home.path().join(".cursor"), b"x").expect("write file");
+    let cursor = find_agent("cursor").expect("cursor is registered");
+
+    let result = crate::connect_exec::disconnect_agent(&cursor, Some(home.path()));
+
+    assert!(
+        result.is_err(),
+        "a stat failure must fail the disconnect, not print Done"
+    );
+}
+
+#[test]
+fn the_installed_binary_check_fails_on_a_stat_error_instead_of_using_the_current_path() {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("temp dir");
+    let file = temp.path().join("file");
+    std::fs::write(&file, b"x").expect("write file");
+
+    let result = temp_env::with_var("SLUGTHUG_HOME", Some(file.as_os_str()), || {
+        crate::connect::prefer_slugthug_binary(std::path::Path::new("/build/artifacts/slugaudit"))
+    });
+
+    assert!(result.is_err(), "{result:?}");
+}

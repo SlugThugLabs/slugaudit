@@ -97,26 +97,131 @@ fn reported(result: Result<(), impl std::fmt::Display>) -> CommandOutcome {
     }
 }
 
+/// Logging choices read from the environment, plus every setting the
+/// environment carried that could not be honored.
+struct LogSettings {
+    filter: EnvFilter,
+    json: bool,
+    /// One message per rejected setting. They are logged once the subscriber
+    /// is installed, because nothing can be logged before it.
+    rejected: Vec<String>,
+}
+
+/// Resolves `RUST_LOG` and `SLUGAUDIT_LOG_FORMAT`. An unset variable takes its
+/// default silently; a set one that is invalid or not UTF-8 falls back to the
+/// default (`info`, plain text) and is recorded in `rejected` rather than
+/// dropped, so the operator learns why the setting did not apply.
+fn log_settings(
+    rust_log: Result<String, std::env::VarError>,
+    format: Result<String, std::env::VarError>,
+) -> LogSettings {
+    let mut rejected = Vec::new();
+    let filter = match rust_log {
+        Ok(directives) => EnvFilter::try_new(&directives).unwrap_or_else(|error| {
+            rejected.push(format!(
+                "RUST_LOG was rejected and the filter is `info`: {error}"
+            ));
+            EnvFilter::new("info")
+        }),
+        Err(std::env::VarError::NotPresent) => EnvFilter::new("info"),
+        Err(error @ std::env::VarError::NotUnicode(_)) => {
+            rejected.push(format!(
+                "RUST_LOG was rejected and the filter is `info`: {error}"
+            ));
+            EnvFilter::new("info")
+        }
+    };
+    let json = match format {
+        Ok(value) => value.eq_ignore_ascii_case("json"),
+        Err(std::env::VarError::NotPresent) => false,
+        Err(error @ std::env::VarError::NotUnicode(_)) => {
+            rejected.push(format!(
+                "SLUGAUDIT_LOG_FORMAT was rejected and logs stay plain text: {error}"
+            ));
+            false
+        }
+    };
+    LogSettings {
+        filter,
+        json,
+        rejected,
+    }
+}
+
 /// Installs the stderr tracing subscriber for `serve`. Logs go to stderr
 /// only — stdout is the JSON-RPC transport. `SLUGAUDIT_LOG_FORMAT=json`
 /// switches the formatter to JSON; anything else stays the plain writer
 /// with ANSI off (stderr may be a captured file, not a terminal).
 fn init_logging() {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let is_json = std::env::var("SLUGAUDIT_LOG_FORMAT")
-        .map(|v| v.eq_ignore_ascii_case("json"))
-        .unwrap_or(false);
-    if is_json {
+    let settings = log_settings(
+        std::env::var("RUST_LOG"),
+        std::env::var("SLUGAUDIT_LOG_FORMAT"),
+    );
+    if settings.json {
         tracing_subscriber::fmt()
             .json()
             .with_writer(std::io::stderr)
-            .with_env_filter(env_filter)
+            .with_env_filter(settings.filter)
             .init();
     } else {
         tracing_subscriber::fmt()
             .with_writer(std::io::stderr)
             .with_ansi(false)
-            .with_env_filter(env_filter)
+            .with_env_filter(settings.filter)
             .init();
+    }
+    for message in &settings.rejected {
+        tracing::warn!("{message}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unset_log_variables_take_their_defaults_without_a_complaint() {
+        let settings = log_settings(
+            Err(std::env::VarError::NotPresent),
+            Err(std::env::VarError::NotPresent),
+        );
+
+        assert!(!settings.json);
+        assert!(settings.rejected.is_empty());
+    }
+
+    #[test]
+    fn an_invalid_rust_log_is_reported_not_dropped() {
+        let settings = log_settings(
+            Ok("slugaudit=trace,,=bogus[".to_owned()),
+            Err(std::env::VarError::NotPresent),
+        );
+
+        assert_eq!(settings.rejected.len(), 1, "{:?}", settings.rejected);
+        assert!(settings.rejected[0].contains("RUST_LOG"));
+    }
+
+    #[test]
+    fn a_valid_rust_log_and_json_format_are_honored_silently() {
+        let settings = log_settings(Ok("debug".to_owned()), Ok("JSON".to_owned()));
+
+        assert!(settings.json);
+        assert!(settings.rejected.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_log_format_is_reported_not_treated_as_plain() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let bad = std::ffi::OsString::from_vec(vec![0xff]);
+
+        let settings = log_settings(
+            Err(std::env::VarError::NotPresent),
+            Err(std::env::VarError::NotUnicode(bad)),
+        );
+
+        assert!(!settings.json);
+        assert_eq!(settings.rejected.len(), 1);
+        assert!(settings.rejected[0].contains("SLUGAUDIT_LOG_FORMAT"));
     }
 }

@@ -28,7 +28,7 @@ fn prefer_slugthug_binary_uses_the_installed_path_when_present() {
     let current = PathBuf::from("/build/artifacts/slugaudit");
     temp_env::with_var("SLUGTHUG_HOME", Some(temp.path().as_os_str()), || {
         assert_eq!(
-            prefer_slugthug_binary(&current),
+            prefer_slugthug_binary(&current).expect("stat succeeds"),
             bin_dir.join("slugaudit"),
             "the stable installed path wins over the current build artifact"
         );
@@ -45,7 +45,10 @@ fn prefer_slugthug_binary_keeps_current_when_not_installed() {
         ],
         || {
             let current = PathBuf::from("/build/artifacts/slugaudit");
-            assert_eq!(prefer_slugthug_binary(&current), current);
+            assert_eq!(
+                prefer_slugthug_binary(&current).expect("stat succeeds"),
+                current
+            );
         },
     );
 }

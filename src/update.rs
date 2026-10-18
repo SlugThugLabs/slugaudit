@@ -94,7 +94,7 @@ pub enum UpdateError {
 /// registers), otherwise the running executable.
 fn target_binary() -> Result<PathBuf, UpdateError> {
     let running = crate::install::running_binary().map_err(UpdateError::Target)?;
-    Ok(crate::connect::prefer_slugthug_binary(&running))
+    crate::connect::prefer_slugthug_binary(&running).map_err(UpdateError::Target)
 }
 
 /// Downloads the release, verifies its checksum, and atomically replaces the
@@ -174,17 +174,23 @@ fn verify_checksum(binary_path: &Path, sums_path: &Path) -> Result<(), UpdateErr
             String::from_utf8_lossy(&output.stderr).trim().to_string(),
         ));
     }
-    let actual = String::from_utf8_lossy(&output.stdout)
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+    let actual = parse_digest(&String::from_utf8_lossy(&output.stdout))?;
     if actual != expected {
         return Err(UpdateError::Checksum(format!(
             "checksum mismatch for {ASSET}: expected {expected}, got {actual}"
         )));
     }
     Ok(())
+}
+
+/// The lowercase digest `sha256sum` printed (its first token). Output with no
+/// token is a parse failure, named as such rather than compared as `""`.
+fn parse_digest(stdout: &str) -> Result<String, UpdateError> {
+    stdout
+        .split_whitespace()
+        .next()
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| UpdateError::Checksum("sha256sum printed no digest".to_owned()))
 }
 
 /// What `update` does after comparing this build with the published release.

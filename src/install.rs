@@ -49,6 +49,10 @@ pub enum InstallError {
     Mkdir { path: String, inner: std::io::Error },
     #[error("could not copy the binary to {path}: {inner}")]
     Copy { path: String, inner: std::io::Error },
+    #[error("could not read the system clock to name the staged binary: {0}")]
+    Clock(std::time::SystemTimeError),
+    #[error("$SHELL is not valid UTF-8, so the shell config to edit cannot be chosen")]
+    ShellNotUnicode,
     #[error(transparent)]
     Place(#[from] crate::install_place::PlaceError),
     #[error(transparent)]
@@ -84,7 +88,7 @@ pub const PREVIOUS_BINARY_NAME: &str = "slugaudit.prev";
 /// mid-write. The copy keeps the source's permission bits, so reverting needs
 /// no separate `chmod`.
 pub(crate) fn retain_previous_binary(target: &Path) -> Result<Option<PathBuf>, std::io::Error> {
-    if !target.exists() {
+    if !target.try_exists()? {
         return Ok(None);
     }
     let Some(directory) = target.parent() else {
@@ -108,13 +112,11 @@ pub fn run_install() -> Result<(), InstallError> {
         inner,
     })?;
 
-    let temporary = bin_dir.join(format!(
-        ".slugaudit.{}.{}.tmp",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos())
-    ));
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(InstallError::Clock)?
+        .as_nanos();
+    let temporary = bin_dir.join(format!(".slugaudit.{}.{stamp}.tmp", std::process::id()));
     std::fs::copy(&source, &temporary).map_err(|inner| {
         crate::install_place::remove_leftover(&temporary, "could not remove staged binary");
         InstallError::Copy {
@@ -129,7 +131,7 @@ pub fn run_install() -> Result<(), InstallError> {
     // it, so offer to add the dir rather than forcing the user to type an
     // export by hand. No-op when stdin isn't a terminal or already on PATH.
     if !on_path(&bin_dir)
-        && interactive_prompt(&format!("Add {} to your PATH? [y/N] ", bin_dir.display()))
+        && crate::prompt::confirm(&format!("Add {} to your PATH? [y/N] ", bin_dir.display()))
     {
         match add_to_path(&bin_dir) {
             Ok(()) => {}
@@ -153,37 +155,24 @@ pub fn run_install() -> Result<(), InstallError> {
 /// True when `dir` is already on `PATH` (as a canonicalized entry).
 fn on_path(dir: &Path) -> bool {
     let canonical = crate::util::canonical_or_self(dir);
-    // PATH entries are compared as-written when they cannot be canonicalized;
-    // warning per entry would be noise, and a missed match only re-offers the
-    // (idempotent) PATH-add prompt.
-    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .any(|entry| std::fs::canonicalize(&entry).unwrap_or(entry) == canonical)
-}
-
-/// Reads a single `y`/`n` answer from stdin, defaulting to no. Non-
-/// interactive (piped) stdin returns `false` immediately.
-fn interactive_prompt(msg: &str) -> bool {
-    #[cfg(test)]
-    {
-        let _ = msg;
-        false
-    }
-    #[cfg(not(test))]
-    {
-        use std::io::{BufRead as _, IsTerminal as _, Write as _};
-        if !std::io::stdin().is_terminal() {
-            return false;
+    // An entry that cannot be canonicalized is compared as written; a missing
+    // directory is routine on a PATH and silent, any other failure is logged.
+    // A missed match only re-offers the (idempotent) PATH-add prompt.
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).any(|entry| {
+        match std::fs::canonicalize(&entry) {
+            Ok(resolved) => resolved == canonical,
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        path = %crate::util::redacted_path(&entry),
+                        error = %error,
+                        "could not canonicalize a PATH entry; comparing it as written",
+                    );
+                }
+                entry == canonical
+            }
         }
-        print!("{msg}");
-        if std::io::stdout().flush().is_err() {
-            return false;
-        }
-        let mut line = String::new();
-        if std::io::stdin().lock().read_line(&mut line).is_err() {
-            return false;
-        }
-        crate::prompt::is_yes(&line)
-    }
+    })
 }
 
 /// Appends an `export PATH="<dir>:$PATH"` line to the user's shell config
@@ -217,7 +206,13 @@ fn path_config(bin_dir: &Path) -> Result<(PathBuf, String), InstallError> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or(InstallError::NoHome)?;
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_owned());
+    // An unset $SHELL defaults to bash; a set but non-UTF-8 one is refused
+    // rather than silently treated as bash.
+    let shell = match std::env::var("SHELL") {
+        Ok(shell) => shell,
+        Err(std::env::VarError::NotPresent) => "/bin/bash".to_owned(),
+        Err(std::env::VarError::NotUnicode(_)) => return Err(InstallError::ShellNotUnicode),
+    };
     let name = Path::new(&shell)
         .file_name()
         .and_then(|s| s.to_str())

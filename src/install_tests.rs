@@ -397,3 +397,60 @@ fn an_install_target_that_is_a_directory_reports_the_failed_step_and_cleans_up()
         "the staged copy must not be left behind: {leftovers:?}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_shell_variable_is_refused_instead_of_choosing_bashrc() {
+    use std::os::unix::ffi::OsStringExt as _;
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("temp dir");
+    let shell = std::ffi::OsString::from_vec(b"/bin/\xff".to_vec());
+
+    temp_env::with_vars(
+        [
+            ("HOME", Some(temp.path().as_os_str())),
+            ("SHELL", Some(shell.as_os_str())),
+        ],
+        || {
+            let error = path_config(Path::new("/x/slugaudit")).expect_err("non-UTF-8 SHELL fails");
+
+            assert!(matches!(error, InstallError::ShellNotUnicode), "{error}");
+        },
+    );
+}
+
+#[test]
+fn retaining_the_previous_binary_reports_a_stat_failure() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let file = directory.path().join("file");
+    std::fs::write(&file, b"x").expect("write file");
+
+    let error = retain_previous_binary(&file.join("slugaudit"))
+        .expect_err("a target whose stat fails must not read as a first install");
+
+    assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
+}
+
+#[test]
+fn an_uncanonicalizable_path_entry_is_compared_as_written_and_logged() {
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("temp dir");
+    let file = temp.path().join("file");
+    std::fs::write(&file, b"x").expect("write file");
+    let broken_entry = file.join("child");
+
+    let (found, logs) = crate::store::test_capture::capture_warns(|| {
+        temp_env::with_var("PATH", Some(broken_entry.as_os_str()), || {
+            on_path(&broken_entry)
+        })
+    });
+
+    assert!(
+        found,
+        "an entry equal to the directory still matches as written"
+    );
+    assert!(
+        logs.contains("could not canonicalize a PATH entry"),
+        "{logs}"
+    );
+}

@@ -158,53 +158,30 @@ fn plain_style_passes_text_through_uncolored() {
     assert_eq!(style.yellow("hi"), "hi");
 }
 
-/// A `Style` created with a fixed enabled flag wraps text in the expected
-/// SGR codes and resets afterwards. We drive it directly with the inner
-/// state rather than relying on `Stdout::is_terminal()` (which is
-/// environment-dependent in CI) by building on the `enabled` flag the
-/// struct exposes.
 #[test]
 fn enabled_style_wraps_text_in_sgr_codes() {
-    // There's no public constructor for an always-on style; the only two
-    // constructors are `stdout()` (environment-dependent) and `plain()`.
-    // So we assert the code shape through the SGR contract by switching on
-    // the current terminal state: if stdout happens to be a terminal the
-    // enabled path is exercised, otherwise the plain path is. Either way
-    // the output must not contain a control byte from the wrong class.
-    let style = Style::stdout();
-    let bold = style.bold("hi");
-    if style.enabled() {
-        assert_eq!(bold, "\x1b[1mhi\x1b[0m");
-    } else {
-        assert_eq!(bold, "hi");
-    }
+    let style = Style::colored();
+
+    assert!(style.enabled());
+    assert_eq!(style.bold("hi"), "\x1b[1mhi\x1b[0m");
 }
 
 /// The exact SGR codes used by `Style` must match the documented ANSI
-/// mapping (bold=1, dim=2, cyan=36, green=32, yellow=33, magenta=35,
-/// reset=0). Checking this prevents someone "fixing" a typo by changing
-/// a code while the wrapper prefix still says enabled.
+/// mapping (bold=1, dim=2, cyan=36, green=32, yellow=33, reset=0), so a
+/// "fix" that changes one code fails here.
 #[test]
 fn style_uses_the_documented_sgr_codes() {
-    let style = Style::stdout();
-    // Build expected strings for each method and verify they contain the
-    // right code when styling is on.
+    let style = Style::colored();
+
     let expectations = [
-        (style.bold("x"), "\x1b[1m"),
-        (style.dim("x"), "\x1b[2m"),
-        (style.cyan("x"), "\x1b[36m"),
-        (style.green("x"), "\x1b[32m"),
-        (style.yellow("x"), "\x1b[33m"),
+        (style.bold("x"), "\x1b[1mx\x1b[0m"),
+        (style.dim("x"), "\x1b[2mx\x1b[0m"),
+        (style.cyan("x"), "\x1b[36mx\x1b[0m"),
+        (style.green("x"), "\x1b[32mx\x1b[0m"),
+        (style.yellow("x"), "\x1b[33mx\x1b[0m"),
     ];
-    for (output, prefix) in expectations {
-        if style.enabled() {
-            assert!(
-                output.starts_with(prefix),
-                "expected {prefix:?}, got {output:?}"
-            );
-        } else {
-            assert_eq!(output, "x");
-        }
+    for (output, expected) in expectations {
+        assert_eq!(output, expected);
     }
 }
 

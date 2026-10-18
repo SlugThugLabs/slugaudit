@@ -10,7 +10,9 @@
 use std::io::IsTerminal;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
+
+pub(crate) use crate::clock::mtime_unix_seconds;
 
 static LAST_UNIX_TIME: AtomicI64 = AtomicI64::new(0);
 
@@ -243,14 +245,12 @@ pub(crate) fn serialized_len<T: serde::Serialize>(value: &T) -> Result<usize, se
     Ok(counter.0)
 }
 
-/// The current Unix timestamp in seconds. Returns 0 if the system clock is
-/// before the epoch (defensive — not expected in practice).
+/// The current Unix timestamp in seconds. A clock before the epoch (or past
+/// the `i64` range) is a documented, deliberate recovery: it yields `0`
+/// (respectively `i64::MAX`), logged with the source error, and the monotonic
+/// guard below keeps stored timestamps from moving backwards.
 pub(crate) fn now_unix() -> i64 {
-    let observed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
-        });
+    let observed = crate::clock::unix_seconds(SystemTime::now());
     let mut previous = LAST_UNIX_TIME.load(Ordering::Relaxed);
     loop {
         let next = observed.max(previous);
@@ -271,16 +271,6 @@ pub(crate) fn now_unix() -> i64 {
 /// human-readable timestamps from moving backwards across restarts.
 pub(crate) fn at_least_timestamp(observed: i64, persisted: Option<i64>) -> i64 {
     observed.max(persisted.unwrap_or(0))
-}
-
-/// Unix-epoch seconds for a file's mtime, or `None` when the platform
-/// cannot report one (or reports a pre-epoch time). Stored alongside the
-/// content hash so the sync sweep can skip unchanged files with one stat
-/// instead of a full read+hash.
-pub(crate) fn mtime_unix_seconds(metadata: &std::fs::Metadata) -> Option<i64> {
-    let modified = metadata.modified().ok()?;
-    let elapsed = modified.duration_since(UNIX_EPOCH).ok()?;
-    i64::try_from(elapsed.as_secs()).ok()
 }
 
 /// A cooperative wall-clock deadline for one sync operation.

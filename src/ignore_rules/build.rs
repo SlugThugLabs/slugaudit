@@ -54,10 +54,16 @@ pub(super) fn assemble_matchers(
 /// Group by parent directory and by file type so each directory gets one
 /// `.ignore` matcher and one `.gitignore` matcher — the two precedence
 /// classes the walker keeps apart.
-fn group_files_by_dir(ignore_files: &[PathBuf]) -> HashMap<PathBuf, (Vec<PathBuf>, Vec<PathBuf>)> {
+pub(super) fn group_files_by_dir(
+    ignore_files: &[PathBuf],
+) -> HashMap<PathBuf, (Vec<PathBuf>, Vec<PathBuf>)> {
     let mut files_by_dir: HashMap<PathBuf, (Vec<PathBuf>, Vec<PathBuf>)> = HashMap::new();
     for file in ignore_files {
         let Some(parent) = file.parent() else {
+            tracing::warn!(
+                path = %file.display(),
+                "ignore file has no parent directory; its rules are not applied",
+            );
             continue;
         };
         let (gitignores, ignores) = files_by_dir.entry(parent.to_path_buf()).or_default();
@@ -99,14 +105,22 @@ fn compile_gitignore_matcher(root: &Path, dir: &Path, files: &[PathBuf]) -> Opti
     let mut builder = GitignoreBuilder::new(dir);
     if dir == root {
         let exclude = root.join(".git/info/exclude");
-        if exclude.is_file()
-            && let Some(err) = builder.add(&exclude)
-        {
-            tracing::warn!(
+        match exclude.try_exists() {
+            Ok(true) => {
+                if let Some(err) = builder.add(&exclude) {
+                    tracing::warn!(
+                        path = ".git/info/exclude",
+                        error = %err,
+                        "failed to add .git/info/exclude to matcher",
+                    );
+                }
+            }
+            Ok(false) => {}
+            Err(err) => tracing::warn!(
                 path = ".git/info/exclude",
                 error = %err,
-                "failed to add .git/info/exclude to matcher",
-            );
+                "could not stat .git/info/exclude; its rules are not applied",
+            ),
         }
     }
     add_files(root, &mut builder, files, ".gitignore");

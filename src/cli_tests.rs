@@ -10,14 +10,22 @@ fn no_arguments_means_serve() {
 
 #[test]
 fn usage_with_a_plain_style_is_byte_identical_to_the_usage_const() {
-    let styled = usage();
-    if styled.contains('\x1b') {
-        for heading in ["USAGE:", "COMMANDS:", "OPTIONS:", "EXAMPLES:"] {
-            assert!(styled.contains(heading), "help must keep {heading:?}");
-        }
-    } else {
-        assert_eq!(styled, USAGE, "non-terminal help must match USAGE exactly");
+    let rendered = render_usage(&Style::plain());
+
+    assert_eq!(rendered, USAGE, "plain help must match USAGE exactly");
+}
+
+#[test]
+fn usage_with_a_colored_style_keeps_every_heading_and_styles_it() {
+    let rendered = render_usage(&Style::colored());
+
+    for heading in ["USAGE:", "COMMANDS:", "OPTIONS:", "EXAMPLES:"] {
+        assert!(rendered.contains(heading), "help must keep {heading:?}");
     }
+    assert!(
+        rendered.contains("\x1b[1m\x1b[36mCOMMANDS:\x1b[0m\x1b[0m"),
+        "headings are bold cyan: {rendered:?}"
+    );
 }
 
 #[test]

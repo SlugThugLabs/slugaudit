@@ -18,6 +18,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod cli;
+pub(crate) mod clock;
 pub mod connect;
 pub mod connect_agents;
 pub mod connect_cli;
@@ -33,6 +34,7 @@ pub mod menu;
 pub(crate) mod menu_render;
 pub mod model;
 pub mod parse;
+pub(crate) mod probe;
 pub mod progress;
 pub mod project;
 pub(crate) mod prompt;
