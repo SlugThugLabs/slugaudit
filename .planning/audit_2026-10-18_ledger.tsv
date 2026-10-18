@@ -1,0 +1,764 @@
+rule	location	description	scenario	scope
+R1	src/evidence/calls.rs:134	Unchecked &source[a..b] using tree-sitter byte offsets; relies on a char-boundary invariant with no check, unlike model/span.rs char_column which floors defensively	If a grammar or external scanner ever yields a mid-codepoint node boundary the slice panics; the panic is caught per call (server_runner JoinError) but the same file re-panics on every sync, so the project's index never publishes	core
+R1	src/evidence/calls.rs:155	Unchecked &source[a..b] using tree-sitter byte offsets; relies on a char-boundary invariant with no check, unlike model/span.rs char_column which floors defensively	If a grammar or external scanner ever yields a mid-codepoint node boundary the slice panics; the panic is caught per call (server_runner JoinError) but the same file re-panics on every sync, so the project's index never publishes	core
+R1	src/evidence/calls.rs:71	Unchecked &source[a..b] using tree-sitter byte offsets; relies on a char-boundary invariant with no check, unlike model/span.rs char_column which floors defensively	If a grammar or external scanner ever yields a mid-codepoint node boundary the slice panics; the panic is caught per call (server_runner JoinError) but the same file re-panics on every sync, so the project's index never publishes	core
+R1	src/evidence/calls.rs:72	Unchecked &source[a..b] using tree-sitter byte offsets; relies on a char-boundary invariant with no check, unlike model/span.rs char_column which floors defensively	If a grammar or external scanner ever yields a mid-codepoint node boundary the slice panics; the panic is caught per call (server_runner JoinError) but the same file re-panics on every sync, so the project's index never publishes	core
+R1	src/evidence/calls/macro_calls.rs:143	Unchecked &source[a..b] using tree-sitter byte offsets; relies on a char-boundary invariant with no check, unlike model/span.rs char_column which floors defensively	If a grammar or external scanner ever yields a mid-codepoint node boundary the slice panics; the panic is caught per call (server_runner JoinError) but the same file re-panics on every sync, so the project's index never publishes	core
+R1	src/evidence/generic_imports.rs:132	Unchecked &source[a..b] using tree-sitter byte offsets; relies on a char-boundary invariant with no check, unlike model/span.rs char_column which floors defensively	If a grammar or external scanner ever yields a mid-codepoint node boundary the slice panics; the panic is caught per call (server_runner JoinError) but the same file re-panics on every sync, so the project's index never publishes	core
+R1	src/evidence/normalize.rs:245	Unchecked &source[a..b] using tree-sitter byte offsets; relies on a char-boundary invariant with no check, unlike model/span.rs char_column which floors defensively	If a grammar or external scanner ever yields a mid-codepoint node boundary the slice panics; the panic is caught per call (server_runner JoinError) but the same file re-panics on every sync, so the project's index never publishes	core
+R1	src/evidence/normalize.rs:266	Unchecked &source[a..b] using tree-sitter byte offsets; relies on a char-boundary invariant with no check, unlike model/span.rs char_column which floors defensively	If a grammar or external scanner ever yields a mid-codepoint node boundary the slice panics; the panic is caught per call (server_runner JoinError) but the same file re-panics on every sync, so the project's index never publishes	core
+R1	src/model/span.rs:217	Unchecked u64 subtraction; Span has pub fields and derives Deserialize so end<start is constructible without Span::new; panics in debug, wraps to a huge length in release (fn is used only by tests)	Low: no production caller today; a future caller trusting a deserialized Span gets a wrapped length	core
+R1	src/tools/query_exec.rs:57	`Instant::now() + limits.max_query_wall_clock` panics on overflow; SLUGAUDIT_MAX_QUERY_WALL_CLOCK_SECS is parsed as u64 and wrapped in Duration::from_secs with no upper clamp (src/model/limits.rs:149)	Operator sets the env var to a huge value (e.g. 18446744073709551615): every `query` call panics inside spawn_blocking and the caller gets a JoinError-derived error instead of an answer	tools
+R1	src/tools/structure_exec.rs:156	`query_match.captures[*capture_index]` indexes without a local check; safe only by the tree-sitter captures() iterator contract (index comes from the same match)	Not reachable unless tree-sitter breaks its contract; listed because it is an unchecked index	tools
+R1	src/tools/structure_exec.rs:36	`Instant::now() + limits.max_structure_execution_time` same overflow panic; SLUGAUDIT_MAX_STRUCTURE_EXECUTION_TIME_SECS has no upper clamp (src/model/limits.rs:161)	Same as above for every `structure` call	tools
+R1-exempt	benches/*.rs, benches/common/mod.rs	39 panic-class lines (expect, Result::unwrap at benches/memory.rs:32, assert)	-	dev-only
+R1-exempt	fuzz/fuzz_targets/*.rs	9 panic-class lines (expect in support.rs, assert!/assert_eq! as the fuzz oracle in structure_query.rs:97-110 and query_sql.rs:65)	-	dev-only
+R1-exempt	src/bin/**/{tests.rs,*_tests.rs,test_support.rs}	198 panic-class lines across the 15 test/support files of src/bin (expect/assert/unwrap_err)	-	dev-only
+R1-exempt	src/bin/check_coverage.rs:164	5 panic-class lines (expect/assert_eq at 164,165,171,177,183) inside the inline #[cfg(test)] mod; production code of every src/bin file has zero unwrap/expect/panic/assert (checked by rg; every slice/index in prod bin code read and proven bounded by a preceding check, incl. scanner.rs:81-188, scan.rs:152-225, module_map.rs:27-59, approval.rs:41-47)	-	dev-only
+R1-exempt	src/bin/gate_common/args.rs:74	6 panic-class lines (74,76,87,89,90,98) in inline #[cfg(test)] mod gate_args_tests	-	dev-only
+R1-exempt	src/cli_tests.rs	42 lines with unwrap/expect/panic!/assert* in test code (line count, not occurrences)	n/a: test failure signal	src root
+R1-exempt	src/connect_registry_tests.rs	93 lines with unwrap/expect/panic!/assert* in test code (line count, not occurrences)	n/a: test failure signal	src root
+R1-exempt	src/connect_tests.rs	132 lines with unwrap/expect/panic!/assert* in test code (line count, not occurrences)	n/a: test failure signal	src root
+R1-exempt	src/error_codes.rs (cfg(test) mod)	19 lines with unwrap/expect/panic!/assert* in test code (line count, not occurrences)	n/a: test failure signal	src root
+R1-exempt	src/evidence/calls_tests.rs	34 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/evidence/generic_imports_tests.rs	18 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/evidence/mod.rs	3 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/evidence/normalize_grammar_tests.rs	7 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/evidence/normalize_tests.rs	46 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/evidence/sql.rs	7 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/graph/mod_tests.rs	15 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/graph/reference_tests.rs	37 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/graph/resolve_rust_tests.rs	33 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/graph/resolve_tests.rs	44 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/graph/resolver/gate_tests.rs	12 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/graph/resolver/proptest.rs	1 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/ignore_rules_tests.rs	76 lines with unwrap/expect/panic!/assert* in test code (line count, not occurrences)	n/a: test failure signal	src root
+R1-exempt	src/install_tests.rs	93 lines with unwrap/expect/panic!/assert* in test code (line count, not occurrences)	n/a: test failure signal	src root
+R1-exempt	src/menu.rs (cfg(test) mod)	15 lines with unwrap/expect/panic!/assert* in test code (line count, not occurrences)	n/a: test failure signal	src root
+R1-exempt	src/model/limits_tests.rs	36 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/model/parser.rs	6 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/model/profile_tests.rs	25 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/model/span_tests.rs	13 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/model/system_ram.rs	11 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/parse/language.rs	1 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/project/activation_lock.rs	13 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/project/activation_tests.rs	112 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/project/config.rs	25 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/project/database_path.rs	5 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/project/root.rs	9 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/prompt.rs (cfg(test) mod)	14 lines with unwrap/expect/panic!/assert* in test code (line count, not occurrences)	n/a: test failure signal	src root
+R1-exempt	src/resources_tests.rs	24 lines with unwrap/expect/panic!/assert* in test code (line count, not occurrences)	n/a: test failure signal	src root
+R1-exempt	src/server_runner_tests.rs	34 lines with unwrap/expect/panic!/assert* in test code (line count, not occurrences)	n/a: test failure signal	src root
+R1-exempt	src/store/connection_tests.rs	110 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/store/migrations_tests.rs	50 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/store/netfs_tests.rs	29 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/store/sql_functions_tests.rs	38 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/store/test_capture.rs	2 lines with unwrap/expect/panic/assert in test code		core
+R1-exempt	src/sync/analyze_tests.rs	24 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/sync/classify.rs:133	20 panic-class lines inside the inline #[cfg(test)] module starting here	exempt: test code	sync/watch
+R1-exempt	src/sync/discovery_tests.rs	42 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/sync/hash.rs:101	16 panic-class lines inside the inline #[cfg(test)] module starting here	exempt: test code	sync/watch
+R1-exempt	src/sync/manager_meta_tests.rs	46 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/sync/manager_observability_tests.rs	58 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/sync/manager_tests.rs	55 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/sync/manifest.rs:131	5 panic-class lines inside the inline #[cfg(test)] module starting here	exempt: test code	sync/watch
+R1-exempt	src/sync/publish_acceptance_tests.rs	41 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/sync/publish_attempt.rs:274	8 panic-class lines inside the inline #[cfg(test)] module starting here	exempt: test code	sync/watch
+R1-exempt	src/sync/publish_edges_tests.rs	53 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/sync/publish_mutation_tests.rs	67 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/sync/publish_race_tests.rs	47 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/sync/publish_tests.rs	67 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/sync/race_hook.rs:12	4 panic-class lines inside the inline #[cfg(test)] module starting here	exempt: test code	sync/watch
+R1-exempt	src/sync/reconcile/reconcile_binary_tests.rs	9 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/sync/reconcile/reconcile_ignore_tests.rs	12 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/sync/reconcile/reconcile_tests.rs	69 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/sync/revision_tests.rs	4 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/sync/sample_tests.rs	52 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/sync/sweep_tests.rs	55 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/sync/test_support.rs	12 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/sync/timeout_tests.rs	36 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/tools/*_tests.rs + src/tools/test_support.rs (21 files)	1071 occurrences of unwrap/expect/expect_err/panic!/assert*! counted with grep -o across the 21 test files	exempt: test code	tools
+R1-exempt	src/tools/mod.rs:202-334	11 occurrences in the inline #[cfg(test)] module	exempt: test code	tools
+R1-exempt	src/tools/page_size.rs:47-92	9 occurrences in the inline #[cfg(test)] module	exempt: test code	tools
+R1-exempt	src/update_fetch_tests.rs	27 lines with unwrap/expect/panic!/assert* in test code (line count, not occurrences)	n/a: test failure signal	src root
+R1-exempt	src/update_tests.rs	54 lines with unwrap/expect/panic!/assert* in test code (line count, not occurrences)	n/a: test failure signal	src root
+R1-exempt	src/util.rs (deadline_tests mod)	2 lines with unwrap/expect/panic!/assert* in test code (line count, not occurrences)	n/a: test failure signal	src root
+R1-exempt	src/util_tests.rs	59 lines with unwrap/expect/panic!/assert* in test code (line count, not occurrences)	n/a: test failure signal	src root
+R1-exempt	src/watch/event_filter.rs:74	12 panic-class lines inside the inline #[cfg(test)] module starting here	exempt: test code	sync/watch
+R1-exempt	src/watch/manager_event_tests.rs	35 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/watch/path.rs:27	4 panic-class lines inside the inline #[cfg(test)] module starting here	exempt: test code	sync/watch
+R1-exempt	src/watch/scope_tests.rs	28 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/watch/state.rs:114	21 panic-class lines inside the inline #[cfg(test)] module starting here	exempt: test code	sync/watch
+R1-exempt	src/watch/tests.rs	15 panic-class lines (assert/expect/panic/unwrap) in a test file	exempt: test code, panic is the failure signal	sync/watch
+R1-exempt	src/watch/types.rs:88	9 panic-class lines inside the inline #[cfg(test)] module starting here	exempt: test code	sync/watch
+R1-exempt	tests/*.rs	143 panic-class lines across 5 integration test files (expect/assert/panic!)	-	dev-only
+R2	benches/memory.rs:30	`let Ok(file) = File::open("/proc/self/status") else { return 0 }` and :39-40 `s.parse().ok()...unwrap_or(0)` swallow open/parse failures and return 0; :32 `.map(Result::unwrap)` panics on a read error instead. The caller then prints "VmHWM unavailable on this OS (not linux)" (:98) even on Linux	Memory figure recorded as unmeasured with a false cause	dev-only
+R2	benches/parsing.rs:64	`assert!(loaded.is_ok(), "...")` discards the grammar-load error (the message does not carry it)	Bench aborts without saying which grammar error occurred	dev-only
+R2	fuzz/fuzz_targets/support.rs:200	[test] `let _ = ensure_synced(..)` drops the fixture-sync result. query_sql.rs:64 and structure_query.rs:94 only inspect `Ok`, so if the fixture never syncs every iteration returns Err and both targets run vacuously with zero coverage and zero failures	Fuzz run reports green while exercising nothing	dev-only
+R2	src/bin/check_coverage.rs:106	[dev-only] `let _ = remove_file` dropped, missing-totals path	Low	dev-only
+R2	src/bin/check_coverage.rs:129	[dev-only] `let _ = remove_file` dropped, below-threshold path	Low	dev-only
+R2	src/bin/check_coverage.rs:132	[dev-only] `let _ = remove_file` dropped, success path	Low	dev-only
+R2	src/bin/check_coverage.rs:59	[dev-only] `let _ = remove_file(&report_path)` before running cargo llvm-cov; if the stale report cannot be removed and llvm-cov writes nothing, the gate reads the previous run's JSON and reports its percentage as this run's. check_performance/bench.rs:30 treats the same failed-cleanup as fatal, so the two gates disagree	A leftover cov.json from a better commit lets a coverage drop pass CI (stale-number fail-open)	dev-only
+R2	src/bin/check_coverage.rs:98	[dev-only] `let _ = remove_file` result dropped on the JSON-parse-failure path (same pattern at 106, 129, 132)	Low: stale temp file left in $TMPDIR, no log	dev-only
+R2	src/bin/check_docs_drift/test_file_count.rs:46	[dev-only] `let Ok(entries) = read_dir(dir) else { return 0 }` turns an unreadable src/ (or subdirectory) into a count of 0; test test_file_count_ignores_a_missing_src_dir pins this for the root	Unreadable subtree undercounts *_tests.rs; with a matching stale claim the gate passes	dev-only
+R2	src/bin/check_docs_drift/test_file_count.rs:50	[dev-only] `entries.flatten()` drops entry errors silently, undercounting	Same as :46	dev-only
+R2	src/bin/check_no_duplicates/commit_subjects.rs:18	[dev-only] `env::var(..).map(..).unwrap_or_else(|_| ..)` drops the VarError: a non-UTF-8 SLUGAUDIT_CHECK_COMMITS_BASE is silently ignored and the gate falls back to origin/main..HEAD or full history without saying so	CI sets a base that is silently not honoured; the gate checks a different commit range than the one requested	dev-only
+R2	src/bin/check_no_duplicates/commit_subjects.rs:26	[dev-only] `.status().map(|s| s.success()).unwrap_or(false)` discards the spawn error of `git rev-parse`, silently selecting range "HEAD" (whole history, not the branch)	A git spawn failure widens the commit window to all history; duplicate subjects from old merged history fail the gate for the wrong reason	dev-only
+R2	src/bin/check_no_duplicates/test_names.rs:15	[dev-only] `&& let Ok(rd) = read_dir(&tests)` silently skips an unreadable tests/ directory (no failure, no log)	Test names in tests/ are never compared; gate prints PASS	dev-only
+R2	src/bin/check_no_duplicates/test_names.rs:17	[dev-only] `rd.flatten()` drops per-entry I/O errors silently	Same fail-open: unreadable entries are not scanned	dev-only
+R2	src/bin/check_no_duplicates/test_names.rs:29	[dev-only] `let Ok(entries) = read_dir(dir) else { return }` swallows the directory error in walk_rs; a src/ subtree that cannot be read is skipped with PASS	Duplicate test names inside an unreadable subtree go undetected	dev-only
+R2	src/bin/check_no_duplicates/test_names.rs:32	[dev-only] `entries.flatten()` drops per-entry I/O errors silently	Same as :29	dev-only
+R2	src/bin/check_no_duplicates/test_names.rs:54	[dev-only] `let Ok(source) = read_to_string(path) else { continue }` silently skips an unreadable (or non-UTF-8) .rs file	File is excluded from the duplicate-name check and the gate still prints PASS	dev-only
+R2	src/bin/check_performance/estimates.rs:108	[dev-only] `entry.get("budget_ns").and_then(as_u64)` turns a present-but-malformed budget_ns (string, negative, float) into None; the budget is silently dropped, and the next --record erases it permanently (record.rs:19 only carries over Some)	A hand-set absolute perf budget silently stops being enforced after a typo	dev-only
+R2	src/bin/check_performance/estimates.rs:56	[dev-only] `median as u64` on an f64 saturates silently (NaN or negative -> 0); a 0 measurement is judged as ratio 0.0 and passes	A corrupt estimates.json yielding NaN reports a bench as infinitely fast and passes the gate	dev-only
+R2	src/bin/check_performance/main.rs:105	[dev-only] `current_dir().map(..).unwrap_or_default()` discards the io error and writes an empty path into the committed baseline's "machine" field on --record; the same field also embeds the developer's absolute cwd into a committed file	Baseline records a blank or machine-specific "machine" string with no warning	dev-only
+R2	src/bin/check_performance/tests.rs:40	[test] `let _ = remove_file(&tmp)` (also :55) and src/bin/check_no_duplicates/tests.rs:64 `let _ = remove_dir_all(&p)`: cleanup errors dropped; fixtures use fixed pid-based names in the shared temp dir and are never removed on assertion failure	Leaked/colliding temp files between runs	dev-only
+R2	src/bin/check_performance/tests.rs:41	[test] `let _ = BaselineEntry::default();` is a no-op that only exists to silence an unused-import/dead_code warning (BaselineEntry::default is otherwise unused)	Lint suppression by side effect	dev-only
+R2	src/bin/check_producer_coverage/scan.rs:156	[dev-only] enum_variants stops at the first line that starts with `}`: a variant with a multi-line payload (`Failed {\n reason: String,\n},`) ends the scan early, silently dropping every later variant from the check; multi-line tuple payload lines like `String,` are instead parsed as bogus variants. Latent: current EvidenceKind/ExtractionCompleteness have only single-line variants (model/evidence.rs:24-33, model/parser.rs:103-112); the only test uses single-line payloads	A future multi-line variant makes the gate pass while variants after it have no producer check	dev-only
+R2	src/bin/check_version_consistency/tests.rs:129	[test] `assert!(manifests::check(..).is_err())` discards which error; passes for any read failure, not just the removed CHANGELOG.md	Weak assertion	dev-only
+R2	src/bin/gate_common/args.rs:99	[test] `assert!(parse_list(..).is_err())` cannot tell --help (Err(ExitCode::SUCCESS)) from a usage error (Err(2)); both are Err	A --help regression to exit 2 would pass	dev-only
+R2	src/cli_tests.rs:14	usage_with_a_plain_style_... only asserts something different when stdout is a terminal; in CI it takes one branch, and the styled branch (headings kept) is unexercised	n/a: low	src root
+R2	src/connect.rs:38	prefer_slugthug_binary: candidate.exists() hides stat errors and silently registers the current (possibly temporary) binary path	stat error on ~/.slugthug/slugaudit/slugaudit makes connect register a build-artifact path	src root
+R2	src/connect.rs:95	read_prompt_line()?.unwrap_or_default(): end-of-input becomes an empty answer (same :107, :136; menu.rs:114)	closed stdin during `slugaudit connect` reports "invalid agent choice" instead of end of input	src root
+R2	src/connect_agents.rs:333	is_installed: path.exists() and path.parent().exists() discard errors (also :336)	detection false negatives with no cause shown	src root
+R2	src/connect_agents.rs:359	goose detection: read_file_capped(..).is_ok_and(|c| c.contains("slugaudit")) drops the read error and matches the substring anywhere (comments included)	unreadable goose config reads as not connected; a YAML comment mentioning slugaudit reads as connected	src root
+R2	src/connect_cli.rs:19	check_connected uses Command::output().is_ok_and(..): spawn failure, non-zero exit and timeout are all reported as "not connected"	`claude mcp list` crashes; connect menu shows the agent as not connected and says nothing	src root
+R2	src/connect_exec.rs:19	has_slugaudit swallows read error, over-cap error and JSON parse error via is_ok_and; comment at :16-18 documents it as advisory but nothing is logged (so not R2-documented)	a 2 MiB or malformed ~/.cursor/mcp.json is reported "not connected"; user sees no reason until the write path fails	src root
+R2	src/connect_exec.rs:282	remove_json_slugaudit: path.exists() hides permission errors, so an unreadable config is skipped and disconnect proceeds to "Done."	config in a 0700 parent dir: disconnect prints Done, entry remains	src root
+R2	src/connect_exec.rs:69	which::which(cli).is_ok() discards the lookup error (same at :274 and connect_agents.rs:326,346); PATH problems look identical to "client not installed"	disconnect skips the CLI remove silently (see R6 connect_exec.rs:262)	src root
+R2	src/evidence/calls.rs:32	get_parser Err dropped, returns (empty, capped=false): Rust call evidence silently absent while the file reports complete extraction	Call evidence missing for a file that is reported Full, so an agent counts zero callers as fact	core
+R2	src/evidence/calls.rs:35	parser.parse None (cancelled/failed) returns (empty,false) with no log and no completeness flag	Same: zero call rows presented as complete	core
+R2	src/evidence/calls/macro_calls.rs:73	get() None returns false (not capped, not logged): a macro fragment that could not be sliced is silently skipped	Calls inside that macro are missing and the file is not marked Partial	core
+R2	src/evidence/calls/macro_calls.rs:77	get_parser Err dropped, returns false (not capped)	Macro-argument calls silently missing, completeness not downgraded	core
+R2	src/evidence/calls/macro_calls.rs:80	parse None returns false (not capped), no log	Macro-argument calls silently missing, completeness not downgraded	core
+R2	src/evidence/normalize.rs:112	get_parser Err dropped for the binding/generic-import walkers; returns (empty,false)	Variable/field symbols and generic imports (and thus dependency edges) silently absent for a file reported complete	core
+R2	src/evidence/normalize.rs:115	parse None dropped for the binding/generic-import walkers; returns (empty,false)	Same as above	core
+R2	src/evidence/sql.rs:27	try_from Err replaced by i64::MAX; comment calls it a documented choice but nothing is logged or flagged	Unreachable for real files (offset > i64::MAX); a wrong stored byte offset would be quoted as fact	core
+R2	src/graph/resolve_rust.rs:68	Option (file_stem) defaulted to empty string; not a Result, listed because the pattern is named in R2	Negligible: a path with no stem resolves to the empty module	core
+R2	src/ignore_rules/build.rs:102	exclude.is_file() hides stat errors so an unreadable .git/info/exclude is skipped without any log	exclude rules silently not applied	src root
+R2	src/ignore_rules/build.rs:60	group_files_by_dir silently skips a path with no parent (continue, no log)	unreachable for absolute file paths; low	src root
+R2	src/install.rs:116	SystemTime::duration_since(..).map_or(0, ..) discards the error when building the staging file name	pre-epoch clock gives a constant timestamp in the staging file name; name still carries the pid; low	src root
+R2	src/install.rs:160	canonicalize(&entry).unwrap_or(entry): comment :156-158 documents it but nothing is logged (not R2-documented)	broken PATH entry silently compared as written; at worst the PATH prompt is re-offered	src root
+R2	src/install.rs:178	interactive_prompt: stdout flush().is_err() and read_line().is_err() both return false with the cause dropped	closed/failed stdin makes the PATH offer vanish and the user is told to edit PATH by hand without a reason	src root
+R2	src/install.rs:220	std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash"): unset and non-UTF-8 SHELL both silently pick ~/.bashrc	user on zsh with non-UTF-8 SHELL gets an export line appended to ~/.bashrc	src root
+R2	src/install.rs:87	retain_previous_binary: target.exists() hides stat errors, returns Ok(None) and skips the slugaudit.prev backup	install/update over a binary whose stat fails replaces it with no .prev, contradicting the documented revert path	src root
+R2	src/main.rs:105	EnvFilter::try_from_default_env().unwrap_or_else(|_| "info"): an invalid RUST_LOG is dropped with no message and no log	user sets RUST_LOG=slugaudit=trace,,; server silently runs at info and the operator never learns the filter was rejected	src root
+R2	src/main.rs:108	std::env::var(SLUGAUDIT_LOG_FORMAT).map(..).unwrap_or(false): VarError::NotUnicode is treated as "not json" silently	non-UTF-8 value makes JSON logging silently not apply	src root
+R2	src/menu.rs:102	running_binary().map(..).unwrap_or_else(|_| PathBuf::from("slugaudit")): the error is dropped and the instructions print the bare word slugaudit as the command	menu option 4 prints a config snippet whose command is "slugaudit" (not an absolute path) when current_exe fails, without saying so	src root
+R2	src/model/span.rs:24	saturating_u32 clamps an out-of-range line/column silently (documented in the doc comment, not logged or flagged)	A line or column over u32::MAX is stored as 4294967295 and quoted as a real position (needs a >4 GiB line; max_file_bytes allows 1 GiB in Adaptive)	core
+R2	src/model/system_ram.rs:27	/proc/meminfo read error dropped; fallback warning at line 48 carries no cause	Operator cannot tell why memory detection failed (permission, sandbox mount)	core
+R2	src/model/system_ram.rs:35	macOS sysctl spawn/utf8/parse errors all dropped through an if-let Ok chain; the final warning carries no cause	Same, on macOS	core
+R2	src/model/system_ram.rs:79	parse error dropped	Malformed MemTotal line becomes the generic 'could not detect' fallback with no cause	core
+R2	src/project/activation.rs:297	disable(): exists() swallows errors and returns Ok(false) ('already inactive') on a stat failure	disable reports the project already off while the directory is still there	core
+R2	src/project/activation.rs:54	is_symlink() treats a symlink_metadata error as 'not a symlink' (check fails open); this is the guard against symlinked .planning/slugaudit	If lstat fails (EACCES on a parent), the symlink refusal is skipped; AGENTS says checks fail closed	core
+R2	src/project/activation.rs:80	io::Error flattened to String inside RootError::Unresolvable, losing ErrorKind (CLAUDE.md: keep the source error)	Callers cannot distinguish NotFound from PermissionDenied	core
+R2	src/project/activation.rs:92	is_dir() swallows errors; find_project_root walks to the parent on a stat error instead of failing	An unreadable child activation dir makes the tool bind to an ancestor project's index	core
+R2	src/project/activation_lock.rs:18	exists() swallows metadata errors; an unstattable database is treated as absent so disable proceeds without taking the lock	disable can remove the activation dir while a connection holds the DB if stat fails transiently	core
+R2	src/project/activation_tests.rs:239	Test toggler thread discards Results (intentional race generator)	None: test code; no assertion on the toggler's errors	core
+R2	src/project/activation_tests.rs:240	Same	None	core
+R2	src/project/config.rs:30	ProjectConfig has no deny_unknown_fields: a misspelled key (max_file_byte) or a key from a newer version is silently ignored	Operator thinks a limit is set; the default applies and nothing is logged	core
+R2	src/project/config.rs:58	Path::exists() turns any metadata error (EACCES on .planning, I/O error) into 'no config', so ProjectConfig::load returns Ok(None)	An unreadable config.json silently yields default limits instead of the ConfigError::Io the function documents	core
+R2	src/project/root.rs:25	Same flattening in ProjectRoot::resolve	Same	core
+R2	src/server_runner.rs:164	u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX) saturates silently	none practical (584M years); listed for completeness	src root
+R2	src/store/connection.rs:120	resolve_parent_dir drops the canonicalize error and falls back to the raw path; the comment documents the fallback but nothing is logged	A parent that cannot be canonicalized opens via the raw path with no trace of why	core
+R2	src/store/connection.rs:295	journal_mode=WAL result row discarded; the mode SQLite actually granted is never checked	On a filesystem where WAL cannot be enabled SQLite silently stays in rollback mode and the 'WAL on every connection' premise (netfs.rs) is false	core
+R2	src/store/connection.rs:90	reject_symlink treats a symlink_metadata error as 'not a symlink' (fails open); SQLITE_OPEN_NOFOLLOW is the backstop	Defense in depth reduced to one layer when lstat fails	core
+R2	src/store/migrations_tests.rs:179	query_row error converted to None with .ok() before asserting Some(version)	None: test only, the assert still fails, but the cause is lost	core
+R2	src/store/netfs.rs:172	Network allow-list omits common network/remote filesystems (fuse.sshfs, 9p, virtiofs, ceph, glusterfs, lustre, afs) and includes 'fusectl', which is not a network filesystem; unlisted types pass as local	Index on sshfs/9p/ceph is opened in WAL mode with the corruption risk the module exists to prevent	core
+R2	src/store/netfs.rs:192	macOS twin of the above: non-UTF-8 path returns Ok(false)	Same on macOS	core
+R2	src/store/netfs.rs:82	Non-UTF-8 database path returns 'not a network filesystem' (fails open); AGENTS: checks fail closed	A project under a non-UTF-8 path on NFS skips the guard and gets WAL on a network mount	core
+R2	src/sync/analyze.rs:112	u32::try_from(diagnostic_count).unwrap_or(u32::MAX) swallows the conversion error; saturates without a log	only a file with more than 4 billion diagnostics; count would be reported capped	sync/watch
+R2	src/sync/manager.rs:209	duration_since(UNIX_EPOCH).map_or(0, ..) turns a pre-epoch clock error into timestamp 0 with no log; the health tool then shows "never synced"	host clock set before 1970 makes last_sync_unix_seconds read 0 after a successful sync	sync/watch
+R2	src/sync/manager.rs:210	i64::try_from(secs).unwrap_or(i64::MAX) swallows the conversion error	unreachable in practice	sync/watch
+R2	src/sync/manager_meta.rs:176	duration_since(UNIX_EPOCH).map_or(0, ..) turns a clock error into created_at_unix = 0 with no log	project row stored with created_at 0 on a pre-epoch clock	sync/watch
+R2	src/sync/manager_meta.rs:177	i64::try_from(secs).unwrap_or(i64::MAX) swallows the conversion error	unreachable in practice	sync/watch
+R2	src/sync/manager_observability_tests.rs:123	let _ = fs::write(..) discards a Result inside the race hook	test passes or fails for the wrong reason if the corruption write fails	sync/watch
+R2	src/sync/manager_orchestration.rs:158	u64::try_from(elapsed_ms).unwrap_or(u64::MAX) swallows the conversion error	unreachable in practice	sync/watch
+R2	src/sync/manager_orchestration.rs:188	u64::try_from(elapsed_ms).unwrap_or(u64::MAX) swallows the conversion error	unreachable in practice	sync/watch
+R2	src/sync/publish_acceptance_tests.rs:63	.ok() on query_row maps every database error to None, same as "no edge"	helper cannot tell a broken query from a missing edge	sync/watch
+R2	src/sync/publish_mutation_tests.rs:129	let _ = tx.send(publish(..)) discards the SendError	test-only	sync/watch
+R2	src/sync/publish_mutation_tests.rs:52	.is_ok() in an assertion discards the error cause of sample_all_with_deadline	failure message lacks the cause	sync/watch
+R2	src/sync/race_hook.rs:28	unwrap_or_else(PoisonError::into_inner) recovers a poisoned mutex without the logging crate::util::lock_or_recover does (cfg(test) only)	test-only	sync/watch
+R2	src/sync/race_hook.rs:43	unwrap_or_else(PoisonError::into_inner) recovers a poisoned mutex without a log (inside cfg(test) block)	test-only	sync/watch
+R2	src/sync/reconcile/pipeline.rs:124	i64::try_from(metadata.len()).unwrap_or(i64::MAX) swallows the error	file over i64::MAX bytes would be stored with a saturated size	sync/watch
+R2	src/sync/reconcile/pipeline.rs:126	u64::try_from(byte_len).unwrap_or(u64::MAX) swallows the error (round-trips the value converted on line 124)	unreachable in practice	sync/watch
+R2	src/sync/reconcile/queries.rs:43	Option::unwrap_or_else(|| "1.0") invents a parser pack version when no revision exists; doc comment says so but nothing is logged	a reconcile before any revision pins revision 1 to pack "1.0", the next full publish sees a pack change and re-parses every file	sync/watch
+R2	src/sync/revalidate.rs:46	sample_file(..).is_ok_and(..) discards the read/size error; a permanently unreadable or now-oversize file becomes ChangedDuringSample ("retry the call") and is retried 4 times with no log of the real cause	a file that turns unreadable between sample and write fails the publish with a message that blames a concurrent edit	sync/watch
+R2	src/sync/sample.rs:241	serde_json::to_vec(&item.payload).map_or(usize::MAX, ..) drops the serialization error; the item is then treated as oversize and dropped, the cause is neither logged nor named in the truncation marker	an evidence item that fails to serialize is reported to the agent as "exceeded the per-item byte cap"	sync/watch
+R2	src/sync/sample_batch.rs:169	tx.send(..).is_err() discards the SendError cause (receiver dropped)	low: receiver outlives the scope, so unreachable today	sync/watch
+R2	src/sync/sample_batch.rs:179	tx.send(..).is_err() discards the SendError cause	low: same as line 169	sync/watch
+R2	src/sync/sample_batch.rs:203	fetch_update(..).is_err() discards the Err(previous) value	none: standard CAS idiom, the observed total is re-read on the next lines	sync/watch
+R2	src/sync/sample_batch.rs:78	available_parallelism().map_or(1, ..) drops the io error and silently runs sampling on one worker	first import on a host where parallelism cannot be read runs about N times slower and may hit the sync deadline with no hint why	sync/watch
+R2	src/sync/sweep.rs:105	i64::try_from(metadata.len()).unwrap_or(i64::MAX) swallows the error	a saturated size would equal the saturated stored size and count as unchanged	sync/watch
+R2	src/sync/sweep.rs:181	let Ok(relative) = strip_prefix(root) else { return None } drops the error with no log	walker entry silently omitted from on_disk, so its stored row is classed as deleted	sync/watch
+R2	src/sync/sweep.rs:198	Err(_) on std::fs::metadata drops the io::Error; the warn line has no error field, so permission errors and races are indistinguishable	file whose stat fails is removed from the index (see OBS sweep.rs:191-208)	sync/watch
+R2	src/sync/sweep.rs:259	unwrap_or_else(|_| root.to_path_buf()) drops the canonicalize error (cfg(test) helper)	test-only	sync/watch
+R2	src/tools/finding.rs:243	`u32::try_from(lines().count()).unwrap_or(u32::MAX)` saturates silently	Only above 4 billion lines; not reachable under the file size cap	tools
+R2	src/tools/health_database.rs:17	`database_path.exists()` swallows stat errors and returns the same silent None the doc calls 'expected, silent absence', although the function doc promises read failures are logged	Permission error on the db path shows as never-synced (phase may say NoActiveProject) with no log line	tools
+R2	src/tools/leads_page.rs:215-228	count_of/files_of return 0 via `map_or(0, ..)` if the mechanic id is missing from the counts; the doc says 'they cannot' but if they did total=0 so `complete` becomes true and the page reports done with no error	Catalogue/count drift would produce a silently wrong 'complete' result instead of a failed call	tools
+R2	src/tools/leads_page.rs:232	`i64::try_from(rows).unwrap_or(i64::MAX)` saturating conversion, no log	Unreachable on 64-bit	tools
+R2	src/tools/leads_query.rs:77	`i64::try_from(value).unwrap_or(i64::MAX)` saturating bind	Unreachable in practice: caller offsets above i64::MAX bind as 'no limit' in leads (query refuses them at query.rs:170, leads does not)	tools
+R2	src/tools/project_control.rs:156-158	An unrecognized `profile` string makes `AuditProfile::parse_str` return None and the `if let ... && let Some` silently skips writing config.json; response is still status=enabled with no note that the profile was ignored. No test covers it.	Agent passes profile="strict" (typo); project is enabled on the adaptive default, the response says enabled, and the agent believes the profile applied	tools
+R2	src/tools/project_control.rs:202	`activation.exists()` returns false on any stat error (permission denied, I/O error), so `off` reports status=already_disabled and does nothing when the activation dir could not be inspected	Unreadable parent dir: agent is told the project is already disabled while its database and activation dir remain	tools
+R2	src/tools/query_exec.rs:102-103	`i64::try_from(..).unwrap_or(i64::MAX)` twice for the exact total	Unreachable: offset already refused above i64::MAX in query.rs:170	tools
+R2	src/tools/query_value.rs:43-44	`Number::from_f64(..).map_or(Null, ..)`: a REAL that is infinite (e.g. `SELECT 1e999`) is returned as JSON null with no flag; a quoted number becomes a different value without a caveat in the response	Agent aggregates a column and a +/-Inf result comes back as null, read as NULL data (violates 'every count quotable as-is')	tools
+R2	src/tools/structure_exec.rs:193	`Err(_) => ("", true)` drops the utf8 error from `node.utf8_text`; it is surfaced only as extraction_failed=true on the match, not logged	Match with empty text and extraction_failed; cause (invalid boundary) is lost	tools
+R2	src/tools/structure_exec.rs:202	`capture_name.unwrap_or_default()` gives an empty capture_name when the capture index has no name; flagged via extraction_failed (:212) but not logged	Low: capture names are always present for compiled queries	tools
+R2	src/update.rs:180	sha256sum stdout .split_whitespace().next().unwrap_or_default(): empty digest becomes "" and surfaces only as a mismatch against `got ` (empty)	garbled sha256sum output reports "checksum mismatch ... got " rather than naming a parse failure	src root
+R2	src/update_tests.rs:11	test returns early with eprintln when sha256sum is missing (same :49, :85, :150 with no message at :150): passes vacuously	CI image without coreutils sha256sum shows green checksum tests that ran nothing	src root
+R2	src/util.rs:251	now_unix: duration_since(UNIX_EPOCH).map_or(0, ..) and try_from(..).unwrap_or(i64::MAX) discard errors; doc :246-247 documents but nothing is logged	pre-epoch clock yields timestamp 0 with no log line	src root
+R2	src/util.rs:281	mtime_unix_seconds: metadata.modified().ok()? and duration_since(..).ok()? (also :282,:283) drop the cause; doc :276-279 documents the None but nothing is logged	files with unreadable or pre-epoch mtime are re-hashed every sweep with no indication why	src root
+R2	src/util_tests.rs:174	enabled_style_wraps_text_in_sgr_codes and style_uses_the_documented_sgr_codes (:189) branch on Style::stdout().enabled(); under CI stdout is not a terminal so only the plain branch runs and the SGR-code assertions never execute (Style::colored exists for this, util.rs:122)	someone changes a SGR code (e.g. cyan 36 to 35) and both tests stay green	src root
+R2	src/watch/manager.rs:339	let Ok(mut guard) = self.inner.try_lock() else { return; } drops the filesystem event with no log and no counter, and does not change health	edit made while a tool thread holds the manager lock is not recorded; only the stat sweep can recover it, and it misses a same-size same-second edit	sync/watch
+R2	src/watch/scope.rs:55	strip_prefix(root).ok() else continue drops the error silently	unreachable for walker entries under root	sync/watch
+R2	tests/menu_tests.rs:53	[test] `let _ = stdout.read_to_string(..)` and :54 `let _ = out_tx.send(..)`, :59-60 same for stderr: read/send errors swallowed, a failed read yields an empty string	Test sees empty stdout and fails with a misleading "menu must render its title" instead of the I/O cause	dev-only
+R2	tests/menu_tests.rs:78	[test] `recv_timeout(..).unwrap_or_default()` (also :81) converts a timed-out/disconnected capture into "" on a Result; the stderr value is only used inside assert messages, so a lost stderr is invisible	Diagnostics silently empty when the capture thread dies	dev-only
+R2	tests/stdio_protocol.rs:35	[test] `.lines().map_while(Result::ok)` stops the stdout reader at the first I/O/UTF-8 error with no trace (same at :43 for stderr)	Reader thread ends silently and the test later fails with a timeout rather than the read error	dev-only
+R2	tests/stdio_protocol.rs:94	[test] has_stderr_output uses `.is_ok()` on recv_timeout, discarding Timeout vs Disconnected; it also consumes the first stderr line, so stderr_snapshot() at :309 never sees it (stdio_protocol.rs:91-95,297,309)	A needed tracing line could be eaten by the probe and the later contains() asserts fail confusingly	dev-only
+R2-documented	benches/parsing.rs:41	get_parser("rust") Err is logged with the error (eprintln :47-49) and the whole parsing group is skipped; comment calls it deliberate. check_performance then fails the gate for the missing baselined benches (compare.rs:60)	-	dev-only
+R2-documented	fuzz/fuzz_targets/query_sql.rs:64	`if let Ok(..)` ignores Err; comment :57-61 documents refusal as expected outcome (same pattern structure_query.rs:94, comment :85-89)	-	dev-only
+R2-documented	fuzz/fuzz_targets/request_arguments.rs:70	`let _ = serde_json::from_slice::<$request>(body)` result dropped; comment at :52-55 states only panic/abort/recursion are under test	-	dev-only
+R2-documented	src/ignore_rules/build.rs:129	per-file builder.add error warned and the file skipped; doc :125-126 says a malformed ignore file is skipped (same :103 for .git/info/exclude)	patterns from a malformed ignore file partly or wholly not applied, so ignored build output may be indexed	src root
+R2-documented	src/ignore_rules/build.rs:44	global gitignore error logged at warn then "continuing without it"; documented by the message	n/a (logged in serve mode; CLI has no subscriber)	src root
+R2-documented	src/ignore_rules/build.rs:84	matcher compile error mapped to warn then .ok(); doc :73-75 says the directory falls back to ancestors (same at :113-122)	a directory whose matcher fails to compile silently loses its ignore rules apart from one warn	src root
+R2-documented	src/install_place.rs:86	remove_leftover: remove_file error other than NotFound logged at warn, documented :321-326	n/a in serve mode; CLI install/update/connect have no subscriber so the warn is dropped (R12 main.rs:43)	src root
+R2-documented	src/model/limits.rs:190	Non-unicode env override: warn (variable name, fixed reason, value withheld) then default applies; documented in parse_override		core
+R2-documented	src/model/limits.rs:201	Unparseable env override: warn with variable and parse error, default applies; documented		core
+R2-documented	src/model/profile.rs:52	SLUGAUDIT_PROFILE unreadable: warn then default; documented		core
+R2-documented	src/model/profile.rs:62	SLUGAUDIT_PROFILE unknown value: warn then default; documented		core
+R2-documented	src/model/system_ram.rs:48	Memory detection failure falls back to 8/4 GiB with a warn; documented (cause not logged, see R12)		core
+R2-documented	src/project/activation.rs:218	ensure_gitignore failures returned as GitignoreOutcome::NotWritten (read at 218-227, write at 252-255); documented as deliberate, reported to the caller not logged here		core
+R2-documented	src/project/config.rs:80	load_or_default: malformed config falls back to defaults with a warn; documented on the fn (note R12 on repeated emission)		core
+R2-documented	src/sync/discovery.rs:179	Err(_) on strip_prefix; converted to DiscoveryError::NotRelative and pushed to the skipped list (and logged by publish_attempt warn_skipped)	none	sync/watch
+R2-documented	src/sync/discovery.rs:89	strip_prefix(root).ok()? returns None for a path outside the root; documented in the doc comment and the caller logs it via warn_skipped	none	sync/watch
+R2-documented	src/sync/publish_cas.rs:54	ProjectConfig::load_or_default(root) falls back to default limits on a malformed config; project/config.rs:85 logs a warn	a malformed config.json silently restores default limits for the publish (logged once)	sync/watch
+R2-documented	src/sync/reconcile/options.rs:32	same load_or_default fallback; logs a warn in project/config.rs:85	same as publish_cas.rs:54	sync/watch
+R2-documented	src/sync/sample.rs:102	Err(_) on from_utf8; deliberate lossy decode recorded as an encoding Diagnostic evidence item (sample.rs:155-166), not logged	none: surfaced to the agent as evidence	sync/watch
+R2-documented	src/sync/sweep.rs:189	relative.to_str()? drops non-UTF-8 paths; comment at lines 187-188 documents it, not logged here (discovery records them as skipped)	none	sync/watch
+R2-documented	src/tools/health_database.rs:20-43	Open/read failure degrades to None but logs warn with key-value fields, documented in module and fn docs	none	tools
+R2-documented	src/tools/query_exec.rs:128-140	Spent step/wall-clock budget during the total count becomes RowTotal::Unavailable(reason) with a warn log; documented on count_rows and in QueryResponse.total_rows_unavailable	none	tools
+R2-documented	src/tools/report_completeness.rs:183	`value.unwrap_or_default()` maps a NULL group value to "", documented in the fn doc (:170-173) so counts sum to rows; Option not Result, nothing to log	none	tools
+R2-documented	src/util.rs:205	lock_or_recover: poisoned mutex recovered with tracing::error!, documented :191-204	n/a (logged in serve mode)	src root
+R2-documented	src/util.rs:46	canonical_or_self: unwrap_or_else logs warn with redacted path and error, doc :37-43 says the fallback is deliberate	n/a: but callers reached from CLI commands (install::on_path) run with no tracing subscriber, so the warn is not emitted there (see R12 main.rs:43)	src root
+R2-documented	src/watch/path.rs:22	strip_prefix(root).ok()? returns None for an event outside the root; documented in the doc comment, not logged	none	sync/watch
+R2-documented	tests/menu_tests.rs:69	`let _ = child.kill()/wait()` in timeout cleanup immediately before panic!; also stdio_protocol.rs:143-144 Drop, benches/startup.rs:52 `let _ = child.wait()`	-	dev-only
+R3	benches/common/mod.rs:8	`#![allow(dead_code)]` file-level waiver, justified only by the module comment (:3-7); not one of the AGENTS.md-documented print_stdout allows. AGENTS.md says no lint suppression	Lint waiver in dev-only bench helper	dev-only
+R3	src/connect_agents.rs:367	#[rustfmt::skip] on AGENTS (formatting waiver, not a lint waiver; listed because the brief asks for every attribute that suppresses a tool)	n/a	src root
+R3	src/graph/mod.rs:51	Lint waiver on resolve_imports (HashSet<&str> parameter); not in the AGENTS.md documented-waiver set	Low: clippy::implicit_hasher is pedantic; the fn could take impl BuildHasher or the waiver be dropped	core
+R3	src/sync/race_hook.rs:37	#[cfg_attr(not(test), allow(unused_variables))] lint waiver on fire	none at runtime; violates the no-waiver rule	sync/watch
+R3	src/sync/sweep.rs:241	#[cfg_attr(not(test), allow(unused_variables))] lint waiver on note_walk	none at runtime; violates the no-waiver rule	sync/watch
+R3	tests/stdio_protocol.rs:153	`#[allow(clippy::too_many_lines)]` on the 170-line test fn; justified in the comment at :148-152 but still a waiver; AGENTS.md bans lint suppression	Lint waiver in test code	dev-only
+R3-documented	src/bin/check_coverage.rs:2	`#![allow(clippy::print_stdout)]` [dev-only] AGENTS.md: every gate bin carries it	-	dev-only
+R3-documented	src/bin/check_docs_drift/main.rs:2	`#![allow(clippy::print_stdout)]` [dev-only]	-	dev-only
+R3-documented	src/bin/check_governance/main.rs:2	`#![allow(clippy::print_stdout)]` [dev-only]	-	dev-only
+R3-documented	src/bin/check_mcp_surface/main.rs:2	`#![allow(clippy::print_stdout)]` [dev-only]	-	dev-only
+R3-documented	src/bin/check_no_duplicates/main.rs:2	`#![allow(clippy::print_stdout)]` [dev-only]	-	dev-only
+R3-documented	src/bin/check_performance/main.rs:2	`#![allow(clippy::print_stdout)]` [dev-only]	-	dev-only
+R3-documented	src/bin/check_producer_coverage/main.rs:2	`#![allow(clippy::print_stdout)]` [dev-only]	-	dev-only
+R3-documented	src/bin/check_source_limits/main.rs:3	`#![allow(clippy::print_stdout)]` [dev-only]	-	dev-only
+R3-documented	src/bin/check_version_consistency/main.rs:2	`#![allow(clippy::print_stdout)]` [dev-only]	-	dev-only
+R3-documented	src/cli.rs:5	#![allow(clippy::print_stdout)] but cli.rs contains no print macro (usage() returns a String); waiver is unneeded	n/a: waiver wider than needed	src root
+R3-documented	src/connect.rs:2	#![allow(clippy::print_stdout)]	n/a	src root
+R3-documented	src/connect_exec.rs:2	#![allow(clippy::print_stdout)]	n/a	src root
+R3-documented	src/install.rs:2	#![allow(clippy::print_stdout)]	n/a	src root
+R3-documented	src/main.rs:2	#![allow(clippy::print_stdout)]	n/a	src root
+R3-documented	src/menu.rs:4	#![allow(clippy::print_stdout)]	n/a	src root
+R3-documented	src/menu_render.rs:2	#![allow(clippy::print_stdout)] but menu_render.rs contains no print macro; waiver is unneeded	n/a: waiver wider than needed	src root
+R3-documented	src/update.rs:30	#![allow(clippy::print_stdout)]	n/a	src root
+R4	benches/common/mod.rs:1	INFORMATIONAL: measures 398 code lines through the gate binary (> 350 hard fail band) because the counter counts every physical line inside raw-string fixtures; no annotation; benches/ is outside the gate scope	Not gated today	dev-only
+R4	src/bin/check_source_limits/main.rs:13	[dev-only] module doc says ">=300 is a hard failure"; the real policy (counter.rs:75-85) allows 301-350 with a dated human exception, and the failure text at main.rs:105 prints "(>300; hard failure)" for a 320-line file that could be rescued	Misleading doc and failure text	dev-only
+R4	src/bin/check_source_limits/scanner.rs:106	[dev-only] The gate counts string/raw-string literal content as code (step_quoted:106 and step_raw_string:118 set has_code on every byte; test raw_string_with_embedded_newline_counts_each_physical_line pins it), but AGENTS.md says literals are "excluded". Also an escaped line-continuation (`\` + newline inside a string, :108-109) skips the newline without closing the line, undercounting	Documented rule and gate disagree; line counts for files with big literals are not what AGENTS.md describes	dev-only
+R4	src/store/connection.rs:1	slugaudit-line-exception: approved-by=slugthug present but file has 190 code lines (band 0-199 needs no exception); annotation is stale. Gate passes it silently.	-	detectors
+R4	tests/stdio_protocol.rs:1	INFORMATIONAL: the project gate only scans src/, so tests/ is unchecked; run through the gate binary this file measures 338 code lines (production band 301-350 needs `approved-by=human-user; date=`; the name is not *_tests.rs so the 500 test-file allowance would not apply) and has no annotation	Not gated today; would hard-fail if the gate scope were widened	dev-only
+R5	src/bin/check_coverage.rs:105	[dev-only] "coverage JSON missing data[*].totals.lines" untested at main level (only merge_line_totals None)	untested exit path	dev-only
+R5	src/bin/check_coverage.rs:126	[dev-only] below-threshold FAIL verdict (the gate's central failure) has no test; gate_binaries.rs only exercises unknown-flag exit 2	A regression making the gate always pass is not caught	dev-only
+R5	src/bin/check_coverage.rs:75	[dev-only] "failed to invoke cargo llvm-cov" has no test (the file's only tests cover merge_line_totals)	cargo spawn failure untested	dev-only
+R5	src/bin/check_coverage.rs:80	[dev-only] "cargo llvm-cov did not complete" untested	llvm-cov nonzero exit untested	dev-only
+R5	src/bin/check_coverage.rs:87	[dev-only] "coverage report was not written" untested	missing report untested	dev-only
+R5	src/bin/check_coverage.rs:97	[dev-only] "could not parse coverage JSON" untested	bad JSON untested	dev-only
+R5	src/bin/check_docs_drift/module_map.rs:18	[dev-only] "failed to read MODULE_MAP/ARCHITECTURE" untested	untested	dev-only
+R5	src/bin/check_docs_drift/test_file_count.rs:11	[dev-only] "failed to read ARCHITECTURE.md" untested	untested	dev-only
+R5	src/bin/check_docs_drift/test_file_count.rs:21	[dev-only] "no longer states the count" failure (the vacuous-pass fix) untested	A regression back to the silent return is not caught	dev-only
+R5	src/bin/check_docs_drift/test_file_count.rs:41	[dev-only] "count claim has no number" untested	untested	dev-only
+R5	src/bin/check_governance/codeowners.rs:21	[dev-only] ".github/CODEOWNERS is unreadable" untested (tests cover only the NotFound skip)	untested	dev-only
+R5	src/bin/check_mcp_surface/main.rs:104	[dev-only] "cannot read snapshot" (exit 1) untested; gate_binaries.rs:80 asserts only !success on an empty root	untested	dev-only
+R5	src/bin/check_mcp_surface/main.rs:115	[dev-only] "is not valid JSON" (exit 2, inconsistent with the unreadable case exit 1) untested	untested	dev-only
+R5	src/bin/check_mcp_surface/main.rs:64	[dev-only] "cannot render the live surface" untested	untested	dev-only
+R5	src/bin/check_mcp_surface/main.rs:81	[dev-only] "cannot render the snapshot" untested	untested	dev-only
+R5	src/bin/check_mcp_surface/main.rs:87	[dev-only] "cannot write" snapshot untested	untested	dev-only
+R5	src/bin/check_no_duplicates/commit_subjects.rs:42	[dev-only] "git not found" failure push has no test (no test calls duplicate_commit_subjects)	untested	dev-only
+R5	src/bin/check_no_duplicates/commit_subjects.rs:46	[dev-only] "git invocation failed" untested	untested	dev-only
+R5	src/bin/check_no_duplicates/commit_subjects.rs:53	[dev-only] "git log exited with" untested	untested	dev-only
+R5	src/bin/check_performance/bench.rs:35	[dev-only] stale-criterion-dir cleanup failure untested	untested	dev-only
+R5	src/bin/check_performance/bench.rs:43	[dev-only] "failed to invoke cargo bench" untested	untested	dev-only
+R5	src/bin/check_performance/bench.rs:45	[dev-only] "cargo bench did not complete" untested	untested	dev-only
+R5	src/bin/check_performance/estimates.rs:107	[dev-only] "baseline entry missing median_ns" untested (only missing 'benches' is)	untested	dev-only
+R5	src/bin/check_performance/estimates.rs:15	[dev-only] "directory does not exist after cargo bench" untested	untested	dev-only
+R5	src/bin/check_performance/estimates.rs:41	[dev-only] non-UTF-8 bench directory names error untested	untested	dev-only
+R5	src/bin/check_performance/estimates.rs:46	[dev-only] unreadable estimates.json error untested	untested	dev-only
+R5	src/bin/check_performance/estimates.rs:70	[dev-only] walk read_dir error untested	untested	dev-only
+R5	src/bin/check_performance/estimates.rs:96	[dev-only] "could not read baseline" untested	untested	dev-only
+R5	src/bin/check_performance/estimates.rs:98	[dev-only] "could not parse baseline JSON" untested	untested	dev-only
+R5	src/bin/check_performance/main.rs:83	[dev-only] "no baseline at" untested	untested	dev-only
+R5	src/bin/check_performance/main.rs:90	[dev-only] "no criterion estimates found" untested	untested	dev-only
+R5	src/bin/check_performance/record.rs:36	[dev-only] "could not serialise baseline" untested	untested	dev-only
+R5	src/bin/check_performance/record.rs:39	[dev-only] "could not create" dir untested	untested	dev-only
+R5	src/bin/check_performance/record.rs:42	[dev-only] "could not write baseline" untested	untested	dev-only
+R5	src/bin/check_producer_coverage/main.rs:127	[dev-only] "no production Rust sources" untested	untested	dev-only
+R5	src/bin/check_producer_coverage/main.rs:136	[dev-only] "cannot read <declaration>" untested	untested	dev-only
+R5	src/bin/check_producer_coverage/main.rs:139	[dev-only] "declares no pub enum" untested	untested	dev-only
+R5	src/bin/check_producer_coverage/main.rs:144	[dev-only] "parsed with no variants" untested (tests/tests.rs has only the happy path on the real repo)	untested	dev-only
+R5	src/bin/check_producer_coverage/scan.rs:29	[dev-only] "is not a directory" untested	untested	dev-only
+R5	src/bin/check_producer_coverage/scan.rs:44	[dev-only] "cannot read <dir>" untested	untested	dev-only
+R5	src/bin/check_producer_coverage/scan.rs:47	[dev-only] per-entry read error untested	untested	dev-only
+R5	src/bin/check_producer_coverage/scan.rs:61	[dev-only] "cannot read <file>" untested	untested	dev-only
+R5	src/bin/check_source_limits/main.rs:70	[dev-only] "cannot scan" error untested	untested	dev-only
+R5	src/bin/check_source_limits/main.rs:76	[dev-only] "no production Rust files found" exit 2 untested (gate_binaries only asserts !success generically)	untested	dev-only
+R5	src/bin/check_source_limits/main.rs:92	[dev-only] per-file "read error" failure untested	untested	dev-only
+R5	src/bin/check_version_consistency/manifests.rs:109	[dev-only] "plugin manifest has no string version" untested	untested	dev-only
+R5	src/bin/check_version_consistency/manifests.rs:44	[dev-only] "Cargo.toml has no top-level version" untested	untested	dev-only
+R5	src/bin/check_version_consistency/manifests.rs:54	[dev-only] "CHANGELOG has no released heading" untested	untested	dev-only
+R5	src/bin/check_version_consistency/manifests.rs:72	[dev-only] "Cargo.toml has no pin" untested	untested	dev-only
+R5	src/bin/check_version_consistency/manifests.rs:73	[dev-only] "declares no PACK_VERSION" untested	untested	dev-only
+R5	src/bin/check_version_consistency/tests.rs:129	[dev-only] unreadable-file error asserted only with is_err(), not the file or message (read() at manifests.rs:83)	weak assertion	dev-only
+R5	src/bin/gate_common/args.rs:23	[dev-only] current_dir failure path untested; `--root` without value (:46) only asserted with is_err (see R2 args.rs:99)	untested	dev-only
+R5	src/connect.rs:46	ConnectError::BinaryPath has no test	n/a	src root
+R5	src/connect_cli.rs:89	ConnectError::AgentCommand from run_add has no test (connect_tests.rs:516 covers run_remove only)	n/a	src root
+R5	src/connect_exec.rs:170	ConnectError::HomeUnavailable (also :205) has no test	connect with HOME unset untested	src root
+R5	src/connect_exec.rs:228	ConnectError::Io from load_json_or_empty (unreadable or over the 1 MiB MAX_FOREIGN_TEXT_BYTES cap) and :215 rename failure and :208 temp-file write failure have no test; connect_tests.rs has no cap test	oversized client config behavior unpinned	src root
+R5	src/connect_exec.rs:256	ConnectError::Json (to_string_pretty ?) has no test and is practically unreachable	n/a	src root
+R5	src/ignore_rules/build.rs:103	builder.add failure branches (.git/info/exclude :103, per-file add_files :129) have no test; ignore_rules_tests.rs never writes a malformed or unreadable ignore file	malformed .gitignore behaviour unpinned	src root
+R5	src/ignore_rules/build.rs:44	global-gitignore load failure branch (warn and continue) has no test	n/a	src root
+R5	src/ignore_rules/build.rs:84	matcher compile failure branches (:84 .ignore, :115 .gitignore) have no test; no test asserts the "failed to compile" warnings	n/a	src root
+R5	src/install.rs:103	InstallError::CurrentExe has no test	n/a	src root
+R5	src/install.rs:120	InstallError::Copy (staging copy failure) has no test	n/a	src root
+R5	src/install.rs:219	InstallError::NoHome from path_config (HOME unset while SLUGTHUG_HOME set) has no test; install_tests.rs:342 covers only run_install's NoHome	PATH-add with HOME unset untested	src root
+R5	src/install_place.rs:56	PlaceError steps "mark executable" and "move the new binary to" (:60) have no test; install_tests.rs:382 asserts only "retain the previous binary at"	n/a	src root
+R5	src/model/parser.rs:135	ParserRun::validate second Err has no test (only the first, 'unavailable parser cannot report a parse outcome', is asserted at parser.rs:169)	Contradictory run records could be persisted if the rule is dropped	core
+R5	src/project/activation.rs:155	ActivationError::Io from create_private_dir (155,156,168) and remove_dir_all (301) has no test asserting the Io variant	Enable/disable failure mapping unverified	core
+R5	src/project/activation.rs:252	NotWritten via append failure (252-255) untested; the test at activation_tests.rs:405 covers only the read failure (directory in place of file)	A read-only .gitignore regression unnoticed	core
+R5	src/project/activation_lock.rs:21	ActivationError::Database (open_read_write failure while locking for disable) has no test	Corrupt DB during disable: error shape unverified	core
+R5	src/project/config.rs:63	ConfigError::Io (read failure, oversize over 1 MiB MAX_FOREIGN_TEXT_BYTES) has no test; only Parse is asserted (config.rs:156-160)	An oversize or unreadable config.json regressing to a different error or a silent default goes unnoticed	core
+R5	src/server.rs:446	resource_not_found mapping in read_resource has no test; resources_tests.rs:136 tests resources::read returning None, not the ErrorData	unknown-URI response code can change unnoticed	src root
+R5	src/server_runner.rs:139	semaphore-closed internal_error has no test	n/a	src root
+R5	src/server_runner.rs:152	"tool task failed" internal_error asserted only with is_err() (server_runner_tests.rs:70); no message substring or code	n/a	src root
+R5	src/store/connection.rs:188	Permissions error from create_with_private_permissions_if_missing (create failure other than AlreadyExists) untested	Unwritable activation dir error mapping unverified	core
+R5	src/store/connection.rs:206	Permissions error from a non-NotFound metadata failure in reject_insecure_permissions untested	Fail-closed behavior on stat error unverified	core
+R5	src/store/connection.rs:75	discard_corrupt_database failure branch (remove_file error other than NotFound) has no test	Rebuild-after-corruption failure handling unverified at store level	core
+R5	src/store/connection_tests.rs:87	ATTACH denial asserted with is_err() only (also 95, 645, 649, 657): any error (busy, locked, typo in SQL) passes; the authorizer's 'not authorized' is never asserted	If the authorizer is removed but ATTACH fails for another reason the security test stays green	core
+R5	src/store/netfs.rs:184	macOS /sbin/mount spawn failure (184) and non-zero exit (186) untested (cfg macos; no Linux test)	macOS guard unverified	core
+R5	src/store/netfs.rs:78	Linux mountinfo read failure -> NetworkFilesystemCheck has no test; connection_tests.rs:357 only builds the error and checks its Display text	The fail-closed path that matters (cannot read mountinfo) is untested	core
+R5	src/store/sql_functions.rs:31	line_count 'count does not fit an integer' error untested (unreachable on 64-bit)	None practical	core
+R5	src/store/sql_functions.rs:69	'text is not valid UTF-8' error untested (sql_functions_tests.rs:109-125 covers start, order, REAL, TEXT, BLOB)	Error text/path unverified	core
+R5	src/sync/discovery.rs:166	DiscoveryError::Walk (walk-entry error turned into a skipped row): no test names DiscoveryError::Walk or asserts its text (grep of src and tests)	unreadable-directory handling could regress unnoticed	sync/watch
+R5	src/sync/discovery.rs:181	DiscoveryError::NotRelative: no test constructs or asserts it	regression undetected	sync/watch
+R5	src/sync/discovery.rs:202	DiscoveryError::NonUtf8Path: discovery_tests.rs:118-137 asserts only skipped.len() == 1, not the NonUtf8Path reason text	reason string could change or be lost without a failing test	sync/watch
+R5	src/sync/discovery.rs:228	HashError::Read from regular_file_metadata on a non-NotFound stat error: no test	permission/io error path in reconcile untested	sync/watch
+R5	src/sync/hash.rs:21	HashError::Read from hash_file: hash.rs tests (141-150) cover only the success path; no test asserts the failure	unreadable-file path in reconcile (pipeline.rs:131) is untested	sync/watch
+R5	src/sync/manager.rs:55	SyncError::Read is never constructed anywhere (dead variant); SyncError::Revision conversion is never exercised by a test	dead code	sync/watch
+R5	src/sync/manager_health.rs:188	ErrorData "reconciling watcher events": manager_observability_tests.rs:381-413 asserts only result.is_err() plus Desynced, not the message or code	message/code regressions undetected	sync/watch
+R5	src/sync/manager_health.rs:252	ErrorData "reading the current revision" (line 252) and "no current revision found after sync" (line 260): no test	untested	sync/watch
+R5	src/sync/manager_health.rs:322	sweep_error_to_sync mapping SweepError::TimeBudgetExceeded to SyncError::SweepBudgetExceeded: manager_tests.rs:461 builds the variant directly, nothing drives the mapping	sync_budget_exhausted code could be lost for the reconcile path	sync/watch
+R5	src/sync/manager_health.rs:97	ErrorData "draining events after verification": no test	untested	sync/watch
+R5	src/sync/manager_meta.rs:194	ErrorData "recording project metadata" (194) and "reading project metadata" (207): no test	untested	sync/watch
+R5	src/sync/manager_meta.rs:278	ErrorData "recreating the project database": no test	untested	sync/watch
+R5	src/sync/manager_meta.rs:43	ErrorData "purging prior-session findings": no test	untested	sync/watch
+R5	src/sync/manager_observability_tests.rs:141	assert!(result.is_err()) only (also :165, :369, :405): asserts failure without the variant, code or message	a wrong error would pass	sync/watch
+R5	src/sync/manager_orchestration.rs:133	ErrorData "discarding the stale project database": no test	untested	sync/watch
+R5	src/sync/manager_orchestration.rs:79	ErrorData "discarding the corrupt or outdated project database": no test	untested	sync/watch
+R5	src/sync/manager_orchestration.rs:96	ErrorData "opening the project database for sync": no test	untested	sync/watch
+R5	src/sync/publish_diff.rs:42	PublishError::TimeBudgetExceeded in diff_against_stored (also :132 in build_upserts_and_deletions and revalidate.rs:37): timeout_tests.rs:105-111 accepts either variant, so no test pins these three sites	a budget check removed from the diff or write phase would still pass	sync/watch
+R5	src/sync/reconcile/pipeline.rs:131	ReconcileError::Hash and ReconcileError::Sample conversions (lines 131 and 155): no reconcile test makes hashing or sampling fail	untested	sync/watch
+R5	src/sync/sample.rs:69	SampleError::Read (metadata and read failures, lines 69 and 82): no test asserts it	abort-the-publish-on-unreadable-file behavior untested	sync/watch
+R5	src/sync/sample.rs:88	SampleError::TooLarge from the post-read TOCTOU re-check: no test; sample_tests cover only the pre-read size check	file growing between stat and read untested	sync/watch
+R5	src/sync/sweep.rs:85	SweepError::Database and SweepError::TimeBudgetExceeded (line 97): no test provokes a failing sweep; grep for "stat sweep" in tests finds nothing	sweep failure contract (sweep_tree, sweep_error_text) untested	sync/watch
+R5	src/sync/sweep_reconcile.rs:110	ErrorData "reconciling sweep results" with budget_payload: no test asserts message or code	untested	sync/watch
+R5	src/sync/sweep_reconcile.rs:162	sweep_error_text messages ("stat sweep exceeded its wall-clock budget", "stat sweep: ..."): no test	wording and error code on sweep failure unpinned	sync/watch
+R5	src/sync/sweep_reconcile.rs:93	ErrorData "reading the current revision before the sweep reconcile": no test	untested	sync/watch
+R5	src/tools/context.rs:88	internal_error('reading the current revision') has no test	Untested arm	tools
+R5	src/tools/context_tests.rs:191	stale-handle error asserted as `concurrent publish || revision` (weak)	Cannot tell which error	tools
+R5	src/tools/context_transactions.rs:11,14,27,30,18,34	Six internal_error contexts (open read/write, begin read/write, commit read/write): context_transaction_tests.rs:32 and :49 assert only `result.is_err()`; only the read-open arm checks the 'retry the call' text (:23); commit and begin arms are untested	Wrong or missing error context in operational failures	tools
+R5	src/tools/finding.rs:128,135,142,163	Four raw `ErrorData::internal_error(error.to_string(), None)` DB-write error sites: no test, and none carries the retry-hint context that `internal_error` gives every other tool	Transient SQLITE_BUSY on finding returns a bare SQLite string with no retry advice	tools
+R5	src/tools/finding.rs:187,190	'path exceeds 32768 bytes' / 'file exceeds 8192 bytes' have no test (no test builds an input over any MAX_*_BYTES)	Limit regresses unnoticed; oversized input reaches the database layer	tools
+R5	src/tools/finding.rs:197	zero line_start/line_end error ('one-based; zero is not a valid line') has no test (no test sets a line to 0)	Regression to 0-based lines would not be caught	tools
+R5	src/tools/finding.rs:203	reversed-range error asserted by finding_tests.rs:194 `contains("line_end")`, also true of the zero-line and beyond-file errors (weak)	Same	tools
+R5	src/tools/finding.rs:211-223	check_field empty/too-long is asserted only for title (empty, finding_tests.rs:177 substring 'title') and description (finding_tests.rs:258 `description || character`); severity and category are never tested; title/severity/category too-long never tested	Limit on severity/category silently removed	tools
+R5	src/tools/finding.rs:234	fetch_file's 'file: sqlite error' invalid_params is asserted only by finding_tests.rs:209 `not indexed || does_not_exist.rs`; the message contains no 'not indexed', so it passes on the filename alone (weak)	Any error naming the file would pass	tools
+R5	src/tools/finding.rs:246	'has no lines to attach' asserted by finding_tests.rs:272 `contains("empty")`; the file is named empty.rs so the filename satisfies it (vacuous)	Test passes even if the message changes completely	tools
+R5	src/tools/finding.rs:252	'line_end N exceeds file length' asserted by finding_tests.rs:226 `exceeds file line count || line_end`; the first alternative is not in the code, the second matches the unrelated reversed-range message too (weak)	Test cannot distinguish the two line errors	tools
+R5	src/tools/finding_read.rs:73	'path or file exceeds its input size limit' has no test	Same	tools
+R5	src/tools/health.rs:222	health 'path exceeds 32768 bytes' has no test	Same	tools
+R5	src/tools/health.rs:289	non-NotActive ActivationError -> invalid_params is untested (health tests cover only the Disabled arm)	Symlinked activation component regresses to a 200 OK	tools
+R5	src/tools/health_database.rs:23	'failed to open the project database read-only' warn path has no test (only the query-failure helper is tested, health_state_tests.rs:108)	Silent unreadable-db regression	tools
+R5	src/tools/leads.rs:331,339,349	path / mechanic / pattern (8192) / expected_revision (256) limit errors have no test	Same	tools
+R5	src/tools/leads_compact.rs:119,128,149,166	internal_error contexts for compact rows/counts have no test	Untested arms	tools
+R5	src/tools/leads_query.rs:97,180,192,215	internal_error contexts 'counting leads', 'preparing leads rows', 'reading leads rows', 'counting covered files' have no test	Untested arms	tools
+R5	src/tools/project_control.rs:126,133	'path exceeds 32768 bytes' and 'profile exceeds 64 bytes' have no test	Same	tools
+R5	src/tools/project_control.rs:139,152,166,175,176,178,181,213	err("resolve:"), enable, serialize profile, discarding outdated database, database, import, disable errors: only `write profile config` (project_control_tests.rs:216) is asserted; 8 other distinct messages have no test	Failure wording or fail-open regressions in enable/disable go unnoticed	tools
+R5	src/tools/query.rs:143,150	path and expected_revision (256) limit errors have no test	Same	tools
+R5	src/tools/query_exec.rs:135-140	wall-clock budget while counting total_rows ('exceeded the wall-clock budget') is untested; only the step-budget count path is (query_page_tests.rs:159)	Wall-clock count path regresses silently	tools
+R5	src/tools/query_exec.rs:184,190,194	'measuring query row size' and 'clipping an oversized query row' internal_errors have no test	Untested arms	tools
+R5	src/tools/query_exec.rs:239	'sql must contain a statement, not only comments' has no test	Comment-only SQL regresses to a SQLite parse error	tools
+R5	src/tools/query_tests.rs:120-122	error for a write attempt asserted as `syntax || readonly || not authorized` (weak: three alternatives)	Cannot tell which error	tools
+R5	src/tools/report.rs:146	report 'path exceeds 32768 bytes' has no test	Same	tools
+R5	src/tools/report.rs:152	report's raw `internal_error(error.to_string(), None)` wrapper has no test and no retry-hint context	Bare SQLite string on transient failure	tools
+R5	src/tools/report_tests.rs:294-296	not-enabled error asserted as `not enabled || inactive || activate` (weak)	Cannot tell which error	tools
+R5	src/tools/structure.rs:162,164	get_language failure and Query::new compile failure: structure_tests.rs:100-101 asserts `syntax || query` (weak); get_language failure untested	Unknown-language error text untested	tools
+R5	src/tools/structure.rs:215,224	path and file/language/pattern (8192) limit errors have no test	Same	tools
+R5	src/tools/structure.rs:236	'structure query exceeds N bytes' asserted by structure_tests.rs:161-163 `bytes || large || exceed` (weak)	Cannot distinguish from other errors	tools
+R5	src/tools/structure_exec.rs:31,90,166	set_language internal_error, 'parser returned no syntax tree' (single-file), and to_vec serialization error have no test	Untested arms	tools
+R5	src/tools/structure_source.rs:157-161	'structure request without file must specify language' has no test	Missing-language contract untested	tools
+R5	src/tools/structure_source.rs:20	fetch_source not-found error asserted by structure_tests.rs:113 `not indexed || does_not_exist.rs` (weak, passes on the filename)	Vacuous	tools
+R5	src/tools/structure_source.rs:29	'has no detected language' has no test	Untested arm	tools
+R5	src/update.rs:103	UpdateError::Stage (no-parent at :103 and place failure map at :127) never produced in a test; update_tests.rs:198 hand-builds it	failed placement during update untested	src root
+R5	src/update.rs:173	UpdateError::Checksum for non-zero sha256sum exit has no test (mismatch :183, missing sums :151 and missing entry :160 are tested)	sha256sum failure message path untested	src root
+R5	src/update.rs:221	UpdateError::UnsupportedPlatform from run_update never produced in a test (only platform_supported and Display are tested; host is linux x86_64)	running update on aarch64 or macOS could regress to downloading the wrong binary and nothing fails	src root
+R5	src/update.rs:75	UpdateError::Io has no producer in update.rs or update_fetch.rs (no ? converts a bare io::Error) and only update_tests.rs:193 constructs it: dead variant	n/a: dead error variant	src root
+R5	src/update.rs:96	UpdateError::Target (target_binary map_err) never produced in a test; update_tests.rs:172 hand-builds it for Display	n/a	src root
+R5	src/update_fetch.rs:105	UpdateError::Download wrap: update_tests.rs:209 hand-builds the value and asserts its source; the download() wrapper itself is untested	n/a	src root
+R5	src/update_fetch.rs:51	UpdateError::NoTag from LatestRelease::from_json has no test: update_tests.rs:186 only checks NoTag's Display; no test feeds JSON without tag_name	a release response without tag_name regresses to a different error and nothing fails	src root
+R5	src/update_fetch.rs:78	UpdateError::Json from fetch_latest_release: only update_tests.rs:182 builds the variant by hand and checks its Display; the production site is untested	malformed API body handling can change unnoticed	src root
+R5	src/update_fetch.rs:91	UpdateError::ToolSpawn for curl (also :119, and sha256sum at update.rs:168): update_tests.rs:164 only formats a hand-built value	missing curl/sha256sum path untested	src root
+R5	src/update_fetch.rs:96	UpdateError::Network (curl_get, and :125 download): update_tests.rs:177,213 construct the variant by hand; no test drives a failing curl	curl non-zero exit handling untested	src root
+R5	src/update_fetch_tests.rs:42	compare_versions error asserted by is_err() only (:42,:43); message/cause asserted separately at :64	n/a	src root
+R5	src/util.rs:79	read_file_capped "file grew past the cap while being read" error has no test (util_tests.rs:268 covers only the pre-read over-cap error)	n/a	src root
+R5	tests/stdio_protocol.rs:206	the DELETE-through-query rejection asserts only `error.code.is_number()`; it does not assert which code/message (not a read-only rejection vs any other failure)	query write guard could regress into another error and still pass	dev-only
+R6	benches/memory.rs:98	"VmHWM unavailable on this OS (not linux)" is printed whenever peak_kib==0, which on Linux means /proc open/parse failure (memory.rs:30-40)	False diagnosis printed	dev-only
+R6	src/bin/check_docs_drift/main.rs:78	[dev-only] doc comment says a missing document "exits with code 2"; callers (module_map.rs:17-19, test_file_count.rs:10-12) turn it into a failure push and exit 1	Stale doc about exit code	dev-only
+R6	src/bin/check_docs_drift/test_file_count.rs:22	[dev-only] failure message contains two runs of 14 literal spaces ("so the              count this check...") from a mangled line continuation	Garbled message text	dev-only
+R6	src/bin/check_no_duplicates/main.rs:37	[dev-only] duplicate_commit_subjects pushes git failures into `failures` (commit_subjects.rs:42,46,53) but main never prints them; only subject and test-name duplicates are println'd at push time, so a git failure ends as bare "no-duplicates: FAIL" with exit 1 and no reason	Developer sees FAIL with no cause in CI logs	dev-only
+R6	src/connect.rs:50	prints "already registered ... Updating connection..." before acting; for CLI-direct agents the add is a plain `mcp add` with no remove (connect_cli.rs:52-53), so a client that rejects duplicates fails; could not verify any client's duplicate behaviour here	user told it is updating, gets AddFailed (unverified)	src root
+R6	src/connect.rs:60	prints "Verify with: <cli> mcp list" for every agent with a cli, including after a config-file fallback with the CLI absent (bob, pi, opencode) and for warp (cli "oz" is detection-only per connect_agents.rs:389 note)	user is told to run a command that does not exist or does not list the entry	src root
+R6	src/connect_agents.rs:340	is_connected is true when `<cli> mcp list` output merely contains the substring "slugaudit" (connect_cli.rs:19) or the goose YAML contains it anywhere (:359); connect.rs:85 prints "[Connected ✅]"	another server named slugaudit-dev shows the agent as connected and disconnect/skip prompts act on it	src root
+R6	src/connect_cli.rs:93	ConnectError::AddFailed text (cli.rs:144) says "see the output above", but run_add captures stdout with .output() and prints only stderr (:93-97); the client's stdout is never shown	failed `agent mcp add` that explains itself on stdout leaves the user with no output above	src root
+R6	src/connect_exec.rs:262	disconnect_agent returns Ok(()) when home is None before running the CLI remove, and silently does nothing for CLI agents whose CLI is absent or whose config is detection-only (claude .claude.json, codex, grok); connect.rs:69 then prints "Done."	user with HOME unset or claude missing from PATH runs `slugaudit disconnect claude`, sees "Disconnecting... Done.", and the entry is still registered	src root
+R6	src/install.rs:225	variable named quoted is not quoted or escaped: a SLUGTHUG_HOME with spaces breaks the fish line (fish_add_path /a b) and one with " $ or newline is written verbatim into ~/.bashrc or ~/.zshrc, after which "Added SlugAudit to your PATH" is printed (:210)	user with spaces in the install dir gets a PATH line that does not work while the message says it was added	src root
+R6	src/menu_render.rs:96	other_agent_instructions interpolates binary.display() into a JSON "paste-ready" snippet without JSON escaping	path containing a quote or backslash prints invalid JSON labelled as a config entry	src root
+R6	src/sync/manager_health.rs:101	record_full_publish() runs only after the post-verification drain succeeds (line 102); if the drain fails the full publish has already landed but consecutive_full_publishes is not incremented, contradicting the doc at manager.rs:147-149 and the number the health tool reports	health under-reports consecutive full publishes exactly when the watcher is failing	sync/watch
+R6	src/tools/finding.rs:171	'finding recorded' info log fires inside the write closure, before `tx.commit()` in with_verified_write (context_transactions.rs:33); a failed commit leaves a 'recorded' log line for a finding that was not stored	Operator reading logs sees a recorded finding that does not exist	tools
+R6	src/tools/leads_query.rs:24-31 and src/tools/structure_source.rs:71-75	Docs (leads.rs:56-60, structure.rs:38) say a pattern with no `*`/`?` is a SUBSTRING match, but the pattern is wrapped as `*pat*` and still interpreted as GLOB: `[`, `]` stay metacharacters, so `app/[id]/page.tsx` or `src/[a]` do not match their literal text and counts come back 0 with no caveat	Next.js/SvelteKit repos: leads/structure pattern `[id]` reports 0 files, agent concludes no match	tools
+R6	src/tools/project_control.rs:182-190	Response says status=enabled and carries import counts only after publish succeeded (ordering OK), but if `profile` was unrecognized (:156) the success message omits that the profile was not applied	Agent is told the project is enabled with its requested profile	tools
+R6	src/tools/project_control.rs:202-208	status=already_disabled is emitted when `exists()` is false, including when stat failed (see R2)	False 'already_disabled' on an unreadable directory	tools
+R7	src/bin/check_coverage.rs:47	[dev-only] threshold `parse::<f64>()` accepts NaN, inf and negatives; with NaN `percent < threshold` is false so the gate PASSES at any coverage	`check_coverage NaN` always exits 0	dev-only
+R7	src/bin/check_coverage.rs:84	[dev-only] read_to_string of the llvm-cov JSON has no size bound (same unbounded reads at: check_performance/estimates.rs:46 and :95, check_mcp_surface/main.rs:101, check_producer_coverage/scan.rs:60 and main.rs:135, check_docs_drift/main.rs:97, check_version_consistency/manifests.rs:83, check_governance/codeowners.rs:17, check_no_duplicates/test_names.rs:54, check_source_limits/main.rs:89)	Large/hostile file read whole into memory (inputs are repo files; low)	dev-only
+R7	src/bin/check_no_duplicates/commit_subjects.rs:16	[dev-only] env SLUGAUDIT_CHECK_COMMITS_BASE interpolated into a git argument with no validation and no `--`; a value starting with `-` is parsed as an option (e.g. --output=..)	Env-controlled git option injection (dev machine only)	dev-only
+R7	src/bin/check_performance/args.rs:32	[dev-only] threshold parse accepts NaN/inf/negatives: NaN makes `ratio > 1.0 + NaN/100` false so no regression can fire (only absolute budgets remain); `--bogus` flags are reported as "threshold is not a number"	`check_performance NaN` hides every regression	dev-only
+R7	src/bin/check_source_limits/counter.rs:105	[dev-only] recursive walk uses path.is_dir() (follows symlinks) with no depth limit or cycle guard; same in check_no_duplicates/test_names.rs:34, check_producer_coverage/scan.rs:49, check_docs_drift/test_file_count.rs:52, check_performance/estimates.rs:73	A symlink cycle under src/ overflows the stack of five gates	dev-only
+R7	src/cli.rs:35	CLI args (agent name, extra args) have no explicit length limit; the unknown-command and UnknownAgent errors echo the argument back unbounded (cli.rs:49, :138); only the OS ARG_MAX bounds it	n/a: low	src root
+R7	src/connect_cli.rs:14	child processes (`<cli> mcp list`, `mcp add`, `sha256sum`, curl) run with .output(): stdout/stderr unbounded and no timeout; the interactive connect menu calls is_connected twice per detected agent (connect.rs:84,101)	a client CLI whose `mcp list` hangs or health-checks slowly freezes `slugaudit connect` and the menu indefinitely	src root
+R7	src/evidence/calls.rs:35	No parse timeout or cancellation on the tree-sitter parse (also macro_calls.rs:80, normalize.rs:115); the sync wall-clock budget is checked only between files	One pathological file can hold a sync past max_sync_wall_clock until the parse returns	core
+R7	src/evidence/calls/macro_calls.rs:70	Recursion bound is per axis, not cumulative: collect() is bounded at 512 per fragment and nesting at 64, but a fragment's stack stays live while it recurses, so worst case is ~64 x 512 frames. Reproduced: a 29 KB Rust file (30 nested m!(((...)))) levels of 480 parens) aborts a 2 MiB thread in a release build; 8 KB (10x400) aborts in a debug build	A crafted .rs file (any cloned dependency) kills the whole MCP server process (stack overflow abort, not catchable), losing the agent's session on every sync that reaches the file	core
+R7	src/evidence/generic_imports.rs:132	Per-import 'source' payload is the whole statement text with no per-item cap here (capped later at sample.rs:242 max_payload_bytes_per_item)	Capped downstream; memory spike only	core
+R7	src/evidence/normalize.rs:28	extract() materialises every EvidenceItem before any cap; max_items_per_file/payload caps run afterwards in sync/sample.rs:225-245. Items per file are unbounded by this module (bounded only by max_file_bytes: 256 MiB Audit, up to 1 GiB Adaptive)	A large dense file allocates multi-GB of EvidenceItem/JSON before truncation	core
+R7	src/ignore_rules/build.rs:129	GitignoreBuilder::add (ignore 0.4.33, gitignore.rs:404-437) reads each ignore file line by line with no byte, line or file-count cap, and build.rs adds no pre-check; ignore files come from the (untrusted) project tree	a repo containing a multi-GB .gitignore or one enormous line exhausts memory during sync (the walker itself also reads them)	src root
+R7	src/install.rs:182	interactive_prompt uses stdin().lock().read_line() with no length cap, bypassing the 256-byte prompt::read_prompt_line cap that prompt.rs:1 says covers the setup prompts	pasting a huge line into the PATH prompt allocates unboundedly	src root
+R7	src/install.rs:9	SLUGTHUG_HOME, SLUGTHUG_CONFIG_HOME, HOME, SHELL, APPDATA and PATH are read with no length or content validation (SLUGTHUG_HOME flows into a shell rc line, install.rs:225)	hostile environment injects shell text into ~/.bashrc	src root
+R7	src/model/limits.rs:130	Env overrides (lines 130-164) accept any value of the type: 0, or u64::MAX, no min/max or relation check (default_page_bytes vs max_query_response_bytes, max_total_import_bytes vs max_file_bytes)	SLUGAUDIT_MAX_FILE_BYTES=0 rejects every file; huge values remove the memory guard; nothing is logged	core
+R7	src/model/system_ram.rs:27	/proc/meminfo read without a size cap (kernel pseudo-file, trusted)	Negligible	core
+R7	src/project/activation.rs:218	Project .gitignore read fully into memory with no size cap (every other foreign read uses util::read_file_capped, 1 MiB)	A hostile or accidental multi-GB .gitignore at the project root exhausts memory on project_control on	core
+R7	src/project/config.rs:67	config.json file read is capped (1 MiB) but values are unvalidated: max_file_bytes, max_total_import_bytes, default_page_bytes accept 0 or u64::MAX	A committed config.json from an untrusted repo can raise max_file_bytes past RAM or set it to 0; config is read from the project being audited	core
+R7	src/server.rs:446	resource URI from the request is echoed in the resource_not_found message with no length bound	client sends a very large uri and receives it back in the error	src root
+R7	src/store/netfs.rs:182	macOS: external command run with no timeout and unbounded stdout capture (also system_ram.rs:35 sysctl)	A hung mount listing (stale network mount) blocks the open indefinitely	core
+R7	src/store/netfs.rs:77	mountinfo read unbounded (kernel pseudo-file, trusted)	Negligible	core
+R7	src/sync/hash.rs:21	hash_file does std::fs::read with no size cap, though HashError is documented as covering "over-cap"; reconcile checks size from metadata first (pipeline.rs:126) so a file growing after the stat is read whole	memory spike on a file that grows during reconcile	sync/watch
+R7	src/sync/manifest.rs:92	NOT IN (?, ...) with upserts+deletions+skipped bind variables, unbounded; same 32766 limit	a reconcile touching more than 32766 paths (branch switch) fails and marks the watcher Desynced	sync/watch
+R7	src/sync/reconcile/queries.rs:16	IN (?, ...) with one variable per dirty path, unbounded; same 32766 limit	a sweep or event drain with more than 32766 candidates fails the sync	sync/watch
+R7	src/sync/revision.rs:270	invalidate_stale_findings binds one variable per touched path (every upsert, deletion, skipped row) with no chunking; bundled rusqlite 0.37.0 rejects more than 32766 variables (probe run in scratchpad: 32766 ok, 32767 "too many SQL variables")	first publish of a project with more than 32766 indexable files fails with a database error; CAS retries cannot help and the message says the failure is often transient	sync/watch
+R7	src/sync/sample.rs:82	fs::read happens before the length re-check at line 88, so the whole grown file is allocated before being rejected (the comment promises failing closed rather than indexing a huge buffer)	memory spike on a file that grows between stat and read	sync/watch
+R7	src/tools/finding.rs:211-223	title/description/severity/category are limited in chars, counted after the whole string is received (`chars().count()`); there is no byte pre-check, and I could not verify a transport-level request size cap (rmcp not read)	Cannot cite an upper bound before the check runs	tools
+R7	src/tools/leads.rs:72,76,104	`limit`, `offset`, `page_bytes` are unbounded usize; page_bytes is clamped to max_query_response_bytes (page_size.rs:42), limit/offset only saturate on bind (leads_query.rs:77)	Bounded in effect by the byte budget; offset above i64::MAX is not refused as query.rs:170 does	tools
+R7	src/tools/leads_query.rs:90 and src/tools/leads_compact.rs:129 and src/tools/structure_source.rs:76	Caller `pattern` (<= 8192 bytes) is evaluated by SQLite GLOB with no progress handler: `query` installs VM-step and wall-clock budgets (query_exec.rs:48) but `leads`/`structure` file queries do not. A pattern with many `*` is a backtracking match. I did not measure worst-case time	A pathological pattern could hold a blocking thread and the read transaction for a long time	tools
+R7	src/tools/structure.rs:161 (and Cargo.toml:80)	Request `language` (<= 8192 bytes, passes through load_targets unchanged in language mode, structure_source.rs:172) goes to `tree_sitter_language_pack::get_language`. tree-sitter-language-pack 1.18.0 has `default = ["dynamic-loading", "download"]` and Cargo.toml:80 does not disable default features; on a registry miss get_language downloads a parser from GitHub (download.rs: GITHUB_RELEASE_BASE) and dlopens it. I read the dependency source; I did not run it to observe a download	Agent calls structure with an unknown language name: the server may make an outbound network request, write a cache, and load a native library chosen by a caller string; no size/checksum limit in this crate	tools
+R7	src/tools/structure.rs:62-66,217-221	`start_after_file` has no length limit (file/language/pattern are capped at 8192 in validate_request) and is bound into SQL (structure_source.rs:79)	Unbounded string bound as a SQL parameter	tools
+R7	src/tools/structure.rs:67-70,158	`expected_revision` has no length limit in structure (query/leads cap it at 256 bytes, leads.rs:41/query.rs:15) and `guard_expected_revision` echoes it into the error message (context.rs:127)	Large string is copied into the error response; bounded only by the transport	tools
+R7	src/update.rs:150	verify_checksum reads the whole SHA256SUMS with read_to_string; the file is fetched by download() whose cap is 150 MB (update_fetch.rs:112), so up to 150 MB is loaded into memory for a file that should be about 100 bytes	hostile or misconfigured release asset named SHA256SUMS costs 150 MB RAM before any parse	src root
+R7	src/update_fetch.rs:47	asset_url and checksums_url are taken from the API JSON browser_download_url with no host or prefix check and tag_name is interpolated into URLs unvalidated (:36); only https is enforced (:18); a URL beginning with "-" would be parsed by curl as an option	redirect to non-GitHub https host accepted; integrity relies entirely on the checksum fetched from the same origin	src root
+R7	src/update_fetch.rs:87	curl_get caps with --max-filesize 10000000 (10 MB) and --max-time 30, then output() buffers stdout; curl documents --max-filesize as applying to the size announced up front, and I could not verify mid-transfer enforcement for chunked bodies	bounded at 30 s / memory by time rather than proven by size	src root
+R7	src/util.rs:66	read_file_capped does metadata().len() then read_to_string(): a FIFO or character device reports length 0 and is then read unbounded; a file growing between stat and read is fully loaded before the :78 re-check	config path replaced by a special file blocks or exhausts memory instead of failing closed	src root
+R7	src/watch/scope.rs:37	WatchScope::compute walks the whole tree with no Deadline and is called with the WatchManager mutex held (manager.rs:179, :254, :286); every other sync step is deadline-bound	a hung or huge filesystem blocks every tool call and the watcher callback (which then drops events via try_lock) with no budget error	sync/watch
+R7	src/watch/state.rs:37	dirty_paths/deleted_paths HashSets have no size cap (mark_dirty/mark_deleted at :37-55); only ignore rules limit what enters them	a noisy unignored directory grows the sets without bound between syncs	sync/watch
+R8	benches/common/mod.rs:30	pub field `file_count` has no doc (also :31 `total_bytes`)	doc gap	dev-only
+R8	benches/common/mod.rs:313	pub(crate) const RUST_SAMPLE has `//` comments (:309-312) but no `///` (also PYTHON_SAMPLE :366, JS_SAMPLE :403, TS_SAMPLE :434)	doc gap	dev-only
+R8	fuzz/fuzz_targets/support.rs:171	pub field `manager` of Fixture undocumented	doc gap	dev-only
+R8	src/bin/check_docs_drift/module_map.rs:10	[dev-only] pub(super) check_module_map undocumented	doc gap	dev-only
+R8	src/bin/check_docs_drift/test_file_count.rs:9	[dev-only] pub(super) check_test_file_count undocumented	doc gap	dev-only
+R8	src/bin/check_docs_drift/test_support.rs:7	[dev-only] pub(super) fn write undocumented (also :15 temp_root)	doc gap	dev-only
+R8	src/bin/check_governance/codeowners.rs:13	[dev-only] pub(super) check_codeowners undocumented	doc gap	dev-only
+R8	src/bin/check_no_duplicates/test_names.rs:6	[dev-only] pub(super) collect_test_files undocumented (also :51 test_names_by_file)	doc gap	dev-only
+R8	src/bin/check_performance/args.rs:13	[dev-only] pub(crate) struct Options undocumented (its fields are documented)	doc gap	dev-only
+R8	src/bin/check_performance/compare.rs:10	[dev-only] pub(crate) enum Verdict undocumented; Row (:32) and fields key :33, new_ns :36, verdict :37; Comparison fields warnings :45, failures :46; fn compare :49 undocumented	8 doc gaps in one file	dev-only
+R8	src/bin/check_performance/estimates.rs:12	[dev-only] pub(crate) collect_new_benches undocumented; BaselineEntry :89 and fields median_ns :90, budget_ns :91; load_baseline :94 undocumented	5 doc gaps	dev-only
+R8	src/bin/check_performance/format.rs:7	[dev-only] pub(crate) fmt_ns undocumented	doc gap	dev-only
+R8	src/bin/check_producer_coverage/main.rs:68	[dev-only] EnumReport fields name :68, declared :69, covered :70, uncovered :71 undocumented (struct itself documented)	4 doc gaps	dev-only
+R8	src/bin/check_source_limits/counter.rs:22	[dev-only] pub(crate) code_lines undocumented; PRODUCTION_CEILING :41 undocumented (the preceding doc belongs to TEST_FILE_CEILING); walk_rs_files :95 undocumented	3 doc gaps	dev-only
+R8	src/bin/check_source_limits/counter.rs:44	[dev-only] pub(crate) HUMAN_APPROVED_CEILING is referenced only inside counter.rs (no outside use; tests do not import it)	needless pub(crate)	dev-only
+R8	src/bin/check_source_limits/scanner.rs:9	[dev-only] pub(crate) enum State undocumented; scan_step :41 undocumented	2 doc gaps	dev-only
+R8	src/bin/check_source_limits/scanner.rs:9	[dev-only] pub(crate) State and ScanCursor fields state :30, block_depth :36, raw_hashes :38 are never referenced outside scanner.rs	needless pub(crate)	dev-only
+R8	src/cli.rs:133	ConnectError variants lack doc comments (they carry #[error] text only): InvalidChoice 133, BinaryPath 135, HomeUnavailable 137, UnknownAgent 139, AgentCommand 141, RemoveFailed 143, AddFailed 145, UnsupportedAgent 147, SectionNotAnObject 152, RootNotAnObject 157, InvalidConfig 161, Json 167, Io 169, plus their named fields	n/a	src root
+R8	src/cli.rs:16	Command::Connect / Command::Disconnect field agent (:16,:18) has no doc	n/a	src root
+R8	src/cli.rs:56	pub const USAGE is not referenced outside cli.rs (only usage() and cli_tests.rs)	n/a	src root
+R8	src/connect.rs:35	pub(crate) fn prefer_slugthug_binary has no doc comment	n/a	src root
+R8	src/connect_agents.rs:144	ConfigPath::PerOs fields macos, windows, linux (:144-146) have no docs	n/a	src root
+R8	src/connect_agents.rs:253	AgentDef fields id (:253), display_name :254, strategy :255, config :263, shape :264, dialect :265, evidence :266 have no docs	n/a	src root
+R8	src/evidence/calls/macro_calls.rs:26	Undocumented pub item: pub(super) rows: Vec<(usize, usize, EvidenceItem)>,		core
+R8	src/evidence/calls/macro_calls.rs:27	Undocumented pub item: pub(super) capped: bool,		core
+R8	src/evidence/calls/macro_calls.rs:44	Undocumented pub item: pub(super) fn extract(macro_node: &Node, source: &str, lines: &LineIndex<'_>) -> MacroCalls		core
+R8	src/evidence/normalize.rs:322	Undocumented pub item: pub(super) fn convert_span(span: &PackSpan, lines: &LineIndex<'_>) -> SpanAvailability		core
+R8	src/evidence/normalize.rs:337	Undocumented pub item: pub(super) fn severity_text(severity: &DiagnosticSeverity) -> &'static str		core
+R8	src/evidence/normalize_builders.rs:110	Undocumented pub item: pub(super) fn diagnostic_item(		core
+R8	src/evidence/normalize_builders.rs:34	Undocumented pub item: pub(super) fn import_item(index: usize, item: &ImportInfo, lines: &LineIndex<'_>) -> EvidenceItem		core
+R8	src/evidence/normalize_builders.rs:49	Undocumented pub item: pub(super) fn export_item(index: usize, item: &ExportInfo, lines: &LineIndex<'_>) -> EvidenceItem		core
+R8	src/evidence/normalize_builders.rs:59	Undocumented pub item: pub(super) fn comment_item(		core
+R8	src/evidence/normalize_builders.rs:77	Undocumented pub item: pub(super) fn docstring_item(		core
+R8	src/evidence/normalize_builders.rs:8	Undocumented pub item: pub(super) fn flatten_structure(		core
+R8	src/evidence/normalize_builders.rs:95	Undocumented pub item: pub(super) fn symbol_item(index: usize, item: &SymbolInfo, lines: &LineIndex<'_>) -> EvidenceItem		core
+R8	src/evidence/sql.rs:10	Undocumented pub item: pub span_availability: &'static str,		core
+R8	src/evidence/sql.rs:11	Undocumented pub item: pub start_byte: Option<i64>,		core
+R8	src/evidence/sql.rs:12	Undocumented pub item: pub end_byte: Option<i64>,		core
+R8	src/evidence/sql.rs:13	Undocumented pub item: pub start_line: Option<i64>,		core
+R8	src/evidence/sql.rs:14	Undocumented pub item: pub start_column: Option<i64>,		core
+R8	src/evidence/sql.rs:15	Undocumented pub item: pub end_line: Option<i64>,		core
+R8	src/evidence/sql.rs:16	Undocumented pub item: pub end_column: Option<i64>,		core
+R8	src/evidence/sql.rs:17	Undocumented pub item: pub payload: String,		core
+R8	src/evidence/sql.rs:7	Undocumented pub item: pub key: String,		core
+R8	src/evidence/sql.rs:8	Undocumented pub item: pub kind: &'static str,		core
+R8	src/evidence/sql.rs:9	Undocumented pub item: pub origin: &'static str,		core
+R8	src/graph/mod.rs:25	pub fn with no caller anywhere (src, tests, benches); the doc says the report tool uses it, but report does not (grep). Dead along with resolver/registry.rs:77 and the re-export resolver/mod.rs:47	Stale doc claim; dead public API	core
+R8	src/graph/mod.rs:33	Undocumented pub item: pub raw_import_text: String,		core
+R8	src/graph/mod.rs:34	Undocumented pub item: pub resolution_kind: &'static str,		core
+R8	src/graph/mod.rs:35	Undocumented pub item: pub confidence: Option<&'static str>,		core
+R8	src/graph/mod.rs:36	Undocumented pub item: pub to_relative_path: Option<String>,		core
+R8	src/graph/reference.rs:9	Undocumented pub item: pub text: String,		core
+R8	src/graph/resolver/generic.rs:124	Undocumented pub item: pub(crate) fn new(config: GenericResolverConfig) -> Self		core
+R8	src/graph/resolver/generic.rs:131	Undocumented pub item: pub(crate) fn python() -> Self		core
+R8	src/graph/resolver/generic.rs:151	Undocumented pub item: pub(crate) fn js() -> Self		core
+R8	src/graph/resolver/python.rs:90	Undocumented pub item: pub(crate) fn extract_python_reference(trimmed: &str) -> Option<ImportReference>		core
+R8	src/graph/resolver/registry.rs:77	pub(crate) fn referenced only by the dead graph::is_supported_language	Dead code	core
+R8	src/graph/resolver/types.rs:13	Undocumented pub item: pub kind: ResolutionKind,		core
+R8	src/graph/resolver/types.rs:14	Undocumented pub item: pub confidence: Option<&'static str>,		core
+R8	src/graph/resolver/types.rs:15	Undocumented pub item: pub to_relative_path: Option<String>,		core
+R8	src/graph/resolver/types.rs:22	Undocumented enum variant: Resolved,		core
+R8	src/graph/resolver/types.rs:23	Undocumented enum variant: Unresolved,		core
+R8	src/graph/resolver/types.rs:24	Undocumented enum variant: External,		core
+R8	src/graph/resolver/types.rs:28	Undocumented pub item: pub(crate) fn as_sql_text(self) -> &'static str		core
+R8	src/install.rs:43	pub enum InstallError is never named outside install.rs/install_tests.rs (main.rs uses it only through run_install's return type)	n/a	src root
+R8	src/install.rs:45	InstallError variants lack doc comments: CurrentExe 45, NoHome 47, Mkdir 49, Copy 51, Place 53, Io 55, plus fields path/inner	n/a	src root
+R8	src/install.rs:58	pub(crate) fn running_binary has no doc comment	n/a	src root
+R8	src/install_place.rs:14	PlaceError fields action :14, path :15, source :17 have no docs	n/a	src root
+R8	src/menu_render.rs:44	pub(crate) fn render_menu has no doc comment	n/a	src root
+R8	src/menu_render.rs:7	pub(crate) const MENU has no doc comment	n/a	src root
+R8	src/menu_render.rs:79	pub(crate) fn section_label has no doc comment	n/a	src root
+R8	src/menu_render.rs:88	pub(crate) fn other_agent_instructions has no doc comment	n/a	src root
+R8	src/model/evidence.rs:10	Undocumented enum variant: PackOmitted,		core
+R8	src/model/evidence.rs:11	Undocumented enum variant: NormalizerUnavailable { reason: String },		core
+R8	src/model/evidence.rs:12	Undocumented enum variant: DerivedEvidence,		core
+R8	src/model/evidence.rs:25	Undocumented enum variant: Structure,		core
+R8	src/model/evidence.rs:26	Undocumented enum variant: Import,		core
+R8	src/model/evidence.rs:27	Undocumented enum variant: Export,		core
+R8	src/model/evidence.rs:28	Undocumented enum variant: Comment,		core
+R8	src/model/evidence.rs:29	Undocumented enum variant: Docstring,		core
+R8	src/model/evidence.rs:30	Undocumented enum variant: Symbol,		core
+R8	src/model/evidence.rs:31	Undocumented enum variant: Diagnostic,		core
+R8	src/model/evidence.rs:32	Undocumented enum variant: Call,		core
+R8	src/model/evidence.rs:39	Undocumented pub item: pub key: String,		core
+R8	src/model/evidence.rs:40	Undocumented pub item: pub kind: EvidenceKind,		core
+R8	src/model/evidence.rs:41	Undocumented pub item: pub origin: EvidenceOrigin,		core
+R8	src/model/evidence.rs:42	Undocumented pub item: pub span: SpanAvailability,		core
+R8	src/model/evidence.rs:43	Undocumented pub item: pub payload: Value,		core
+R8	src/model/evidence.rs:9	Undocumented enum variant: Present(Span),		core
+R8	src/model/limits.rs:10	Undocumented pub item: pub max_payload_bytes_per_file: usize,		core
+R8	src/model/limits.rs:115	Doc says unparseable env vars are 'silently ignored', but parse_override (178-209) warns; doc contradicts behavior	Operator reads that typos are silent	core
+R8	src/model/limits.rs:8	Undocumented pub item: pub max_items_per_file: usize,		core
+R8	src/model/limits.rs:9	Undocumented pub item: pub max_payload_bytes_per_item: usize,		core
+R8	src/model/limits.rs:97	Undocumented pub item: pub evidence: EvidenceLimits,		core
+R8	src/model/profile.rs:76	pub(crate) const referenced only inside profile.rs	Over-wide visibility	core
+R8	src/model/source.rs:16	pub struct re-exported but never used outside source.rs (grep src, tests, benches)	Dead public type	core
+R8	src/model/source.rs:25	pub struct never used outside source.rs	Dead public type	core
+R8	src/model/source.rs:34	pub struct never used outside source.rs	Dead public type	core
+R8	src/model/span.rs:107	LineIndex::line not called outside span.rs in production code	Dead public method	core
+R8	src/model/span.rs:216	Span::byte_len referenced only by span_tests.rs:7	Test-only public method	core
+R8	src/model/span.rs:40	pub fn not called outside span.rs (only re-exported and mentioned in a test comment)	Dead public fn	core
+R8	src/progress.rs:35	ProgressEvent variant fields phase (:35,:42,:49), current :43, total :44 have no field docs	n/a	src root
+R8	src/progress.rs:59	ProgressSink::emit trait method has no doc comment	n/a	src root
+R8	src/project/activation.rs:20	Undocumented enum variant: Root(#[from] RootError),		core
+R8	src/project/activation.rs:200	Undocumented pub item: NotWritten { path: PathBuf, reason: String } field path (variant fields undocumented)		core
+R8	src/project/activation.rs:200	Undocumented pub item: NotWritten { path: PathBuf, reason: String } field reason (variant fields undocumented)		core
+R8	src/project/activation.rs:22	Undocumented enum variant: NotActive,		core
+R8	src/project/activation.rs:24	Undocumented enum variant: SymlinkedActivationPath,		core
+R8	src/project/activation.rs:26	Undocumented enum variant: Io(#[from] std::io::Error),		core
+R8	src/project/activation.rs:28	Undocumented enum variant: Database(#[source] crate::store::StoreError),		core
+R8	src/project/activation.rs:33	Undocumented enum variant: DatabaseBusy(#[source] rusqlite::Error),		core
+R8	src/project/activation.rs:39	Undocumented enum variant: CheckpointIncomplete,		core
+R8	src/project/activation.rs:41	Undocumented enum variant: DatabaseLock(#[source] rusqlite::Error),		core
+R8	src/project/config.rs:10	pub enum not referenced outside config.rs and not re-exported (project/mod.rs:17 exports ProjectConfig only) although ProjectConfig::load returns it, so callers cannot name it	Unnameable public error type	core
+R8	src/project/config.rs:32	Doc lists profile value `default`; the enum accepts lean, audit, adaptive (profile.rs:13-21). `"profile": "default"` fails to parse and the whole config is discarded (config.rs:77-91)	Following the doc discards the config	core
+R8	src/project/root.rs:10	Undocumented enum variant: NotADirectory,		core
+R8	src/project/root.rs:8	Undocumented enum variant: Unresolvable(String),		core
+R8	src/server.rs:159	pub fn with_manager is not referenced outside server.rs by name	n/a	src root
+R8	src/store/connection.rs:19	Undocumented enum variant: Open(#[source] rusqlite::Error),		core
+R8	src/store/connection.rs:21	Undocumented enum variant: Configure(#[source] rusqlite::Error),		core
+R8	src/store/connection.rs:23	Undocumented enum variant: Migration(#[from] super::migrations::MigrationError),		core
+R8	src/store/connection.rs:25	Undocumented enum variant: Symlink,		core
+R8	src/store/connection.rs:27	Undocumented enum variant: Permissions(#[source] std::io::Error),		core
+R8	src/store/connection.rs:35	Undocumented enum variant: NetworkFilesystem,		core
+R8	src/store/connection.rs:44	Undocumented enum variant: NetworkFilesystemCheck(#[source] std::io::Error),		core
+R8	src/store/connection.rs:81	Orphaned doc comment (81-84) attached to a `use` item; it describes open_flags (125)	Misplaced docs	core
+R8	src/store/migrations.rs:17	Undocumented enum variant: ReadVersion(#[source] rusqlite::Error),		core
+R8	src/store/migrations.rs:19	Undocumented enum variant: Apply(#[source] rusqlite::Error),		core
+R8	src/store/migrations.rs:25	Undocumented enum variant: UnsupportedVersion { found: i64, supported: i64 },		core
+R8	src/store/migrations.rs:9	Referenced outside migrations.rs only through a #[cfg(test)] re-export (store/mod.rs:37); production use is file-local	Test-only external reference	core
+R8	src/store/netfs.rs:35	Doc has two stacked paragraphs; the first (13-25) describes reject_network_filesystem, not this fn; only referenced by tests	Misleading doc	core
+R8	src/sync/analyze.rs:6	pub(super) struct ParseResult and its four pub fields (7-10) have no doc comments	doc gap	sync/watch
+R8	src/sync/discovery.rs:23	DiscoveredFile fields relative_path, absolute_path, kind (23-25) undocumented	doc gap	sync/watch
+R8	src/sync/discovery.rs:34	SkippedFile fields absolute_path, reason (34-35) undocumented	doc gap	sync/watch
+R8	src/sync/discovery.rs:42	pub enum DiscoveryError variants Walk, Read, NotRelative, TimeBudgetExceeded have no doc comments (only NonUtf8Path does); same for FileKind::Indexed/Binary (lines 15-16)	doc gap	sync/watch
+R8	src/sync/hash.rs:9	HashError::Read undocumented	doc gap	sync/watch
+R8	src/sync/manager.rs:166	pub fn active_watch_state (and WatchManager::iter, watch/manager.rs:218, which only it calls) has no non-test caller in the repo	unused public API	sync/watch
+R8	src/sync/manager.rs:29	SyncedProject fields database_path, revision_id undocumented	doc gap	sync/watch
+R8	src/sync/manager.rs:36	pub enum SyncError variants Database, Revision, Reconcile, Read have no doc comments	doc gap	sync/watch
+R8	src/sync/manager_meta.rs:232	pub(crate) map_publish_error is referenced only inside manager_meta.rs and tests	visibility wider than use	sync/watch
+R8	src/sync/manager_meta.rs:36	pub(crate) purge_prior_session_findings is referenced only inside manager_meta.rs (ensure_project_row) and tests; not used outside its module	visibility wider than use	sync/watch
+R8	src/sync/manager_meta.rs:94	ProjectMetaError::IncompatibleVersion fields contract_version, schema_version (95-96) and RootMismatch field stored_root undocumented	doc gap	sync/watch
+R8	src/sync/manifest.rs:17	ChangeStatus variants Added/Modified/Deleted (17-19) and FileChange fields (25-26) undocumented	doc gap	sync/watch
+R8	src/sync/publish.rs:33	PublishError variants Discovery, Sample, Revision, Database, ImportTooLarge, InvalidParserPackVersion undocumented	doc gap	sync/watch
+R8	src/sync/publish.rs:86	PublishReport fields revision_id (86), modified, deleted, unchanged (93-95) undocumented	doc gap	sync/watch
+R8	src/sync/publish_cas.rs:23	pub(super) fn is_retryable has no doc comment	doc gap	sync/watch
+R8	src/sync/publish_diff.rs:101	pub(super) fn build_upserts_and_deletions has no doc comment	doc gap	sync/watch
+R8	src/sync/publish_diff.rs:17	pub(super) struct Diff and its six fields (18-23) undocumented	doc gap	sync/watch
+R8	src/sync/publish_log.rs:5	pub(super) fn log_outcome has no doc comment	doc gap	sync/watch
+R8	src/sync/reconcile/error.rs:15	ReconcileError variants Discovery, Database, Hash, Sample, Revision undocumented	doc gap	sync/watch
+R8	src/sync/reconcile/options.rs:19	ReconcileOptions fields limits, deadline, rules (19-21) undocumented	doc gap	sync/watch
+R8	src/sync/reconcile/pipeline.rs:161	pub(crate) fn reconcile_dirty_paths_with_deadline has no doc comment; its doc block (70-81) is attached to the private enum DirtyOutcome at line 82 instead	misleading doc on the wrong item	sync/watch
+R8	src/sync/revision.rs:14	FileRecord fields relative_path, is_binary, content, identity, byte_len, language, language_detected, run, evidence (14-18, 23-26) undocumented	doc gap	sync/watch
+R8	src/sync/revision.rs:33	RevisionError variants Database and InvalidParserRun undocumented	doc gap	sync/watch
+R8	src/sync/revision_skipped.rs:34	SkippedRecord fields relative_path (34) and modified_unix_seconds (42) undocumented	doc gap	sync/watch
+R8	src/sync/sample.rs:27	SampleError variants Read, TooLarge undocumented	doc gap	sync/watch
+R8	src/sync/sample.rs:46	Sample fields relative_path, is_binary, content, identity, byte_len (46-48, 53-54) undocumented	doc gap	sync/watch
+R8	src/sync/sweep.rs:34	pub(super) enum SweepError has no doc comment and its variants are undocumented	doc gap	sync/watch
+R8	src/sync/sweep.rs:62	SweepReport fields candidates, deleted, on_disk, unchanged (62-65) undocumented individually	doc gap	sync/watch
+R8	src/tools/context_transactions.rs:6,22	with_verified_read and with_verified_write (pub(crate)) have no doc comment, and they are the freshness entry points every handler shares	Doc gap	tools
+R8	src/tools/finding.rs:69-72	FindingResponse.id, revision_id, source_hash, status have no doc	Doc gap in a response schema	tools
+R8	src/tools/finding_read.rs:37-46,53-54	FindingReadEntry (10 fields) and FindingReadResponse.revision_id, findings have no field docs	Doc gap	tools
+R8	src/tools/health.rs:190-196	HealthPhase variants Importing, Restoring, SteadyState, Unavailable, NoActiveProject, IndexedUnwatched, Disabled have no per-variant doc (explained only in the enum's list)	Doc gap	tools
+R8	src/tools/health.rs:76,95,115,160	pub WatcherState, ServerCounters, HealthPhase have no reference outside health.rs (DatabaseState is used by health_database.rs)	Same	tools
+R8	src/tools/leads.rs:187-188	LeadRows::Full and LeadRows::Compact have no variant doc	Doc gap	tools
+R8	src/tools/leads_mechanics.rs:67-68,73-74,185,202,206	Mechanic.id, family, predicate, detail and methods line_expr, pattern_clause, detail_expr (pub(super)) have no doc	Doc gap	tools
+R8	src/tools/leads_page.rs:22-24	Paging.limit, offset, budget_bytes (pub(super)) have no doc	Doc gap	tools
+R8	src/tools/leads_query.rs:112,116	Page.rows and Page.limited_by have no doc	Doc gap	tools
+R8	src/tools/mod.rs:15	`pub(crate) mod context;` and src/tools/context.rs have no module doc (`//!`) at all	Doc gap	tools
+R8	src/tools/mod.rs:169-171	ToolCounters.call_count, error_count, total_ms have no doc comment	Doc gap	tools
+R8	src/tools/project_control.rs:33,58,73,99	pub ProjectControlAction (outside use only in project_control_tests.rs), GitignoreReport, GitignoreStatus, ImportReport have no reference outside project_control.rs	Same	tools
+R8	src/tools/project_control.rs:34-37,74-76,100-102	ProjectControlAction::On/Off, GitignoreStatus::Added/AlreadyIgnored/NotWritten variants and ImportReport.added, unchanged, revision_id have no doc	Doc gap	tools
+R8	src/tools/query.rs:74-75	QueryResponse.rows and QueryResponse.truncated have no doc	Doc gap	tools
+R8	src/tools/query_clip.rs:50-51	ClippedRow.row and cells have no doc	Doc gap	tools
+R8	src/tools/query_exec.rs:36,41	Collected.rows and Collected.total have no doc	Doc gap	tools
+R8	src/tools/query_value.rs:39	sql_value_to_json (pub(super)) has no doc	Doc gap	tools
+R8	src/tools/report.rs:25	pub LanguageCount, EvidenceKindCount, ImportResolutionCount, ParserFailureFile (report.rs:24,31,41,52) are referenced by no code outside report.rs (grep over src/tests/benches); they are nested types of the public ReportResponse so they cannot simply be narrowed	pub items with no outside reference (reference rule)	tools
+R8	src/tools/report.rs:25-26,32-33,44,53-54,80,90-92,101	LanguageCount.language, file_count; EvidenceKindCount.kind, count; ImportResolutionCount.count; ParserFailureFile.path, parse_outcome; ReportResponse.revision_id, languages, evidence_counts, parser_failure_count, open_finding_count have no doc	Doc gap	tools
+R8	src/tools/report_completeness.rs:22,30,38,49	pub FileKindCount, FileClassCount, SkipReasonCount, CompletenessCount are referenced outside the file only by the `pub use` in mod.rs:59-61 (no code use)	Same	tools
+R8	src/tools/report_completeness.rs:25,33,44,55	FileKindCount.count, FileClassCount.count, SkipReasonCount.count, CompletenessCount.count have no doc	Doc gap	tools
+R8	src/tools/structure.rs:77-88,95-97	StructureMatch (12 fields: file, capture_name, node_kind, start_byte, end_byte, start_line, start_column, end_line, end_column, text, text_truncated, extraction_failed) and StructureResponse.revision_id, language, matches have no doc	Doc gap in the tool's main output	tools
+R8	src/tools/structure_page.rs:27	RunOutput.matches has no doc	Doc gap	tools
+R8	src/tools/structure_source.rs:6-8,10,175,186	MAX_TEXT_BYTES, MAX_SNIPPET_BYTES, MAX_MULTI_FILE_TOTAL_BYTES, fetch_source, truncate_text, truncate_snippet (pub(super)) have no doc	Doc gap	tools
+R8	src/update.rs:50	UpdateError variants lack doc comments: ToolSpawn 50, Target 56, Network 58, Json 60, NoTag 62, Checksum 64, UnsupportedPlatform 70, Io 75, Download 77, Stage 84, plus their named fields	n/a	src root
+R8	src/update_fetch.rs:12	pub(crate) const ASSET has no doc comment (the comment at :9-11 documents the private OWNER/REPO)	n/a	src root
+R8	src/update_fetch.rs:141	pub(crate) struct VersionParseError is not referenced outside update_fetch.rs	n/a	src root
+R8	src/update_fetch.rs:15	pub(crate) const ASSET_ARCH has no doc comment	n/a	src root
+R8	src/update_fetch.rs:18	pub(crate) HTTPS_ONLY is not referenced outside update_fetch.rs	n/a	src root
+R8	src/update_fetch.rs:26	LatestRelease field tag has no doc (asset_url :29 and checksums_url :30 likewise)	n/a	src root
+R8	src/update_fetch.rs:35	pub(crate) LatestRelease::from_tag is not referenced outside update_fetch.rs (from_json :47 likewise)	n/a	src root
+R8	src/util.rs:122	Style::colored (cfg(test)) has no doc comment	n/a	src root
+R8	src/util.rs:126	Style::enabled has no doc comment	n/a	src root
+R8	src/util.rs:137	Style::bold has no doc comment (dim :141, cyan :145, green :149, yellow :153 likewise)	n/a	src root
+R8	src/util.rs:306	Deadline::after has no doc comment	n/a	src root
+R8	src/watch/event_filter.rs:56	pub(super) fn classify_path has no doc comment	doc gap	sync/watch
+R9	src/evidence/calls.rs:84	Key String and callee_text/callee_name Strings built before seen.insert (line 86) decides the node is a duplicate; deduped nodes pay the allocations and discard them	Extra allocation per duplicate call node in macro-heavy files	core
+R9	src/evidence/normalize.rs:185	SymbolKind::Other("Field".to_owned()) allocates a String per field only to Debug-format it at line 210	Per field symbol allocation; negligible	core
+R9	src/graph/resolve_rust.rs:138	vec! of 4 Strings (and 281: 2 Strings) built then borrowed as a slice; pick() requires &[String] so the strings are needed but the Vec is avoidable with an array	Minor allocation per Rust import	core
+R9	src/graph/resolver/types.rs:63	collect() into a Vec only to read len() and the first element; a count plus find would not allocate	Per import edge allocation	core
+R9	src/ignore_rules/build.rs:63	entry(parent.to_path_buf()) allocates a PathBuf for every ignore file even when the key exists; file.clone() at :65 and :67 clone each path into the Vecs instead of borrowing	none practical; per-sync allocations proportional to ignore files	src root
+R9	src/install.rs:225	quoted = bin_dir.display().to_string() allocates a String that is only formatted into the line	none	src root
+R9	src/menu_render.rs:92	text.push_str(&format!(..)) builds a temporary String (also :96); write! or push_str on pieces avoids it	none (one-shot CLI)	src root
+R9	src/project/activation.rs:243	entry and addition built as two Strings where one write of the parts would do	Negligible (once per enable)	core
+R9	src/store/connection.rs:70	Sidecar path built as format!(display) -> Path::new -> to_path_buf (2 allocations) and display() is lossy for non-UTF-8 paths, so -wal/-shm names are wrong there; an OsString append is exact	Non-UTF-8 project path: corrupt-DB discard misses the real sidecars and leaves stale WAL/SHM	core
+R9	src/sync/manifest.rs:84	rows collected into a Vec<(String,String)> then immediately into_iter().collect() into a BTreeMap (same at lines 102-108); collect once	extra allocation of every stored path and hash	sync/watch
+R9	src/sync/publish_diff.rs:108	changed_paths is a HashSet<String> built by cloning every changed path (and deletions at 120-124 clones again) when &str borrows from samples/changes suffice	one String per changed file per publish	sync/watch
+R9	src/sync/publish_diff.rs:74	current_refs.clone() copies the whole Vec only to feed compare() and then aggregate_manifest_hash(); both accept IntoIterator, so iter().copied() twice avoids the copy	extra allocation per publish, proportional to file count	sync/watch
+R9	src/sync/revision_edges.rs:31	known_paths clones the full discovered set, inserts all stored paths, collects into Vec<String> (line 37), and revision.rs:195-196 rebuilds a HashSet<&str> from it: three full-size path collections where one set would do	allocation spike proportional to file count on every publish and reconcile	sync/watch
+R9	src/sync/sample.rs:101	text.to_owned() copies the entire file after from_utf8 validated an owned Vec<u8> (bytes still needed afterwards only for len/hash, which could run first); revalidate.rs:45 then builds a full Sample (read + copy) only to compare one hash	second full read and copy of every upserted file at publish time	sync/watch
+R9	src/tools/finding.rs:117,160	`session_id().to_string()` allocated twice per call for params	Minor	tools
+R9	src/tools/finding.rs:90	`synced.revision_id.clone()` only to pass `&revision_id`; `&synced.revision_id` is already available	Needless clone	tools
+R9	src/tools/finding_read.rs:97-109	Builds a `String` SQL and a `Vec<String>` of owned params (`to_owned` x2) to bind one or two values	Minor	tools
+R9	src/tools/leads_query.rs:172-174 and :206-208	`Value::Text(glob.to_owned())` clones a String that `glob` owns and uses only for `.is_some()` afterwards	Minor	tools
+R9	src/tools/project_control.rs:124	`inner.path.as_deref().unwrap_or(".").to_string()` allocates a String then borrows it; a `&str` would do	Minor	tools
+R9	src/tools/query_value.rs:45 and src/tools/query_exec.rs:182	`row_to_json` clones every TEXT cell (`text.clone()`) while the owned `values` Vec is dropped right after in the common (unclipped) case; only the oversized-first-row path needs `values` again. Doubles per-row memory for large cells (the module doc says the cap exists to avoid exactly this)	Peak memory per row is 2x the cell size, up to max_query_value_bytes per cell	tools
+R9	src/tools/report.rs:149,151	revision_id cloned at :149 (`synced.revision_id.clone()`) and cloned again inside the FnOnce closure at :151; the closure can move it	Two needless String clones	tools
+R9	src/tools/structure_exec.rs:165	`serde_json::to_vec(&found)?.len()` allocates a full buffer for every match just to measure it; `crate::util::serialized_len` (counting writer, used in query_exec.rs:183 and leads_query.rs:143) does this without allocating	One extra up-to-1MB buffer per match on full_text queries	tools
+R9	src/tools/structure_page.rs:40-44	Error message built by `"..".to_owned() + ".." + ".."` instead of one literal	Needless String building	tools
+R9	src/tools/structure_source.rs:76,80	`sql.push_str(&format!(..))` builds a temporary String per append	Minor	tools
+R9	src/watch/manager.rs:288	info.scope.clone() copies the full watch_dirs set on every scope refresh; the old scope is overwritten at line 322, so take() would do	allocation proportional to directory count while holding the manager lock	sync/watch
+R9	src/watch/manager.rs:337	event.paths.clone() on an owned Event (cloned before try_lock, so dropped events pay for it too); iterate &event.paths instead	allocation on every filesystem event	sync/watch
+RX	benches/memory.rs:69	bench validity: opens a fresh DB in db_dir (:69-70) that the sync never uses; ensure_current syncs into <project>/.planning/slugaudit/project.db, so from the 2nd iteration on it is an unchanged-project no-op, not the "full sync" the bench name and comment (:64-68) claim	peak_memory_after_full_sync_200 measures mostly no-op syncs	dev-only
+RX	benches/startup.rs:48	bench validity: read_to_end waits for stdout EOF, i.e. server exit after stdin EOF, so the time includes shutdown, not only "first initialize response" as the doc (:367-369) says; also binary lookup uses a runtime env var CARGO_BIN_EXE_slugaudit with a target/release fallback (:63-72) unlike tests/ which use compile-time env!	Startup number overstated; could panic if target dir differs (not verified)	dev-only
+RX	fuzz/fuzz_targets/structure_query.rs:5	doc cites "AGENTS.md, Security and trust model"; that section is in .planning/ARCHITECTURE.md:439, not AGENTS.md	Stale reference	dev-only
+RX	src/bin/check_docs_drift/module_map.rs:10	[dev-only] OUTSIDE R1-R12, gate vs AGENTS.md: AGENTS.md says adding/renaming/removing anything under src/ requires updating MODULE_MAP.md, but the gate only checks that every listed path exists; a new src file that is not listed passes	Doc-drift gate does not catch added files	dev-only
+RX	src/bin/check_producer_coverage/scan.rs:150	[dev-only] gate accuracy: `pub enum {name}` is matched as a prefix (EvidenceKind would also match EvidenceKindX); only `//` comments are stripped although the module doc says comments are; `kind: Enum::X` in a match/struct pattern is counted as a producer (is_value_position ':' arm)	Possible false pass for a variant only named in a block comment or a struct pattern	dev-only
+RX	src/bin/check_version_consistency/manifests.rs:15	[dev-only] AGENTS.md says PACK_VERSION is the string in `src/parse/PACK_VERSION`; no such file exists, the gate (correctly) reads `pub const PACK_VERSION` in src/parse/mod.rs:19 (value 1.18.0, matches Cargo.toml:80). AGENTS.md is stale	Misleads an agent	dev-only
+OBS	src/sync/reconcile/barrier.rs:65	empty snapshot returns Ok without acknowledge_through, so after a failed drain (sets already taken by snapshot_dirty) last_verified_sequence stays behind watcher_sequence and has_unreconciled_events() stays true on every later Healthy call	extra drain pass on every call until the next real event; barrier doc at lines 27-29 says the sets "remain unacknowledged" but snapshot_dirty has cleared them	sync/watch
+OBS	src/sync/reconcile/barrier.rs:80	iteration cap check runs before the stability check: a barrier that converges on its 16th pass still returns BarrierCapExceeded and marks Desynced	spurious full re-verification at exactly 16 passes	sync/watch
+OBS	src/sync/revision_edges.rs:45	edges are re-resolved only for upserted files (publish_diff.rs:108-119); adding a file does not revisit other files whose imports were stored Unresolved, and deleting a target removes the edge rows entirely because dependency_edges.to_file_id is ON DELETE CASCADE (store/schema.sql:156). Read from code, not executed; no test found for either case	stale or missing dependency_edges for unchanged importers until they are edited	sync/watch
+OBS	src/sync/sweep.rs:189	sweep keeps backslashes in names; discovery.rs:208 and watch/path.rs:24 rewrite backslash to slash. On Unix a file named with a backslash gets different keys in the three paths	such a file flips between two row keys across full publish and sweep	sync/watch
+OBS	src/sync/sweep.rs:191	comment says other stat errors are skipped like discovery, but code returns None for every error (line 198-206), which classes the path as deleted and removes its row	a stat that fails for a reason other than NotFound deletes the file from the index	sync/watch
+OBS	src/watch/manager.rs:142	root is watched Recursive and scope.rs then adds a Recursive watch per directory (line 312); notify-8.2.0 inotify add_watch walks the subtree each time, so the scope pruning described in scope.rs:1-14 does not reduce descriptors and repeats subtree walks. Read from code, not executed	inotify exhaustion on large trees persists; extra startup cost under the manager lock	sync/watch
+OBS	src/watch/manager.rs:339	comment says a skipped event is harmless because the sync layer will do a full verification next call; code does not change health, so the only recovery is the stat sweep, which has a documented same-size same-second blind spot	comment is wrong about the mechanism	sync/watch
+R10	src/connect.rs:12	run_connect (:12-21) and run_disconnect (:24-33) are the same 10-line match with find_agent/UnknownAgent and a different callee	n/a	src root
+R10	src/connect_tests.rs:54	json_agent_connect_and_disconnect_modifies_config (:54-76) and zed_agent_connect_and_disconnect_modifies_settings (:79-99) are the same ~22-line connect/is_connected/read/disconnect sequence for two agents	n/a	src root
+R10	src/evidence/calls.rs:166	node_span (calls.rs:166-179, generic_imports.rs:199-214, normalize.rs:305-320) is the same 14-16 line Position/Span construction three times, differing only in the context label	Drift: a fix to column handling lands in one copy only	core
+R10	src/evidence/calls_tests.rs:105	Two identical 10-line assertion blocks (105-114, 119-128) counting callee_name == unwrap	Test duplication	core
+R10	src/evidence/generic_imports.rs:199	Second copy of node_span (see calls.rs:166)	Same	core
+R10	src/evidence/generic_imports_tests.rs:128	18-row language/source table (lines 128-146) duplicated in normalize_grammar_tests.rs:137-155	Test table drift	core
+R10	src/evidence/normalize.rs:305	Third copy of node_span (see calls.rs:166)	Same	core
+R10	src/evidence/normalize_grammar_tests.rs:64	Three near-identical 11-line loops (lines 64-74, 80-90, 99-109) differing only in the table	Test duplication	core
+R10	src/ignore_rules/build.rs:82	compile_ignore_matcher (:82-91) and compile_gitignore_matcher (:113-122) repeat the identical build().map_err(warn).ok() block (10 lines)	n/a	src root
+R10	src/install_tests.rs:233	path_config_maps_bash..., path_config_maps_fish... and path_config_defaults_to_bashrc... (:233-284) repeat the same ~16-line temp_env::with_vars scaffold, differing only in SHELL and expected values; config_home tests :108-165 repeat it again	n/a	src root
+R10	src/model/limits.rs:130	Twelve copies of the same 3-line 'if let Some(val) = parse_override ... assign' block (lines 130-165), 36 lines of one pattern	Adding a limit means editing three places (struct, profile table, this list); easy to forget one	core
+R10	src/model/profile.rs:107	Audit (lines 107-114) and Adaptive (130-137) struct literals repeat 8 identical field lines plus 2 identical evidence lines (116-117 / 139-140)	A limit changed in one profile and not the other	core
+R10	src/server.rs:224	eight #[tool] handlers (report 224, leads 258, query 281, structure 305, finding 328, finding_read 349, project_control 376, health 398) repeat the same ~10-line signature/dispatch shape; dictated by the rmcp macro	n/a: low	src root
+R10	src/store/netfs.rs:54	The 13-line doc block at lines 13-25 on log_rejected_network_filesystem is a verbatim copy of the block at 54-66 on reject_network_filesystem, so the log helper carries a wrong first doc paragraph	Misleading API docs	core
+R10	src/sync/publish_race_tests.rs:98	lines 98-112 and 173-187 are identical (temp project, db, bootstrap publish, channel setup)	maintenance only	sync/watch
+R10	src/sync/sweep_tests.rs:311	lines 311-325 and 366-380 are identical (manager, project, first sync, watch-state setup)	maintenance only	sync/watch
+R10	src/tools/ (8 files: finding.rs:16, finding_read.rs:15, health.rs:43, leads.rs:39, project_control.rs:15, query.rs:14, report.rs:74, structure.rs:17)	Identical `const MAX_PATH_BYTES: usize = 32 * 1024;` plus the same 3-line exceeds_input_bytes/`path exceeds 32768 bytes` check repeated in each handler (message hardcodes 32768, not derived from the const)	Changing the cap needs 8 edits and the message can drift from the const	tools
+R10	src/tools/finding.rs:227-240 vs src/tools/structure_source.rs:10-33	fetch_file and fetch_source: same files-by-path lookup, same `format!("{file}: {error}")` invalid_params mapping, same FileNotIndexed payload (about 14 near-identical lines)	Fix to one needs the other; the two already differ (fetch_source also requires language)	tools
+R10	src/tools/leads.rs:343 <-> src/tools/query.rs:144	10 duplicated lines (path-bytes and expected_revision-bytes input validation blocks, same error messages; normalized, blank/comment lines dropped)	-	detectors
+R10	src/tools/leads_page.rs:101-111 vs :145-155	full() and compact() end with the same 11-line Prepared construction (and the same through/complete/files_covered logic at :92-100 vs :138-144)	Paging fix applied to one mode only	tools
+R10	src/tools/leads_query.rs:166-193 vs src/tools/leads_compact.rs:111-129	rows_for in both files: compile_pattern, fetch=limit+1, bind building, prepare/map_err, query_map/map_err, fill_page (about 19 near-identical lines, differing only in the row type and SQL builder); files_covered (leads_query.rs:198-216 vs leads_compact.rs:135-150) repeats the same shape	Bind-order bug fixed in one copy only	tools
+R10	src/tools/leads_query.rs:24-31 vs src/tools/structure_source.rs:71-75	Glob/substring compile logic duplicated (leads docs say it is compiled 'the same way structure does' but by copy, not by call)	Fixes to one (e.g. escaping `[`) miss the other	tools
+R10	src/update_fetch.rs:85	curl_get (:85-102) and download (:105-130) repeat the same curl Command build, HTTPS_ONLY, ToolSpawn map_err and stderr-to-Network handling (about 15 near-identical lines)	a flag change (timeouts, size cap) must be made twice and can diverge	src root
+R10	src/update_tests.rs:25	expected-hash setup (sha256sum Command, split_whitespace, write SHA256SUMS; 12 lines) is repeated at :63-74	n/a	src root
+R10	tests/stdio_protocol.rs:166	INFORMATIONAL, below the 10-line threshold (0 exact 8-line normalized windows duplicated anywhere in scope, checked by script): the send/recv/`result.content[0].text`/parse sequence is repeated 6 times at ~8 lines each (166-173, 187-194, 214-221, 229-236, 258-265, 283-290); check_governance/tests.rs:11-21, check_version_consistency/tests.rs:15-25 and check_docs_drift/test_support.rs:7-17 each carry the same temp_root+write helper; five independent recursive .rs walkers exist with divergent error handling (counter.rs:102, test_names.rs:28, scan.rs:37, test_file_count.rs:45, estimates.rs:68)	Drift risk: the walkers already disagree on whether I/O errors fail or are skipped (see R2 entries)	dev-only
+R11	deny.toml:31	cargo deny (root) warning license-exception-not-encountered: exception for libfuzzer-sys 0.4 (NCSA) unmatched because root graph excludes the fuzz workspace; fuzz-manifest run matches it (0 warnings). Advisories/bans/sources/licenses all ok.	-	detectors
+R12	src/connect_exec.rs:213	warn logs path = %temp.display() (absolute path, not util::redacted_path); comment :211-212 says deliberate	n/a (also dropped, see main.rs:43)	src root
+R12	src/ignore_rules/build.rs:107	warn for .git/info/exclude logs error = %err which carries the absolute path (same cause as :132); also :47 for the global gitignore (absolute path under the user's home)	home directory path in the log	src root
+R12	src/ignore_rules/build.rs:132	warn logs error = %err from GitignoreBuilder::add; ignore::Error::WithPath displays path.display() (ignore 0.4.33 lib.rs:339) so the absolute path (and glob text) is logged, contradicting the relative-path rationale at :25-28; rel(root, file) in the same event is not enough	operator's home directory and pattern text from the user's ignore file reach the server log	src root
+R12	src/install_place.rs:86	warn logs path = %path.display() (absolute path, not redacted); doc :324-326 says deliberate; message is a runtime string passed as "{message}"	n/a (also dropped, see main.rs:43)	src root
+R12	src/main.rs:43	init_logging() runs only after run_command returns Serve; install, update, connect, disconnect and menu steps run with no tracing subscriber, so every tracing::warn!/info! in those paths (install_place.rs:86, connect_exec.rs:213, util.rs:47 via install::on_path, update.rs:207) is discarded	a failed cleanup of a staged 100+ MB binary or a leftover temp file is logged "once" only on paper; the operator never sees it	src root
+R12	src/model/system_ram.rs:48	Prose-only warn with no key-value fields and no cause (read/parse error dropped at 27/35/79)	Operator cannot filter or diagnose	core
+R12	src/project/activation.rs:161	Permission-tightening warn logs raw absolute path; comment at 158-160 says deliberate	Absolute path in logs	core
+R12	src/project/config.rs:85	Emitted at every layer: load_or_default is called per tool call (tools/mod.rs:129), per publish (sync/publish_cas.rs:55) and per reconcile (sync/reconcile/options.rs:32), so one malformed config.json warns up to three times per request; also error text from serde_json can echo config values (invalid type: string "...")	Repeated warn spam; config values in logs	core
+R12	src/store/connection.rs:214	Insecure-permissions warn logs raw absolute path; comment at 210-213 says deliberate; caller also logs the StoreError::Permissions	Absolute path in logs, twice per rejection	core
+R12	src/store/connection.rs:97	Symlink rejection warn logs raw absolute path (path = %path.display()) instead of util::redacted_path, and the returned StoreError::Symlink is logged again by the caller (two layers); the comment at 92-96 states this is deliberate	Absolute project path in stderr logs, twice per rejection	core
+R12	src/store/netfs.rs:42	Network-filesystem rejection logs raw absolute path and is logged again when StoreError::NetworkFilesystem reaches the tool failure log	Absolute path in logs, twice per rejection	core
+R12	src/sync/manager_health.rs:179	warn error = %error with the same embedded absolute paths as line 92	absolute path in logs	sync/watch
+R12	src/sync/manager_health.rs:92	warn error = %error: ReconcileError Display embeds absolute paths (HashError/SampleError/DiscoveryError, and Hash/Sample via transparent)	absolute path in logs	sync/watch
+R12	src/sync/manager_meta.rs:237	map_publish_error warns again with error = %error for the same PublishError already logged at publish_log.rs:16 (logged at two layers), also with unredacted paths	every failed publish produces two warn lines; paths leak	sync/watch
+R12	src/sync/manager_orchestration.rs:127	reason = %reason contains the stored project root verbatim ("different project root ({stored_root})", built at line 114)	absolute path of the previous project root in logs	sync/watch
+R12	src/sync/publish_attempt.rs:57	warn_skipped logs reason = %file.reason; the reason is DiscoveryError/SampleError Display text containing the absolute path (discovery.rs:194, sample_batch.rs:179), bypassing the redacted path_id field on line 56	absolute path leaks beside a redacted path_id, once per skipped file	sync/watch
+R12	src/sync/publish_log.rs:16	warn "publish failed" logs error = %error; PublishError Display embeds absolute paths (DiscoveryError::Read and SampleError carry PathBuf, discovery.rs:44, sample.rs:27-33), unredacted	absolute project/home paths written to stderr logs	sync/watch
+R12	src/sync/sweep.rs:169	warn error = %error: ignore::Error Display includes the offending absolute path; no redacted path field	absolute path in logs	sync/watch
+R12	src/sync/sweep.rs:202	warn has path_id but no error field, so the cause of the failed stat is not recorded (cause dropped by Err(_) on line 198)	operator cannot tell why a file was treated as deleted	sync/watch
+R12	src/sync/sweep_reconcile.rs:58	warn error = %error where the ErrorData message embeds the formatted ReconcileError (sweep_reconcile.rs:110), including absolute paths	absolute path in logs	sync/watch
+R12	src/util.rs:207	tracing::error!("mutex was poisoned; ..") has no key-value fields (no mutex identity, no call site)	operator sees an unattributable error line	src root
+R12	src/watch/manager.rs:149	watch(&canonical) failure logs error = %error, which carries the paths even though root_id is redacted on line 148	redacted root_id defeated by the error text	sync/watch
+R12	src/watch/manager.rs:313	watch/unwatch failures (lines 195, 305, 313) log notify errors that carry absolute paths beside a redacted dir_id	absolute path in logs	sync/watch
+R12	src/watch/manager.rs:93	warn error = %error: notify::Error Display appends "about {paths}" (notify-8.2.0 src/error.rs:123), so absolute paths are logged	absolute path in logs	sync/watch
+R12	src/watch/scope.rs:47	warn error = %error: ignore::Error Display includes the absolute path	absolute path in logs	sync/watch

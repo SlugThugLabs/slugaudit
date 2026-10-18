@@ -1241,3 +1241,28 @@ maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by rea
     `max_total_import_bytes`, up to 32 GB on audit). Not started.
   - `query` `OFFSET` paging re-runs the query from row 0 on each page (by design; documented
     cost). Not scheduled.
+
+### Full code-quality audit (2026-10-18, HEAD `7fcffd8`) — not started
+
+255 of 255 files, rules R1-R12 (owner's audit prompt; file size per this repo's bands; function
+size informational per D-13). Report: `.planning/audit_2026-10-18_report.md`; ledger (762 rows):
+`.planning/audit_2026-10-18_ledger.tsv`. Detectors all clean (clippy 0, 903 tests pass, deny/machete
+0, coverage 89.84%). Highest-impact items, all **not started**:
+1. `structure`'s `language` reaches `tree_sitter_language_pack::get_language` with the pack's
+   default `download` feature on: network fetch and native-library load on an unknown name
+   (verified in pack 1.18.0 `lib.rs:193`).
+2. Nested-macro stack overflow still reachable: macro cap (64) × walk cap (512) multiply; a 29 KB
+   file aborts a release build (`evidence/calls/macro_calls.rs:70`, reproduced by the auditor).
+3. More than 32,766 files cannot complete a first publish: one SQL variable per path
+   (`sync/revision.rs:270`; also `manifest.rs:92`, `reconcile/queries.rs:16`).
+4. `Instant + Duration` overflow panic from unclamped env limits (`tools/query_exec.rs:57`,
+   `structure_exec.rs:36`).
+5. Stat error treated as deletion (`sync/sweep.rs:198`).
+6. Parser setup/parse failure reported as complete evidence (`evidence/calls.rs:32`, `normalize.rs:112`).
+7. Edges of unchanged files never re-resolved (`sync/publish_diff.rs:108`; read from code, untested).
+8. Watch-scope walk under the manager lock with no deadline; events dropped unlogged (`watch/scope.rs:37`).
+9. CLI commands never initialise logging (`main.rs:43`).
+10. `disconnect` "Done." with nothing removed (`connect_exec.rs:262`); `enable` ignores an unknown profile.
+Dev-only: `check_coverage NaN` / `check_performance NaN` pass; fuzz fixture sync failure discarded
+(`fuzz/fuzz_targets/support.rs:200`); `check_docs_drift` does not require new files in the module map;
+AGENTS.md cites a nonexistent `src/parse/PACK_VERSION` (the value is in `src/parse/mod.rs:19`).
