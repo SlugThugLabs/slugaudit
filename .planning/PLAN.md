@@ -367,10 +367,10 @@ The open list below was re-checked line by line against the code. Former items:
 - **Test gaps — partly resolved** (`850b09d`): `file_not_indexed` is pinned at both
   producers (binary file → `structure` and `finding`); the remaining non-panic
   `is_err()`-only assertions now name the error. Still open: see item 2 below.
-- **R4-0 (`verdict()` doc comment ambiguous) — resolved** (uncommitted, 2026-10-18): the
+- **R4-0 (`verdict()` doc comment ambiguous) — resolved** (`97c9957`, 2026-10-18): the
   comment in `src/bin/check_source_limits/counter.rs` now states each band (0–199, 200–300,
   301–`HUMAN_APPROVED_CEILING` with a dated human exception only, above it always fail).
-- **R4-1 (301–350 band untested; `"[human-approved "` duplicated) — resolved** (uncommitted,
+- **R4-1 (301–350 band untested; `"[human-approved "` duplicated) — resolved** (`97c9957`,
   2026-10-18): four tests in `src/bin/check_source_limits/tests.rs` pin 301 and 350 passing with
   a human annotation, failing with an agent one, and 351 failing even with a human one. The
   prefix is one const, `approval::HUMAN_APPROVED_PREFIX`, used by both the producer
@@ -1106,15 +1106,18 @@ does not rediscover them.
   it exercises that boundary directly.
 - **`extraction_completeness` is still read by no tool except `report`'s failure rows** —
   the completeness envelope across `report`/`leads`/`health` remains Phase 2.
-- **`supply-chain.yml` also runs on push to `main` — landed (uncommitted, 2026-10-18).** The
+- **`supply-chain.yml` also runs on push to `main` — landed (`50cfbeb`, 2026-10-18).** The
   workflow was `pull_request`-only, and the owner commits straight to `main` without PRs, so
   dependency review, the OSV scan and the secret scan never ran. Dependency review now takes
   `base-ref`/`head-ref` = `before`/`sha` on push and fails on a zero or unreachable `before`.
   **Still open:** the secret scan checks the tree at the pushed commit, not the `before`..`sha`
   range (trivy has no range mode), so a secret added and removed within one push is missed —
-  accepted, not scheduled: GitHub's native secret scanning covers history.
+  still open: GitHub's native secret scanning and push protection are **disabled** on the
+  repository (`security_and_analysis`, checked 2026-10-18), so nothing covers history yet.
+  Dependency review also fails on push: the repository's dependency graph is off (run
+  39120745986) — still open, needs the owner to enable it.
 
-### Algorithm-scale audit (2026-10-18) — not started
+### Algorithm-scale audit (2026-10-18) — in progress
 
 Read-only audit against three owner rules (O(1) fixed-set lookups; scale at documented
 maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by reading the code:
@@ -1131,7 +1134,7 @@ maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by rea
   breaks at `MAX_MULTI_FILE_TOTAL_BYTES` and the response carries no flag: a breach of
   non-negotiable 3. (The earlier "stops at `MAX_MULTI_FILE_TOTAL_BYTES`" note above recorded
   the cap, not its reporting.)
-- **Silent fallback — resolved (uncommitted, 2026-10-18).** The three copies of the limits
+- **Silent fallback — resolved (`35f52be`, 2026-10-18).** The three copies of the limits
   resolver (`query.rs`, `leads.rs`, `structure.rs`, each `Err(_) => *process_limits()` with no
   log) are now one `tools::resolve_limits` (`src/tools/mod.rs`) that returns the error. Chosen:
   fail, not warn. Evidence: all three tools go on to `ensure_synced` ->
@@ -1142,19 +1145,19 @@ maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by rea
   path now reports "not a project" before request-validation errors (the existing suites pass
   unchanged). Tests: `resolve_limits_rejects_a_path_with_no_active_project`,
   `resolve_limits_returns_limits_for_an_active_project`.
-- **`sample_batch` swallowed-error arm — resolved (uncommitted, 2026-10-18).** The `Err(_) => {}`
+- **`sample_batch` swallowed-error arm — resolved (`35f52be`, 2026-10-18).** The `Err(_) => {}`
   exhaustiveness net in `Batch::collect` is gone: the worker channel now carries
   `Outcome = Result<Sample, String>` (sample or skip reason), so no error variant can reach the
   drain; every other `SampleError` still aborts via `error_slot`. Unreachable by construction, so
   no new test; the skip path stays pinned by the existing oversize-skip test in `sample_tests.rs`.
-- **`skipped_record` stat failure — resolved (uncommitted, 2026-10-18).** `std::fs::metadata`
+- **`skipped_record` stat failure — partly resolved (`35f52be`); still open.** `std::fs::metadata`
   failure in `sample.rs::skipped_record` still records `(0, None)` but now warns with the path
   and source error. Kept the placeholder because `files.byte_len` is `NOT NULL` and `reason` is a
   coded value (`oversize`/`unreadable`); an Option or a reason suffix would change the schema or
   the skip-reason surface. Still open as a design choice: the stored 0 is indistinguishable from a
   real empty file in `query`. Tests: `a_skipped_record_for_an_unstattable_file_warns_with_the_source_error`,
   `a_skipped_record_for_a_statable_file_does_not_warn`.
-- **Env-override warnings dropped the source error — resolved (uncommitted, 2026-10-18).**
+- **Env-override warnings dropped the source error — resolved (`35f52be`, 2026-10-18).**
   `limits.rs::parse_override` now logs the parse error (`error = %error`); the unreadable-variable
   branch (and `profile.rs::profile_from_env`) matches `VarError::NotUnicode` and logs a fixed
   "value is not valid unicode" instead of the error, because `NotUnicode`'s Display prints the raw
