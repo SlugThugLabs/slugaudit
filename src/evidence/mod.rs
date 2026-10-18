@@ -9,18 +9,52 @@ mod sql;
 
 /// How deep SlugAudit's own tree walkers descend before they stop.
 ///
-/// The walkers recurse over the raw parse tree, whose depth is a property of
-/// the file's content: a file nesting 6 000 parentheses parses to a
-/// 6 000-deep tree, and unbounded recursion over it overflows the thread
-/// stack — which ABORTS the process rather than raising a catchable panic, so
-/// the tool call never returns and the caller's session dies with it.
+/// Tree depth is a property of untrusted file content (6 000 nested parens
+/// parse to a 6 000-deep tree), and a stack overflow ABORTS the process — it
+/// is not a catchable panic — so the tool call never returns and the caller's
+/// session dies with it. Every walker in this module (`calls::walk`,
+/// `macro_calls::scan` including macro re-entry, `walk_bindings`,
+/// `walk_imports`, `flatten_structure`, `simple_name`) is therefore a loop
+/// over a heap stack ([`push_children`]), never recursion; the only recursion
+/// left is `first_identifier_descendant`, fixed at 3 levels. This bound no
+/// longer guards the stack: it keeps the walkers' truncation aligned with the
+/// language pack's (`ts_pack::intel` truncates at `MAX_TREE_DEPTH = 512`), and
+/// a cut is reported as `ExtractionCompleteness::Partial`, never silent.
 ///
-/// 512 matches the bound the language pack already applies to its own
-/// traversal (`ts_pack::intel` truncates at `max_depth=512` and reports
-/// `skipped_nodes`), so any file the pack considers safe is one these walkers
-/// finish. Exceeding it yields a truncated extraction, reported as
-/// `ExtractionCompleteness::Partial` — never a crash.
+/// Stack budget, measured 2026-10-18 (Rust 1.97.1, pack 1.18.0) by bisecting
+/// the smallest thread stack `normalize::extract` completes on, 20 000-deep
+/// inputs: SlugAudit's walkers need no stack proportional to depth — Rust
+/// paren/call/macro shapes (incl. 64 macro levels x 505 parens) finish in
+/// 31 KiB debug / 15 KiB release. The deepest user is the pack's own
+/// bounded recursion: JSON value extraction, 512 levels, 1646 KiB debug /
+/// 455 KiB release (~3.2 / ~0.9 KiB per level). The smallest stack production
+/// extracts on is 2 MiB (tokio's blocking pool and `std::thread` defaults —
+/// `server_runner.rs` `spawn_blocking`, `sync/sample_batch.rs`
+/// `thread::scope`). Before this, the walkers recursed with ~2.2 KiB debug
+/// frames and macro re-entry multiplied 64 macro levels by 512 tree levels.
 pub(super) const MAX_WALK_DEPTH: u32 = 512;
+
+/// Pushes one `entry` per named child of `node` onto a walker's explicit
+/// stack, in reverse, so popping visits the children in source order — the
+/// same pre-order a recursive walk produces. Every tree walker in this module
+/// is a loop over such a heap stack rather than recursion: tree depth is a
+/// property of untrusted file content, and the heap grows where the thread
+/// stack would abort.
+pub(super) fn push_children<T>(
+    pending: &mut Vec<T>,
+    node: &tree_sitter_language_pack::Node,
+    entry: impl Fn(tree_sitter_language_pack::Node) -> T,
+) {
+    let first = pending.len();
+    pending.extend(
+        (0..node.named_child_count() as u32)
+            .filter_map(|index| node.named_child(index))
+            .map(entry),
+    );
+    if let Some(added) = pending.get_mut(first..) {
+        added.reverse();
+    }
+}
 
 /// The one constructor for `NormalizerUnavailable`: keeps the real
 /// `SpanError` in the reason instead of a static string, and warns, because a

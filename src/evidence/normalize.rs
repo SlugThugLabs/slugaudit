@@ -113,10 +113,10 @@ fn extract_extra_walkers(
 
     let mut items = Vec::new();
     let mut counter = 0usize;
-    let mut capped = walk_bindings(&root, source, lines, &mut items, &mut counter, 0);
+    let mut capped = walk_bindings(&root, source, lines, &mut items, &mut counter);
     if pack_imports_was_empty {
         capped |=
-            super::generic_imports::walk_imports(&root, source, lines, &mut items, &mut counter, 0);
+            super::generic_imports::walk_imports(&root, source, lines, &mut items, &mut counter);
     }
     (items, capped)
 }
@@ -162,65 +162,72 @@ fn is_field_declaration(kind: &str) -> bool {
     )
 }
 
+/// Pre-order walk over an explicit heap stack (never recursion — see
+/// [`crate::evidence::push_children`]) emitting one symbol per named binding
+/// or field. Children are visited regardless of a match — a function body
+/// contains let bindings, a struct body contains field declarations, etc.
 fn walk_bindings(
-    node: &tree_sitter_language_pack::Node,
+    root: &tree_sitter_language_pack::Node,
     source: &str,
     lines: &LineIndex<'_>,
     items: &mut Vec<EvidenceItem>,
     counter: &mut usize,
-    depth: u32,
 ) -> bool {
-    if depth >= crate::evidence::MAX_WALK_DEPTH {
-        return true;
-    }
-    let kind = node.kind();
     let mut capped = false;
-    let name = match identifier_name(node, source) {
-        Ok(name) => name,
-        Err(error) => {
-            tracing::warn!(%error, "binding name skipped; extraction is partial");
+    let mut pending = vec![(root.clone(), 0)];
+    while let Some((node, depth)) = pending.pop() {
+        if depth >= crate::evidence::MAX_WALK_DEPTH {
             capped = true;
-            None
+            continue;
         }
-    };
-    if let Some(name) = name {
-        let (sym_kind, origin_kind) = if is_field_declaration(&kind) {
-            (SymbolKind::Other("Field".to_owned()), "field")
-        } else if is_variable_binding(&kind) {
-            if kind.starts_with("const") {
-                (SymbolKind::Constant, "variable")
-            } else {
-                (SymbolKind::Variable, "variable")
+        match identifier_name(&node, source) {
+            Ok(Some(name)) => push_binding(&node, name, lines, items, counter),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, "binding name skipped; extraction is partial");
+                capped = true;
             }
-        } else {
-            // Not a binding we care about — still recurse in case a child is.
-            for child in named_children(node) {
-                capped |= walk_bindings(&child, source, lines, items, counter, depth + 1);
-            }
-            return capped;
-        };
-
-        let key = format!("{}:{counter}", origin_kind);
-        *counter += 1;
-        items.push(EvidenceItem {
-            key,
-            kind: EvidenceKind::Symbol,
-            origin: EvidenceOrigin::PackSymbol,
-            span: node_span(node, lines),
-            payload: json!({
-                "name": name,
-                "kind": format!("{sym_kind:?}"),
-                "type_annotation": null,
-                "doc": null,
-            }),
-        });
-    }
-    // Recurse into children regardless — a function body contains let
-    // bindings, a struct body contains field declarations, etc.
-    for child in named_children(node) {
-        capped |= walk_bindings(&child, source, lines, items, counter, depth + 1);
+        }
+        super::push_children(&mut pending, &node, |child| (child, depth + 1));
     }
     capped
+}
+
+/// Emits the symbol row for `node` when its kind is a field or a variable
+/// binding; any other named node is not a binding and emits nothing.
+fn push_binding(
+    node: &tree_sitter_language_pack::Node,
+    name: String,
+    lines: &LineIndex<'_>,
+    items: &mut Vec<EvidenceItem>,
+    counter: &mut usize,
+) {
+    let kind = node.kind();
+    let (sym_kind, origin_kind) = if is_field_declaration(&kind) {
+        (SymbolKind::Other("Field".to_owned()), "field")
+    } else if is_variable_binding(&kind) {
+        if kind.starts_with("const") {
+            (SymbolKind::Constant, "variable")
+        } else {
+            (SymbolKind::Variable, "variable")
+        }
+    } else {
+        return;
+    };
+    let key = format!("{}:{counter}", origin_kind);
+    *counter += 1;
+    items.push(EvidenceItem {
+        key,
+        kind: EvidenceKind::Symbol,
+        origin: EvidenceOrigin::PackSymbol,
+        span: node_span(node, lines),
+        payload: json!({
+            "name": name,
+            "kind": format!("{sym_kind:?}"),
+            "type_annotation": null,
+            "doc": null,
+        }),
+    });
 }
 
 /// Returns the text of the first identifier-flavored named child of `node`,

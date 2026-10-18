@@ -5,29 +5,33 @@ use tree_sitter_language_pack::{
     CommentInfo, DocstringInfo, ExportInfo, ImportInfo, StructureItem, SymbolInfo,
 };
 
+/// Flattens one pack structure tree in pre-order. A loop over a heap stack,
+/// not recursion: the tree's nesting follows file content, and this walk
+/// must not be the one that overflows the thread stack on it.
 pub(super) fn flatten_structure(
-    item: &StructureItem,
+    root: &StructureItem,
     lines: &LineIndex<'_>,
     items: &mut Vec<EvidenceItem>,
     counter: &mut usize,
 ) {
-    let key = format!("structure:{counter}");
-    *counter += 1;
-    items.push(EvidenceItem {
-        key,
-        kind: EvidenceKind::Structure,
-        origin: EvidenceOrigin::PackStructure,
-        span: convert_span(&item.span, lines),
-        payload: json!({
-            "kind": format!("{:?}", item.kind),
-            "name": item.name,
-            "visibility": item.visibility,
-            "decorators": item.decorators,
-            "signature": item.signature,
-        }),
-    });
-    for child in &item.children {
-        flatten_structure(child, lines, items, counter);
+    let mut pending = vec![root];
+    while let Some(item) = pending.pop() {
+        let key = format!("structure:{counter}");
+        *counter += 1;
+        items.push(EvidenceItem {
+            key,
+            kind: EvidenceKind::Structure,
+            origin: EvidenceOrigin::PackStructure,
+            span: convert_span(&item.span, lines),
+            payload: json!({
+                "kind": format!("{:?}", item.kind),
+                "name": item.name,
+                "visibility": item.visibility,
+                "decorators": item.decorators,
+                "signature": item.signature,
+            }),
+        });
+        pending.extend(item.children.iter().rev());
     }
 }
 

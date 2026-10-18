@@ -8,16 +8,17 @@ use super::{callee_node, enclosing_caller, named_children, simple_name};
 use crate::evidence::{TextRangeError, node_text, parse_tree};
 use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, LineIndex, Span, SpanAvailability};
 use serde_json::json;
+use std::rc::Rc;
 use tree_sitter_language_pack::Node;
 
 const PREFIX: &str = "fn __slug_macro() { __slug_probe(";
 const SUFFIX: &str = "); }";
 
 /// How many macro invocations may nest inside one another before the
-/// extraction stops reparsing. Each level reparses its whole body and
-/// re-enters this module's recursion, so a file of `a!(a!(a!(...)))` costs
-/// stack proportional to the nesting and parse work quadratic in it —
-/// 10 000 levels abort the process with a stack overflow. Real code nests a
+/// extraction stops reparsing. Each level reparses its whole body, so a file
+/// of `a!(a!(a!(...)))` costs parse work quadratic in the nesting. The scan
+/// itself is a loop over a heap stack (see [`scan`]), so nesting costs no
+/// thread stack; this bound exists for the parse work. Real code nests a
 /// handful of levels; 64 is far past that. Past it the remaining fragment is
 /// not scanned and the caller is told, so the file is reported `Partial`.
 pub(super) const MAX_MACRO_DEPTH: u32 = 64;
@@ -35,11 +36,21 @@ struct Scan<'a> {
     caller: Option<String>,
 }
 
-/// One reparsed fragment: the synthetic text and its frame in the source.
-struct Fragment<'a> {
-    wrapped: &'a str,
+/// One reparsed fragment: the synthetic text, its frame in the source, and
+/// how many macros it sits inside. Shared by every pending node of its tree.
+struct Fragment {
+    wrapped: String,
     start: usize,
     end: usize,
+    macro_depth: u32,
+}
+
+/// One node waiting on the scan stack, with its depth in its own fragment's
+/// synthetic tree.
+struct Pending {
+    node: Node,
+    fragment: Rc<Fragment>,
+    depth: u32,
 }
 
 pub(super) fn extract(macro_node: &Node, source: &str, lines: &LineIndex<'_>) -> MacroCalls {
@@ -60,26 +71,77 @@ pub(super) fn extract(macro_node: &Node, source: &str, lines: &LineIndex<'_>) ->
             return out;
         }
     };
-    let scan = Scan {
+    let context = Scan {
         source,
         lines,
         caller,
     };
-    out.capped = scan_fragment(&scan, (start, end), 0, &mut out.rows);
+    out.capped = scan(&context, (start, end), &mut out.rows);
     out
 }
 
+/// Scans the outermost fragment and every macro nested in it, depth-first, on
+/// one explicit heap stack: no recursion, so neither tree depth nor macro
+/// nesting consumes thread stack. A node's own row is emitted before its
+/// subtree and a nested macro's fragment is pushed on top of the node's
+/// children, so rows come out in the same order as the recursive scan this
+/// replaced and `calls::walk`'s first-wins dedup keeps the outermost row.
 /// Returns true when the macro-nesting or tree-depth bound truncated the scan.
-fn scan_fragment(
-    scan: &Scan<'_>,
+fn scan(
+    context: &Scan<'_>,
+    range: (usize, usize),
+    rows: &mut Vec<(usize, usize, EvidenceItem)>,
+) -> bool {
+    let mut pending = Vec::new();
+    let mut capped = open_fragment(context, range, 0, &mut pending);
+    while let Some(Pending {
+        node,
+        fragment,
+        depth,
+    }) = pending.pop()
+    {
+        // Bounds descent within ONE synthetic tree; the chain of nested
+        // macros is bounded separately by `MAX_MACRO_DEPTH`.
+        if depth >= crate::evidence::MAX_WALK_DEPTH {
+            capped = true;
+            continue;
+        }
+        let in_frame = within_synthetic_frame(&node, &fragment.wrapped);
+        if in_frame && matches!(node.kind().as_str(), "call_expression" | "macro_invocation") {
+            match emit_call_row(&node, context, &fragment) {
+                Ok(Some(row)) => rows.push(row),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "macro argument call skipped; extraction is partial");
+                    capped = true;
+                }
+            }
+        }
+        crate::evidence::push_children(&mut pending, &node, |child| Pending {
+            node: child,
+            fragment: Rc::clone(&fragment),
+            depth: depth + 1,
+        });
+        if in_frame && let Some(nested) = nested_macro_range(&node, &fragment) {
+            capped |= open_fragment(context, nested, fragment.macro_depth + 1, &mut pending);
+        }
+    }
+    capped
+}
+
+/// Reparses `source[start..end]` inside the synthetic frame and pushes its
+/// root onto the scan stack. Returns true when the fragment could not be
+/// scanned — past `MAX_MACRO_DEPTH`, an unsliceable range, or no parse tree.
+fn open_fragment(
+    context: &Scan<'_>,
     (start, end): (usize, usize),
     macro_depth: u32,
-    rows: &mut Vec<(usize, usize, EvidenceItem)>,
+    pending: &mut Vec<Pending>,
 ) -> bool {
     if macro_depth >= MAX_MACRO_DEPTH {
         return true;
     }
-    let body = match node_text(scan.source, start, end) {
+    let body = match node_text(context.source, start, end) {
         Ok(body) => body,
         Err(error) => {
             tracing::warn!(%error, "macro argument fragment skipped; extraction is partial");
@@ -90,48 +152,17 @@ fn scan_fragment(
     let Some(tree) = parse_tree("rust", &wrapped) else {
         return true;
     };
-    let fragment = Fragment {
-        wrapped: &wrapped,
-        start,
-        end,
-    };
-    collect(tree.root_node(), scan, &fragment, macro_depth, rows, 0)
-}
-
-fn collect(
-    node: Node,
-    scan: &Scan<'_>,
-    fragment: &Fragment<'_>,
-    macro_depth: u32,
-    rows: &mut Vec<(usize, usize, EvidenceItem)>,
-    depth: u32,
-) -> bool {
-    // The depth guard bounds descent within THIS synthetic tree only; the
-    // chain of nested macros is bounded separately by `MAX_MACRO_DEPTH`,
-    // which `recurse_into_nested_macro` threads through every re-entry.
-    if depth >= crate::evidence::MAX_WALK_DEPTH {
-        return true;
-    }
-    // Emit the node's own row *before* descending, so `calls::walk`'s
-    // first-wins dedup keeps the outermost row.
-    let mut capped = false;
-    if matches!(node.kind().as_str(), "call_expression" | "macro_invocation")
-        && within_synthetic_frame(&node, fragment.wrapped)
-    {
-        match emit_call_row(&node, scan, fragment) {
-            Ok(Some(row)) => rows.push(row),
-            Ok(None) => {}
-            Err(error) => {
-                tracing::warn!(%error, "macro argument call skipped; extraction is partial");
-                capped = true;
-            }
-        }
-    }
-    capped |= recurse_into_nested_macro(&node, scan, fragment, macro_depth, rows);
-    for child in named_children(&node) {
-        capped |= collect(child, scan, fragment, macro_depth, rows, depth + 1);
-    }
-    capped
+    pending.push(Pending {
+        node: tree.root_node(),
+        fragment: Rc::new(Fragment {
+            wrapped,
+            start,
+            end,
+            macro_depth,
+        }),
+        depth: 0,
+    });
+    false
 }
 
 /// True when the node's byte range sits inside the probe body of the
@@ -148,9 +179,9 @@ fn within_synthetic_frame(node: &Node, wrapped: &str) -> bool {
 fn emit_call_row(
     node: &Node,
     scan: &Scan<'_>,
-    fragment: &Fragment<'_>,
+    fragment: &Fragment,
 ) -> Result<Option<(usize, usize, EvidenceItem)>, TextRangeError> {
-    let wrapped = fragment.wrapped;
+    let wrapped = fragment.wrapped.as_str();
     let macro_call = node.kind() == "macro_invocation";
     let start = fragment.start + node.start_byte() - PREFIX.len();
     let end = fragment.start + node.end_byte() - PREFIX.len();
@@ -201,26 +232,15 @@ fn emit_call_row(
 }
 
 /// A nested macro still owns an opaque token tree after the outer fragment is
-/// reparsed. Recurse into its contents using absolute source coordinates,
-/// preserving the enclosing Rust function as caller. Returns true when the
-/// nesting bound stopped a scan below this macro.
-fn recurse_into_nested_macro(
-    node: &Node,
-    scan: &Scan<'_>,
-    fragment: &Fragment<'_>,
-    macro_depth: u32,
-    rows: &mut Vec<(usize, usize, EvidenceItem)>,
-) -> bool {
-    if node.kind() != "macro_invocation" || !within_synthetic_frame(node, fragment.wrapped) {
-        return false;
+/// reparsed. Returns its contents' range in absolute source coordinates, so
+/// the scan reparses it with the enclosing Rust function kept as caller, or
+/// `None` when `node` is not a macro with a non-empty body inside the frame.
+fn nested_macro_range(node: &Node, fragment: &Fragment) -> Option<(usize, usize)> {
+    if node.kind() != "macro_invocation" {
+        return None;
     }
-    let Some(tokens) = named_children(node).find(|n| n.kind() == "token_tree") else {
-        return false;
-    };
+    let tokens = named_children(node).find(|n| n.kind() == "token_tree")?;
     let start = fragment.start + tokens.start_byte() + 1 - PREFIX.len();
     let end = fragment.start + tokens.end_byte().saturating_sub(1) - PREFIX.len();
-    if end <= fragment.end && start < end {
-        return scan_fragment(scan, (start, end), macro_depth + 1, rows);
-    }
-    false
+    (end <= fragment.end && start < end).then_some((start, end))
 }

@@ -85,18 +85,11 @@ pub(super) fn extract_generic_imports(language: &str, source: &str) -> Vec<Evide
     let mut items = Vec::new();
     let mut counter = 0usize;
     let lines = crate::model::LineIndex::new(source);
-    walk_imports(
-        &tree.root_node(),
-        source,
-        &lines,
-        &mut items,
-        &mut counter,
-        0,
-    );
+    walk_imports(&tree.root_node(), source, &lines, &mut items, &mut counter);
     items
 }
 
-/// Recursive walk emitting one `Import` evidence item per import-shaped
+/// Walk emitting one `Import` evidence item per import-shaped
 /// node, slicing the raw statement text from `source` via byte range.
 /// Child nodes of a matched statement are still visited (a `using` block
 /// may contain nested directives), but only whole-statement kinds emit.
@@ -113,41 +106,46 @@ pub(super) fn extract_generic_imports(language: &str, source: &str) -> Vec<Evide
 /// walker on the same already-parsed tree it uses for the
 /// variable-binding walker — saving the redundant second parse that
 /// the C2 audit flagged.
+///
+/// The walk is a loop over an explicit heap stack, never recursion (see
+/// [`super::push_children`]): each entry carries whether it is *suppressed*
+/// — an import-shaped node directly under another import-shaped node, which
+/// is walked past without emitting.
 pub(super) fn walk_imports(
-    node: &Node,
+    root: &Node,
     source: &str,
     lines: &crate::model::LineIndex<'_>,
     items: &mut Vec<EvidenceItem>,
     counter: &mut usize,
-    depth: u32,
 ) -> bool {
-    if depth >= crate::evidence::MAX_WALK_DEPTH {
-        return true;
-    }
-    let kind = node.kind();
-    let is_import = is_import_statement_kind(&kind);
     let mut capped = false;
-    if is_import {
-        // Trim: some grammars (e.g. c/cpp `preproc_include`) include the
-        // trailing newline in the statement node's byte range.
-        match super::node_text(source, node.start_byte(), node.end_byte()) {
-            Ok(text) => push_import(text.trim(), node, lines, items, counter),
-            Err(error) => {
-                tracing::warn!(%error, "import statement skipped; extraction is partial");
-                capped = true;
+    let mut pending = vec![(root.clone(), 0, false)];
+    while let Some((node, depth, suppressed)) = pending.pop() {
+        if depth >= crate::evidence::MAX_WALK_DEPTH {
+            capped = true;
+            continue;
+        }
+        let is_import = is_import_statement_kind(&node.kind());
+        if is_import && !suppressed {
+            // Trim: some grammars (e.g. c/cpp `preproc_include`) include the
+            // trailing newline in the statement node's byte range.
+            match super::node_text(source, node.start_byte(), node.end_byte()) {
+                Ok(text) => push_import(text.trim(), &node, lines, items, counter),
+                Err(error) => {
+                    tracing::warn!(%error, "import statement skipped; extraction is partial");
+                    capped = true;
+                }
             }
         }
-    }
-    for child in named_children(node) {
-        capped |= if is_import && is_import_statement_kind(&child.kind()) {
-            // Nested import-shaped container: walk past it for further
-            // nesting, but don't re-emit the same statement. Guarded by
-            // the explicit `child.kind()` check so a non-import child
-            // (e.g. a string literal) is never skipped.
-            walk_imports_past(&child, source, lines, items, counter, depth + 1)
-        } else {
-            walk_imports(&child, source, lines, items, counter, depth + 1)
-        };
+        // An import-shaped child of an import-shaped node (emitted or itself
+        // suppressed) is a nested container: walk past it for further
+        // nesting, but don't re-emit the same statement. Guarded by the
+        // child's own kind so a non-import child (e.g. a string literal) is
+        // never skipped.
+        super::push_children(&mut pending, &node, |child| {
+            let nested = is_import && is_import_statement_kind(&child.kind());
+            (child, depth + 1, nested)
+        });
     }
     capped
 }
@@ -173,42 +171,6 @@ fn push_import(
             "is_wildcard": text.contains('*'),
         }),
     });
-}
-
-/// Walks `node`'s subtree without emitting for `node` itself or any
-/// immediate import-shaped descendant at the first level (handled by the
-/// caller's parent guard), but still recursing into grandchildren — a
-/// `using` block may contain nested directives that are genuine
-/// statements. Keeps the parent-suppression rule from skipping an
-/// unrelated import under a wrapper.
-fn walk_imports_past(
-    node: &Node,
-    source: &str,
-    lines: &crate::model::LineIndex<'_>,
-    items: &mut Vec<EvidenceItem>,
-    counter: &mut usize,
-    depth: u32,
-) -> bool {
-    if depth >= crate::evidence::MAX_WALK_DEPTH {
-        return true;
-    }
-    let mut capped = false;
-    for child in named_children(node) {
-        capped |= if is_import_statement_kind(&child.kind()) {
-            // Another level of nesting under the suppressed parent — skip
-            // this immediate match too, but keep descending.
-            walk_imports_past(&child, source, lines, items, counter, depth + 1)
-        } else {
-            walk_imports(&child, source, lines, items, counter, depth + 1)
-        };
-    }
-    capped
-}
-
-/// Iterator helper over a node's named children (the pack exposes only
-/// `named_child(index)` + `named_child_count()`).
-fn named_children(node: &Node) -> impl Iterator<Item = Node> {
-    (0..node.named_child_count() as u32).filter_map(move |i| node.named_child(i))
 }
 
 fn node_span(node: &Node, lines: &crate::model::LineIndex<'_>) -> SpanAvailability {

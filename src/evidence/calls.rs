@@ -43,7 +43,6 @@ pub(crate) fn extract_rust(source: &str, lines: &LineIndex<'_>) -> (Vec<Evidence
         &mut items,
         &mut counter,
         &mut seen,
-        0,
     );
     (items, capped)
 }
@@ -74,31 +73,36 @@ fn call_parts(node: &Node, source: &str, macro_call: bool) -> Result<CallParts, 
     })
 }
 
+/// Pre-order walk with an explicit heap stack, so the thread stack stays flat
+/// however deep the file nests (see [`crate::evidence::MAX_WALK_DEPTH`]).
+/// Children pop in source order, which keeps `call:N` keys and the first-wins
+/// dedup identical to the recursive walk this replaced.
 fn walk(
-    node: Node,
+    root: Node,
     source: &str,
     lines: &LineIndex<'_>,
     items: &mut Vec<EvidenceItem>,
     counter: &mut usize,
     seen: &mut HashSet<(usize, usize)>,
-    depth: u32,
 ) -> bool {
-    if depth >= crate::evidence::MAX_WALK_DEPTH {
-        return true;
-    }
     let mut capped = false;
-    if RUST_CALL_KINDS.contains(&node.kind().as_str()) {
-        let macro_call = node.kind() == "macro_invocation";
-        match call_parts(&node, source, macro_call) {
-            Ok(parts) => capped |= emit_call(&node, parts, source, lines, items, counter, seen),
-            Err(error) => {
-                tracing::warn!(%error, "Rust call node skipped; extraction is partial");
-                capped = true;
+    let mut pending = vec![(root, 0)];
+    while let Some((node, depth)) = pending.pop() {
+        if depth >= crate::evidence::MAX_WALK_DEPTH {
+            capped = true;
+            continue;
+        }
+        if RUST_CALL_KINDS.contains(&node.kind().as_str()) {
+            let macro_call = node.kind() == "macro_invocation";
+            match call_parts(&node, source, macro_call) {
+                Ok(parts) => capped |= emit_call(&node, parts, source, lines, items, counter, seen),
+                Err(error) => {
+                    tracing::warn!(%error, "Rust call node skipped; extraction is partial");
+                    capped = true;
+                }
             }
         }
-    }
-    for child in named_children(&node) {
-        capped |= walk(child, source, lines, items, counter, seen, depth + 1);
+        crate::evidence::push_children(&mut pending, &node, |child| (child, depth + 1));
     }
     capped
 }
@@ -165,16 +169,20 @@ fn callee_node(node: &Node, macro_call: bool) -> Option<Node> {
 
 /// The simple name of a callee. `field_expression` (`v.unwrap`) recurses to
 /// its last named child — the `field_identifier` — so a method call reports
-/// `unwrap`, while `callee_text` keeps the receiver for context.
+/// `unwrap`, while `callee_text` keeps the receiver for context. A loop, not
+/// recursion: the descent follows file content, so its length is untrusted.
 fn simple_name(node: Node, source: &str) -> Result<Option<String>, TextRangeError> {
-    if node.kind() == "identifier" || node.kind() == "field_identifier" {
-        return Ok(Some(
-            node_text(source, node.start_byte(), node.end_byte())?.to_owned(),
-        ));
-    }
-    match named_children(&node).last() {
-        Some(child) => simple_name(child, source),
-        None => Ok(None),
+    let mut current = node;
+    loop {
+        if current.kind() == "identifier" || current.kind() == "field_identifier" {
+            return Ok(Some(
+                node_text(source, current.start_byte(), current.end_byte())?.to_owned(),
+            ));
+        }
+        match named_children(&current).last() {
+            Some(child) => current = child,
+            None => return Ok(None),
+        }
     }
 }
 
