@@ -1,0 +1,1 @@
+SELECT line_count(content), line_range(content, 400, 600) FROM files WHERE path = 'src/big.rs'

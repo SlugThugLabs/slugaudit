@@ -572,3 +572,6 @@ fn results_exceeding_response_bytes_are_truncated() {
 
 #[path = "query_page_tests.rs"]
 mod query_page_tests;
+
+#[path = "query_clip_tests.rs"]
+mod query_clip_tests;

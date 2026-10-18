@@ -583,3 +583,49 @@ fn a_database_under_a_symlinked_parent_directory_opens_for_both_modes() {
         "the database lands in the real directory"
     );
 }
+
+#[test]
+fn the_line_functions_run_on_both_guarded_connections_while_the_guard_still_denies_attach() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let project_path = directory.path().join("project.db");
+    open_read_write(&project_path).expect("create project database");
+
+    for (label, connection) in [
+        (
+            "read-only",
+            open_read_only(&project_path).expect("open read-only"),
+        ),
+        (
+            "read-write",
+            open_read_write(&project_path).expect("open read-write"),
+        ),
+    ] {
+        let lines: (i64, String) = connection
+            .query_row(
+                "SELECT line_count('a\nb\nc'), line_range('a\nb\nc', 2, 3)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or_else(|error| panic!("{label}: the functions must pass the guard: {error}"));
+        assert_eq!(lines, (3, "b\nc".to_owned()), "{label}");
+
+        assert!(
+            connection
+                .execute_batch("ATTACH DATABASE ':memory:' AS other")
+                .is_err(),
+            "{label} must still deny ATTACH"
+        );
+        assert!(
+            connection.execute_batch("DETACH DATABASE main").is_err(),
+            "{label} must still deny DETACH"
+        );
+        assert!(
+            connection
+                .query_row("SELECT load_extension('libnothing')", [], |row| {
+                    row.get::<_, Option<String>>(0)
+                })
+                .is_err(),
+            "{label} must not load extensions"
+        );
+    }
+}

@@ -43,6 +43,8 @@ src/
 │   ├── query_exec.rs         query execution: single-statement proof, budgets, byte-budgeted page, exact total
 │   ├── page_size.rs          effective page size (request or default, clamped to the ceiling)
 │   ├── query_value.rs        SQLite row/value → JSON with a per-value cap
+│   ├── query_clip.rs         clipping an oversized first row's TEXT/BLOB cells, with substr continuations
+│   ├── query_clip_tests.rs   clipping walks (5 MB text, blob, units) and line functions through query
 │   ├── structure.rs          tree-sitter pattern match: contract, validation, targets
 │   ├── structure_exec.rs     query execution under match cap + time budget
 │   ├── structure_source.rs   source loading + multi-file and snippet helpers
@@ -136,6 +138,8 @@ src/
 │   ├── mod.rs                open_read_write / open_read_only / discard_corrupt_database
 │   ├── connection.rs         typed StoreError + symlink/permission/ATTACH guards
 │   ├── netfs.rs              network-filesystem rejection
+│   ├── sql_functions.rs      line_count / line_range scalar SQL functions registered on every connection
+│   ├── sql_functions_tests.rs line-function edge cases
 │   ├── migrations.rs         schema versioning (CURRENT_SCHEMA_VERSION)
 │   ├── schema.sql            canonical schema
 │   └── test_capture.rs       test-only tracing capture helper (owns PERMISSIVE_BACKSTOP)

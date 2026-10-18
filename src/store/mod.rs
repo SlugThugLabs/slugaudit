@@ -6,6 +6,7 @@
 mod connection;
 mod migrations;
 mod netfs;
+mod sql_functions;
 
 #[cfg(test)]
 #[path = "test_capture.rs"]

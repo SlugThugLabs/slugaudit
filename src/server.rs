@@ -78,8 +78,13 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     Every response carries `total_rows`, the exact size of the whole result, so you see how large it is before \
     you read it (if counting ran out of budget it is absent and `total_rows_unavailable` says why). Add `LIMIT` \
     to exploratory queries, page with `next_offset`, or narrow the query: some MCP clients pass a large tool \
-    result to the model unbounded, which fails the turn. A first row bigger than the page is still returned and \
-    flagged `oversized_row`; when resuming an `offset`, pass the previous page's `revision_id` as `expected_revision` and a changed index \
+    result to the model unbounded, which fails the turn. A first row bigger than the page (one huge \
+    `files.content`, a `group_concat`) is not returned whole: its TEXT/BLOB cells are clipped to fit and each cut is \
+    listed in `clipped_cells` with `row`, `column`, `returned` and `total` (characters for text, bytes for a blob: \
+    `substr`'s own units) and `continue_with`, a ready `substr(\"<column>\", start, len)` for the rest; nothing is lost, \
+    and a larger `page_bytes` avoids the cut. To read a file by lines, `line_count(text)` and \
+    `line_range(text, start, end)` (1-based, inclusive, source line endings kept, NULL in gives NULL): SELECT \
+    line_count(content), line_range(content, 400, 600) FROM files WHERE path = 'src/big.rs'. When resuming an `offset`, pass the previous page's `revision_id` as `expected_revision` and a changed index \
     is refused with `stale_revision` instead of returning rows from a different ordering. Always JOIN evidence \
     to files: SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = \
     'Symbol' AND json_extract(e.payload, '$.name') = 'configure'. Discover the rest with SELECT name FROM \
@@ -269,7 +274,7 @@ impl SlugAuditServer {
          files (id, path, language, byte_len, content — full text of every indexed file including non-code files), \
          evidence (id, file_id, kind, start_line, end_line, payload — Symbol, Import, Comment, Structure), \
          dependency_edges (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled). \
-         To inspect code or file content directly from the DB without filesystem reads, query `files.content` (e.g. `SELECT content FROM files WHERE path = 'src/main.rs'`). \
+         To inspect code or file content directly from the DB without filesystem reads, query `files.content` (e.g. `SELECT content FROM files WHERE path = 'src/main.rs'`); `line_count(text)` and `line_range(text, start, end)` read a file by 1-based lines, and an oversized first row is clipped with a `substr` continuation in `clipped_cells`. \
          To link evidence to file paths, always JOIN: `SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND json_extract(e.payload, '$.name') = 'configure'`. \
          Schema discovery: `SELECT name FROM sqlite_master WHERE type='table'`."
     )]

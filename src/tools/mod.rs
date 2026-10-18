@@ -25,6 +25,7 @@ mod leads_query;
 mod page_size;
 mod project_control;
 mod query;
+mod query_clip;
 mod query_exec;
 mod query_value;
 
@@ -52,6 +53,7 @@ pub use leads::{
 };
 pub use project_control::{ProjectControlRequest, ProjectControlResponse, project_control};
 pub use query::{QueryRequest, QueryResponse, query};
+pub use query_clip::ClippedCell;
 pub use report::{ReportRequest, ReportResponse, report};
 pub use report_completeness::{
     CompletenessCount, CompletenessEnvelope, FileClassCount, FileKindCount, SkipReasonCount,

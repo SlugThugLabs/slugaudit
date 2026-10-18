@@ -5,7 +5,8 @@
 //! response shapes, validation order) and this one owns what runs under the
 //! progress handler.
 
-use super::query_value::row_to_json;
+use super::query_clip::{ClippedCell, clip_row};
+use super::query_value::{read_row, row_to_json};
 
 use super::context::internal_error;
 use crate::model::ResourceLimits;
@@ -38,6 +39,8 @@ pub(super) struct Collected {
     /// Serialized JSON bytes of `rows`, measured per row.
     pub(super) rows_bytes: usize,
     pub(super) total: RowTotal,
+    /// The cells cut from the first row because it alone exceeded the page.
+    pub(super) clipped: Vec<ClippedCell>,
 }
 
 /// Installs the VM-step and wall-clock progress handler and returns the cell
@@ -166,19 +169,30 @@ fn execute_and_collect(
         .map(str::to_owned)
         .collect();
     let value_cap = limits.max_query_value_bytes;
+    let column_count = column_names.len();
     let mapped = statement
-        .query_map([], move |row| row_to_json(row, &column_names, value_cap))
+        .query_map([], move |row| read_row(row, column_count, value_cap))
         .map_err(|error| describe_error(&error, abort_reason))?;
     let mut rows = Vec::new();
+    let mut clipped = Vec::new();
     let mut total_bytes = 0usize;
     let mut size_truncated = false;
     for row in mapped {
-        let value = row.map_err(|error| describe_error(&error, abort_reason))?;
-        let row_bytes = serialized_len(&value)
+        let values = row.map_err(|error| describe_error(&error, abort_reason))?;
+        let mut value = row_to_json(&column_names, &values);
+        let mut row_bytes = serialized_len(&value)
             .map_err(|error| internal_error("measuring query row size", error))?;
-        // The first row is always kept, so an oversized row still makes
-        // progress; the caller flags it from `rows_bytes > page_bytes`.
-        if !rows.is_empty() && total_bytes.saturating_add(row_bytes) > page_bytes {
+        if rows.is_empty() && row_bytes > page_bytes {
+            // The first row is always kept so paging makes progress, but its
+            // TEXT/BLOB cells are cut to the page and each cut is reported.
+            let row_index = offset.saturating_add(rows.len());
+            let cut = clip_row(&column_names, &values, page_bytes, row_index)
+                .map_err(|error| internal_error("clipping an oversized query row", error))?;
+            value = cut.row;
+            clipped = cut.cells;
+            row_bytes = serialized_len(&value)
+                .map_err(|error| internal_error("measuring query row size", error))?;
+        } else if !rows.is_empty() && total_bytes.saturating_add(row_bytes) > page_bytes {
             size_truncated = true;
             break;
         }
@@ -192,6 +206,7 @@ fn execute_and_collect(
             truncated: size_truncated,
             rows_bytes: total_bytes,
             total: RowTotal::Exact(0),
+            clipped,
         },
     ))
 }

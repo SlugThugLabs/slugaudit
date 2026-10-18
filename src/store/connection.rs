@@ -255,6 +255,7 @@ pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
         Connection::open_with_flags(path, open_flags(true)).map_err(StoreError::Open)?;
     configure(&connection)?;
     guard_against_attach(&connection);
+    super::sql_functions::register(&connection).map_err(StoreError::Configure)?;
     super::migrations::ensure_current_schema(&mut connection)?;
     Ok(connection)
 }
@@ -282,6 +283,7 @@ pub fn open_read_only(path: &Path) -> Result<Connection, StoreError> {
         .busy_timeout(BUSY_TIMEOUT)
         .map_err(StoreError::Configure)?;
     guard_against_attach(&connection);
+    super::sql_functions::register(&connection).map_err(StoreError::Configure)?;
     Ok(connection)
 }
 

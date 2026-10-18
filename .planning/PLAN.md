@@ -1174,12 +1174,26 @@ maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by rea
   Tests: `more_than_one_statement_is_refused_with_the_single_statement_message`,
   `a_single_statement_with_semicolons_or_trailing_trivia_is_accepted`,
   `more_than_500_rows_come_back_in_one_page_when_the_byte_budget_allows`.
+- **Query value clipping and line functions — landed (uncommitted, 2026-10-18).** `query` no
+  longer returns an oversized first row whole: its TEXT/BLOB cells are clipped to the page
+  (serialized-byte accounting, BLOB hex counted, TEXT cut on a char boundary, fair share between
+  cells) and `oversized_row` is replaced by `clipped_cells` (`row`, `column`, `kind`, `unit`,
+  `returned`, `total`, `next_start`, `continue_with` = `substr("<col>", start, len)`). Units are
+  SQLite's `substr`/`length` units: characters for TEXT, bytes for BLOB; a TEXT containing a NUL is
+  reported in bytes and continued via `CAST(.. AS BLOB)` because SQLite text functions stop at a
+  NUL (verified on SQLite 3.46.1 and the bundled build). `leads` keeps its own `oversized_row`
+  (not changed). New SQL functions `line_count(text)` / `line_range(text, start, end)`
+  (`src/store/sql_functions.rs`, registered in both `open_read_only` and `open_read_write`,
+  deterministic; rusqlite `functions` feature enabled with no `Cargo.lock` change). Code:
+  `src/tools/query_clip.rs`. Tests: `query_clip_tests.rs`, `sql_functions_tests.rs`,
+  `the_line_functions_run_on_both_guarded_connections_while_the_guard_still_denies_attach`.
 - **Still open, unverified (auditor-reported):**
   `update_fetch::compare_versions` treats `1.0` < `1.0.0`; `graph/resolve.rs::normalize_join`
   drops `..` past the root; `ignore_rules::is_excluded_dir` string-prefix match excludes
   `.planning/slugaudit-notes/`; `netfs` mountinfo ignores `\040` escapes; nested-macro
-  re-parse depth is uncapped; `util::hex_encode` formats per byte; `query` always keeps an
-  over-budget first row.
+  re-parse depth is uncapped; `util::hex_encode` formats per byte. (`query` always keeping an
+  over-budget first row: resolved, uncommitted 2026-10-18, by value clipping above; `leads`
+  still keeps one.)
 - **Client handling of large `query`/`leads` results — landed (2026-10-18, commit "feat(query,leads): page at 64 KiB by default…").**
   Owner decision 2026-10-18: never limit what the agent cannot change or get past; lose no
   information; show size up front. Landed: new limit `default_page_bytes` (64 KiB in every

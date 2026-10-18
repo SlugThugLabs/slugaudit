@@ -38,7 +38,7 @@ fn the_default_page_cuts_at_64_kib_and_resumes_at_next_offset() {
     assert!(first.rows_bytes <= 65_536, "{}", first.rows_bytes);
     assert!(first.rows.len() > 1 && first.rows.len() < 500);
     assert_eq!(first.next_offset, Some(first.rows.len()));
-    assert!(!first.oversized_row);
+    assert!(first.clipped_cells.is_empty());
     assert_eq!(first.page_bytes_clamped_from, None);
 }
 
@@ -160,15 +160,20 @@ fn an_exhausted_count_budget_omits_total_rows_and_says_why() {
 }
 
 #[test]
-fn a_single_row_larger_than_the_page_is_returned_whole_and_flagged() {
+fn a_first_row_larger_than_the_page_is_clipped_and_the_cut_is_reported() {
     let project = activated_project(&[]);
     let limits = ResourceLimits::default();
 
     let page = ask_page(&project, FAT_ROWS, 0, Some(100), &limits).expect("oversized first row");
 
     assert_eq!(page.rows.len(), 1, "one row per page minimum");
-    assert!(page.oversized_row);
-    assert!(page.rows_bytes > 100);
+    assert!(page.rows_bytes <= 100, "{}", page.rows_bytes);
+    assert_eq!(page.clipped_cells.len(), 1);
+    let cell = &page.clipped_cells[0];
+    assert_eq!(
+        (cell.row, cell.column.as_str(), cell.total),
+        (0, "pad", 1000)
+    );
     assert_eq!(page.next_offset, Some(1));
     assert_eq!(page.total_rows, Some(500));
 }

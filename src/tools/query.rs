@@ -1,5 +1,6 @@
 use super::context::{ensure_synced, guard_expected_revision, with_verified_read};
 use super::page_size;
+use super::query_clip::ClippedCell;
 use super::query_exec::{RowTotal, run_query};
 
 use crate::error_codes::{self, ErrorCode};
@@ -41,8 +42,10 @@ pub struct QueryRequest {
     /// what applied). A larger value returns a larger page, up to the hard
     /// ceiling `max_query_response_bytes`: a value above the ceiling is
     /// clamped and the response reports `page_bytes_clamped_from`. Pages are
-    /// cut on a row boundary; a single row larger than the page is still
-    /// returned whole and flagged with `oversized_row`.
+    /// cut on a row boundary; when the first row alone is larger than the page,
+    /// its TEXT/BLOB cells are clipped to fit and listed in `clipped_cells`
+    /// with the `substr` expression that continues each one. Raise
+    /// `page_bytes` to avoid clipping.
     #[serde(default)]
     pub page_bytes: Option<usize>,
 }
@@ -90,10 +93,16 @@ pub struct QueryResponse {
     pub page_bytes_clamped_from: Option<usize>,
     /// Serialized JSON bytes of the returned `rows`, measured per row.
     pub rows_bytes: usize,
-    /// True when the page is larger than `page_bytes` because its first row
-    /// alone is. That row is returned whole so paging makes progress and
-    /// nothing is lost.
-    pub oversized_row: bool,
+    /// The TEXT/BLOB cells cut from the first row because the row alone was
+    /// larger than `page_bytes`; empty when nothing was cut. Each entry gives
+    /// the absolute `row` index, `column`, `returned` and `total` length in
+    /// `substr` units (characters for text, bytes for a blob), `next_start`
+    /// (1-based) and a ready `continue_with` expression. No data is lost: the
+    /// rest of every clipped cell is one `substr` away. If this is empty,
+    /// every cell is complete. Only a row whose non-text cells alone exceed
+    /// the page (or a page smaller than one character per cell) can leave
+    /// `rows_bytes` above `page_bytes`.
+    pub clipped_cells: Vec<ClippedCell>,
 }
 
 /// # Errors
@@ -191,6 +200,7 @@ fn query_with_limits(
         row_count = rows.len(),
         truncated,
         total_rows,
+        clipped_cells = collected.clipped.len(),
         page_bytes = page.bytes,
         clamped = page.clamped_from.is_some(),
         "query executed"
@@ -205,7 +215,7 @@ fn query_with_limits(
         page_bytes: page.bytes,
         page_bytes_clamped_from: page.clamped_from,
         rows_bytes: collected.rows_bytes,
-        oversized_row: collected.rows_bytes > page.bytes,
+        clipped_cells: collected.clipped,
     }))
 }
 

@@ -1013,7 +1013,7 @@
         "destructiveHint": false,
         "readOnlyHint": true
       },
-      "description": "Query the indexed codebase with read-only SQL. Key tables: files (id, path, language, byte_len, content — full text of every indexed file including non-code files), evidence (id, file_id, kind, start_line, end_line, payload — Symbol, Import, Comment, Structure), dependency_edges (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled). To inspect code or file content directly from the DB without filesystem reads, query `files.content` (e.g. `SELECT content FROM files WHERE path = 'src/main.rs'`). To link evidence to file paths, always JOIN: `SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND json_extract(e.payload, '$.name') = 'configure'`. Schema discovery: `SELECT name FROM sqlite_master WHERE type='table'`.",
+      "description": "Query the indexed codebase with read-only SQL. Key tables: files (id, path, language, byte_len, content — full text of every indexed file including non-code files), evidence (id, file_id, kind, start_line, end_line, payload — Symbol, Import, Comment, Structure), dependency_edges (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled). To inspect code or file content directly from the DB without filesystem reads, query `files.content` (e.g. `SELECT content FROM files WHERE path = 'src/main.rs'`); `line_count(text)` and `line_range(text, start, end)` read a file by 1-based lines, and an oversized first row is clipped with a `substr` continuation in `clipped_cells`. To link evidence to file paths, always JOIN: `SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND json_extract(e.payload, '$.name') = 'configure'`. Schema discovery: `SELECT name FROM sqlite_master WHERE type='table'`.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1034,7 +1034,7 @@
           },
           "page_bytes": {
             "default": null,
-            "description": "Page size in serialized JSON bytes. Omit it for the server default\n(64 KiB unless configured otherwise; the response's `page_bytes` says\nwhat applied). A larger value returns a larger page, up to the hard\nceiling `max_query_response_bytes`: a value above the ceiling is\nclamped and the response reports `page_bytes_clamped_from`. Pages are\ncut on a row boundary; a single row larger than the page is still\nreturned whole and flagged with `oversized_row`.",
+            "description": "Page size in serialized JSON bytes. Omit it for the server default\n(64 KiB unless configured otherwise; the response's `page_bytes` says\nwhat applied). A larger value returns a larger page, up to the hard\nceiling `max_query_response_bytes`: a value above the ceiling is\nclamped and the response reports `page_bytes_clamped_from`. Pages are\ncut on a row boundary; when the first row alone is larger than the page,\nits TEXT/BLOB cells are clipped to fit and listed in `clipped_cells`\nwith the `substr` expression that continues each one. Raise\n`page_bytes` to avoid clipping.",
             "format": "uint",
             "minimum": 0,
             "type": [
@@ -1059,8 +1059,73 @@
       },
       "name": "query",
       "outputSchema": {
+        "$defs": {
+          "ClippedCell": {
+            "description": "One TEXT or BLOB cell that was cut to fit the page.",
+            "properties": {
+              "column": {
+                "description": "Result column name of the clipped cell.",
+                "type": "string"
+              },
+              "continue_with": {
+                "description": "A ready-to-use expression for the rest, `substr(\"<column>\", start,\nlength)`. The column name is quoted as an identifier; apply the same\n`substr` to the expression that produced the column.",
+                "type": "string"
+              },
+              "kind": {
+                "description": "`\"text\"` or `\"blob\"`.",
+                "type": "string"
+              },
+              "next_start": {
+                "description": "1-based position of the first unit not returned, ready for `substr`.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "returned": {
+                "description": "How many units of the value the response carries (from the start).",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "row": {
+                "description": "Zero-based index of the row in the whole result (`offset` plus its\nposition on the page), the same numbering `offset` uses.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total": {
+                "description": "How many units the whole value has: SQLite's `length(value)`.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unit": {
+                "description": "What `returned`, `total` and `next_start` count, in `substr`'s own\nunits: `\"characters\"` for text, `\"bytes\"` for a blob, and `\"bytes\"` for\na text containing a NUL (SQLite's text functions stop at a NUL, so such\na value is continued as bytes: `continue_with` casts it to a blob and\nthe rest comes back hex-encoded).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "row",
+              "column",
+              "kind",
+              "unit",
+              "returned",
+              "total",
+              "next_start",
+              "continue_with"
+            ],
+            "type": "object"
+          }
+        },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "clipped_cells": {
+            "description": "The TEXT/BLOB cells cut from the first row because the row alone was\nlarger than `page_bytes`; empty when nothing was cut. Each entry gives\nthe absolute `row` index, `column`, `returned` and `total` length in\n`substr` units (characters for text, bytes for a blob), `next_start`\n(1-based) and a ready `continue_with` expression. No data is lost: the\nrest of every clipped cell is one `substr` away. If this is empty,\nevery cell is complete. Only a row whose non-text cells alone exceed\nthe page (or a page smaller than one character per cell) can leave\n`rows_bytes` above `page_bytes`.",
+            "items": {
+              "$ref": "#/$defs/ClippedCell"
+            },
+            "type": "array"
+          },
           "next_offset": {
             "description": "Use this as the next request's `offset` when present. Only valid\nwhile `revision_id` is unchanged (see the paging contract above).",
             "format": "uint",
@@ -1069,10 +1134,6 @@
               "integer",
               "null"
             ]
-          },
-          "oversized_row": {
-            "description": "True when the page is larger than `page_bytes` because its first row\nalone is. That row is returned whole so paging makes progress and\nnothing is lost.",
-            "type": "boolean"
           },
           "page_bytes": {
             "description": "The page size that applied to this call, in serialized JSON bytes: the\nrequest's `page_bytes` or the server default, clamped to the ceiling.",
@@ -1128,7 +1189,7 @@
           "truncated",
           "page_bytes",
           "rows_bytes",
-          "oversized_row"
+          "clipped_cells"
         ],
         "type": "object"
       },

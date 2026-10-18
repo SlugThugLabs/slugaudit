@@ -1,0 +1,1 @@
+SELECT line_range(NULL, 1, 2), line_range('a', 0, 1), line_range('a', 1.5, 'x'), line_count(x'00')
