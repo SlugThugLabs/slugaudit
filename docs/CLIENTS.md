@@ -41,15 +41,13 @@ with the number of rows at each:
 | Tier | Meaning | Rows |
 |---|---|---|
 | `VerifiedByProbe` | the real CLI was installed and its `mcp` subcommands were probed | 18 |
-| `DocVerified` | established from vendor/user documentation | 6 |
-| `VerifiedFromSource` | established from the client's own source; stronger than docs, but no runtime probe | 1 |
-| `Contested` | the research passes disagreed and no probe settled it | 0 |
-| `Unverified` | nothing could establish it; `connect` refuses | 1 |
+| `DocVerified` | established from vendor/user documentation | 3 |
+| `VerifiedFromSource` | established from the client's own source; stronger than docs, but no runtime probe | 2 |
 
 How those facts were obtained: the real CLIs were installed and their `mcp`
 subcommands probed by hand — that is the 18 `VerifiedByProbe` rows. Before the
 probes, two independent documentation-based passes had disagreed with each
-other on seven of the 26 targets, and each pass was wrong on roughly half of
+other on seven of the original 26 targets, and each pass was wrong on roughly half of
 those (`src/connect_agents.rs`). Documented commands that turned out not
 to exist include:
 
@@ -63,30 +61,33 @@ to exist include:
 `bob` and `droid` were missed by both documentation passes and were resolved
 only by probing: bob's `-t/--transport` and `-s/--scope` flags and droid's
 `--type` flag (there is no `--transport` alias) are in the registry solely
-because the installed binaries were run (`src/connect_agents.rs`). One target, `trae`, could not be probed — its installer is
-geo-blocked from the audit host and its CLI is enterprise-gated — so its row
-rests on documentation alone (`src/connect_agents.rs`).
+because the installed binaries were run (`src/connect_agents.rs`).
 
-An entry that could not be established says so instead of guessing: `pearai` is
-`Unverified` and `connect` refuses it before doing anything
-(`src/connect_exec.rs`). No row currently uses `Strategy::Unknown`; the
-variant exists so an unestablished mechanism refuses rather than running an
-invented command (`src/connect_exec.rs`).
+A client whose mechanism could not be established is not in the registry.
+`pearai` (no mechanism either research pass could agree on), `trae` (its
+installer is geo-blocked and its CLI is enterprise-gated, so it could not be
+probed) and `1mcp` (a gateway, so its `mcp add` registers a backend rather than
+a client) were removed on 2026-10-17. `gemini` was probed against the real CLI
+that day (0.64.0) and `omp` was checked against its own source and schema
+(18.12.0). The three remaining `DocVerified` rows (`windsurf`, `warp`,
+`claude-desktop`) are GUI applications with no CLI to run. No row currently uses
+`Strategy::Unknown`; the variant exists so an unestablished mechanism refuses
+rather than running an invented command (`src/connect_exec.rs`).
 
 ## The three registration states
 
 `Strategy` (`src/connect_agents.rs`):
 
-- **`CliDirect` (15 rows)** — the client documents a scriptable `mcp add`, so
+- **`CliDirect` (14 rows)** — the client documents a scriptable `mcp add`, so
   slugaudit runs `<cli> mcp add ...`. `connect` first runs the client's remove
   command so a re-connect replaces the entry instead of duplicating it
   (`src/connect_exec.rs`).
 - **`CliInteractiveOnly` (1 row: `omp`)** — the client's only add path is
   in-session (`/mcp add`), which slugaudit cannot drive programmatically, so
   the installer writes the client's config file instead.
-- **`ConfigFile` (10 rows)** — there is no usable CLI, so slugaudit merges the
-  client's config file. Two of these, `crush` and `pearai`, refuse because
-  neither the written shape nor a path could be established.
+- **`ConfigFile` (8 rows)** — there is no usable CLI, so slugaudit merges the
+  client's config file. Two of these, `goose` and `crush`, are refused with
+  printed instructions because no safe machine-writable shape exists.
 - **`Unknown` (0 rows)** — reserved for "the mechanism was never established";
   it refuses.
 
@@ -125,13 +126,11 @@ Path kinds (`ConfigPath`, `src/connect_agents.rs`; resolution in `ConfigPath::re
   Windows a `%APPDATA%/` prefix expands to `$APPDATA`, or
   `<user home>/AppData/Roaming` when unset (`expand_os_tokens`,
   `src/connect_agents.rs`).
-- `ProjectRoot(rel)` → resolved against the **current directory**, not the home
-  directory (`trae` only).
 - `Unverified` → no verified path; the writer refuses.
 
 ## Targets
 
-26 rows — exactly the 26 `AgentDef` rows in `AGENTS`. "Config file" is the path
+23 rows — exactly the 23 `AgentDef` rows in `AGENTS`. "Config file" is the path
 when slugaudit writes one; where registration goes through the CLI, the config
 path is read for detection only and slugaudit does not write it. Paths are
 relative to the user's home unless marked otherwise.
@@ -139,7 +138,7 @@ relative to the user's home unless marked otherwise.
 | Target id | Client | Registration today | Config file | Manual steps | Evidence | Reference | Docs |
 |---|---|---|---|---|---|---|---|
 | `agy` | Antigravity (agy) | `agy mcp add slugaudit <binary>` | — | No | `VerifiedByProbe` | agy 1.2.14 (probed 2026-09-30) | <https://antigravity.google/docs/mcp/> |
-| `gemini` | Gemini CLI | `gemini mcp add -s user slugaudit <binary>` | `~/.gemini/settings.json` (detection only) | No | `DocVerified` | vendor docs, as of 2026-09-30 | <https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md> |
+| `gemini` | Gemini CLI | `gemini mcp add -s user slugaudit <binary>` | `~/.gemini/settings.json` (detection only) | No | `VerifiedByProbe` | gemini 0.64.0 (probed 2026-10-17) | <https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md> |
 | `claude` | Claude Code | `claude mcp add -s user slugaudit -- <binary>` | `~/.claude.json` (detection only) | No | `VerifiedByProbe` | claude 2.1.233 (probed 2026-09-30) | <https://code.claude.com/docs/en/mcp> |
 | `hermes` | Hermes Agent | `hermes mcp add slugaudit --command <binary>` | `~/.hermes/config.yaml` (detection only) | No | `VerifiedByProbe` | hermes 0.18.2 (probed 2026-09-30) | <https://hermes-agent.nousresearch.com/docs/reference/mcp-config-reference> |
 | `copilot` | GitHub Copilot | `copilot mcp add slugaudit -- <binary>` | `~/.copilot/mcp-config.json` (detection only) | No | `VerifiedByProbe` | copilot 1.0.89 (probed) | <https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers> |
@@ -149,7 +148,6 @@ relative to the user's home unless marked otherwise.
 | `bob` | Bob Agent | `bob mcp add --transport stdio --scope global slugaudit <binary>`; config-file fallback | `~/.bob/mcp_settings.json` (written on fallback) | No | `VerifiedByProbe` | bob 2.0.5 (probed 2026-09-30) | <https://bob.ibm.com/docs/shell/configuration/mcp/mcp-bobshell> |
 | `grok` | Grok CLI | `grok mcp add slugaudit --scope user -- <binary>` | `~/.grok/config.toml` (detection only) | No | `VerifiedByProbe` | grok 1.0.44 (probed) | <https://docs.x.ai/build/features/mcp-servers> |
 | `goose` | Goose CLI | refuses: YAML config cannot be merged safely; instructions printed | `~/.config/goose/config.yaml` (not written) | **Yes** | `VerifiedByProbe` | goose 1.52.0 (probed 2026-09-30) | <https://goose-docs.ai/docs/getting-started/using-extensions/> |
-| `1mcp` | 1MCP Agent | `1mcp mcp add slugaudit -- <binary>` — gateway, see below | — | No | `VerifiedByProbe` | 1mcp 0.38.2 (probed) | <https://docs.1mcp.app/commands/mcp/add> |
 | `openhands` | OpenHands | `openhands mcp add slugaudit --transport stdio <binary>` | `~/.openhands/mcp.json` (detection only) | No | `VerifiedByProbe` | openhands 1.16.0 (probed 2026-09-30) | <https://docs.openhands.dev/openhands/usage/cli/mcp-servers> |
 | `kimi` | Kimi Code | config write (no `mcp` subcommand exists) | `~/.kimi-code/mcp.json` (written) | No | `VerifiedByProbe` | kimi 2.1.1 (probed) | <https://moonshotai.github.io/kimi-code/en/customization/mcp> |
 | `droid` | Droid (Factory) | `droid mcp add --type stdio slugaudit <binary>` | `~/.factory/mcp.json` (detection only) | No | `VerifiedByProbe` | droid 0.230.0 (probed) | <https://docs.factory.ai/cli/configuration/mcp> |
@@ -157,10 +155,8 @@ relative to the user's home unless marked otherwise.
 | `q` | Amazon Q Developer | `q mcp add --name slugaudit --command <binary>` | — | No | `VerifiedByProbe` | q 1.19.7 (probed 2026-09-30) | <https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/command-line-mcp.html> |
 | `cursor` | Cursor IDE | config write (the `agent` CLI has no `mcp add`) | `~/.cursor/mcp.json` (written) | No | `VerifiedByProbe` | cursor 2026.09.28-64d2043 (probed) | <https://cursor.com/docs/cli/mcp> |
 | `windsurf` | Windsurf | config write | `~/.codeium/windsurf/mcp_config.json` (written) | No | `DocVerified` | vendor docs, as of 2026-09-30 | <https://docs.devin.ai/windsurf/plugins/cascade/mcp> |
-| `trae` | Trae AI IDE | refuses: project-scoped plus a UI toggle; instructions printed | `<cwd>/.trae/mcp.json` (not written) | **Yes** | `DocVerified` | vendor docs, as of 2026-09-30 (installer geo-blocked, not probed) | <https://docs.trae.ai/ide/add-mcp-servers> |
 | `pi` | Pi Agent | `pi mcp add slugaudit -- <binary>`; config-file fallback | `~/.pi/agent/mcp.json` (written on fallback) | No | `VerifiedByProbe` | pi 0.99.1 (probed) | <https://pi.dev/docs/latest/mcp> |
-| `omp` | Oh My Pi (omp) | config write (client's own add is in-session `/mcp add`) | `~/.omp/agent/mcp.json` (written) | No | `DocVerified` | vendor docs, as of 2026-09-30 | <https://github.com/can1357/oh-my-pi/blob/main/docs/mcp-config.md> |
-| `pearai` | PearAI | refuses: mechanism unverified | not written | **Yes** | `Unverified` | vendor docs, as of 2026-09-30 | <https://docs.roocode.com/features/mcp/using-mcp-in-roo> |
+| `omp` | Oh My Pi (omp) | config write (client's own add is in-session `/mcp add`) | `~/.omp/agent/mcp.json` (written) | No | `VerifiedFromSource` | omp 18.12.0 source and schema (checked 2026-10-17) | <https://github.com/can1357/oh-my-pi/blob/main/docs/mcp-config.md> |
 | `warp` | Warp Terminal | config write | `~/.warp/.mcp.json` (written; filename has a leading dot) | No | `DocVerified` | vendor docs, as of 2026-09-30 | <https://docs.warp.dev/agents/capabilities/mcp/> |
 | `claude-desktop` | Claude Desktop | config write | per-OS, see below | No | `DocVerified` | vendor docs, as of 2026-09-30 | <https://modelcontextprotocol.io/docs/develop/connect-local-servers> |
 | `zed` | Zed Editor | config write (`context_servers`) | `~/.config/zed/settings.json` (written) | No | `VerifiedFromSource` | Zed source, as of 2026-09-30 | <https://zed.dev/docs/ai/mcp> |
@@ -168,22 +164,16 @@ relative to the user's home unless marked otherwise.
 Notes on individual rows:
 
 - `—` in the config column means the row has no config path at all (`agy`,
-  `amp`, `1mcp`, `q`): detection is CLI-only, via `<cli> mcp list`.
+  `amp`, `q`): detection is CLI-only, via `<cli> mcp list`.
 - Rows that register through their CLI are detected by reading the config file
   for a `slugaudit` entry, and fall back to running `<cli> mcp list`
   (`AgentDef::is_connected`, `src/connect_agents.rs`;
   `cli_check_connected`, `src/connect_exec.rs`).
-- `1mcp` is not really a client. It is a gateway/aggregator: `connect 1mcp`
-  emits a valid `1mcp mcp add` command, but that adds slugaudit as a backend of
-  the 1mcp server rather than registering slugaudit with a client. Connecting
-  other clients to slugaudit means pointing them at 1mcp
-  (`src/connect_agents.rs`).
-- Four rows set `manual_steps` — `goose`, `crush`, `trae` and `pearai` —
-  and `connect` refuses them with a paste-ready remedy instead of attempting a
-  write. `goose`'s config is YAML, `crush`'s `mcp add` exists only as a crushrc
-  bash builtin, `trae` is project-scoped with a UI toggle, and `pearai`'s
-  mechanism was never established. `omp` needs no manual step for slugaudit's
-  write even though the client's own `/mcp add` is in-session-only.
+- Two rows set `manual_steps` — `goose` and `crush` — and `connect` refuses
+  them with a paste-ready remedy instead of attempting a write. `goose`'s config
+  is YAML and `crush`'s `mcp add` exists only as a crushrc bash builtin. `omp`
+  needs no manual step for slugaudit's write even though the client's own
+  `/mcp add` is in-session-only.
 - Three CLI rows carry the config-file fallback (`opencode`, `bob`, `pi`).
   `opencode` additionally has no `--type`/`--transport` flag — it infers the
   transport — and its own writer omits `enabled`, while slugaudit's fallback
@@ -219,7 +209,7 @@ inserted into is the first of `ConfigShape::sections`
   `{ "type": "stdio", "cmd": "<binary>", "args": [] }` — detection only;
   `write_section()` returns `None` for this shape, so the user pastes the YAML
   block themselves (see the goose row above).
-- `Unknown` (`crush`, `pearai` paths) → no section; the writer refuses rather
+- `Unknown` (`crush`) → no section; the writer refuses rather
   than guessing.
 
 The rest of the file is preserved; a file that exists but is not valid JSON is
@@ -292,14 +282,13 @@ or breaking it trying*.
 - **Failure**: the attempted action, the failure, the exact command to run by
   hand, plus `Reference:` and `Docs:`.
 - **Refusal**: what cannot be automated, the paste-ready remedy, `Reference:`
-  and `Docs:` — the four `manual_steps` rows.
+  and `Docs:` — the two `manual_steps` rows.
 
 Automation is attempted only when slugaudit can be confident at the moment of
 the call: probed rows as before; documented rows only for a single-key merge
-into a JSON file that parses, or a CLI subcommand confirmed by
-`<cli> mcp add --help` right then. Non-JSON configs, a platform outside a row's
-`PerOs` paths, `manual_steps` rows and `Unverified` rows are instructed instead
-of attempted, and nothing is ever overwritten that slugaudit could not parse.
+into a JSON file that parses. Non-JSON configs, a platform outside a row's
+`PerOs` paths and `manual_steps` rows are instructed instead of attempted, and
+nothing is ever overwritten that slugaudit could not parse.
 
 ## Errors
 
@@ -313,12 +302,8 @@ of attempted, and nothing is ever overwritten that slugaudit could not parse.
   `cannot be connected automatically`, naming the missing binary, the exact
   command slugaudit would have run, the `Reference:` the row's facts come from,
   and the vendor `Docs:` link.
-- A row that cannot be automated (`goose`, `crush`, `trae`, `pearai`) or whose
-  evidence is `Unverified` → the same message shape, carrying the paste-ready
-  remedy the registry holds for that row.
-- A documented CLI whose `mcp add` is not confirmed by `<cli> mcp add --help`
-  at call time → refused with instructions: slugaudit will not guess the syntax
-  of a client it has only read about.
+- A row that cannot be automated (`goose`, `crush`) → the same message shape,
+  carrying the paste-ready remedy the registry holds for that row.
 - A config file that exists but is not valid JSON → `cannot modify <path>:
   configuration file exists but contains invalid JSON: … (fix
   syntax/comments or remove the file to reset, then retry)`

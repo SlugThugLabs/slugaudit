@@ -7,18 +7,18 @@
 //! grammar of a client's `mcp add` subcommand.
 //!
 //! Each entry carries an [`Evidence`] marker because two independent
-//! doc-research passes disagreed on seven of the 26 clients — and each pass
-//! was wrong on roughly half of those (cursor and kimi turned out to have no
-//! `mcp add` at all, while opencode and crush landed on the opposite verdict
+//! doc-research passes disagreed on seven of the original 26 clients — and each
+//! pass was wrong on roughly half of those (cursor and kimi turned out to have
+//! no `mcp add` at all, while opencode and crush landed on the opposite verdict
 //! each pass had chosen). Only probing the installed binaries was reliable, so
-//! an entry must be able to say "unverified" instead of asserting: `connect`
-//! refuses `Unverified` entries and never runs an invented command for a
-//! [`Strategy::Unknown`] one. A probe result
-//! ([`Evidence::VerifiedByProbe`]) overrides both doc passes.
+//! a client whose mechanism could not be established is not in the registry
+//! (pearai, trae and 1mcp were removed on 2026-10-17 for that reason), and
+//! `connect` never runs an invented command for a [`Strategy::Unknown`] one. A
+//! probe result ([`Evidence::VerifiedByProbe`]) overrides both doc passes.
 
 use std::path::{Path, PathBuf};
 
-// slugaudit-line-exception: approved-by=slugthug; reason=the client registry is a data table with one line per client (26 rows) plus the three-state strategy, written-shape and evidence model it encodes; splitting the table from its invariants would scatter the reconciliation this file exists to record and that connect_exec, docs and tests all read from one place
+// slugaudit-line-exception: approved-by=slugthug; reason=the client registry is a data table with one line per client (23 rows) plus the three-state strategy, written-shape and evidence model it encodes; splitting the table from its invariants would scatter the reconciliation this file exists to record and that connect_exec, docs and tests all read from one place
 
 /// How slugaudit can register itself with a client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,9 +70,6 @@ pub enum ConfigShape {
     /// block (see the `goose` entry's `remedy`). Do not "fix" this by adding a
     /// YAML dependency.
     GooseExtensions,
-    /// VS Code-style top-level `"servers": { name: { command, args } }`.
-    /// Candidate shape for PearAI only, whose entry is `Unverified`.
-    VsCodeServers,
     /// The written shape could not be established; writers MUST refuse.
     Unknown,
 }
@@ -86,7 +83,6 @@ impl ConfigShape {
             ConfigShape::McpServersCommandArgs => &["mcpServers", "mcp"],
             ConfigShape::OpenCodeLocal => &["mcp"],
             ConfigShape::ZedContextServer => &["context_servers"],
-            ConfigShape::VsCodeServers => &["servers"],
             ConfigShape::GooseExtensions => &["extensions"],
             ConfigShape::Unknown => &[],
         }
@@ -101,7 +97,6 @@ impl ConfigShape {
             ConfigShape::McpServersCommandArgs => Some("mcpServers"),
             ConfigShape::OpenCodeLocal => Some("mcp"),
             ConfigShape::ZedContextServer => Some("context_servers"),
-            ConfigShape::VsCodeServers => Some("servers"),
             ConfigShape::GooseExtensions | ConfigShape::Unknown => None,
         }
     }
@@ -110,7 +105,7 @@ impl ConfigShape {
     pub fn entry(self, binary: &Path) -> serde_json::Value {
         let command = binary.to_string_lossy();
         match self {
-            ConfigShape::McpServersCommandArgs | ConfigShape::VsCodeServers => {
+            ConfigShape::McpServersCommandArgs => {
                 serde_json::json!({ "command": command, "args": [] })
             }
             ConfigShape::OpenCodeLocal => {
@@ -137,10 +132,6 @@ pub enum Evidence {
     /// Verified against the client's own source (stronger than docs, but not
     /// a runtime probe of an installed binary).
     VerifiedFromSource,
-    /// The research passes disagreed and no probe settled it.
-    Contested,
-    /// No pass could establish it; `connect` refuses.
-    Unverified,
 }
 
 /// Where a client's config file lives.
@@ -154,20 +145,15 @@ pub enum ConfigPath {
         windows: &'static str,
         linux: &'static str,
     },
-    /// Relative to the project root, not the home directory.
-    ProjectRoot(&'static str),
     /// No verified path.
     Unverified,
 }
 
 impl ConfigPath {
     /// Resolves the config file against `home` (the OS home directory).
-    /// `ProjectRoot` paths resolve relative to the current directory, because
-    /// the project root is what the client reads, not the user's home.
     pub fn resolve(&self, home: &Path) -> Option<PathBuf> {
         match self {
             ConfigPath::Home(rel) => Some(home.join(rel)),
-            ConfigPath::ProjectRoot(rel) => Some(PathBuf::from(rel)),
             ConfigPath::PerOs {
                 macos,
                 windows,
@@ -301,9 +287,6 @@ impl AgentDef {
     /// The sentence explaining why `connect` must refuse this entry, or `None`
     /// when the automated path is sufficient.
     pub fn blocker(&self) -> Option<&'static str> {
-        if self.evidence == Evidence::Unverified {
-            return Some("its registration mechanism could not be established");
-        }
         if self.manual_steps {
             return Some(match self.shape {
                 ConfigShape::GooseExtensions => {
@@ -384,7 +367,7 @@ impl AgentDef {
 #[rustfmt::skip]
 pub const AGENTS: &[AgentDef] = &[
     AgentDef { id: "agy", display_name: "Antigravity (agy)", strategy: Strategy::CliDirect, cli: Some("agy"), verify_cli: None, config: ConfigPath::Unverified, shape: ConfigShape::Unknown, dialect: Dialect::Plain, evidence: Evidence::VerifiedByProbe, file_fallback: false, manual_steps: false, remedy: "", reference: "agy 1.2.14 (probed 2026-09-30)", docs_url: "https://antigravity.google/docs/mcp/", note: "`agy mcp add|remove|list|enable|disable` all exist (probed on the installed binary).", },
-    AgentDef { id: "gemini", display_name: "Gemini CLI", strategy: Strategy::CliDirect, cli: Some("gemini"), verify_cli: None, config: ConfigPath::Home(".gemini/settings.json"), shape: ConfigShape::McpServersCommandArgs, dialect: Dialect::GeminiScope, evidence: Evidence::DocVerified, file_fallback: false, manual_steps: false, remedy: "", reference: "vendor docs, as of 2026-09-30", docs_url: "https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md", note: "`--scope` defaults to project (writes `./.gemini/settings.json` in the CWD), so registration passes `-s user` to land in `~/.gemini/settings.json`; no `--` separator is used because Gemini takes the command as a positional. The settings file is detection only.", },
+    AgentDef { id: "gemini", display_name: "Gemini CLI", strategy: Strategy::CliDirect, cli: Some("gemini"), verify_cli: None, config: ConfigPath::Home(".gemini/settings.json"), shape: ConfigShape::McpServersCommandArgs, dialect: Dialect::GeminiScope, evidence: Evidence::VerifiedByProbe, file_fallback: false, manual_steps: false, remedy: "", reference: "gemini 0.64.0 (probed 2026-10-17)", docs_url: "https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md", note: "probed against the real CLI: `gemini mcp add <name> <commandOrUrl> [args...]`; `--scope` defaults to project (writes `./.gemini/settings.json` in the CWD), so registration passes `-s user` to land in `~/.gemini/settings.json`; no `--` separator is used because Gemini takes the command as a positional. End to end, `connect gemini` wrote the entry and `disconnect gemini` removed it. Gemini lists the server as Disabled until the folder is trusted. The settings file is detection only.", },
     AgentDef { id: "claude", display_name: "Claude Code", strategy: Strategy::CliDirect, cli: Some("claude"), verify_cli: None, config: ConfigPath::Home(".claude.json"), shape: ConfigShape::McpServersCommandArgs, dialect: Dialect::Claude, evidence: Evidence::VerifiedByProbe, file_fallback: false, manual_steps: false, remedy: "", reference: "claude 2.1.233 (probed 2026-09-30)", docs_url: "https://code.claude.com/docs/en/mcp", note: "`claude mcp add` probed; user scope is documented as `-s user`; `.claude.json` is detection only.", },
     AgentDef { id: "hermes", display_name: "Hermes Agent", strategy: Strategy::CliDirect, cli: Some("hermes"), verify_cli: None, config: ConfigPath::Home(".hermes/config.yaml"), shape: ConfigShape::Unknown, dialect: Dialect::Hermes, evidence: Evidence::VerifiedByProbe, file_fallback: false, manual_steps: false, remedy: "", reference: "hermes 0.18.2 (probed 2026-09-30)", docs_url: "https://hermes-agent.nousresearch.com/docs/reference/mcp-config-reference", note: "`hermes mcp add <name> --command <binary>` probed; the YAML config is detection only.", },
     AgentDef { id: "copilot", display_name: "GitHub Copilot", strategy: Strategy::CliDirect, cli: Some("copilot"), verify_cli: None, config: ConfigPath::Home(".copilot/mcp-config.json"), shape: ConfigShape::McpServersCommandArgs, dialect: Dialect::DashSeparator, evidence: Evidence::VerifiedByProbe, file_fallback: false, manual_steps: false, remedy: "", reference: "copilot 1.0.89 (probed)", docs_url: "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers", note: "probed: `copilot mcp add <name> -- <cmd>` matches slugaudit's emission and adds no `--scope`; the config file is detection only.", },
@@ -394,7 +377,6 @@ pub const AGENTS: &[AgentDef] = &[
     AgentDef { id: "bob", display_name: "Bob Agent", strategy: Strategy::CliDirect, cli: Some("bob"), verify_cli: None, config: ConfigPath::Home(".bob/mcp_settings.json"), shape: ConfigShape::McpServersCommandArgs, dialect: Dialect::BobTransportScope, evidence: Evidence::VerifiedByProbe, file_fallback: true, manual_steps: false, remedy: "", reference: "bob 2.0.5 (probed 2026-09-30)", docs_url: "https://bob.ibm.com/docs/shell/configuration/mcp/mcp-bobshell", note: "probed: both doc passes missed it, but `bob mcp add <name> <commandOrUrl>` exists with -t/--transport stdio|http (default stdio) and -s/--scope workspace|global (default workspace); the global file is the fallback path.", },
     AgentDef { id: "grok", display_name: "Grok CLI", strategy: Strategy::CliDirect, cli: Some("grok"), verify_cli: None, config: ConfigPath::Home(".grok/config.toml"), shape: ConfigShape::Unknown, dialect: Dialect::DashSeparator, evidence: Evidence::VerifiedByProbe, file_fallback: false, manual_steps: false, remedy: "", reference: "grok 1.0.44 (probed)", docs_url: "https://docs.x.ai/build/features/mcp-servers", note: "probed: `grok mcp add` and `--scope user` are real (user scope is the explicit default); the TOML config is detection only.", },
     AgentDef { id: "goose", display_name: "Goose CLI", strategy: Strategy::ConfigFile, cli: Some("goose"), verify_cli: None, config: ConfigPath::Home(".config/goose/config.yaml"), shape: ConfigShape::GooseExtensions, dialect: Dialect::Plain, evidence: Evidence::VerifiedByProbe, file_fallback: false, manual_steps: true, remedy: "goose has no `mcp add`. Add this block to `~/.config/goose/config.yaml`:\nextensions:\n  slugaudit:\n    type: stdio\n    cmd: {binary}\n    args: []", reference: "goose 1.52.0 (probed 2026-09-30)", docs_url: "https://goose-docs.ai/docs/getting-started/using-extensions/", note: "probed: `goose mcp <SERVER>` only *runs* goose's bundled servers (`goose mcp add` errors), so there is no add subcommand; the YAML config is user-edited — no machine-writable shape.", },
-    AgentDef { id: "1mcp", display_name: "1MCP Agent", strategy: Strategy::CliDirect, cli: Some("1mcp"), verify_cli: None, config: ConfigPath::Unverified, shape: ConfigShape::Unknown, dialect: Dialect::DashSeparator, evidence: Evidence::VerifiedByProbe, file_fallback: false, manual_steps: false, remedy: "", reference: "1mcp 0.38.2 (probed)", docs_url: "https://docs.1mcp.app/commands/mcp/add", note: "probed in both `--type ...` and `-- ...` forms; it is a gateway/aggregator, not a client, so the emitted command is valid but is not client registration.", },
     AgentDef { id: "openhands", display_name: "OpenHands", strategy: Strategy::CliDirect, cli: Some("openhands"), verify_cli: None, config: ConfigPath::Home(".openhands/mcp.json"), shape: ConfigShape::McpServersCommandArgs, dialect: Dialect::TransportStdio, evidence: Evidence::VerifiedByProbe, file_fallback: false, manual_steps: false, remedy: "", reference: "openhands 1.16.0 (probed 2026-09-30)", docs_url: "https://docs.openhands.dev/openhands/usage/cli/mcp-servers", note: "probed: `--transport {http,sse,stdio}` is REQUIRED (the grammar is `<name> --transport <T> <target>`, target being a positional); the JSON config is detection only.", },
     AgentDef { id: "kimi", display_name: "Kimi Code", strategy: Strategy::ConfigFile, cli: None, verify_cli: None, config: ConfigPath::Home(".kimi-code/mcp.json"), shape: ConfigShape::McpServersCommandArgs, dialect: Dialect::Plain, evidence: Evidence::VerifiedByProbe, file_fallback: false, manual_steps: false, remedy: "", reference: "kimi 2.1.1 (probed)", docs_url: "https://moonshotai.github.io/kimi-code/en/customization/mcp", note: "probed: Kimi Code 2.1.1 has no `mcp` subcommand (`kimi mcp add` belonged to the archived legacy kimi-cli); write the config file.", },
     AgentDef { id: "droid", display_name: "Droid (Factory)", strategy: Strategy::CliDirect, cli: Some("droid"), verify_cli: None, config: ConfigPath::Home(".factory/mcp.json"), shape: ConfigShape::McpServersCommandArgs, dialect: Dialect::DroidType, evidence: Evidence::VerifiedByProbe, file_fallback: false, manual_steps: false, remedy: "", reference: "droid 0.230.0 (probed)", docs_url: "https://docs.factory.ai/cli/configuration/mcp", note: "probed: `droid mcp add [--type <http|sse|stdio>] <name> <urlOrCommand...>` — the flag is `--type` (no `--transport` alias) and the command is a positional; the JSON config is detection only.", },
@@ -402,10 +384,8 @@ pub const AGENTS: &[AgentDef] = &[
     AgentDef { id: "q", display_name: "Amazon Q Developer", strategy: Strategy::CliDirect, cli: Some("q"), verify_cli: None, config: ConfigPath::Unverified, shape: ConfigShape::Unknown, dialect: Dialect::Q, evidence: Evidence::VerifiedByProbe, file_fallback: false, manual_steps: false, remedy: "", reference: "q 1.19.7 (probed 2026-09-30)", docs_url: "https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/command-line-mcp.html", note: "probed: `q mcp add --name X --command Y` (both flags required, no transport flag); the Debian `q` collision is `python3-q-text-as-data`, which also ships /usr/bin/q.", },
     AgentDef { id: "cursor", display_name: "Cursor IDE", strategy: Strategy::ConfigFile, cli: None, verify_cli: Some("agent"), config: ConfigPath::Home(".cursor/mcp.json"), shape: ConfigShape::McpServersCommandArgs, dialect: Dialect::Plain, evidence: Evidence::VerifiedByProbe, file_fallback: false, manual_steps: false, remedy: "", reference: "cursor 2026.09.28-64d2043 (probed)", docs_url: "https://cursor.com/docs/cli/mcp", note: "probed: `agent mcp` has no `add` (only login/list/list-tools/enable/disable; its docs agree), so `agent mcp list` verifies but cannot register; write `.cursor/mcp.json` (binary `agent`, legacy alias `cursor-agent`).", },
     AgentDef { id: "windsurf", display_name: "Windsurf", strategy: Strategy::ConfigFile, cli: None, verify_cli: None, config: ConfigPath::Home(".codeium/windsurf/mcp_config.json"), shape: ConfigShape::McpServersCommandArgs, dialect: Dialect::Plain, evidence: Evidence::DocVerified, file_fallback: false, manual_steps: false, remedy: "", reference: "vendor docs, as of 2026-09-30", docs_url: "https://docs.devin.ai/windsurf/plugins/cascade/mcp", note: "docs: config-file only, no CLI.", },
-    AgentDef { id: "trae", display_name: "Trae AI IDE", strategy: Strategy::ConfigFile, cli: None, verify_cli: None, config: ConfigPath::ProjectRoot(".trae/mcp.json"), shape: ConfigShape::McpServersCommandArgs, dialect: Dialect::Plain, evidence: Evidence::DocVerified, file_fallback: false, manual_steps: true, remedy: "trae is project-scoped: put the `mcpServers` entry in `.trae/mcp.json` at the project root, then enable project MCP in Trae's settings UI.", reference: "vendor docs, as of 2026-09-30 (installer geo-blocked, not probed)", docs_url: "https://docs.trae.ai/ide/add-mcp-servers", note: "could not be probed: the traecli installer is geo-blocked from this host and the CLI is enterprise-gated; project-scoped with a UI toggle.", },
     AgentDef { id: "pi", display_name: "Pi Agent", strategy: Strategy::CliDirect, cli: Some("pi"), verify_cli: None, config: ConfigPath::Home(".pi/agent/mcp.json"), shape: ConfigShape::McpServersCommandArgs, dialect: Dialect::DashSeparator, evidence: Evidence::VerifiedByProbe, file_fallback: true, manual_steps: false, remedy: "", reference: "pi 0.99.1 (probed)", docs_url: "https://pi.dev/docs/latest/mcp", note: "probed: `pi mcp add` is real; `.pi/agent/mcp.json` is documented too and serves as the file fallback.", },
-    AgentDef { id: "omp", display_name: "Oh My Pi (omp)", strategy: Strategy::CliInteractiveOnly, cli: None, verify_cli: None, config: ConfigPath::Home(".omp/agent/mcp.json"), shape: ConfigShape::McpServersCommandArgs, dialect: Dialect::Plain, evidence: Evidence::DocVerified, file_fallback: false, manual_steps: false, remedy: "", reference: "vendor docs, as of 2026-09-30", docs_url: "https://github.com/can1357/oh-my-pi/blob/main/docs/mcp-config.md", note: "in-session `/mcp add` only; the installer writes `.omp/agent/mcp.json`.", },
-    AgentDef { id: "pearai", display_name: "PearAI", strategy: Strategy::ConfigFile, cli: None, verify_cli: None, config: ConfigPath::Unverified, shape: ConfigShape::VsCodeServers, dialect: Dialect::Plain, evidence: Evidence::Unverified, file_fallback: false, manual_steps: true, remedy: "PearAI documents no config path (a VS Code-style `servers` key vs its bundled Roo-Code agent); add slugaudit manually once the format is confirmed.", reference: "vendor docs, as of 2026-09-30", docs_url: "https://docs.roocode.com/features/mcp/using-mcp-in-roo", note: "unverified: the passes disagree between a VS Code-style `servers` key and its bundled Roo-Code agent.", },
+    AgentDef { id: "omp", display_name: "Oh My Pi (omp)", strategy: Strategy::CliInteractiveOnly, cli: None, verify_cli: None, config: ConfigPath::Home(".omp/agent/mcp.json"), shape: ConfigShape::McpServersCommandArgs, dialect: Dialect::Plain, evidence: Evidence::VerifiedFromSource, file_fallback: false, manual_steps: false, remedy: "", reference: "omp 18.12.0 source and schema (checked 2026-10-17)", docs_url: "https://github.com/can1357/oh-my-pi/blob/main/docs/mcp-config.md", note: "omp 18.12.0 has no `mcp` subcommand; its own `mcp-schema.json` names `~/.omp/agent/mcp.json` with a top-level `mcpServers` map, and the entry connect writes validates against that schema. Not run: loading the entry needs a configured model provider. The in-session `/mcp add` is the client's own add path; the installer writes the config file instead.", },
     AgentDef { id: "warp", display_name: "Warp Terminal", strategy: Strategy::ConfigFile, cli: Some("oz"), verify_cli: None, config: ConfigPath::Home(".warp/.mcp.json"), shape: ConfigShape::McpServersCommandArgs, dialect: Dialect::Plain, evidence: Evidence::DocVerified, file_fallback: false, manual_steps: false, remedy: "", reference: "vendor docs, as of 2026-09-30", docs_url: "https://docs.warp.dev/agents/capabilities/mcp/", note: "filename is `.mcp.json` (leading dot); the newer CLI exposes agent commands as `oz ... --mcp` (oz is `cli` for detection only).", },
     AgentDef { id: "claude-desktop", display_name: "Claude Desktop", strategy: Strategy::ConfigFile, cli: None, verify_cli: None, config: ConfigPath::PerOs { macos: "Library/Application Support/Claude/claude_desktop_config.json", windows: "%APPDATA%/Claude/claude_desktop_config.json", linux: ".config/Claude/claude_desktop_config.json", }, shape: ConfigShape::McpServersCommandArgs, dialect: Dialect::Plain, evidence: Evidence::DocVerified, file_fallback: false, manual_steps: false, remedy: "", reference: "vendor docs, as of 2026-09-30", docs_url: "https://modelcontextprotocol.io/docs/develop/connect-local-servers", note: "per-OS config; the Linux path is convention, not vendor-documented.", },
     AgentDef { id: "zed", display_name: "Zed Editor", strategy: Strategy::ConfigFile, cli: None, verify_cli: None, config: ConfigPath::Home(".config/zed/settings.json"), shape: ConfigShape::ZedContextServer, dialect: Dialect::Plain, evidence: Evidence::VerifiedFromSource, file_fallback: false, manual_steps: false, remedy: "", reference: "Zed source, as of 2026-09-30", docs_url: "https://zed.dev/docs/ai/mcp", note: "Zed's source: `command` is a string with a sibling `args` array (nested `{path,args}` is the legacy shape).", },

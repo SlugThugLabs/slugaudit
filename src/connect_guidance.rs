@@ -119,21 +119,6 @@ pub fn refusal(agent: &AgentDef, binary: &Path, home: Option<&Path>) -> ConnectE
     }
 }
 
-/// A documented CLI whose `mcp add` we could not confirm at runtime: refuse
-/// rather than guess the syntax.
-pub fn unconfirmed_cli(agent: &AgentDef, binary: &Path, cli: &str, command: &str) -> ConnectError {
-    let mut reason = format!(
-        "`{cli} mcp add` was not confirmed at runtime, so slugaudit will not guess the syntax \
-         for a client it has only read about.\n{}",
-        hand_instructions(agent, binary, Some(command))
-    );
-    push_provenance(&mut reason, agent);
-    ConnectError::UnsupportedAgent {
-        agent: agent.display_name.to_string(),
-        reason,
-    }
-}
-
 fn push_provenance(reason: &mut String, agent: &AgentDef) {
     // A refusal always ends with both lines: the user is being sent to the
     // vendor page, whether or not the entry came from a probe.

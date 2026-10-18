@@ -74,16 +74,12 @@ const CASES: &[Case] = &[
         invocations: &["mcp list", "mcp add slugaudit --scope user -- {bin}"],
         written: None,
     },
-    // Gemini's grammar is documented, not probed, so `connect` first confirms
-    // the installed binary really offers `mcp add`.
+    // Gemini's `--scope` defaults to project, so a global registration passes
+    // `-s user` and no `--` separator (probed against gemini 0.64.0).
     Case {
         agent: "gemini",
         cli: true,
-        invocations: &[
-            "mcp list",
-            "mcp add --help",
-            "mcp add -s user slugaudit {bin}",
-        ],
+        invocations: &["mcp list", "mcp add -s user slugaudit {bin}"],
         written: None,
     },
     Case {

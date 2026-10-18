@@ -1448,3 +1448,31 @@ Format: date — title; status; context; decision; rationale; consequences.
   justified, the exception is added; otherwise the code is restructured.
 - **Rejected**: replacing the line limit with a cyclomatic-complexity/CRAP gate — it
   measures the code but never makes anyone justify it to the owner.
+
+
+## 2026-10-17 — Only clients whose registration is established stay in `connect`
+
+- **Decision**: the registry holds 23 clients, down from 26. `pearai`, `trae` and `1mcp` are
+  removed, along with the code only they needed: `ConfigShape::VsCodeServers`,
+  `ConfigPath::ProjectRoot`, `Evidence::Unverified` and `Evidence::Contested`, and the
+  runtime `mcp add --help` confirmation (`connect_cli::supports_add`,
+  `connect_guidance::unconfirmed_cli`), which could no longer fire once no `CliDirect` row
+  was unprobed. `gemini` was probed against the real CLI (0.64.0) and `omp` checked against
+  its own source and schema (18.12.0), so both stay with a stronger tier.
+- **Rationale** (owner): trim the agents to the ones known to be right; the product should not
+  differ by agent, and setup is part of the product, so its entries must be correct.
+  `pearai` had no established mechanism, `trae` could not be probed (installer geo-blocked,
+  CLI enterprise-gated), and `1mcp` is a gateway whose `mcp add` registers a backend rather
+  than connecting a client. The server itself never reads which client is connected (checked:
+  no use of client identity anywhere under `src/`), so removal changes registration only.
+- **Rejected**: removing every client not probed against a real binary. `windsurf`, `warp`
+  and `claude-desktop` are GUI applications that cannot be run headlessly, but each writes a
+  plain JSON entry at a documented path; they stay as `DocVerified` with the follow-up open
+  in PLAN. Also rejected: dropping the config-file writers altogether — they are how
+  `cursor`, `kimi`, `zed` and `omp` are registered, since those clients have no `mcp add`.
+- **Consequences**: users of the three removed clients lose one-command setup and can paste
+  the snippet from `slugaudit menu` option 4. Each probe was run with `HOME`,
+  `SLUGTHUG_HOME` and `SLUGTHUG_CONFIG_HOME` pointed at a temporary directory, so no real
+  client config was read or written. Reversible: a row can come back once its mechanism is
+  established.
+

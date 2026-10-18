@@ -209,13 +209,9 @@ fn json_agent_refuses_to_overwrite_invalid_or_commented_json() {
 fn connect_refuses_entries_it_cannot_write_safely() {
     // goose: YAML config with no machine-writable shape.
     // crush: `mcp add` is a crushrc bash builtin, so no shape is established.
-    // trae: project-scoped, plus a UI toggle.
-    // pearai: the mechanism could not be established at all.
     let cases: &[(&str, Option<&str>)] = &[
         ("goose", Some(".config/goose/config.yaml")),
         ("crush", Some(".config/crush/crushrc")),
-        ("trae", Some(".trae/mcp.json")),
-        ("pearai", None),
     ];
     for (id, file) in cases {
         let temp = tempfile::tempdir().expect("tempdir");

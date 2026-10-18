@@ -77,14 +77,13 @@ slugaudit connect claude     # Claude Code (~/.claude.json)
 slugaudit disconnect claude  # alias: slugaudit remove claude
 ```
 
-26 targets in this revision (ids are the `connect` argument; the display name is in
+23 targets in this revision (ids are the `connect` argument; the display name is in
 parentheses where the id is not self-evident):
 
 `agy` (Antigravity), `amp`, `bob`, `claude` (Claude Code), `claude-desktop`, `codex`,
 `copilot` (GitHub Copilot), `crush`, `cursor`, `droid` (Droid / Factory), `gemini`
 (Gemini CLI), `goose`, `grok`, `hermes`, `kimi` (Kimi Code), `omp` (Oh My Pi),
-`opencode`, `openhands`, `pearai`, `pi`, `q` (Amazon Q Developer), `trae`, `warp`,
-`windsurf`, `zed`, `1mcp`.
+`opencode`, `openhands`, `pi`, `q` (Amazon Q Developer), `warp`, `windsurf`, `zed`.
 
 `claude-code` is accepted as an alias for `claude`, `antigravity` for `agy`,
 `github-copilot` for `copilot`, and `oh-my-pi` for `omp`. The registry is

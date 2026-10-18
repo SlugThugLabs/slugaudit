@@ -20,7 +20,7 @@ fn find_agent_finds_standard_and_aliased_names() {
 
 #[test]
 fn registry_entries_declare_an_executable_or_a_config_file() {
-    assert_eq!(AGENTS.len(), 26, "the reconciled registry holds 26 clients");
+    assert_eq!(AGENTS.len(), 23, "the reconciled registry holds 23 clients");
     for a in AGENTS {
         match a.strategy {
             Strategy::CliDirect => assert!(
@@ -42,15 +42,13 @@ fn registry_entries_declare_an_executable_or_a_config_file() {
             }
             Strategy::ConfigFile => {
                 assert!(
-                    a.config.is_usable() || a.evidence == Evidence::Unverified,
-                    "{}: a config-file entry needs a path unless it is unverified",
+                    a.config.is_usable(),
+                    "{}: a config-file entry needs a verified path",
                     a.id
                 );
             }
-            Strategy::Unknown => assert_eq!(
-                a.evidence,
-                Evidence::Unverified,
-                "{}: an unknown mechanism may never assert an unverified mode",
+            Strategy::Unknown => panic!(
+                "{}: no client may be left without an established mechanism",
                 a.id
             ),
         }
@@ -79,7 +77,7 @@ fn registry_entries_carry_an_evidence_status() {
         "bob",
         "grok",
         "goose",
-        "1mcp",
+        "gemini",
         "openhands",
         "kimi",
         "droid",
@@ -94,31 +92,23 @@ fn registry_entries_carry_an_evidence_status() {
             "{id} was probed"
         );
     }
-    // pearai is the one mechanism neither pass could establish, and trae's
-    // installer is geo-blocked, so neither reaches a probe.
-    assert_eq!(
-        find_agent("pearai").expect("pearai").evidence,
-        Evidence::Unverified
-    );
-    // Documented-only and source-verified entries round out the 26.
-    for id in [
-        "gemini",
-        "windsurf",
-        "trae",
-        "omp",
-        "warp",
-        "claude-desktop",
-    ] {
+    // Documented-only entries: GUI apps with no CLI to run, so their config
+    // path comes from vendor documentation alone.
+    for id in ["windsurf", "warp", "claude-desktop"] {
         assert_eq!(
             find_agent(id).expect("agent").evidence,
             Evidence::DocVerified,
             "{id} is doc-verified"
         );
     }
-    assert_eq!(
-        find_agent("zed").expect("zed").evidence,
-        Evidence::VerifiedFromSource
-    );
+    // Source-verified entries: the client's own code names the path and shape.
+    for id in ["zed", "omp"] {
+        assert_eq!(
+            find_agent(id).expect("agent").evidence,
+            Evidence::VerifiedFromSource,
+            "{id} is source-verified"
+        );
+    }
     // The Unknown state stays part of the model, but every client now has an
     // established mechanism, so no live entry needs it.
     assert!(
@@ -289,10 +279,6 @@ fn registry_shape_and_path_models_match_the_documented_forms() {
         find_agent("goose").expect("goose").shape,
         ConfigShape::GooseExtensions
     );
-    assert_eq!(
-        find_agent("pearai").expect("pearai").shape,
-        ConfigShape::VsCodeServers
-    );
 
     let desktop = find_agent("claude-desktop").expect("claude-desktop");
     let home = Path::new("/home/user");
@@ -311,7 +297,7 @@ fn registry_shape_and_path_models_match_the_documented_forms() {
         .collect();
     assert_eq!(
         manual,
-        ["goose", "crush", "trae", "pearai"],
+        ["goose", "crush"],
         "these clients cannot be registered by an automated write"
     );
     for a in AGENTS.iter().filter(|a| a.manual_steps) {
@@ -333,18 +319,11 @@ fn registry_shape_and_path_models_match_the_documented_forms() {
             a.id
         );
         assert!(
-            a.blocker().is_none() || a.evidence == Evidence::Unverified,
-            "{}: only an unverified mechanism may block an automated entry",
+            a.blocker().is_none(),
+            "{}: only a manual entry may block the automated path",
             a.id
         );
     }
-    let trae = find_agent("trae").expect("trae");
-    assert_eq!(trae.config, ConfigPath::ProjectRoot(".trae/mcp.json"));
-    assert_eq!(
-        trae.config.resolve(home),
-        Some(PathBuf::from(".trae/mcp.json")),
-        "trae is project-scoped, so a home-scoped write cannot work"
-    );
 }
 
 #[test]
@@ -411,10 +390,7 @@ fn every_refusal_carries_a_remedy_and_the_source_it_came_from() {
         );
     }
     // The clients we refuse outright must also carry the paste-ready snippet.
-    for a in AGENTS
-        .iter()
-        .filter(|a| a.manual_steps || a.evidence == Evidence::Unverified)
-    {
+    for a in AGENTS.iter().filter(|a| a.manual_steps) {
         let text = refusal_text(a);
         let remedy = a.guidance(Path::new("/bin/slugaudit")).expect("remedy");
         assert!(

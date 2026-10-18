@@ -1,9 +1,9 @@
 //! Low-level command execution and JSON config file modification for agent connect.
 #![allow(clippy::print_stdout)]
-// slugaudit-line-exception: approved-by=slugthug; reason=one cohesive concern - the registration policy for 26 clients (probe-or-fallback dispatch, single-key config merging, and the wiring of every refusal/failure into actionable guidance); it reads as one decision table and moving any branch out scatters the policy that is verified entry-by-entry against the registry
+// slugaudit-line-exception: approved-by=slugthug; reason=one cohesive concern - the registration policy for 23 clients (probe-or-fallback dispatch, single-key config merging, and the wiring of every refusal/failure into actionable guidance); it reads as one decision table and moving any branch out scatters the policy that is verified entry-by-entry against the registry
 
 use crate::cli::ConnectError;
-use crate::connect_agents::{AgentDef, Evidence, Strategy};
+use crate::connect_agents::{AgentDef, Strategy};
 use crate::connect_cli;
 use crate::connect_guidance as guidance;
 use std::fs;
@@ -112,9 +112,6 @@ fn run_installed_cli(
 ) -> Result<(), ConnectError> {
     let args = connect_cli::add_args(agent, binary);
     let attempted = connect_cli::display_command(cli, &args);
-    if agent.evidence != Evidence::VerifiedByProbe && !connect_cli::supports_add(cli) {
-        return Err(guidance::unconfirmed_cli(agent, binary, cli, &attempted));
-    }
     match connect_cli::run_add(cli, &args) {
         Ok(()) => {
             print_lines(&guidance::success_lines(

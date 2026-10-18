@@ -10,16 +10,6 @@ use crate::connect_agents::{AgentDef, Dialect};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// Confirms the installed binary really offers `mcp add`, so a client we have
-/// only read about is automated only while its CLI agrees at call time.
-pub fn supports_add(cli: &str) -> bool {
-    Command::new(cli)
-        .args(["mcp", "add", "--help"])
-        .stdin(Stdio::null())
-        .output()
-        .is_ok_and(|out| out.status.success())
-}
-
 /// True when the client's own `mcp list` reports slugaudit.
 pub fn check_connected(cli: &str) -> bool {
     Command::new(cli)

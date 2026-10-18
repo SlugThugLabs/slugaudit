@@ -459,23 +459,31 @@ covering `SectionNotAnObject`, `UnknownAgent`, `InvalidChoice`, `RemoveFailed`, 
 The registry no longer asserts anything nobody has run — that is what its `Evidence` tier,
 `reference` version and `docs_url` are for. Current state, to finish from:
 
+State as of 2026-10-17 (23 clients; the registry was 26 until `pearai`, `trae` and `1mcp` were
+removed that day — see DECISIONS 2026-10-17):
+
 - **18 `VerifiedByProbe`** — the CLI was installed and its `mcp` subcommands probed:
-  `agy`, `amp`, `bob`, `claude`, `codex`, `copilot`, `crush`, `cursor`, `droid`, `goose`,
-  `grok`, `hermes`, `kimi`, `opencode`, `openhands`, `pi`, `q`, `1mcp`.
-- **6 `DocVerified`** — route taken from vendor documentation, never run here: `gemini`,
-  `omp`, `trae`, `warp`, `windsurf`, `claude-desktop`.
-- **1 `VerifiedFromSource`** — `zed`, read out of Zed's own settings code: `command` is a
+  `agy`, `amp`, `bob`, `claude`, `codex`, `copilot`, `crush`, `cursor`, `droid`, `gemini`,
+  `goose`, `grok`, `hermes`, `kimi`, `opencode`, `openhands`, `pi`, `q`. `gemini` moved here
+  on 2026-10-17 (resolved): gemini 0.64.0 was installed in an isolated directory and
+  `slugaudit connect gemini` / `disconnect gemini` ran end to end against it under a
+  throwaway `HOME`; the entry landed in `~/.gemini/settings.json` and was removed again.
+- **3 `DocVerified`** — GUI applications with no CLI to run, so still documentation only:
+  `windsurf`, `warp`, `claude-desktop`. **Still open**, not scheduled: confirming their config
+  path and shape against the installed application (for example from its bundled sources, as
+  was done for `omp`).
+- **2 `VerifiedFromSource`** — `zed`, read out of Zed's own settings code: `command` is a
   string with a sibling `args` array, and the nested object slugaudit used to write is the
-  legacy shape that no longer deserializes.
-- **1 `Unverified`** — `pearai`; the two research passes disagreed about its mechanism, so
-  `connect` refuses rather than guessing.
-- **4 clients refuse by design** with a paste-ready remedy, the version the advice came
-  from and a docs link: `goose`, `crush`, `pearai`, `trae`.
+  legacy shape that no longer deserializes; and `omp` (resolved 2026-10-17), checked against
+  omp 18.12.0's own `mcp-schema.json` (the entry `connect` writes validates against it; the
+  runtime load was not exercised because it needs a model provider). omp 18.12.1 could not be
+  installed that day (its `@oh-my-pi/pi-natives@18.12.1` dependency was unpublished).
+- **2 clients refuse by design** with a paste-ready remedy, the version the advice came
+  from and a docs link: `goose`, `crush`.
 
 **Follow-up (small, not scheduled).** On a machine where the remaining clients are
-installed, probe them the same way and upgrade `Evidence`; `gemini` first, since it is the
-one `DocVerified` client whose *argv* correctness matters (the `-s user` scope) and whose
-binary was unavailable here. Treat any disagreement with the recorded route as a bug in the
+installed, probe them the same way and upgrade `Evidence`. (`gemini` was the first, and is done —
+see above.) Treat any disagreement with the recorded route as a bug in the
 registry rather than as documentation drift: of the clients the two research passes
 disagreed about, each pass was wrong on roughly half, and only the installed binaries
 settled it.
