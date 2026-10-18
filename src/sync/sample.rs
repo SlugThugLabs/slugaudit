@@ -117,7 +117,10 @@ pub(super) fn sample_file(
 /// index. Never reads the file: the identity is stat-derived
 /// (`hash::stat_identity`) precisely so that skipping keeps its no-read
 /// cost, and a failed stat (the file vanished, or was never readable)
-/// records zero bytes and no mtime rather than failing the publish.
+/// records zero bytes and no mtime rather than failing the publish. That
+/// zero is a placeholder, not a measurement (`files.byte_len` is `NOT NULL`
+/// and `reason` is a coded value, so neither can carry "unknown"); the
+/// failure is therefore logged with its source error.
 #[must_use]
 pub(super) fn skipped_record(
     relative_path: &str,
@@ -126,7 +129,14 @@ pub(super) fn skipped_record(
 ) -> SkippedRecord {
     let (byte_len, modified_unix_seconds) = match std::fs::metadata(absolute_path) {
         Ok(metadata) => (metadata.len(), util::mtime_unix_seconds(&metadata)),
-        Err(_) => (0, None),
+        Err(error) => {
+            tracing::warn!(
+                path = %util::redacted_path(absolute_path),
+                error = %error,
+                "could not stat a skipped file; recording 0 bytes and no mtime"
+            );
+            (0, None)
+        }
     };
     SkippedRecord {
         relative_path: relative_path.to_owned(),

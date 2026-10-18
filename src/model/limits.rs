@@ -163,24 +163,33 @@ impl ResourceLimits {
 /// and it used to be indistinguishable from unset: the operator's intended
 /// limit was silently discarded. That is now logged. The fallback itself is
 /// unchanged and deliberate; what changed is that it can be seen.
-fn parse_override<T: std::str::FromStr>(name: &str) -> Option<T> {
-    let Ok(raw) = std::env::var(name) else {
-        // NotPresent is the documented "no override" case; anything else is a
-        // variable the operator set that could not be read, which is not the
-        // same thing and is reported.
-        if !matches!(std::env::var(name), Err(std::env::VarError::NotPresent)) {
+fn parse_override<T>(name: &str) -> Option<T>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let raw = match std::env::var(name) {
+        Ok(raw) => raw,
+        // NotPresent is the documented "no override" case.
+        Err(std::env::VarError::NotPresent) => return None,
+        // A variable the operator set that could not be read is not the same
+        // thing and is reported. `NotUnicode`'s Display prints the raw value,
+        // which may be sensitive, so the failure kind is logged instead.
+        Err(std::env::VarError::NotUnicode(_)) => {
             tracing::warn!(
                 variable = name,
+                error = "value is not valid unicode",
                 "could not read a limit override; using the default"
             );
+            return None;
         }
-        return None;
     };
     match raw.parse::<T>() {
         Ok(value) => Some(value),
-        Err(_) => {
+        Err(error) => {
             tracing::warn!(
                 variable = name,
+                error = %error,
                 "limit override is not a valid value and was ignored; the default applies",
             );
             None
@@ -195,102 +204,5 @@ impl Default for ResourceLimits {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defaults_are_strictly_positive() {
-        let limits = ResourceLimits::default();
-        assert!(limits.max_file_bytes > 0);
-        assert!(limits.max_total_import_bytes >= limits.max_file_bytes);
-        assert!(limits.max_query_response_bytes > 0);
-        assert!(limits.max_query_vm_steps > 0);
-        assert!(limits.max_query_wall_clock.as_millis() > 0);
-        assert!(limits.max_query_value_bytes > 0);
-        assert!(limits.max_query_value_bytes <= limits.max_query_response_bytes);
-        assert!(limits.max_structure_query_bytes > 0);
-        assert!(limits.max_structure_matches > 0);
-        assert!(limits.max_structure_execution_time.as_millis() > 0);
-        assert!(limits.max_sync_wall_clock.as_millis() > 0);
-    }
-
-    #[test]
-    fn from_env_uses_defaults_when_no_vars_are_set() {
-        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
-        temp_env::with_var_unset("SLUGAUDIT_MAX_FILE_BYTES", || {
-            let limits = ResourceLimits::from_env();
-            assert_eq!(
-                limits.max_file_bytes,
-                ResourceLimits::default().max_file_bytes
-            );
-        });
-    }
-
-    #[test]
-    fn from_env_overrides_u64_fields() {
-        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
-        temp_env::with_vars(
-            [
-                ("SLUGAUDIT_PROFILE", Some("lean")),
-                ("SLUGAUDIT_MAX_FILE_BYTES", Some("16777216")),
-            ],
-            || {
-                let limits = ResourceLimits::from_env();
-                assert_eq!(limits.max_file_bytes, 16_777_216);
-                // Other fields remain at the selected profile's defaults.
-                assert_eq!(limits.max_total_import_bytes, 2 * 1024 * 1024 * 1024);
-            },
-        );
-    }
-
-    #[test]
-    fn from_env_overrides_duration_fields() {
-        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
-        temp_env::with_var("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS", Some("120"), || {
-            let limits = ResourceLimits::from_env();
-            assert_eq!(limits.max_sync_wall_clock, Duration::from_secs(120));
-        });
-    }
-
-    #[test]
-    fn an_unparseable_override_falls_back_to_the_default_and_says_so() {
-        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
-        temp_env::with_var("SLUGAUDIT_MAX_FILE_BYTES", Some("not-a-number"), || {
-            let (limits, logs) =
-                crate::store::test_capture::capture_warns(ResourceLimits::from_env);
-            assert_eq!(
-                limits.max_file_bytes,
-                ResourceLimits::default().max_file_bytes,
-                "the default still applies"
-            );
-            assert!(
-                logs.contains("not a valid value and was ignored"),
-                "the operator's discarded setting must be visible, or an intended \
-                 limit silently does nothing:\n{logs}"
-            );
-        });
-    }
-
-    #[test]
-    fn multiple_overrides_compose() {
-        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
-        temp_env::with_vars(
-            [
-                ("SLUGAUDIT_MAX_FILE_BYTES", Some("1048576")),
-                ("SLUGAUDIT_MAX_QUERY_VM_STEPS", Some("5000000")),
-                ("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS", Some("30")),
-            ],
-            || {
-                let limits = ResourceLimits::from_env();
-                assert_eq!(limits.max_file_bytes, 1_048_576);
-                assert_eq!(limits.max_query_vm_steps, 5_000_000);
-                assert_eq!(limits.max_sync_wall_clock, Duration::from_secs(30));
-                // Unset fields stay at defaults
-                assert_eq!(
-                    limits.max_query_response_bytes,
-                    ResourceLimits::default().max_query_response_bytes
-                );
-            },
-        );
-    }
-}
+#[path = "limits_tests.rs"]
+mod tests;

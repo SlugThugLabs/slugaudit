@@ -4,7 +4,7 @@ use super::query_sql_scanner::first_statement_separator;
 use super::query_value::row_to_json;
 
 use crate::error_codes::{self, ErrorCode};
-use crate::model::{ResourceLimits, process_limits};
+use crate::model::ResourceLimits;
 use crate::sync;
 use crate::util::serialized_len;
 use rmcp::ErrorData;
@@ -88,20 +88,12 @@ pub fn query(
     sink: &dyn crate::progress::ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<QueryResponse>, ErrorData> {
-    let limits = resolve_query_limits(&request.0.path);
+    let limits = super::resolve_limits(&request.0.path)?;
     query_with_limits(request, &limits, sink, manager)
 }
 
-fn resolve_query_limits(path: &str) -> ResourceLimits {
-    match crate::project::find_project_root(std::path::Path::new(path)) {
-        Ok(root) => crate::project::ProjectConfig::load_or_default(root.as_path())
-            .apply_to_limits(*process_limits()),
-        Err(_) => *process_limits(),
-    }
-}
-
 /// Test-only seam: production code always goes through [`query`] with
-/// [`process_limits`]; tests inject tighter limits to exercise
+/// `process_limits`; tests inject tighter limits to exercise
 /// truncation and budget paths without waiting out production-sized caps.
 /// Private (not `pub`), but visible to the `tests` submodule below like any
 /// other item in this module.

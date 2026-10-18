@@ -4,7 +4,7 @@
 
 use super::context::{SyncedProject, ensure_synced, with_verified_read};
 use super::structure_exec::{OutputMode, run_query};
-use crate::model::{ResourceLimits, process_limits};
+use crate::model::ResourceLimits;
 use crate::sync;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -83,20 +83,12 @@ pub fn structure(
     sink: &dyn crate::progress::ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<StructureResponse>, ErrorData> {
-    let limits = resolve_structure_limits(&request.0.path);
+    let limits = super::resolve_limits(&request.0.path)?;
     structure_with_limits(request, &limits, sink, manager)
 }
 
-fn resolve_structure_limits(path: &str) -> ResourceLimits {
-    match crate::project::find_project_root(std::path::Path::new(path)) {
-        Ok(root) => crate::project::ProjectConfig::load_or_default(root.as_path())
-            .apply_to_limits(*process_limits()),
-        Err(_) => *process_limits(),
-    }
-}
-
 /// Test-only seam: production code always goes through [`structure`] with
-/// [`process_limits`]; tests inject a tighter
+/// `process_limits`; tests inject a tighter
 /// `max_structure_execution_time` to exercise the abort path without
 /// waiting out the production-sized budget.
 fn structure_with_limits(

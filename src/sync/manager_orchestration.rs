@@ -202,7 +202,7 @@ impl SourceSyncManager {
 /// `action: "on"` and the path argument). Any other resolution failure — an
 /// unresolvable path, a symlinked activation directory — keeps its plain
 /// message and no code, because `project_control` cannot fix it.
-fn map_activation_error(error: project::ActivationError) -> ErrorData {
+pub(crate) fn map_activation_error(error: project::ActivationError) -> ErrorData {
     let data = if matches!(error, project::ActivationError::NotActive) {
         error_codes::payload(ErrorCode::ProjectNotEnabled)
     } else {

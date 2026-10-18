@@ -389,3 +389,42 @@ fn parallel_sampling_emits_one_progress_event_per_file() {
         "one Sampling event per file"
     );
 }
+
+#[test]
+fn a_skipped_record_for_an_unstattable_file_warns_with_the_source_error() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let missing = directory.path().join("vanished-skip-probe.bin");
+
+    let (record, logs) = crate::store::test_capture::capture_warns(|| {
+        skipped_record("vanished-skip-probe.bin", &missing, "oversize")
+    });
+
+    assert_eq!(record.byte_len, 0, "the placeholder size is unchanged");
+    assert_eq!(record.modified_unix_seconds, None);
+    assert!(
+        logs.contains("could not stat a skipped file") && logs.contains("No such file"),
+        "the stat failure and its source error must be logged:\n{logs}"
+    );
+}
+
+#[test]
+fn a_skipped_record_for_a_statable_file_does_not_warn() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let present = directory.path().join("present-skip-probe.bin");
+    std::fs::write(&present, b"12345").expect("write fixture");
+
+    let (record, logs) = crate::store::test_capture::capture_warns(|| {
+        tracing::warn!("control-line-probe-skipped-record");
+        skipped_record("present-skip-probe.bin", &present, "oversize")
+    });
+
+    assert_eq!(record.byte_len, 5);
+    assert!(
+        logs.contains("control-line-probe-skipped-record"),
+        "capture liveness control"
+    );
+    assert!(
+        !logs.contains("could not stat a skipped file"),
+        "a readable file must not warn:\n{logs}"
+    );
+}

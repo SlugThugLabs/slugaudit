@@ -25,7 +25,7 @@
 use super::context::{ensure_synced, guard_expected_revision, with_verified_read};
 use super::leads_mechanics::resolve_mechanic;
 use super::leads_page::{self, Paging};
-use crate::model::{ResourceLimits, process_limits};
+use crate::model::ResourceLimits;
 use crate::progress::ProgressSink;
 use crate::sync;
 use rmcp::ErrorData;
@@ -283,18 +283,8 @@ pub fn leads(
     sink: &dyn ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<LeadsResponse>, ErrorData> {
-    let limits = resolve_limits(&request.0.path);
+    let limits = super::resolve_limits(&request.0.path)?;
     leads_with_limits(request, &limits, sink, manager)
-}
-
-/// The process and project resource limits for `path`, resolved before the
-/// index is touched.
-fn resolve_limits(path: &str) -> ResourceLimits {
-    match crate::project::find_project_root(std::path::Path::new(path)) {
-        Ok(root) => crate::project::ProjectConfig::load_or_default(root.as_path())
-            .apply_to_limits(*process_limits()),
-        Err(_) => *process_limits(),
-    }
 }
 
 /// Test-only seam: production code always goes through [`leads`] with the

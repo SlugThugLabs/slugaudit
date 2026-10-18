@@ -146,7 +146,9 @@ src/
 ├── model/                    contracts shared by parsing, storage, and tools
 │   ├── mod.rs                re-exports
 │   ├── limits.rs             ResourceLimits + process_limits()
+│   ├── limits_tests.rs       limits unit tests
 │   ├── profile.rs            Lean / Audit / Adaptive profiles
+│   ├── profile_tests.rs      profile unit tests
 │   ├── system_ram.rs         host memory detection
 │   ├── parser.rs             parser-availability / parse-outcome enums
 │   ├── evidence.rs           evidence kind + payload model

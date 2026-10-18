@@ -58,6 +58,8 @@ pub use report_completeness::{
 pub use report_edges::DependencyEdgeTotals;
 pub use structure::{StructureRequest, StructureResponse, structure};
 
+use crate::model::{ResourceLimits, process_limits};
+use rmcp::ErrorData;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Single definition of "this path looks like a credential file". Shared by
@@ -103,6 +105,27 @@ pub(crate) const CREDENTIAL_PATH_PREDICATE: &str = "lower(path) LIKE '%.env' \
         OR lower(path) LIKE '%id\\_ecdsa%' ESCAPE '\\' \
         OR lower(path) LIKE '%id\\_ed25519%' ESCAPE '\\') \
         AND lower(path) NOT LIKE '%.pub')";
+
+/// The process and project resource limits for `path`, resolved before the
+/// index is touched. Shared by `query`, `leads` and `structure`.
+///
+/// A path with no active project root is an error, not a cue to fall back to
+/// process defaults: every one of those tools goes on to call
+/// `ensure_synced`, which resolves the same root and rejects the same path,
+/// so a fallback would only run request validation against limits the
+/// project does not use, and would drop the resolution error unlogged. The
+/// error is the same `invalid_params` (with `project_not_enabled` when the
+/// project was never enabled) that `ensure_synced` returns. A malformed
+/// project config is a documented, logged recovery inside
+/// `ProjectConfig::load_or_default`.
+pub(super) fn resolve_limits(path: &str) -> Result<ResourceLimits, ErrorData> {
+    let root = crate::project::find_project_root(std::path::Path::new(path))
+        .map_err(crate::sync::map_activation_error)?;
+    Ok(
+        crate::project::ProjectConfig::load_or_default(root.as_path())
+            .apply_to_limits(*process_limits()),
+    )
+}
 
 /// Total number of tool calls the MCP server has served since process
 /// start. Includes both successful and errored calls — operators
@@ -175,6 +198,32 @@ impl ToolCounters {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_limits_rejects_a_path_with_no_active_project() {
+        let directory = tempfile::tempdir().expect("temp dir");
+
+        let error = resolve_limits(directory.path().to_str().expect("utf-8 path"))
+            .expect_err("a path with no project root must fail, not fall back");
+
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        let code = error
+            .data
+            .as_ref()
+            .and_then(|data| data.get("code"))
+            .and_then(|code| code.as_str());
+        assert_eq!(code, Some("project_not_enabled"));
+    }
+
+    #[test]
+    fn resolve_limits_returns_limits_for_an_active_project() {
+        let project = test_support::activated_project("a.rs", b"fn a() {}");
+
+        let limits = resolve_limits(project.path().to_str().expect("utf-8 path"))
+            .expect("an active project resolves");
+
+        assert!(limits.max_file_bytes > 0);
+    }
 
     /// Runs the shared fragment — the literal SQL text, not a Rust copy of
     /// it — against one path with the real SQLite engine both surfaces use,

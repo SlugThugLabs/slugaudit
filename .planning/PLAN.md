@@ -1113,3 +1113,58 @@ does not rediscover them.
   **Still open:** the secret scan checks the tree at the pushed commit, not the `before`..`sha`
   range (trivy has no range mode), so a secret added and removed within one push is missed —
   accepted, not scheduled: GitHub's native secret scanning covers history.
+
+### Algorithm-scale audit (2026-10-18) — not started
+
+Read-only audit against three owner rules (O(1) fixed-set lookups; scale at documented
+maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by reading the code:
+
+- **Quadratic column computation — not started.** `src/model/span.rs::char_column` walks back
+  to the line start per call; indexing calls it twice per evidence item, so a single-line
+  (minified) file costs items × line length. Fix: one line-start table per file.
+- **Quadratic macro-call positions — not started.** `src/evidence/calls/macro_calls.rs::position`
+  counts newlines from byte 0 for every row (O(calls × file)). Fix: same line-start table.
+- **`structure` has no response byte budget — not started.** Up to `max_structure_matches` ×
+  1 MB (`MAX_TEXT_BYTES`) of text can be returned. Fix: cut rows by a byte budget like
+  `query`/`leads`.
+- **Silent 64 MB cut in `structure` — not started.** `structure_source.rs::fetch_sources_for_language`
+  breaks at `MAX_MULTI_FILE_TOTAL_BYTES` and the response carries no flag: a breach of
+  non-negotiable 3. (The earlier "stops at `MAX_MULTI_FILE_TOTAL_BYTES`" note above recorded
+  the cap, not its reporting.)
+- **Silent fallback — resolved (uncommitted, 2026-10-18).** The three copies of the limits
+  resolver (`query.rs`, `leads.rs`, `structure.rs`, each `Err(_) => *process_limits()` with no
+  log) are now one `tools::resolve_limits` (`src/tools/mod.rs`) that returns the error. Chosen:
+  fail, not warn. Evidence: all three tools go on to `ensure_synced` ->
+  `SourceSyncManager::ensure_current` -> `project::resolve_project` -> `find_project_root` on the
+  same `path`, which already rejects a root-less path with `invalid_params` (+
+  `project_not_enabled`); no path exists where no root is expected. The error is mapped by the
+  same `map_activation_error` (now `pub(crate)`, re-exported via `sync`). Side effect: a root-less
+  path now reports "not a project" before request-validation errors (the existing suites pass
+  unchanged). Tests: `resolve_limits_rejects_a_path_with_no_active_project`,
+  `resolve_limits_returns_limits_for_an_active_project`.
+- **`sample_batch` swallowed-error arm — resolved (uncommitted, 2026-10-18).** The `Err(_) => {}`
+  exhaustiveness net in `Batch::collect` is gone: the worker channel now carries
+  `Outcome = Result<Sample, String>` (sample or skip reason), so no error variant can reach the
+  drain; every other `SampleError` still aborts via `error_slot`. Unreachable by construction, so
+  no new test; the skip path stays pinned by the existing oversize-skip test in `sample_tests.rs`.
+- **`skipped_record` stat failure — resolved (uncommitted, 2026-10-18).** `std::fs::metadata`
+  failure in `sample.rs::skipped_record` still records `(0, None)` but now warns with the path
+  and source error. Kept the placeholder because `files.byte_len` is `NOT NULL` and `reason` is a
+  coded value (`oversize`/`unreadable`); an Option or a reason suffix would change the schema or
+  the skip-reason surface. Still open as a design choice: the stored 0 is indistinguishable from a
+  real empty file in `query`. Tests: `a_skipped_record_for_an_unstattable_file_warns_with_the_source_error`,
+  `a_skipped_record_for_a_statable_file_does_not_warn`.
+- **Env-override warnings dropped the source error — resolved (uncommitted, 2026-10-18).**
+  `limits.rs::parse_override` now logs the parse error (`error = %error`); the unreadable-variable
+  branch (and `profile.rs::profile_from_env`) matches `VarError::NotUnicode` and logs a fixed
+  "value is not valid unicode" instead of the error, because `NotUnicode`'s Display prints the raw
+  value. Tests: `an_unparseable_override_warning_carries_the_parse_error`,
+  `a_non_unicode_override_warns_without_logging_its_value`,
+  `a_non_unicode_profile_warns_without_logging_its_value`.
+- **Still open, unverified (auditor-reported):** `query_sql_scanner` rejects `SELECT 1; -- c`
+  as multi-statement and may be replaceable by SQLite's own prepare error;
+  `update_fetch::compare_versions` treats `1.0` < `1.0.0`; `graph/resolve.rs::normalize_join`
+  drops `..` past the root; `ignore_rules::is_excluded_dir` string-prefix match excludes
+  `.planning/slugaudit-notes/`; `netfs` mountinfo ignores `\040` escapes; nested-macro
+  re-parse depth is uncapped; `util::hex_encode` formats per byte; `query` always keeps an
+  over-budget first row.

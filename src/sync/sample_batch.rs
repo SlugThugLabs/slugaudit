@@ -79,7 +79,7 @@ pub(super) fn sample_all_with_deadline(
             .min(8),
     );
 
-    let (tx, rx) = std::sync::mpsc::channel::<(usize, Result<Sample, SampleError>)>();
+    let (tx, rx) = std::sync::mpsc::channel::<(usize, Outcome)>();
     let batch = Batch {
         discovered,
         limits,
@@ -112,6 +112,11 @@ pub(super) fn sample_all_with_deadline(
     batch.collect(rx)
 }
 
+/// What a worker sends the drain for one file: the sample, or the reason the
+/// file was skipped. Every other sampling error aborts through `error_slot`
+/// and never reaches the channel, so the drain has no error arm to ignore.
+type Outcome = Result<Sample, String>;
+
 /// Shared state for one parallel sampling run, with the worker loop and
 /// the result drain as methods so each stays small; `sample_all_with_deadline`
 /// owns the pool setup and nothing else.
@@ -131,11 +136,7 @@ impl Batch<'_> {
     /// and send results in arrival order. Exits on the shared error flag,
     /// an exhausted deadline, claimed-index overflow, or a dropped
     /// receiver.
-    fn run_worker(
-        &self,
-        tx: std::sync::mpsc::Sender<(usize, Result<Sample, SampleError>)>,
-        sink: &dyn ProgressSink,
-    ) {
+    fn run_worker(&self, tx: std::sync::mpsc::Sender<(usize, Outcome)>, sink: &dyn ProgressSink) {
         loop {
             if self.error_flag.load(Ordering::Acquire) {
                 return;
@@ -175,7 +176,7 @@ impl Batch<'_> {
                 // file going.
                 Err(error @ SampleError::TooLarge { .. }) => {
                     self.emit_sampling(sink, idx);
-                    if tx.send((idx, Err(error))).is_err() {
+                    if tx.send((idx, Err(error.to_string()))).is_err() {
                         return;
                     }
                 }
@@ -232,21 +233,17 @@ impl Batch<'_> {
     /// regardless of which worker finished which file first.
     fn collect(
         &self,
-        rx: std::sync::mpsc::Receiver<(usize, Result<Sample, SampleError>)>,
+        rx: std::sync::mpsc::Receiver<(usize, Outcome)>,
     ) -> Result<(Vec<Sample>, Vec<SkippedFile>), PublishError> {
         let mut samples: Vec<Option<Sample>> = (0..self.total).map(|_| None).collect();
         let mut skipped: Vec<SkippedFile> = Vec::new();
         while let Ok((idx, result)) = rx.recv() {
             match result {
                 Ok(sample) => samples[idx] = Some(sample),
-                Err(error @ SampleError::TooLarge { .. }) => skipped.push(SkippedFile {
+                Err(reason) => skipped.push(SkippedFile {
                     absolute_path: self.discovered[idx].absolute_path.clone(),
-                    reason: error.to_string(),
+                    reason,
                 }),
-                // Other sampling errors never reach the channel — they
-                // abort via `error_slot` above. This arm is the
-                // exhaustiveness safety net.
-                Err(_) => {}
             }
         }
         if let Some(err) = lock_or_recover(&self.error_slot).take() {

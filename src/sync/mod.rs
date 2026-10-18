@@ -28,6 +28,7 @@ mod sweep_reconcile;
 
 pub use discovery::{DiscoveredFile, DiscoveryError, FileKind, SkippedFile, discover};
 pub use hash::{HashError, aggregate_manifest_hash, hash_bytes, hash_file};
+pub(crate) use manager::map_activation_error;
 pub use manager::{SourceSyncManager, SyncedProject};
 pub use manifest::{ChangeStatus, FileChange, compare};
 pub use publish::{PublishError, PublishReport, publish};

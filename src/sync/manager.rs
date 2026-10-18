@@ -15,6 +15,7 @@ mod orchestration;
 use super::reconcile;
 use super::revision;
 use crate::watch::{WatchManager, WatchState};
+pub(crate) use orchestration::map_activation_error;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
