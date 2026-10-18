@@ -93,3 +93,33 @@ fn leads_counts_only_reply_carries_the_page_size_that_applied() {
     );
     assert!(!response.oversized_row);
 }
+
+#[test]
+fn an_offset_sqlite_cannot_hold_is_refused_in_both_modes_not_bound_as_no_limit() {
+    let project = unwrap_fixture(1, 2);
+    for mode in [LeadMode::Full, LeadMode::Compact] {
+        let mut huge = request(project.path(), Some("unwrap_calls"));
+        huge.mode = mode;
+        huge.offset = Some(usize::MAX);
+
+        let error = try_run(huge).expect_err("an offset above i64::MAX must fail");
+
+        assert!(
+            error
+                .message
+                .contains("exceeds the maximum supported integer"),
+            "{}",
+            error.message
+        );
+    }
+}
+
+#[test]
+fn a_mechanic_missing_from_the_counts_fails_instead_of_reading_as_zero() {
+    use crate::tools::leads_page::{count_of, files_of};
+
+    let error = count_of(&[], "unwrap_calls").expect_err("no entry must not count as 0");
+
+    assert!(error.message.contains("unwrap_calls"), "{}", error.message);
+    assert!(files_of(&[], "unwrap_calls").is_err());
+}

@@ -111,8 +111,8 @@ pub(super) fn rows_for(
     let glob = compile_pattern(pattern);
     let fetch = limit.map(|rows| rows.saturating_add(1));
     let mut binds = pattern_binds(glob.as_deref(), scope.len());
-    binds.push(Value::Integer(int_bind(fetch)));
-    binds.push(Value::Integer(int_bind(Some(offset))));
+    binds.push(Value::Integer(int_bind(fetch)?));
+    binds.push(Value::Integer(int_bind(Some(offset))?));
 
     let mut statement = tx
         .prepare(&rows_sql(scope, glob.is_some()))
@@ -140,7 +140,7 @@ pub(super) fn files_covered(
 ) -> Result<i64, ErrorData> {
     let glob = compile_pattern(pattern);
     let mut binds = pattern_binds(glob.as_deref(), scope.len());
-    binds.push(Value::Integer(int_bind(Some(through))));
+    binds.push(Value::Integer(int_bind(Some(through))?));
     tx.query_row(
         &covered_sql(scope, glob.is_some()),
         params_from_iter(binds),

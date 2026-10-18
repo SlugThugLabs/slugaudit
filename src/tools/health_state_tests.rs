@@ -312,3 +312,23 @@ fn published_project_without_watcher_is_reported_as_indexed_unwatched() {
     assert_eq!(fields.watcher, None, "no watcher was registered");
     assert_eq!(fields.remedy, None);
 }
+
+/// `Path::exists` folds every stat error into `false`, so an uninspectable
+/// database path read as "never synced" with no log line. A path below a
+/// regular file fails with ENOTDIR, which is not an absent database.
+#[test]
+fn an_uninspectable_database_path_is_logged_not_read_as_never_synced() {
+    let directory = tempfile::tempdir().expect("dir");
+    let file = directory.path().join("not_a_directory");
+    fs::write(&file, b"x").expect("write file");
+
+    let (state, logs) = crate::store::test_capture::capture_warns(|| {
+        super::read_database(&file.join("project.db"))
+    });
+
+    assert!(state.is_none());
+    assert!(
+        logs.contains("failed to inspect the project database path"),
+        "logs: {logs}"
+    );
+}

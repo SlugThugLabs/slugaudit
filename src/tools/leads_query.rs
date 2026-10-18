@@ -72,9 +72,20 @@ fn covered_sql(mechanic: &Mechanic, matched: bool) -> String {
 }
 
 /// Binds a `usize` as SQLite's 64-bit integer; `None` becomes the largest
-/// value SQLite accepts, i.e. "no limit".
-pub(super) fn int_bind(value: Option<usize>) -> i64 {
-    value.map_or(i64::MAX, |value| i64::try_from(value).unwrap_or(i64::MAX))
+/// value SQLite accepts, i.e. "no limit". A value SQLite cannot hold is a
+/// contract error: binding it as "no limit" would page from the wrong place.
+pub(super) fn int_bind(value: Option<usize>) -> Result<i64, ErrorData> {
+    value.map_or(Ok(i64::MAX), |value| {
+        i64::try_from(value).map_err(|error| {
+            ErrorData::invalid_params(
+                format!(
+                    "{value} exceeds the maximum supported integer ({}): {error}",
+                    i64::MAX
+                ),
+                None,
+            )
+        })
+    })
 }
 
 /// Counts for every mechanic, in `MECHANICS` order, under `pattern`.
@@ -172,8 +183,8 @@ pub(super) fn rows_for(
     if let Some(glob) = glob.as_deref() {
         binds.push(Value::Text(glob.to_owned()));
     }
-    binds.push(Value::Integer(int_bind(fetch)));
-    binds.push(Value::Integer(int_bind(Some(offset))));
+    binds.push(Value::Integer(int_bind(fetch)?));
+    binds.push(Value::Integer(int_bind(Some(offset))?));
 
     let mut statement = tx
         .prepare(&rows_sql(mechanic, glob.is_some()))
@@ -206,7 +217,7 @@ pub(super) fn files_covered(
     if let Some(glob) = glob.as_deref() {
         binds.push(Value::Text(glob.to_owned()));
     }
-    binds.push(Value::Integer(int_bind(Some(through))));
+    binds.push(Value::Integer(int_bind(Some(through))?));
     tx.query_row(
         &covered_sql(mechanic, glob.is_some()),
         params_from_iter(binds),

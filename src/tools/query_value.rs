@@ -5,6 +5,48 @@
 use crate::util;
 use rusqlite::Row;
 use rusqlite::types::{Type as SqlType, Value as SqlValue};
+use schemars::JsonSchema;
+use serde::Serialize;
+
+/// One REAL cell whose value JSON cannot carry (an infinity; SQLite turns NaN
+/// into NULL itself). JSON has no such number, so the cell is `null` in `rows`;
+/// this entry says it was not SQL NULL and what it really was.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct NonFiniteCell {
+    /// Zero-based index of the row in the whole result (`offset` plus its
+    /// position on the page), the same numbering `offset` uses.
+    pub row: usize,
+    /// Result column name of the cell.
+    pub column: String,
+    /// The real value: `"Infinity"`, `"-Infinity"` or `"NaN"`.
+    pub value: &'static str,
+}
+
+/// The non-finite REAL cells of one row (see [`NonFiniteCell`]).
+pub(super) fn non_finite_cells(
+    column_names: &[String],
+    values: &[SqlValue],
+    row: usize,
+) -> Vec<NonFiniteCell> {
+    column_names
+        .iter()
+        .zip(values)
+        .filter_map(|(column, value)| match value {
+            SqlValue::Real(number) if !number.is_finite() => Some(NonFiniteCell {
+                row,
+                column: column.clone(),
+                value: if number.is_nan() {
+                    "NaN"
+                } else if number.is_sign_negative() {
+                    "-Infinity"
+                } else {
+                    "Infinity"
+                },
+            }),
+            _ => None,
+        })
+        .collect()
+}
 
 /// Reads one row's cells, enforcing the per-value cap on each TEXT/BLOB.
 pub(super) fn read_row(
@@ -36,6 +78,7 @@ pub(super) fn row_to_json(column_names: &[String], values: &[SqlValue]) -> serde
     serde_json::Value::Object(object)
 }
 
+/// A non-finite REAL becomes `null`; [`non_finite_cells`] reports it.
 pub(super) fn sql_value_to_json(value: &SqlValue) -> serde_json::Value {
     match value {
         SqlValue::Null => serde_json::Value::Null,

@@ -240,7 +240,15 @@ fn fetch_file(tx: &Transaction<'_>, file: &str) -> Result<(String, String), Erro
 }
 
 fn validate_line_range(request: &FindingRequest, content: &str) -> Result<(), ErrorData> {
-    let line_count = u32::try_from(content.lines().count()).unwrap_or(u32::MAX);
+    let line_count = u32::try_from(content.lines().count()).map_err(|error| {
+        ErrorData::invalid_params(
+            format!(
+                "{} has too many lines to attach a finding to: {error}",
+                request.file
+            ),
+            None,
+        )
+    })?;
     // An empty file still has no addressable one-based lines.
     if line_count == 0 {
         return Err(ErrorData::invalid_params(

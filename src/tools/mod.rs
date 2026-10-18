@@ -55,6 +55,7 @@ pub use leads::{
 pub use project_control::{ProjectControlRequest, ProjectControlResponse, project_control};
 pub use query::{QueryRequest, QueryResponse, query};
 pub use query_clip::ClippedCell;
+pub use query_value::NonFiniteCell;
 pub use report::{ReportRequest, ReportResponse, report};
 pub use report_completeness::{
     CompletenessCount, CompletenessEnvelope, FileClassCount, FileKindCount, SkipReasonCount,

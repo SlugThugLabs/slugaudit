@@ -2,10 +2,10 @@
 //! capture cursor under the match cap and the wall-clock budget, and mapping
 //! captured nodes back to source coordinates.
 
+use super::query_exec::deadline_after;
 use super::structure::StructureMatch;
-use super::structure_page::{OutputMode, Paging, RunOutput, require_captures};
-use super::structure_source::{MAX_SNIPPET_BYTES, truncate_snippet, truncate_text};
-use crate::model::{LineIndex, ResourceLimits, saturating_u32};
+use super::structure_page::{OutputMode, Paging, RunOutput, node_to_match, require_captures};
+use crate::model::{LineIndex, ResourceLimits};
 use rmcp::ErrorData;
 use std::ops::ControlFlow;
 use std::time::Instant;
@@ -33,7 +33,7 @@ pub(super) fn run_query(
         query,
         mode,
         max_matches: limits.max_structure_matches,
-        deadline: Instant::now() + limits.max_structure_execution_time,
+        deadline: deadline_after(limits.max_structure_execution_time),
         timed_out: false,
         cursor: QueryCursor::new(),
         matches: Vec::new(),
@@ -62,7 +62,9 @@ struct Run<'q> {
     query: &'q Query,
     mode: &'q OutputMode,
     max_matches: usize,
-    deadline: Instant,
+    /// `None` when the configured budget is too large to be an `Instant`:
+    /// no wall-clock deadline (see [`deadline_after`]).
+    deadline: Option<Instant>,
     timed_out: bool,
     cursor: QueryCursor,
     matches: Vec<StructureMatch>,
@@ -107,7 +109,10 @@ impl Run<'_> {
 
     /// Whether another file may be scanned; records a passed deadline.
     fn out_of_budget(&mut self) -> bool {
-        if Instant::now() >= self.deadline {
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
             self.timed_out = true;
             return true;
         }
@@ -125,7 +130,7 @@ impl Run<'_> {
         let deadline = self.deadline;
         let mut timed_out = false;
         let mut check_deadline = |_state: &QueryCursorState| -> ControlFlow<()> {
-            if Instant::now() >= deadline {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 timed_out = true;
                 ControlFlow::Break(())
             } else {
@@ -153,7 +158,15 @@ impl Run<'_> {
                 more_remain = true;
                 break;
             }
-            let capture = query_match.captures[*capture_index];
+            let capture = *query_match.captures.get(*capture_index).ok_or_else(|| {
+                ErrorData::internal_error(
+                    format!(
+                        "tree-sitter reported capture index {capture_index} but the match has {} captures",
+                        query_match.captures.len()
+                    ),
+                    None,
+                )
+            })?;
             let found = node_to_match(
                 file_path,
                 capture.node,
@@ -177,38 +190,5 @@ impl Run<'_> {
         drop(captures);
         self.timed_out |= timed_out;
         Ok(more_remain)
-    }
-}
-
-fn node_to_match(
-    file: &str,
-    node: tree_sitter::Node<'_>,
-    content: &str,
-    lines: &LineIndex<'_>,
-    capture_name: Option<&str>,
-    want_full_text: bool,
-) -> StructureMatch {
-    let (node_text, text_extraction_failed) = match node.utf8_text(content.as_bytes()) {
-        Ok(text) => (text, false),
-        Err(_) => ("", true),
-    };
-    let (text, text_truncated) = if want_full_text {
-        truncate_text(node_text)
-    } else {
-        truncate_snippet(node_text, MAX_SNIPPET_BYTES)
-    };
-    StructureMatch {
-        file: file.to_owned(),
-        capture_name: capture_name.unwrap_or_default().to_owned(),
-        node_kind: node.kind().to_owned(),
-        start_byte: node.start_byte() as u64,
-        end_byte: node.end_byte() as u64,
-        start_line: saturating_u32(node.start_position().row),
-        start_column: lines.column(node.start_byte()),
-        end_line: saturating_u32(node.end_position().row),
-        end_column: lines.column(node.end_byte()),
-        text,
-        text_truncated,
-        extraction_failed: text_extraction_failed || capture_name.is_none(),
     }
 }

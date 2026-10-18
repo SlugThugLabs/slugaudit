@@ -14,8 +14,18 @@ use rusqlite::OptionalExtension;
 /// empty fields can tell "not synced yet" from "the database is unreadable"
 /// (permissions, corruption, symlink, NFS).
 pub(super) fn read_database(database_path: &std::path::Path) -> Option<DatabaseState> {
-    if !database_path.exists() {
-        return None;
+    match database_path.try_exists() {
+        Ok(true) => {}
+        Ok(false) => return None,
+        Err(error) => {
+            tracing::warn!(
+                database_id = %crate::util::redacted_path(database_path),
+                error = %error,
+                "health: failed to inspect the project database path; \
+                 reporting empty database fields",
+            );
+            return None;
+        }
     }
     let mut connection = match store::open_read_only(database_path) {
         Ok(connection) => connection,

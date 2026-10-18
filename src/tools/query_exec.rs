@@ -6,7 +6,7 @@
 //! progress handler.
 
 use super::query_clip::{ClippedCell, clip_row};
-use super::query_value::{read_row, row_to_json};
+use super::query_value::{NonFiniteCell, non_finite_cells, read_row, row_to_json};
 
 use super::context::internal_error;
 use crate::model::ResourceLimits;
@@ -15,7 +15,7 @@ use rmcp::ErrorData;
 use rusqlite::Transaction;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const ABORT_NONE: u8 = 0;
 const ABORT_STEP_BUDGET: u8 = 1;
@@ -41,6 +41,17 @@ pub(super) struct Collected {
     pub(super) total: RowTotal,
     /// The cells cut from the first row because it alone exceeded the page.
     pub(super) clipped: Vec<ClippedCell>,
+    /// The REAL cells that are `null` in `rows` only because JSON cannot carry
+    /// them (see [`NonFiniteCell`]).
+    pub(super) non_finite: Vec<NonFiniteCell>,
+}
+
+/// `now + budget`, or `None` when that instant cannot be represented (a
+/// configured budget of centuries). `None` means no wall-clock deadline: an
+/// effectively unlimited budget is honoured as such instead of overflowing
+/// `Instant` and panicking; the VM-step budget still bounds the work.
+pub(super) fn deadline_after(budget: Duration) -> Option<Instant> {
+    Instant::now().checked_add(budget)
 }
 
 /// Installs the VM-step and wall-clock progress handler and returns the cell
@@ -54,7 +65,7 @@ fn install_budget(tx: &Transaction<'_>, limits: &ResourceLimits) -> Arc<AtomicU8
     let handler_reason = Arc::clone(&abort_reason);
     let mut steps = 0_u32;
     let max_steps = limits.max_query_vm_steps;
-    let deadline = Instant::now() + limits.max_query_wall_clock;
+    let deadline = deadline_after(limits.max_query_wall_clock);
     tx.progress_handler(
         1000,
         Some(move || {
@@ -63,7 +74,7 @@ fn install_budget(tx: &Transaction<'_>, limits: &ResourceLimits) -> Arc<AtomicU8
                 handler_reason.store(ABORT_STEP_BUDGET, Ordering::Relaxed);
                 return true;
             }
-            if Instant::now() >= deadline {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 handler_reason.store(ABORT_WALL_CLOCK, Ordering::Relaxed);
                 return true;
             }
@@ -99,8 +110,10 @@ pub(super) fn run_query(
         .and_then(|body| execute_and_collect(tx, body, offset, page_bytes, limits, &abort_reason));
     clear_budget(tx);
     let (body, mut collected) = page?;
-    let rows_len = i64::try_from(collected.rows.len()).unwrap_or(i64::MAX);
-    let offset_rows = i64::try_from(offset).unwrap_or(i64::MAX);
+    let rows_len = i64::try_from(collected.rows.len())
+        .map_err(|error| internal_error("counting the page's rows", error))?;
+    let offset_rows = i64::try_from(offset)
+        .map_err(|error| ErrorData::invalid_params(format!("offset {offset}: {error}"), None))?;
     collected.total = if !collected.truncated && (offset == 0 || rows_len > 0) {
         RowTotal::Exact(offset_rows.saturating_add(rows_len))
     } else {
@@ -175,6 +188,7 @@ fn execute_and_collect(
         .map_err(|error| describe_error(&error, abort_reason))?;
     let mut rows = Vec::new();
     let mut clipped = Vec::new();
+    let mut non_finite = Vec::new();
     let mut total_bytes = 0usize;
     let mut size_truncated = false;
     for row in mapped {
@@ -197,6 +211,11 @@ fn execute_and_collect(
             break;
         }
         total_bytes = total_bytes.saturating_add(row_bytes);
+        non_finite.extend(non_finite_cells(
+            &column_names,
+            &values,
+            offset.saturating_add(rows.len()),
+        ));
         rows.push(value);
     }
     Ok((
@@ -207,6 +226,7 @@ fn execute_and_collect(
             rows_bytes: total_bytes,
             total: RowTotal::Exact(0),
             clipped,
+            non_finite,
         },
     ))
 }

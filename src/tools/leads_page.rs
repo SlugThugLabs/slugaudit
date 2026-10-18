@@ -67,7 +67,7 @@ pub(super) fn build(
         mechanic_counts,
         prepared,
         paging,
-    )))
+    )?))
 }
 
 /// One page of a single mechanic's full rows.
@@ -87,10 +87,10 @@ fn full(
         paging.budget_bytes,
     )?;
     let returned = page.rows.len();
-    let total = count_of(counts, mechanic.id);
-    let files_total = files_of(counts, mechanic.id);
+    let total = count_of(counts, mechanic.id)?;
+    let files_total = files_of(counts, mechanic.id)?;
     let through = paging.offset.saturating_add(returned);
-    let complete = seen(through) >= total;
+    let complete = seen(through)? >= total;
     // The page that ends the mechanic has seen every file by construction;
     // earlier pages ask the index how many distinct files their rows reach.
     let files_covered = if complete {
@@ -130,13 +130,12 @@ fn compact(
         paging.budget_bytes,
     )?;
     let returned = page.rows.len();
-    let total: i64 = scope
-        .iter()
-        .map(|mechanic| count_of(counts, mechanic.id))
-        .sum();
+    let total = scope.iter().try_fold(0_i64, |sum, mechanic| {
+        count_of(counts, mechanic.id).map(|count| sum.saturating_add(count))
+    })?;
     let files_total = leads_compact::files_total(tx, &scope, pattern)?;
     let through = paging.offset.saturating_add(returned);
-    let complete = seen(through) >= total;
+    let complete = seen(through)? >= total;
     let files_covered = if complete {
         files_total
     } else {
@@ -188,10 +187,10 @@ fn envelope(
     mechanic_counts: Vec<MechanicCount>,
     prepared: Prepared,
     paging: Paging,
-) -> LeadsResponse {
+) -> Result<LeadsResponse, ErrorData> {
     let through = paging.offset.saturating_add(prepared.returned);
-    let complete = seen(through) >= prepared.total;
-    LeadsResponse {
+    let complete = seen(through)? >= prepared.total;
+    Ok(LeadsResponse {
         revision_id: revision_id.to_owned(),
         mechanic_counts,
         rows: prepared.rows,
@@ -207,27 +206,36 @@ fn envelope(
         oversized_row: prepared.rows_bytes > paging.budget_bytes,
         rows_bytes: prepared.rows_bytes,
         next_offset: (!complete).then_some(through),
-    }
+    })
 }
 
-/// The row count the counts pass recorded for `id`; `0` if the catalogue and
-/// the counts ever disagree — they cannot, but the envelope must not panic.
-fn count_of(counts: &[MechanicCount], id: &str) -> i64 {
+/// The counts-pass entry for `id`. The catalogue and the counts come from the
+/// same table, so a missing entry is a defect: the call fails rather than
+/// reporting `total = 0` and a `complete` page.
+fn entry_of<'a>(counts: &'a [MechanicCount], id: &str) -> Result<&'a MechanicCount, ErrorData> {
     counts
         .iter()
         .find(|entry| entry.mechanic == id)
-        .map_or(0, |entry| entry.count)
+        .ok_or_else(|| {
+            super::context::internal_error(
+                "reading leads counts",
+                format!("no count was recorded for mechanic `{id}`"),
+            )
+        })
 }
 
-/// The distinct-file count the counts pass recorded for `id`; `0` as above.
-fn files_of(counts: &[MechanicCount], id: &str) -> i64 {
-    counts
-        .iter()
-        .find(|entry| entry.mechanic == id)
-        .map_or(0, |entry| entry.files)
+/// The row count the counts pass recorded for `id`.
+pub(super) fn count_of(counts: &[MechanicCount], id: &str) -> Result<i64, ErrorData> {
+    entry_of(counts, id).map(|entry| entry.count)
 }
 
-/// `usize` rows as an `i64`, saturating rather than wrapping.
-fn seen(rows: usize) -> i64 {
-    i64::try_from(rows).unwrap_or(i64::MAX)
+/// The distinct-file count the counts pass recorded for `id`.
+pub(super) fn files_of(counts: &[MechanicCount], id: &str) -> Result<i64, ErrorData> {
+    entry_of(counts, id).map(|entry| entry.files)
+}
+
+/// `usize` rows as an `i64`; a count SQLite cannot hold fails the call.
+fn seen(rows: usize) -> Result<i64, ErrorData> {
+    i64::try_from(rows)
+        .map_err(|error| super::context::internal_error("counting leads rows seen", error))
 }

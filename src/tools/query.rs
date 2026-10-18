@@ -2,6 +2,7 @@ use super::context::{ensure_synced, guard_expected_revision, with_verified_read}
 use super::page_size;
 use super::query_clip::ClippedCell;
 use super::query_exec::{RowTotal, run_query};
+use super::query_value::NonFiniteCell;
 
 use crate::error_codes::{self, ErrorCode};
 use crate::model::ResourceLimits;
@@ -103,6 +104,11 @@ pub struct QueryResponse {
     /// the page (or a page smaller than one character per cell) can leave
     /// `rows_bytes` above `page_bytes`.
     pub clipped_cells: Vec<ClippedCell>,
+    /// REAL cells that are `null` in `rows` only because JSON cannot carry an
+    /// infinity: each entry gives the absolute `row`, the `column` and the real
+    /// `value` (`"Infinity"`, `"-Infinity"` or `"NaN"`). A `null` that is not
+    /// listed here is SQL NULL. Empty when every REAL is finite.
+    pub non_finite_cells: Vec<NonFiniteCell>,
 }
 
 /// # Errors
@@ -201,6 +207,7 @@ fn query_with_limits(
         truncated,
         total_rows,
         clipped_cells = collected.clipped.len(),
+        non_finite_cells = collected.non_finite.len(),
         page_bytes = page.bytes,
         clamped = page.clamped_from.is_some(),
         "query executed"
@@ -216,6 +223,7 @@ fn query_with_limits(
         page_bytes_clamped_from: page.clamped_from,
         rows_bytes: collected.rows_bytes,
         clipped_cells: collected.clipped,
+        non_finite_cells: collected.non_finite,
     }))
 }
 

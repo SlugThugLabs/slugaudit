@@ -177,3 +177,57 @@ fn a_first_row_larger_than_the_page_is_clipped_and_the_cut_is_reported() {
     assert_eq!(page.next_offset, Some(1));
     assert_eq!(page.total_rows, Some(500));
 }
+
+#[test]
+fn an_unrepresentable_wall_clock_budget_means_no_deadline_not_a_panic() {
+    let project = activated_project(&[]);
+    let limits = ResourceLimits {
+        max_query_wall_clock: std::time::Duration::MAX,
+        ..ResourceLimits::default()
+    };
+
+    let page = ask_page(&project, "SELECT 1 AS one", 0, None, &limits)
+        .expect("a budget too large for an Instant must not panic the query");
+
+    assert_eq!(page.rows.len(), 1);
+    assert_eq!(page.total_rows, Some(1));
+}
+
+#[test]
+fn an_infinite_real_is_listed_as_non_finite_not_left_as_a_bare_null() {
+    let project = activated_project(&[]);
+
+    let page = ask_page(
+        &project,
+        "SELECT 1e999 AS big, -1e999 AS small, NULL AS missing, 1.5 AS fine",
+        0,
+        None,
+        &ResourceLimits::default(),
+    )
+    .expect("query succeeds");
+
+    assert_eq!(page.rows[0]["big"], serde_json::Value::Null);
+    assert_eq!(page.rows[0]["fine"], serde_json::json!(1.5));
+    let listed: Vec<(usize, &str, &str)> = page
+        .non_finite_cells
+        .iter()
+        .map(|cell| (cell.row, cell.column.as_str(), cell.value))
+        .collect();
+    assert_eq!(listed, [(0, "big", "Infinity"), (0, "small", "-Infinity")]);
+}
+
+#[test]
+fn a_result_with_only_finite_reals_lists_no_non_finite_cells() {
+    let project = activated_project(&[]);
+
+    let page = ask_page(
+        &project,
+        "SELECT 2.5 AS a, NULL AS b",
+        0,
+        None,
+        &ResourceLimits::default(),
+    )
+    .expect("query succeeds");
+
+    assert!(page.non_finite_cells.is_empty());
+}

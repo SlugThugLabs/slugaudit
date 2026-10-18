@@ -132,6 +132,20 @@ pub fn project_control(
     {
         return Err(ErrorData::invalid_params("profile exceeds 64 bytes", None));
     }
+    // Refused before any side effect: an unknown profile must not enable the
+    // project on the default profile while the response says it applied.
+    let profile = inner
+        .profile
+        .as_deref()
+        .map(|value| {
+            crate::model::AuditProfile::parse_str(value).ok_or_else(|| {
+                ErrorData::invalid_params(
+                    format!("unknown profile `{value}`; use adaptive, audit or lean"),
+                    None,
+                )
+            })
+        })
+        .transpose()?;
     let path = std::path::PathBuf::from(&path_str);
     // `ProjectRoot::resolve`, not `project::resolve_project`: enabling a
     // project must work *before* the activation marker exists, so there
@@ -139,23 +153,21 @@ pub fn project_control(
     let root = ProjectRoot::resolve(&path).map_err(|e| err(format!("resolve: {e}")))?;
 
     match inner.action {
-        ProjectControlAction::On => enable(&root, inner.profile.as_deref(), sink),
+        ProjectControlAction::On => enable(&root, profile, sink),
         ProjectControlAction::Off => disable(&root, manager),
     }
 }
 
 fn enable(
     root: &ProjectRoot,
-    profile_override: Option<&str>,
+    profile_override: Option<crate::model::AuditProfile>,
     sink: &dyn crate::progress::ProgressSink,
 ) -> Result<Json<ProjectControlResponse>, ErrorData> {
     project::enable(root).map_err(|e| err(format!("enable: {e}")))?;
     // Right after the directory itself: the guard must be in place even if
     // the initial import below fails, and it never fails this call.
     let gitignore = gitignore_report(project::ensure_gitignore(root));
-    if let Some(prof_str) = profile_override
-        && let Some(profile) = crate::model::AuditProfile::parse_str(prof_str)
-    {
+    if let Some(profile) = profile_override {
         let conf_path = root
             .as_path()
             .join(".planning")
@@ -199,7 +211,11 @@ fn disable(
     manager: Option<&sync::SourceSyncManager>,
 ) -> Result<Json<ProjectControlResponse>, ErrorData> {
     let activation = project::activation_dir(root);
-    if !activation.exists() {
+    // `try_exists`: a stat error (permissions, I/O) is not "already disabled".
+    let present = activation
+        .try_exists()
+        .map_err(|e| err(format!("inspect {}: {e}", activation.display())))?;
+    if !present {
         return Ok(Json(ProjectControlResponse {
             status: "already_disabled".into(),
             path: root.as_path().to_string_lossy().to_string(),

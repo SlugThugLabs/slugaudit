@@ -319,3 +319,44 @@ fn off_action_does_not_touch_the_gitignore() {
         "off leaves the user's ignore file alone"
     );
 }
+
+#[test]
+fn an_unknown_profile_is_refused_before_anything_is_enabled() {
+    let (project, path) = temp_project_with_source();
+    let req = Parameters(ProjectControlRequest {
+        path: Some(path),
+        action: ProjectControlAction::On,
+        profile: Some("strict".to_string()),
+    });
+
+    let error = project_control(&req, &crate::progress::NoopProgressSink, None)
+        .err()
+        .expect("a profile that does not exist must not enable on the default");
+
+    assert!(
+        error.message.contains("unknown profile `strict`"),
+        "{}",
+        error.message
+    );
+    assert!(
+        !activation_dir(&project).exists(),
+        "the refused call must leave the project disabled"
+    );
+}
+
+#[test]
+fn off_fails_when_the_activation_dir_cannot_be_inspected() {
+    let (project, path) = temp_project_with_source();
+    // `.planning` is a file, so `.planning/slugaudit` fails with ENOTDIR.
+    fs::write(project.path().join(".planning"), b"x").expect("write file");
+
+    let error = project_control(
+        &off_request(&path),
+        &crate::progress::NoopProgressSink,
+        None,
+    )
+    .err()
+    .expect("an uninspectable activation dir is not 'already disabled'");
+
+    assert!(error.message.contains("inspect"), "{}", error.message);
+}

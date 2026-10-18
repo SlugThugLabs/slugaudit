@@ -281,3 +281,69 @@ fn a_window_that_ends_exactly_at_the_last_file_reports_nothing_unscanned() {
     assert_eq!(response.next_start_after_file, None);
     assert_eq!(response.matches.len(), 1);
 }
+
+#[test]
+fn an_unrepresentable_execution_budget_means_no_deadline_not_a_panic() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let limits = ResourceLimits {
+        max_structure_execution_time: std::time::Duration::MAX,
+        ..ResourceLimits::default()
+    };
+
+    let response = run_with(&page_request(&project, 0, None), &limits, usize::MAX);
+
+    assert_eq!(response.matches.len(), 1);
+}
+
+fn rust_root(source: &str) -> tree_sitter::Tree {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_language_pack::get_language("rust").expect("rust grammar"))
+        .expect("set language");
+    parser.parse(source, None).expect("parse")
+}
+
+#[test]
+fn a_capture_without_a_name_is_logged_and_flagged_as_failed_extraction() {
+    let source = "fn a() {}";
+    let tree = rust_root(source);
+    let lines = crate::model::LineIndex::new(source);
+
+    let (found, logs) = crate::store::test_capture::capture_warns(|| {
+        crate::tools::structure_page::node_to_match(
+            "lib.rs",
+            tree.root_node(),
+            source,
+            &lines,
+            None,
+            false,
+        )
+    });
+
+    assert!(found.extraction_failed);
+    assert!(logs.contains("capture has no name"), "logs: {logs}");
+}
+
+#[test]
+fn text_that_is_not_valid_utf8_keeps_its_cause_in_the_log() {
+    let tree = rust_root("abc");
+    // Three bytes of a four-byte string end inside the second character.
+    let content = "\u{e9}\u{e9}";
+    let lines = crate::model::LineIndex::new(content);
+
+    let (found, logs) = crate::store::test_capture::capture_warns(|| {
+        crate::tools::structure_page::node_to_match(
+            "lib.rs",
+            tree.root_node(),
+            content,
+            &lines,
+            Some("name"),
+            false,
+        )
+    });
+
+    assert!(found.extraction_failed);
+    assert!(found.text.is_empty());
+    assert!(logs.contains("not valid UTF-8"), "logs: {logs}");
+    assert!(logs.contains("utf-8"), "source error kept: {logs}");
+}
