@@ -1164,7 +1164,7 @@ maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by rea
   value. Tests: `an_unparseable_override_warning_carries_the_parse_error`,
   `a_non_unicode_override_warns_without_logging_its_value`,
   `a_non_unicode_profile_warns_without_logging_its_value`.
-- **SQL scanner deleted and `query` row cap removed — landed (uncommitted, 2026-10-18).**
+- **SQL scanner deleted and `query` row cap removed — landed (`ddded2b`, 2026-10-18).**
   `src/tools/query_sql_scanner.rs` (hand-rolled lexer, no recorded reason) is gone: single-statement
   detection is rusqlite's `Error::MultipleStatement` (SQLite's own tail check, rusqlite 0.37.0
   `src/lib.rs:770-775`), mapped to `invalid_params`; it now runs after sync, inside the read
@@ -1180,3 +1180,13 @@ maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by rea
   `.planning/slugaudit-notes/`; `netfs` mountinfo ignores `\040` escapes; nested-macro
   re-parse depth is uncapped; `util::hex_encode` formats per byte; `query` always keeps an
   over-budget first row.
+- **Client handling of large `query`/`leads` results — owner decision pending (2026-10-18).**
+  With `MAX_ROWS` gone a page is cut only by `max_query_response_bytes` (32 MB lean,
+  256 MB audit/adaptive). Source-read survey of MCP clients (clones of each repo, 2026-10-16..18):
+  saved-to-file with a notice — Claude Code (>25k tokens, code.claude.com/docs/en/mcp),
+  OpenCode (50 KiB, `packages/core/src/tool-output.ts`), Gemini CLI (40k chars, single text
+  part only, `scheduler/tool-executor.ts`), Goose (200k chars, `large_response_handler.rs`),
+  VS Code Copilot (8 KiB, `toolCalling.tsx`), Cline SDK (8k chars + cache); lossy middle cut
+  with notice — Codex CLI (10,000 bytes default, `codex-rs/models-manager/src/model_info.rs`);
+  passed whole — Zed (`context_server_registry.rs`), Continue (hard error past context,
+  `core/llm/countTokens.ts`); unknown — Cursor, Windsurf.
