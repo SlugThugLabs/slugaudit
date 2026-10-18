@@ -1572,6 +1572,14 @@
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "expected_revision": {
+            "default": null,
+            "description": "Set to a previous page's `revision_id` when resuming; if the index\nchanged since, the call is refused instead of paging a shifted order.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "file": {
             "default": null,
             "description": "Project-relative path of a single file to match against.\nWhen omitted, matches all files in the project matching `language`.",
@@ -1596,6 +1604,23 @@
               "null"
             ]
           },
+          "offset": {
+            "default": 0,
+            "description": "Number of matches to skip when paging through a result; use the\nprevious response's `next_offset`. Valid only while `revision_id` is\nunchanged, and only together with the same `start_after_file`.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "page_bytes": {
+            "default": null,
+            "description": "Page size in serialized JSON bytes of `matches`. Omit it for the server\ndefault (64 KiB unless configured otherwise; the response's\n`page_bytes` says what applied). A value above the hard ceiling\n`max_query_response_bytes` is clamped and reported as\n`page_bytes_clamped_from`. Pages are cut on a match boundary; the first\nmatch is always returned, so a single match larger than the page\narrives whole (its own `text_truncated` flag covers the 1 MB text cap).",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "path": {
             "description": "Any path inside the active project.",
             "type": "string"
@@ -1611,6 +1636,14 @@
           "query": {
             "description": "A tree-sitter S-expression query, e.g. `(function_item name: (identifier) @name)`.\nFor patterns normalized evidence and `query` can't easily express.",
             "type": "string"
+          },
+          "start_after_file": {
+            "default": null,
+            "description": "Multi-file queries only: scan only files whose path sorts strictly\nafter this one. Use the previous response's `next_start_after_file`\nwhen it reports `files_not_scanned`.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1693,6 +1726,18 @@
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "bytes_not_scanned": {
+            "description": "Content bytes of those unscanned files.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "files_not_scanned": {
+            "description": "Multi-file only: matching files past the memory window that were NOT\nscanned by this call (0 means every matching file after\n`start_after_file` was scanned). When above 0 the result is incomplete\neven if `truncated` is false: finish `next_offset` paging, then repeat\nwith `start_after_file` = `next_start_after_file` and offset 0.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
           "language": {
             "type": "string"
           },
@@ -1702,18 +1747,68 @@
             },
             "type": "array"
           },
+          "matches_bytes": {
+            "description": "Serialized JSON bytes of the returned `matches`.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "next_offset": {
+            "description": "Pass as the next request's `offset` (with the same other fields) when\npresent.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "next_start_after_file": {
+            "description": "Present when `files_not_scanned` > 0.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "page_bytes": {
+            "description": "The page size that applied, in serialized JSON bytes of `matches`.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "page_bytes_clamped_from": {
+            "description": "Non-null when the requested (or configured default) page size exceeded\n`max_query_response_bytes`: the size asked for; `page_bytes` is then\nthe ceiling.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "revision_id": {
             "type": "string"
           },
           "truncated": {
+            "description": "True when more matches exist past this page (page bytes or the match\ncap); `next_offset` continues. False means this scan window is done.",
             "type": "boolean"
+          },
+          "unparsed_files": {
+            "description": "Multi-file only: files the parser produced no syntax tree for, so they\ncontributed no matches. Empty when none.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
           "revision_id",
           "language",
           "matches",
-          "truncated"
+          "truncated",
+          "page_bytes",
+          "matches_bytes",
+          "files_not_scanned",
+          "bytes_not_scanned",
+          "unparsed_files"
         ],
         "type": "object"
       },

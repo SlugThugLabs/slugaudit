@@ -2,8 +2,10 @@
 //! validation, and target loading. Query execution lives in
 //! `structure_exec`.
 
-use super::context::{SyncedProject, ensure_synced, with_verified_read};
-use super::structure_exec::{OutputMode, run_query};
+use super::context::{ensure_synced, guard_expected_revision};
+use super::page_size;
+use super::structure_exec::run_query;
+use super::structure_page::{OutputMode, Paging};
 use crate::model::ResourceLimits;
 use crate::sync;
 use rmcp::ErrorData;
@@ -17,9 +19,9 @@ const MAX_FILTER_BYTES: usize = 8 * 1024;
 
 #[cfg(test)]
 pub(super) use super::structure_source::MAX_TEXT_BYTES;
-use super::structure_source::{fetch_source, fetch_sources_for_language};
+use super::structure_source::{MAX_MULTI_FILE_TOTAL_BYTES, load_targets};
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 /// A Tree-sitter query to run against one indexed file, or every indexed
 /// file of one language.
 pub struct StructureRequest {
@@ -43,6 +45,29 @@ pub struct StructureRequest {
     /// Defaults to true for single-file queries, and false (lean 1-line snippet) for multi-file queries.
     #[serde(default)]
     pub full_text: Option<bool>,
+    /// Number of matches to skip when paging through a result; use the
+    /// previous response's `next_offset`. Valid only while `revision_id` is
+    /// unchanged, and only together with the same `start_after_file`.
+    #[serde(default)]
+    pub offset: usize,
+    /// Page size in serialized JSON bytes of `matches`. Omit it for the server
+    /// default (64 KiB unless configured otherwise; the response's
+    /// `page_bytes` says what applied). A value above the hard ceiling
+    /// `max_query_response_bytes` is clamped and reported as
+    /// `page_bytes_clamped_from`. Pages are cut on a match boundary; the first
+    /// match is always returned, so a single match larger than the page
+    /// arrives whole (its own `text_truncated` flag covers the 1 MB text cap).
+    #[serde(default)]
+    pub page_bytes: Option<usize>,
+    /// Multi-file queries only: scan only files whose path sorts strictly
+    /// after this one. Use the previous response's `next_start_after_file`
+    /// when it reports `files_not_scanned`.
+    #[serde(default)]
+    pub start_after_file: Option<String>,
+    /// Set to a previous page's `revision_id` when resuming; if the index
+    /// changed since, the call is refused instead of paging a shifted order.
+    #[serde(default)]
+    pub expected_revision: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -65,12 +90,38 @@ pub struct StructureMatch {
 
 #[derive(Debug, Serialize, JsonSchema)]
 /// The matches for one structure call, the revision they were read from,
-/// and whether the match cap or the deadline cut them short.
+/// and every cut that bounded them, each with the way past it.
 pub struct StructureResponse {
     pub revision_id: String,
     pub language: String,
     pub matches: Vec<StructureMatch>,
+    /// True when more matches exist past this page (page bytes or the match
+    /// cap); `next_offset` continues. False means this scan window is done.
     pub truncated: bool,
+    /// Pass as the next request's `offset` (with the same other fields) when
+    /// present.
+    pub next_offset: Option<usize>,
+    /// The page size that applied, in serialized JSON bytes of `matches`.
+    pub page_bytes: usize,
+    /// Non-null when the requested (or configured default) page size exceeded
+    /// `max_query_response_bytes`: the size asked for; `page_bytes` is then
+    /// the ceiling.
+    pub page_bytes_clamped_from: Option<usize>,
+    /// Serialized JSON bytes of the returned `matches`.
+    pub matches_bytes: usize,
+    /// Multi-file only: matching files past the memory window that were NOT
+    /// scanned by this call (0 means every matching file after
+    /// `start_after_file` was scanned). When above 0 the result is incomplete
+    /// even if `truncated` is false: finish `next_offset` paging, then repeat
+    /// with `start_after_file` = `next_start_after_file` and offset 0.
+    pub files_not_scanned: usize,
+    /// Content bytes of those unscanned files.
+    pub bytes_not_scanned: u64,
+    /// Present when `files_not_scanned` > 0.
+    pub next_start_after_file: Option<String>,
+    /// Multi-file only: files the parser produced no syntax tree for, so they
+    /// contributed no matches. Empty when none.
+    pub unparsed_files: Vec<String>,
 }
 
 /// # Errors
@@ -84,24 +135,28 @@ pub fn structure(
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<StructureResponse>, ErrorData> {
     let limits = super::resolve_limits(&request.0.path)?;
-    structure_with_limits(request, &limits, sink, manager)
+    structure_with_limits(request, &limits, MAX_MULTI_FILE_TOTAL_BYTES, sink, manager)
 }
 
 /// Test-only seam: production code always goes through [`structure`] with
-/// `process_limits`; tests inject a tighter
-/// `max_structure_execution_time` to exercise the abort path without
-/// waiting out the production-sized budget.
+/// `process_limits`; tests inject a tighter `max_structure_execution_time`
+/// to exercise the abort path without waiting out the production-sized
+/// budget, and a small `window_bytes` to cut the multi-file memory window
+/// without writing 64 MB.
 fn structure_with_limits(
     request: &Parameters<StructureRequest>,
     limits: &ResourceLimits,
+    window_bytes: usize,
     sink: &dyn crate::progress::ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<StructureResponse>, ErrorData> {
     let request = &request.0;
     validate_request(request, limits)?;
+    let page = page_size::resolve(request.page_bytes, limits)?;
 
     let synced = ensure_synced(&request.path, sink, manager)?;
-    let (target_language, files_to_scan) = load_targets(&synced, request)?;
+    guard_expected_revision(&synced.revision_id, request.expected_revision.as_deref())?;
+    let (target_language, window) = load_targets(&synced, request, window_bytes)?;
 
     let ts_language = tree_sitter_language_pack::get_language(&target_language)
         .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
@@ -113,14 +168,44 @@ fn structure_with_limits(
         full_text: request.full_text.unwrap_or(single_file),
         single_file,
     };
-    let (matches, truncated) =
-        run_query(&compiled_query, &ts_language, &files_to_scan, limits, &mode)?;
+    let paging = Paging {
+        offset: request.offset,
+        page_bytes: page.bytes,
+    };
+    let run = run_query(
+        &compiled_query,
+        &ts_language,
+        &window.files,
+        limits,
+        &mode,
+        &paging,
+    )?;
+    let next_offset = run
+        .truncated
+        .then_some(request.offset.saturating_add(run.matches.len()));
+    tracing::info!(
+        match_count = run.matches.len(),
+        truncated = run.truncated,
+        files_not_scanned = window.files_not_scanned,
+        unparsed = run.unparsed_files.len(),
+        page_bytes = page.bytes,
+        clamped = page.clamped_from.is_some(),
+        "structure executed"
+    );
 
     Ok(Json(StructureResponse {
         revision_id: synced.revision_id,
         language: target_language,
-        matches,
-        truncated,
+        matches: run.matches,
+        truncated: run.truncated,
+        next_offset,
+        page_bytes: page.bytes,
+        page_bytes_clamped_from: page.clamped_from,
+        matches_bytes: run.matches_bytes,
+        files_not_scanned: window.files_not_scanned,
+        bytes_not_scanned: window.bytes_not_scanned,
+        next_start_after_file: window.next_start_after_file,
+        unparsed_files: run.unparsed_files,
     }))
 }
 
@@ -156,30 +241,13 @@ fn validate_request(request: &StructureRequest, limits: &ResourceLimits) -> Resu
             None,
         ));
     }
-    Ok(())
-}
-
-/// The grammar to use and the `(path, content)` pairs to scan: the one
-/// named file (language detected from the index), or every indexed file of
-/// the requested language that matches `pattern`.
-fn load_targets(
-    synced: &SyncedProject,
-    request: &StructureRequest,
-) -> Result<(String, Vec<(String, String)>), ErrorData> {
-    if let Some(file) = &request.file {
-        let (content, detected) = with_verified_read(synced, |tx| fetch_source(tx, file))?;
-        return Ok((detected, vec![(file.clone(), content)]));
-    }
-    let language = request.language.as_deref().ok_or_else(|| {
-        ErrorData::invalid_params(
-            "structure request without 'file' must specify 'language'",
+    if request.file.is_some() && request.start_after_file.is_some() {
+        return Err(ErrorData::invalid_params(
+            "start_after_file applies only to multi-file queries; omit it with `file`",
             None,
-        )
-    })?;
-    let sources = with_verified_read(synced, |tx| {
-        fetch_sources_for_language(tx, language, request.pattern.as_deref())
-    })?;
-    Ok((language.to_owned(), sources))
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

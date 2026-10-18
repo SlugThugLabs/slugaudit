@@ -83,6 +83,7 @@ fuzz_target!(|data: &[u8]| {
         pattern: None,
         query: String::from_utf8_lossy(body).into_owned(),
         full_text: Some(selector & FULL_TEXT != 0),
+        ..Default::default()
     });
 
     // Errors are the expected outcome for most hostile queries (a malformed

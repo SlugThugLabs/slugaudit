@@ -3,6 +3,7 @@
 //! captured nodes back to source coordinates.
 
 use super::structure::StructureMatch;
+use super::structure_page::{OutputMode, Paging, RunOutput, require_captures};
 use super::structure_source::{MAX_SNIPPET_BYTES, truncate_snippet, truncate_text};
 use crate::model::{ResourceLimits, char_column, saturating_u32};
 use rmcp::ErrorData;
@@ -12,24 +13,17 @@ use tree_sitter::{
     Parser, Query, QueryCursor, QueryCursorOptions, QueryCursorState, StreamingIterator, Tree,
 };
 
-/// How a run reports its matches.
-pub(super) struct OutputMode {
-    /// Full matched text (up to `MAX_TEXT_BYTES`) instead of a 1-line snippet.
-    pub(super) full_text: bool,
-    /// A single-file run fails on an unparseable file; a multi-file run skips it.
-    pub(super) single_file: bool,
-}
-
-/// Runs `query` over `files`, returning the matches and whether the match
-/// cap cut them short. A spent execution budget is an error, never a
-/// silently partial result.
+/// Runs `query` over `files`, returning one page of matches. `truncated` is
+/// true only when a further match was actually seen past the page. A spent
+/// execution budget is an error, never a silently partial result.
 pub(super) fn run_query(
     query: &Query,
     language: &tree_sitter::Language,
     files: &[(String, String)],
     limits: &ResourceLimits,
     mode: &OutputMode,
-) -> Result<(Vec<StructureMatch>, bool), ErrorData> {
+    paging: &Paging,
+) -> Result<RunOutput, ErrorData> {
     require_captures(query)?;
     let mut parser = Parser::new();
     parser
@@ -43,6 +37,10 @@ pub(super) fn run_query(
         timed_out: false,
         cursor: QueryCursor::new(),
         matches: Vec::new(),
+        skip: paging.offset,
+        page_bytes: paging.page_bytes,
+        matches_bytes: 0,
+        unparsed_files: Vec::new(),
     };
     let truncated = run.scan_files(&mut parser, files)?;
     if run.timed_out {
@@ -51,22 +49,12 @@ pub(super) fn run_query(
             None,
         ));
     }
-    Ok((run.matches, truncated))
-}
-
-/// A bare pattern with no `@capture` can never return a node; reject it
-/// with guidance instead of answering an empty, misleading success.
-fn require_captures(query: &Query) -> Result<(), ErrorData> {
-    if query.capture_names().is_empty() {
-        return Err(ErrorData::invalid_params(
-            "structure query declares no @capture, so it can never return any node; add "
-                .to_owned()
-                + "one, e.g. `(function_item name: (identifier) @name)` for Rust or "
-                + "`(function_definition) @node` for Python/JS",
-            None,
-        ));
-    }
-    Ok(())
+    Ok(RunOutput {
+        matches: run.matches,
+        truncated,
+        matches_bytes: run.matches_bytes,
+        unparsed_files: run.unparsed_files,
+    })
 }
 
 /// One query execution's budget and accumulated output.
@@ -78,11 +66,16 @@ struct Run<'q> {
     timed_out: bool,
     cursor: QueryCursor,
     matches: Vec<StructureMatch>,
+    skip: usize,
+    page_bytes: usize,
+    matches_bytes: usize,
+    unparsed_files: Vec<String>,
 }
 
 impl Run<'_> {
-    /// Scans files in order until they run out, the cap fills, or the
-    /// deadline passes. Returns whether the result was cut short.
+    /// Scans files in order until they run out, a further match is seen past
+    /// a full page, or the deadline passes. Returns whether such a further
+    /// match exists.
     fn scan_files(
         &mut self,
         parser: &mut Parser,
@@ -99,9 +92,10 @@ impl Run<'_> {
                         None,
                     ));
                 }
+                self.unparsed_files.push(file_path.clone());
                 continue;
             };
-            if self.scan_tree(file_path, content, &tree) {
+            if self.scan_tree(file_path, content, &tree)? {
                 return Ok(true);
             }
             if self.timed_out {
@@ -117,12 +111,17 @@ impl Run<'_> {
             self.timed_out = true;
             return true;
         }
-        self.matches.len() >= self.max_matches
+        false
     }
 
-    /// Collects `tree`'s captures up to the cap. Returns whether captures
-    /// remained past it.
-    fn scan_tree(&mut self, file_path: &str, content: &str, tree: &Tree) -> bool {
+    /// Skips `offset` captures, then collects until the match cap or the page
+    /// byte budget is full. Returns whether a capture was seen past the page.
+    fn scan_tree(
+        &mut self,
+        file_path: &str,
+        content: &str,
+        tree: &Tree,
+    ) -> Result<bool, ErrorData> {
         let deadline = self.deadline;
         let mut timed_out = false;
         let mut check_deadline = |_state: &QueryCursorState| -> ControlFlow<()> {
@@ -141,22 +140,39 @@ impl Run<'_> {
             content.as_bytes(),
             options,
         );
-        while self.matches.len() < self.max_matches
-            && let Some((query_match, capture_index)) = captures.next()
-        {
+        let mut more_remain = false;
+        while let Some((query_match, capture_index)) = captures.next() {
+            if self.skip > 0 {
+                self.skip -= 1;
+                continue;
+            }
+            if self.matches.len() >= self.max_matches {
+                more_remain = true;
+                break;
+            }
             let capture = query_match.captures[*capture_index];
-            self.matches.push(node_to_match(
+            let found = node_to_match(
                 file_path,
                 capture.node,
                 content,
                 capture_names.get(capture.index as usize).copied(),
                 self.mode.full_text,
-            ));
+            );
+            let found_bytes = serde_json::to_vec(&found)
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+                .len();
+            if !self.matches.is_empty()
+                && self.matches_bytes.saturating_add(found_bytes) > self.page_bytes
+            {
+                more_remain = true;
+                break;
+            }
+            self.matches_bytes = self.matches_bytes.saturating_add(found_bytes);
+            self.matches.push(found);
         }
-        let more_remain = captures.next().is_some();
         drop(captures);
         self.timed_out |= timed_out;
-        more_remain
+        Ok(more_remain)
     }
 }
 

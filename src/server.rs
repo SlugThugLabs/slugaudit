@@ -100,7 +100,7 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     STRUCTURE: `structure` runs a Tree-sitter S-expression query (required, and it must name at least one \
     capture) against indexed content — in one `file`, or project-wide with `language` and an optional `pattern` \
     path filter (e.g. `src/**/*.rs`). Rust `(function_item name: (identifier) @name)`, \
-    Python `(function_definition name: (identifier) @name)`. Ready-made recipes are resources: \
+    Python `(function_definition name: (identifier) @name)`. Results page at 64 KiB: `truncated` + `next_offset` continue it (`page_bytes` overrides, clamped and reported); `files_not_scanned` > 0 means the project-wide scan hit its memory window and `next_start_after_file` resumes it; `unparsed_files` lists files that yielded no tree. Ready-made recipes are resources: \
     `slugaudit://queries/README.md` is the index of every one of them, beside the payload-key \
     reference and `slugaudit://schema.sql`.\n\n\
     OTHER TOOLS: `report` is the project snapshot — files, languages, evidence kinds, parser failures, import \

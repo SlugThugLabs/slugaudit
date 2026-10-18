@@ -27,6 +27,7 @@ fn ask(
             pattern: None,
             query: query.to_owned(),
             full_text: None,
+            ..Default::default()
         }),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
@@ -183,8 +184,10 @@ fn matches_are_capped_and_truncation_is_reported() {
             pattern: None,
             query: "(function_item name: (identifier) @name)".to_owned(),
             full_text: None,
+            ..Default::default()
         }),
         &limits,
+        MAX_MULTI_FILE_TOTAL_BYTES,
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
     )
@@ -218,8 +221,10 @@ fn a_pathological_query_is_aborted_by_the_execution_time_budget() {
             pattern: None,
             query: "(function_item name: (identifier) @name)".to_owned(),
             full_text: None,
+            ..Default::default()
         }),
         &limits,
+        MAX_MULTI_FILE_TOTAL_BYTES,
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
     )
@@ -246,6 +251,7 @@ fn matches_across_multiple_files_with_language_and_lean_snippets() {
             pattern: None,
             query: "(function_item name: (identifier) @name)".to_owned(),
             full_text: None,
+            ..Default::default()
         }),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
@@ -279,6 +285,7 @@ fn pattern_filters_files_in_multi_file_query() {
             pattern: Some("*auth*".to_owned()),
             query: "(function_item name: (identifier) @name)".to_owned(),
             full_text: None,
+            ..Default::default()
         }),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
