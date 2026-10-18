@@ -51,6 +51,11 @@ pub enum PublishError {
     /// should retry the whole tool call.
     #[error("{path} changed on disk after being sampled; retry the call")]
     ChangedDuringSample { path: String },
+    /// A worker could not hand a sampled file to the result drain (the
+    /// receiving end was gone). The file's outcome would have been lost, so
+    /// the publish fails instead of omitting it.
+    #[error("sampling result for {path} could not be delivered: {reason}")]
+    SamplingResultLost { path: String, reason: String },
     #[error("invalid parser pack version {0:?}; expected a non-empty numeric dotted version")]
     InvalidParserPackVersion(String),
     /// `path` is a pre-formatted note naming the file being processed when

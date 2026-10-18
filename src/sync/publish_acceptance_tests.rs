@@ -9,6 +9,7 @@
 use super::*;
 use crate::store::open_read_write;
 use crate::sync::test_support::{stored_paths, write};
+use rusqlite::OptionalExtension;
 use std::fs;
 
 struct FileRow {
@@ -58,9 +59,11 @@ fn resolved_target(connection: &Connection, from: &str) -> Option<String> {
              LEFT JOIN files t ON t.id = e.to_file_id \
              WHERE f.path = ?1 AND e.resolution_kind = 'Resolved'",
             [from],
-            |row| row.get(0),
+            |row| row.get::<_, Option<String>>(0),
         )
-        .ok()
+        .optional()
+        .expect("resolved-edge query runs")
+        .flatten()
 }
 
 #[test]

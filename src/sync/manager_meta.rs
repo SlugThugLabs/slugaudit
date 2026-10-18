@@ -171,11 +171,7 @@ pub(crate) fn ensure_project_row(
     purge_prior_session_findings(connection).map_err(ProjectMetaError::Other)?;
 
     let root_path = root.to_string_lossy();
-    let created_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
-        });
+    let created_at = crate::util::now_unix();
 
     connection
         .execute(

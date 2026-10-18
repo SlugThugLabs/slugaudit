@@ -155,7 +155,7 @@ impl SourceSyncManager {
         self.watch_manager.refresh_scope(root.as_path());
         let revision_id = self.sync_by_health(root, &state, connection, &database_path, sink)?;
 
-        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let duration_ms = elapsed_ms(start);
         self.stamp_last_sync(duration_ms);
         tracing::debug!(
             revision_id = %revision_id,
@@ -185,13 +185,24 @@ impl SourceSyncManager {
     ) -> Result<SyncedProject, ErrorData> {
         let synced = publish_from_scratch(root, database_path, sink)?;
         self.record_full_publish();
-        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let duration_ms = elapsed_ms(start);
         self.stamp_last_sync(duration_ms);
         sink.emit(ProgressEvent::Completed {
             phase: "ensuring_current",
         });
         Ok(synced)
     }
+}
+
+/// Milliseconds since `start`, for the `last_sync_duration_ms` stamp. A
+/// `u128` count of milliseconds only exceeds `u64::MAX` after about 584
+/// million years, so the saturation is a documented impossibility; it is
+/// still logged with its cause rather than swallowed.
+fn elapsed_ms(start: std::time::Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or_else(|error| {
+        tracing::warn!(error = %error, "sync duration exceeds u64 milliseconds; stamp saturates");
+        u64::MAX
+    })
 }
 
 /// Every state-bearing tool funnels through `ensure_current`, so this is

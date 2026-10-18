@@ -121,12 +121,17 @@ fn reconcile_single_dirty_path(
     }
 
     let mtime = crate::util::mtime_unix_seconds(&metadata);
-    let byte_len = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
-
-    if u64::try_from(byte_len).unwrap_or(u64::MAX) > limits.max_file_bytes {
-        push_skipped_record(skipped_records, existing_hashes, &path, &absolute_path);
-        return Ok(DirtyOutcome::Skipped);
-    }
+    // A size beyond `i64::MAX` cannot be stored in the SQLite integer
+    // column, so it is skipped like an over-limit file (an existence row,
+    // reported in `skipped`) instead of being saturated into a wrong size.
+    let size = metadata.len();
+    let byte_len = match i64::try_from(size) {
+        Ok(len) if size <= limits.max_file_bytes => len,
+        _ => {
+            push_skipped_record(skipped_records, existing_hashes, &path, &absolute_path);
+            return Ok(DirtyOutcome::Skipped);
+        }
+    };
 
     let identity = hash::hash_file(&path, &absolute_path)?;
 

@@ -23,31 +23,27 @@ static HOOKS: std::sync::Mutex<Option<Hooks>> = std::sync::Mutex::new(None);
 /// (run 38949456424, 2026-10-16, cancelled at the 6-hour job limit).
 #[cfg(test)]
 pub(crate) fn set(root: &Path, hook: impl FnOnce() + Send + 'static) {
-    let mut guard = HOOKS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = crate::util::lock_or_recover(&HOOKS);
     guard
         .get_or_insert_with(std::collections::HashMap::new)
         .insert(crate::util::canonical_or_self(root), Box::new(hook));
 }
 
-/// A no-op outside tests (this module is `cfg(test)`-only besides this one
-/// always-compiled entry point, so it compiles to nothing in release
-/// builds) and a no-op for any root nobody armed a hook for.
-#[cfg_attr(not(test), allow(unused_variables))]
+/// Fires the hook armed for `root`, if any, and removes it; a no-op for any
+/// root nobody armed a hook for.
+#[cfg(test)]
 pub(crate) fn fire(root: &Path) {
-    #[cfg(test)]
-    {
-        let hook = HOOKS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_mut()
-            .and_then(|hooks| hooks.remove(&crate::util::canonical_or_self(root)));
-        if let Some(hook) = hook {
-            hook();
-        }
+    let hook = crate::util::lock_or_recover(&HOOKS)
+        .as_mut()
+        .and_then(|hooks| hooks.remove(&crate::util::canonical_or_self(root)));
+    if let Some(hook) = hook {
+        hook();
     }
 }
+
+/// Release builds have no hooks: this compiles to nothing.
+#[cfg(not(test))]
+pub(crate) fn fire(_root: &Path) {}
 
 #[cfg(test)]
 mod tests {

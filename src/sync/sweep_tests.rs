@@ -454,3 +454,44 @@ fn a_stored_unknown_size_is_always_nominated_for_re_examination() {
     );
     assert!(!report.candidates.contains("b.rs"));
 }
+
+/// The first regular-file entry the indexable walker yields under `root`.
+fn first_walked_file(root: &Path) -> ignore::DirEntry {
+    crate::ignore_rules::indexable_walker(root)
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
+        .expect("the walker yields the fixture file")
+}
+
+#[test]
+fn a_stat_failing_with_something_other_than_not_found_leaves_the_file_unverifiable_not_gone() {
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "d/a.rs", b"fn a() {}");
+    let entry = first_walked_file(project.path());
+    // After the walk, `d` becomes a regular file: stat of `d/a.rs` now fails
+    // with ENOTDIR, which is not `NotFound`.
+    std::fs::remove_dir_all(project.path().join("d")).expect("remove the directory");
+    write(project.path(), "d", b"now a file");
+
+    let walked = super::walked_file(project.path(), Ok(entry));
+
+    assert!(
+        matches!(&walked, super::Walked::Unverifiable(path) if path == "d/a.rs"),
+        "a non-NotFound stat failure must not classify the file as gone"
+    );
+}
+
+#[test]
+fn a_walked_file_that_vanished_before_its_stat_is_skipped_so_its_row_is_deleted() {
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "a.rs", b"fn a() {}");
+    let entry = first_walked_file(project.path());
+    std::fs::remove_file(project.path().join("a.rs")).expect("delete the file");
+
+    let walked = super::walked_file(project.path(), Ok(entry));
+
+    assert!(
+        matches!(walked, super::Walked::Skipped),
+        "NotFound is the one stat error that means deleted"
+    );
+}

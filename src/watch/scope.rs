@@ -52,8 +52,18 @@ impl WatchScope {
                     continue;
                 }
             };
-            let Some(relative) = entry.path().strip_prefix(root).ok() else {
-                continue;
+            let relative = match entry.path().strip_prefix(root) {
+                Ok(relative) => relative,
+                Err(error) => {
+                    // The walker yields paths under `root`, so this cannot
+                    // happen; if it did, the entry would go unwatched.
+                    tracing::warn!(
+                        path_id = %crate::util::redacted_path(entry.path()),
+                        error = %error,
+                        "watch scope walked a path outside the project root; it is left out",
+                    );
+                    continue;
+                }
             };
             let relative_str = relative.to_string_lossy();
             let Some(file_type) = entry.file_type() else {

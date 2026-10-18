@@ -230,6 +230,7 @@ pub(crate) fn apply_evidence_limits(
     let mut kept = Vec::with_capacity(original_len.min(cap.max_items_per_file));
     let mut cumulative_bytes = 0_usize;
     let mut oversized_dropped = 0_usize;
+    let mut unmeasurable_dropped = 0_usize;
     let mut limit_truncated = false;
 
     for item in items.drain(..) {
@@ -237,8 +238,21 @@ pub(crate) fn apply_evidence_limits(
             limit_truncated = true;
             break;
         }
-        let payload_bytes =
-            serde_json::to_vec(&item.payload).map_or(usize::MAX, |bytes| bytes.len());
+        let payload_bytes = match serde_json::to_vec(&item.payload) {
+            Ok(bytes) => bytes.len(),
+            Err(error) => {
+                // A `Value` serializes infallibly today; if that ever stops
+                // being true the item is dropped under its own count, never
+                // passed off as an over-the-cap item.
+                tracing::warn!(
+                    key = %item.key,
+                    error = %error,
+                    "evidence payload failed to serialize; item dropped",
+                );
+                unmeasurable_dropped += 1;
+                continue;
+            }
+        };
         if payload_bytes > cap.max_payload_bytes_per_item {
             oversized_dropped += 1;
             continue;
@@ -253,12 +267,13 @@ pub(crate) fn apply_evidence_limits(
 
     let kept_len = kept.len();
     *items = kept;
-    let discarded = limit_truncated || oversized_dropped > 0;
+    let discarded = limit_truncated || oversized_dropped > 0 || unmeasurable_dropped > 0;
     if discarded {
         items.push(truncation_evidence(
             original_len,
             kept_len,
             oversized_dropped,
+            unmeasurable_dropped,
         ));
     }
     discarded
@@ -268,10 +283,17 @@ fn truncation_evidence(
     original_count: usize,
     kept_count: usize,
     oversized_dropped: usize,
+    unmeasurable_dropped: usize,
 ) -> EvidenceItem {
     let dropped_for_cap = original_count
         .saturating_sub(kept_count)
-        .saturating_sub(oversized_dropped);
+        .saturating_sub(oversized_dropped)
+        .saturating_sub(unmeasurable_dropped);
+    let unmeasurable_note = if unmeasurable_dropped > 0 {
+        format!(", {unmeasurable_dropped} item(s) failed to serialize")
+    } else {
+        String::new()
+    };
     EvidenceItem {
         key: "evidence:truncated".to_owned(),
         kind: EvidenceKind::Diagnostic,
@@ -281,7 +303,7 @@ fn truncation_evidence(
             "message": format!(
                 "evidence limits discarded records: {oversized_dropped} item(s) exceeded the \
                  per-item byte cap, {dropped_for_cap} item(s) dropped by the item-count or \
-                 cumulative-byte cap"
+                 cumulative-byte cap{unmeasurable_note}"
             ),
             "severity": "warning",
             "original_item_count": original_count,

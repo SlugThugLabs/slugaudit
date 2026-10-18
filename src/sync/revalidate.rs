@@ -6,10 +6,11 @@
 use super::discovery::DiscoveredFile;
 use super::publish::PublishError;
 use super::revision::FileRecord;
-use super::sample::sample_file;
+use super::sample::{SampleError, sample_file};
 use crate::model::ResourceLimits;
 use crate::util::Deadline;
 use std::collections::HashMap;
+use std::io::ErrorKind;
 
 /// Re-samples every file this function is about to write and aborts if any
 /// no longer matches what was recorded during the original sample. This
@@ -39,12 +40,10 @@ pub(super) fn revalidate_unchanged_since_sample(
                 elapsed_ms: elapsed.as_millis(),
             });
         }
-        let unchanged = by_path
-            .get(upsert.relative_path.as_str())
-            .is_some_and(|file| {
-                sample_file(file, limits)
-                    .is_ok_and(|fresh| fresh.identity.content_hash == upsert.identity.content_hash)
-            });
+        let unchanged = match by_path.get(upsert.relative_path.as_str()) {
+            Some(file) => still_matches(file, upsert, limits)?,
+            None => false,
+        };
         if !unchanged {
             return Err(PublishError::ChangedDuringSample {
                 path: upsert.relative_path.clone(),
@@ -52,4 +51,23 @@ pub(super) fn revalidate_unchanged_since_sample(
         }
     }
     Ok(())
+}
+
+/// Whether `file` still hashes to what `upsert` recorded. A file that is now
+/// gone or now over the size ceiling has changed since the sample, so a fresh
+/// sample can resolve it and the caller retries. Any other read failure
+/// (permissions, I/O error, the path becoming a directory) is not a
+/// concurrent edit and retrying cannot fix it, so it fails the publish with
+/// its real cause instead of being reported as `ChangedDuringSample`.
+fn still_matches(
+    file: &DiscoveredFile,
+    upsert: &FileRecord,
+    limits: &ResourceLimits,
+) -> Result<bool, PublishError> {
+    match sample_file(file, limits) {
+        Ok(fresh) => Ok(fresh.identity.content_hash == upsert.identity.content_hash),
+        Err(SampleError::TooLarge { .. }) => Ok(false),
+        Err(SampleError::Read { source, .. }) if source.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(PublishError::Sample(error)),
+    }
 }

@@ -28,8 +28,12 @@ pub(super) fn query_existing_hashes(
     Ok(result)
 }
 
-/// Reads the parser pack version of the current revision, falling back to
-/// `"1.0"` when no revision has been published yet.
+/// Reads the parser pack version of the current revision. When no revision
+/// has been published yet, the pack this build parses with
+/// ([`crate::parse::PACK_VERSION`]) is the truthful answer: any revision
+/// this reconcile creates is parsed by it, and recording a made-up version
+/// would make the next full publish see a pack change and re-parse every
+/// file.
 pub(super) fn query_current_parser_pack_version(
     connection: &Connection,
 ) -> Result<String, rusqlite::Error> {
@@ -40,5 +44,21 @@ pub(super) fn query_current_parser_pack_version(
             |row| row.get(0),
         )
         .optional()?;
-    Ok(version.unwrap_or_else(|| "1.0".to_owned()))
+    Ok(version.unwrap_or_else(|| crate::parse::PACK_VERSION.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_database_with_no_revision_reports_the_pack_this_build_parses_with() {
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let connection =
+            crate::store::open_read_write(&db_dir.path().join("project.db")).expect("open db");
+
+        let version = query_current_parser_pack_version(&connection).expect("query version");
+
+        assert_eq!(version, crate::parse::PACK_VERSION);
+    }
 }

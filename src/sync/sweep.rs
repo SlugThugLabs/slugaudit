@@ -98,15 +98,28 @@ pub(super) fn sweep(
                 elapsed_ms: elapsed.as_millis(),
             });
         }
-        let Some((relative, metadata)) = walked_file(root, entry) else {
-            continue;
+        let (relative, metadata) = match walked_file(root, entry) {
+            Walked::Stat(relative, metadata) => (relative, metadata),
+            Walked::Unverifiable(relative) => {
+                // The file exists but could not be stat'd: keep its stored
+                // row (on disk, neither a candidate nor proven unchanged)
+                // rather than classing it deleted.
+                if stored.contains_key(&relative) {
+                    on_disk.insert(relative);
+                }
+                continue;
+            }
+            Walked::Skipped => continue,
         };
         let mtime = crate::util::mtime_unix_seconds(&metadata);
-        let byte_len = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
-        let unchanged_match = matches!(
-            stored.get(&relative),
-            Some((stored_mtime, Some(stored_len))) if *stored_mtime == mtime && *stored_len == byte_len
-        );
+        // A size beyond `i64::MAX` cannot equal any stored size, so it is
+        // never proven unchanged; it stays a candidate and reconcile skips it.
+        let unchanged_match = i64::try_from(metadata.len()).is_ok_and(|byte_len| {
+            matches!(
+                stored.get(&relative),
+                Some((stored_mtime, Some(stored_len))) if *stored_mtime == mtime && *stored_len == byte_len
+            )
+        });
         if unchanged_match {
             unchanged += 1;
         } else {
@@ -153,14 +166,21 @@ fn stored_signatures(
     Ok(stored)
 }
 
-/// One walked entry, reduced to the pair the comparison needs — `None`
-/// (after warning where the gap is invisible otherwise) for anything the
-/// sweep must not compare: unreadable directories, non-files, excluded or
-/// non-UTF-8 paths, and un-stat-able files.
-fn walked_file(
-    root: &Path,
-    entry: Result<ignore::DirEntry, ignore::Error>,
-) -> Option<(String, std::fs::Metadata)> {
+/// What the sweep makes of one walked entry.
+enum Walked {
+    /// A file with a successful stat, ready for comparison.
+    Stat(String, std::fs::Metadata),
+    /// A file whose stat failed for a reason other than it being gone
+    /// (permissions, I/O error): it exists, so a stored row must stay.
+    Unverifiable(String),
+    /// Nothing to compare: unreadable directories, non-files, excluded or
+    /// non-UTF-8 paths, and files that vanished between walk and stat. The
+    /// cases that are otherwise invisible warn.
+    Skipped,
+}
+
+/// One walked entry, reduced to what the comparison needs.
+fn walked_file(root: &Path, entry: Result<ignore::DirEntry, ignore::Error>) -> Walked {
     let entry = match entry {
         Ok(entry) => entry,
         Err(error) => {
@@ -171,42 +191,58 @@ fn walked_file(
                 "sweep could not read a directory entry; its subtree is not part of \
                  this comparison and files under it cannot be verified",
             );
-            return None;
+            return Walked::Skipped;
         }
     };
     if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-        return None;
+        return Walked::Skipped;
     }
     let absolute_path = entry.path();
-    let Ok(relative) = absolute_path.strip_prefix(root) else {
-        return None;
+    let relative = match absolute_path.strip_prefix(root) {
+        Ok(relative) => relative,
+        Err(error) => {
+            // The walker yields paths under `root`, so this cannot happen;
+            // if it did, the entry is omitted and its stored row (if any)
+            // would be classed deleted, so say so with the cause.
+            tracing::warn!(
+                path_id = %crate::util::redacted_path(absolute_path),
+                error = %error,
+                "sweep walked a path outside the project root; it is left out of the comparison",
+            );
+            return Walked::Skipped;
+        }
     };
     if is_excluded_path(&relative.to_string_lossy()) {
-        return None;
+        return Walked::Skipped;
     }
     // Non-UTF-8 paths are never in the database (discovery rejects
     // them), so there is nothing to compare and nothing to delete.
-    let relative = relative.to_str()?.to_owned();
+    let Some(relative) = relative.to_str().map(str::to_owned) else {
+        return Walked::Skipped;
+    };
 
-    // A stat that fails with NotFound means the file vanished between
-    // the walk and the stat: leaving it out of `on_disk` classifies it
-    // as deleted. Any other stat error means the file can't be verified
-    // — skipping it matches discovery, which skips unreadable files and
-    // would not index them on a full publish either.
-    let metadata = match std::fs::metadata(absolute_path) {
-        Ok(metadata) => metadata,
-        Err(_) => {
-            // Leaving the path out of `on_disk` classifies it as deleted, so
-            // a stat failure here removes a file from the index. That is worth
-            // a line: a file that cannot be stat'd is not a file that is gone.
+    // Only a stat that fails with NotFound means the file vanished between
+    // the walk and the stat; leaving it out of `on_disk` classifies it as
+    // deleted. Any other stat error (permissions, I/O) leaves the file
+    // unverifiable, not gone: its stored row is kept and the cause is logged.
+    match std::fs::metadata(absolute_path) {
+        Ok(metadata) => Walked::Stat(relative, metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(
+                path_id = %crate::util::redacted_path(absolute_path),
+                "sweep walked a file that vanished before it could be stat'd",
+            );
+            Walked::Skipped
+        }
+        Err(error) => {
             tracing::warn!(
                 path_id = %crate::util::redacted_path(absolute_path),
-                "sweep could not stat a file it walked; it will be reported as deleted",
+                error = %error,
+                "sweep could not stat a file it walked; its stored row is kept unverified",
             );
-            return None;
+            Walked::Unverifiable(relative)
         }
-    };
-    Some((relative, metadata))
+    }
 }
 
 /// Test-only per-root walk counters, so the Healthy-path regression can
@@ -231,33 +267,31 @@ pub(super) fn count_walks(root: &Path) -> std::sync::Arc<std::sync::atomic::Atom
     let mut guard = crate::util::lock_or_recover(&WALK_COUNTERS);
     guard
         .get_or_insert_with(std::collections::HashMap::new)
-        .insert(canonical_root(root), std::sync::Arc::clone(&counter));
+        .insert(
+            crate::util::canonical_or_self(root),
+            std::sync::Arc::clone(&counter),
+        );
     counter
 }
 
-/// Bumps the armed counter for `root`, if any. A no-op outside tests (only
-/// the `#[cfg(test)]` block below does anything) and a no-op for any root
-/// nobody armed a counter for.
-#[cfg_attr(not(test), allow(unused_variables))]
+/// Bumps the armed counter for `root`, if any; a no-op for any root nobody
+/// armed a counter for. Counting exists only in test builds.
+#[cfg(test)]
 fn note_walk(root: &Path) {
-    #[cfg(test)]
+    let guard = crate::util::lock_or_recover(&WALK_COUNTERS);
+    // Canonical like the watcher's keys, so a counter armed with a tempdir
+    // path matches the walk's resolved root.
+    if let Some(counter) = guard
+        .as_ref()
+        .and_then(|counters| counters.get(&crate::util::canonical_or_self(root)))
     {
-        let guard = crate::util::lock_or_recover(&WALK_COUNTERS);
-        if let Some(counter) = guard
-            .as_ref()
-            .and_then(|counters| counters.get(&canonical_root(root)))
-        {
-            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
-/// Canonicalizes `root` the way the watcher does, so a counter armed with a
-/// tempdir path matches the walk's resolved root.
-#[cfg(test)]
-fn canonical_root(root: &Path) -> std::path::PathBuf {
-    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
-}
+/// Release builds count nothing.
+#[cfg(not(test))]
+fn note_walk(_root: &Path) {}
 
 #[cfg(test)]
 #[path = "sweep_tests.rs"]

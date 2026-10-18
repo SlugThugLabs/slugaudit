@@ -39,6 +39,58 @@ fn a_file_changed_after_sampling_is_detected_and_rejected() {
 }
 
 #[test]
+fn a_file_that_became_unreadable_after_sampling_fails_with_its_real_cause_not_as_a_concurrent_edit()
+{
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "lib.rs", b"original\n");
+    let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
+    let limits = ResourceLimits::default();
+    let sink = crate::progress::NoopProgressSink;
+    let deadline = crate::util::Deadline::after(std::time::Duration::from_secs(60));
+    let (samples, _skipped) =
+        sample_all_with_deadline(&discovered, &limits, &sink, &deadline).expect("sample");
+    let (upserts, _deletions) =
+        build_upserts_and_deletions(samples, &[], true, &limits, &deadline).expect("build upserts");
+    // The path becomes a directory: stat succeeds but the read fails with
+    // something other than NotFound, which retrying cannot fix.
+    std::fs::remove_file(project.path().join("lib.rs")).expect("remove the file");
+    std::fs::create_dir(project.path().join("lib.rs")).expect("replace it with a directory");
+
+    let result = revalidate_unchanged_since_sample(&discovered, &upserts, &limits, &deadline);
+
+    assert!(
+        matches!(
+            &result,
+            Err(PublishError::Sample(sample::SampleError::Read { .. }))
+        ),
+        "expected the read error, got {result:?}"
+    );
+    assert!(!is_retryable(&result.expect_err("revalidation fails")));
+}
+
+#[test]
+fn a_file_deleted_after_sampling_is_reported_as_changed_during_sample() {
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "lib.rs", b"original\n");
+    let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
+    let limits = ResourceLimits::default();
+    let sink = crate::progress::NoopProgressSink;
+    let deadline = crate::util::Deadline::after(std::time::Duration::from_secs(60));
+    let (samples, _skipped) =
+        sample_all_with_deadline(&discovered, &limits, &sink, &deadline).expect("sample");
+    let (upserts, _deletions) =
+        build_upserts_and_deletions(samples, &[], true, &limits, &deadline).expect("build upserts");
+    std::fs::remove_file(project.path().join("lib.rs")).expect("remove the file");
+
+    let result = revalidate_unchanged_since_sample(&discovered, &upserts, &limits, &deadline);
+
+    assert!(
+        matches!(&result, Err(PublishError::ChangedDuringSample { path }) if path == "lib.rs"),
+        "a vanished file is a change a fresh sample resolves, got {result:?}"
+    );
+}
+
+#[test]
 fn an_unchanged_file_passes_revalidation() {
     let project = tempfile::tempdir().expect("project dir");
     write(project.path(), "lib.rs", b"stable\n");

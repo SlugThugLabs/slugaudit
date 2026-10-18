@@ -109,7 +109,19 @@ fn succeeded_result(
         .count();
     let outcome = if diagnostic_count > 0 {
         ParseOutcome::SyntaxErrors {
-            count: u32::try_from(diagnostic_count).unwrap_or(u32::MAX),
+            // A per-file diagnostic count past `u32::MAX` would need more
+            // than 100 GB of in-memory evidence items, so it cannot occur
+            // within any configured limit; if it ever did, the saturation is
+            // logged with the cause rather than reported as an exact count.
+            count: u32::try_from(diagnostic_count).unwrap_or_else(|error| {
+                tracing::warn!(
+                    path = relative_path,
+                    diagnostic_count,
+                    error = %error,
+                    "diagnostic count exceeds u32; the recorded syntax-error count saturates",
+                );
+                u32::MAX
+            }),
         }
     } else {
         ParseOutcome::Succeeded

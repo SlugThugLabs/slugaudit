@@ -440,3 +440,22 @@ fn a_skipped_record_for_a_statable_file_does_not_warn() {
         "a readable file must not warn:\n{logs}"
     );
 }
+
+#[test]
+fn the_truncation_marker_names_items_that_failed_to_serialize_only_when_there_were_some() {
+    let without = truncation_evidence(5, 3, 1, 0);
+    let with = truncation_evidence(5, 2, 1, 2);
+
+    let message = |item: &EvidenceItem| item.payload["message"].as_str().unwrap_or("").to_owned();
+    assert!(!message(&without).contains("failed to serialize"));
+    assert!(
+        message(&with).contains("2 item(s) failed to serialize"),
+        "{}",
+        message(&with)
+    );
+    assert!(
+        message(&with).contains("0 item(s) dropped by the item-count"),
+        "unmeasurable items must not be double-counted as cap drops: {}",
+        message(&with)
+    );
+}

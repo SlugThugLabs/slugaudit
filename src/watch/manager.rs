@@ -21,7 +21,7 @@ use crate::util::{lock_or_recover, redacted_path};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 /// Manages filesystem watchers for all active projects. One instance lives
 /// on the `SlugAuditServer` (or its sync manager). Each project gets its
@@ -29,6 +29,23 @@ use std::sync::{Arc, Mutex, MutexGuard};
 #[derive(Clone, Default)]
 pub struct WatchManager {
     inner: Arc<Mutex<WatchManagerInner>>,
+    /// Events that arrived while a tool thread held `inner`. They wait here
+    /// (a lock that is never held across anything that blocks, so the notify
+    /// thread can always take it) and are applied, in order, by whichever
+    /// thread next holds `inner`.
+    deferred: Arc<Mutex<Deferred>>,
+}
+
+/// The most events held back while the manager lock is busy. Past this the
+/// events are counted, not kept, and the loss is made explicit by marking
+/// the projects `Desynced`.
+const MAX_DEFERRED_EVENTS: usize = 4096;
+
+#[derive(Default)]
+struct Deferred {
+    events: Vec<Event>,
+    /// Events that did not fit under `MAX_DEFERRED_EVENTS`.
+    overflowed: u64,
 }
 
 #[derive(Default)]
@@ -74,6 +91,7 @@ impl WatchManager {
         };
         let manager = Self {
             inner: Arc::new(Mutex::new(inner)),
+            ..Self::default()
         };
 
         // Try to create a notify watcher. If it fails, we'll operate in
@@ -129,6 +147,7 @@ impl WatchManager {
         let canonical = crate::util::canonical_or_self(root);
 
         let mut guard = lock_or_recover(&self.inner);
+        self.apply_deferred(&mut guard);
 
         // If we already have a state for this project, return it.
         if let Some(info) = guard.projects.get(&canonical) {
@@ -177,7 +196,40 @@ impl WatchManager {
         // directories now, so the watcher and the index agree from the
         // start.
         Self::refresh_scope_locked(&mut guard, &canonical);
+        // Events that arrived during the scope walk above.
+        self.apply_deferred(&mut guard);
         state
+    }
+
+    /// Applies the events deferred while the lock was busy, oldest first,
+    /// through the same path as a live event. Events past
+    /// `MAX_DEFERRED_EVENTS` were not kept, so that loss is made explicit:
+    /// every project that is not `Unavailable` becomes `Desynced` and the
+    /// sync that follows does a full verification.
+    fn apply_deferred(&self, inner: &mut WatchManagerInner) {
+        let Deferred { events, overflowed } = std::mem::take(&mut *lock_or_recover(&self.deferred));
+        if overflowed > 0 {
+            tracing::warn!(
+                overflowed,
+                kept = events.len(),
+                "too many filesystem events arrived while the watch manager was busy; \
+                 marking projects for full re-verification"
+            );
+            for info in inner.projects.values() {
+                if info.state.health() != WatcherHealth::Unavailable {
+                    info.state.set_health(WatcherHealth::Desynced);
+                }
+            }
+        }
+        if !events.is_empty() {
+            tracing::debug!(
+                count = events.len(),
+                "applying filesystem events deferred while the watch manager was busy"
+            );
+        }
+        for event in &events {
+            Self::apply_event(inner, event);
+        }
     }
 
     /// Stop watching `root` and remove its state.
@@ -245,6 +297,9 @@ impl WatchManager {
     pub fn refresh_scope(&self, root: &Path) {
         let canonical = crate::util::canonical_or_self(root);
         let mut guard = lock_or_recover(&self.inner);
+        // Before the check: a deferred ignore-file event is what sets
+        // `needs_scope_refresh`.
+        self.apply_deferred(&mut guard);
         let needs = guard
             .projects
             .get(&canonical)
@@ -329,19 +384,27 @@ impl WatchManager {
     }
 
     /// Handle a `notify` event: normalize the path and mark it dirty/deleted,
-    /// unless the project's rules exclude it. Uses `try_lock` to avoid
-    /// blocking the watcher's background thread if the sync layer holds the
-    /// lock — stale events are harmless because the sync layer will do a
-    /// full verification on the next `ensure_current`.
+    /// unless the project's rules exclude it. Uses `try_lock`, never `lock`:
+    /// `unwatch` runs under the manager lock on a tool thread and blocks
+    /// waiting for this very notify thread, so blocking here would deadlock.
+    /// An event that finds the lock held is not dropped: it is deferred and
+    /// applied, in order, by the next thread that holds the lock (this
+    /// handler on its next event, or a tool thread in `watch`/`refresh_scope`
+    /// before the sync reads the dirty sets).
     fn handle_event(&self, event: Event) {
-        let paths: Vec<PathBuf> = event.paths.clone();
-
-        let Ok(mut guard) = self.inner.try_lock() else {
-            // Sync layer holds the lock — skip this event. The sync layer
-            // will do a full verification on the next `ensure_current`, so
-            // missing an event here is harmless.
-            return;
+        let mut guard = match self.inner.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::WouldBlock) => {
+                self.defer(event);
+                return;
+            }
+            Err(TryLockError::Poisoned(poisoned)) => {
+                tracing::error!("mutex was poisoned; recovering inner value");
+                poisoned.into_inner()
+            }
         };
+        self.apply_deferred(&mut guard);
+        Self::apply_event(&mut guard, &event);
 
         // Check if any project roots have been deleted (e.g. tempdirs
         // dropped after tests). If so, unwatch and remove them to prevent
@@ -353,8 +416,38 @@ impl WatchManager {
             .cloned()
             .collect();
 
-        for path in &paths {
-            for (project_root, info) in guard.projects.iter_mut() {
+        // Deliberately no `watcher.unwatch(root)` here: this loop runs on
+        // the notify event-loop thread, and notify-rs's `unwatch` blocks
+        // waiting for a response from that same loop - calling it from
+        // inside a callback deadlocks (the loop can't service the request
+        // while it's inside the handler). It's also unnecessary: the
+        // kernel auto-removes the watch when the watched directory is
+        // deleted (notify's Linux backend is inotify), so notify already
+        // treats the watch as gone. `unwatch` remains safe from
+        // `WatchManager::unwatch` and `refresh_scope_locked`, which the
+        // sync layer calls from a tool thread, never from the event loop.
+        for root in &deleted_roots {
+            guard.projects.remove(root);
+            tracing::info!(root_id = %redacted_path(root), "removed watch for deleted project root");
+        }
+    }
+
+    /// Holds `event` back until a thread that owns the manager lock applies
+    /// it. Never blocks on `inner`; `deferred` is only ever held for a push
+    /// or a take, so the notify thread cannot wait on a tool thread here.
+    fn defer(&self, event: Event) {
+        let mut deferred = lock_or_recover(&self.deferred);
+        if deferred.events.len() < MAX_DEFERRED_EVENTS {
+            deferred.events.push(event);
+        } else {
+            deferred.overflowed += 1;
+        }
+    }
+
+    /// Routes one event to the project it belongs to and records it.
+    fn apply_event(inner: &mut WatchManagerInner, event: &Event) {
+        for path in &event.paths {
+            for (project_root, info) in inner.projects.iter_mut() {
                 if let Some(relative) = normalize_relative_path(project_root, path) {
                     match classify_path(&relative, info.rules.as_deref()) {
                         PathClass::Excluded | PathClass::Ignored => continue,
@@ -373,21 +466,6 @@ impl WatchManager {
                     break;
                 }
             }
-        }
-
-        // Deliberately no `watcher.unwatch(root)` here: this loop runs on
-        // the notify event-loop thread, and notify-rs's `unwatch` blocks
-        // waiting for a response from that same loop — calling it from
-        // inside a callback deadlocks (the loop can't service the request
-        // while it's inside the handler). It's also unnecessary: the
-        // kernel auto-removes the watch when the watched directory is
-        // deleted (notify's Linux backend is inotify), so notify already
-        // treats the watch as gone. `unwatch` remains safe from
-        // `WatchManager::unwatch` and `refresh_scope_locked`, which the
-        // sync layer calls from a tool thread, never from the event loop.
-        for root in &deleted_roots {
-            guard.projects.remove(root);
-            tracing::info!(root_id = %redacted_path(root), "removed watch for deleted project root");
         }
     }
 }

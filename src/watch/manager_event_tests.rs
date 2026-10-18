@@ -252,3 +252,66 @@ fn deleted_project_roots_are_pruned_on_the_next_event() {
     );
     assert!(manager.snapshot_all().is_empty());
 }
+
+#[test]
+fn an_event_arriving_while_the_lock_is_held_is_applied_by_the_next_watch_call() {
+    let project = temp_project();
+    let manager = WatchManager::new();
+    let state = manager.watch(project.path());
+
+    let held = manager.inner.lock().expect("hold the manager lock");
+    let path = project.path().join("src").join("lib.rs");
+    manager.handle_event(event_with(EventKind::Modify(ModifyKind::Any), &path));
+    drop(held);
+    assert!(
+        state.snapshot().dirty_paths.is_empty(),
+        "the notify thread must not block, so the event waits"
+    );
+    manager.watch(project.path());
+
+    assert!(
+        state.snapshot().dirty_paths.contains("src/lib.rs"),
+        "a deferred event must be recorded, not lost"
+    );
+}
+
+#[test]
+fn deferred_events_are_applied_in_arrival_order_before_a_later_live_event() {
+    let project = temp_project();
+    let manager = WatchManager::new();
+    let state = manager.watch(project.path());
+    let path = project.path().join("lib.rs");
+
+    let held = manager.inner.lock().expect("hold the manager lock");
+    manager.handle_event(event_with(EventKind::Modify(ModifyKind::Any), &path));
+    drop(held);
+    manager.handle_event(event_with(EventKind::Remove(RemoveKind::File), &path));
+
+    let snapshot = state.snapshot();
+    assert!(
+        snapshot.deleted_paths.contains("lib.rs") && snapshot.dirty_paths.is_empty(),
+        "the later delete must supersede the earlier deferred modify"
+    );
+}
+
+#[test]
+fn overflowing_the_deferred_queue_desyncs_the_project_instead_of_losing_events_silently() {
+    let project = temp_project();
+    let manager = WatchManager::new();
+    let state = manager.watch(project.path());
+    state.set_health(WatcherHealth::Healthy);
+    let path = project.path().join("lib.rs");
+
+    let held = manager.inner.lock().expect("hold the manager lock");
+    for _ in 0..=MAX_DEFERRED_EVENTS {
+        manager.handle_event(event_with(EventKind::Modify(ModifyKind::Any), &path));
+    }
+    drop(held);
+    manager.watch(project.path());
+
+    assert_eq!(
+        state.health(),
+        WatcherHealth::Desynced,
+        "events past the queue cap must force a full re-verification"
+    );
+}

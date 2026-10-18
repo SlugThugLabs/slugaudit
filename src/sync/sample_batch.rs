@@ -73,11 +73,18 @@ pub(super) fn sample_all_with_deadline(
     // `available_parallelism` (capped at 8 to match the run_blocking
     // semaphore's permit cap, so we don't outnumber other concurrent
     // tool-call concurrency points) avoids oversubscribing.
-    let worker_count = total.min(
-        thread::available_parallelism()
-            .map_or(1, |n| n.get())
-            .min(8),
+    let parallelism = thread::available_parallelism().map_or_else(
+        |error| {
+            tracing::warn!(
+                error = %error,
+                "could not read available parallelism; sampling on one worker, \
+                 so a large first import runs slower and may reach the sync deadline",
+            );
+            1
+        },
+        |n| n.get(),
     );
+    let worker_count = total.min(parallelism.min(8));
 
     let (tx, rx) = std::sync::mpsc::channel::<(usize, Outcome)>();
     let batch = Batch {
@@ -163,10 +170,8 @@ impl Batch<'_> {
                     }
                     self.emit_sampling(sink, idx);
                     // Send AFTER any cap/limit bookkeeping so a post-cap
-                    // sample never lands in the result vector. `send`
-                    // returns `Err` once the receiver is dropped (after
-                    // the scope); the worker then exits cleanly.
-                    if tx.send((idx, Ok(sample))).is_err() {
+                    // sample never lands in the result vector.
+                    if !self.deliver(&tx, idx, Ok(sample)) {
                         return;
                     }
                 }
@@ -176,7 +181,7 @@ impl Batch<'_> {
                 // file going.
                 Err(error @ SampleError::TooLarge { .. }) => {
                     self.emit_sampling(sink, idx);
-                    if tx.send((idx, Err(error.to_string()))).is_err() {
+                    if !self.deliver(&tx, idx, Err(error.to_string())) {
                         return;
                     }
                 }
@@ -194,24 +199,43 @@ impl Batch<'_> {
     /// notices. Returns false (having recorded `ImportTooLarge` and set
     /// the flag) when the add would exceed `max_total_import_bytes`.
     fn claim_bytes(&self, byte_len: u64) -> bool {
-        let limit_exceeded = self
+        let claimed = self
             .total_bytes
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |prev| {
                 let next = prev.saturating_add(byte_len);
                 (next <= self.limits.max_total_import_bytes).then_some(next)
-            })
-            .is_err();
-        if limit_exceeded {
-            let observed = self
-                .total_bytes
-                .load(Ordering::Relaxed)
-                .saturating_add(byte_len);
+            });
+        if let Err(total_before) = claimed {
+            // `Err` carries the total this claim was refused against.
             self.abort(PublishError::ImportTooLarge {
-                total: observed,
+                total: total_before.saturating_add(byte_len),
                 limit: self.limits.max_total_import_bytes,
             });
         }
-        !limit_exceeded
+        claimed.is_ok()
+    }
+
+    /// Sends one outcome to the drain. The receiver outlives the worker
+    /// scope, so a failed send is a broken invariant, not a normal exit:
+    /// the outcome would be lost and the result would silently miss a file.
+    /// It aborts the run with the cause instead; returns `false` then so the
+    /// worker stops.
+    fn deliver(
+        &self,
+        tx: &std::sync::mpsc::Sender<(usize, Outcome)>,
+        idx: usize,
+        outcome: Outcome,
+    ) -> bool {
+        match tx.send((idx, outcome)) {
+            Ok(()) => true,
+            Err(error) => {
+                self.abort(PublishError::SamplingResultLost {
+                    path: self.discovered[idx].relative_path.clone(),
+                    reason: error.to_string(),
+                });
+                false
+            }
+        }
     }
 
     /// Signals other workers and records the first error callers see.
@@ -274,3 +298,7 @@ fn record_error(slot: &Mutex<Option<PublishError>>, error: PublishError) {
         *guard = Some(error);
     }
 }
+
+#[cfg(test)]
+#[path = "sample_batch_tests.rs"]
+mod tests;

@@ -18,7 +18,6 @@ use crate::watch::{WatchManager, WatchState};
 pub(crate) use orchestration::map_activation_error;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 /// A project brought fully up to date, ready for a tool to query. Defined
@@ -204,12 +203,8 @@ impl SourceSyncManager {
     }
 
     fn stamp_last_sync(&self, duration_ms: u64) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| {
-                i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
-            });
-        self.last_sync_unix_seconds.store(now, Ordering::Relaxed);
+        self.last_sync_unix_seconds
+            .store(crate::util::now_unix(), Ordering::Relaxed);
         self.last_sync_duration_ms
             .store(duration_ms, Ordering::Relaxed);
     }

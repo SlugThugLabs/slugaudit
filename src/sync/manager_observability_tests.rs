@@ -120,7 +120,7 @@ fn corrupt_database_hook(project: &tempfile::TempDir) {
     let hook_path = project_path.clone();
     race_hook::set(&project_path, move || {
         let database = hook_path.join(".planning/slugaudit/project.db");
-        let _ = fs::write(database, b"corrupted mid-publish");
+        fs::write(database, b"corrupted mid-publish").expect("corrupt the database mid-publish");
     });
 }
 

@@ -42,16 +42,13 @@ fn sample_all_rejects_strictly_over_the_byte_limit_not_at_or_under_it() {
         max_total_import_bytes: 5,
         ..ResourceLimits::default()
     };
-    assert!(
-        sample_all_with_deadline(
-            &discovered,
-            &exact,
-            &crate::progress::NoopProgressSink,
-            &generous
-        )
-        .is_ok(),
-        "a total exactly at the limit must be accepted, not rejected"
-    );
+    sample_all_with_deadline(
+        &discovered,
+        &exact,
+        &crate::progress::NoopProgressSink,
+        &generous,
+    )
+    .expect("a total exactly at the limit must be accepted, not rejected");
 
     let one_under_needed = ResourceLimits {
         max_total_import_bytes: 4,
@@ -126,12 +123,13 @@ fn retry_gives_up_after_exactly_max_cas_retries_and_never_hangs() {
     let root = project.path().to_path_buf();
     std::thread::spawn(move || {
         let mut connection_a = open_read_write(&db_path).expect("open db (A)");
-        let _ = tx.send(publish(
+        tx.send(publish(
             &mut connection_a,
             &root,
             "1.0.0",
             &crate::progress::NoopProgressSink,
-        ));
+        ))
+        .expect("the test thread holds the receiver until the publish result arrives");
     });
 
     // A generous bound: a correct implementation returns almost instantly.
