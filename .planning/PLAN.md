@@ -1117,20 +1117,20 @@ does not rediscover them.
   Dependency review also fails on push: the repository's dependency graph is off (run
   39120745986) — still open, needs the owner to enable it.
 
-### Algorithm-scale audit (2026-10-18) — in progress
+### Algorithm-scale audit (2026-10-18) — mostly resolved; open items listed last
 
 Read-only audit against three owner rules (O(1) fixed-set lookups; scale at documented
 maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by reading the code:
 
-- **Quadratic column computation — not started.** `src/model/span.rs::char_column` walks back
+- **Quadratic column computation — resolved (2026-10-18, `LineIndex` in `src/model/span.rs`, used by evidence and `structure`; 16 MB one-line file 52 s → 2.2 s).** `src/model/span.rs::char_column` walks back
   to the line start per call; indexing calls it twice per evidence item, so a single-line
   (minified) file costs items × line length. Fix: one line-start table per file.
-- **Quadratic macro-call positions — not started.** `src/evidence/calls/macro_calls.rs::position`
+- **Quadratic macro-call positions — resolved (2026-10-18, same `LineIndex`).** `src/evidence/calls/macro_calls.rs::position`
   counts newlines from byte 0 for every row (O(calls × file)). Fix: same line-start table.
-- **`structure` has no response byte budget — not started.** Up to `max_structure_matches` ×
+- **`structure` has no response byte budget — resolved (2026-10-18): pages at `default_page_bytes` with `page_bytes`/`next_offset`.** Up to `max_structure_matches` ×
   1 MB (`MAX_TEXT_BYTES`) of text can be returned. Fix: cut rows by a byte budget like
   `query`/`leads`.
-- **Silent 64 MB cut in `structure` — not started.** `structure_source.rs::fetch_sources_for_language`
+- **Silent 64 MB cut in `structure` — resolved (2026-10-18): `files_not_scanned`/`bytes_not_scanned` reported, continue with `start_after_file`; parser-less files listed in `unparsed_files`.** `structure_source.rs::fetch_sources_for_language`
   breaks at `MAX_MULTI_FILE_TOTAL_BYTES` and the response carries no flag: a breach of
   non-negotiable 3. (The earlier "stops at `MAX_MULTI_FILE_TOTAL_BYTES`" note above recorded
   the cap, not its reporting.)
@@ -1150,7 +1150,7 @@ maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by rea
   `Outcome = Result<Sample, String>` (sample or skip reason), so no error variant can reach the
   drain; every other `SampleError` still aborts via `error_slot`. Unreachable by construction, so
   no new test; the skip path stays pinned by the existing oversize-skip test in `sample_tests.rs`.
-- **`skipped_record` stat failure — partly resolved (`35f52be`); still open.** `std::fs::metadata`
+- **`skipped_record` stat failure — resolved (2026-10-18): unknown size stored as NULL with reason `stat_failed`, schema `user_version` 6→7, one warn line.** `std::fs::metadata`
   failure in `sample.rs::skipped_record` still records `(0, None)` but now warns with the path
   and source error. Kept the placeholder because `files.byte_len` is `NOT NULL` and `reason` is a
   coded value (`oversize`/`unreadable`); an Option or a reason suffix would change the schema or
@@ -1174,7 +1174,7 @@ maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by rea
   Tests: `more_than_one_statement_is_refused_with_the_single_statement_message`,
   `a_single_statement_with_semicolons_or_trailing_trivia_is_accepted`,
   `more_than_500_rows_come_back_in_one_page_when_the_byte_budget_allows`.
-- **Query value clipping and line functions — landed (uncommitted, 2026-10-18).** `query` no
+- **Query value clipping and line functions — landed (`115a7a3`, 2026-10-18).** `query` no
   longer returns an oversized first row whole: its TEXT/BLOB cells are clipped to the page
   (serialized-byte accounting, BLOB hex counted, TEXT cut on a char boundary, fair share between
   cells) and `oversized_row` is replaced by `clipped_cells` (`row`, `column`, `kind`, `unit`,
@@ -1187,7 +1187,7 @@ maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by rea
   deterministic; rusqlite `functions` feature enabled with no `Cargo.lock` change). Code:
   `src/tools/query_clip.rs`. Tests: `query_clip_tests.rs`, `sql_functions_tests.rs`,
   `the_line_functions_run_on_both_guarded_connections_while_the_guard_still_denies_attach`.
-- **Still open, unverified (auditor-reported):**
+- **Auditor-reported items — verified 2026-10-18 with failing tests first:** `normalize_join` root escape CONFIRMED and fixed (plus the same bug in Python relative imports); mountinfo `\040` escapes CONFIRMED and fixed; `compare_versions` `1.0`<`1.0.0` CONFIRMED and fixed (now `VersionParseError`); nested-macro depth CONFIRMED (10k levels aborted with a stack overflow) and capped at 64, file marked `Partial`; `is_excluded_dir` prefix CONFIRMED and fixed by path component; `hex_encode` table refactor (no bug). Original list, kept for the record:
   `update_fetch::compare_versions` treats `1.0` < `1.0.0`; `graph/resolve.rs::normalize_join`
   drops `..` past the root; `ignore_rules::is_excluded_dir` string-prefix match excludes
   `.planning/slugaudit-notes/`; `netfs` mountinfo ignores `\040` escapes; nested-macro
@@ -1231,3 +1231,13 @@ maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by rea
   (`agent.go:865-875`), Crush's auto-summarize runs only after a completed step
   (`internal/agent/agent.go:1105-1120`), and a context-overflow error is returned as a provider
   error, not compacted and retried (`IsContextTooLarge` has no callers in Crush).
+- **Still open after the 2026-10-18 fix round:**
+  - `leads` still returns one oversized row whole (`oversized_row`); `query` clips cells. Not started.
+  - Indexing time per call still grows slightly faster than linear at 100k-300k calls on one
+    file (6.9 s / 15.3 s / 25.5 s, debug); cause not found, outside `LineIndex`. Not started.
+  - `check_docs_drift` only checks that module-map paths exist, not that every `src/` file is
+    listed (two new files were missing and the gate passed). Not started.
+  - Indexing holds every sampled file in memory at once (`sync/sample.rs`, bounded only by
+    `max_total_import_bytes`, up to 32 GB on audit). Not started.
+  - `query` `OFFSET` paging re-runs the query from row 0 on each page (by design; documented
+    cost). Not scheduled.

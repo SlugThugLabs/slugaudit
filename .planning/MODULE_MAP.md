@@ -47,6 +47,7 @@ src/
 │   ├── query_clip_tests.rs   clipping walks (5 MB text, blob, units) and line functions through query
 │   ├── structure.rs          tree-sitter pattern match: contract, validation, targets
 │   ├── structure_exec.rs     query execution under match cap + time budget
+│   ├── structure_page.rs     byte paging of matches and the multi-file memory-window cursor
 │   ├── structure_source.rs   source loading + multi-file and snippet helpers
 │   ├── leads.rs              unranked mechanical observations
 │   ├── leads_mechanics.rs    the leads mechanic catalogue
@@ -158,7 +159,8 @@ src/
 │   ├── parser.rs             parser-availability / parse-outcome enums
 │   ├── evidence.rs           evidence kind + payload model
 │   ├── source.rs             source-text model
-│   └── span.rs               byte/line span types
+│   ├── span.rs               byte/line span types and the per-file LineIndex
+│   └── span_tests.rs         LineIndex equivalence with char_column
 │
 └── bin/                      development-only gate binaries
     ├── check_source_limits/  per-file code-line ceilings

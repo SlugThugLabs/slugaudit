@@ -16,3 +16,8 @@
 # both names are ignored.
 /mutants.out/
 /mutants.out.old/
+
+# Claude Code session state, including agent git worktrees under
+# .claude/worktrees/ (full checkouts of this repo). Never version, and kept out
+# of the tree so tools that walk the repo do not see duplicate sources.
+/.claude/

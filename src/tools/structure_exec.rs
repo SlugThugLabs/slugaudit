@@ -5,7 +5,7 @@
 use super::structure::StructureMatch;
 use super::structure_page::{OutputMode, Paging, RunOutput, require_captures};
 use super::structure_source::{MAX_SNIPPET_BYTES, truncate_snippet, truncate_text};
-use crate::model::{ResourceLimits, char_column, saturating_u32};
+use crate::model::{LineIndex, ResourceLimits, saturating_u32};
 use rmcp::ErrorData;
 use std::ops::ControlFlow;
 use std::time::Instant;
@@ -140,6 +140,9 @@ impl Run<'_> {
             content.as_bytes(),
             options,
         );
+        // One index per file: columns cost O(log lines), not the line's length,
+        // so many matches on one long (minified) line stay linear.
+        let lines = LineIndex::new(content);
         let mut more_remain = false;
         while let Some((query_match, capture_index)) = captures.next() {
             if self.skip > 0 {
@@ -155,6 +158,7 @@ impl Run<'_> {
                 file_path,
                 capture.node,
                 content,
+                &lines,
                 capture_names.get(capture.index as usize).copied(),
                 self.mode.full_text,
             );
@@ -180,6 +184,7 @@ fn node_to_match(
     file: &str,
     node: tree_sitter::Node<'_>,
     content: &str,
+    lines: &LineIndex<'_>,
     capture_name: Option<&str>,
     want_full_text: bool,
 ) -> StructureMatch {
@@ -199,9 +204,9 @@ fn node_to_match(
         start_byte: node.start_byte() as u64,
         end_byte: node.end_byte() as u64,
         start_line: saturating_u32(node.start_position().row),
-        start_column: char_column(content, node.start_byte()),
+        start_column: lines.column(node.start_byte()),
         end_line: saturating_u32(node.end_position().row),
-        end_column: char_column(content, node.end_byte()),
+        end_column: lines.column(node.end_byte()),
         text,
         text_truncated,
         extraction_failed: text_extraction_failed || capture_name.is_none(),

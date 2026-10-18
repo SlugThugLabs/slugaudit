@@ -1459,7 +1459,7 @@
                 "type": "integer"
               },
               "reason": {
-                "description": "A short stable code from `files.skip_reason`: `oversize` (over the\nper-file import ceiling) or `unreadable` (the read failed). Empty when\na skipped row carries no recorded reason.",
+                "description": "A short stable code from `files.skip_reason`: `oversize` (over the\nper-file import ceiling), `unreadable` (the read failed) or\n`stat_failed` (the stat failed, so `files.byte_len` is NULL: size\nunknown, not 0). Empty when a skipped row carries no recorded reason.",
                 "type": "string"
               }
             },
