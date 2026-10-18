@@ -1312,3 +1312,21 @@ Still open from this round:
   does not pin the watcher fix (needs a held event on a different path) and
   `a_well_formed_client_config_with_the_entry_is_registered_silently` needs a log-capture assertion.
   Not started.
+
+### Handoff (2026-10-18, end of session 8ac33515)
+- **Hybrid grammar bundle — owner decision pending.** Branch `parser-hybrid-bundle` (`2ca94a8`) on origin:
+  21 grammars compiled in (rust, python, javascript, typescript, tsx, go, java, c, cpp, csharp, ruby, php,
+  kotlin, swift, dart, elixir, haskell, julia, ocaml, perl, json) via `.cargo/config.toml` `TSLP_LANGUAGES`,
+  downloads kept for every other language, Cargo.lock unchanged. Cost: release binary 15.6 → 63.7 MB,
+  clean release build 45 → 67 s, first build fetches the pack's source bundle (CI release and
+  rebuild-and-compare jobs will need network; not checked). Options put to the owner: all 21; drop the 7
+  heaviest (csharp, kotlin, cpp, perl, ocaml, swift, haskell ≈ 33 MB) — lead's recommendation; or a smaller
+  core. Not merged. Branch `parser-static-compile` is superseded (downloads off — rejected) and can be deleted.
+- **Wave 2 — not started.** In order: R7 (38), R6 (16), R12 (25) open ledger rows; `verify_and_drain` stale
+  revision; CLI logging never initialised (`main.rs:43`); `.git/info/exclude` only with a root `.gitignore`;
+  `leads` oversized row; `check_docs_drift` module-map completeness; explicit stack size at
+  `server_runner.rs` / `sync/sample_batch.rs`; strengthen `deferred_events_are_applied_in_arrival_order…`
+  and `a_well_formed_client_config…registered_silently`. Then wave 3: R5, R8, R9, R10, R4, R11.
+  Briefs used this session (rules, fix brief) are reproduced in the audit report and these PLAN entries.
+- Pending owner decisions: `#[rustfmt::skip]` in `connect_agents.rs` (lead recommends accept), `9p`/`virtiofs`
+  allowed (recommend keep), invalid `RUST_LOG` falls back to `info` (recommend keep).
