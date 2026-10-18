@@ -6,7 +6,7 @@
 //! for traits, generics, function pointers, macros, and dynamic dispatch.
 
 use crate::model::{
-    EvidenceItem, EvidenceKind, EvidenceOrigin, Position, Span, SpanAvailability, char_column,
+    EvidenceItem, EvidenceKind, EvidenceOrigin, LineIndex, Position, Span, SpanAvailability,
     saturating_u32,
 };
 use serde_json::json;
@@ -26,31 +26,34 @@ const RUST_FUNCTION_KINDS: &[&str] = &[
 
 /// Extracts Rust call-site evidence from one already indexed source file.
 /// Returns an empty vector for non-Rust input or when the parser cannot
-/// produce a tree.
-pub(crate) fn extract_rust(source: &str) -> Vec<EvidenceItem> {
+/// produce a tree. The flag is true when a walk bound (tree depth or macro
+/// nesting) truncated the extraction, which the caller must report.
+pub(crate) fn extract_rust(source: &str, lines: &LineIndex<'_>) -> (Vec<EvidenceItem>, bool) {
     let Ok(mut parser) = tree_sitter_language_pack::get_parser("rust") else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
     let Some(tree) = parser.parse(source) else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
     let mut items = Vec::new();
     let mut counter = 0usize;
     let mut seen = HashSet::new();
-    let _depth_capped = walk(
+    let capped = walk(
         tree.root_node(),
         source,
+        lines,
         &mut items,
         &mut counter,
         &mut seen,
         0,
     );
-    items
+    (items, capped)
 }
 
 fn walk(
     node: Node,
     source: &str,
+    lines: &LineIndex<'_>,
     items: &mut Vec<EvidenceItem>,
     counter: &mut usize,
     seen: &mut HashSet<(usize, usize)>,
@@ -59,6 +62,7 @@ fn walk(
     if depth >= crate::evidence::MAX_WALK_DEPTH {
         return true;
     }
+    let mut capped = false;
     if RUST_CALL_KINDS.contains(&node.kind().as_str()) {
         let macro_call = node.kind() == "macro_invocation";
         let callee = callee_node(&node, macro_call);
@@ -84,7 +88,7 @@ fn walk(
                 key,
                 kind: EvidenceKind::Call,
                 origin: EvidenceOrigin::RustCallWalker,
-                span: node_span(&node, source),
+                span: node_span(&node, lines),
                 payload: json!({
                     "language": "rust",
                     "callee_text": callee_text,
@@ -96,7 +100,9 @@ fn walk(
             });
         }
         if macro_call {
-            for (start, end, mut item) in macro_calls::extract(&node, source) {
+            let recovered = macro_calls::extract(&node, source, lines);
+            capped |= recovered.capped;
+            for (start, end, mut item) in recovered.rows {
                 if seen.insert((start, end)) {
                     item.key = format!("call:{counter}");
                     *counter += 1;
@@ -105,9 +111,8 @@ fn walk(
             }
         }
     }
-    let mut capped = false;
     for child in named_children(&node) {
-        capped |= walk(child, source, items, counter, seen, depth + 1);
+        capped |= walk(child, source, lines, items, counter, seen, depth + 1);
     }
     capped
 }
@@ -158,14 +163,14 @@ fn named_children(node: &Node) -> impl Iterator<Item = Node> {
     (0..node.named_child_count() as u32).filter_map(move |index| node.named_child(index))
 }
 
-fn node_span(node: &Node, source: &str) -> SpanAvailability {
+fn node_span(node: &Node, lines: &LineIndex<'_>) -> SpanAvailability {
     let start = Position {
         line: saturating_u32(node.start_position().row),
-        column: char_column(source, node.start_byte()),
+        column: lines.column(node.start_byte()),
     };
     let end = Position {
         line: saturating_u32(node.end_position().row),
-        column: char_column(source, node.end_byte()),
+        column: lines.column(node.end_byte()),
     };
     Span::new(node.start_byte() as u64, node.end_byte() as u64, start, end).map_or_else(
         |error| super::span_unavailable("Rust call", error),

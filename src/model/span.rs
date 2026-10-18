@@ -47,6 +47,119 @@ pub fn char_column(source: &str, byte_offset: usize) -> u32 {
     saturating_u32(source[line_start..offset].chars().count())
 }
 
+/// Bytes per block of the character-count table in [`LineIndex`]. A column
+/// query scans at most this many bytes, so it bounds the per-query cost
+/// independent of line length; the table costs `8 / BLOCK_BYTES` of the
+/// source size (about 3 percent).
+const BLOCK_BYTES: usize = 256;
+
+/// Per-file line/column lookup, built once in O(n) and answering each query
+/// in O(log lines + [`BLOCK_BYTES`]) — independent of line length.
+///
+/// [`char_column`] walks back to the line start per call, so a minified
+/// single-line file with one evidence item per token costs line-length
+/// steps per item: quadratic in file size. This index replaces it for every
+/// bulk caller. Results are identical to [`char_column`] and to counting
+/// `\n` bytes before the offset, including for offsets past the end of the
+/// source or inside a multi-byte character (floored to the boundary).
+#[derive(Debug)]
+pub struct LineIndex<'a> {
+    source: &'a str,
+    /// Byte offset of the start of every line; always begins with 0.
+    line_starts: Vec<usize>,
+    /// `block_chars[i]` is the number of characters before byte
+    /// `i * BLOCK_BYTES`. Empty when the source is pure ASCII, where a
+    /// character count equals a byte count.
+    block_chars: Vec<usize>,
+}
+
+impl<'a> LineIndex<'a> {
+    /// Indexes `source` once.
+    #[must_use]
+    pub fn new(source: &'a str) -> Self {
+        let bytes = source.as_bytes();
+        let mut line_starts = vec![0];
+        line_starts.extend(
+            bytes
+                .iter()
+                .enumerate()
+                .filter(|(_, byte)| **byte == b'\n')
+                .map(|(index, _)| index + 1),
+        );
+        let mut block_chars = Vec::new();
+        if !source.is_ascii() {
+            let mut total = 0usize;
+            block_chars.push(0);
+            for chunk in bytes.chunks(BLOCK_BYTES) {
+                total += count_chars(chunk);
+                block_chars.push(total);
+            }
+        }
+        Self {
+            source,
+            line_starts,
+            block_chars,
+        }
+    }
+
+    /// Zero-based line of `byte_offset` (clamped to the source length).
+    #[must_use]
+    pub fn line(&self, byte_offset: usize) -> u32 {
+        saturating_u32(self.line_index(byte_offset.min(self.source.len())))
+    }
+
+    /// Character column of `byte_offset`; equal to
+    /// [`char_column`]`(source, byte_offset)`.
+    #[must_use]
+    pub fn column(&self, byte_offset: usize) -> u32 {
+        self.position(byte_offset).column
+    }
+
+    /// Line and column of `byte_offset` in one lookup.
+    #[must_use]
+    pub fn position(&self, byte_offset: usize) -> Position {
+        let offset = self.floor_to_boundary(byte_offset);
+        let line = self.line_index(offset);
+        let line_start = self.line_starts[line];
+        Position {
+            line: saturating_u32(line),
+            column: saturating_u32(self.chars_before(offset) - self.chars_before(line_start)),
+        }
+    }
+
+    fn floor_to_boundary(&self, byte_offset: usize) -> usize {
+        let mut offset = byte_offset.min(self.source.len());
+        // Offset 0 is always a char boundary, so this terminates.
+        while !self.source.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        offset
+    }
+
+    /// Index of the line containing `offset`: the number of `\n` bytes
+    /// strictly before it.
+    fn line_index(&self, offset: usize) -> usize {
+        // `line_starts[0] == 0 <= offset`, so the partition point is >= 1.
+        self.line_starts.partition_point(|start| *start <= offset) - 1
+    }
+
+    /// Characters in `source[..offset]`; `offset` must be a char boundary.
+    fn chars_before(&self, offset: usize) -> usize {
+        if self.block_chars.is_empty() {
+            return offset;
+        }
+        let block = offset / BLOCK_BYTES;
+        let tail = &self.source.as_bytes()[block * BLOCK_BYTES..offset];
+        self.block_chars[block] + count_chars(tail)
+    }
+}
+
+/// Characters starting in `bytes`: every byte that is not a UTF-8
+/// continuation byte.
+fn count_chars(bytes: &[u8]) -> usize {
+    bytes.iter().filter(|byte| (**byte & 0xC0) != 0x80).count()
+}
+
 /// Half-open range of source text spanning byte offsets and line/column positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
@@ -106,47 +219,5 @@ impl Span {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_empty_eof_span() {
-        let position = Position { line: 2, column: 4 };
-        let span = Span::new(8, 8, position, position).expect("valid span");
-        assert_eq!(span.byte_len(), 0);
-    }
-
-    #[test]
-    fn rejects_reversed_ranges() {
-        let position = Position { line: 0, column: 0 };
-        assert_eq!(
-            Span::new(2, 1, position, position),
-            Err(SpanError::ReversedBytes)
-        );
-    }
-
-    #[test]
-    fn a_span_whose_end_position_precedes_its_start_is_rejected() {
-        let start = Position { line: 3, column: 5 };
-        let end = Position { line: 3, column: 4 };
-
-        let result = Span::new(10, 12, start, end);
-
-        assert_eq!(result, Err(SpanError::ReversedPosition));
-    }
-
-    #[test]
-    fn a_mid_codepoint_offset_floors_to_the_character_boundary() {
-        // `é` occupies bytes 0..2, so byte 1 is inside it: the column must be
-        // measured from the boundary before it rather than panicking.
-        let source = "é=1";
-        assert_eq!(char_column(source, 1), 0);
-        assert_eq!(char_column(source, 2), 1);
-    }
-
-    #[test]
-    fn an_offset_past_the_end_measures_the_whole_line() {
-        let source = "a\nbc";
-        assert_eq!(char_column(source, 99), 2);
-    }
-}
+#[path = "span_tests.rs"]
+mod tests;

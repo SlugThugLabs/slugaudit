@@ -1,4 +1,8 @@
-use super::extract_rust;
+use crate::model::LineIndex;
+
+fn extract_rust(source: &str) -> Vec<crate::model::EvidenceItem> {
+    super::extract_rust(source, &LineIndex::new(source)).0
+}
 use crate::model::EvidenceKind;
 
 #[test]

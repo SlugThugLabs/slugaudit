@@ -84,7 +84,15 @@ pub(super) fn extract_generic_imports(language: &str, source: &str) -> Vec<Evide
     };
     let mut items = Vec::new();
     let mut counter = 0usize;
-    walk_imports(&tree.root_node(), source, &mut items, &mut counter, 0);
+    let lines = crate::model::LineIndex::new(source);
+    walk_imports(
+        &tree.root_node(),
+        source,
+        &lines,
+        &mut items,
+        &mut counter,
+        0,
+    );
     items
 }
 
@@ -108,6 +116,7 @@ pub(super) fn extract_generic_imports(language: &str, source: &str) -> Vec<Evide
 pub(super) fn walk_imports(
     node: &Node,
     source: &str,
+    lines: &crate::model::LineIndex<'_>,
     items: &mut Vec<EvidenceItem>,
     counter: &mut usize,
     depth: u32,
@@ -127,7 +136,7 @@ pub(super) fn walk_imports(
             key,
             kind: EvidenceKind::Import,
             origin: EvidenceOrigin::GenericWalker,
-            span: node_span(node, source),
+            span: node_span(node, lines),
             payload: json!({
                 "source": text,
                 "items": [],
@@ -143,9 +152,9 @@ pub(super) fn walk_imports(
             // nesting, but don't re-emit the same statement. Guarded by
             // the explicit `child.kind()` check so a non-import child
             // (e.g. a string literal) is never skipped.
-            walk_imports_past(&child, source, items, counter, depth + 1)
+            walk_imports_past(&child, source, lines, items, counter, depth + 1)
         } else {
-            walk_imports(&child, source, items, counter, depth + 1)
+            walk_imports(&child, source, lines, items, counter, depth + 1)
         };
     }
     capped
@@ -160,6 +169,7 @@ pub(super) fn walk_imports(
 fn walk_imports_past(
     node: &Node,
     source: &str,
+    lines: &crate::model::LineIndex<'_>,
     items: &mut Vec<EvidenceItem>,
     counter: &mut usize,
     depth: u32,
@@ -172,9 +182,9 @@ fn walk_imports_past(
         capped |= if is_import_statement_kind(&child.kind()) {
             // Another level of nesting under the suppressed parent — skip
             // this immediate match too, but keep descending.
-            walk_imports_past(&child, source, items, counter, depth + 1)
+            walk_imports_past(&child, source, lines, items, counter, depth + 1)
         } else {
-            walk_imports(&child, source, items, counter, depth + 1)
+            walk_imports(&child, source, lines, items, counter, depth + 1)
         };
     }
     capped
@@ -186,16 +196,16 @@ fn named_children(node: &Node) -> impl Iterator<Item = Node> {
     (0..node.named_child_count() as u32).filter_map(move |i| node.named_child(i))
 }
 
-fn node_span(node: &Node, source: &str) -> SpanAvailability {
+fn node_span(node: &Node, lines: &crate::model::LineIndex<'_>) -> SpanAvailability {
     let start_byte = node.start_byte();
     let end_byte = node.end_byte();
     let start = Position {
         line: crate::model::saturating_u32(node.start_position().row),
-        column: crate::model::char_column(source, start_byte),
+        column: lines.column(start_byte),
     };
     let end = Position {
         line: crate::model::saturating_u32(node.end_position().row),
-        column: crate::model::char_column(source, end_byte),
+        column: lines.column(end_byte),
     };
     match Span::new(start_byte as u64, end_byte as u64, start, end) {
         Ok(span) => SpanAvailability::Present(span),

@@ -1,6 +1,6 @@
 // slugaudit-line-exception: approved-by=slugthug; reason=one match arm per Tree-sitter evidence kind; splitting by kind would hide the exhaustiveness this file exists to guarantee
 use crate::model::{
-    EvidenceItem, EvidenceKind, EvidenceOrigin, Position, Span, SpanAvailability, char_column,
+    EvidenceItem, EvidenceKind, EvidenceOrigin, LineIndex, Position, Span, SpanAvailability,
     saturating_u32,
 };
 use serde_json::json;
@@ -29,32 +29,33 @@ pub fn extract(language: &str, source: &str) -> Result<(Vec<EvidenceItem>, bool)
     let config = ProcessConfig::new(language).all();
     let result = process(source, &config)?;
 
+    let lines = LineIndex::new(source);
     let mut items = Vec::new();
     let mut counter = 0usize;
     for item in &result.structure {
-        flatten_structure(item, source, &mut items, &mut counter);
+        flatten_structure(item, &lines, &mut items, &mut counter);
     }
     for (index, item) in result.imports.iter().enumerate() {
-        items.push(import_item(index, item, source));
+        items.push(import_item(index, item, &lines));
     }
     for (index, item) in result.exports.iter().enumerate() {
-        items.push(export_item(index, item, source));
+        items.push(export_item(index, item, &lines));
     }
     for (index, item) in result.comments.iter().enumerate() {
-        items.push(comment_item(index, item, source));
+        items.push(comment_item(index, item, &lines));
     }
     for (index, item) in result.docstrings.iter().enumerate() {
-        items.push(docstring_item(index, item, source));
+        items.push(docstring_item(index, item, &lines));
     }
     for (index, item) in result.symbols.iter().enumerate() {
-        items.push(symbol_item(index, item, source));
+        items.push(symbol_item(index, item, &lines));
     }
     items.extend(
         result
             .diagnostics
             .iter()
             .enumerate()
-            .map(|(index, diagnostic)| diagnostic_item(index, diagnostic, source)),
+            .map(|(index, diagnostic)| diagnostic_item(index, diagnostic, &lines)),
     );
 
     // The language pack's `process()` extracts structure, imports, exports,
@@ -79,11 +80,13 @@ pub fn extract(language: &str, source: &str) -> Result<(Vec<EvidenceItem>, bool)
     // pack's `process` parse is unavoidable — `tree-sitter-language-pack`
     // exposes no `process_with_tree(source, tree)` overload — but the
     // two extra ones collapse to one.
-    let (walker_items, depth_capped) =
-        extract_extra_walkers(language, source, result.imports.is_empty());
+    let (walker_items, mut depth_capped) =
+        extract_extra_walkers(language, source, &lines, result.imports.is_empty());
     items.extend(walker_items);
     if language == "rust" {
-        items.extend(super::calls::extract_rust(source));
+        let (call_items, calls_capped) = super::calls::extract_rust(source, &lines);
+        items.extend(call_items);
+        depth_capped |= calls_capped;
     }
 
     Ok((items, depth_capped))
@@ -103,6 +106,7 @@ pub fn extract(language: &str, source: &str) -> Result<(Vec<EvidenceItem>, bool)
 fn extract_extra_walkers(
     language: &str,
     source: &str,
+    lines: &LineIndex<'_>,
     pack_imports_was_empty: bool,
 ) -> (Vec<EvidenceItem>, bool) {
     let Ok(mut parser) = get_parser(language) else {
@@ -115,9 +119,10 @@ fn extract_extra_walkers(
 
     let mut items = Vec::new();
     let mut counter = 0usize;
-    let mut capped = walk_bindings(&root, source, &mut items, &mut counter, 0);
+    let mut capped = walk_bindings(&root, source, lines, &mut items, &mut counter, 0);
     if pack_imports_was_empty {
-        capped |= super::generic_imports::walk_imports(&root, source, &mut items, &mut counter, 0);
+        capped |=
+            super::generic_imports::walk_imports(&root, source, lines, &mut items, &mut counter, 0);
     }
     (items, capped)
 }
@@ -166,6 +171,7 @@ fn is_field_declaration(kind: &str) -> bool {
 fn walk_bindings(
     node: &tree_sitter_language_pack::Node,
     source: &str,
+    lines: &LineIndex<'_>,
     items: &mut Vec<EvidenceItem>,
     counter: &mut usize,
     depth: u32,
@@ -187,7 +193,7 @@ fn walk_bindings(
             // Not a binding we care about — still recurse in case a child is.
             let mut capped = false;
             for child in named_children(node) {
-                capped |= walk_bindings(&child, source, items, counter, depth + 1);
+                capped |= walk_bindings(&child, source, lines, items, counter, depth + 1);
             }
             return capped;
         };
@@ -198,7 +204,7 @@ fn walk_bindings(
             key,
             kind: EvidenceKind::Symbol,
             origin: EvidenceOrigin::PackSymbol,
-            span: node_span(node, source),
+            span: node_span(node, lines),
             payload: json!({
                 "name": name,
                 "kind": format!("{sym_kind:?}"),
@@ -211,7 +217,7 @@ fn walk_bindings(
     // bindings, a struct body contains field declarations, etc.
     let mut capped = false;
     for child in named_children(node) {
-        capped |= walk_bindings(&child, source, items, counter, depth + 1);
+        capped |= walk_bindings(&child, source, lines, items, counter, depth + 1);
     }
     capped
 }
@@ -296,16 +302,16 @@ fn named_children(
     (0..node.named_child_count() as u32).filter_map(move |i| node.named_child(i))
 }
 
-fn node_span(node: &tree_sitter_language_pack::Node, source: &str) -> SpanAvailability {
+fn node_span(node: &tree_sitter_language_pack::Node, lines: &LineIndex<'_>) -> SpanAvailability {
     let start_byte = node.start_byte();
     let end_byte = node.end_byte();
     let start = Position {
         line: saturating_u32(node.start_position().row),
-        column: char_column(source, start_byte),
+        column: lines.column(start_byte),
     };
     let end = Position {
         line: saturating_u32(node.end_position().row),
-        column: char_column(source, end_byte),
+        column: lines.column(end_byte),
     };
     match Span::new(start_byte as u64, end_byte as u64, start, end) {
         Ok(span) => SpanAvailability::Present(span),
@@ -313,14 +319,14 @@ fn node_span(node: &tree_sitter_language_pack::Node, source: &str) -> SpanAvaila
     }
 }
 
-pub(super) fn convert_span(span: &PackSpan, source: &str) -> SpanAvailability {
+pub(super) fn convert_span(span: &PackSpan, lines: &LineIndex<'_>) -> SpanAvailability {
     let start = Position {
         line: saturating_u32(span.start_line),
-        column: char_column(source, span.start_byte),
+        column: lines.column(span.start_byte),
     };
     let end = Position {
         line: saturating_u32(span.end_line),
-        column: char_column(source, span.end_byte),
+        column: lines.column(span.end_byte),
     };
     match Span::new(span.start_byte as u64, span.end_byte as u64, start, end) {
         Ok(converted) => SpanAvailability::Present(converted),

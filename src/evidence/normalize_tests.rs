@@ -78,6 +78,65 @@ fn a_source_nested_past_the_walk_bound_is_truncated_not_aborted() {
     assert!(!items.is_empty(), "the walk still yields what it reached");
 }
 
+/// 10 000 levels of `a!(a!(...))` aborted the process with a stack overflow
+/// (observed 2026-10-18 on the unbounded `macro_calls` recursion) and, before
+/// that, reparsed the whole body once per level. The nesting bound makes it a
+/// truncated extraction, reported the same way as the tree-depth bound.
+#[test]
+fn a_rust_macro_nested_past_the_macro_bound_is_reported_partial_not_aborted() {
+    let nesting = 10_000;
+    let source = format!(
+        "fn run() {{ {}1{} }}",
+        "a!(".repeat(nesting),
+        ")".repeat(nesting)
+    );
+
+    let (items, depth_capped) =
+        extract("rust", &source).expect("a deep macro is truncated, not a failure");
+
+    assert!(depth_capped, "a macro scan cut short must be reported");
+    assert!(!items.is_empty(), "the walk still yields what it reached");
+}
+
+#[test]
+fn a_rust_macro_nested_within_the_bound_is_fully_scanned() {
+    let source = "fn run(v: Option<u8>) { a!(b!(c!(v.unwrap()))); }";
+
+    let (items, depth_capped) = extract("rust", source).expect("extract");
+
+    assert!(!depth_capped);
+    assert!(
+        items
+            .iter()
+            .any(|item| item.payload["callee_name"] == "unwrap")
+    );
+}
+
+/// A minified single-line file used to cost line-length steps per evidence
+/// item (`char_column` walked back to the line start and counted). Here 20 000
+/// calls sit behind a 16 MB block comment on ONE line, so the old code
+/// counted ~16 MB twice per call (~6e11 bytes, measured at over a minute);
+/// with the per-file `LineIndex` the whole extraction is linear.
+#[test]
+fn a_multi_megabyte_single_line_file_indexes_in_linear_time() {
+    let pad = "é".repeat(8 * 1024 * 1024);
+    let source = format!("fn r() {{ /*{pad}*/ {}}}", "helper(1); ".repeat(20_000));
+    let started = std::time::Instant::now();
+
+    let (items, _) = extract("rust", &source).expect("extract");
+
+    let calls = items
+        .iter()
+        .filter(|item| item.kind == EvidenceKind::Call)
+        .count();
+    assert_eq!(calls, 20_000);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "indexing took {:?}",
+        started.elapsed()
+    );
+}
+
 #[test]
 fn malformed_source_still_produces_diagnostics() {
     let items = extract_items("rust", "fn broken( {\n");

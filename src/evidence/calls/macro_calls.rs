@@ -5,109 +5,114 @@
 //! treating string contents or comments as calls. All coordinates are mapped
 //! back to the original source; the synthetic probe is never emitted.
 use super::{callee_node, enclosing_caller, named_children, simple_name};
-use crate::model::{
-    EvidenceItem, EvidenceKind, EvidenceOrigin, Position, Span, SpanAvailability, char_column,
-    saturating_u32,
-};
+use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, LineIndex, Span, SpanAvailability};
 use serde_json::json;
 use tree_sitter_language_pack::{Node, get_parser};
 
 const PREFIX: &str = "fn __slug_macro() { __slug_probe(";
 const SUFFIX: &str = "); }";
 
-pub(super) fn extract(macro_node: &Node, source: &str) -> Vec<(usize, usize, EvidenceItem)> {
+/// How many macro invocations may nest inside one another before the
+/// extraction stops reparsing. Each level reparses its whole body and
+/// re-enters this module's recursion, so a file of `a!(a!(a!(...)))` costs
+/// stack proportional to the nesting and parse work quadratic in it —
+/// 10 000 levels abort the process with a stack overflow. Real code nests a
+/// handful of levels; 64 is far past that. Past it the remaining fragment is
+/// not scanned and the caller is told, so the file is reported `Partial`.
+pub(super) const MAX_MACRO_DEPTH: u32 = 64;
+
+/// Calls recovered from one macro, and whether any bound truncated the scan.
+pub(super) struct MacroCalls {
+    pub(super) rows: Vec<(usize, usize, EvidenceItem)>,
+    pub(super) capped: bool,
+}
+
+/// What stays fixed across every fragment of one outermost macro.
+struct Scan<'a> {
+    source: &'a str,
+    lines: &'a LineIndex<'a>,
+    caller: Option<String>,
+}
+
+/// One reparsed fragment: the synthetic text and its frame in the source.
+struct Fragment<'a> {
+    wrapped: &'a str,
+    start: usize,
+    end: usize,
+}
+
+pub(super) fn extract(macro_node: &Node, source: &str, lines: &LineIndex<'_>) -> MacroCalls {
+    let mut out = MacroCalls {
+        rows: Vec::new(),
+        capped: false,
+    };
     let Some(tokens) = named_children(macro_node).find(|n| n.kind() == "token_tree") else {
-        return Vec::new();
+        return out;
     };
     let start = tokens.start_byte().saturating_add(1);
     let end = tokens.end_byte().saturating_sub(1);
-    let mut rows = Vec::new();
-    scan_fragment(
+    let scan = Scan {
         source,
-        start,
-        end,
-        enclosing_caller(macro_node, source),
-        &mut rows,
-    );
-    rows
+        lines,
+        caller: enclosing_caller(macro_node, source),
+    };
+    out.capped = scan_fragment(&scan, (start, end), 0, &mut out.rows);
+    out
 }
 
+/// Returns true when the macro-nesting or tree-depth bound truncated the scan.
 fn scan_fragment(
-    source: &str,
-    start: usize,
-    end: usize,
-    caller: Option<String>,
+    scan: &Scan<'_>,
+    (start, end): (usize, usize),
+    macro_depth: u32,
     rows: &mut Vec<(usize, usize, EvidenceItem)>,
-) {
-    let Some(body) = source.get(start..end) else {
-        return;
+) -> bool {
+    if macro_depth >= MAX_MACRO_DEPTH {
+        return true;
+    }
+    let Some(body) = scan.source.get(start..end) else {
+        return false;
     };
     let wrapped = format!("{PREFIX}{body}{SUFFIX}");
     let Ok(mut parser) = get_parser("rust") else {
-        return;
+        return false;
     };
     let Some(tree) = parser.parse(&wrapped) else {
-        return;
+        return false;
     };
-    collect(
-        tree.root_node(),
-        &wrapped,
-        source,
-        (start, end),
-        caller,
-        rows,
-        0,
-    );
+    let fragment = Fragment {
+        wrapped: &wrapped,
+        start,
+        end,
+    };
+    collect(tree.root_node(), scan, &fragment, macro_depth, rows, 0)
 }
 
-/// `source_start`/`source_end` arrive as one tuple: they are the fragment's
-/// coordinate frame within `source`, meaningless apart, and grouping them is
-/// what keeps `depth` from pushing the parameter list past the limit the
-/// lint — and a reader — can hold.
 fn collect(
     node: Node,
-    wrapped: &str,
-    source: &str,
-    (source_start, source_end): (usize, usize),
-    caller: Option<String>,
+    scan: &Scan<'_>,
+    fragment: &Fragment<'_>,
+    macro_depth: u32,
     rows: &mut Vec<(usize, usize, EvidenceItem)>,
     depth: u32,
 ) -> bool {
-    // The depth guard bounds descent within THIS synthetic tree only;
-    // nested macros re-enter `scan_fragment` at depth 0 by design (see
-    // `recurse_into_nested_macro`) — the macro-nesting chain is separately
-    // bounded by the token trees it reparses.
+    // The depth guard bounds descent within THIS synthetic tree only; the
+    // chain of nested macros is bounded separately by `MAX_MACRO_DEPTH`,
+    // which `recurse_into_nested_macro` threads through every re-entry.
     if depth >= crate::evidence::MAX_WALK_DEPTH {
         return true;
     }
     // Emit the node's own row *before* descending, so `calls::walk`'s
     // first-wins dedup keeps the outermost row.
     if matches!(node.kind().as_str(), "call_expression" | "macro_invocation")
-        && within_synthetic_frame(&node, wrapped)
-        && let Some(row) = emit_call_row(&node, wrapped, source, source_start, source_end, &caller)
+        && within_synthetic_frame(&node, fragment.wrapped)
+        && let Some(row) = emit_call_row(&node, scan, fragment)
     {
         rows.push(row);
     }
-    recurse_into_nested_macro(
-        &node,
-        wrapped,
-        source,
-        source_start,
-        source_end,
-        &caller,
-        rows,
-    );
-    let mut capped = false;
+    let mut capped = recurse_into_nested_macro(&node, scan, fragment, macro_depth, rows);
     for child in named_children(&node) {
-        capped |= collect(
-            child,
-            wrapped,
-            source,
-            (source_start, source_end),
-            caller.clone(),
-            rows,
-            depth + 1,
-        );
+        capped |= collect(child, scan, fragment, macro_depth, rows, depth + 1);
     }
     capped
 }
@@ -124,16 +129,14 @@ fn within_synthetic_frame(node: &Node, wrapped: &str) -> bool {
 /// wrapper itself, has no callee, or falls outside the fragment.
 fn emit_call_row(
     node: &Node,
-    wrapped: &str,
-    source: &str,
-    source_start: usize,
-    source_end: usize,
-    caller: &Option<String>,
+    scan: &Scan<'_>,
+    fragment: &Fragment<'_>,
 ) -> Option<(usize, usize, EvidenceItem)> {
+    let wrapped = fragment.wrapped;
     let macro_call = node.kind() == "macro_invocation";
-    let start = source_start + node.start_byte() - PREFIX.len();
-    let end = source_start + node.end_byte() - PREFIX.len();
-    if end > source_end {
+    let start = fragment.start + node.start_byte() - PREFIX.len();
+    let end = fragment.start + node.end_byte() - PREFIX.len();
+    if end > fragment.end {
         return None;
     }
     let callee = callee_node(node, macro_call)?;
@@ -150,8 +153,8 @@ fn emit_call_row(
     let span = Span::new(
         start as u64,
         end as u64,
-        position(source, start),
-        position(source, end),
+        scan.lines.position(start),
+        scan.lines.position(end),
     )
     .map_or_else(
         |error| crate::evidence::span_unavailable("macro argument call", error),
@@ -169,7 +172,7 @@ fn emit_call_row(
                 "language": "rust",
                 "callee_text": callee_text,
                 "callee_name": name,
-                "caller": caller,
+                "caller": scan.caller,
                 "resolution": resolution,
                 "confidence": if macro_call { "high" } else { "medium" },
             }),
@@ -179,33 +182,25 @@ fn emit_call_row(
 
 /// A nested macro still owns an opaque token tree after the outer fragment is
 /// reparsed. Recurse into its contents using absolute source coordinates,
-/// preserving the enclosing Rust function as caller.
+/// preserving the enclosing Rust function as caller. Returns true when the
+/// nesting bound stopped a scan below this macro.
 fn recurse_into_nested_macro(
     node: &Node,
-    wrapped: &str,
-    source: &str,
-    source_start: usize,
-    source_end: usize,
-    caller: &Option<String>,
+    scan: &Scan<'_>,
+    fragment: &Fragment<'_>,
+    macro_depth: u32,
     rows: &mut Vec<(usize, usize, EvidenceItem)>,
-) {
-    if node.kind() != "macro_invocation" || !within_synthetic_frame(node, wrapped) {
-        return;
+) -> bool {
+    if node.kind() != "macro_invocation" || !within_synthetic_frame(node, fragment.wrapped) {
+        return false;
     }
     let Some(tokens) = named_children(node).find(|n| n.kind() == "token_tree") else {
-        return;
+        return false;
     };
-    let start = source_start + tokens.start_byte() + 1 - PREFIX.len();
-    let end = source_start + tokens.end_byte().saturating_sub(1) - PREFIX.len();
-    if end <= source_end && start < end {
-        scan_fragment(source, start, end, caller.clone(), rows);
+    let start = fragment.start + tokens.start_byte() + 1 - PREFIX.len();
+    let end = fragment.start + tokens.end_byte().saturating_sub(1) - PREFIX.len();
+    if end <= fragment.end && start < end {
+        return scan_fragment(scan, (start, end), macro_depth + 1, rows);
     }
-}
-
-fn position(source: &str, byte: usize) -> Position {
-    let prefix = &source[..byte];
-    Position {
-        line: saturating_u32(prefix.bytes().filter(|b| *b == b'\n').count()),
-        column: char_column(source, byte),
-    }
+    false
 }
