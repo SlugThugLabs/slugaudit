@@ -1301,7 +1301,7 @@ Still open from this round:
   parser pack's own JSON recursion uses ~1.6 MiB of the 2 MiB stack in debug (455 KiB release); set an
   explicit stack size where extraction threads are spawned (`server_runner.rs`, `sync/sample_batch.rs`).
   Not started.
-- **Parser download/dlopen triggered by agent input — owner decision pending.** The pack's default
+- **Parser download/dlopen triggered by agent input — accepted risk (owner decision 2026-10-18, see DECISIONS.md).** The pack's default
   features download and `dlopen` grammars at runtime; `structure`'s `language` string and detected file
   types trigger it. A compile-in fix (28 static grammars, downloads off) is parked on branch
   `parser-static-compile` (`5737053`), NOT merged: the owner prefers on-demand downloads. Proposed

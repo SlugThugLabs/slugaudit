@@ -1476,3 +1476,17 @@ Format: date — title; status; context; decision; rationale; consequences.
   client config was read or written. Reversible: a row can come back once its mechanism is
   established.
 
+
+## 2026-10-18 — Keep runtime grammar downloads (accepted risk)
+
+- **Context**: the 2026-10-18 audit confirmed that `tree-sitter-language-pack` 1.18.0 runs with its
+  default features (`download`, `dynamic-loading`): on a registry miss `get_language` fetches a manifest
+  from GitHub and `dlopen`s a downloaded native grammar (pack `src/lib.rs:193`). `structure`'s
+  `language` string and detected file types trigger it. Impact if the grammar source were compromised:
+  arbitrary code in the SlugAudit process with the user's privileges.
+- **Decision (owner)**: keep runtime downloads for now. The owner judges a compromise highly unlikely,
+  does not want to cut language support to a compiled-in set, and does not want a hand-rolled
+  replacement (a SlugAudit-owned grammar installer). An alternative that compiles 28 grammars in with
+  downloads off is parked on branch `parser-static-compile` (`5737053`), not merged.
+- **Revisit when**: the pack offers pinned per-grammar checksums or a vetted static build covering the
+  languages the owner needs, or SlugAudit is run against untrusted repositories in a shared environment.
