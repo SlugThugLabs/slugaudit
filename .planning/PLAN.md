@@ -1190,3 +1190,11 @@ maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by rea
   with notice — Codex CLI (10,000 bytes default, `codex-rs/models-manager/src/model_info.rs`);
   passed whole — Zed (`context_server_registry.rs`), Continue (hard error past context,
   `core/llm/countTokens.ts`); unknown — Cursor, Windsurf.
+  Follow-up survey, same day: file with notice — Kimi Code (`toolResultTruncationService.ts`),
+  Oh My Pi (`tools/output-meta.ts`), Hermes (`tool_result_storage.py`), Bob (changelog 2.1.0),
+  Copilot CLI (user report, copilot-cli#5003); cut with notice — OpenHands (`utils/truncate.py`,
+  50k chars), Pi (20 KB + file), Grok (`mcp_truncate.rs`, 20 KB + file); passed whole — Crush
+  (`internal/agent/tools/mcp/tools.go`), Amazon Q chat path (superseded by Kiro); Cursor spills
+  to a workspace file with a ~100k-char read-back limit (forum reports only, 2026-08); unknown —
+  Windsurf, Antigravity, Claude Desktop, Droid, Amp, Warp. Of 23 registry clients: 13 handle
+  large results safely, 4 are risky (Zed, Crush, Amazon Q, Cursor), 6 unknown.
