@@ -1490,3 +1490,16 @@ Format: date — title; status; context; decision; rationale; consequences.
   downloads off is parked on branch `parser-static-compile` (`5737053`), not merged.
 - **Revisit when**: the pack offers pinned per-grammar checksums or a vetted static build covering the
   languages the owner needs, or SlugAudit is run against untrusted repositories in a shared environment.
+
+- **Amended same day: hybrid - 21 bundled languages, downloads kept for the rest.** The owner chose to
+  compile the languages SlugAudit gets the best evidence from into the binary, so they work from the
+  first run and offline, and to leave every other language on the pack's own runtime download, unchanged.
+  `default-features = false` (as on `parser-static-compile`) is explicitly NOT used. Mechanism:
+  `TSLP_LANGUAGES` + `TSLP_LINK_MODE=static` in `.cargo/config.toml`; the pack looks up its static table
+  before any dynamic or download step (`registry.rs` `get_language`, `lib.rs:193-197`). Bundled: rust,
+  python, javascript, typescript, tsx, go, java, c, cpp, csharp, ruby, php, kotlin, swift, dart, elixir,
+  haskell, julia, ocaml, perl, json (the grammar-matrix and generic-import test languages, tsx via the JS
+  resolver, json from the evidence tests). Cost measured 2026-10-18: release binary 15.6 MB to 63.7 MB,
+  clean release build 45 s to 67 s, first build needs network for the source bundle. Tests in
+  `src/parse/language.rs`. The compromised-grammar risk above still applies to non-bundled
+  languages.

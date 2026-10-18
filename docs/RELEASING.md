@@ -194,6 +194,13 @@ That string depends on where the tree and the target directory sit, so two build
 only record the same one when they share both — which the two jobs do, and which
 `RUSTFLAGS` (below) makes independent of the registry layout.
 
+Third, the build needs network access: with `TSLP_LANGUAGES` set in
+`.cargo/config.toml`, the pack's build script downloads its sha256-verified
+parser-source bundle (`parser-sources-<version>.tar.zst`) to compile the bundled
+grammars in. This is build time only; the release job and `rebuild-and-compare`
+both fetch it, and the pin (`=1.18.0`) fixes which bundle. Measured 2026-10-18:
+the 21 bundled grammars take the release binary from 15.6 MB to 63.7 MB.
+
 ### 4.2 What the job does
 
 It checks out the released tag into a **fresh job**, downloads the published

@@ -1,0 +1,19 @@
+# tree-sitter-language-pack selects the grammars it compiles IN at build time
+# from these variables (its build.rs `selected_languages`). The pack keeps its
+# default `download` + `dynamic-loading` features (Cargo.toml), so the model is
+# hybrid: the languages listed here are statically linked and found first by
+# `get_language`/`get_parser` (static_lookup, before any dynamic or download
+# step), so they parse from the first run and offline. Every other language is
+# still fetched by the pack at runtime, unchanged. Verified against
+# tree-sitter-language-pack 1.18.0 on 2026-10-18.
+#
+# Choosing the list: the languages SlugAudit has dedicated handling or tests
+# for (see .planning/archive/DECISIONS.md, 2026-10-18 amendment). Adding one is
+# a deliberate change: add it here and to BUNDLED in src/parse/language.rs (a
+# test pins both).
+#
+# The build downloads the sha256-verified parser-source bundle once (build
+# time only, cached under target/), so the FIRST build needs network access.
+[env]
+TSLP_LINK_MODE = "static"
+TSLP_LANGUAGES = "rust,python,javascript,typescript,tsx,go,java,c,cpp,csharp,ruby,php,kotlin,swift,dart,elixir,haskell,julia,ocaml,perl,json"

@@ -450,7 +450,17 @@ cargo mutants --file src/sync/hash.rs
 - Dependencies: 16 runtime + 4 dev (`Cargo.toml`).
   `tree-sitter-language-pack = "=1.18.0"` is the only exact pin (number verified
   against `Cargo.toml` on 2026-10-16; this sentence has drifted before — re-check
-  it whenever the pack moves);
+  it whenever the pack moves). It keeps its default `download` +
+  `dynamic-loading` features: the languages in `TSLP_LANGUAGES` (with
+  `TSLP_LINK_MODE=static`, both set in `.cargo/config.toml`, read by the pack's
+  `build.rs`) are compiled into the binary and found first by `get_language`,
+  so they parse from the first run and offline; every other language is still
+  downloaded by the pack at runtime (accepted risk, DECISIONS 2026-10-18). The
+  build fetches the sha256-verified parser-source bundle once, so the first
+  build needs network access (`TSLP_OFFLINE=1` skips it and bundles nothing).
+  Adding a bundled language means editing `TSLP_LANGUAGES` and `BUNDLED` in
+  `src/parse/language.rs` (a test pins both). Verified against 1.18.0,
+  2026-10-18;
   `src/parse/PACK_VERSION` is a hand-duplicated string that
   the `check_version_consistency` gate asserts against the manifest pin —
   update both together.
