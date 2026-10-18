@@ -94,7 +94,10 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
 
     let choice = crate::prompt::read_prompt_line()?.unwrap_or_default();
     let index = parse_choice(&choice, detected.len())?;
-    let agent = detected[index];
+    let agent = detected
+        .get(index)
+        .copied()
+        .ok_or(ConnectError::InvalidChoice)?;
     if agent.is_connected(home.as_deref()) {
         print!(
             "{} is already connected. Re-connect / update path? [y/N]: ",
@@ -132,7 +135,11 @@ pub fn run_disconnect_interactive() -> Result<(), ConnectError> {
 
     let choice = crate::prompt::read_prompt_line()?.unwrap_or_default();
     let index = parse_choice(&choice, connected.len())?;
-    disconnect_one(connected[index])
+    let agent = connected
+        .get(index)
+        .copied()
+        .ok_or(ConnectError::InvalidChoice)?;
+    disconnect_one(agent)
 }
 
 /// The zero-based index of a 1-based menu answer among `count` options, or

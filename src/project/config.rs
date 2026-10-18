@@ -74,7 +74,15 @@ impl ProjectConfig {
             Ok(Some(cfg)) => cfg,
             Ok(None) => Self::default(),
             Err(err) => {
-                tracing::warn!("ignoring malformed project config: {err}");
+                let error_message = match &err {
+                    ConfigError::Io { source, .. } => source.to_string(),
+                    ConfigError::Parse { source, .. } => source.to_string(),
+                };
+                tracing::warn!(
+                    root_id = %crate::util::redacted_path(project_root),
+                    error = %error_message,
+                    "ignoring malformed project config; falling back to default"
+                );
                 Self::default()
             }
         }

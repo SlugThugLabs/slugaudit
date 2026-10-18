@@ -163,8 +163,15 @@ fn resolve_existing_ancestor(path: &Path) -> std::path::PathBuf {
     let mut tail = Vec::new();
     let mut current = path;
     loop {
-        if let Ok(real) = current.canonicalize() {
-            return tail.iter().rev().fold(real, |acc, part| acc.join(part));
+        match current.canonicalize() {
+            Ok(real) => return tail.iter().rev().fold(real, |acc, part| acc.join(part)),
+            Err(error) => {
+                tracing::trace!(
+                    path_id = %crate::util::redacted_path(current),
+                    error = %error,
+                    "ancestor canonicalize failed; checking parent"
+                );
+            }
         }
         match (current.parent(), current.file_name()) {
             (Some(parent), Some(name)) => {

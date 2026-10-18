@@ -139,7 +139,8 @@ pub(super) fn fill_page<R: serde::Serialize>(
             break;
         }
         let row = row.map_err(|error| super::context::internal_error(context, error))?;
-        let row_bytes = serialized_len(&row);
+        let row_bytes =
+            serialized_len(&row).map_err(|error| super::context::internal_error(context, error))?;
         if !page.rows.is_empty() && page.bytes.saturating_add(row_bytes) > max_bytes {
             page.limited_by = PageLimit::Bytes;
             break;

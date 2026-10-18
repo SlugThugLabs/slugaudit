@@ -263,3 +263,11 @@ fn a_capped_read_accepts_a_file_exactly_at_the_cap() {
 
     assert_eq!(text.len(), 1024, "the cap is inclusive");
 }
+
+#[test]
+fn serialized_len_measures_exact_json_bytes() {
+    let value = serde_json::json!({"key": "value"});
+    let len = crate::util::serialized_len(&value).expect("serialized_len must succeed");
+    let exact = serde_json::to_string(&value).expect("to_string").len();
+    assert_eq!(len, exact);
+}

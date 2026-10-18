@@ -1,5 +1,5 @@
 // slugaudit-line-exception: approved-by=slugthug; reason=one tool contract owns request/response types, the execution/budget path, and the single-statement separator scanner; splitting would fragment the query tool's validation order (empty → size → statement count → freshness → budget) that the tests assert against
-use super::context::{ensure_synced, guard_expected_revision, with_verified_read};
+use super::context::{ensure_synced, guard_expected_revision, internal_error, with_verified_read};
 use super::query_sql_scanner::first_statement_separator;
 use super::query_value::row_to_json;
 
@@ -262,7 +262,8 @@ fn execute_and_collect(
     let mut size_truncated = false;
     for row in mapped {
         let value = row.map_err(|error| describe_error(&error, abort_reason))?;
-        let row_bytes = serialized_len(&value);
+        let row_bytes = serialized_len(&value)
+            .map_err(|error| internal_error("measuring query row size", error))?;
         if !rows.is_empty()
             && total_bytes.saturating_add(row_bytes) > limits.max_query_response_bytes
         {

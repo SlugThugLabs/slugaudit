@@ -49,12 +49,16 @@ pub(crate) fn render_menu(style: &Style) -> String {
     for line in MENU.lines() {
         let trimmed = line.trim();
         if let Some(label) = section_label(trimmed) {
-            let prefix_len = line.find(label).unwrap_or(0);
-            let before = &line[..prefix_len];
-            let after = &line[prefix_len + label.len()..];
-            out.push_str(before);
-            out.push_str(&style.green(&style.bold(label)));
-            out.push_str(&style.dim(after));
+            if let Some(prefix_len) = line.find(label) {
+                let before = line.get(..prefix_len).unwrap_or("");
+                let after_start = prefix_len + label.len();
+                let after = line.get(after_start..).unwrap_or("");
+                out.push_str(before);
+                out.push_str(&style.green(&style.bold(label)));
+                out.push_str(&style.dim(after));
+            } else {
+                out.push_str(line);
+            }
         } else if trimmed.starts_with('┌') || trimmed.starts_with('└') {
             out.push_str(&style.dim(line));
         } else if trimmed.contains("SlugAudit setup") {

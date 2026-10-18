@@ -153,102 +153,9 @@ at database open rather than silently accepting an unknown mount
 ## Architecture and data flow
 
 **`.planning/ARCHITECTURE.md` is the authoritative source of truth** — module
-map, data flow, process lifecycle, security model, and the numbered invariants.
-Read it before any structural change. This section is a summary, not a
-replacement.
-
-### Request path (one tool call)
-
-`src/main.rs` → `SlugAuditServer` (rmcp `#[tool_router]`, `src/server.rs`) →
-`dispatch` (`src/server.rs`) → `server_runner::run_blocking` →
-`tools::context::ensure_synced` → `SourceSyncManager::ensure_current` →
-reconcile/publish → `with_verified_read` or `with_verified_write` → `Json`
-response.
-
-- `src/server.rs` declares *contracts only* (schemas, `INSTRUCTIONS`, thin
-  handlers). Execution mechanics — the semaphore, `spawn_blocking`, MCP
-  progress notifications — live in `src/server_runner.rs`. Keep that split.
-- **Streaming publishing is forbidden under `serve`**: stdout *is* the JSON-RPC
-  transport, so any `println!`/`print!` in serve-reachable code is a hard lint
-  error.
-- Progress: `ProgressEvent::{Started, Sampling, Completed}` flows from the sync
-  layer → `ProgressSink` → `server_runner` → MCP `notify_progress` (`0.0`
-  queued, `0.5` publishing, `1.0` completed, plus throttled per-file
-  `Sampling`). Sends are best-effort; a broken channel never fails a successful
-  call (`src/server_runner.rs`, `src/progress.rs`).
-
-### Indexing and revision model
-
-- `src/sync/manager_orchestration.rs::ensure_current` resolves the project →
-  opens or rebuilds the database → verifies metadata → reconciles/rebuilds →
-  returns `SyncedProject { database_path, revision_id }`.
-- `src/sync/manager_health.rs::sync_by_health` branches on `WatcherHealth`:
-  `NeedsVerification`/`Desynced` → full publish + drain; `Healthy` → one
-  reconcile + stat sweep; `Unavailable` → full publish every call.
-- Every publish is compare-and-swap: `src/sync/publish_cas.rs` retries only
-  `StaleBaseline`/`ChangedDuringSample` up to `MAX_CAS_RETRIES = 4` under one
-  shared `Deadline`. `src/sync/revision.rs::publish_revision` is the **only**
-  write path for `files`/`evidence`/`dependency_edges`/`revisions`, and flips
-  `is_current` last.
-- `revision_id` is rowid-derived (`rev-{id}`), not hash-derived, and changes on
-  every publish. `src/tools/context_transactions.rs` re-verifies it inside the
-  transaction and the caller retries — a successful `ensure_current` never
-  guarantees no concurrent publish.
-- Freshness has two layers: the `notify` watcher (which *drops* events when the
-  sync thread holds the lock, via `try_lock`, `src/watch/manager.rs`) and the
-  watcher-independent stat sweep (`src/sync/sweep.rs`). Treat the sweep as the
-  guarantee, the watcher as an optimization. A same-size edit inside the same
-  second with no watcher event is a documented blind spot.
-
-### Concurrency
-
-- Blocking tool work runs on Tokio's blocking pool gated by one
-  `Arc<Semaphore>` of `MAX_CONCURRENT_BLOCKING_OPS = 8` per server; the permit
-  is moved *into* the blocking closure so cancellation can't free it early
-  (`src/server_runner.rs`).
-- Barrier sync loops at most `MAX_BARRIER_LOOPS = 16` times before marking the
-  project `Desynced` (`src/sync/reconcile/mod.rs`, `reconcile/barrier.rs`).
-- Per-server state, not globals: `SourceSyncManager` is injected via
-  `SlugAuditServer::with_manager` (tests pass `SourceSyncManager::default()`,
-  which starts **no** watcher). Process-global state is limited to the
-  `ToolCounters` atomics (`src/tools/mod.rs`), `util::SESSION_ID`,
-  `model::limits::process_limits` (a `OnceLock`), and `parse::PACK_VERSION`.
-- Every `Mutex` lock goes through `util::lock_or_recover` (poison recovery,
-  never a re-panic; `src/util.rs`).
-
-### Invariants every contributor must not break
-
-These are enforced in code (see `ARCHITECTURE.md` for the full numbered
-list):
-
-- Correctness comes from the connection, never from query text: `query` opens
-  `SQLITE_OPEN_READ_ONLY` and installs an authorizer that denies
-  `ATTACH`/`DETACH`; there is **no** SQL keyword blocklist or table allowlist
-  (`src/store/connection.rs`, `src/tools/query.rs`).
-- Symlinks and network filesystems are rejected at open time
-  (`src/store/connection.rs`).
-- `#![forbid(unsafe_code)]` crate-wide (`src/lib.rs`).
-- Production code never panics on an error value; all `Mutex` locks recover.
-- Each revision is published atomically (CAS); the database is disposable
-  derived data; findings are scoped to the writing session.
-
-### Security and trust model
-
-The threat model is a **lazy/unsupervised AI agent, not a hostile attacker** —
-the agent already has filesystem access to the same directory as the database.
-
-- Security here means convenience guards, not defense against a malicious
-  actor. The stdio transport is the auth boundary: no network listener, no
-  multi-client multiplexing, no auth.
-- The `query` tool's read-only connection, subquery wrapper, and authorizer hook
-  are the real guards.
-- `structure` executes agent-supplied Tree-sitter queries — the most interesting
-  surface, because the agent can ask SlugAudit to do work the human didn't
-  request.
-- `finding` stores agent-authored text verbatim by design: the human reads it
-  directly, and session-scoped purge prevents cross-contamination.
-- The database is deliberately throwaway so a past agent cannot leave stale
-  "this is unfinished" commentary that misleads the next one.
+map, data flow, process lifecycle, concurrency, security model, and the full
+numbered list of invariants. Read it before any structural change. This file
+does not summarise it; duplicated summaries drift.
 
 ---
 
@@ -366,102 +273,16 @@ planning docs go in `.planning/`; completed records go in
 
 ## Repository layout
 
-| Path | Purpose |
-|---|---|
-| `src/main.rs`, `src/cli.rs` | Binary entry, arg parsing, stderr-only tracing |
-| `src/server.rs`, `src/server_runner.rs` | MCP surface: tool contracts, `INSTRUCTIONS`, dispatch, blocking pool, progress |
-| `src/tools/` | Tool handlers: `report`, `query`, `structure`, `leads`, `finding`, `finding_read`, `project_control`, `health` |
-| `src/sync/` | Indexing: manager, orchestration, health, reconcile, publish/CAS, revision, sweep, discovery, ignore rules |
-| `src/store/` | The only SQLite boundary: connection guards, migrations, `schema.sql` (`CURRENT_SCHEMA_VERSION = 6`) |
-| `src/watch/` | `notify` watcher, per-project `WatchState`, `WatcherHealth` |
-| `src/evidence/` | Tree-sitter evidence extraction + normalization |
-| `src/graph/` | Import resolution (Rust/Python/JS resolvers, `resolve_imports`) |
-| `src/parse/`, `src/model/` | Language detection + `PACK_VERSION`; limits, profiles, spans, source models |
-| `src/project/` | Project root resolution, activation marker, database path, `config.json` |
-| `src/ignore_rules.rs` | Single source of truth for exclusions (discovery, watcher, sweep, reconcile) |
-| `src/resources.rs` | `slugaudit://` resources, compiled in via `include_str!` from `examples/queries/` and `src/store/schema.sql` |
-| `src/bin/` | Development gate binaries |
-| `tests/` | Integration crates: `stdio_protocol`, `menu_tests`, `connect_tests` |
-| `benches/` | Criterion targets: discovery, parsing, search, startup, memory |
-| `examples/queries/` | Query cookbook **and** the `include_str!` source of `slugaudit://` resources |
-| `.planning/ARCHITECTURE.md` | Authoritative design + invariants (gate-checked structure) |
-| `.planning/PLAN.md` | The single active plan |
-| `.planning/archive/DECISIONS.md` | Append-only decision log — add entries, never rewrite history |
-| `.planning/archive/perf_baseline.json` | Consumed by `check_performance` — never delete |
-| `.planning/archive/mcp_surface.json` | The committed `tools/list` + `resources/list` surface, consumed by `check_mcp_surface` — re-record deliberately with `--record` |
-| `docs/CLIENTS.md` | Every `slugaudit connect` target and its config path/scope |
-| `docs/TROUBLESHOOTING.md` | Operator runbook: slow calls, full-publish loops, sync budget, watcher unavailable, rebuild semantics |
-| `.planning/slugaudit/` | Runtime DB state, gitignored — never documentation, never committed |
-| `Cargo.toml`, `rust-toolchain.toml`, `clippy.toml`, `deny.toml` | Bins, benches, lint policy, pins, supply-chain policy |
+See `.planning/ARCHITECTURE.md` (*Subsystems and module layout*) and the
+exhaustive manifest in `.planning/MODULE_MAP.md`.
 
 ---
 
-## Development commands
+## Development commands and gates
 
-```bash
-cargo build --release --locked                    # the shipped binary
-cargo run                                          # serve MCP over stdio (default-run = slugaudit)
-cargo fmt --all -- --check
-cargo check --all-targets --all-features --locked
-cargo clippy --all-targets --all-features --locked -- -D warnings
-cargo test --lib --bins --tests --all-features --locked   # CI bulk run
-cargo test --lib <name_substring>                         # one test
-cargo test --lib -- tools::leads::tests                   # one module
-cargo test --test stdio_protocol --locked                 # integration crate
-cargo bench --bench discovery                             # one bench
-```
-
-### Gates
-
-CI (`.github/workflows/quality.yml`, Rust 1.97.1, Linux + macOS) runs, in
-order:
-
-```bash
-cargo fmt --all -- --check
-cargo run --quiet --bin check_source_limits --locked   # LoC ceilings + exception annotations
-cargo run --quiet --bin check_no_duplicates --locked   # duplicate commit subjects / test fn names
-cargo run --quiet --bin check_docs_drift --locked      # ARCHITECTURE module map, test count, canonical docs
-cargo run --quiet --bin check_producer_coverage --locked  # every evidence kind is constructed somewhere
-cargo run --quiet --bin check_mcp_surface --locked     # tools/list + resources/list match the committed snapshot
-cargo run --quiet --bin check_governance --locked      # governance files exist; CODEOWNERS paths resolve
-cargo run --quiet --bin check_version_consistency --locked  # Cargo.toml = lhm.plugin.json = CHANGELOG = PACK_VERSION
-cargo check --all-targets --all-features --locked
-cargo clippy --all-targets --all-features --locked -- -D warnings
-cargo test --lib --bins --tests --all-features --locked
-cargo test --test stdio_protocol --locked              # re-run alone so a transport break is its own check
-cargo build --release --locked
-```
-
-Then `cargo-deny` (`check advisories bans sources licenses`), `check_coverage`,
-and — Linux only, fails closed — `cargo mutants` over `src/sync/revision.rs`,
-`src/sync/publish.rs`, `src/sync/hash.rs`, `src/tools/context.rs` (a deliberate
-four-file scope, not an unfinished widening — see *Mutation testing* under
-*Testing and QA*). The `advisories`
-half of that cargo-deny run is the RustSec advisory-database (the RustSec
-`audit-check` action quality.yml used to add read the same database and could not
-run at all once Node 20 left GitHub-hosted runners, so it was removed on
-2026-09-30 rather than left standing as false coverage).
-
-Two workflows cover what a push cannot: `.github/workflows/advisories.yml`
-re-runs `cargo-deny check advisories` against the same `deny.toml` on a weekly
-cron, so an advisory published against an unchanged `Cargo.lock` is visible
-without a push; `.github/workflows/supply-chain.yml` gates each pull request with
-dependency review of the diff, an OSV.dev scan of `Cargo.lock`, and a secret scan
-that skips `.planning/slugaudit/` (as GitHub's own secret scanning does, via
-`.github/secret_scanning.yml`).
-
-`check_performance` is **local-only and is not wired into CI at all** — not in
-`quality.yml`, not on a schedule. The reason is the baseline: it records the
-machine that measured it (`perf_baseline.json`'s `machine` field), and criterion
-medians on a shared, unpinned GitHub runner differ from that machine for reasons
-that have nothing to do with the commit, so the 20 percent allowance would measure
-the runner. Its value is a same-machine before/after comparison. Run it when
-touching the discovery/parsing/search paths:
-
-```bash
-cargo run --bin check_performance --locked                 # criterion medians vs baseline, default 20%
-cargo run --bin check_performance --locked -- --record     # deliberately re-baseline
-```
+Build, test, lint, gate, coverage, and performance commands live in
+`CONTRIBUTING.md` (*Build and test*, *Gates*). Keep the lists there, not here —
+duplication drifts.
 
 Other local tools: `bash install.sh` installs to `${HOME}/.slugthug/slugaudit`;
 `slugaudit update` downloads a release and verifies it against `SHA256SUMS`
