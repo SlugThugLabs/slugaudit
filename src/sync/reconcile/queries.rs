@@ -2,6 +2,7 @@
 //! paths (to skip unchanged files) and the current parser pack version
 //! (to pin the new revision against).
 
+use crate::sync::manifest::{PATH_SET_SUBQUERY, paths_json_array};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 
@@ -13,11 +14,11 @@ pub(super) fn query_existing_hashes(
     if paths.is_empty() {
         return Ok(HashMap::new());
     }
-    let placeholders = vec!["?"; paths.len()].join(", ");
-    let sql = format!("SELECT path, content_hash FROM files WHERE path IN ({placeholders})");
-    let params = rusqlite::params_from_iter(paths.iter());
-    let mut stmt = connection.prepare(&sql)?;
-    let rows = stmt.query_map(params, |row| {
+    let wanted = paths_json_array(paths.iter().map(String::as_str))?;
+    let mut stmt = connection.prepare(&format!(
+        "SELECT path, content_hash FROM files WHERE path IN ({PATH_SET_SUBQUERY})"
+    ))?;
+    let rows = stmt.query_map([wanted], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
     let mut result = HashMap::new();
@@ -60,5 +61,17 @@ mod tests {
         let version = query_current_parser_pack_version(&connection).expect("query version");
 
         assert_eq!(version, crate::parse::PACK_VERSION);
+    }
+
+    #[test]
+    fn stored_hashes_are_found_for_a_path_set_beyond_the_sqlite_variable_limit() {
+        let (_project, _db_dir, connection, _revision) = crate::sync::test_support::setup_project();
+        let mut paths: HashSet<String> = (0..40_000).map(|i| format!("missing/{i}.rs")).collect();
+        paths.insert("a.rs".to_owned());
+
+        let hashes = query_existing_hashes(&connection, &paths).expect("40k-path lookup");
+
+        assert_eq!(hashes.len(), 1, "only the stored path matches: {hashes:?}");
+        assert!(hashes.contains_key("a.rs"));
     }
 }

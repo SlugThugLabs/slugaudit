@@ -267,17 +267,17 @@ fn invalidate_stale_findings(
     if touched_paths.is_empty() {
         return Ok(());
     }
-    let placeholders = vec!["?"; touched_paths.len()].join(", ");
+    let touched = super::manifest::paths_json_array(touched_paths.iter().copied())?;
     let sql = format!(
         "UPDATE findings SET status = 'stale' \
-         WHERE status = 'current' AND path IN ({placeholders}) \
+         WHERE status = 'current' AND path IN ({}) \
          AND NOT EXISTS ( \
              SELECT 1 FROM files \
              WHERE files.path = findings.path AND files.content_hash = findings.source_hash \
-         )"
+         )",
+        super::manifest::PATH_SET_SUBQUERY
     );
-    let params = rusqlite::params_from_iter(touched_paths.iter());
-    tx.execute(&sql, params)?;
+    tx.execute(&sql, [touched])?;
     Ok(())
 }
 

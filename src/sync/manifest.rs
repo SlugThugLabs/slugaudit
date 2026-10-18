@@ -62,6 +62,27 @@ pub fn compare<'a>(
     changes
 }
 
+/// SQL subquery yielding the paths of the JSON array bound to its single
+/// parameter (built by [`paths_json_array`]).
+///
+/// Every query that filters on a caller-sized set of paths binds ONE JSON
+/// array and reads it through `json_each`, never one `?` per path: SQLite
+/// rejects a statement with more than `SQLITE_MAX_VARIABLE_NUMBER` bound
+/// variables (32766 in the bundled build, probed 2026-10-18: 32766 binds
+/// succeed, 32767 fail with "too many SQL variables"), and a project's first
+/// publish touches every file, so a per-path bind list made any project with
+/// more than 32766 files impossible to index. One parameter keeps the work
+/// set-based and inside the caller's transaction.
+pub(crate) const PATH_SET_SUBQUERY: &str = "SELECT value FROM json_each(?)";
+
+/// Serializes `paths` into the JSON array [`PATH_SET_SUBQUERY`] binds.
+pub(crate) fn paths_json_array<'a>(
+    paths: impl IntoIterator<Item = &'a str>,
+) -> Result<String, rusqlite::Error> {
+    let paths: Vec<&str> = paths.into_iter().collect();
+    serde_json::to_string(&paths).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+}
+
 /// Computes the aggregate manifest hash from a post-update file set:
 /// existing DB state, updated with upserts and skipped records, minus
 /// deletions. The skipped records matter twice: their paths stay in the set
@@ -89,19 +110,19 @@ pub(crate) fn compute_manifest_hash(
                 .collect::<Result<Vec<_>, _>>()?;
             rows.into_iter().collect()
         } else {
-            let placeholders = vec!["?"; exclude_count].join(", ");
-            let sql =
-                format!("SELECT path, content_hash FROM files WHERE path NOT IN ({placeholders})");
-            let params = rusqlite::params_from_iter(
+            let excluded = paths_json_array(
                 upserts
                     .iter()
-                    .map(|r| &r.relative_path)
-                    .chain(deletions.iter())
-                    .chain(skipped.iter().map(|r| &r.relative_path)),
-            );
+                    .map(|r| r.relative_path.as_str())
+                    .chain(deletions.iter().map(String::as_str))
+                    .chain(skipped.iter().map(|r| r.relative_path.as_str())),
+            )?;
             let rows: Vec<(String, String)> = connection
-                .prepare(&sql)?
-                .query_map(params, |row| {
+                .prepare(&format!(
+                    "SELECT path, content_hash FROM files \
+                     WHERE path NOT IN ({PATH_SET_SUBQUERY})"
+                ))?
+                .query_map([excluded], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
