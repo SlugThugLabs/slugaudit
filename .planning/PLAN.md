@@ -1246,7 +1246,7 @@ maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by rea
 
 255 of 255 files, rules R1-R12 (owner's audit prompt; file size per this repo's bands; function
 size informational per D-13). Report: `.planning/audit_2026-10-18_report.md`; ledger (762 rows):
-`.planning/audit_2026-10-18_ledger.tsv`. Detectors all clean (clippy 0, 903 tests pass, deny/machete
+`.planning/audit_2026-10-18_ledger.tsv` (6th column `state`: handled / open / tag / observation). Detectors all clean (clippy 0, 903 tests pass, deny/machete
 0, coverage 89.84%). Highest-impact items, all **not started**:
 1. `structure`'s `language` reaches `tree_sitter_language_pack::get_language` with the pack's
    default `download` feature on: network fetch and native-library load on an unknown name
