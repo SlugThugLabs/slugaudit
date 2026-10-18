@@ -92,7 +92,9 @@ pub(crate) fn resolve_relative_path(
     config: &GenericResolverConfig,
     known_paths: &HashSet<&str>,
 ) -> Resolution {
-    let path = crate::graph::resolve::normalize_join(base_dir, text);
+    let Some(path) = crate::graph::resolve::normalize_join(base_dir, text) else {
+        return unresolved();
+    };
     candidate_paths(&path, config, known_paths)
 }
 

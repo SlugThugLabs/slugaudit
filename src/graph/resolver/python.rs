@@ -53,10 +53,13 @@ pub(crate) fn resolve_python_relative(
         base_dir = crate::graph::resolve::parent_dir(&base_dir);
     }
 
-    let path = if remainder.is_empty() {
+    let joined = if remainder.is_empty() {
         crate::graph::resolve::normalize_join(&base_dir, "")
     } else {
         crate::graph::resolve::normalize_join(&base_dir, &remainder.replace('.', "/"))
+    };
+    let Some(path) = joined else {
+        return unresolved();
     };
 
     if remainder.is_empty() {

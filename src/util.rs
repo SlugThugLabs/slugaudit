@@ -7,7 +7,6 @@
 //! wherever the majority of its callers live), put it there instead of
 //! defaulting to `util`. This file should not become a dumping ground.
 
-use std::fmt::Write as _;
 use std::io::IsTerminal;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -213,10 +212,13 @@ pub(crate) fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, 
 /// Hex-encodes a byte slice as a lowercase hex string. Used by both the
 /// hashing layer and the query value converter.
 pub(crate) fn hex_encode(bytes: &[u8]) -> String {
+    const DIGITS: [char; 16] = [
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
+    ];
     let mut hex = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        // `write!` into a String never fails.
-        let _ = write!(hex, "{byte:02x}");
+    for &byte in bytes {
+        hex.push(DIGITS[usize::from(byte >> 4)]);
+        hex.push(DIGITS[usize::from(byte & 0x0f)]);
     }
     hex
 }

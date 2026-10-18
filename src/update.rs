@@ -203,7 +203,10 @@ fn update_decision(current: &str, latest: &str) -> UpdateDecision {
     match compare_versions(current, latest) {
         Ok(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal) => UpdateDecision::UpToDate,
         Ok(std::cmp::Ordering::Less) => UpdateDecision::Newer,
-        Err(()) => UpdateDecision::Incomparable,
+        Err(error) => {
+            tracing::info!(%error, "versions are not comparable; fetching the release anyway");
+            UpdateDecision::Incomparable
+        }
     }
 }
 

@@ -275,7 +275,9 @@ fn resolve_rust_path(
         return unresolved();
     }
     for take in (1..=parts.len()).rev() {
-        let joined = normalize_join(base_dir, &parts[..take].join("/"));
+        let Some(joined) = normalize_join(base_dir, &parts[..take].join("/")) else {
+            continue;
+        };
         let candidates = vec![format!("{joined}.rs"), format!("{joined}/mod.rs")];
         let resolution = pick(&candidates, known_paths);
         if resolution.kind == ResolutionKind::Resolved {

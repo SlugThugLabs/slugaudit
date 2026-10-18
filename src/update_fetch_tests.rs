@@ -39,12 +39,33 @@ fn compare_versions_orders_numeric_releases() {
 
 #[test]
 fn compare_versions_rejects_non_numeric_local_versions() {
-    assert_eq!(compare_versions("dev", "1.0.3"), Err(()));
-    assert_eq!(compare_versions("1.0.3", "abc"), Err(()));
+    assert!(compare_versions("dev", "1.0.3").is_err());
+    assert!(compare_versions("1.0.3", "abc").is_err());
     assert_eq!(
-        compare_versions("1.0.3", "1.0.3"),
-        Ok(std::cmp::Ordering::Equal)
+        compare_versions("1.0.3", "1.0.3").expect("comparable"),
+        std::cmp::Ordering::Equal
     );
+}
+
+#[test]
+fn compare_versions_treats_missing_components_as_zero() {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    assert_eq!(compare_versions("1.0", "1.0.0").expect("comparable"), Equal);
+    assert_eq!(compare_versions("1", "1.0.0").expect("comparable"), Equal);
+    assert_eq!(compare_versions("1.0.0", "1.0").expect("comparable"), Equal);
+    assert_eq!(compare_versions("1.0", "1.0.1").expect("comparable"), Less);
+    assert_eq!(
+        compare_versions("1.1", "1.0.9").expect("comparable"),
+        Greater
+    );
+}
+
+#[test]
+fn compare_versions_error_names_the_unparseable_version_and_keeps_the_cause() {
+    let error = compare_versions("1.0.0-rc1", "1.0.0").expect_err("pre-release is not numeric");
+
+    assert!(error.to_string().contains("1.0.0-rc1"), "{error}");
+    assert!(std::error::Error::source(&error).is_some());
 }
 
 #[test]

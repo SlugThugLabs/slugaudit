@@ -98,6 +98,33 @@ fn hex_encode_renders_lowercase_hex() {
 }
 
 #[test]
+fn hex_encode_matches_the_format_macro_for_every_byte_and_pseudo_random_inputs() {
+    use std::fmt::Write as _;
+    fn reference(bytes: &[u8]) -> String {
+        let mut out = String::new();
+        for byte in bytes {
+            write!(out, "{byte:02x}").expect("write to String");
+        }
+        out
+    }
+    let every_byte: Vec<u8> = (0..=255).collect();
+    assert_eq!(hex_encode(&every_byte), reference(&every_byte));
+
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    for len in [0_usize, 1, 2, 3, 31, 32, 33, 1000] {
+        let input: Vec<u8> = (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state.to_le_bytes()[0]
+            })
+            .collect();
+        assert_eq!(hex_encode(&input), reference(&input), "len {len}");
+    }
+}
+
+#[test]
 fn now_unix_is_nonzero_and_never_moves_backwards() {
     let first = now_unix();
     assert!(first > 0, "the epoch must be in the past");

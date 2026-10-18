@@ -129,8 +129,8 @@ fn csharp_using_system_is_unresolved_not_faked() {
 
 #[test]
 fn dart_relative_import_resolves_to_the_real_file() {
-    let known = paths(&["util.dart", "app.dart"]);
-    let result = resolve_one("dart", "app.dart", "import '../util.dart';", &known);
+    let known = paths(&["util.dart", "lib/app.dart"]);
+    let result = resolve_one("dart", "lib/app.dart", "import '../util.dart';", &known);
     assert_eq!(result.kind.as_sql_text(), "Resolved");
     assert_eq!(result.to_relative_path.as_deref(), Some("util.dart"));
 }
@@ -178,4 +178,32 @@ fn perl_use_resolves_to_real_module_file() {
     let result = resolve_one("perl", "app.pl", "use My::Module;", &known);
     assert_eq!(result.kind.as_sql_text(), "Resolved");
     assert_eq!(result.to_relative_path.as_deref(), Some("My/Module.pm"));
+}
+
+#[test]
+fn a_relative_import_that_escapes_the_project_root_is_unresolved() {
+    let known = paths(&["x.ts", "a.ts"]);
+
+    let result = resolve_one("typescript", "a.ts", "../x", &known);
+
+    assert_eq!(result.kind.as_sql_text(), "Unresolved");
+    assert_eq!(result.to_relative_path, None);
+}
+
+#[test]
+fn a_relative_import_that_climbs_past_the_root_from_a_subdirectory_is_unresolved() {
+    let known = paths(&["x.ts", "src/a.ts"]);
+
+    let result = resolve_one("typescript", "src/a.ts", "../../x", &known);
+
+    assert_eq!(result.to_relative_path, None);
+}
+
+#[test]
+fn a_relative_import_that_stays_inside_the_root_still_resolves() {
+    let known = paths(&["x.ts", "src/a.ts"]);
+
+    let result = resolve_one("typescript", "src/a.ts", "../x", &known);
+
+    assert_eq!(result.to_relative_path.as_deref(), Some("x.ts"));
 }

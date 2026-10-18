@@ -103,6 +103,50 @@ fn mountinfo_parser_handles_optional_fields_before_the_dash_separator() {
     ));
 }
 
+/// The kernel escapes space, tab, newline and backslash in mount points as
+/// `\040`, `\011`, `\012`, `\134`; matching must happen on the decoded path.
+#[cfg(target_os = "linux")]
+#[test]
+fn mountinfo_octal_escapes_in_mount_points_are_decoded_before_matching() {
+    let mountinfo = "\
+30 1 0:25 / /mnt/my\\040share rw - cifs //srv/share rw
+31 1 0:26 / /mnt/tab\\011dir rw - nfs4 srv:/x rw
+32 1 0:27 / /mnt/back\\134slash rw - nfs srv:/y rw
+33 1 0:28 / /mnt/new\\012line rw - nfs srv:/z rw
+";
+
+    assert!(is_mountpoint_network_filesystem(
+        mountinfo,
+        "/mnt/my share/project.db"
+    ));
+    assert!(is_mountpoint_network_filesystem(
+        mountinfo,
+        "/mnt/tab\tdir/project.db"
+    ));
+    assert!(is_mountpoint_network_filesystem(
+        mountinfo,
+        "/mnt/back\\slash/project.db"
+    ));
+    assert!(is_mountpoint_network_filesystem(
+        mountinfo,
+        "/mnt/new\nline/project.db"
+    ));
+    assert!(!is_mountpoint_network_filesystem(
+        mountinfo,
+        "/mnt/my/project.db"
+    ));
+}
+
+/// An escape that is not a full three-digit octal sequence is kept
+/// literally rather than dropped or guessed at.
+#[cfg(target_os = "linux")]
+#[test]
+fn mountinfo_malformed_octal_escapes_are_kept_literally() {
+    let mountinfo = "30 1 0:25 / /mnt/a\\04 rw - nfs srv:/x rw\n";
+
+    assert!(is_mountpoint_network_filesystem(mountinfo, "/mnt/a\\04/f"));
+}
+
 /// Malformed mountinfo lines (missing the ` - ` separator, missing
 /// fields, empty lines) must be skipped gracefully rather than
 /// panicking or misidentifying the filesystem.

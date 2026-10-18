@@ -134,18 +134,41 @@ pub(crate) fn platform_supported(os: &str, arch: &str) -> bool {
     os == ASSET_OS && arch == ASSET_ARCH
 }
 
-/// Compares two dot-separated numeric versions. Only the (major.minor.patch)
-/// prefix is considered; `v1.0.3` == `1.0.3`. Returns `Ok(Ordering)` when
-/// both parse as sequences of numeric components, `Err` otherwise.
-pub(crate) fn compare_versions(current: &str, latest: &str) -> Result<std::cmp::Ordering, ()> {
-    fn components(v: &str) -> Result<Vec<u64>, ()> {
+/// A version string that is not a plain dot-separated numeric version
+/// (a dev build or a pre-release such as `1.0.0-rc1`).
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("version {version:?} is not a dot-separated numeric version: {source}")]
+pub(crate) struct VersionParseError {
+    version: String,
+    #[source]
+    source: std::num::ParseIntError,
+}
+
+/// Compares two dot-separated numeric versions; `v1.0.3` == `1.0.3` and a
+/// missing trailing component counts as 0, so `1.0` == `1.0.0`. Returns
+/// `Ok(Ordering)` when both parse as sequences of numeric components, and
+/// a [`VersionParseError`] naming the offending string otherwise (so a
+/// pre-release suffix is incomparable rather than guessed at).
+pub(crate) fn compare_versions(
+    current: &str,
+    latest: &str,
+) -> Result<std::cmp::Ordering, VersionParseError> {
+    fn components(v: &str) -> Result<Vec<u64>, VersionParseError> {
         v.trim_start_matches('v')
             .split('.')
-            .map(|part| part.parse::<u64>().map_err(|_| ()))
+            .map(|part| {
+                part.parse::<u64>().map_err(|source| VersionParseError {
+                    version: v.to_owned(),
+                    source,
+                })
+            })
             .collect()
     }
-    let current = components(current)?;
-    let latest = components(latest)?;
+    let mut current = components(current)?;
+    let mut latest = components(latest)?;
+    let width = current.len().max(latest.len());
+    current.resize(width, 0);
+    latest.resize(width, 0);
     Ok(current.cmp(&latest))
 }
 

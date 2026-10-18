@@ -10,7 +10,11 @@ use std::path::Path;
 /// working on project-relative forward-slash paths rather than the host
 /// OS's `Path` semantics (a project's stored paths are always `/`-joined,
 /// see `sync::discovery`).
-pub(super) fn normalize_join(base_dir: &str, relative: &str) -> String {
+///
+/// Returns `None` when a `..` would climb above the project root: such a
+/// path names nothing inside the project, and dropping the excess `..`
+/// would map `../x` from the root onto the in-project `x` (a false edge).
+pub(super) fn normalize_join(base_dir: &str, relative: &str) -> Option<String> {
     let mut segments: Vec<&str> = if base_dir.is_empty() {
         Vec::new()
     } else {
@@ -20,12 +24,12 @@ pub(super) fn normalize_join(base_dir: &str, relative: &str) -> String {
         match part {
             "" | "." => {}
             ".." => {
-                segments.pop();
+                segments.pop()?;
             }
             other => segments.push(other),
         }
     }
-    segments.join("/")
+    Some(segments.join("/"))
 }
 
 /// Returns the parent directory of a project-relative path.

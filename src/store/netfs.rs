@@ -85,6 +85,45 @@ fn is_on_network_filesystem(path: &Path) -> Result<bool, StoreError> {
     Ok(is_mountpoint_network_filesystem(&content, path_str))
 }
 
+/// Decodes the `\NNN` octal escapes the kernel writes into mountinfo
+/// fields (space `\040`, tab `\011`, newline `\012`, backslash `\134`).
+/// Without this a mount point containing such a character never matches
+/// its real path and a network mount would go undetected. A backslash not
+/// followed by exactly three octal digits (or encoding a byte above 0x7f,
+/// which would not be valid UTF-8 on its own) is kept literally.
+#[cfg(target_os = "linux")]
+fn decode_mountinfo_escapes(field: &str) -> std::borrow::Cow<'_, str> {
+    if !field.contains('\\') {
+        return std::borrow::Cow::Borrowed(field);
+    }
+    let bytes = field.as_bytes();
+    let mut decoded = String::with_capacity(field.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let escaped = bytes
+            .get(index + 1..index + 4)
+            .filter(|_| bytes[index] == b'\\')
+            .filter(|digits| digits.iter().all(|digit| (b'0'..=b'7').contains(digit)))
+            .map(|digits| {
+                digits
+                    .iter()
+                    .fold(0_u32, |acc, digit| acc * 8 + u32::from(digit - b'0'))
+            })
+            .filter(|value| *value <= 0x7f)
+            .and_then(char::from_u32);
+        if let Some(character) = escaped {
+            decoded.push(character);
+            index += 4;
+        } else {
+            // Copy one whole UTF-8 character, not one byte.
+            let width = field[index..].chars().next().map_or(1, char::len_utf8);
+            decoded.push_str(&field[index..index + width]);
+            index += width;
+        }
+    }
+    std::borrow::Cow::Owned(decoded)
+}
+
 /// Given the raw contents of `/proc/self/mountinfo` and a target path,
 /// returns true if the most specific mount point covering the path is a
 /// known network filesystem. Extracted as a pure function so the parsing
@@ -106,7 +145,8 @@ fn is_mountpoint_network_filesystem(mountinfo: &str, path_str: &str) -> bool {
         let before_dash = &line[..dash_idx];
         let mut fields = before_dash.split_whitespace();
         // Skip: mount ID, parent ID, major:minor, root
-        let mount_point = fields.nth(4).unwrap_or("");
+        let mount_point = decode_mountinfo_escapes(fields.nth(4).unwrap_or(""));
+        let mount_point = mount_point.as_ref();
 
         // Path-boundary match: the path must be the mount point itself or
         // fall under it as a child (`/mnt/nfs/x`), not merely share a
