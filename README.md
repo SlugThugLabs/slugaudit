@@ -198,9 +198,10 @@ Two workflows cover what a push cannot:
 same `deny.toml` policy weekly, so an advisory published against an unchanged
 `Cargo.lock` is visible without waiting for a push, and
 [`.github/workflows/supply-chain.yml`](.github/workflows/supply-chain.yml) gates
-each pull request — dependency review of the diff, an OSV.dev scan of
-`Cargo.lock`, and a secret scan of the working tree, which skips the runtime state
-directory `.planning/slugaudit/` exactly as GitHub's own secret scanning does via
+each pull request and each push to `main` — dependency review of the diff, an
+OSV.dev scan of `Cargo.lock`, and a secret scan of the working tree, which skips
+the runtime state directory `.planning/slugaudit/` exactly as GitHub's own secret
+scanning does via
 [`.github/secret_scanning.yml`](.github/secret_scanning.yml).
 `check_mcp_surface` fails when `tools/list` or `resources/list`
 drifts from the committed `.planning/archive/mcp_surface.json`; a deliberate surface

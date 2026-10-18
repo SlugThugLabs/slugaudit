@@ -48,11 +48,11 @@ cargo build --release --locked
 Then CI runs `cargo-deny` (advisories, bans, sources, licences — its `advisories`
 check is the RustSec advisory database), `check_coverage` (83% line coverage by
 default), and — Linux only — `cargo mutants` over the revision/publish/hash/context
-surface. Two further workflows cover what a push cannot:
-`.github/workflows/advisories.yml` re-runs the `deny.toml` advisory policy weekly,
-and `.github/workflows/supply-chain.yml` gates each pull request on dependency
-review, an OSV.dev scan of `Cargo.lock`, and a secret scan. A new dependency must
-clear `cargo deny`.
+surface. `.github/workflows/supply-chain.yml` gates each pull request and each
+push to `main` on dependency review, an OSV.dev scan of `Cargo.lock`, and a
+secret scan. `.github/workflows/advisories.yml` covers what a push cannot: it
+re-runs the `deny.toml` advisory policy weekly. A new dependency must clear
+`cargo deny`.
 
 `check_coverage` requires `cargo-llvm-cov`. `check_performance` is a **local** gate
 and is deliberately in no workflow: its baseline records the machine that measured

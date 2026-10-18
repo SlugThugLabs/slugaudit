@@ -7,11 +7,11 @@ name: Release
 # one: quality.yml runs fmt, clippy, tests, cargo-deny (advisories, bans,
 # sources, licences), coverage and mutation testing on every push/PR;
 # `.github/workflows/advisories.yml` re-runs the advisory policy on a weekly
-# cron; `.github/workflows/supply-chain.yml` gates the PR diff and scans for
-# secrets. `check_performance` is deliberately in none of them — it is a
-# local-only gate, and quality.yml carries the reason. This workflow only builds
-# the release artifact, produces its supply-chain paperwork, and attaches it to
-# the GitHub Release, so it stays lean and fast.
+# cron; `.github/workflows/supply-chain.yml` gates the diff of each PR and push
+# to main and scans for secrets. `check_performance` is deliberately in none of
+# them — it is a local-only gate, and quality.yml carries the reason. This
+# workflow only builds the release artifact, produces its supply-chain
+# paperwork, and attaches it to the GitHub Release, so it stays lean and fast.
 #
 # Every third-party `uses:` here is pinned to the full commit SHA behind its
 # release tag, with the version kept as a trailing comment so a human can still

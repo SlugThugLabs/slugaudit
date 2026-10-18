@@ -1106,3 +1106,10 @@ does not rediscover them.
   it exercises that boundary directly.
 - **`extraction_completeness` is still read by no tool except `report`'s failure rows** —
   the completeness envelope across `report`/`leads`/`health` remains Phase 2.
+- **`supply-chain.yml` also runs on push to `main` — landed (uncommitted, 2026-10-18).** The
+  workflow was `pull_request`-only, and the owner commits straight to `main` without PRs, so
+  dependency review, the OSV scan and the secret scan never ran. Dependency review now takes
+  `base-ref`/`head-ref` = `before`/`sha` on push and fails on a zero or unreachable `before`.
+  **Still open:** the secret scan checks the tree at the pushed commit, not the `before`..`sha`
+  range (trivy has no range mode), so a secret added and removed within one push is missed —
+  accepted, not scheduled: GitHub's native secret scanning covers history.
