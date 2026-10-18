@@ -126,26 +126,18 @@ pub(super) fn walk_imports(
     }
     let kind = node.kind();
     let is_import = is_import_statement_kind(&kind);
+    let mut capped = false;
     if is_import {
         // Trim: some grammars (e.g. c/cpp `preproc_include`) include the
         // trailing newline in the statement node's byte range.
-        let text = source[node.start_byte()..node.end_byte()].trim();
-        let key = format!("generic_import:{counter}");
-        *counter += 1;
-        items.push(EvidenceItem {
-            key,
-            kind: EvidenceKind::Import,
-            origin: EvidenceOrigin::GenericWalker,
-            span: node_span(node, lines),
-            payload: json!({
-                "source": text,
-                "items": [],
-                "alias": null,
-                "is_wildcard": text.contains('*'),
-            }),
-        });
+        match super::node_text(source, node.start_byte(), node.end_byte()) {
+            Ok(text) => push_import(text.trim(), node, lines, items, counter),
+            Err(error) => {
+                tracing::warn!(%error, "import statement skipped; extraction is partial");
+                capped = true;
+            }
+        }
     }
-    let mut capped = false;
     for child in named_children(node) {
         capped |= if is_import && is_import_statement_kind(&child.kind()) {
             // Nested import-shaped container: walk past it for further
@@ -158,6 +150,29 @@ pub(super) fn walk_imports(
         };
     }
     capped
+}
+
+fn push_import(
+    text: &str,
+    node: &Node,
+    lines: &crate::model::LineIndex<'_>,
+    items: &mut Vec<EvidenceItem>,
+    counter: &mut usize,
+) {
+    let key = format!("generic_import:{counter}");
+    *counter += 1;
+    items.push(EvidenceItem {
+        key,
+        kind: EvidenceKind::Import,
+        origin: EvidenceOrigin::GenericWalker,
+        span: node_span(node, lines),
+        payload: json!({
+            "source": text,
+            "items": [],
+            "alias": null,
+            "is_wildcard": text.contains('*'),
+        }),
+    });
 }
 
 /// Walks `node`'s subtree without emitting for `node` itself or any

@@ -261,3 +261,31 @@ fn the_macos_mount_table_respects_path_boundaries_and_skips_malformed_lines() {
         "/Volumes/share2/project.db"
     ));
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_non_utf8_database_path_fails_the_network_filesystem_check_closed() {
+    use std::os::unix::ffi::OsStrExt;
+    let path = Path::new(std::ffi::OsStr::from_bytes(b"/tmp/\xff/project.db"));
+
+    let error = is_on_network_filesystem(path).expect_err("must fail closed");
+
+    assert!(matches!(error, StoreError::NetworkFilesystemCheck(_)));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn mountinfo_parser_recognizes_remote_fuse_and_cluster_filesystems_but_not_fusectl() {
+    for fs_type in ["fuse.sshfs", "ceph", "glusterfs", "lustre", "afs"] {
+        let mountinfo = format!("1 0 0:1 / /mnt/remote rw - {fs_type} host:/x rw");
+        assert!(
+            is_mountpoint_network_filesystem(&mountinfo, "/mnt/remote/file"),
+            "{fs_type} should be detected as a network filesystem"
+        );
+    }
+    let fusectl = "1 0 0:1 / /sys/fs/fuse/connections rw - fusectl none rw";
+    assert!(!is_mountpoint_network_filesystem(
+        fusectl,
+        "/sys/fs/fuse/connections/x"
+    ));
+}

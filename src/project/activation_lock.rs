@@ -15,7 +15,7 @@ pub(super) fn acquire_database_lock(
     root: &ProjectRoot,
 ) -> Result<Option<Connection>, ActivationError> {
     let db_path = database_path(root);
-    if !db_path.exists() {
+    if !db_path.try_exists()? {
         return Ok(None);
     }
     let connection = open_read_write(&db_path).map_err(ActivationError::Database)?;

@@ -26,8 +26,10 @@ pub enum ConfigError {
     },
 }
 
-/// Optional per-project configuration overrides.
+/// Optional per-project configuration overrides. An unknown key is a parse
+/// error, so a misspelled limit is reported instead of silently ignored.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectConfig {
     /// Desired audit resource profile (`default`, `audit`, or `lean`).
     #[serde(default)]
@@ -55,7 +57,11 @@ impl ProjectConfig {
             .join(".planning")
             .join("slugaudit")
             .join("config.json");
-        if !config_path.exists() {
+        let exists = config_path.try_exists().map_err(|source| ConfigError::Io {
+            path: config_path.clone(),
+            source,
+        })?;
+        if !exists {
             return Ok(None);
         }
         let content =
@@ -186,5 +192,26 @@ mod tests {
 
         assert_eq!(applied.default_page_bytes, 4_096);
         assert_eq!(applied.max_query_response_bytes, 32 * 1024 * 1024);
+    }
+
+    #[test]
+    fn a_misspelled_config_key_is_a_parse_error_not_silently_ignored() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf_dir = dir.path().join(".planning").join("slugaudit");
+        std::fs::create_dir_all(&conf_dir).expect("create dir");
+        std::fs::write(conf_dir.join("config.json"), r#"{"max_file_byte": 5}"#).expect("write");
+
+        let error = ProjectConfig::load(dir.path()).expect_err("unknown key must fail");
+
+        assert!(matches!(error, ConfigError::Parse { .. }), "{error}");
+    }
+
+    #[test]
+    fn an_uninspectable_config_path_is_an_io_error_not_no_config() {
+        let root = Path::new("/tmp").join("a".repeat(300));
+
+        let error = ProjectConfig::load(&root).expect_err("stat failure must surface");
+
+        assert!(matches!(error, ConfigError::Io { .. }), "{error}");
     }
 }

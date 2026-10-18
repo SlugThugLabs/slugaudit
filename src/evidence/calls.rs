@@ -13,6 +13,7 @@ use serde_json::json;
 use std::collections::HashSet;
 
 mod macro_calls;
+use super::{TextRangeError, node_text};
 use tree_sitter_language_pack::Node;
 
 const RUST_CALL_KINDS: &[&str] = &["call_expression", "macro_invocation"];
@@ -25,15 +26,12 @@ const RUST_FUNCTION_KINDS: &[&str] = &[
 ];
 
 /// Extracts Rust call-site evidence from one already indexed source file.
-/// Returns an empty vector for non-Rust input or when the parser cannot
-/// produce a tree. The flag is true when a walk bound (tree depth or macro
-/// nesting) truncated the extraction, which the caller must report.
+/// The flag is true when the extraction is truncated, which the caller must
+/// report as partial: a walk bound (tree depth or macro nesting) was hit, the
+/// parser could not produce a tree, or a node range did not slice the source.
 pub(crate) fn extract_rust(source: &str, lines: &LineIndex<'_>) -> (Vec<EvidenceItem>, bool) {
-    let Ok(mut parser) = tree_sitter_language_pack::get_parser("rust") else {
-        return (Vec::new(), false);
-    };
-    let Some(tree) = parser.parse(source) else {
-        return (Vec::new(), false);
+    let Some(tree) = super::parse_tree("rust", source) else {
+        return (Vec::new(), true);
     };
     let mut items = Vec::new();
     let mut counter = 0usize;
@@ -48,6 +46,32 @@ pub(crate) fn extract_rust(source: &str, lines: &LineIndex<'_>) -> (Vec<Evidence
         0,
     );
     (items, capped)
+}
+
+/// The text-derived fields of one call node.
+struct CallParts {
+    callee_text: String,
+    callee_name: String,
+    caller: Option<String>,
+}
+
+fn call_parts(node: &Node, source: &str, macro_call: bool) -> Result<CallParts, TextRangeError> {
+    let callee = callee_node(node, macro_call);
+    let callee_text = match &callee {
+        Some(child) => node_text(source, child.start_byte(), child.end_byte())?,
+        None => node_text(source, node.start_byte(), node.end_byte())?,
+    }
+    .to_owned();
+    let callee_name = match callee {
+        Some(child) => simple_name(child, source)?,
+        None => None,
+    }
+    .unwrap_or_else(|| callee_text.trim_end_matches('!').to_owned());
+    Ok(CallParts {
+        callee_text,
+        callee_name,
+        caller: enclosing_caller(node, source)?,
+    })
 }
 
 fn walk(
@@ -65,49 +89,11 @@ fn walk(
     let mut capped = false;
     if RUST_CALL_KINDS.contains(&node.kind().as_str()) {
         let macro_call = node.kind() == "macro_invocation";
-        let callee = callee_node(&node, macro_call);
-        let callee_text = callee
-            .as_ref()
-            .map(|child| source[child.start_byte()..child.end_byte()].to_owned())
-            .unwrap_or_else(|| source[node.start_byte()..node.end_byte()].to_owned());
-        let callee_name = callee
-            .and_then(|child| simple_name(child, source))
-            .unwrap_or_else(|| callee_text.trim_end_matches('!').to_owned());
-        let caller = enclosing_caller(&node, source);
-        let (resolution, confidence) = if macro_call {
-            ("macro", "high")
-        } else if callee_text.contains("::") {
-            ("qualified-syntactic", "high")
-        } else {
-            ("unresolved-syntactic", "medium")
-        };
-        let key = format!("call:{counter}");
-        *counter += 1;
-        if seen.insert((node.start_byte(), node.end_byte())) {
-            items.push(EvidenceItem {
-                key,
-                kind: EvidenceKind::Call,
-                origin: EvidenceOrigin::RustCallWalker,
-                span: node_span(&node, lines),
-                payload: json!({
-                    "language": "rust",
-                    "callee_text": callee_text,
-                    "callee_name": callee_name,
-                    "caller": caller,
-                    "resolution": resolution,
-                    "confidence": confidence,
-                }),
-            });
-        }
-        if macro_call {
-            let recovered = macro_calls::extract(&node, source, lines);
-            capped |= recovered.capped;
-            for (start, end, mut item) in recovered.rows {
-                if seen.insert((start, end)) {
-                    item.key = format!("call:{counter}");
-                    *counter += 1;
-                    items.push(item);
-                }
+        match call_parts(&node, source, macro_call) {
+            Ok(parts) => capped |= emit_call(&node, parts, source, lines, items, counter, seen),
+            Err(error) => {
+                tracing::warn!(%error, "Rust call node skipped; extraction is partial");
+                capped = true;
             }
         }
     }
@@ -115,6 +101,57 @@ fn walk(
         capped |= walk(child, source, lines, items, counter, seen, depth + 1);
     }
     capped
+}
+
+/// Pushes the call row for `node` (and, for a macro, the calls recovered from
+/// its token tree). Returns true when the macro scan was truncated.
+fn emit_call(
+    node: &Node,
+    parts: CallParts,
+    source: &str,
+    lines: &LineIndex<'_>,
+    items: &mut Vec<EvidenceItem>,
+    counter: &mut usize,
+    seen: &mut HashSet<(usize, usize)>,
+) -> bool {
+    let macro_call = node.kind() == "macro_invocation";
+    let (resolution, confidence) = if macro_call {
+        ("macro", "high")
+    } else if parts.callee_text.contains("::") {
+        ("qualified-syntactic", "high")
+    } else {
+        ("unresolved-syntactic", "medium")
+    };
+    let key = format!("call:{counter}");
+    *counter += 1;
+    if seen.insert((node.start_byte(), node.end_byte())) {
+        items.push(EvidenceItem {
+            key,
+            kind: EvidenceKind::Call,
+            origin: EvidenceOrigin::RustCallWalker,
+            span: node_span(node, lines),
+            payload: json!({
+                "language": "rust",
+                "callee_text": parts.callee_text,
+                "callee_name": parts.callee_name,
+                "caller": parts.caller,
+                "resolution": resolution,
+                "confidence": confidence,
+            }),
+        });
+    }
+    if !macro_call {
+        return false;
+    }
+    let recovered = macro_calls::extract(node, source, lines);
+    for (start, end, mut item) in recovered.rows {
+        if seen.insert((start, end)) {
+            item.key = format!("call:{counter}");
+            *counter += 1;
+            items.push(item);
+        }
+    }
+    recovered.capped
 }
 
 fn callee_node(node: &Node, macro_call: bool) -> Option<Node> {
@@ -129,16 +166,19 @@ fn callee_node(node: &Node, macro_call: bool) -> Option<Node> {
 /// The simple name of a callee. `field_expression` (`v.unwrap`) recurses to
 /// its last named child — the `field_identifier` — so a method call reports
 /// `unwrap`, while `callee_text` keeps the receiver for context.
-fn simple_name(node: Node, source: &str) -> Option<String> {
+fn simple_name(node: Node, source: &str) -> Result<Option<String>, TextRangeError> {
     if node.kind() == "identifier" || node.kind() == "field_identifier" {
-        return Some(source[node.start_byte()..node.end_byte()].to_owned());
+        return Ok(Some(
+            node_text(source, node.start_byte(), node.end_byte())?.to_owned(),
+        ));
     }
-    named_children(&node)
-        .last()
-        .and_then(|child| simple_name(child, source))
+    match named_children(&node).last() {
+        Some(child) => simple_name(child, source),
+        None => Ok(None),
+    }
 }
 
-fn enclosing_caller(node: &Node, source: &str) -> Option<String> {
+fn enclosing_caller(node: &Node, source: &str) -> Result<Option<String>, TextRangeError> {
     let mut current = node.parent();
     while let Some(parent) = current {
         if RUST_FUNCTION_KINDS.contains(&parent.kind().as_str()) {
@@ -146,17 +186,16 @@ fn enclosing_caller(node: &Node, source: &str) -> Option<String> {
         }
         current = parent.parent();
     }
-    None
+    Ok(None)
 }
 
-fn function_name(node: &Node, source: &str) -> Option<String> {
-    named_children(node).find_map(|child| {
-        if child.kind() == "identifier" {
-            Some(source[child.start_byte()..child.end_byte()].to_owned())
-        } else {
-            None
-        }
-    })
+fn function_name(node: &Node, source: &str) -> Result<Option<String>, TextRangeError> {
+    match named_children(node).find(|child| child.kind() == "identifier") {
+        Some(child) => Ok(Some(
+            node_text(source, child.start_byte(), child.end_byte())?.to_owned(),
+        )),
+        None => Ok(None),
+    }
 }
 
 fn named_children(node: &Node) -> impl Iterator<Item = Node> {

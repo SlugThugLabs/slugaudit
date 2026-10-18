@@ -5,9 +5,10 @@
 //! treating string contents or comments as calls. All coordinates are mapped
 //! back to the original source; the synthetic probe is never emitted.
 use super::{callee_node, enclosing_caller, named_children, simple_name};
+use crate::evidence::{TextRangeError, node_text, parse_tree};
 use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, LineIndex, Span, SpanAvailability};
 use serde_json::json;
-use tree_sitter_language_pack::{Node, get_parser};
+use tree_sitter_language_pack::Node;
 
 const PREFIX: &str = "fn __slug_macro() { __slug_probe(";
 const SUFFIX: &str = "); }";
@@ -51,10 +52,18 @@ pub(super) fn extract(macro_node: &Node, source: &str, lines: &LineIndex<'_>) ->
     };
     let start = tokens.start_byte().saturating_add(1);
     let end = tokens.end_byte().saturating_sub(1);
+    let caller = match enclosing_caller(macro_node, source) {
+        Ok(caller) => caller,
+        Err(error) => {
+            tracing::warn!(%error, "macro argument scan skipped; extraction is partial");
+            out.capped = true;
+            return out;
+        }
+    };
     let scan = Scan {
         source,
         lines,
-        caller: enclosing_caller(macro_node, source),
+        caller,
     };
     out.capped = scan_fragment(&scan, (start, end), 0, &mut out.rows);
     out
@@ -70,15 +79,16 @@ fn scan_fragment(
     if macro_depth >= MAX_MACRO_DEPTH {
         return true;
     }
-    let Some(body) = scan.source.get(start..end) else {
-        return false;
+    let body = match node_text(scan.source, start, end) {
+        Ok(body) => body,
+        Err(error) => {
+            tracing::warn!(%error, "macro argument fragment skipped; extraction is partial");
+            return true;
+        }
     };
     let wrapped = format!("{PREFIX}{body}{SUFFIX}");
-    let Ok(mut parser) = get_parser("rust") else {
-        return false;
-    };
-    let Some(tree) = parser.parse(&wrapped) else {
-        return false;
+    let Some(tree) = parse_tree("rust", &wrapped) else {
+        return true;
     };
     let fragment = Fragment {
         wrapped: &wrapped,
@@ -104,13 +114,20 @@ fn collect(
     }
     // Emit the node's own row *before* descending, so `calls::walk`'s
     // first-wins dedup keeps the outermost row.
+    let mut capped = false;
     if matches!(node.kind().as_str(), "call_expression" | "macro_invocation")
         && within_synthetic_frame(&node, fragment.wrapped)
-        && let Some(row) = emit_call_row(&node, scan, fragment)
     {
-        rows.push(row);
+        match emit_call_row(&node, scan, fragment) {
+            Ok(Some(row)) => rows.push(row),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, "macro argument call skipped; extraction is partial");
+                capped = true;
+            }
+        }
     }
-    let mut capped = recurse_into_nested_macro(&node, scan, fragment, macro_depth, rows);
+    capped |= recurse_into_nested_macro(&node, scan, fragment, macro_depth, rows);
     for child in named_children(&node) {
         capped |= collect(child, scan, fragment, macro_depth, rows, depth + 1);
     }
@@ -126,22 +143,25 @@ fn within_synthetic_frame(node: &Node, wrapped: &str) -> bool {
 
 /// Builds one call row for a `call_expression`/`macro_invocation` node mapped
 /// back to original-source coordinates, or `None` when the node is the probe
-/// wrapper itself, has no callee, or falls outside the fragment.
+/// wrapper itself, has no callee, or falls outside the fragment. An error
+/// means a node range did not slice the synthetic text.
 fn emit_call_row(
     node: &Node,
     scan: &Scan<'_>,
     fragment: &Fragment<'_>,
-) -> Option<(usize, usize, EvidenceItem)> {
+) -> Result<Option<(usize, usize, EvidenceItem)>, TextRangeError> {
     let wrapped = fragment.wrapped;
     let macro_call = node.kind() == "macro_invocation";
     let start = fragment.start + node.start_byte() - PREFIX.len();
     let end = fragment.start + node.end_byte() - PREFIX.len();
     if end > fragment.end {
-        return None;
+        return Ok(None);
     }
-    let callee = callee_node(node, macro_call)?;
-    let callee_text = &wrapped[callee.start_byte()..callee.end_byte()];
-    let name = simple_name(callee, wrapped)
+    let Some(callee) = callee_node(node, macro_call) else {
+        return Ok(None);
+    };
+    let callee_text = node_text(wrapped, callee.start_byte(), callee.end_byte())?;
+    let name = simple_name(callee, wrapped)?
         .unwrap_or_else(|| callee_text.trim_end_matches('!').to_owned());
     let resolution = if macro_call {
         "macro"
@@ -160,7 +180,7 @@ fn emit_call_row(
         |error| crate::evidence::span_unavailable("macro argument call", error),
         SpanAvailability::Present,
     );
-    Some((
+    Ok(Some((
         start,
         end,
         EvidenceItem {
@@ -177,7 +197,7 @@ fn emit_call_row(
                 "confidence": if macro_call { "high" } else { "medium" },
             }),
         },
-    ))
+    )))
 }
 
 /// A nested macro still owns an opaque token tree after the outer fragment is

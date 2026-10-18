@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error)]
 /// Why a path could not be resolved to an enabled project root.
 pub enum RootError {
     #[error("failed to resolve project root: {0}")]
-    Unresolvable(String),
+    Unresolvable(#[source] std::io::Error),
     #[error("project root is not a directory")]
     NotADirectory,
 }
@@ -20,10 +20,11 @@ impl ProjectRoot {
     /// Returns an error if `path` cannot be resolved to a canonical path,
     /// or if it resolves to something other than a directory.
     pub fn resolve(path: &Path) -> Result<Self, RootError> {
-        let canonical = path
-            .canonicalize()
-            .map_err(|error| RootError::Unresolvable(error.to_string()))?;
-        if !canonical.is_dir() {
+        let canonical = path.canonicalize().map_err(RootError::Unresolvable)?;
+        if !std::fs::metadata(&canonical)
+            .map_err(RootError::Unresolvable)?
+            .is_dir()
+        {
             return Err(RootError::NotADirectory);
         }
         Ok(Self(canonical))
@@ -58,10 +59,10 @@ mod tests {
         let directory = tempfile::tempdir().expect("temp dir");
         let file_path = directory.path().join("not-a-directory");
         std::fs::write(&file_path, b"content").expect("write fixture file");
-        assert_eq!(
+        assert!(matches!(
             ProjectRoot::resolve(&file_path),
             Err(RootError::NotADirectory)
-        );
+        ));
     }
 
     #[test]
@@ -72,5 +73,17 @@ mod tests {
             ProjectRoot::resolve(&missing),
             Err(RootError::Unresolvable(_))
         ));
+    }
+
+    #[test]
+    fn an_unresolvable_root_keeps_the_io_error_kind() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let missing = directory.path().join("does-not-exist");
+
+        let Err(RootError::Unresolvable(source)) = ProjectRoot::resolve(&missing) else {
+            panic!("a missing path must be unresolvable");
+        };
+
+        assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
     }
 }

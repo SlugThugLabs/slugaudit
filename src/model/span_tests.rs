@@ -4,7 +4,7 @@ use super::*;
 fn accepts_empty_eof_span() {
     let position = Position { line: 2, column: 4 };
     let span = Span::new(8, 8, position, position).expect("valid span");
-    assert_eq!(span.byte_len(), 0);
+    assert_eq!(span.byte_len(), Some(0));
 }
 
 #[test]
@@ -125,4 +125,13 @@ fn a_multi_megabyte_single_line_answers_every_column_query_quickly() {
         "200k column queries took {:?}",
         started.elapsed()
     );
+}
+
+#[test]
+fn a_reversed_deserialized_span_has_no_byte_length() {
+    let json = r#"{"start_byte":9,"end_byte":3,"start":{"line":0,"column":0},"end":{"line":0,"column":0}}"#;
+
+    let span: Span = serde_json::from_str(json).expect("deserialize bypasses Span::new");
+
+    assert_eq!(span.byte_len(), None);
 }

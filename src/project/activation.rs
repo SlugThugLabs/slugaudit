@@ -49,9 +49,39 @@ pub fn activation_dir(root: &ProjectRoot) -> PathBuf {
     root.as_path().join(PLANNING_DIR).join(ACTIVATION_DIR)
 }
 
-fn is_symlink(path: &Path) -> bool {
-    path.symlink_metadata()
-        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+/// True when `path` is a symlink. A path that does not exist (or sits under a
+/// non-directory) is not a symlink; any other `lstat` failure is returned, so
+/// the symlink guard fails closed instead of being skipped.
+fn is_symlink(path: &Path) -> std::io::Result<bool> {
+    match path.symlink_metadata() {
+        Ok(metadata) => Ok(metadata.file_type().is_symlink()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// True when `path` exists and is a directory. A missing path is `false`; any
+/// other stat failure is returned rather than read as "absent".
+fn is_existing_dir(path: &Path) -> std::io::Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Returns the activation directory under `canonical_root`, refusing a
@@ -59,7 +89,7 @@ fn is_symlink(path: &Path) -> bool {
 fn validated_activation_dir(canonical_root: &Path) -> Result<PathBuf, ActivationError> {
     let planning = canonical_root.join(PLANNING_DIR);
     let activation = planning.join(ACTIVATION_DIR);
-    if is_symlink(&planning) || is_symlink(&activation) {
+    if is_symlink(&planning)? || is_symlink(&activation)? {
         return Err(ActivationError::SymlinkedActivationPath);
     }
     Ok(activation)
@@ -72,12 +102,12 @@ fn validated_activation_dir(canonical_root: &Path) -> Result<PathBuf, Activation
 /// # Errors
 ///
 /// Returns an error if `start` cannot be resolved, if a `.planning` or
-/// `.planning/slugaudit` component along the way is a symlink, or if no
-/// ancestor has an activation directory at all.
+/// `.planning/slugaudit` component along the way is a symlink or cannot be
+/// inspected, or if no ancestor has an activation directory at all.
 pub fn find_project_root(start: &Path) -> Result<ProjectRoot, ActivationError> {
     let canonical = start
         .canonicalize()
-        .map_err(|error| ActivationError::Root(RootError::Unresolvable(error.to_string())))?;
+        .map_err(|error| ActivationError::Root(RootError::Unresolvable(error)))?;
     let search_origin = if canonical.is_file() {
         canonical
             .parent()
@@ -89,7 +119,7 @@ pub fn find_project_root(start: &Path) -> Result<ProjectRoot, ActivationError> {
 
     for ancestor in search_origin.ancestors() {
         let activation = validated_activation_dir(ancestor)?;
-        if activation.is_dir() {
+        if is_existing_dir(&activation)? {
             return Ok(ProjectRoot::resolve(ancestor)?);
         }
     }
@@ -294,7 +324,7 @@ fn ignores_activation_dir(contents: &[u8]) -> bool {
 /// or if removal fails.
 pub fn disable(root: &ProjectRoot) -> Result<bool, ActivationError> {
     let activation = validated_activation_dir(root.as_path())?;
-    if !activation.exists() {
+    if !activation.try_exists()? {
         return Ok(false);
     }
     let database_lock = acquire_database_lock(root)?;

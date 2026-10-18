@@ -23,6 +23,13 @@ pub enum StoreError {
     Migration(#[from] super::migrations::MigrationError),
     #[error("refusing to open a database path that is a symlink")]
     Symlink,
+    #[error("failed to inspect the database path (lstat): {0}")]
+    Inspect(#[source] std::io::Error),
+    #[error(
+        "SQLite did not enable WAL journal mode (granted '{granted}'); \
+         every read-write connection requires WAL, so the database filesystem is unsupported"
+    )]
+    WalUnavailable { granted: String },
     #[error("failed to set database file permissions: {0}")]
     Permissions(#[source] std::io::Error),
     #[error(
@@ -53,6 +60,8 @@ impl StoreError {
             Self::Open(error) | Self::Configure(error) => super::is_rusqlite_corruption(error),
             Self::Migration(error) => error.is_corruption(),
             Self::Symlink
+            | Self::Inspect(_)
+            | Self::WalUnavailable { .. }
             | Self::Permissions(_)
             | Self::NetworkFilesystem
             | Self::NetworkFilesystemCheck(_) => false,
@@ -85,10 +94,29 @@ pub fn discard_corrupt_database(path: &Path) -> Result<(), std::io::Error> {
 use super::netfs::reject_network_filesystem;
 
 fn reject_symlink(path: &Path) -> Result<(), StoreError> {
-    if path
-        .symlink_metadata()
-        .is_ok_and(|metadata| metadata.file_type().is_symlink())
-    {
+    // An absent path is simply not a symlink (the first open creates it);
+    // any other lstat failure fails the open instead of skipping the guard.
+    let is_symlink = match path.symlink_metadata() {
+        Ok(metadata) => metadata.file_type().is_symlink(),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            false
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "slugaudit::store",
+                path = %path.display(),
+                %error,
+                "could not inspect the database path; refusing to open"
+            );
+            return Err(StoreError::Inspect(error));
+        }
+    };
+    if is_symlink {
         // Logged at the rejection moment so an operator investigating
         // "why did this open fail" sees the exact path that was a
         // symlink, even when only the typed `StoreError::Symlink`
@@ -112,12 +140,24 @@ fn reject_symlink(path: &Path) -> Result<(), StoreError> {
 /// keeps guarding the database file itself without refusing a project under a
 /// symlinked ancestor — on macOS `/var` and `/tmp` are links into `/private`
 /// (verified on macos-latest CI, 2026-10-16). Falls back to the path as given
-/// when the parent cannot be resolved; the open then fails on its own terms.
+/// when the parent cannot be resolved (logged with the cause); the open then
+/// fails on its own terms.
 fn resolve_parent_dir(path: &Path) -> std::path::PathBuf {
     match (path.parent(), path.file_name()) {
-        (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => parent
-            .canonicalize()
-            .map_or_else(|_| path.to_path_buf(), |real| real.join(name)),
+        (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
+            match parent.canonicalize() {
+                Ok(real) => real.join(name),
+                Err(error) => {
+                    tracing::warn!(
+                        target: "slugaudit::store",
+                        path = %path.display(),
+                        %error,
+                        "database parent directory could not be canonicalized; using the path as given"
+                    );
+                    path.to_path_buf()
+                }
+            }
+        }
         _ => path.to_path_buf(),
     }
 }
@@ -291,9 +331,17 @@ fn configure(connection: &Connection) -> Result<(), StoreError> {
     connection
         .pragma_update(None, "foreign_keys", "ON")
         .map_err(StoreError::Configure)?;
-    connection
-        .pragma_update_and_check(None, "journal_mode", "WAL", |_row| Ok(()))
+    let granted: String = connection
+        .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))
         .map_err(StoreError::Configure)?;
+    if !granted.eq_ignore_ascii_case("wal") {
+        tracing::warn!(
+            target: "slugaudit::store",
+            granted = %granted,
+            "SQLite did not grant WAL journal mode; refusing the connection"
+        );
+        return Err(StoreError::WalUnavailable { granted });
+    }
     connection
         .busy_timeout(BUSY_TIMEOUT)
         .map_err(StoreError::Configure)?;

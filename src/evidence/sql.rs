@@ -21,26 +21,38 @@ pub struct EvidenceRow {
 /// Maps one normalized `EvidenceItem` onto an `evidence` table row: key, kind,
 /// origin, span columns (NULL when no span is available), and the payload JSON.
 pub fn to_row(item: &EvidenceItem) -> EvidenceRow {
-    // SQLite has no unsigned 64-bit column type; byte offsets past i64::MAX
-    // are not a real file size, so saturating here is a documented choice,
-    // not a silent truncation risk.
-    let byte_to_i64 = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
+    // SQLite has no unsigned 64-bit column type. A byte offset past i64::MAX
+    // is not a real file size, so such a span is stored as unavailable (NULL
+    // coordinates, logged) rather than as a clamped offset quoted as fact.
+    let mut span_availability = span_availability_text(&item.span);
     let (start_byte, end_byte, start_line, start_column, end_line, end_column) = match &item.span {
-        SpanAvailability::Present(span) => (
-            Some(byte_to_i64(span.start_byte)),
-            Some(byte_to_i64(span.end_byte)),
-            Some(i64::from(span.start.line)),
-            Some(i64::from(span.start.column)),
-            Some(i64::from(span.end.line)),
-            Some(i64::from(span.end.column)),
-        ),
+        SpanAvailability::Present(span) => {
+            match (i64::try_from(span.start_byte), i64::try_from(span.end_byte)) {
+                (Ok(start_byte), Ok(end_byte)) => (
+                    Some(start_byte),
+                    Some(end_byte),
+                    Some(i64::from(span.start.line)),
+                    Some(i64::from(span.start.column)),
+                    Some(i64::from(span.end.line)),
+                    Some(i64::from(span.end.column)),
+                ),
+                _ => {
+                    tracing::warn!(
+                        key = %item.key,
+                        "evidence span byte offset exceeds i64::MAX; stored as unavailable"
+                    );
+                    span_availability = "NormalizerUnavailable";
+                    (None, None, None, None, None, None)
+                }
+            }
+        }
         _ => (None, None, None, None, None, None),
     };
     EvidenceRow {
         key: item.key.clone(),
         kind: kind_text(&item.kind),
         origin: origin_text(&item.origin),
-        span_availability: span_availability_text(&item.span),
+        span_availability,
         start_byte,
         end_byte,
         start_line,
@@ -112,6 +124,31 @@ mod tests {
         assert_eq!(row.span_availability, "Present");
         assert_eq!(row.start_byte, Some(0));
         assert_eq!(row.end_byte, Some(3));
+    }
+
+    #[test]
+    fn a_span_past_i64_max_is_stored_unavailable_not_clamped() {
+        let item = EvidenceItem {
+            key: "symbol:1".into(),
+            kind: EvidenceKind::Symbol,
+            origin: EvidenceOrigin::PackSymbol,
+            span: SpanAvailability::Present(
+                Span::new(
+                    0,
+                    u64::MAX,
+                    Position { line: 0, column: 0 },
+                    Position { line: 0, column: 3 },
+                )
+                .expect("valid span"),
+            ),
+            payload: serde_json::json!({"name": "x"}),
+        };
+
+        let row = to_row(&item);
+
+        assert_eq!(row.span_availability, "NormalizerUnavailable");
+        assert_eq!(row.start_byte, None);
+        assert_eq!(row.end_byte, None);
     }
 
     #[test]

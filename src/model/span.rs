@@ -16,12 +16,17 @@ pub struct Position {
     pub column: u32,
 }
 
-/// A line or column past `u32::MAX` is not a real source position;
-/// saturating is a documented choice, not a silent truncation risk. Shared
-/// by every caller that converts a parser's `usize` position into ours.
+/// A line or column past `u32::MAX` is not a real source position. The clamp
+/// is unreachable for any file the profiles admit (`max_file_bytes` is at most
+/// 1 GiB, so no line or column count reaches 2^32), and it is logged if it
+/// ever happens. Shared by every caller that converts a parser's `usize`
+/// position into ours.
 #[must_use]
 pub fn saturating_u32(value: usize) -> u32 {
-    u32::try_from(value).unwrap_or(u32::MAX)
+    u32::try_from(value).unwrap_or_else(|error| {
+        tracing::warn!(value, %error, "source position exceeds u32::MAX; clamped");
+        u32::MAX
+    })
 }
 
 /// Converts a Tree-sitter byte offset into the character offset from the
@@ -211,10 +216,12 @@ impl Span {
         })
     }
 
-    /// Length of the span in bytes.
+    /// Length of the span in bytes, or `None` when `end_byte` precedes
+    /// `start_byte` (possible for a deserialized `Span`, which bypasses
+    /// [`Span::new`]).
     #[must_use]
-    pub fn byte_len(self) -> u64 {
-        self.end_byte - self.start_byte
+    pub fn byte_len(self) -> Option<u64> {
+        self.end_byte.checked_sub(self.start_byte)
     }
 }
 

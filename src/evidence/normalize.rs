@@ -5,10 +5,10 @@ use crate::model::{
 };
 use serde_json::json;
 use tree_sitter_language_pack::{
-    DiagnosticSeverity, Error as PackError, ProcessConfig, Span as PackSpan, SymbolKind,
-    get_parser, process,
+    DiagnosticSeverity, Error as PackError, ProcessConfig, Span as PackSpan, SymbolKind, process,
 };
 
+use super::TextRangeError;
 use super::normalize_builders::{
     comment_item, diagnostic_item, docstring_item, export_item, flatten_structure, import_item,
     symbol_item,
@@ -94,26 +94,20 @@ pub fn extract(language: &str, source: &str) -> Result<(Vec<EvidenceItem>, bool)
 
 /// Parses `source` once and runs both the variable-binding walker and
 /// (when `pack_imports_was_empty`) the generic import walker on the
-/// same `Tree`. Returns an empty `Vec` when `language` has no parser
-/// or the source doesn't parse — same contract as the two individual
-/// extractors this replaces, so callers see the same emptiness on the
-/// same failure modes.
-/// Returns the items and whether any walker stopped early at
-/// [`crate::evidence::MAX_WALK_DEPTH`]. The flag is the whole reason this
-/// returns a pair: a depth-capped walk is a truncated extraction, and a
-/// caller that cannot tell it apart from a complete one would claim
-/// completeness it does not have.
+/// same `Tree`. Returns the items and whether the extraction is truncated:
+/// a walker stopped early at [`crate::evidence::MAX_WALK_DEPTH`], a node
+/// range did not slice the source, or `language` has no parser or the source
+/// did not parse (then no items at all). The flag is the whole reason this
+/// returns a pair: a truncated extraction that a caller cannot tell apart
+/// from a complete one would claim completeness it does not have.
 fn extract_extra_walkers(
     language: &str,
     source: &str,
     lines: &LineIndex<'_>,
     pack_imports_was_empty: bool,
 ) -> (Vec<EvidenceItem>, bool) {
-    let Ok(mut parser) = get_parser(language) else {
-        return (Vec::new(), false);
-    };
-    let Some(tree) = parser.parse(source) else {
-        return (Vec::new(), false);
+    let Some(tree) = super::parse_tree(language, source) else {
+        return (Vec::new(), true);
     };
     let root = tree.root_node();
 
@@ -180,7 +174,16 @@ fn walk_bindings(
         return true;
     }
     let kind = node.kind();
-    if let Some(name) = identifier_name(node, source) {
+    let mut capped = false;
+    let name = match identifier_name(node, source) {
+        Ok(name) => name,
+        Err(error) => {
+            tracing::warn!(%error, "binding name skipped; extraction is partial");
+            capped = true;
+            None
+        }
+    };
+    if let Some(name) = name {
         let (sym_kind, origin_kind) = if is_field_declaration(&kind) {
             (SymbolKind::Other("Field".to_owned()), "field")
         } else if is_variable_binding(&kind) {
@@ -191,7 +194,6 @@ fn walk_bindings(
             }
         } else {
             // Not a binding we care about — still recurse in case a child is.
-            let mut capped = false;
             for child in named_children(node) {
                 capped |= walk_bindings(&child, source, lines, items, counter, depth + 1);
             }
@@ -215,7 +217,6 @@ fn walk_bindings(
     }
     // Recurse into children regardless — a function body contains let
     // bindings, a struct body contains field declarations, etc.
-    let mut capped = false;
     for child in named_children(node) {
         capped |= walk_bindings(&child, source, lines, items, counter, depth + 1);
     }
@@ -239,10 +240,15 @@ fn walk_bindings(
 /// identifier-kind descendant — for the probed grammars (rust, go, c,
 /// cpp, csharp, java, ocaml, swift, kotlin, js/ts) the member name
 /// precedes the type, so this yields the name, not the type.
-fn identifier_name(node: &tree_sitter_language_pack::Node, source: &str) -> Option<String> {
+fn identifier_name(
+    node: &tree_sitter_language_pack::Node,
+    source: &str,
+) -> Result<Option<String>, TextRangeError> {
     for child in named_children(node) {
         if is_identifier_kind(&child.kind()) {
-            return Some(source[child.start_byte()..child.end_byte()].to_owned());
+            return Ok(Some(
+                super::node_text(source, child.start_byte(), child.end_byte())?.to_owned(),
+            ));
         }
     }
     first_identifier_descendant(node, source, 0)
@@ -257,21 +263,23 @@ fn first_identifier_descendant(
     node: &tree_sitter_language_pack::Node,
     source: &str,
     depth: u8,
-) -> Option<String> {
+) -> Result<Option<String>, TextRangeError> {
     if depth >= 3 {
-        return None;
+        return Ok(None);
     }
     for child in named_children(node) {
         if is_identifier_kind(&child.kind()) {
-            return Some(source[child.start_byte()..child.end_byte()].to_owned());
+            return Ok(Some(
+                super::node_text(source, child.start_byte(), child.end_byte())?.to_owned(),
+            ));
         }
     }
     for child in named_children(node) {
-        if let Some(name) = first_identifier_descendant(&child, source, depth + 1) {
-            return Some(name);
+        if let Some(name) = first_identifier_descendant(&child, source, depth + 1)? {
+            return Ok(Some(name));
         }
     }
-    None
+    Ok(None)
 }
 
 /// Node kinds that name a *binding or member*. Deliberately excludes

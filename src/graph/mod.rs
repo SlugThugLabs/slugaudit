@@ -48,8 +48,7 @@ pub struct ResolvedEdge {
 /// because it couldn't be parsed or resolved; it becomes `"Unresolved"`
 /// instead, preserving the raw text for the AI to inspect.
 #[must_use]
-#[allow(clippy::implicit_hasher)]
-pub fn resolve_imports(
+pub(crate) fn resolve_imports(
     language: &str,
     importing_relative_path: &str,
     import_sources: &[String],

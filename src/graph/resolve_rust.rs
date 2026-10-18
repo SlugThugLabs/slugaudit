@@ -61,11 +61,12 @@ impl LanguageResolver for RustResolver {
     }
 }
 
+/// The file stem, or the empty string for a path with none (`..`, `/`): such
+/// a path owns no module, which is the correct answer, not a lost error.
 fn file_stem(relative_path: &str) -> String {
     Path::new(relative_path)
         .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_default()
+        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned())
 }
 
 /// The directory that a Rust file's *own* module owns — i.e. where its

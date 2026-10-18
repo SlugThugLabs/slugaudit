@@ -37,6 +37,44 @@ pub(super) fn span_unavailable(
     }
 }
 
+/// A node byte range that does not slice the source: it is out of bounds or
+/// lands inside a UTF-8 code point. A well-formed parse never produces one,
+/// so seeing it means a grammar or scanner defect; callers report the
+/// extraction as truncated instead of panicking.
+#[derive(Debug, thiserror::Error)]
+#[error("node byte range {start}..{end} does not slice the source text")]
+pub(super) struct TextRangeError {
+    start: usize,
+    end: usize,
+}
+
+/// Slices `source[start..end]` without panicking.
+pub(super) fn node_text(source: &str, start: usize, end: usize) -> Result<&str, TextRangeError> {
+    source.get(start..end).ok_or(TextRangeError { start, end })
+}
+
+/// Parses `source` as `language`. A parser that cannot be built or a parse
+/// that yields no tree is logged once and returned as `None`; the caller
+/// must then report its extraction as truncated (`ExtractionCompleteness::
+/// Partial`), never as complete.
+pub(super) fn parse_tree(language: &str, source: &str) -> Option<tree_sitter_language_pack::Tree> {
+    let mut parser = match tree_sitter_language_pack::get_parser(language) {
+        Ok(parser) => parser,
+        Err(error) => {
+            tracing::warn!(language, %error, "evidence walker could not build a parser; extraction is partial");
+            return None;
+        }
+    };
+    let tree = parser.parse(source);
+    if tree.is_none() {
+        tracing::warn!(
+            language,
+            "evidence walker parse produced no tree; extraction is partial"
+        );
+    }
+    tree
+}
+
 pub use normalize::extract;
 
 pub use sql::{EvidenceRow, to_row};
@@ -57,5 +95,24 @@ mod tests {
             reason.contains("span end byte precedes start byte"),
             "{reason}"
         );
+    }
+
+    #[test]
+    fn a_node_range_inside_a_code_point_is_an_error_not_a_panic() {
+        let source = "a\u{e9}b";
+
+        assert!(node_text(source, 0, 2).is_err());
+        assert!(node_text(source, 0, 99).is_err());
+        assert_eq!(node_text(source, 1, 3).expect("whole code point"), "\u{e9}");
+    }
+
+    #[test]
+    fn a_parser_that_cannot_be_built_is_logged_and_reported_as_none() {
+        let (tree, logs) = crate::store::test_capture::capture_warns(|| {
+            parse_tree("no-such-language-for-evidence-test", "x")
+        });
+
+        assert!(tree.is_none());
+        assert!(logs.contains("could not build a parser"), "{logs}");
     }
 }

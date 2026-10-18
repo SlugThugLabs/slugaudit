@@ -324,3 +324,17 @@ fn binding_extraction_gracefully_degrades_for_an_unsupported_language() {
         .count();
     assert_eq!(binding_count, 0, "no bindings to extract here");
 }
+
+#[test]
+fn a_walker_parser_failure_marks_the_extraction_truncated() {
+    let lines = LineIndex::new("x");
+
+    let (items, truncated) =
+        extract_extra_walkers("no-such-language-for-walker-test", "x", &lines, true);
+
+    assert!(items.is_empty());
+    assert!(
+        truncated,
+        "a failed parser setup must not read as a complete extraction"
+    );
+}

@@ -72,14 +72,22 @@ pub(super) fn reject_network_filesystem(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// The mount table is matched as text, so a non-UTF-8 database path cannot be
+/// checked; the check fails closed rather than reporting the path as local.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn non_utf8_path_error() -> StoreError {
+    StoreError::NetworkFilesystemCheck(std::io::Error::other(
+        "the database path is not valid UTF-8, so its filesystem cannot be inspected",
+    ))
+}
+
 #[cfg(target_os = "linux")]
 fn is_on_network_filesystem(path: &Path) -> Result<bool, StoreError> {
     let content = std::fs::read_to_string("/proc/self/mountinfo")
         .map_err(StoreError::NetworkFilesystemCheck)?;
 
-    let path_str = match path.to_str() {
-        Some(p) => p,
-        None => return Ok(false),
+    let Some(path_str) = path.to_str() else {
+        return Err(non_utf8_path_error());
     };
 
     Ok(is_mountpoint_network_filesystem(&content, path_str))
@@ -169,7 +177,20 @@ fn is_mountpoint_network_filesystem(mountinfo: &str, path_str: &str) -> bool {
     };
     matches!(
         fs_type,
-        "nfs" | "nfs4" | "cifs" | "smb" | "smb3" | "ncp" | "ncpfs" | "fusectl"
+        "nfs"
+            | "nfs4"
+            | "cifs"
+            | "smb"
+            | "smb3"
+            | "ncp"
+            | "ncpfs"
+            | "fuse.sshfs"
+            | "ceph"
+            | "fuse.ceph"
+            | "glusterfs"
+            | "fuse.glusterfs"
+            | "lustre"
+            | "afs"
     )
 }
 
@@ -190,7 +211,7 @@ fn is_on_network_filesystem(path: &Path) -> Result<bool, StoreError> {
     let table = String::from_utf8_lossy(&output.stdout);
     let resolved = resolve_existing_ancestor(path);
     let Some(path_str) = resolved.to_str() else {
-        return Ok(false);
+        return Err(non_utf8_path_error());
     };
     Ok(is_mount_table_network_filesystem(&table, path_str))
 }

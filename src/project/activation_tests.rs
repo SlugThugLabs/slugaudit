@@ -236,8 +236,8 @@ fn a_marker_toggled_concurrently_never_panics_or_returns_a_partial_state() {
     let stop_toggler = Arc::clone(&stop);
     let toggler = std::thread::spawn(move || {
         while !stop_toggler.load(Ordering::Relaxed) {
-            let _ = fs::remove_dir_all(&activation_dir);
-            let _ = fs::create_dir_all(&activation_dir);
+            fs::remove_dir_all(&activation_dir).expect("toggler removes the marker");
+            fs::create_dir_all(&activation_dir).expect("toggler recreates the marker");
         }
     });
 
@@ -420,4 +420,23 @@ fn an_unreadable_gitignore_is_reported_rather_than_fatal() {
         }
         other => panic!("a file that cannot be read must report NotWritten, got {other:?}"),
     }
+}
+
+fn overlong_path() -> PathBuf {
+    Path::new("/tmp").join("a".repeat(300))
+}
+
+#[test]
+fn an_uninspectable_symlink_guard_path_fails_the_activation_check_closed() {
+    let result = validated_activation_dir(&overlong_path());
+
+    assert!(matches!(result, Err(ActivationError::Io(_))), "{result:?}");
+}
+
+#[test]
+fn an_unstattable_activation_directory_is_an_error_not_absent() {
+    let missing = tempfile::tempdir().expect("temp dir").path().join("gone");
+
+    assert!(!is_existing_dir(&missing).expect("a missing path is absent"));
+    assert!(is_existing_dir(&overlong_path()).is_err());
 }

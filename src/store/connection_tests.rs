@@ -659,3 +659,24 @@ fn the_line_functions_run_on_both_guarded_connections_while_the_guard_still_deni
         );
     }
 }
+
+#[test]
+fn a_connection_that_cannot_enter_wal_mode_fails_configuration() {
+    let connection = rusqlite::Connection::open_in_memory().expect("in-memory db");
+
+    let result = super::configure(&connection);
+
+    assert!(matches!(&result, Err(StoreError::WalUnavailable { granted }) if granted == "memory"));
+}
+
+#[test]
+fn an_uninspectable_database_path_fails_instead_of_skipping_the_symlink_guard() {
+    let path = std::path::Path::new("/tmp")
+        .join("a".repeat(300))
+        .join("project.db");
+
+    assert!(matches!(
+        super::reject_symlink(&path),
+        Err(StoreError::Inspect(_))
+    ));
+}
