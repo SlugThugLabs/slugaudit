@@ -1292,3 +1292,23 @@ Still open from this round:
   owner decision pending.
 - `tests/stdio_protocol.rs` `Drop` still has `let _ = child.kill()/wait()`. Not started.
 - New tests were not yet proven to fail on the old code; a verification run is in progress (2026-10-18).
+
+### Wave 1 critical fixes (2026-10-18)
+- **More than 32,766 files could not finish a first index — resolved (`dbc2c72`).** Path sets bind one
+  JSON array (`json_each`) instead of one variable per path; end-to-end test publishes 32,800 files.
+- **Nested-macro / deep-tree stack overflow — resolved (`5f066bc`).** Every evidence walker is an explicit
+  heap-stack loop; worst case 31 KiB debug / 15 KiB release on 20,000-deep inputs. Still open: the
+  parser pack's own JSON recursion uses ~1.6 MiB of the 2 MiB stack in debug (455 KiB release); set an
+  explicit stack size where extraction threads are spawned (`server_runner.rs`, `sync/sample_batch.rs`).
+  Not started.
+- **Parser download/dlopen triggered by agent input — owner decision pending.** The pack's default
+  features download and `dlopen` grammars at runtime; `structure`'s `language` string and detected file
+  types trigger it. A compile-in fix (28 static grammars, downloads off) is parked on branch
+  `parser-static-compile` (`5737053`), NOT merged: the owner prefers on-demand downloads. Proposed
+  instead: an explicit `slugaudit grammars add <lang>` command into a SlugAudit-owned folder, the server
+  only loads from it and never downloads, agent strings cannot trigger anything, every install logged.
+- Test-strength check of the R1/R2/R3 round (2026-10-18): 29 new tests fail on old code, 52 cannot
+  compile there, 3 pass on old code. `deferred_events_are_applied_in_arrival_order_before_a_later_live_event`
+  does not pin the watcher fix (needs a held event on a different path) and
+  `a_well_formed_client_config_with_the_entry_is_registered_silently` needs a log-capture assertion.
+  Not started.
