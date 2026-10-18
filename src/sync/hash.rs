@@ -48,13 +48,21 @@ pub(super) const STAT_IDENTITY_ALGORITHM: &str = "stat-identity";
 #[must_use]
 pub(super) fn stat_identity(
     relative_path: &str,
-    byte_len: u64,
+    byte_len: Option<u64>,
     modified_unix_seconds: Option<i64>,
 ) -> SourceIdentity {
     let mut hasher = blake3::Hasher::new();
     hasher.update(relative_path.as_bytes());
     hasher.update(&[0]);
-    hasher.update(&byte_len.to_le_bytes());
+    match byte_len {
+        Some(length) => {
+            hasher.update(b"l");
+            hasher.update(&length.to_le_bytes());
+        }
+        None => {
+            hasher.update(b"u");
+        }
+    }
     match modified_unix_seconds {
         Some(seconds) => {
             hasher.update(b"m");
@@ -146,7 +154,7 @@ mod tests {
     /// skipped file would look unchanged after any edit that kept its path.
     #[test]
     fn stat_identity_is_tagged_and_tracks_size_and_mtime() {
-        let baseline = stat_identity("a.rs", 10, Some(100));
+        let baseline = stat_identity("a.rs", Some(10), Some(100));
         assert_eq!(baseline.hash_algorithm, STAT_IDENTITY_ALGORITHM);
         assert_ne!(
             baseline.hash_algorithm, "blake3-v1",
@@ -154,21 +162,26 @@ mod tests {
         );
         assert_eq!(
             baseline.content_hash,
-            stat_identity("a.rs", 10, Some(100)).content_hash,
+            stat_identity("a.rs", Some(10), Some(100)).content_hash,
             "identical stat state must hash identically"
         );
         assert_ne!(
             baseline.content_hash,
-            stat_identity("a.rs", 11, Some(100)).content_hash
+            stat_identity("a.rs", Some(11), Some(100)).content_hash
         );
         assert_ne!(
             baseline.content_hash,
-            stat_identity("a.rs", 10, Some(101)).content_hash
+            stat_identity("a.rs", Some(10), Some(101)).content_hash
         );
         assert_ne!(
             baseline.content_hash,
-            stat_identity("a.rs", 10, None).content_hash,
+            stat_identity("a.rs", Some(10), None).content_hash,
             "a missing mtime must not collide with any recorded one"
+        );
+        assert_ne!(
+            stat_identity("a.rs", Some(0), Some(100)).content_hash,
+            stat_identity("a.rs", None, Some(100)).content_hash,
+            "an unknown size must not collide with a recorded empty file"
         );
     }
 }

@@ -105,7 +105,7 @@ pub(super) fn sweep(
         let byte_len = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
         let unchanged_match = matches!(
             stored.get(&relative),
-            Some((stored_mtime, stored_len)) if *stored_mtime == mtime && *stored_len == byte_len
+            Some((stored_mtime, Some(stored_len))) if *stored_mtime == mtime && *stored_len == byte_len
         );
         if unchanged_match {
             unchanged += 1;
@@ -129,18 +129,23 @@ pub(super) fn sweep(
     })
 }
 
+/// Stored `(mtime, byte_len)`; `byte_len` is `None` for an unknown size.
+type StoredSignature = (Option<i64>, Option<i64>);
+
 /// `(mtime, byte_len)` per stored path — the two signals a stat can
-/// disprove without reading the file.
+/// disprove without reading the file. A NULL `byte_len` (unknown size, a
+/// `stat_failed` skipped row) never equals a real size, so that path is
+/// always a candidate for re-examination.
 fn stored_signatures(
     connection: &Connection,
-) -> Result<HashMap<String, (Option<i64>, i64)>, rusqlite::Error> {
+) -> Result<HashMap<String, StoredSignature>, rusqlite::Error> {
     let mut statement =
         connection.prepare("SELECT path, modified_unix_seconds, byte_len FROM files")?;
     let stored = statement
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                (row.get::<_, Option<i64>>(1)?, row.get::<_, i64>(2)?),
+                (row.get::<_, Option<i64>>(1)?, row.get::<_, Option<i64>>(2)?),
             ))
         })?
         .collect::<Result<_, _>>()?;

@@ -37,8 +37,9 @@ pub struct FileClassCount {
 /// Row count for one recorded skip reason.
 pub struct SkipReasonCount {
     /// A short stable code from `files.skip_reason`: `oversize` (over the
-    /// per-file import ceiling) or `unreadable` (the read failed). Empty when
-    /// a skipped row carries no recorded reason.
+    /// per-file import ceiling), `unreadable` (the read failed) or
+    /// `stat_failed` (the stat failed, so `files.byte_len` is NULL: size
+    /// unknown, not 0). Empty when a skipped row carries no recorded reason.
     pub reason: String,
     pub count: i64,
 }

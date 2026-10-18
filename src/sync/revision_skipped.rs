@@ -21,6 +21,10 @@ pub(super) const SKIP_REASON_OVERSIZE: &str = "oversize";
 /// `files.skip_reason` for a file discovery could not read (the sniff/stat
 /// failed), so its content was never sampled.
 pub(super) const SKIP_REASON_UNREADABLE: &str = "unreadable";
+/// `files.skip_reason` for a skipped file whose `stat` failed (deleted or
+/// renamed mid-sync, permissions changed, broken symlink), so its size is
+/// unknown: `files.byte_len` is NULL, never a fake 0.
+pub(super) const SKIP_REASON_STAT_FAILED: &str = "stat_failed";
 
 /// One discovered-but-not-indexed file's existence row: enough to say the
 /// file is in the project, why it was not indexed, and a stat-derived
@@ -28,11 +32,13 @@ pub(super) const SKIP_REASON_UNREADABLE: &str = "unreadable";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SkippedRecord {
     pub(super) relative_path: String,
-    /// A [`SKIP_REASON_OVERSIZE`]/[`SKIP_REASON_UNREADABLE`] code.
+    /// A [`SKIP_REASON_OVERSIZE`]/[`SKIP_REASON_UNREADABLE`]/
+    /// [`SKIP_REASON_STAT_FAILED`] code.
     pub(super) reason: String,
     /// `hash::stat_identity` — never a content hash.
     pub(super) identity: SourceIdentity,
-    pub(super) byte_len: u64,
+    /// `None` when the stat failed: stored as NULL (unknown), not 0.
+    pub(super) byte_len: Option<u64>,
     pub(super) modified_unix_seconds: Option<i64>,
 }
 

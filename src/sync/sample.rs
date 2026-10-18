@@ -3,7 +3,7 @@ use super::analyze::analyze;
 use super::discovery::{DiscoveredFile, FileKind};
 use super::hash;
 use super::revision::FileRecord;
-use super::revision_skipped::SkippedRecord;
+use super::revision_skipped::{SKIP_REASON_STAT_FAILED, SkippedRecord};
 use crate::model::{
     EvidenceItem, EvidenceKind, EvidenceOrigin, ExtractionCompleteness, ResourceLimits,
     SourceIdentity, SpanAvailability,
@@ -116,26 +116,31 @@ pub(super) fn sample_file(
 /// The existence row for a file discovery or sampling deliberately did not
 /// index. Never reads the file: the identity is stat-derived
 /// (`hash::stat_identity`) precisely so that skipping keeps its no-read
-/// cost, and a failed stat (the file vanished, or was never readable)
-/// records zero bytes and no mtime rather than failing the publish. That
-/// zero is a placeholder, not a measurement (`files.byte_len` is `NOT NULL`
-/// and `reason` is a coded value, so neither can carry "unknown"); the
-/// failure is therefore logged with its source error.
+/// cost. A failed stat (the file vanished, was never readable, or is a
+/// broken symlink) records an unknown size (`None`, stored as NULL, never a
+/// fake 0), no mtime, and the distinct [`SKIP_REASON_STAT_FAILED`] reason
+/// instead of `reason`, rather than failing the publish; the failure is
+/// logged once here.
 #[must_use]
 pub(super) fn skipped_record(
     relative_path: &str,
     absolute_path: &Path,
     reason: &str,
 ) -> SkippedRecord {
-    let (byte_len, modified_unix_seconds) = match std::fs::metadata(absolute_path) {
-        Ok(metadata) => (metadata.len(), util::mtime_unix_seconds(&metadata)),
+    let (byte_len, modified_unix_seconds, reason) = match std::fs::metadata(absolute_path) {
+        Ok(metadata) => (
+            Some(metadata.len()),
+            util::mtime_unix_seconds(&metadata),
+            reason,
+        ),
         Err(error) => {
             tracing::warn!(
-                path = %util::redacted_path(absolute_path),
+                path_id = %util::redacted_path(absolute_path),
+                requested_reason = reason,
                 error = %error,
-                "could not stat a skipped file; recording 0 bytes and no mtime"
+                "stat failed for a skipped file; recording its size as unknown"
             );
-            (0, None)
+            (None, None, SKIP_REASON_STAT_FAILED)
         }
     };
     SkippedRecord {

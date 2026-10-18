@@ -45,11 +45,12 @@ CREATE TABLE IF NOT EXISTS files (
     -- written by `sync::revision_skipped::upsert_skipped_file`.
     file_kind TEXT NOT NULL DEFAULT 'indexed'
         CHECK (file_kind IN ('indexed', 'binary', 'skipped')),
-    -- Why a 'skipped' row was not indexed, as one of two short stable codes
+    -- Why a 'skipped' row was not indexed, as one of a few short stable codes
     -- (`sync::revision_skipped::SKIP_REASON_*`) rather than the per-file
     -- human message — which embeds each file's own path and size and so
     -- could never group. 'oversize' = over the per-file import ceiling;
-    -- 'unreadable' = the read failed. NULL for every other kind: those rows
+    -- 'unreadable' = the read failed; 'stat_failed' = the stat failed so the
+    -- size is unknown (byte_len NULL). NULL for every other kind: those rows
     -- were read, so nothing was skipped.
     skip_reason TEXT,
     -- Where the file came from, as a fixed set rather than a judgment:
@@ -80,7 +81,12 @@ CREATE TABLE IF NOT EXISTS files (
     -- changes without changing its size or mtime is not detected.
     content_hash TEXT NOT NULL,
     hash_algorithm TEXT NOT NULL,
-    byte_len INTEGER NOT NULL,
+    -- NULL only for a 'skipped' row whose stat failed (skip_reason =
+    -- 'stat_failed'): the size is unknown, which is not the same as a real
+    -- empty file's 0. Every other row carries the real size. A SUM over
+    -- this column ignores unknowns, so pair it with count(*) WHERE
+    -- byte_len IS NULL.
+    byte_len INTEGER,
     modified_unix_seconds INTEGER,
     language TEXT,
     language_detected INTEGER NOT NULL DEFAULT 0 CHECK (language_detected IN (0, 1)),

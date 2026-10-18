@@ -258,7 +258,7 @@ is derived from the row id (`rev-{id}`), so it changes on every publish.
 A `files` row means "this file is in the project", not "this file was read".
 Every discovered file gets one: a file discovery or sampling skipped (oversize,
 unreadable) is written as `file_kind = 'skipped'` with a `skip_reason` code
-(`oversize` / `unreadable`), `content` NULL, `extraction_completeness =
+(`oversize` / `unreadable` / `stat_failed`), `content` NULL, `extraction_completeness =
 'Unavailable'` and `parse_outcome = 'NotAttempted'` — so `count(*) FROM files`
 counts it instead of losing it, and `report.completeness` states how many rows
 are skipped and why. Its identity is stat-derived (`hash::stat_identity`:
@@ -267,7 +267,12 @@ because reading the file to hash it would cost exactly what skipping avoids;
 the accepted consequence is the stat sweep's own documented blind spot — a
 skipped file edited to the same size within the same mtime second is not
 detected. A path with no representable text form (a non-UTF-8 name) still has
-no row and is visible only in the publish report and the server log.
+no row and is visible only in the publish report and the server log. A
+skipped file whose `stat` fails (deleted mid-sync, permissions changed, broken
+symlink) is recorded with `skip_reason = 'stat_failed'` and `files.byte_len`
+NULL: NULL means the size is unknown, and only a real empty file stores 0. A
+sum over `byte_len` ignores unknown sizes, so pair it with
+`count(*) WHERE byte_len IS NULL`.
 
 Every row also carries `file_class` — `authored`, `generated`, or `vendored` —
 derived from its path alone by `sync::classify::classify`, never from content,
@@ -417,7 +422,7 @@ a second database file. This is the engine-level half of the invariant that
 correctness comes from the connection, not from inspecting query text.
 
 **Schema versioning is discard-and-rebuild.** `store/migrations.rs` writes
-`CURRENT_SCHEMA_VERSION` (currently `6`) to `PRAGMA user_version`. A database
+`CURRENT_SCHEMA_VERSION` (currently `7`) to `PRAGMA user_version`. A database
 whose version is neither fresh (`0`) nor current resolves as
 `UnsupportedVersion`, which `is_corruption()` reports as corruption; the sync
 layer discards the file and rebuilds it from project source. There is no

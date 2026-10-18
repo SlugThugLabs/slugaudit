@@ -436,3 +436,21 @@ fn healthy_sweep_apply_resolves_an_import_to_a_discovered_but_skipped_file() {
         "the apply must resolve imports against the sweep's on_disk, not indexed rows alone"
     );
 }
+
+#[test]
+fn a_stored_unknown_size_is_always_nominated_for_re_examination() {
+    let (project, _db_dir, connection, _revision) = setup_project();
+    store_current_stats(&connection, project.path(), &["a.rs", "b.rs"]);
+    connection
+        .execute("UPDATE files SET byte_len = NULL WHERE path = 'a.rs'", [])
+        .expect("store an unknown size");
+
+    let report = sweep_report(&connection, project.path());
+
+    assert!(
+        report.candidates.contains("a.rs"),
+        "NULL byte_len must never match a real size: {:?}",
+        report.candidates
+    );
+    assert!(!report.candidates.contains("b.rs"));
+}

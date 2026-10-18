@@ -35,10 +35,21 @@ const EXCLUDED_COMPONENT: &str = ".git";
 /// discovery. Crate-visible because the watch-scope walk filters
 /// directories with it.
 pub(crate) fn is_excluded_dir(relative: &str) -> bool {
-    relative.starts_with(ACTIVATION_RELATIVE_DIR)
+    is_activation_dir_or_descendant(relative)
         || relative
             .split(['/', '\\'])
             .any(|component| component == EXCLUDED_COMPONENT)
+}
+
+/// True for exactly the runtime data directory and its descendants. Matches
+/// whole path components, so a sibling that merely shares the textual prefix
+/// (`.planning/slugaudit-notes/`, `.planning/slugauditx`) stays indexed.
+/// Accepts both `/` and `\` separators, like the `.git` check.
+fn is_activation_dir_or_descendant(relative: &str) -> bool {
+    let mut components = relative.split(['/', '\\']);
+    ACTIVATION_RELATIVE_DIR
+        .split('/')
+        .all(|expected| components.next() == Some(expected))
 }
 
 /// True if the file name (last component) is scratch/editor junk that is

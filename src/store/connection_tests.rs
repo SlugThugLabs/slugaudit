@@ -506,6 +506,36 @@ fn evidence_kind_check_rejects_an_unmodeled_kind() {
     );
 }
 
+/// `files.byte_len` is nullable: NULL is an unknown size (a skipped file
+/// whose stat failed), and a real empty file's 0 must stay distinguishable
+/// from it.
+#[test]
+fn a_null_byte_len_is_storable_and_distinct_from_an_empty_file() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let connection = open_read_write(&directory.path().join("project.db")).expect("open");
+    let file_id = insert_a_file_row(&connection);
+    let size = |connection: &rusqlite::Connection| -> Option<i64> {
+        connection
+            .query_row(
+                "SELECT byte_len FROM files WHERE id = ?1",
+                [file_id],
+                |row| row.get(0),
+            )
+            .expect("read the size")
+    };
+    assert_eq!(size(&connection), Some(0), "an empty file stores 0");
+
+    connection
+        .execute(
+            "UPDATE files SET byte_len = NULL, file_kind = 'skipped', \
+             skip_reason = 'stat_failed' WHERE id = ?1",
+            [file_id],
+        )
+        .expect("a skipped row may carry an unknown size");
+
+    assert_eq!(size(&connection), None, "an unknown size stays NULL");
+}
+
 /// Every kind `kind_text` can produce must be accepted, and the CHECK must
 /// list those strings and no others — the SQL mirror has to be exact in both
 /// directions. The insert set is driven through `evidence::to_row`, the one

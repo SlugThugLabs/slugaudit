@@ -391,19 +391,31 @@ fn parallel_sampling_emits_one_progress_event_per_file() {
 }
 
 #[test]
-fn a_skipped_record_for_an_unstattable_file_warns_with_the_source_error() {
-    let directory = tempfile::tempdir().expect("temp dir");
-    let missing = directory.path().join("vanished-skip-probe.bin");
+fn a_failed_stat_records_an_unknown_size_and_the_stat_failed_reason() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let vanished = dir.path().join("vanished.rs");
 
-    let (record, logs) = crate::store::test_capture::capture_warns(|| {
-        skipped_record("vanished-skip-probe.bin", &missing, "oversize")
-    });
+    let record = skipped_record("vanished.rs", &vanished, "oversize");
 
-    assert_eq!(record.byte_len, 0, "the placeholder size is unchanged");
+    assert_eq!(record.byte_len, None, "an unknown size is not 0");
     assert_eq!(record.modified_unix_seconds, None);
-    assert!(
-        logs.contains("could not stat a skipped file") && logs.contains("No such file"),
-        "the stat failure and its source error must be logged:\n{logs}"
+    assert_eq!(record.reason, "stat_failed");
+}
+
+#[test]
+fn a_real_empty_skipped_file_records_zero_bytes_and_keeps_its_reason() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let empty = dir.path().join("empty.rs");
+    std::fs::write(&empty, b"").expect("write empty file");
+
+    let record = skipped_record("empty.rs", &empty, "unreadable");
+
+    assert_eq!(record.byte_len, Some(0));
+    assert_eq!(record.reason, "unreadable");
+    let unknown = skipped_record("empty.rs", &dir.path().join("gone.rs"), "unreadable");
+    assert_ne!(
+        record.identity.content_hash, unknown.identity.content_hash,
+        "empty and unknown-size files must not share an identity"
     );
 }
 
@@ -418,13 +430,13 @@ fn a_skipped_record_for_a_statable_file_does_not_warn() {
         skipped_record("present-skip-probe.bin", &present, "oversize")
     });
 
-    assert_eq!(record.byte_len, 5);
+    assert_eq!(record.byte_len, Some(5));
     assert!(
         logs.contains("control-line-probe-skipped-record"),
         "capture liveness control"
     );
     assert!(
-        !logs.contains("could not stat a skipped file"),
+        !logs.contains("stat failed for a skipped file"),
         "a readable file must not warn:\n{logs}"
     );
 }

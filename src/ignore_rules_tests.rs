@@ -223,3 +223,32 @@ fn discovery_parity_rules_and_walker_agree_on_every_file() {
     assert!(indexed.contains(".gitignore"));
     assert!(indexed.contains("sub/.gitignore"));
 }
+
+#[test]
+fn the_runtime_data_directory_and_its_descendants_are_excluded() {
+    for excluded in [
+        ".planning/slugaudit",
+        ".planning/slugaudit/project.db",
+        ".planning/slugaudit/nested/deep.json",
+        ".planning\\slugaudit\\project.db",
+    ] {
+        assert!(is_excluded_path(excluded), "{excluded} must be excluded");
+        assert!(is_excluded_dir(excluded), "{excluded} must be excluded");
+    }
+}
+
+#[test]
+fn a_planning_sibling_sharing_the_runtime_dir_prefix_stays_indexed() {
+    for included in [
+        ".planning/slugaudit-notes/x.md",
+        ".planning/slugaudit-notes",
+        ".planning/slugauditx",
+        ".planning/slugauditfoo/y.md",
+        ".planning/other/z.md",
+        ".planning/PLAN.md",
+        ".planning",
+        "slugaudit/x.md",
+    ] {
+        assert!(!is_excluded_path(included), "{included} must be indexed");
+    }
+}

@@ -52,6 +52,25 @@ fn excludes_the_activation_directory() {
 }
 
 #[test]
+fn indexes_a_planning_directory_that_only_shares_the_activation_prefix() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let root = directory.path();
+    write(root, ".planning/slugaudit/project.db", b"sqlite-bytes");
+    write(root, ".planning/slugaudit-notes/x.md", b"# notes");
+    write(root, ".planning/slugauditx", b"x");
+
+    let (files, _skipped) = discover(root).expect("discover");
+    let paths: Vec<&str> = files
+        .iter()
+        .map(|file| file.relative_path.as_str())
+        .collect();
+    assert_eq!(
+        paths,
+        vec![".planning/slugaudit-notes/x.md", ".planning/slugauditx"]
+    );
+}
+
+#[test]
 fn excludes_git_internals() {
     let directory = tempfile::tempdir().expect("temp dir");
     let root = directory.path();

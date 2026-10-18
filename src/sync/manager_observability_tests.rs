@@ -320,6 +320,36 @@ fn an_incompatible_version_database_is_discarded_and_rebuilt() {
     assert_eq!(synced2.revision_id, "rev-1");
 }
 
+/// A database stamped with the previous schema version (6, before
+/// `files.byte_len` became nullable) must be discarded and rebuilt at the
+/// current version, with no migration code.
+#[test]
+fn a_database_at_the_previous_schema_version_is_rebuilt_at_the_current_one() {
+    let manager = SourceSyncManager::with_watcher();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+    let _synced = sync_project(&manager, &project);
+    let database = project.path().join(".planning/slugaudit/project.db");
+    {
+        let conn = crate::store::open_read_write(&database).expect("open db");
+        conn.pragma_update(
+            None,
+            "user_version",
+            crate::store::CURRENT_SCHEMA_VERSION - 1,
+        )
+        .expect("stamp the previous schema version");
+    }
+
+    let synced = sync_project(&manager, &project);
+
+    let connection = open_db(&project);
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("read user_version");
+    assert_eq!(version, crate::store::CURRENT_SCHEMA_VERSION);
+    assert_eq!(synced.revision_id, "rev-1", "the database was rebuilt");
+}
+
 /// An unopenable database (the db path is a directory) must surface as an
 /// error, never a panic, and never silently publish into nothing.
 #[test]

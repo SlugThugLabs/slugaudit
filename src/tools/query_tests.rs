@@ -61,6 +61,18 @@ fn ask_with_limits(
 }
 
 #[test]
+fn a_null_byte_len_is_returned_as_null_not_zero() {
+    let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
+    let response = ask(
+        &project,
+        "SELECT CAST(NULL AS INTEGER) AS byte_len, 0 AS empty_len FROM files",
+    )
+    .expect("query succeeds");
+    assert!(response.rows[0]["byte_len"].is_null());
+    assert_eq!(response.rows[0]["empty_len"], 0);
+}
+
+#[test]
 fn a_plain_select_returns_real_rows() {
     let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
     let response = ask(&project, "SELECT path, language FROM files").expect("query succeeds");
