@@ -207,3 +207,32 @@ fn a_relative_import_that_stays_inside_the_root_still_resolves() {
 
     assert_eq!(result.to_relative_path.as_deref(), Some("x.ts"));
 }
+
+#[test]
+fn python_double_dot_from_a_root_level_file_is_unresolved() {
+    let known = paths(&["a.py", "bar.py"]);
+
+    let result = resolve_one("python", "a.py", "..bar", &known);
+
+    assert_eq!(result.kind.as_sql_text(), "Unresolved");
+    assert_eq!(result.to_relative_path, None);
+}
+
+#[test]
+fn python_extra_dots_that_climb_past_the_root_from_a_subdirectory_are_unresolved() {
+    let known = paths(&["pkg/a.py", "bar.py"]);
+
+    let result = resolve_one("python", "pkg/a.py", "...bar", &known);
+
+    assert_eq!(result.kind.as_sql_text(), "Unresolved");
+    assert_eq!(result.to_relative_path, None);
+}
+
+#[test]
+fn python_double_dot_from_a_first_level_package_reaches_the_root_module() {
+    let known = paths(&["pkg/a.py", "bar.py"]);
+
+    let result = resolve_one("python", "pkg/a.py", "..bar", &known);
+
+    assert_eq!(result.to_relative_path.as_deref(), Some("bar.py"));
+}

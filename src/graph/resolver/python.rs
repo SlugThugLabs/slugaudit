@@ -49,6 +49,13 @@ pub(crate) fn resolve_python_relative(
     let levels_up = dots.saturating_sub(1);
 
     let mut base_dir = crate::graph::resolve::parent_dir(importing_relative_path);
+    // `parent_dir` of the root is the root, so without this check extra
+    // dots would silently stay at the root and resolve `..bar` from a
+    // root-level file to the in-project `bar.py` (a false edge).
+    let depth = base_dir.split('/').filter(|part| !part.is_empty()).count();
+    if levels_up > depth {
+        return unresolved();
+    }
     for _ in 0..levels_up {
         base_dir = crate::graph::resolve::parent_dir(&base_dir);
     }
