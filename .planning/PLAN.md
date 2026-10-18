@@ -1198,3 +1198,7 @@ maximums; no hand-rolled re-inventions). Rule 1 passes. Findings verified by rea
   to a workspace file with a ~100k-char read-back limit (forum reports only, 2026-08); unknown —
   Windsurf, Antigravity, Claude Desktop, Droid, Amp, Warp. Of 23 registry clients: 13 handle
   large results safely, 4 are risky (Zed, Crush, Amazon Q, Cursor), 6 unknown.
+  Crush confirmed risky (same day): its LLM library `fantasy` v0.45.1 passes tool text verbatim
+  (`agent.go:865-875`), Crush's auto-summarize runs only after a completed step
+  (`internal/agent/agent.go:1105-1120`), and a context-overflow error is returned as a provider
+  error, not compacted and retried (`IsContextTooLarge` has no callers in Crush).
