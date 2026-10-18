@@ -194,10 +194,11 @@ impl Fixture {
         let manager = SourceSyncManager::default();
         let path = path_str(&root);
         // Index once, before fuzzing starts, so the first iteration measures
-        // the tool rather than the initial publish. A failure here is a real
-        // defect in the sync pipeline, but not this target's subject, so it
-        // is not asserted on: the tool calls below would fail the same way.
-        let _ = ensure_synced(&path, &NoopProgressSink, &manager);
+        // the tool rather than the initial publish. A failed fixture sync
+        // would make every fuzz input return an error and the run would pass
+        // green while exercising nothing, so it aborts the fuzz process here.
+        ensure_synced(&path, &NoopProgressSink, &manager)
+            .expect("fixture sync must succeed or the fuzz run exercises nothing");
 
         Self {
             _project: project,

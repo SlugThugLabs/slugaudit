@@ -126,7 +126,9 @@ fn version_consistency_unreadable_file_is_an_error_not_a_verdict() {
     agreeing_fixture(root.path());
     std::fs::remove_file(root.path().join("CHANGELOG.md")).expect("remove fixture");
 
-    assert!(manifests::check(root.path()).is_err());
+    let error = manifests::check(root.path()).expect_err("a missing CHANGELOG.md is an error");
+
+    assert!(error.contains("CHANGELOG.md"), "{error}");
 }
 
 #[test]

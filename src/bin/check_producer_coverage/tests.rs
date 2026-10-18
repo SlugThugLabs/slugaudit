@@ -26,6 +26,20 @@ fn enum_variants_ignore_attributes_and_payloads() {
 }
 
 #[test]
+fn enum_variants_survive_multi_line_payloads() {
+    let source = "pub enum Thing {\n    Alpha,\n    Failed {\n        reason: String,\n    },\n    Pair(\n        String,\n        u8,\n    ),\n    Omega,\n}\n";
+    assert_eq!(
+        scan::enum_variants(source, "Thing"),
+        Some(vec![
+            "Alpha".to_owned(),
+            "Failed".to_owned(),
+            "Pair".to_owned(),
+            "Omega".to_owned()
+        ])
+    );
+}
+
+#[test]
 fn a_braced_value_is_a_producer() {
     let produced =
         scan::producer_variants("let item = Thing { kind: Thing::Alpha, x: 1 };", "Thing");

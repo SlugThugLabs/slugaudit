@@ -92,12 +92,19 @@ mod gate_args_tests {
 
     #[test]
     fn usage_errors_and_help_stop_the_gate_before_it_runs() {
-        let cases: &[&[&str]] = &[&["--root"], &["--record"], &["--help"]];
+        let cases: &[(&[&str], ExitCode)] = &[
+            (&["--root"], ExitCode::from(USAGE_EXIT)),
+            (&["--record"], ExitCode::from(USAGE_EXIT)),
+            (&["--help"], ExitCode::SUCCESS),
+        ];
 
-        for args in cases {
-            assert!(
-                parse_list(args, &mut []).is_err(),
-                "{args:?} must not reach the check"
+        for (args, expected) in cases {
+            let outcome = parse_list(args, &mut []);
+
+            assert_eq!(
+                outcome,
+                Err(*expected),
+                "{args:?} must stop with its own exit code"
             );
         }
     }

@@ -44,19 +44,26 @@ fn main() -> ExitCode {
     // single run (e.g. CI flavor that wants a harder floor); document
     // any raise in `.planning/archive/DECISIONS.md` so the gate stays honest.
     let threshold_str: String = args.next().unwrap_or_else(|| "83".to_string());
-    let threshold: f64 = match threshold_str.parse() {
+    let threshold = match parse_threshold(&threshold_str) {
         Ok(n) => n,
-        Err(err) => {
-            eprintln!("threshold {threshold_str:?} is not a number: {err}");
+        Err(message) => {
+            eprintln!("{message}");
             return ExitCode::from(2);
         }
     };
 
     // Cargo-llvm-cov writes the report to `--output-path=<file>`. Use
     // a stable temp file so the path is predictable and easy to clean
-    // up after extraction.
+    // up after extraction. A report that cannot be removed beforehand
+    // could be read back as this run's result, so that is fatal.
     let report_path = std::env::temp_dir().join("slugaudit-check-coverage.cov.json");
-    let _ = std::fs::remove_file(&report_path);
+    if let Err(err) = remove_report(&report_path) {
+        eprintln!(
+            "FAIL: could not remove the stale coverage report at {}: {err}",
+            report_path.display()
+        );
+        return ExitCode::from(1);
+    }
 
     let status = Command::new("cargo")
         .args([
@@ -95,16 +102,14 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(err) => {
             eprintln!("FAIL: could not parse coverage JSON: {err}");
-            let _ = std::fs::remove_file(&report_path);
-            return ExitCode::from(1);
+            return cleanup_then(&report_path, ExitCode::from(1));
         }
     };
     let (covered, count) = match merge_line_totals(&cov) {
         Some(v) => v,
         None => {
             eprintln!("FAIL: coverage JSON missing data[*].totals.lines");
-            let _ = std::fs::remove_file(&report_path);
-            return ExitCode::from(1);
+            return cleanup_then(&report_path, ExitCode::from(1));
         }
     };
     let percent = if count == 0 {
@@ -126,11 +131,45 @@ fn main() -> ExitCode {
             "FAIL: line coverage {:.2}% is below the {}% gate",
             percent, threshold
         );
-        let _ = std::fs::remove_file(&report_path);
-        return code;
+        return cleanup_then(&report_path, code);
     }
-    let _ = std::fs::remove_file(&report_path);
-    ExitCode::SUCCESS
+    cleanup_then(&report_path, ExitCode::SUCCESS)
+}
+
+/// Parse the gate threshold. `f64::from_str` accepts `NaN` and `inf`,
+/// and every comparison against NaN is false, so a NaN gate would pass at
+/// any coverage; only a finite percentage in `0..=100` is a usable gate.
+fn parse_threshold(raw: &str) -> Result<f64, String> {
+    let value: f64 = raw
+        .parse()
+        .map_err(|err| format!("threshold {raw:?} is not a number: {err}"))?;
+    if !value.is_finite() || !(0.0..=100.0).contains(&value) {
+        return Err(format!(
+            "threshold {raw:?} must be a finite percentage between 0 and 100"
+        ));
+    }
+    Ok(value)
+}
+
+/// Remove the report file; an already-missing file is the expected state.
+fn remove_report(path: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
+        _ => Ok(()),
+    }
+}
+
+/// Remove the report after the verdict is known. A cleanup failure fails
+/// the run (reported once) rather than being dropped; it never turns a
+/// failing verdict into a pass.
+fn cleanup_then(path: &std::path::Path, verdict: ExitCode) -> ExitCode {
+    match remove_report(path) {
+        Ok(()) => verdict,
+        Err(err) => {
+            eprintln!("FAIL: could not remove {}: {err}", path.display());
+            ExitCode::from(1)
+        }
+    }
 }
 
 /// Merge every data entry: newer cargo-llvm-cov versions can emit one
@@ -152,6 +191,29 @@ fn merge_line_totals(cov: &serde_json::Value) -> Option<(u64, u64)> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_non_finite_or_out_of_range_threshold_is_rejected() {
+        for raw in ["NaN", "nan", "inf", "-inf", "-1", "100.5", "abc"] {
+            assert!(parse_threshold(raw).is_err(), "{raw} must be rejected");
+        }
+    }
+
+    #[test]
+    fn a_percentage_threshold_is_accepted() {
+        assert_eq!(parse_threshold("83"), Ok(83.0));
+        assert_eq!(parse_threshold("0"), Ok(0.0));
+        assert_eq!(parse_threshold("100"), Ok(100.0));
+    }
+
+    #[test]
+    fn removing_a_missing_report_succeeds_and_an_unremovable_one_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        remove_report(&dir.path().join("absent.json")).expect("missing file is fine");
+        // A directory cannot be removed with remove_file.
+        assert!(remove_report(dir.path()).is_err());
+    }
 
     #[test]
     fn merges_lines_across_data_entries() {

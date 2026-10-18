@@ -30,7 +30,19 @@ pub(super) fn check_test_file_count(root: &Path, failures: &mut Vec<String>) {
         .rev()
         .find_map(|w| w.trim_end_matches('.').parse::<usize>().ok());
 
-    let actual = count_test_files(&root.join("src"));
+    let src = root.join("src");
+    // A missing src/ legitimately holds zero test files; an unreadable one does not.
+    let actual = if src.exists() {
+        match count_test_files(&src) {
+            Ok(n) => n,
+            Err(err) => {
+                failures.push(format!("cannot count `*_tests.rs` files: {err}"));
+                return;
+            }
+        }
+    } else {
+        0
+    };
     match number {
         Some(claimed) if claimed != actual => failures.push(format!(
             "ARCHITECTURE.md claims {claimed} `*_tests.rs` files, but {actual} exist under src/; \
@@ -42,15 +54,18 @@ pub(super) fn check_test_file_count(root: &Path, failures: &mut Vec<String>) {
     }
 }
 
-fn count_test_files(dir: &Path) -> usize {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return 0;
-    };
+/// Count `*_tests.rs` files under `dir`. An unreadable directory or entry is an
+/// error, not a zero: an undercount next to a stale claim would pass the gate.
+fn count_test_files(dir: &Path) -> Result<usize, String> {
+    let entries =
+        fs::read_dir(dir).map_err(|err| format!("cannot read {}: {err}", dir.display()))?;
     let mut count = 0;
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry =
+            entry.map_err(|err| format!("cannot read an entry of {}: {err}", dir.display()))?;
         let path = entry.path();
         if path.is_dir() {
-            count += count_test_files(&path);
+            count += count_test_files(&path)?;
         } else if path
             .file_name()
             .and_then(|n| n.to_str())
@@ -59,5 +74,21 @@ fn count_test_files(dir: &Path) -> usize {
             count += 1;
         }
     }
-    count
+    Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unreadable_directory_is_an_error_not_a_zero_count() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("not_a_dir");
+        fs::write(&file, "x").expect("fixture");
+
+        let result = count_test_files(&file);
+
+        assert!(result.is_err(), "{result:?}");
+    }
 }

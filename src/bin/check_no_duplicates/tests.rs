@@ -39,8 +39,8 @@ fn same_line_fn_name_with_pub() {
 fn block_line_skips_comments_and_attrs() {
     // Build a synthetic file by running test_names_by_file against
     // a tiny tempdir.
-    let tmp = tempfile_or_panic_path();
-    let dir = tmp.join("src");
+    let tmp = tempfile::tempdir().expect("temp dir creates");
+    let dir = tmp.path().join("src");
     std::fs::create_dir_all(&dir).expect("temp src dir creates");
     let p = dir.join("a_tests.rs");
     std::fs::write(
@@ -51,17 +51,41 @@ fn block_line_skips_comments_and_attrs() {
          fn my_test() {}\n",
     )
     .expect("fixture file writes");
-    let map = test_names_by_file(&[p]);
+    let mut failures = Vec::new();
+    let map = test_names_by_file(&[p], &mut failures);
     assert!(map.contains_key("my_test"), "missing key in {map:?}");
+    assert!(failures.is_empty(), "unexpected: {failures:?}");
 }
 
-fn tempfile_or_panic_path() -> std::path::PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "slugaudit-check-no-duplicates-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).expect("temp dir creates");
-    p
+#[test]
+fn an_unreadable_test_file_is_a_failure_not_a_skip() {
+    let tmp = tempfile::tempdir().expect("temp dir creates");
+    let p = tmp.path().join("invalid_utf8_tests.rs");
+    std::fs::write(&p, [0xff, 0xfe, 0x00]).expect("fixture file writes");
+    let mut failures = Vec::new();
+
+    let map = test_names_by_file(&[p], &mut failures);
+
+    assert!(map.is_empty());
+    assert!(
+        failures.iter().any(|f| f.contains("cannot read")),
+        "{failures:?}"
+    );
+}
+
+#[test]
+fn an_unreadable_directory_is_a_failure_not_a_skip() {
+    let tmp = tempfile::tempdir().expect("temp dir creates");
+    let not_a_dir = tmp.path().join("plain_file");
+    std::fs::write(&not_a_dir, "x").expect("fixture file writes");
+    let mut out = Vec::new();
+    let mut failures = Vec::new();
+
+    walk_rs(&not_a_dir, &mut out, None, &mut failures);
+
+    assert!(out.is_empty());
+    assert!(
+        failures.iter().any(|f| f.contains("cannot read directory")),
+        "{failures:?}"
+    );
 }

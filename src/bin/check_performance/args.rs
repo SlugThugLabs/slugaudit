@@ -29,9 +29,18 @@ pub(crate) fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, S
             "--record" => options.record = true,
             "--help" => return Ok(Command::Help),
             other => {
-                options.threshold_pct = other
+                let value = other
                     .parse::<f64>()
                     .map_err(|err| format!("threshold {other:?} is not a number: {err}"))?;
+                // NaN makes every regression comparison false, so the gate
+                // would pass at any slowdown; infinity and negatives are
+                // equally meaningless as a regression allowance.
+                if !value.is_finite() || value < 0.0 {
+                    return Err(format!(
+                        "threshold {other:?} must be a finite, non-negative percentage"
+                    ));
+                }
+                options.threshold_pct = value;
             }
         }
     }

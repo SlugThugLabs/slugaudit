@@ -14,6 +14,9 @@
 
 mod common;
 
+/// Small fixture size: 40 files (the cheap contrast to `common::LARGE`).
+const SMALL: usize = 40;
+
 use criterion::{Criterion, criterion_group, criterion_main};
 use slugaudit_mcp_rust::progress::NoopProgressSink;
 use slugaudit_mcp_rust::project::{ProjectRoot, database_path};
@@ -30,7 +33,7 @@ struct SyncedDb {
 
 fn build_synced(file_count: usize) -> SyncedDb {
     let dir = tempfile::tempdir().expect("temp dir");
-    let _ = common::generate_fixture(dir.path(), file_count);
+    common::generate_fixture(dir.path(), file_count).log("search");
     let root = dir.path().to_str().expect("utf-8 fixture path").to_owned();
     SourceSyncManager::new()
         .ensure_current(&root, &NoopProgressSink)
@@ -65,7 +68,7 @@ const TRAVERSAL_SQL: &str = "WITH RECURSIVE reach(from_id) AS ( \
      ) SELECT COUNT(*) FROM reach";
 
 fn bench_search(c: &mut Criterion) {
-    let small = build_synced(common::SMALL);
+    let small = build_synced(SMALL);
     let large = build_synced(common::LARGE);
     let small_connection = store::open_read_only(&small.path).expect("open read-only");
     let large_connection = store::open_read_only(&large.path).expect("open read-only");

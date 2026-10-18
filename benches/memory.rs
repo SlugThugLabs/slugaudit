@@ -11,7 +11,7 @@
 //! The bench measures the in-process peak (this bencher process), which is
 //! the realistic peak a single MCP tool call pays — no swap, no OS
 //! allocator slot pressure specific to a child process. On non-Linux it
-//! reports 0; the bench still runs and the number is declared as
+//! reports no figure; the bench still runs and the number is declared as
 //! "unmeasured on this OS" rather than skipped, so cross-machine
 //! comparison is unambiguous.
 mod common;
@@ -22,37 +22,40 @@ use std::fs;
 use std::io::BufRead;
 
 /// Linux-only: peak resident-set size in kibibytes, read from
-/// `/proc/self/status`'s `VmHWM` field. Returns 0 if the field is missing
-/// or `/proc/self/status` is unreadable.
+/// `/proc/self/status`'s `VmHWM` field. `Err` carries the real cause when
+/// the file is unreadable or the field is missing or malformed.
 #[cfg(target_os = "linux")]
-fn peak_rss_kib() -> u64 {
-    let file = std::fs::File::open("/proc/self/status");
-    let Ok(file) = file else { return 0 };
+fn peak_rss_kib() -> Result<Option<u64>, String> {
+    let file = std::fs::File::open("/proc/self/status")
+        .map_err(|err| format!("cannot open /proc/self/status: {err}"))?;
     let reader = std::io::BufReader::new(file);
-    for line in reader.lines().map(Result::unwrap) {
+    for line in reader.lines() {
+        let line = line.map_err(|err| format!("cannot read /proc/self/status: {err}"))?;
         if let Some(rest) = line.strip_prefix("VmHWM:") {
             // "  12345 kB" — split on whitespace, take the first numeric token.
-            let trimmed = rest.trim();
-            let kib: u64 = trimmed
+            let token = rest
                 .split_whitespace()
                 .next()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
-            return kib;
+                .ok_or_else(|| format!("VmHWM line has no value: {line:?}"))?;
+            let kib = token
+                .parse()
+                .map_err(|err| format!("VmHWM value {token:?} is not a number: {err}"))?;
+            return Ok(Some(kib));
         }
     }
-    0
+    Err("/proc/self/status has no VmHWM line".to_owned())
 }
 
+/// Peak RSS is only read on Linux; elsewhere the figure is unmeasured.
 #[cfg(not(target_os = "linux"))]
-fn peak_rss_kib() -> u64 {
-    0
+fn peak_rss_kib() -> Result<Option<u64>, String> {
+    Ok(None)
 }
 
 fn bench_memory(c: &mut Criterion) {
     let project = tempfile::tempdir().expect("project dir");
     fs::create_dir_all(project.path().join(".planning").join("slugaudit")).expect("activation dir");
-    let _stats = common::generate_fixture(project.path(), common::LARGE);
+    common::generate_fixture(project.path(), common::LARGE).log("memory");
 
     // Open the just-built database, do one full publish, sample peak RSS
     // *during* the publish (criterion's bench_function sleeps between
@@ -92,14 +95,15 @@ fn bench_memory(c: &mut Criterion) {
     // Final measurement of peak RSS after a single sync — criterion's
     // bench loop already ran many, so this reports the steady-state
     // peak as a side-channel.
-    let peak_kib = peak_rss_kib();
-    if peak_kib == 0 {
-        eprintln!(
+    match peak_rss_kib() {
+        Ok(Some(peak_kib)) => {
+            eprintln!("peak_memory_after_full_sync_200: {peak_kib} KiB peak RSS");
+        }
+        Ok(None) => eprintln!(
             "peak_memory_after_full_sync_200: VmHWM unavailable on this OS (not linux); \
              bench ran but the memory figure is not recorded."
-        );
-    } else {
-        eprintln!("peak_memory_after_full_sync_200: {} KiB peak RSS", peak_kib);
+        ),
+        Err(error) => panic!("peak_memory_after_full_sync_200: cannot measure peak RSS: {error}"),
     }
 }
 

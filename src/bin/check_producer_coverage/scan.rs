@@ -151,10 +151,26 @@ pub(super) fn enum_variants(source: &str, name: &str) -> Option<Vec<String>> {
     let header_start = source.find(&header)?;
     let open = source[header_start..].find('{')? + header_start;
     let mut variants = Vec::new();
+    // Bracket nesting inside a variant payload: only a line that begins at
+    // depth 0 declares a variant, and only a `}` at depth 0 ends the enum.
+    let mut depth: usize = 0;
     for line in source[open + 1..].lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with('}') {
-            break;
+        let code = code_before_line_comment(trimmed);
+        let starts_at_depth = depth;
+        for character in code.chars() {
+            match character {
+                '{' | '(' | '[' => depth += 1,
+                '}' | ')' | ']' => match depth.checked_sub(1) {
+                    Some(next) => depth = next,
+                    // A closer at depth 0 is the enum's own closing brace.
+                    None => return Some(variants),
+                },
+                _ => {}
+            }
+        }
+        if starts_at_depth > 0 {
+            continue;
         }
         if trimmed.is_empty()
             || trimmed.starts_with("//")

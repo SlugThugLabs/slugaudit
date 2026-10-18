@@ -53,6 +53,14 @@ pub(crate) fn collect_benches_in(dir: &Path) -> std::io::Result<BTreeMap<String,
             .and_then(|m| m.get("point_estimate"))
             .and_then(serde_json::Value::as_f64)
             .ok_or_else(|| invalid(&estimates_path, "no median.point_estimate"))?;
+        // `as u64` saturates silently (NaN or negative -> 0), and a 0 median is
+        // judged infinitely fast, so reject anything that is not a real time.
+        if !median.is_finite() || median < 0.0 || median >= u64::MAX as f64 {
+            return Err(invalid(
+                &estimates_path,
+                &format!("median.point_estimate {median} is not a valid time in ns"),
+            ));
+        }
         out.insert(format!("{group_name}/{func_name}"), median as u64);
     }
     Ok(out)
@@ -105,7 +113,14 @@ pub(crate) fn load_baseline(path: &Path) -> Result<BTreeMap<String, BaselineEntr
             .get("median_ns")
             .and_then(serde_json::Value::as_u64)
             .ok_or_else(|| format!("baseline entry {key:?} missing median_ns"))?;
-        let budget_ns = entry.get("budget_ns").and_then(serde_json::Value::as_u64);
+        // Absent or null means "no budget"; anything else must be a u64, or a
+        // typo would silently drop the budget and the next --record erase it.
+        let budget_ns = match entry.get("budget_ns") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => Some(value.as_u64().ok_or_else(|| {
+                format!("baseline entry {key:?} has a malformed budget_ns: {value}")
+            })?),
+        };
         map.insert(
             key.clone(),
             BaselineEntry {

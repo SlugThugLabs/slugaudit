@@ -98,13 +98,13 @@ fn run(options: &Options) -> Result<ExitCode, String> {
     };
 
     if options.record {
-        let machine = format!(
-            "current run (re-recorded {})",
-            std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default()
+        // No cwd here: it embedded a developer's absolute path in a committed file.
+        let json = record::baseline_json(
+            &measured,
+            &baseline,
+            options.threshold_pct,
+            "current run (re-recorded)",
         );
-        let json = record::baseline_json(&measured, &baseline, options.threshold_pct, &machine);
         record::write(baseline_path, &json)?;
         println!(
             "recorded {} benchmarks to {}",

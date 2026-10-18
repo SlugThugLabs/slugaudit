@@ -3,18 +3,39 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-pub(super) fn collect_test_files(root: &Path) -> Vec<PathBuf> {
+/// Read a directory, recording an unreadable directory or entry as a gate
+/// failure: a subtree that cannot be scanned must not let the gate print PASS.
+fn read_dir_entries(dir: &Path, failures: &mut Vec<String>) -> Vec<std::fs::DirEntry> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            failures.push(format!("cannot read directory {}: {err}", dir.display()));
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => out.push(entry),
+            Err(err) => failures.push(format!(
+                "cannot read an entry of directory {}: {err}",
+                dir.display()
+            )),
+        }
+    }
+    out
+}
+
+pub(super) fn collect_test_files(root: &Path, failures: &mut Vec<String>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let src = root.join("src");
     if src.is_dir() {
-        walk_rs(&src, &mut out, /* skip_substr= */ None);
+        walk_rs(&src, &mut out, /* skip_substr= */ None, failures);
     }
     // Integration tests under tests/*.rs (not tests/fixtures/...).
     let tests = root.join("tests");
-    if tests.is_dir()
-        && let Ok(rd) = std::fs::read_dir(&tests)
-    {
-        for entry in rd.flatten() {
+    if tests.is_dir() {
+        for entry in read_dir_entries(&tests, failures) {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("rs") && path.is_file() {
                 out.push(path);
@@ -25,11 +46,13 @@ pub(super) fn collect_test_files(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn walk_rs(dir: &Path, out: &mut Vec<PathBuf>, skip_substr: Option<&str>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
+fn walk_rs(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    skip_substr: Option<&str>,
+    failures: &mut Vec<String>,
+) {
+    for entry in read_dir_entries(dir, failures) {
         let path = entry.path();
         if path.is_dir() {
             let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
@@ -41,18 +64,25 @@ fn walk_rs(dir: &Path, out: &mut Vec<PathBuf>, skip_substr: Option<&str>) {
             {
                 continue;
             }
-            walk_rs(&path, out, skip_substr);
+            walk_rs(&path, out, skip_substr, failures);
         } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
             out.push(path);
         }
     }
 }
 
-pub(super) fn test_names_by_file(paths: &[PathBuf]) -> HashMap<String, Vec<PathBuf>> {
+pub(super) fn test_names_by_file(
+    paths: &[PathBuf],
+    failures: &mut Vec<String>,
+) -> HashMap<String, Vec<PathBuf>> {
     let mut names: HashMap<String, Vec<PathBuf>> = HashMap::new();
     for path in paths {
-        let Ok(source) = std::fs::read_to_string(path) else {
-            continue;
+        let source = match std::fs::read_to_string(path) {
+            Ok(source) => source,
+            Err(err) => {
+                failures.push(format!("cannot read {}: {err}", path.display()));
+                continue;
+            }
         };
         let lines: Vec<&str> = source.lines().collect();
         for (idx, line) in lines.iter().enumerate() {

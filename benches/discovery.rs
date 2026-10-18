@@ -7,6 +7,9 @@
 
 mod common;
 
+/// Small fixture size: 40 files (the cheap contrast to `common::LARGE`).
+const SMALL: usize = 40;
+
 use criterion::{Criterion, criterion_group, criterion_main};
 use slugaudit_mcp_rust::sync::{FileKind, discover, hash_file};
 use std::hint::black_box;
@@ -31,15 +34,8 @@ fn walk_and_hash(root: &std::path::Path) -> u64 {
 fn bench_discovery(c: &mut Criterion) {
     let small = tempfile::tempdir().expect("temp dir");
     let large = tempfile::tempdir().expect("temp dir");
-    let small_stats = common::generate_fixture(small.path(), common::SMALL);
-    let large_stats = common::generate_fixture(large.path(), common::LARGE);
-    eprintln!(
-        "fixture_stats: small={{files={}, bytes={}}} large={{files={}, bytes={}}}",
-        small_stats.file_count,
-        small_stats.total_bytes,
-        large_stats.file_count,
-        large_stats.total_bytes,
-    );
+    common::generate_fixture(small.path(), SMALL).log("small");
+    common::generate_fixture(large.path(), common::LARGE).log("large");
 
     let mut group = c.benchmark_group("discovery");
     group.sample_size(15);

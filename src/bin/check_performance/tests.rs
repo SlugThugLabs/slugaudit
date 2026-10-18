@@ -26,33 +26,57 @@ fn load_baseline_parses_object() {
             "parsing/extract_rust": {"median_ns": 50, "budget_ns": null}
         }
     }"#;
-    let mut tmp = std::env::temp_dir();
-    tmp.push(format!(
-        "slugaudit-check-perf-baseline-{}.json",
-        std::process::id()
-    ));
+    let dir = tempfile::tempdir().expect("temp dir");
+    let tmp = dir.path().join("baseline.json");
     std::fs::write(&tmp, raw).expect("baseline file writes");
     let map = load_baseline(&tmp).expect("parse");
     assert_eq!(map["sync/first"].median_ns, 100);
     assert_eq!(map["sync/first"].budget_ns, Some(200));
     assert_eq!(map["parsing/extract_rust"].median_ns, 50);
     assert_eq!(map["parsing/extract_rust"].budget_ns, None);
-    let _ = std::fs::remove_file(&tmp);
-    let _ = BaselineEntry::default();
 }
 
 #[test]
 fn load_baseline_rejects_missing_benches() {
     let raw = r#"{"machine": "x", "threshold_percent": 20.0}"#;
-    let mut tmp = std::env::temp_dir();
-    tmp.push(format!(
-        "slugaudit-check-perf-baseline-bad-{}.json",
-        std::process::id()
-    ));
+    let dir = tempfile::tempdir().expect("temp dir");
+    let tmp = dir.path().join("baseline.json");
     std::fs::write(&tmp, raw).expect("baseline file writes");
     let err = load_baseline(&tmp).unwrap_err();
     assert!(err.contains("missing 'benches' object"), "{err}");
-    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn load_baseline_rejects_a_malformed_budget() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    for budget in [r#""200""#, "-5", "1.5"] {
+        let raw = format!(
+            r#"{{"benches": {{"sync/first": {{"median_ns": 100, "budget_ns": {budget}}}}}}}"#
+        );
+        let path = dir.path().join("baseline.json");
+        std::fs::write(&path, raw).expect("baseline file writes");
+
+        let err = load_baseline(&path).expect_err("a malformed budget_ns must not be dropped");
+
+        assert!(err.contains("budget_ns"), "{budget}: {err}");
+    }
+}
+
+#[test]
+fn collect_benches_rejects_a_non_finite_or_negative_median() {
+    for median in ["-1.0", "1e999"] {
+        let root = tempfile::tempdir().expect("temp dir");
+        write_estimates(
+            root.path(),
+            "g",
+            "f",
+            &format!(r#"{{"median": {{"point_estimate": {median}}}}}"#),
+        );
+
+        let result = estimates::collect_benches_in(root.path());
+
+        assert!(result.is_err(), "median {median} must be rejected");
+    }
 }
 
 fn write_estimates(root: &std::path::Path, group: &str, func: &str, body: &str) {
@@ -221,6 +245,15 @@ fn re_recording_keeps_each_hand_set_budget() {
     assert_eq!(json["benches"]["sync/first"]["median_ns"], 5);
     assert!(json["benches"]["search/a"]["budget_ns"].is_null());
     assert_eq!(json["machine"], "m");
+}
+
+#[test]
+fn the_cli_rejects_a_non_finite_or_negative_threshold() {
+    for raw in ["NaN", "inf", "-1"] {
+        let result = parse([raw.to_string()]);
+
+        assert!(result.is_err(), "threshold {raw} must be rejected");
+    }
 }
 
 #[test]

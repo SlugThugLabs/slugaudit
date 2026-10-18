@@ -13,7 +13,8 @@
 //! warm-cache parse+extract, which is the cost a running server pays per
 //! changed file during sync.
 
-mod common;
+#[path = "common/samples.rs"]
+mod samples;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use slugaudit_mcp_rust::evidence::extract;
@@ -59,34 +60,34 @@ fn bench_parsing(c: &mut Criterion) {
     // one-time load, which is exactly what the cold-load line captures for
     // Rust).
     for language in ["python", "javascript", "typescript"] {
-        let loaded = get_parser(language);
-        assert!(
-            loaded.is_ok(),
-            "{language} parser loads; a missing grammar would make its extract bench meaningless"
-        );
-        drop(loaded);
+        // A missing grammar would make its extract bench meaningless, so a
+        // load failure aborts the run and carries the grammar error.
+        match get_parser(language) {
+            Ok(parser) => drop(parser),
+            Err(error) => panic!("{language} parser failed to load: {error}"),
+        }
     }
 
     let mut group = c.benchmark_group("parsing");
     group.sample_size(15);
-    bench_extract(&mut group, "extract_rust", "rust", common::RUST_SAMPLE);
+    bench_extract(&mut group, "extract_rust", "rust", samples::RUST_SAMPLE);
     bench_extract(
         &mut group,
         "extract_python",
         "python",
-        common::PYTHON_SAMPLE,
+        samples::PYTHON_SAMPLE,
     );
     bench_extract(
         &mut group,
         "extract_javascript",
         "javascript",
-        common::JS_SAMPLE,
+        samples::JS_SAMPLE,
     );
     bench_extract(
         &mut group,
         "extract_typescript",
         "typescript",
-        common::TS_SAMPLE,
+        samples::TS_SAMPLE,
     );
     group.finish();
 }

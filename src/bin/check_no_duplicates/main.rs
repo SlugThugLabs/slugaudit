@@ -40,8 +40,8 @@ fn main() -> ExitCode {
         println!("no-duplicates: commit subject {subject:?} used {count} times");
     }
 
-    let test_files = test_names::collect_test_files(&project_root);
-    let names = test_names::test_names_by_file(&test_files);
+    let test_files = test_names::collect_test_files(&project_root, &mut failures);
+    let names = test_names::test_names_by_file(&test_files, &mut failures);
     let mut sorted_names: Vec<_> = names.iter().filter(|(_, files)| files.len() > 1).collect();
     sorted_names.sort_by_key(|(name, _)| *name);
     for (name, files) in sorted_names {
@@ -61,6 +61,9 @@ fn main() -> ExitCode {
     }
 
     if !failures.is_empty() {
+        for failure in &failures {
+            eprintln!("no-duplicates: {failure}");
+        }
         println!("no-duplicates: FAIL");
         return ExitCode::from(1);
     }

@@ -50,14 +50,14 @@ fn run_menu(input: &str, extra_env: Option<(&str, &str)>) -> (ExitStatus, String
     let mut stdout = child.stdout.take().expect("menu stdout");
     std::thread::spawn(move || {
         let mut text = String::new();
-        let _ = stdout.read_to_string(&mut text);
-        let _ = out_tx.send(text);
+        let read = stdout.read_to_string(&mut text).map(|_| text);
+        out_tx.send(read).expect("menu stdout receiver is alive");
     });
     let mut stderr = child.stderr.take().expect("menu stderr");
     std::thread::spawn(move || {
         let mut text = String::new();
-        let _ = stderr.read_to_string(&mut text);
-        let _ = err_tx.send(text);
+        let read = stderr.read_to_string(&mut text).map(|_| text);
+        err_tx.send(read).expect("menu stderr receiver is alive");
     });
 
     let deadline = Instant::now() + MENU_TIMEOUT;
@@ -75,10 +75,12 @@ fn run_menu(input: &str, extra_env: Option<(&str, &str)>) -> (ExitStatus, String
 
     let stdout = out_rx
         .recv_timeout(Duration::from_secs(5))
-        .unwrap_or_default();
+        .expect("menu stdout capture must finish")
+        .expect("menu stdout must be readable");
     let stderr = err_rx
         .recv_timeout(Duration::from_secs(5))
-        .unwrap_or_default();
+        .expect("menu stderr capture must finish")
+        .expect("menu stderr must be readable");
     (status, stdout, stderr)
 }
 
