@@ -9,7 +9,9 @@ use super::publish_diff::{self, build_upserts_and_deletions};
 use super::race_hook;
 use super::revalidate::revalidate_unchanged_since_sample;
 use super::revision;
-use super::revision_skipped::{SKIP_REASON_OVERSIZE, SKIP_REASON_UNREADABLE, SkippedRecord};
+use super::revision_skipped::{
+    SKIP_REASON_OVERSIZE, SKIP_REASON_STAT_FAILED, SKIP_REASON_UNREADABLE, SkippedRecord,
+};
 use super::sample::{self, sample_all_with_deadline};
 use crate::model::ResourceLimits;
 use crate::progress::ProgressSink;
@@ -32,21 +34,29 @@ fn collect_skipped(
     records: &mut BTreeMap<String, SkippedRecord>,
 ) {
     for file in files {
-        tracing::warn!(
-            path_id = %crate::util::redacted_path(&file.absolute_path),
-            reason = %file.reason,
-            "skipped file during {reason}"
-        );
         let Some(relative) = discovery::representable_relative_path(root, &file.absolute_path)
         else {
+            warn_skipped(file, reason);
             continue;
         };
+        let record = sample::skipped_record(&relative, &file.absolute_path, reason);
+        // A failed stat is already warned about, with the path, the requested
+        // reason and the source error, inside `skipped_record`; a second line
+        // for the same file would break "every error is logged once".
+        if record.reason != SKIP_REASON_STAT_FAILED {
+            warn_skipped(file, reason);
+        }
         discovered_paths.insert(relative.clone());
-        records.insert(
-            relative.clone(),
-            sample::skipped_record(&relative, &file.absolute_path, reason),
-        );
+        records.insert(relative, record);
     }
+}
+
+fn warn_skipped(file: &discovery::SkippedFile, reason: &str) {
+    tracing::warn!(
+        path_id = %crate::util::redacted_path(&file.absolute_path),
+        reason = %file.reason,
+        "skipped file during {reason}"
+    );
 }
 
 /// Everything one sampled-and-diffed attempt produces before the delta is
@@ -259,4 +269,70 @@ fn commit_attempt(
         unchanged: diff.unchanged,
         skipped,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::test_capture::capture_warns;
+
+    fn skipped(path: std::path::PathBuf) -> discovery::SkippedFile {
+        discovery::SkippedFile {
+            absolute_path: path,
+            reason: "read failed".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_stat_failed_skip_logs_exactly_one_warn_line() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let files = [skipped(root.path().join("vanished.rs"))];
+        let mut paths = HashSet::new();
+        let mut records = BTreeMap::new();
+
+        let (_, logs) = capture_warns(|| {
+            collect_skipped(
+                root.path(),
+                &files,
+                "once-probe-stat-failed",
+                &mut paths,
+                &mut records,
+            );
+        });
+
+        let lines = logs
+            .lines()
+            .filter(|line| line.contains("once-probe-stat-failed"))
+            .count();
+        assert_eq!(lines, 1, "one warn per stat-failed skip: {logs}");
+        assert_eq!(records["vanished.rs"].reason, SKIP_REASON_STAT_FAILED);
+        assert_eq!(records["vanished.rs"].byte_len, None);
+    }
+
+    #[test]
+    fn a_skip_whose_stat_succeeds_keeps_the_publish_loop_warn() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let present = root.path().join("present.rs");
+        std::fs::write(&present, b"fn a() {}").expect("write file");
+        let files = [skipped(present)];
+        let mut paths = HashSet::new();
+        let mut records = BTreeMap::new();
+
+        let (_, logs) = capture_warns(|| {
+            collect_skipped(
+                root.path(),
+                &files,
+                "once-probe-stat-ok",
+                &mut paths,
+                &mut records,
+            );
+        });
+
+        let lines = logs
+            .lines()
+            .filter(|line| line.contains("once-probe-stat-ok"))
+            .count();
+        assert_eq!(lines, 1, "{logs}");
+        assert_eq!(records["present.rs"].reason, "once-probe-stat-ok");
+    }
 }
