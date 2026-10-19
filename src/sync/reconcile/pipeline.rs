@@ -182,9 +182,9 @@ fn reconcile_single_dirty_path(
 /// shared budget is spent. The deadline is checked before the query, so a
 /// bulk watcher event burst cannot serialize and execute one huge lookup
 /// before the budget gets a chance to trip.
-fn query_stored_hash_batch<'a>(
+fn query_stored_hash_batch(
     connection: &Connection,
-    batch: &mut Vec<&'a str>,
+    batch: &mut Vec<&str>,
     deadline: Deadline,
 ) -> Result<HashMap<String, String>, ReconcileError> {
     if let Some(elapsed) = deadline.exceeded() {
