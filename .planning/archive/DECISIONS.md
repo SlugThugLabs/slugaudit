@@ -1490,25 +1490,11 @@ Format: date — title; status; context; decision; rationale; consequences.
   downloads off is parked on branch `parser-static-compile` (`5737053`), not merged.
 - **Revisit when**: the pack offers pinned per-grammar checksums or a vetted static build covering the
   languages the owner needs, or SlugAudit is run against untrusted repositories in a shared environment.
-
-- **Amended same day: hybrid - 14 bundled core languages, downloads kept for the rest.** The owner chose
-  to compile the languages SlugAudit gets the best evidence from into the binary, so they work from the
-  first run and offline, and to leave every other language on the pack's own runtime download, unchanged.
-  The first 21-language cut measured 63.7 MB; the seven heaviest were dropped to keep the release binary
-  near 30 MB. `default-features = false` (as on `parser-static-compile`) is explicitly NOT used.
-  Mechanism: `TSLP_LANGUAGES` + `TSLP_LINK_MODE=static` in `.cargo/config.toml`, both with
-  `force = true` so an exported variable cannot silently build a different binary; the pack looks up its
-  static table before any dynamic or download step (`registry.rs` `get_language`, `lib.rs:193-197`).
-  Bundled (14): rust, python, javascript, typescript, tsx, go, java, c, ruby, php, dart, elixir, julia,
-  json. Deliberately left on runtime download (7 heaviest): cpp, csharp, haskell, kotlin, ocaml, perl,
-  swift. Cost measured 2026-10-18: release binary 15.6 MB to 30.4 MB; rebuild after the list change 42 s;
-  first build needs network for the source bundle. Tests in `src/parse/language.rs`. The
-  compromised-grammar risk above still applies to non-bundled languages.
-- **Release notice gap (still open).** The bundled grammar sources are downloaded by the pack's
-  `build.rs`, not Cargo dependencies, so `cargo about` (`docs/about.toml`) does not see them. The source
-  bundle carries only `license_cache.json` (repo to SPDX id) and no license texts, and the shipped binary
-  embeds no license text. A release that ships the bundled grammars needs their notices added to
-  `third-party-notices` before publication. Follow-up recorded in PLAN.md; not started.
+- **Reverted 2026-10-19: the hybrid static bundle was removed.** The 14-language bundle (`26ed140`,
+  branch `024ec1e`) was reverted because the release-notice obligation for the bundled grammar sources
+  and the 2× binary/build-network cost were not worth it. All languages use the pack's runtime download,
+  as in the accepted-risk decision above. The bundle code, `.cargo/config.toml`, and the grammar-notices
+  task are gone; the historical merge remains in git history.
 
 ## 2026-10-19 — Production resource bounds: activation, hashing, sampling, reconcile, watch, query
 
@@ -1544,4 +1530,5 @@ Format: date — title; status; context; decision; rationale; consequences.
   (hash-first, single-transaction windowed publish) with five binding parameters, recorded in PLAN.
   Not implemented. A size-only clamp is insufficient because lossy UTF-8 conversion can expand
   content up to 3×; the content check and a `content_limit` skip reason are part of D2 parameter 3.
-- **Open — grammar notices** remain a release blocker (see the 2026-10-18 entry).
+- **Grammar notices**: not applicable; the hybrid static bundle was reverted (2026-10-18 decision,
+  above).

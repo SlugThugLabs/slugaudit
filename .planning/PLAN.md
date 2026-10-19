@@ -1314,19 +1314,13 @@ Still open from this round:
   Not started.
 
 ### Handoff (2026-10-18, end of session 8ac33515)
-- **Hybrid grammar bundle — landed (merge `26ed140`, branch commits `2ca94a8` + `024ec1e`).** 14 core
-  grammars compiled in (rust, python, javascript, typescript, tsx, go, java, c, ruby, php, dart, elixir,
-  julia, json); cpp, csharp, haskell, kotlin, ocaml, perl, swift remain on runtime download.
-  `TSLP_LANGUAGES` + `TSLP_LINK_MODE=static` in `.cargo/config.toml`, both `force = true`, Cargo.lock
-  unchanged. Measured 2026-10-18: release binary 15.6 → 30.4 MB, 42 s rebuild, full suite 999 passed /
-  2 ignored, all seven `check_*` gates PASS. The 21-language cut (63.7 MB) was dropped for size. Branch
-  `parser-hybrid-bundle` is merged and can be deleted from origin; `parser-static-compile` remains
-  superseded (downloads off — rejected).
-- **Grammar notices for the bundled sources — not started (release blocker).** The grammar sources are
-  downloaded by the pack's `build.rs`, not Cargo dependencies, so `cargo about` does not see them; the
-  source bundle carries `license_cache.json` (repo → SPDX id) but no license texts, and the binary embeds
-  none. Generate and attach the notice set before the next release. The root `.cargo/config.toml` also
-  applies to `fuzz/`, so fuzz builds compile the 14 grammars and need network.
+- **Hybrid grammar bundle — reverted (2026-10-19).** The 14-language static bundle (merge `26ed140`,
+  branch `024ec1e`) was removed: `.cargo/config.toml` and the `BUNDLED` tests are gone, all languages use
+  the pack's runtime download, and the release binary returns to 15.6 MB with no build-time grammar-source
+  download. Reason: the release-notice obligation for the bundled grammar sources and the 2× binary/
+  build-network cost were not worth it; the 2026-10-18 accepted-risk decision stands. Branches
+  `parser-hybrid-bundle` and `parser-static-compile` are deleted from origin.
+- **Grammar notices — not applicable.** No grammar sources are bundled; the notice set is not needed.
 - **Wave 2 — not started.** In order: R7 (38), R6 (16), R12 (25) open ledger rows; `verify_and_drain` stale
   revision; CLI logging never initialised (`main.rs:43`); `.git/info/exclude` only with a root `.gitignore`;
   `leads` oversized row; `check_docs_drift` module-map completeness; explicit stack size at
@@ -1368,6 +1362,6 @@ Still open from this round:
 - **Open — lossy UTF-8 content limit**: a file under the file cap can still exceed SQLite's value
   limit after lossy conversion. D2 parameter 3 closes it; until then a very large invalid-UTF-8
   file in the Adaptive profile can still fail the publish at insert.
-- **Open — grammar notices** remain a release blocker (see the 2026-10-18 handoff).
+- **Grammar notices — closed by the revert; no grammar sources are bundled.**
 - **Remaining audit waves** (R5/R6/R7/R8/R9/R10/R12 and the rest of the top-10) are unchanged and
   not part of this remediation.

@@ -79,7 +79,8 @@ Do not mark a row resolved until its implementation and regression tests exist a
   after 3× lossy expansion; D2 parameter 3 (content check + `content_limit` skip reason) is open.
   Until then, a very large invalid-UTF-8 file in the Adaptive profile can still fail the publish at
   insert.
-- **Grammar notices:** release blocker from the 2026-10-18 hybrid bundle; still not started.
+- **Grammar notices:** not applicable; the hybrid static bundle was reverted 2026-10-19. All languages
+  use the pack's runtime download, per the 2026-10-18 accepted-risk decision.
 - **Watch:** the full-verification scope refresh closes the transient `rules_for == None` window;
   the caps are process/env only.
 - **Query:** an admitted max-size value still needs one owned copy (~2× live bytes) for clipping;
