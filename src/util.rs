@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=the shared bounded-read helper and its cap-boundary tests belong beside the existing helpers they extend; splitting them would scatter one cap contract across modules
 //! Small shared helpers used across multiple modules, kept here to avoid
 //! drifting duplicate implementations.
 //!

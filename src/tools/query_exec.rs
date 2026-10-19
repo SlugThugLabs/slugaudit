@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=the row lower-bound pre-check and the single-statement/VM-budget/paging path are one execution contract; splitting them would duplicate the budget accounting
 //! Executing one `query` statement: the single-statement proof, the VM-step
 //! and wall-clock budgets, the byte-budgeted page, and the exact total.
 //!
