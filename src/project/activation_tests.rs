@@ -422,6 +422,59 @@ fn an_unreadable_gitignore_is_reported_rather_than_fatal() {
     }
 }
 
+#[test]
+fn an_oversized_gitignore_is_reported_and_left_byte_identical() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let cap = usize::try_from(MAX_FOREIGN_TEXT_BYTES).expect("cap fits usize");
+    let contents = vec![b'#'; cap + 1];
+    let (root, path) = gitignore_fixture(&directory, &contents);
+
+    let outcome = ensure_gitignore(&root);
+
+    match outcome {
+        GitignoreOutcome::NotWritten {
+            path: reported,
+            reason,
+        } => {
+            assert_eq!(reported, path, "the over-cap path is named");
+            assert!(
+                reason.contains(&format!("{MAX_FOREIGN_TEXT_BYTES}-byte cap")),
+                "the reason names the cap rather than merely failing: {reason}"
+            );
+        }
+        other => panic!("an over-cap .gitignore must be reported, not read, got {other:?}"),
+    }
+    assert_eq!(
+        fs::read(&path).expect("read .gitignore"),
+        contents,
+        "an over-cap file is never truncated or appended to"
+    );
+}
+
+#[test]
+fn a_gitignore_exactly_at_the_cap_is_still_inspected() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let cap = usize::try_from(MAX_FOREIGN_TEXT_BYTES).expect("cap fits usize");
+    let rule = b".planning/slugaudit/\n";
+    let mut contents = vec![b'\n'; cap - rule.len()];
+    contents.extend_from_slice(rule);
+    assert_eq!(contents.len(), cap, "the fixture sits exactly on the cap");
+    let (root, path) = gitignore_fixture(&directory, &contents);
+
+    let outcome = ensure_gitignore(&root);
+
+    assert_eq!(
+        outcome,
+        GitignoreOutcome::AlreadyIgnored(path.clone()),
+        "a file exactly at the cap is inspected, not rejected"
+    );
+    assert_eq!(
+        fs::read(&path).expect("read .gitignore"),
+        contents,
+        "inspecting the file leaves it byte-identical"
+    );
+}
+
 fn overlong_path() -> PathBuf {
     Path::new("/tmp").join("a".repeat(300))
 }

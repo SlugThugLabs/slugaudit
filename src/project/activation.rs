@@ -1,7 +1,9 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=project activation is one cohesive root-resolution/marker/enable/disable contract; the .gitignore guard and its append path must stay beside the marker they protect, and splitting them would scatter the non-fatal-guard rule from the activation action it never undoes
 use super::activation_lock::acquire_database_lock;
 use super::database_path::database_path;
 use super::root::{ProjectRoot, RootError};
 use crate::ignore_rules::ACTIVATION_RELATIVE_DIR;
+use crate::util::{CappedReadError, MAX_FOREIGN_TEXT_BYTES, read_file_capped_bytes};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -217,6 +219,11 @@ const GITIGNORE_FILE: &str = ".gitignore";
 /// written is *reported* to the caller, never fatal to the enable, because a
 /// convenience guard must not undo the primary action.
 ///
+/// The file is foreign, user-controlled text, so it is read under the same
+/// 1 MiB cap as other foreign text files (`MAX_FOREIGN_TEXT_BYTES`). A
+/// `.gitignore` over that cap is reported as [`Self::NotWritten`] rather than
+/// read, truncated, or appended to; the project stays enabled either way.
+///
 /// `disable` deliberately does not remove the rule: a `.gitignore` rule can
 /// be hiding paths SlugAudit knows nothing about, and un-hiding them is not
 /// SlugAudit's call.
@@ -240,14 +247,23 @@ pub enum GitignoreOutcome {
 /// gets one first, so the rule can never be merged into it; and a file
 /// written with CRLF keeps that convention instead of acquiring a mixed one.
 ///
+/// The file is read through [`read_file_capped_bytes`] with a 1 MiB cap
+/// (`MAX_FOREIGN_TEXT_BYTES`), the same cap used for other foreign text
+/// files. An over-cap file is reported as [`GitignoreOutcome::NotWritten`]
+/// rather than read, and any other read failure is reported the same way:
+/// this guard is non-fatal by design and never undoes the enable. A missing
+/// file is not a failure — the append below creates it.
+///
 /// Failure is reported through [`GitignoreOutcome::NotWritten`], never
 /// propagated — see [`GitignoreOutcome`].
 #[must_use]
 pub fn ensure_gitignore(root: &ProjectRoot) -> GitignoreOutcome {
     let path = root.as_path().join(GITIGNORE_FILE);
-    let existing = match std::fs::read(&path) {
+    let existing = match read_file_capped_bytes(&path, MAX_FOREIGN_TEXT_BYTES) {
         Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(CappedReadError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            Vec::new()
+        }
         Err(error) => {
             return GitignoreOutcome::NotWritten {
                 path,
