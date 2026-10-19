@@ -196,10 +196,19 @@ only record the same one when they share both — which the two jobs do, and whi
 
 Third, the build needs network access: with `TSLP_LANGUAGES` set in
 `.cargo/config.toml`, the pack's build script downloads its sha256-verified
-parser-source bundle (`parser-sources-<version>.tar.zst`) to compile the bundled
-grammars in. This is build time only; the release job and `rebuild-and-compare`
-both fetch it, and the pin (`=1.18.0`) fixes which bundle. Measured 2026-10-18:
-the 21 bundled grammars take the release binary from 15.6 MB to 63.7 MB.
+parser-source bundle (`parser-sources-<version>.tar.zst`) to compile the 14
+bundled grammars in. This is build time only; the release job and
+`rebuild-and-compare` both fetch it, and the pin (`=1.18.0`) fixes which
+bundle. Measured 2026-10-18: the 14 bundled grammars take the release binary
+from 15.6 MB to 30.4 MB (the 21-language cut was 63.7 MB).
+
+Fourth, the release notices must cover the bundled grammar sources. They are
+downloaded by the pack's build script, not Cargo dependencies, so
+`cargo about` does not see them; the source bundle ships only
+`license_cache.json` (repo to SPDX id) and no license texts, and the binary
+embeds none. The release is not publishable with bundled grammars until that
+notice set is generated and attached. Status 2026-10-18: not implemented;
+tracked in `PLAN.md`.
 
 ### 4.2 What the job does
 

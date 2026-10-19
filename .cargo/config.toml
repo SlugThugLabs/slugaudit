@@ -7,13 +7,20 @@
 # still fetched by the pack at runtime, unchanged. Verified against
 # tree-sitter-language-pack 1.18.0 on 2026-10-18.
 #
-# Choosing the list: the languages SlugAudit has dedicated handling or tests
-# for (see .planning/archive/DECISIONS.md, 2026-10-18 amendment). Adding one is
-# a deliberate change: add it here and to BUNDLED in src/parse/language.rs (a
-# test pins both).
+# Choosing the list: the 14 core languages SlugAudit has dedicated handling or
+# tests for (see .planning/archive/DECISIONS.md, 2026-10-18 amendment). The
+# seven heaviest grammars (cpp, csharp, haskell, kotlin, ocaml, perl, swift)
+# are deliberately left on runtime download; they are not compiled in. Adding
+# one is a deliberate change: add it here and to BUNDLED in
+# src/parse/language.rs (a test pins both).
 #
 # The build downloads the sha256-verified parser-source bundle once (build
 # time only, cached under target/), so the FIRST build needs network access.
+#
+# `force = true` matters: Cargo's `[env]` does not override an already-exported
+# variable by default. Without it, a developer or CI environment with
+# TSLP_LANGUAGES/TSLP_LINK_MODE set would silently build a different binary
+# than the one this file and src/parse/language.rs pin.
 [env]
-TSLP_LINK_MODE = "static"
-TSLP_LANGUAGES = "rust,python,javascript,typescript,tsx,go,java,c,cpp,csharp,ruby,php,kotlin,swift,dart,elixir,haskell,julia,ocaml,perl,json"
+TSLP_LINK_MODE = { value = "static", force = true }
+TSLP_LANGUAGES = { value = "rust,python,javascript,typescript,tsx,go,java,c,ruby,php,dart,elixir,julia,json", force = true }

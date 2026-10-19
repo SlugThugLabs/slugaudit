@@ -19,27 +19,22 @@ mod tests {
     use super::*;
 
     /// Must equal `TSLP_LANGUAGES` in `.cargo/config.toml`: the grammars compiled
-    /// into the binary. Every other language is fetched by the pack at runtime.
+    /// into the binary. Every other language is fetched by the pack at runtime;
+    /// the seven heaviest grammars are deliberately not bundled (2026-10-18
+    /// size decision in `.planning/archive/DECISIONS.md`).
     const BUNDLED: &[&str] = &[
         "c",
-        "cpp",
-        "csharp",
         "dart",
         "elixir",
         "go",
-        "haskell",
         "java",
         "javascript",
         "json",
         "julia",
-        "kotlin",
-        "ocaml",
-        "perl",
         "php",
         "python",
         "ruby",
         "rust",
-        "swift",
         "tsx",
         "typescript",
     ];
