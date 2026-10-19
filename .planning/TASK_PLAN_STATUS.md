@@ -87,4 +87,6 @@ Do not mark a row resolved until its implementation and regression tests exist a
   rejected values no longer allocate.
 - **Source-size exceptions:** util 230, hash 243, pipeline 238, query_exec 210, watch/manager 295 —
   all in the project's 200–300 slugthug band, annotated.
-- **Remaining audit waves** (R5/R6/R7/R8/R9/R10/R12 and the rest of the top-10) are unchanged.
+- **Remaining audit waves:** reconciled 2026-10-19 against `f9544ca` — **441 open** (R5 149,
+  R8 192, R7 22, R12 17, R10 23, R9 24, R6 12, R4 2), **28 handled**, **13 not violations**,
+  **2 needs decision**. See `.planning/audit_2026-10-18_triage.md`; the ledger states are updated.

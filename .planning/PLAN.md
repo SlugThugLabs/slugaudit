@@ -1365,3 +1365,18 @@ Still open from this round:
 - **Grammar notices — closed by the revert; no grammar sources are bundled.**
 - **Remaining audit waves** (R5/R6/R7/R8/R9/R10/R12 and the rest of the top-10) are unchanged and
   not part of this remediation.
+
+### Audit backlog reconciliation (2026-10-19)
+
+- All 484 rows the 2026-10-18 ledger marked `open` were re-checked against `main` at `f9544ca`:
+  **28 handled, 441 still open, 13 not violations, 2 needs decision**. By rule: R5 149 open,
+  R8 192, R7 22, R12 17, R10 23, R9 24, R6 12, R4 2. The resource-bounding wave closed 12 R7 and
+  2 R12 rows; the rest of the handled set is the earlier fix rounds. The ledger states now carry
+  the triage result; per-row evidence is in `.planning/audit_2026-10-18_triage.md`.
+- **Needs decision (owner):** limit overrides still accept `0`/`u64::MAX` with no minimum or
+  cross-field relation checks (`default_page_bytes <= max_query_response_bytes`,
+  `max_total_import_bytes >= max_file_bytes`) — ledger rows 456 and 459. `7d87f04` clamped only
+  the SQLite-bound values.
+- The 441 open rows are the real backlog: R5 failure-path tests (149) and R8 documentation (192)
+  are the bulk; the 100 production-rule rows (R4 2, R6 12, R7 22, R9 24, R10 23, R12 17) are the
+  next actionable set. The 28 handled rows are recorded so finished work is not redone.
