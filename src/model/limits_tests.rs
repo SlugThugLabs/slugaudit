@@ -14,6 +14,8 @@ fn defaults_are_strictly_positive() {
     assert!(limits.max_structure_matches > 0);
     assert!(limits.max_structure_execution_time.as_millis() > 0);
     assert!(limits.max_sync_wall_clock.as_millis() > 0);
+    assert!(limits.max_watch_entries > 0);
+    assert!(limits.max_watch_depth > 0);
 }
 
 #[test]
@@ -124,6 +126,51 @@ fn multiple_overrides_compose() {
             assert_eq!(
                 limits.max_query_response_bytes,
                 ResourceLimits::default().max_query_response_bytes
+            );
+        },
+    );
+}
+
+#[test]
+fn watch_scope_limits_default_to_the_adaptive_profile_caps() {
+    let limits = ResourceLimits::default();
+    assert_eq!(limits.max_watch_entries, 200_000);
+    assert_eq!(limits.max_watch_depth, 64);
+}
+
+#[test]
+fn from_env_overrides_watch_scope_limits() {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    temp_env::with_vars(
+        [
+            ("SLUGAUDIT_PROFILE", Some("lean")),
+            ("SLUGAUDIT_MAX_WATCH_ENTRIES", Some("1234")),
+            ("SLUGAUDIT_MAX_WATCH_DEPTH", Some("7")),
+        ],
+        || {
+            let limits = ResourceLimits::from_env();
+            assert_eq!(limits.max_watch_entries, 1_234);
+            assert_eq!(limits.max_watch_depth, 7);
+            // Unset neighbours remain at the selected profile's defaults.
+            assert_eq!(limits.max_file_bytes, 32 * 1024 * 1024);
+        },
+    );
+}
+
+#[test]
+fn an_override_above_sqlite_max_is_clamped() {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    temp_env::with_vars(
+        [
+            ("SLUGAUDIT_MAX_FILE_BYTES", Some("2000000000")),
+            ("SLUGAUDIT_MAX_QUERY_VALUE_BYTES", Some("2000000000")),
+        ],
+        || {
+            let limits = ResourceLimits::from_env();
+            assert_eq!(limits.max_file_bytes, SQLITE_MAX_VALUE_BYTES);
+            assert_eq!(
+                limits.max_query_value_bytes,
+                SQLITE_MAX_VALUE_BYTES as usize
             );
         },
     );

@@ -102,6 +102,27 @@ fn a_known_profile_resolves_without_warning() {
 }
 
 #[test]
+fn watch_scope_caps_are_bounded_per_profile() {
+    let lean = limits_for_profile(AuditProfile::Lean);
+    assert_eq!(lean.max_watch_entries, 50_000);
+    assert_eq!(lean.max_watch_depth, 32);
+
+    for profile in [AuditProfile::Audit, AuditProfile::Adaptive] {
+        let limits = limits_for_profile(profile);
+        assert_eq!(limits.max_watch_entries, 200_000, "{profile:?}");
+        assert_eq!(limits.max_watch_depth, 64, "{profile:?}");
+    }
+}
+
+#[test]
+fn adaptive_file_and_query_caps_never_exceed_sqlite_max() {
+    let limits = limits_for_profile(AuditProfile::Adaptive);
+
+    assert!(limits.max_file_bytes <= SQLITE_MAX_VALUE_BYTES);
+    assert!(limits.max_query_value_bytes <= SQLITE_MAX_VALUE_BYTES as usize);
+}
+
+#[test]
 fn every_profile_defaults_to_a_64_kib_page_under_its_ceiling() {
     for profile in [
         AuditProfile::Lean,

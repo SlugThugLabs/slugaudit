@@ -40,7 +40,7 @@ impl SourceSyncManager {
             WatcherHealth::NeedsVerification | WatcherHealth::Desynced => {
                 self.verify_and_drain(root, state, connection, sink)
             }
-            WatcherHealth::Healthy => {
+            WatcherHealth::Healthy | WatcherHealth::Partial => {
                 self.healthy_path(root, state, connection, database_path, sink)
             }
             WatcherHealth::Unavailable => {
@@ -98,7 +98,17 @@ impl SourceSyncManager {
                     data,
                 )
             })?;
-        state.set_health(WatcherHealth::Healthy);
+        // A watcher that is active but whose scope walk stopped at a
+        // documented limit is still trusted for the directories it watches;
+        // the stat sweep covers the rest. Reporting `Healthy` would hide the
+        // incomplete watch set, and `NeedsVerification` would force a full
+        // publish on every call, so the verification ends `Partial` instead.
+        let health = if self.watch_manager.scope_limited(root.as_path()) {
+            WatcherHealth::Partial
+        } else {
+            WatcherHealth::Healthy
+        };
+        state.set_health(health);
         self.record_full_publish();
         Ok(report.revision_id)
     }

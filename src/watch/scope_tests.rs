@@ -65,3 +65,72 @@ fn nested_gitignores_are_collected_for_the_matcher() {
     assert!(scope.watch_dirs.contains(&root.join("a")));
     assert!(scope.watch_dirs.contains(&root.join("a/b")));
 }
+
+#[test]
+fn a_count_capped_scope_walk_is_reported_and_keeps_the_root() {
+    let project = tempfile::tempdir().expect("project dir");
+    let root = project.path();
+    for name in ["a", "b", "c", "d", "e"] {
+        fs::create_dir_all(root.join(name)).expect("dir");
+    }
+
+    let scope = WatchScope::compute_with_limits(root, 3, 64);
+
+    let limit = scope
+        .limit
+        .expect("more entries than the cap must report a limit");
+    assert_eq!(limit.max_entries, 3);
+    assert_eq!(limit.entries_seen, 3, "at most `max_entries` are processed");
+    assert!(!limit.depth_limited);
+    assert!(
+        scope.watch_dirs.contains(&root.to_path_buf()),
+        "root is always watched"
+    );
+    assert!(
+        scope.watch_dirs.len() <= 3,
+        "the watch set cannot contain more directories than entries processed: {:?}",
+        scope.watch_dirs
+    );
+}
+
+#[test]
+fn a_depth_capped_scope_walk_stops_at_the_limit_and_flags_it() {
+    let project = tempfile::tempdir().expect("project dir");
+    let root = project.path();
+    fs::create_dir_all(root.join("a/b/c/d")).expect("nested dirs");
+
+    let scope = WatchScope::compute_with_limits(root, 1_000, 2);
+
+    let limit = scope
+        .limit
+        .expect("a directory at the depth cap with children must report a limit");
+    assert_eq!(limit.max_depth, 2);
+    assert!(
+        limit.depth_limited,
+        "a/b has an unwalked child at the depth cap"
+    );
+    assert!(scope.watch_dirs.contains(&root.to_path_buf()));
+    assert!(scope.watch_dirs.contains(&root.join("a")));
+    assert!(scope.watch_dirs.contains(&root.join("a/b")));
+    assert!(
+        !scope.watch_dirs.contains(&root.join("a/b/c")),
+        "the walker must not descend past max_depth"
+    );
+}
+
+#[test]
+fn a_scope_exactly_at_the_entry_cap_is_not_reported_as_truncated() {
+    let project = tempfile::tempdir().expect("project dir");
+    let root = project.path();
+    fs::create_dir_all(root.join("src")).expect("src dir");
+    fs::write(root.join("src/lib.rs"), "fn lib() {}\n").expect("lib file");
+
+    // The walker yields exactly three entries: root, src, src/lib.rs.
+    let scope = WatchScope::compute_with_limits(root, 3, 64);
+
+    assert!(
+        scope.limit.is_none(),
+        "a tree exactly at the cap is complete, not truncated: {:?}",
+        scope.limit
+    );
+}

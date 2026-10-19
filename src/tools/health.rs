@@ -172,6 +172,10 @@ pub struct ServerCounters {
 ///   call will do a full verification rather than incremental reconcile.
 /// - `SteadyState`: watcher `Healthy`, no unreconciled events, a current
 ///   revision exists, the project is fully served from disk.
+/// - `Degraded`: watcher `Partial`, no unreconciled events, a current
+///   revision exists. The project is served and the stat sweep keeps it
+///   fresh, but part of the tree (beyond the documented watch-scope limit)
+///   carries no watcher — this is not full steady state.
 /// - `Unavailable`: watcher could not be initialized; every call will
 ///   full-publish.
 /// - `NoActiveProject`: server has been initialized but no `ensure_current`
@@ -190,6 +194,7 @@ pub enum HealthPhase {
     Importing,
     Restoring,
     SteadyState,
+    Degraded,
     Unavailable,
     NoActiveProject,
     IndexedUnwatched,
@@ -401,6 +406,18 @@ fn derive_phase(
                 HealthPhase::Restoring
             } else {
                 HealthPhase::SteadyState
+            }
+        }
+        watch::WatcherHealth::Partial => {
+            // SteadyState means the project is fully served from disk; a
+            // partial watch scope means part of the tree has no watcher, so
+            // the same revision/event conditions yield Degraded instead.
+            if revision_id.is_none() {
+                HealthPhase::Importing
+            } else if has_unreconciled_events {
+                HealthPhase::Restoring
+            } else {
+                HealthPhase::Degraded
             }
         }
     }

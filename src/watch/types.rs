@@ -22,6 +22,12 @@ pub enum WatcherHealth {
     /// Watcher is active and events are being recorded.
     #[default]
     Healthy,
+    /// Watcher is active, but the scope walk hit a documented limit
+    /// (`max_watch_entries` / `max_watch_depth`): directories beyond it are
+    /// unwatched. The watched directories still record events normally, and
+    /// the stat sweep still runs on every call, so freshness is preserved —
+    /// the watcher is an incomplete hint, not a gap in the guarantee.
+    Partial,
     /// Watcher history is untrustworthy (e.g. after restart). The current
     /// filesystem must be reconciled against the stored state before the
     /// database can be considered synchronized.

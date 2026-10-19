@@ -1,6 +1,6 @@
 //! In-repo project configuration (`.planning/slugaudit/config.json`).
 
-use crate::model::{AuditProfile, ResourceLimits, limits_for_profile};
+use crate::model::{AuditProfile, ResourceLimits, SQLITE_MAX_VALUE_BYTES, limits_for_profile};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -105,7 +105,15 @@ impl ProjectConfig {
             limits = limits_for_profile(profile);
         }
         if let Some(file_bytes) = self.max_file_bytes {
-            limits.max_file_bytes = file_bytes;
+            let capped = file_bytes.min(SQLITE_MAX_VALUE_BYTES);
+            if capped != file_bytes {
+                tracing::warn!(
+                    requested = file_bytes,
+                    cap = SQLITE_MAX_VALUE_BYTES,
+                    "project max_file_bytes exceeds SQLite's maximum storable value; clamping",
+                );
+            }
+            limits.max_file_bytes = capped;
         }
         if let Some(import_bytes) = self.max_total_import_bytes {
             limits.max_total_import_bytes = import_bytes;
@@ -213,5 +221,21 @@ mod tests {
         let error = ProjectConfig::load(&root).expect_err("stat failure must surface");
 
         assert!(matches!(error, ConfigError::Io { .. }), "{error}");
+    }
+
+    #[test]
+    fn a_config_file_above_sqlite_max_is_clamped() {
+        let config = ProjectConfig {
+            max_file_bytes: Some(2_000_000_000),
+            ..Default::default()
+        };
+
+        let applied = config.apply_to_limits(ResourceLimits::default());
+
+        assert_eq!(
+            applied.max_file_bytes,
+            crate::model::SQLITE_MAX_VALUE_BYTES,
+            "SQLite cannot store a larger content value; the project limit is clamped"
+        );
     }
 }

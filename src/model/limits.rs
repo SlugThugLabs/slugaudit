@@ -20,6 +20,16 @@ impl Default for EvidenceLimits {
     }
 }
 
+/// Largest TEXT/BLOB the bundled SQLite can store (`SQLITE_MAX_LENGTH`).
+///
+/// `libsqlite3-sys` 0.35.0 compiles SQLite with the default
+/// `SQLITE_MAX_LENGTH` of 1,000,000,000 bytes (`sqlite3.c:14137-14138`).
+/// A content or query value over this cannot be inserted or read, so the
+/// per-file/query limits are clamped here: without the clamp, a file in
+/// (1e9, max_file] would fail the whole publish at insert instead of
+/// becoming a reported skipped row. Verified 2026-10-19.
+pub(crate) const SQLITE_MAX_VALUE_BYTES: u64 = 1_000_000_000;
+
 /// Process-wide resource ceilings for import, query, and structure work.
 /// Defaults are intentionally conservative for a single-project MCP server.
 ///
@@ -30,14 +40,21 @@ impl Default for EvidenceLimits {
 /// `SLUGAUDIT_MAX_FILE_BYTES=134217728` doubles the per-file size cap.
 /// Duration fields accept a number of seconds (whole seconds only).
 /// Only explicitly-set variables override; defaults are never altered.
+/// Single-value overrides are clamped to [`SQLITE_MAX_VALUE_BYTES`] with a
+/// warning, because SQLite cannot store a larger value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceLimits {
     /// Largest single file that will be fully read into memory for hashing
-    /// and indexing. Larger files are rejected rather than loaded.
+    /// and indexing. Larger files are rejected rather than loaded. Clamped
+    /// to [`SQLITE_MAX_VALUE_BYTES`] so a stored content value cannot exceed
+    /// what the bundled SQLite can hold.
     /// Env: `SLUGAUDIT_MAX_FILE_BYTES` (u64).
     pub max_file_bytes: u64,
-    /// Cap on the sum of sampled file sizes in one publish. Prevents one
-    /// oversized tree from exhausting process memory during import.
+    /// Cap on the sum of sampled file sizes in one publish. This is a
+    /// **work budget**, not a process memory bound: peak memory also includes
+    /// in-flight samples, evidence payloads, and parse transients, so a tree
+    /// can fit this budget and still exceed available RAM. A separate memory
+    /// bound is a pending architectural decision (PLAN/DECISIONS 2026-10-19).
     /// Env: `SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES` (u64).
     pub max_total_import_bytes: u64,
     /// Cap on serialized JSON bytes returned by one read call — the rows of
@@ -94,6 +111,22 @@ pub struct ResourceLimits {
     /// not be cut off; this bounds hangs, not real work.
     /// Env: `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS` (seconds, u64).
     pub max_sync_wall_clock: Duration,
+    /// Largest number of filesystem entries one watch-scope walk may yield.
+    /// The scope decides how many directories carry a `notify` watch, so
+    /// every counted entry is one potential kernel watch descriptor plus the
+    /// path set's per-directory memory; bounding the walk bounds both. A tree
+    /// past the cap produces a partial scope: the directories beyond it are
+    /// unwatched, the scope reports the limit (`WatcherHealth::Partial`), and
+    /// the stat sweep still runs on every call, so freshness does not depend
+    /// on the cap. Env: `SLUGAUDIT_MAX_WATCH_ENTRIES` (usize).
+    pub max_watch_entries: usize,
+    /// Deepest directory level one watch-scope walk may descend, with the
+    /// project root at depth 0. Bounds a pathologically deep tree that the
+    /// entry cap alone would let the walk explore deeply before stopping; a
+    /// directory at the limit with unwalked children also marks the scope
+    /// partial, and the per-call stat sweep remains the freshness guarantee
+    /// for the unwatched subtrees. Env: `SLUGAUDIT_MAX_WATCH_DEPTH` (usize).
+    pub max_watch_depth: usize,
     pub evidence: EvidenceLimits,
 }
 
@@ -128,7 +161,7 @@ impl ResourceLimits {
             None => Self::default(),
         };
         if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_FILE_BYTES") {
-            limits.max_file_bytes = val;
+            limits.max_file_bytes = clamp_sqlite_value("SLUGAUDIT_MAX_FILE_BYTES", val);
         }
         if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES") {
             limits.max_total_import_bytes = val;
@@ -149,7 +182,8 @@ impl ResourceLimits {
             limits.max_query_wall_clock = Duration::from_secs(val);
         }
         if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_QUERY_VALUE_BYTES") {
-            limits.max_query_value_bytes = val;
+            limits.max_query_value_bytes =
+                clamp_sqlite_value("SLUGAUDIT_MAX_QUERY_VALUE_BYTES", val as u64) as usize;
         }
         if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES") {
             limits.max_structure_query_bytes = val;
@@ -163,7 +197,32 @@ impl ResourceLimits {
         if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS") {
             limits.max_sync_wall_clock = Duration::from_secs(val);
         }
+        if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_WATCH_ENTRIES") {
+            limits.max_watch_entries = val;
+        }
+        if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_WATCH_DEPTH") {
+            limits.max_watch_depth = val;
+        }
         limits
+    }
+}
+
+/// Clamps one single-value limit to what the bundled SQLite can store.
+///
+/// An override above the cap is unusable: the value would be rejected at
+/// insert/read. Clamp it and say so rather than letting a per-file skip turn
+/// into a failed publish.
+fn clamp_sqlite_value(name: &str, value: u64) -> u64 {
+    if value > SQLITE_MAX_VALUE_BYTES {
+        tracing::warn!(
+            variable = name,
+            requested = value,
+            cap = SQLITE_MAX_VALUE_BYTES,
+            "limit exceeds SQLite's maximum storable value; clamping",
+        );
+        SQLITE_MAX_VALUE_BYTES
+    } else {
+        value
     }
 }
 

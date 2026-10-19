@@ -315,3 +315,94 @@ fn overflowing_the_deferred_queue_desyncs_the_project_instead_of_losing_events_s
         "events past the queue cap must force a full re-verification"
     );
 }
+
+/// A root whose only watchable directory is the root itself: `.git` is a
+/// hard exclusion and `lib.rs` is a file, so a truncated scope still has
+/// the same watch set as the full one. That isolates the health transition
+/// from the changed-watch-set rule (which forces `NeedsVerification`).
+fn root_only_scope_project() -> tempfile::TempDir {
+    let base = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonical temp dir");
+    let project = tempfile::tempdir_in(base).expect("project dir");
+    std::fs::write(project.path().join("lib.rs"), "fn lib() {}\n").expect("lib file");
+    std::fs::create_dir_all(project.path().join(".git")).expect("git dir");
+    std::fs::write(project.path().join(".git/config"), "[core]\n").expect("git config");
+    project
+}
+
+fn mark_scope_for_refresh(manager: &WatchManager, project: &tempfile::TempDir) {
+    manager.handle_event(event_with(
+        EventKind::Modify(ModifyKind::Any),
+        &project.path().join(".gitignore"),
+    ));
+}
+
+#[test]
+fn a_truncated_scope_moves_a_healthy_project_to_partial() {
+    let project = root_only_scope_project();
+    let manager = WatchManager::new();
+    let state = manager.watch(project.path());
+    state.set_health(WatcherHealth::Healthy);
+
+    mark_scope_for_refresh(&manager, &project);
+    manager.refresh_scope_with_limits_for_test(project.path(), 1, 64);
+
+    assert!(
+        manager.scope_limited(project.path()),
+        "one entry of a multi-entry tree must produce a limited scope"
+    );
+    assert_eq!(
+        state.health(),
+        WatcherHealth::Partial,
+        "a limited scope on an unchanged watch set is Partial, not Healthy"
+    );
+}
+
+#[test]
+fn a_scope_that_is_no_longer_truncated_moves_partial_back_to_healthy() {
+    let project = root_only_scope_project();
+    let manager = WatchManager::new();
+    let state = manager.watch_with_scope_limits_for_test(project.path(), 1, 64);
+    assert!(manager.scope_limited(project.path()));
+    state.set_health(WatcherHealth::Partial);
+
+    mark_scope_for_refresh(&manager, &project);
+    manager.refresh_scope_with_limits_for_test(project.path(), 1_000_000, 64);
+
+    assert!(!manager.scope_limited(project.path()));
+    assert_eq!(
+        state.health(),
+        WatcherHealth::Healthy,
+        "a complete scope restores Healthy when the watch set did not change"
+    );
+}
+
+/// The walk is the expensive half of a scope refresh. It must not run under
+/// the manager lock: if it did, every tool call and the notify callback
+/// would wait for a whole-tree walk. The hook runs on the walking thread
+/// (this one), so a held lock would be held by this very thread and
+/// `try_lock` would fail deterministically — no timing guess is involved.
+#[test]
+fn the_scope_walk_runs_without_holding_the_manager_lock() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let project = temp_project();
+    let manager = WatchManager::new();
+    let probe = Arc::new(AtomicBool::new(false));
+    let probe_in_hook = Arc::clone(&probe);
+    let manager_in_hook = manager.clone();
+
+    crate::watch::set_walk_hook(Box::new(move || {
+        probe_in_hook.store(manager_in_hook.inner.try_lock().is_ok(), Ordering::SeqCst);
+    }));
+
+    manager.watch(project.path());
+
+    assert!(
+        probe.load(Ordering::SeqCst),
+        "the manager lock must be free while the scope walk runs; a tool \
+         call arriving mid-walk must not block on the walk"
+    );
+}

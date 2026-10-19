@@ -71,6 +71,34 @@ fn phase_is_steady_state_when_healthy_with_revision_and_no_unreconciled() {
 }
 
 #[test]
+fn phase_is_degraded_when_partial_with_revision_and_no_unreconciled() {
+    let revision = Some("rev-1".to_owned());
+    assert_eq!(
+        derive_phase(WatcherHealth::Partial, &revision, false),
+        HealthPhase::Degraded,
+        "a partial watch scope is never full steady state"
+    );
+}
+
+#[test]
+fn phase_is_restoring_when_partial_with_unreconciled_events() {
+    let revision = Some("rev-1".to_owned());
+    assert_eq!(
+        derive_phase(WatcherHealth::Partial, &revision, true),
+        HealthPhase::Restoring,
+    );
+}
+
+#[test]
+fn phase_is_importing_when_partial_without_a_revision() {
+    assert_eq!(
+        derive_phase(WatcherHealth::Partial, &None, false),
+        HealthPhase::Importing,
+        "no published revision outranks the watcher's partial scope"
+    );
+}
+
+#[test]
 fn phase_is_unavailable_when_watcher_unavailable() {
     let revision = Some("rev-1".to_owned());
     // Watcher Unavailable wins regardless of revision/extras — the

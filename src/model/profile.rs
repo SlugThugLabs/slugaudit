@@ -1,6 +1,6 @@
 //! Resource limit profiles (Lean, Audit, Adaptive).
 
-use super::limits::{EvidenceLimits, ResourceLimits};
+use super::limits::{EvidenceLimits, ResourceLimits, SQLITE_MAX_VALUE_BYTES};
 use super::system_ram::detect_system_memory;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -75,6 +75,19 @@ pub(crate) fn profile_from_env() -> Option<AuditProfile> {
 /// large enough for a useful page. Clamped to `max_query_response_bytes`.
 pub(crate) const DEFAULT_PAGE_BYTES: usize = 64 * 1024;
 
+/// Watch-scope walk caps. The walk enumerates the directories that carry a
+/// `notify` watch, so its size is bounded in both entries (one potential
+/// kernel watch descriptor and one entry in the scope's path set each) and
+/// depth (a deep tree can be expensive to explore before the entry cap
+/// trips). Lean runs bounded tightly enough for a laptop; Audit and Adaptive
+/// allow a larger tree. Either way a truncated scope is reported as
+/// `WatcherHealth::Partial`, and the stat sweep still runs on every call —
+/// the sweep is the freshness guarantee, not the watcher.
+const LEAN_MAX_WATCH_ENTRIES: usize = 50_000;
+const LEAN_MAX_WATCH_DEPTH: usize = 32;
+const AUDIT_MAX_WATCH_ENTRIES: usize = 200_000;
+const AUDIT_MAX_WATCH_DEPTH: usize = 64;
+
 #[must_use]
 /// The complete limit set for one profile. `Adaptive` scales the import
 /// budget from detected host memory.
@@ -93,6 +106,8 @@ pub fn limits_for_profile(profile: AuditProfile) -> ResourceLimits {
             max_structure_matches: 2_000,
             max_structure_execution_time: Duration::from_secs(10),
             max_sync_wall_clock: Duration::from_secs(120),
+            max_watch_entries: LEAN_MAX_WATCH_ENTRIES,
+            max_watch_depth: LEAN_MAX_WATCH_DEPTH,
             evidence: EvidenceLimits {
                 max_items_per_file: 50_000,
                 max_payload_bytes_per_item: 128 * 1024,
@@ -112,6 +127,8 @@ pub fn limits_for_profile(profile: AuditProfile) -> ResourceLimits {
             max_structure_matches: 20_000,
             max_structure_execution_time: Duration::from_secs(60),
             max_sync_wall_clock: Duration::from_secs(1200),
+            max_watch_entries: AUDIT_MAX_WATCH_ENTRIES,
+            max_watch_depth: AUDIT_MAX_WATCH_DEPTH,
             evidence: EvidenceLimits {
                 max_items_per_file: 200_000,
                 max_payload_bytes_per_item: 512 * 1024,
@@ -121,7 +138,11 @@ pub fn limits_for_profile(profile: AuditProfile) -> ResourceLimits {
         AuditProfile::Adaptive => {
             let ram = detect_system_memory();
             let import_budget = (ram.available_bytes / 2).max(4 * 1024 * 1024 * 1024);
-            let max_file = (ram.total_bytes / 10).clamp(256 * 1024 * 1024, 1024 * 1024 * 1024);
+            // SQLite cannot store a value larger than `SQLITE_MAX_LENGTH`;
+            // clamping here keeps a per-file skip from becoming a failed
+            // publish at the insert.
+            let max_file =
+                (ram.total_bytes / 10).clamp(256 * 1024 * 1024, SQLITE_MAX_VALUE_BYTES);
             ResourceLimits {
                 max_file_bytes: max_file,
                 max_total_import_bytes: import_budget,
@@ -135,6 +156,8 @@ pub fn limits_for_profile(profile: AuditProfile) -> ResourceLimits {
                 max_structure_matches: 20_000,
                 max_structure_execution_time: Duration::from_secs(60),
                 max_sync_wall_clock: Duration::from_secs(1200),
+                max_watch_entries: AUDIT_MAX_WATCH_ENTRIES,
+                max_watch_depth: AUDIT_MAX_WATCH_DEPTH,
                 evidence: EvidenceLimits {
                     max_items_per_file: 200_000,
                     max_payload_bytes_per_item: 512 * 1024,

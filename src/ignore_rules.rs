@@ -79,12 +79,28 @@ pub fn is_excluded_path(relative: &str) -> bool {
 /// its walker from here so they agree on the indexable set by
 /// construction.
 pub(crate) fn indexable_walker(root: &Path) -> ignore::Walk {
-    ignore::WalkBuilder::new(root)
+    indexable_walker_with_max_depth(root, None)
+}
+
+/// [`indexable_walker`], optionally bounded at `max_depth` (the root is
+/// depth 0). Discovery uses the unbounded form; the watch-scope walk uses a
+/// depth bound so a pathologically deep tree cannot dictate how long the
+/// walk runs. The ignore filters are identical either way — only the
+/// descent limit differs.
+pub(crate) fn indexable_walker_with_max_depth(
+    root: &Path,
+    max_depth: Option<usize>,
+) -> ignore::Walk {
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder
         .standard_filters(true)
         .follow_links(false)
         .hidden(false)
-        .require_git(false)
-        .build()
+        .require_git(false);
+    if let Some(max_depth) = max_depth {
+        builder.max_depth(Some(max_depth));
+    }
+    builder.build()
 }
 
 /// Ignore rules for one project root: the hardcoded exclusions plus the

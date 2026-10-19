@@ -298,11 +298,12 @@
             "type": "object"
           },
           "HealthPhase": {
-            "description": "Coarse-grained operational phase. Derived from existing state rather\nthan tracked separately so it can't drift.\n\n- `Importing`: no current revision — the first sync has never succeeded.\n- `Restoring`: watcher is `NeedsVerification` or `Desynced`; the next\n  call will do a full verification rather than incremental reconcile.\n- `SteadyState`: watcher `Healthy`, no unreconciled events, a current\n  revision exists, the project is fully served from disk.\n- `Unavailable`: watcher could not be initialized; every call will\n  full-publish.\n- `NoActiveProject`: server has been initialized but no `ensure_current`\n  call has succeeded, so the watcher state can't be summarized.\n- `IndexedUnwatched`: the enabled project has a published revision in\n  its database, but this server has no registered watcher for that path.\n  Indexed evidence remains readable; no watcher health is implied.\n- `Disabled`: `request.path` resolved to no enabled project — the\n  activation marker is absent — so nothing can serve that path until\n  `project_control` enables it. `remedy` names that call. This is a\n  state, not an error: a diagnostic tool that fails when there is\n  nothing to diagnose is useless.",
+            "description": "Coarse-grained operational phase. Derived from existing state rather\nthan tracked separately so it can't drift.\n\n- `Importing`: no current revision — the first sync has never succeeded.\n- `Restoring`: watcher is `NeedsVerification` or `Desynced`; the next\n  call will do a full verification rather than incremental reconcile.\n- `SteadyState`: watcher `Healthy`, no unreconciled events, a current\n  revision exists, the project is fully served from disk.\n- `Degraded`: watcher `Partial`, no unreconciled events, a current\n  revision exists. The project is served and the stat sweep keeps it\n  fresh, but part of the tree (beyond the documented watch-scope limit)\n  carries no watcher — this is not full steady state.\n- `Unavailable`: watcher could not be initialized; every call will\n  full-publish.\n- `NoActiveProject`: server has been initialized but no `ensure_current`\n  call has succeeded, so the watcher state can't be summarized.\n- `IndexedUnwatched`: the enabled project has a published revision in\n  its database, but this server has no registered watcher for that path.\n  Indexed evidence remains readable; no watcher health is implied.\n- `Disabled`: `request.path` resolved to no enabled project — the\n  activation marker is absent — so nothing can serve that path until\n  `project_control` enables it. `remedy` names that call. This is a\n  state, not an error: a diagnostic tool that fails when there is\n  nothing to diagnose is useless.",
             "enum": [
               "importing",
               "restoring",
               "steady_state",
+              "degraded",
               "unavailable",
               "no_active_project",
               "indexed_unwatched",
@@ -387,6 +388,11 @@
               {
                 "const": "healthy",
                 "description": "Watcher is active and events are being recorded.",
+                "type": "string"
+              },
+              {
+                "const": "partial",
+                "description": "Watcher is active, but the scope walk hit a documented limit\n(`max_watch_entries` / `max_watch_depth`): directories beyond it are\nunwatched. The watched directories still record events normally, and\nthe stat sweep still runs on every call, so freshness is preserved —\nthe watcher is an incomplete hint, not a gap in the guarantee.",
                 "type": "string"
               },
               {

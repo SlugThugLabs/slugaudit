@@ -485,3 +485,52 @@ fn sync_error_budget_classifier_sees_through_the_reconcile_wrapper() {
         None
     );
 }
+
+/// A full verification of a project whose watch scope stopped at a
+/// documented limit ends `Partial`, not `Healthy`: the watched directories
+/// are trusted, the stat sweep covers the rest, and every later call must
+/// keep reporting the incomplete watch set.
+#[test]
+fn a_full_verification_of_a_truncated_watch_scope_ends_partial() {
+    let manager = SourceSyncManager::new();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+
+    let state = manager
+        .watch_manager
+        .watch_with_scope_limits_for_test(project.path(), 1, 64);
+    assert!(manager.watch_manager.scope_limited(project.path()));
+    // No notify watcher exists in tests, so registration is Unavailable;
+    // force the full-verification path this test is about.
+    state.set_health(crate::watch::WatcherHealth::NeedsVerification);
+
+    sync_project(&manager, &project);
+
+    assert_eq!(
+        state.health(),
+        crate::watch::WatcherHealth::Partial,
+        "verification must not hide the truncated watch scope as Healthy"
+    );
+}
+
+#[test]
+fn a_full_verification_of_an_untruncated_watch_scope_ends_healthy() {
+    let manager = SourceSyncManager::new();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+
+    let state =
+        manager
+            .watch_manager
+            .watch_with_scope_limits_for_test(project.path(), 1_000_000, 64);
+    assert!(!manager.watch_manager.scope_limited(project.path()));
+    state.set_health(crate::watch::WatcherHealth::NeedsVerification);
+
+    sync_project(&manager, &project);
+
+    assert_eq!(
+        state.health(),
+        crate::watch::WatcherHealth::Healthy,
+        "a complete scope restores Healthy after verification"
+    );
+}
