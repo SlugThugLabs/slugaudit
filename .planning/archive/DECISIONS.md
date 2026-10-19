@@ -1509,3 +1509,39 @@ Format: date — title; status; context; decision; rationale; consequences.
   bundle carries only `license_cache.json` (repo to SPDX id) and no license texts, and the shipped binary
   embeds no license text. A release that ships the bundled grammars needs their notices added to
   `third-party-notices` before publication. Follow-up recorded in PLAN.md; not started.
+
+## 2026-10-19 — Production resource bounds: activation, hashing, sampling, reconcile, watch, query
+
+- **Context**: the 2026-10-19 algorithm-scale follow-up left four unbounded production paths and
+  two limit defects. All are now bounded and tested; the larger import-memory architecture remains
+  a pending owner decision (PLAN, "Resource-bounding remediation").
+- **Decisions**:
+  - `.gitignore` is read through the shared capped-byte helper at `MAX_FOREIGN_TEXT_BYTES` (1 MiB).
+    Over-cap/unreadable is `GitignoreOutcome::NotWritten` with the observed error; the project still
+    enables, and a missing file still creates the rule (`dd87904`).
+  - Hashing streams `take(max_file_bytes + 1)` into BLAKE3 and never feeds a byte past the cap;
+    `HashError::TooLarge` becomes a skipped existence row. Sampling uses the same bounded read
+    (`94726ab`).
+  - The reconcile stored-hash lookup is batched at 4096 paths; the sync deadline is checked before
+    every batch and the final flush; a spent budget returns `TimeBudgetExceeded` before any lookup
+    or commit (`94726ab`).
+  - Query rows check TEXT/BLOB lengths with `Row::get_ref`; a conservative serialized-size lower
+    bound sends an over-page first row straight to `clip_row` and ends the page before converting an
+    over-page later row. Rows that fit are byte-identical (`4d50e18`).
+  - The watch-scope walk is bounded by `max_watch_entries`/`max_watch_depth` (Lean 50k/32; Audit and
+    Adaptive 200k/64; env `SLUGAUDIT_MAX_WATCH_ENTRIES`/`_DEPTH`; process/env only, not project
+    config) and runs outside the manager lock. A truncated scope reports `WatcherHealth::Partial`
+    and health phase `degraded`; the per-call stat sweep remains the freshness guarantee. A
+    scope-refresh generation prevents an ignore-file event during the walk from being swallowed,
+    and full verification refreshes the scope before draining (`7d87f04`, `a1147f9`).
+  - `max_file_bytes` and `max_query_value_bytes` are clamped to `SQLITE_MAX_VALUE_BYTES`
+    (1,000,000,000; bundled `libsqlite3-sys` 0.35.0 default `SQLITE_MAX_LENGTH`) in the Adaptive
+    profile, env overrides, and project config, with a warning when an override is reduced
+    (`7d87f04`).
+  - `max_total_import_bytes` is documented as a **work budget**, not a memory bound. Peak memory
+    also includes in-flight samples, evidence, and parse transients.
+- **Open — import-memory architecture (owner decision)**: the architect's recommendation is D2
+  (hash-first, single-transaction windowed publish) with five binding parameters, recorded in PLAN.
+  Not implemented. A size-only clamp is insufficient because lossy UTF-8 conversion can expand
+  content up to 3×; the content check and a `content_limit` skip reason are part of D2 parameter 3.
+- **Open — grammar notices** remain a release blocker (see the 2026-10-18 entry).

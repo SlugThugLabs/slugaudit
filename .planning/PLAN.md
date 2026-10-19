@@ -1335,3 +1335,39 @@ Still open from this round:
   Briefs used this session (rules, fix brief) are reproduced in the audit report and these PLAN entries.
 - Pending owner decisions: `#[rustfmt::skip]` in `connect_agents.rs` (lead recommends accept), `9p`/`virtiofs`
   allowed (recommend keep), invalid `RUST_LOG` falls back to `info` (recommend keep).
+
+### Resource-bounding remediation (2026-10-19)
+
+- **Landed** (branch `fix/resource-bounds-2026-10-19`): activation `.gitignore` 1 MiB cap
+  (`dd87904`); streaming hash cap + bounded sampling (`94726ab`); 4096-path reconcile lookup
+  batching with a deadline check before every batch (`94726ab`); query `get_ref`/lower-bound
+  pre-check (`4d50e18`); watch scope caps, lock-free walk, `Partial` health/degraded phase, and the
+  SQLite value clamp (`7d87f04`); full-verification scope refresh (`a1147f9`); source-limit
+  annotations (`1f17dc5`); rustfmt (`4f58379`). Evidence: `.planning/TASK_PLAN_STATUS.md`.
+- **Open — import memory (owner decision).** The architect recommends **D2: hash-first, single-
+  transaction windowed publish**, with these binding parameters:
+  1. `max_total_import_bytes` keeps its name/number but is documented as a work budget (sampled
+     bytes per publish), not a memory bound; the `ImportTooLarge` text stops claiming it is memory.
+  2. New RAM-derived `max_import_workers` (`ResourceLimits`, `SLUGAUDIT_MAX_IMPORT_WORKERS`,
+     `ProjectConfig`), default `clamp(available_bytes / (2 × 16 × F_effective), 1, 8)`; the 16×
+     per-file allowance is calibrated by `benches/memory.rs` before landing.
+  3. Admit a file only when its size ≤ `max_file_bytes` **and** its stored UTF-8 content is
+     ≤ 1,000,000,000 bytes; otherwise a skipped existence row with reason `content_limit`, never a
+     fatal publish. Adaptive becomes `min(current_formula, 1e9, max(64 MiB, available/32))`.
+  4. The write transaction begins after prepare/hash/diff, spans re-read + hash-verify + parse +
+     write, resolves edges in a bounded post-pass, flips `is_current` last; `SQLITE_BUSY` on
+     `BEGIN` is a typed retry within the sync deadline.
+  5. A final streaming hash-only verification over changed paths runs before the flip; decide
+     whether the same window extends to `reconcile_dirty_paths_with_deadline`.
+  Key numbers: current Audit floor ~36 GiB (32 GiB retained + 8×2×256 MiB in flight), worst case
+  ~64 GiB; Adaptive's sampling floor is 16.8 GiB on an 8 GiB host; SQLite's value cap is 1e9;
+  lossy UTF-8 expansion is up to 3×. D2's bound is `F_eff = min(profile_F, 1e9, max(64 MiB,
+  available/32))`, `W = clamp(available/(2×16×F_eff), 1, 8)`. Plain batched commits and staging
+  tables cannot preserve invariant 6 / quotable counts; see the design at
+  `/tmp/audit/import_memory_design.md` (session artifact; parameters above are the durable record).
+- **Open — lossy UTF-8 content limit**: a file under the file cap can still exceed SQLite's value
+  limit after lossy conversion. D2 parameter 3 closes it; until then a very large invalid-UTF-8
+  file in the Adaptive profile can still fail the publish at insert.
+- **Open — grammar notices** remain a release blocker (see the 2026-10-18 handoff).
+- **Remaining audit waves** (R5/R6/R7/R8/R9/R10/R12 and the rest of the top-10) are unchanged and
+  not part of this remediation.

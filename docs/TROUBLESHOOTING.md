@@ -20,6 +20,7 @@ it reports (`src/tools/health.rs:265-275`).
 | `NeedsVerification` / `Desynced` | full publish (walk + hash the tree, re-parse changed files) |
 | `Healthy` with unreconciled events | incremental reconcile (only the dirty paths) |
 | `Healthy` with no events | returns the current revision, no work |
+| `Partial` | same stat sweep/reconcile as `Healthy`, but the watch scope stopped at `max_watch_entries`/`max_watch_depth`; directories beyond the limit are unwatched, so the sweep is the freshness guarantee for them |
 | `Unavailable` | full publish |
 
 So a call that walks the whole tree when nothing or little changed means the
@@ -31,16 +32,19 @@ reconcile (`src/sync/manager.rs:140-148`;
 `src/tools/health.rs:163`). **A value that stays at 1 or more across calls,
 instead of returning to 0, means every call is paying the full-publish cost.**
 `watcher.health` and `phase` in the same response tell you which state caused
-it (`src/tools/health.rs:82`, `:459-467`): `desynced` maps to phase
-`restoring`, `unavailable` to phase `unavailable`.
+it (`src/tools/health.rs`): `desynced` maps to phase `restoring`, `partial`
+to `degraded`, and `unavailable` to `unavailable`. A `partial` watcher still
+does the sweep on every call, so freshness is preserved for the unwatched
+directories; raise `SLUGAUDIT_MAX_WATCH_ENTRIES`/`_DEPTH` or narrow the tree
+if the degraded state is not acceptable.
 
 ### Inotify watch exhaustion (Linux)
 
 A large tree can exceed the kernel's per-user watch limit. The `notify`
 watcher reports this as an error; SlugAudit's error callback marks every
-project `Desynced` so the next call does a full verification
-(`src/watch/manager.rs:80-101`). `Desynced` is documented as "watcher detected
-an integrity problem (queue overflow, watch removed, etc.)"
+project `Desynced` so the next call does a full verification (the watcher's
+error callback in `src/watch/manager.rs`). `Desynced` is documented as
+"watcher detected an integrity problem (queue overflow, watch removed, etc.)"
 (`src/watch/types.rs:29-31`). Because a full publish only resets the counter
 when a reconcile later succeeds incrementally, `consecutive_full_publishes`
 climbs instead of resetting.

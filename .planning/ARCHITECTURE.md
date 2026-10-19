@@ -165,9 +165,9 @@ Caller                             SlugAudit server
       ├─ ensure_project_row          INSERT OR IGNORE the singleton row; purge prior-session findings
       ├─ watch_manager.watch         register or reuse the project's WatchState
       └─ sync_by_health branch
-         ├─ NeedsVerification│Desynced → full publish + drain events → Healthy
+         ├─ NeedsVerification│Desynced → full publish + drain events → Healthy|Partial
          │                              <!-- mcp://progress: publishing {i}/{total} -->
-         ├─ Healthy → stat sweep, then reconcile unreconciled events
+         ├─ Healthy│Partial → stat sweep, then reconcile unreconciled events
          │            (barrier-bounded to MAX_BARRIER_LOOPS), then apply sweep findings
          └─ Unavailable → full publish every call
    └─ tools::* handler             with_verified_read / with_verified_write
@@ -230,9 +230,19 @@ metadata row, and dispatches on watcher health (`sync/manager_health.rs`):
 
 | Health | Action |
 |---|---|
-| `NeedsVerification`, `Desynced` | full publish, then drain events that arrived during it, then mark `Healthy` |
-| `Healthy` | stat sweep; reconcile unreconciled events if any; apply the sweep's findings |
+| `NeedsVerification`, `Desynced` | full publish, then drain events that arrived during it, then mark `Healthy` (or `Partial` when the watch scope is limited) |
+| `Healthy`, `Partial` | stat sweep; reconcile unreconciled events if any; apply the sweep's findings |
 | `Unavailable` | full publish every call |
+
+`Partial` means the watcher is active but its scope walk stopped at a documented
+`max_watch_entries` / `max_watch_depth` limit; directories beyond the limit are
+unwatched, and the per-call stat sweep remains the freshness guarantee for them.
+The walk and the `IgnoreRules` build run outside the manager lock; only the
+watch-set diff and `watcher.watch`/`unwatch` are serialized. A scope-refresh
+generation makes an ignore-file event that arrives during the walk force another
+pass instead of being swallowed. These caps are process/env limits
+(`SLUGAUDIT_MAX_WATCH_ENTRIES`/`_DEPTH`); the watcher is registered before a
+project config is loaded, so `config.json` does not override them.
 
 A publish is compare-and-swap. `sync/publish_cas.rs::publish` discovers, hashes,
 and diffs the current disk state against what the database holds, then asks
@@ -339,7 +349,7 @@ Freshness has two layers, and the ordering matters:
   watcher's error arm marks every project `Desynced`, which forces a full
   publish on the next call.
 - **The stat sweep is the guarantee** (`sync/sweep.rs`). On every `Healthy`
-  call the project is walked with the same walker discovery uses, and every
+  or `Partial` call the project is walked with the same walker discovery uses, and every
   file is `stat`ed — one `stat`, no read. A file whose stored
   `modified_unix_seconds` and `byte_len` both match is proven unchanged;
   everything else (stat mismatch, new on disk, or present in the database but
@@ -420,6 +430,15 @@ enforced atomically:
 `ATTACH DATABASE` on every connection, so a read-only connection cannot reach
 a second database file. This is the engine-level half of the invariant that
 correctness comes from the connection, not from inspecting query text.
+
+**Value-size ceiling.** The bundled SQLite caps one TEXT/BLOB at
+`SQLITE_MAX_LENGTH` (1,000,000,000 bytes; `libsqlite3-sys` 0.35.0). The
+per-file and per-query-value limits are clamped to that ceiling in the
+Adaptive profile, env overrides, and project config, with a warning when an
+override is reduced, so an over-limit file becomes a reported skipped row
+rather than a failed publish. `max_total_import_bytes` is a sampled-bytes
+**work budget**, not a memory bound; the separate memory/in-flight design is
+a pending decision (PLAN, 2026-10-19).
 
 **Schema versioning is discard-and-rebuild.** `store/migrations.rs` writes
 `CURRENT_SCHEMA_VERSION` (currently `7`) to `PRAGMA user_version`. A database
