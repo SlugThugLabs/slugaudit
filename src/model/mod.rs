@@ -9,8 +9,8 @@ mod span;
 mod system_ram;
 
 pub use evidence::{EvidenceItem, EvidenceKind, SpanAvailability};
-pub use limits::{EvidenceLimits, ResourceLimits, process_limits};
 pub(crate) use limits::SQLITE_MAX_VALUE_BYTES;
+pub use limits::{EvidenceLimits, ResourceLimits, process_limits};
 pub use parser::{
     EvidenceOrigin, ExtractionCompleteness, ParseOutcome, ParserAvailability, ParserRun,
 };

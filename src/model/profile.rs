@@ -141,8 +141,7 @@ pub fn limits_for_profile(profile: AuditProfile) -> ResourceLimits {
             // SQLite cannot store a value larger than `SQLITE_MAX_LENGTH`;
             // clamping here keeps a per-file skip from becoming a failed
             // publish at the insert.
-            let max_file =
-                (ram.total_bytes / 10).clamp(256 * 1024 * 1024, SQLITE_MAX_VALUE_BYTES);
+            let max_file = (ram.total_bytes / 10).clamp(256 * 1024 * 1024, SQLITE_MAX_VALUE_BYTES);
             ResourceLimits {
                 max_file_bytes: max_file,
                 max_total_import_bytes: import_budget,

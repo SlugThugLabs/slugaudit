@@ -28,8 +28,8 @@ fn walk_and_hash(root: &std::path::Path) -> u64 {
     let mut digest_chars = 0_u64;
     for file in &files {
         if file.kind == FileKind::Indexed {
-            let identity = hash_file(&file.relative_path, &file.absolute_path, HASH_CAP_BYTES)
-                .expect("hash");
+            let identity =
+                hash_file(&file.relative_path, &file.absolute_path, HASH_CAP_BYTES).expect("hash");
             digest_chars += identity.content_hash.len() as u64;
         }
     }

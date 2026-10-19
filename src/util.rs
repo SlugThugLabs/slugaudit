@@ -77,7 +77,10 @@ impl std::fmt::Display for CappedReadError {
         match self {
             Self::Io(error) => write!(formatter, "{error}"),
             Self::TooLarge { limit, observed } => {
-                write!(formatter, "file is {observed} bytes, over the {limit}-byte cap")
+                write!(
+                    formatter,
+                    "file is {observed} bytes, over the {limit}-byte cap"
+                )
             }
         }
     }
