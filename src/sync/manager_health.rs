@@ -74,6 +74,11 @@ impl SourceSyncManager {
             root_id = %crate::util::redacted_path(root.as_path()),
             "watcher untrusted; running full verification",
         );
+        // A concurrent first `watch` can still be computing its scope (the
+        // walk runs outside the manager lock); make sure the drain below has
+        // the project's ignore rules instead of a transient `None`. A no-op
+        // when the scope is already current.
+        self.watch_manager.refresh_scope(root.as_path());
         let report = super::super::manager_meta::publish_full(
             connection,
             root.as_path(),
