@@ -6,7 +6,9 @@
 //! progress handler.
 
 use super::query_clip::{ClippedCell, clip_row};
-use super::query_value::{NonFiniteCell, non_finite_cells, read_row, row_to_json};
+use super::query_value::{
+    NonFiniteCell, non_finite_cells, read_row, row_serialized_lower_bound, row_to_json,
+};
 
 use super::context::internal_error;
 use crate::model::ResourceLimits;
@@ -193,13 +195,33 @@ fn execute_and_collect(
     let mut size_truncated = false;
     for row in mapped {
         let values = row.map_err(|error| describe_error(&error, abort_reason))?;
+        let row_index = offset.saturating_add(rows.len());
+        if row_serialized_lower_bound(&values) > page_bytes {
+            // The bound never exceeds the exact serialized size, so this row
+            // must cross the page. Converting it would clone its TEXT and
+            // hex-expand its BLOB only to drop the result, so skip that work.
+            if !rows.is_empty() {
+                size_truncated = true;
+                break;
+            }
+            // The first row is always kept so paging makes progress; it needs
+            // only the raw values for clipping.
+            let cut = clip_row(&column_names, &values, page_bytes, row_index)
+                .map_err(|error| internal_error("clipping an oversized query row", error))?;
+            clipped = cut.cells;
+            let row_bytes = serialized_len(&cut.row)
+                .map_err(|error| internal_error("measuring query row size", error))?;
+            total_bytes = total_bytes.saturating_add(row_bytes);
+            non_finite.extend(non_finite_cells(&column_names, &values, row_index));
+            rows.push(cut.row);
+            continue;
+        }
         let mut value = row_to_json(&column_names, &values);
         let mut row_bytes = serialized_len(&value)
             .map_err(|error| internal_error("measuring query row size", error))?;
         if rows.is_empty() && row_bytes > page_bytes {
             // The first row is always kept so paging makes progress, but its
             // TEXT/BLOB cells are cut to the page and each cut is reported.
-            let row_index = offset.saturating_add(rows.len());
             let cut = clip_row(&column_names, &values, page_bytes, row_index)
                 .map_err(|error| internal_error("clipping an oversized query row", error))?;
             value = cut.row;
@@ -211,11 +233,7 @@ fn execute_and_collect(
             break;
         }
         total_bytes = total_bytes.saturating_add(row_bytes);
-        non_finite.extend(non_finite_cells(
-            &column_names,
-            &values,
-            offset.saturating_add(rows.len()),
-        ));
+        non_finite.extend(non_finite_cells(&column_names, &values, row_index));
         rows.push(value);
     }
     Ok((

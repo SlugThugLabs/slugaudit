@@ -4,7 +4,7 @@
 //! execution (budgets, response-size shrinking) rather than value framing.
 use crate::util;
 use rusqlite::Row;
-use rusqlite::types::{Type as SqlType, Value as SqlValue};
+use rusqlite::types::{Type as SqlType, Value as SqlValue, ValueRef};
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -56,17 +56,41 @@ pub(super) fn read_row(
 ) -> rusqlite::Result<Vec<SqlValue>> {
     let mut values = Vec::with_capacity(column_count);
     for index in 0..column_count {
-        let value: SqlValue = row.get(index)?;
-        match &value {
-            SqlValue::Text(text) => reject_oversized(text.len(), value_cap, index, SqlType::Text)?,
-            SqlValue::Blob(bytes) => {
+        // `get_ref` borrows SQLite's buffer, so an oversized value is rejected
+        // before `get` copies it into an owned `Value` that would be dropped
+        // unread: the cap check never allocates the bytes it refuses.
+        match row.get_ref(index)? {
+            ValueRef::Text(bytes) => {
+                reject_oversized(bytes.len(), value_cap, index, SqlType::Text)?
+            }
+            ValueRef::Blob(bytes) => {
                 reject_oversized(bytes.len(), value_cap, index, SqlType::Blob)?
             }
-            _ => {}
+            ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) => {}
         }
-        values.push(value);
+        values.push(row.get(index)?);
     }
     Ok(values)
+}
+
+/// A lower bound on the serialized JSON size of one row, computed from the raw
+/// cells without converting them.
+///
+/// Object punctuation, column names and the quotes around string values are
+/// all omitted, as are NULL/integer/real contributions; a TEXT cell counts its
+/// UTF-8 byte length (JSON escaping only ever adds bytes) and a BLOB cell
+/// counts its hex length. Every omitted term is positive, so this never
+/// exceeds the exact `serialized_len(&row_to_json(..))`: a row whose bound
+/// already exceeds the page can be dropped without converting it.
+pub(super) fn row_serialized_lower_bound(values: &[SqlValue]) -> usize {
+    values.iter().fold(0usize, |total, value| {
+        let contribution = match value {
+            SqlValue::Text(text) => text.len(),
+            SqlValue::Blob(bytes) => bytes.len().saturating_mul(2),
+            SqlValue::Null | SqlValue::Integer(_) | SqlValue::Real(_) => 0,
+        };
+        total.saturating_add(contribution)
+    })
 }
 
 /// One row as a JSON object, column names as keys, BLOBs hex-encoded.

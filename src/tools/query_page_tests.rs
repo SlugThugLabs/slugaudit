@@ -231,3 +231,98 @@ fn a_result_with_only_finite_reals_lists_no_non_finite_cells() {
 
     assert!(page.non_finite_cells.is_empty());
 }
+
+#[test]
+fn a_first_row_oversized_blob_is_clipped_with_the_continuation_metadata() {
+    let project = activated_project(&[]);
+
+    let page = ask_page(
+        &project,
+        "SELECT zeroblob(5000) AS b",
+        0,
+        Some(100),
+        &ResourceLimits::default(),
+    )
+    .expect("oversized blob row");
+
+    assert_eq!(page.rows.len(), 1, "one row per page minimum");
+    assert_eq!(page.rows_bytes, 100);
+    let cell = &page.clipped_cells[0];
+    assert_eq!(
+        (cell.row, cell.column.as_str(), cell.kind, cell.unit),
+        (0, "b", "blob", "bytes")
+    );
+    assert_eq!((cell.returned, cell.total, cell.next_start), (46, 5000, 47));
+    assert_eq!(cell.continue_with, "substr(\"b\", 47, 46)");
+    let returned = page.rows[0]["b"].as_str().expect("hex string");
+    assert_eq!(returned.len(), cell.returned * 2);
+    assert!(returned.bytes().all(|byte| byte == b'0'));
+}
+
+#[test]
+fn a_first_row_oversized_text_is_clipped_on_a_character_boundary() {
+    let project = activated_project(&[]);
+    let text = "日本語".repeat(100);
+
+    let page = ask_page(
+        &project,
+        &format!("SELECT '{text}' AS t"),
+        0,
+        Some(20),
+        &ResourceLimits::default(),
+    )
+    .expect("oversized text row");
+
+    let cell = &page.clipped_cells[0];
+    assert_eq!((cell.kind, cell.unit), ("text", "characters"));
+    assert_eq!((cell.returned, cell.total, cell.next_start), (4, 300, 5));
+    assert_eq!(page.rows_bytes, 20);
+    assert_eq!(page.rows[0]["t"], "日本語日");
+}
+
+#[test]
+fn an_oversized_row_after_a_small_first_row_still_ends_the_page() {
+    let project = activated_project(&[]);
+
+    let page = ask_page(
+        &project,
+        "SELECT 'a' AS t UNION ALL SELECT hex(zeroblob(5000)) AS t",
+        0,
+        Some(100),
+        &ResourceLimits::default(),
+    )
+    .expect("later oversized row");
+
+    assert_eq!(page.rows.len(), 1, "the small first row stays intact");
+    assert_eq!(page.rows[0]["t"], "a");
+    assert_eq!(page.rows_bytes, 9);
+    assert!(page.clipped_cells.is_empty());
+    assert!(page.truncated);
+    assert_eq!(page.next_offset, Some(1));
+    assert_eq!(page.total_rows, Some(2));
+}
+
+#[test]
+fn an_escaped_text_row_is_measured_exactly_not_by_the_raw_lower_bound() {
+    let project = activated_project(&[]);
+
+    // 200 quote characters: 200 raw bytes, but 400 bytes once JSON-escaped.
+    // The raw lower bound fits a 300-byte page while the exact row does not,
+    // so the row is still measured exactly and clipped.
+    let page = ask_page(
+        &project,
+        "SELECT printf('%.*c', 200, '\"') AS t",
+        0,
+        Some(300),
+        &ResourceLimits::default(),
+    )
+    .expect("escape-heavy row");
+
+    let cell = &page.clipped_cells[0];
+    assert_eq!((cell.kind, cell.unit), ("text", "characters"));
+    assert_eq!((cell.returned, cell.total), (146, 200));
+    assert_eq!(page.rows_bytes, 300);
+    let returned = page.rows[0]["t"].as_str().expect("text cell");
+    assert_eq!(returned.chars().count(), cell.returned);
+    assert!(returned.chars().all(|character| character == '"'));
+}
