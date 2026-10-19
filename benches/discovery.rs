@@ -10,6 +10,10 @@ mod common;
 /// Small fixture size: 40 files (the cheap contrast to `common::LARGE`).
 const SMALL: usize = 40;
 
+/// The generated fixtures are far below this cap; it keeps the benchmark on
+/// the same bounded hashing API production uses instead of an unbounded call.
+const HASH_CAP_BYTES: u64 = 64 * 1024 * 1024;
+
 use criterion::{Criterion, criterion_group, criterion_main};
 use slugaudit_mcp_rust::sync::{FileKind, discover, hash_file};
 use std::hint::black_box;
@@ -24,7 +28,8 @@ fn walk_and_hash(root: &std::path::Path) -> u64 {
     let mut digest_chars = 0_u64;
     for file in &files {
         if file.kind == FileKind::Indexed {
-            let identity = hash_file(&file.relative_path, &file.absolute_path).expect("hash");
+            let identity = hash_file(&file.relative_path, &file.absolute_path, HASH_CAP_BYTES)
+                .expect("hash");
             digest_chars += identity.content_hash.len() as u64;
         }
     }

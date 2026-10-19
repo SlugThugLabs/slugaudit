@@ -492,6 +492,65 @@ fn a_symlink_in_the_dirty_set_is_never_dereferenced() {
     assert_eq!(indexed, 0, "no row may exist for the symlink path");
 }
 
+/// A budget already spent before reconciliation begins must fail before the
+/// first stored-hash lookup and leave the database untouched: no lookup, no
+/// commit, and the dirty events stay unreconciled.
+#[test]
+fn an_already_spent_deadline_fails_before_any_stored_hash_lookup() {
+    let (project, _db_dir, mut connection, revision) = setup_project();
+    write(project.path(), "a.rs", b"fn a_changed() {}");
+    let revisions_before: i64 = connection
+        .query_row("SELECT count(*) FROM revisions", [], |row| row.get(0))
+        .expect("count revisions");
+    let stored_hash_before: String = connection
+        .query_row(
+            "SELECT content_hash FROM files WHERE path = 'a.rs'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("stored hash");
+    let dirty = ["a.rs"].iter().map(|s| s.to_string()).collect();
+    let options = ReconcileOptions {
+        limits: ResourceLimits::default(),
+        deadline: Deadline::after(std::time::Duration::ZERO),
+        rules: None,
+    };
+
+    let error = reconcile_dirty_paths_with_deadline(
+        &mut connection,
+        project.path(),
+        dirty,
+        HashSet::new(),
+        Some(&revision),
+        &options,
+        &HashSet::new(),
+    )
+    .expect_err("a spent budget must abort before any lookup");
+
+    assert!(
+        matches!(error, ReconcileError::TimeBudgetExceeded { .. }),
+        "expected TimeBudgetExceeded, got {error:?}"
+    );
+    let revisions_after: i64 = connection
+        .query_row("SELECT count(*) FROM revisions", [], |row| row.get(0))
+        .expect("count revisions");
+    let stored_hash_after: String = connection
+        .query_row(
+            "SELECT content_hash FROM files WHERE path = 'a.rs'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("stored hash");
+    assert_eq!(
+        revisions_after, revisions_before,
+        "no revision may be published"
+    );
+    assert_eq!(
+        stored_hash_after, stored_hash_before,
+        "the database must be unchanged"
+    );
+}
+
 /// A path that was an indexed file and is now a directory no longer holds
 /// indexable content, so its row must go — exactly as if it were deleted.
 #[test]

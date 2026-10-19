@@ -1,14 +1,18 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=the per-path dirty reconcile loop, bounded stored-hash lookup batching, and their deadline checks are one cohesive pipeline; the barrier loop and SQL already live in sibling modules
 //! The per-path reconciliation pipeline: for each dirty path, decide
 //! delete / ignore / unchanged / re-index, then atomically commit the
 //! resulting upserts and deletions under compare-and-swap. The barrier
 //! loop that drives this pipeline lives in [`super::barrier`]; the SQL
 //! it reads lives in [`super::queries`].
 
-use super::queries::{query_current_parser_pack_version, query_existing_hashes};
+use super::queries::{
+    MAX_PATH_LOOKUP_BATCH, query_current_parser_pack_version, query_existing_hashes,
+};
 use super::{ReconcileError, ReconcileOptions, ReconcileReport};
 use crate::sync::discovery::{self, DiscoveredFile, sniff_kind};
 use crate::sync::revision_skipped::{SKIP_REASON_OVERSIZE, SkippedRecord};
 use crate::sync::{FileRecord, hash, manifest, revision, sample};
+use crate::util::Deadline;
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -133,7 +137,18 @@ fn reconcile_single_dirty_path(
         }
     };
 
-    let identity = hash::hash_file(&path, &absolute_path)?;
+    let identity = match hash::hash_file(&path, &absolute_path, limits.max_file_bytes) {
+        Ok(identity) => identity,
+        Err(hash::HashError::TooLarge { .. }) => {
+            // The file grew between the stat above and the bounded hash
+            // read. Record it as an existence row exactly as the static
+            // oversize path does, rather than indexing content the ceiling
+            // says not to read.
+            push_skipped_record(skipped_records, existing_hashes, &path, &absolute_path);
+            return Ok(DirtyOutcome::Skipped);
+        }
+        Err(error) => return Err(error.into()),
+    };
 
     if let Some(existing_hash) = existing_hashes.get(&path)
         && existing_hash == &identity.content_hash
@@ -163,6 +178,24 @@ fn reconcile_single_dirty_path(
     Ok(DirtyOutcome::Upsert(Box::new(record)))
 }
 
+/// Queries one bounded batch of stored path hashes, failing closed when the
+/// shared budget is spent. The deadline is checked before the query, so a
+/// bulk watcher event burst cannot serialize and execute one huge lookup
+/// before the budget gets a chance to trip.
+fn query_stored_hash_batch<'a>(
+    connection: &Connection,
+    batch: &mut Vec<&'a str>,
+    deadline: Deadline,
+) -> Result<HashMap<String, String>, ReconcileError> {
+    if let Some(elapsed) = deadline.exceeded() {
+        return Err(ReconcileError::TimeBudgetExceeded {
+            path: " while reading stored path hashes".to_owned(),
+            elapsed_ms: elapsed.as_millis(),
+        });
+    }
+    Ok(query_existing_hashes(connection, batch.drain(..))?)
+}
+
 pub(crate) fn reconcile_dirty_paths_with_deadline(
     connection: &mut Connection,
     root: &Path,
@@ -180,7 +213,30 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
     let mut ignored = 0usize;
     let mut skipped = 0usize;
 
-    let existing_hashes = query_existing_hashes(connection, &dirty)?;
+    // The dirty set can be the whole event burst from a bulk filesystem
+    // change. Look the stored hashes up in bounded batches, checking the
+    // budget before each query, instead of serializing the entire set into
+    // one JSON array before the first deadline check can run.
+    let mut existing_hashes = HashMap::new();
+    let mut batch: Vec<&str> = Vec::with_capacity(MAX_PATH_LOOKUP_BATCH.min(dirty.len()));
+    for path in &dirty {
+        batch.push(path.as_str());
+        if batch.len() == MAX_PATH_LOOKUP_BATCH {
+            existing_hashes.extend(query_stored_hash_batch(
+                connection,
+                &mut batch,
+                options.deadline,
+            )?);
+        }
+    }
+    if !batch.is_empty() {
+        existing_hashes.extend(query_stored_hash_batch(
+            connection,
+            &mut batch,
+            options.deadline,
+        )?);
+    }
+    drop(batch);
 
     for path in dirty {
         if let Some(elapsed) = options.deadline.exceeded() {

@@ -1,4 +1,6 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=bounded streaming hash and its cap-boundary tests are one cohesive file-identity module; splitting the tests into a sibling would add a module-map entry without separating concerns
 use crate::model::SourceIdentity;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -12,17 +14,70 @@ pub enum HashError {
         #[source]
         source: std::io::Error,
     },
+    /// The file holds more than the caller's byte cap. `observed` is the
+    /// bounded read's length — at least `limit + 1` — never a truncated
+    /// size, so the message reports what crossed the cap.
+    #[error("{path} is {observed} bytes, exceeding the {limit}-byte per-file hash ceiling")]
+    TooLarge {
+        path: PathBuf,
+        observed: u64,
+        limit: u64,
+    },
 }
+
+/// Chunk size for bounded hashing: one fixed buffer per call, so hashing a
+/// multi-gigabyte file never allocates memory proportional to the file.
+const HASH_CHUNK_BYTES: usize = 64 * 1024;
 
 /// # Errors
 ///
-/// Returns an error if `absolute_path` can't be read.
-pub fn hash_file(relative_path: &str, absolute_path: &Path) -> Result<SourceIdentity, HashError> {
-    let bytes = std::fs::read(absolute_path).map_err(|source| HashError::Read {
+/// Returns [`HashError::Read`] if `absolute_path` can't be opened or read,
+/// and [`HashError::TooLarge`] if it holds more than `max_bytes` bytes. The
+/// read is bounded by `take(max_bytes + 1)`, so a file that grows after the
+/// caller's stat cannot allocate an unbounded buffer; no byte past the cap
+/// is ever fed to the hasher.
+pub fn hash_file(
+    relative_path: &str,
+    absolute_path: &Path,
+    max_bytes: u64,
+) -> Result<SourceIdentity, HashError> {
+    let file = std::fs::File::open(absolute_path).map_err(|source| HashError::Read {
         path: absolute_path.to_path_buf(),
         source,
     })?;
-    Ok(hash_bytes(relative_path, &bytes))
+    let mut hasher = blake3::Hasher::new();
+    let mut chunk = [0_u8; HASH_CHUNK_BYTES];
+    let mut observed = 0_u64;
+    let mut reader = file.take(max_bytes.saturating_add(1));
+    loop {
+        let read = match reader.read(&mut chunk) {
+            Ok(read) => read,
+            // `Read` contract: an interrupted read is retried by the caller.
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(source) => {
+                return Err(HashError::Read {
+                    path: absolute_path.to_path_buf(),
+                    source,
+                });
+            }
+        };
+        if read == 0 {
+            break;
+        }
+        observed = observed.saturating_add(read as u64);
+        if observed > max_bytes {
+            return Err(HashError::TooLarge {
+                path: absolute_path.to_path_buf(),
+                observed,
+                limit: max_bytes,
+            });
+        }
+        hasher.update(&chunk[..read]);
+    }
+    Ok(SourceIdentity::new(
+        relative_path.to_owned(),
+        hasher.finalize().to_string(),
+    ))
 }
 
 #[must_use]
@@ -142,10 +197,74 @@ mod tests {
         let path = directory.path().join("a.rs");
         std::fs::write(&path, b"fn a() {}").expect("write fixture file");
 
-        let identity = hash_file("a.rs", &path).expect("hash file");
+        let identity = hash_file("a.rs", &path, 1024).expect("hash file");
         assert_eq!(
             identity.content_hash,
             hash_bytes("a.rs", b"fn a() {}").content_hash
+        );
+    }
+
+    #[test]
+    fn hash_file_under_the_cap_matches_hash_bytes() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("under.rs");
+        let bytes = b"fn under() {}";
+        std::fs::write(&path, bytes).expect("write fixture file");
+
+        let identity = hash_file("under.rs", &path, bytes.len() as u64 + 1)
+            .expect("a file under the cap hashes");
+
+        assert_eq!(identity, hash_bytes("under.rs", bytes));
+    }
+
+    #[test]
+    fn hash_file_exactly_at_the_cap_succeeds() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("at-cap.rs");
+        let bytes = b"exactly!";
+        std::fs::write(&path, bytes).expect("write fixture file");
+
+        let identity =
+            hash_file("at-cap.rs", &path, bytes.len() as u64).expect("the cap is inclusive");
+
+        assert_eq!(identity, hash_bytes("at-cap.rs", bytes));
+    }
+
+    #[test]
+    fn hash_file_one_byte_over_the_cap_reports_the_observed_size() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("over.rs");
+        std::fs::write(&path, b"ninebytes").expect("write fixture file");
+
+        let error = hash_file("over.rs", &path, 8).expect_err("over-cap file is refused");
+
+        match error {
+            HashError::TooLarge {
+                path: reported,
+                observed,
+                limit,
+            } => {
+                assert_eq!(reported, path);
+                assert_eq!(
+                    observed, 9,
+                    "the observed length is reported, not truncated"
+                );
+                assert_eq!(limit, 8);
+            }
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hash_file_reports_a_missing_path_as_a_read_error() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("missing.rs");
+
+        let error = hash_file("missing.rs", &path, 1024).expect_err("a missing file is unreadable");
+
+        assert!(
+            matches!(error, HashError::Read { .. }),
+            "a missing file must stay a read error, got {error:?}"
         );
     }
 

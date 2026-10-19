@@ -204,6 +204,55 @@ fn a_full_run_within_every_evidence_cap_stays_full() {
     assert_eq!(record.run.completeness, ExtractionCompleteness::Full);
 }
 
+#[test]
+fn sample_file_accepts_a_file_exactly_at_the_cap() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("at-cap.rs");
+    let body = b"fn at_cap() {}";
+    std::fs::write(&path, body).expect("write fixture file");
+    let file = DiscoveredFile {
+        relative_path: "at-cap.rs".to_owned(),
+        absolute_path: path,
+        kind: FileKind::Indexed,
+    };
+    let limits = ResourceLimits {
+        max_file_bytes: body.len() as u64,
+        ..ResourceLimits::default()
+    };
+
+    let sample = sample_file(&file, &limits).expect("the per-file cap is inclusive");
+
+    assert_eq!(sample.byte_len, body.len() as u64);
+    assert_eq!(sample.identity, hash::hash_bytes("at-cap.rs", body));
+    assert_eq!(sample.content.as_deref(), Some("fn at_cap() {}"));
+}
+
+#[test]
+fn sample_file_reports_a_file_over_the_cap_as_too_large() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("over.rs");
+    std::fs::write(&path, vec![b'x'; 17]).expect("write fixture file");
+    let file = DiscoveredFile {
+        relative_path: "over.rs".to_owned(),
+        absolute_path: path,
+        kind: FileKind::Indexed,
+    };
+    let limits = ResourceLimits {
+        max_file_bytes: 16,
+        ..ResourceLimits::default()
+    };
+
+    let error = sample_file(&file, &limits).expect_err("an over-cap file is refused");
+
+    match error {
+        SampleError::TooLarge { size, limit, .. } => {
+            assert_eq!(size, 17, "the observed size is reported, not truncated");
+            assert_eq!(limit, 16);
+        }
+        other => panic!("expected SampleError::TooLarge, got {other:?}"),
+    }
+}
+
 /// Parallel-sampling tests below. They construct `DiscoveredFile`s
 /// directly (synthetic relative paths + temp file bodies) rather than
 /// going through the full discovery walker; the goal is to pin

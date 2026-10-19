@@ -79,19 +79,23 @@ pub(super) fn sample_file(
         });
     }
 
-    let bytes = std::fs::read(&file.absolute_path).map_err(|source| SampleError::Read {
-        path: file.absolute_path.clone(),
-        source,
-    })?;
-    // Re-check after the read: the file may have grown between stat and
-    // read (TOCTOU). Prefer failing closed over indexing a huge buffer.
-    if bytes.len() as u64 > limits.max_file_bytes {
-        return Err(SampleError::TooLarge {
-            path: file.absolute_path.clone(),
-            size: bytes.len() as u64,
-            limit: limits.max_file_bytes,
-        });
-    }
+    // The helper stats first (fast rejection) and bounds the read with
+    // `take(max + 1)`, so a file that grows between stat and read cannot
+    // allocate an unbounded buffer. Its observed length is reported, never
+    // truncated.
+    let bytes = util::read_file_capped_bytes(&file.absolute_path, limits.max_file_bytes).map_err(
+        |error| match error {
+            util::CappedReadError::Io(source) => SampleError::Read {
+                path: file.absolute_path.clone(),
+                source,
+            },
+            util::CappedReadError::TooLarge { limit, observed } => SampleError::TooLarge {
+                path: file.absolute_path.clone(),
+                size: observed,
+                limit,
+            },
+        },
+    )?;
 
     let is_binary = file.kind == FileKind::Binary;
     let (content, utf8_lossy) = if is_binary {
