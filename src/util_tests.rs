@@ -9,7 +9,8 @@
 //! where the helper is actually used.
 
 use crate::util::{
-    Style, at_least_timestamp, exceeds_input_bytes, hex_encode, lock_or_recover, now_unix,
+    CappedReadError, Style, at_least_timestamp, exceeds_input_bytes, hex_encode, lock_or_recover,
+    now_unix, read_file_capped_bytes,
 };
 use std::sync::{Arc, Mutex};
 
@@ -19,6 +20,49 @@ use std::sync::{Arc, Mutex};
 /// path that uses `lock_or_recover`-equivalent recovery would crash the
 /// enclosing process on the next lock attempt. This test reproduces
 /// exactly that sequence on a generic `Mutex<String>`.
+#[test]
+fn capped_byte_read_returns_a_file_exactly_at_the_cap() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("at-cap.bin");
+    std::fs::write(&path, vec![b'x'; 1024]).expect("write fixture");
+
+    let bytes = read_file_capped_bytes(&path, 1024).expect("at-cap file reads");
+
+    assert_eq!(bytes.len(), 1024);
+}
+
+#[test]
+fn capped_byte_read_reports_an_oversized_file_without_reading_it_whole() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("over-cap.bin");
+    std::fs::write(&path, vec![b'x'; 1025]).expect("write fixture");
+
+    let error = read_file_capped_bytes(&path, 1024).expect_err("over-cap file is refused");
+
+    match error {
+        CappedReadError::TooLarge { limit, observed } => {
+            assert_eq!(limit, 1024);
+            assert_eq!(observed, 1025);
+        }
+        other => panic!("expected TooLarge, got {other:?}"),
+    }
+}
+
+#[test]
+fn capped_byte_read_keeps_not_found() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("missing.bin");
+
+    let error = read_file_capped_bytes(&path, 1024).expect_err("missing file is an I/O error");
+
+    match error {
+        CappedReadError::Io(error) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        }
+        other => panic!("expected Io, got {other:?}"),
+    }
+}
+
 #[test]
 fn lock_or_recover_returns_inner_state_after_a_panic_in_a_critical_section() {
     let mutex: Mutex<String> = Mutex::new("uncorrupted".to_owned());
