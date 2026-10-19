@@ -1314,14 +1314,19 @@ Still open from this round:
   Not started.
 
 ### Handoff (2026-10-18, end of session 8ac33515)
-- **Hybrid grammar bundle — owner decision pending.** Branch `parser-hybrid-bundle` (`2ca94a8`) on origin:
-  21 grammars compiled in (rust, python, javascript, typescript, tsx, go, java, c, cpp, csharp, ruby, php,
-  kotlin, swift, dart, elixir, haskell, julia, ocaml, perl, json) via `.cargo/config.toml` `TSLP_LANGUAGES`,
-  downloads kept for every other language, Cargo.lock unchanged. Cost: release binary 15.6 → 63.7 MB,
-  clean release build 45 → 67 s, first build fetches the pack's source bundle (CI release and
-  rebuild-and-compare jobs will need network; not checked). Options put to the owner: all 21; drop the 7
-  heaviest (csharp, kotlin, cpp, perl, ocaml, swift, haskell ≈ 33 MB) — lead's recommendation; or a smaller
-  core. Not merged. Branch `parser-static-compile` is superseded (downloads off — rejected) and can be deleted.
+- **Hybrid grammar bundle — landed (merge `26ed140`, branch commits `2ca94a8` + `024ec1e`).** 14 core
+  grammars compiled in (rust, python, javascript, typescript, tsx, go, java, c, ruby, php, dart, elixir,
+  julia, json); cpp, csharp, haskell, kotlin, ocaml, perl, swift remain on runtime download.
+  `TSLP_LANGUAGES` + `TSLP_LINK_MODE=static` in `.cargo/config.toml`, both `force = true`, Cargo.lock
+  unchanged. Measured 2026-10-18: release binary 15.6 → 30.4 MB, 42 s rebuild, full suite 999 passed /
+  2 ignored, all seven `check_*` gates PASS. The 21-language cut (63.7 MB) was dropped for size. Branch
+  `parser-hybrid-bundle` is merged and can be deleted from origin; `parser-static-compile` remains
+  superseded (downloads off — rejected).
+- **Grammar notices for the bundled sources — not started (release blocker).** The grammar sources are
+  downloaded by the pack's `build.rs`, not Cargo dependencies, so `cargo about` does not see them; the
+  source bundle carries `license_cache.json` (repo → SPDX id) but no license texts, and the binary embeds
+  none. Generate and attach the notice set before the next release. The root `.cargo/config.toml` also
+  applies to `fuzz/`, so fuzz builds compile the 14 grammars and need network.
 - **Wave 2 — not started.** In order: R7 (38), R6 (16), R12 (25) open ledger rows; `verify_and_drain` stale
   revision; CLI logging never initialised (`main.rs:43`); `.git/info/exclude` only with a root `.gitignore`;
   `leads` oversized row; `check_docs_drift` module-map completeness; explicit stack size at
