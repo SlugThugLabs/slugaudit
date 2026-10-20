@@ -25,15 +25,18 @@
 //! that touches the watcher. That split is what keeps a large walk from
 //! blocking every tool call and the notify callback.
 
-use super::event_filter::watch_dir_changes;
-use super::manager::{ProjectWatchInfo, WatchManagerInner, log_notify_failure};
-use super::types::WatcherHealth;
-use crate::ignore_rules::{
-    IgnoreRules, indexable_walker_with_max_depth, is_excluded_dir, is_excluded_path,
-};
-use notify::{RecursiveMode, Watcher};
+use super::errors::{ignore_error_kind, ignore_error_path};
+#[cfg(test)]
+use super::manager::{ProjectWatchInfo, WatchManagerInner};
+pub(super) use super::scope_apply::{apply_scope_locked, scope_limited};
+#[cfg(test)]
+use crate::ignore_rules::IgnoreRules;
+use crate::ignore_rules::{indexable_walker_with_max_depth, is_excluded_dir, is_excluded_path};
+#[cfg(test)]
+use notify::Watcher;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::sync::Arc;
 
 /// A documented limit at which a scope walk stopped. Present on a
@@ -90,95 +93,140 @@ impl WatchScope {
         #[cfg(test)]
         super::run_walk_hook();
 
-        let mut scope = WatchScope::default();
-        let mut entries_seen = 0usize;
-        let mut entries_limited = false;
-        let mut depth_limited = false;
-
+        let mut walk = ScopeWalk::default();
         for entry in indexable_walker_with_max_depth(root, Some(max_depth)) {
             // Another entry exists past the cap: the walk is truncated.
             // Checked before counting, so exactly-at-cap is not limited and
             // at most `max_entries` entries are processed.
-            if entries_seen >= max_entries {
-                entries_limited = true;
+            if walk.entries_seen >= max_entries {
+                walk.entries_limited = true;
                 break;
             }
-            entries_seen += 1;
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(error) => {
-                    // The doc above covers only "the root can't be walked at
-                    // all". A failing subtree under-registers watches, which
-                    // means changes under it are not seen until a full
-                    // verification — worth a line rather than silence.
-                    let path_id = ignore_error_path(&error).map(crate::util::redacted_path);
-                    tracing::warn!(operation = "watch_scope_walk", error_kind = ignore_error_kind(&error), path_id = ?path_id, "watch scope could not read a directory entry; that subtree is unwatched until the next scope refresh");
-                    continue;
-                }
-            };
-            let relative = match entry.path().strip_prefix(root) {
-                Ok(relative) => relative,
-                Err(error) => {
-                    // The walker yields paths under `root`, so this cannot
-                    // happen; if it did, the entry would go unwatched.
-                    tracing::warn!(
-                        path_id = %crate::util::redacted_path(entry.path()),
-                        error = %error,
-                        "watch scope walked a path outside the project root; it is left out",
-                    );
-                    continue;
-                }
-            };
-            let relative_str = relative.to_string_lossy();
-            let Some(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_dir() {
-                if is_excluded_dir(&relative_str) {
-                    continue;
-                }
-                // A directory *at* the depth cap is yielded but never
-                // descended into. If it has any child, that child is
-                // unwalked because of the cap.
-                if relative.components().count() == max_depth {
-                    match directory_has_entries(entry.path()) {
-                        Ok(has_entries) => depth_limited |= has_entries,
-                        Err(error) => {
-                            // Can't prove it is empty: fail closed and report
-                            // the scope as partial rather than claim full
-                            // coverage over children we could not inspect.
-                            depth_limited = true;
-                            tracing::warn!(
-                                path_id = %crate::util::redacted_path(entry.path()),
-                                error = %error,
-                                "could not inspect a directory at the watch-scope depth \
-                                 limit; treating its children as unwatched",
-                            );
-                        }
-                    }
-                }
-                scope.watch_dirs.insert(entry.path().to_path_buf());
-            } else if file_type.is_file() {
-                if is_excluded_path(&relative_str) {
-                    continue;
-                }
-                let name = relative.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if name == ".gitignore" || name == ".ignore" {
-                    scope.ignore_files.push(entry.path().to_path_buf());
-                }
+            walk.entries_seen += 1;
+            walk.visit(root, max_depth, entry);
+        }
+        walk.finish(root, max_entries, max_depth)
+    }
+}
+
+/// The state of one bounded scope walk: what has been found so far and
+/// whether an entry or depth cap stopped it early.
+#[derive(Default)]
+struct ScopeWalk {
+    scope: WatchScope,
+    entries_seen: usize,
+    entries_limited: bool,
+    depth_limited: bool,
+}
+
+impl ScopeWalk {
+    /// Classifies one walker entry into the scope. Errors and paths outside
+    /// the root are logged and left out of the scope, never treated as fatal.
+    fn visit(
+        &mut self,
+        root: &Path,
+        max_depth: usize,
+        entry: Result<ignore::DirEntry, ignore::Error>,
+    ) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                // The docs on `compute_with_limits` cover only "the root
+                // can't be walked at all". A failing subtree
+                // under-registers watches, which means changes under it are
+                // not seen until a full verification — worth a line rather
+                // than silence.
+                let path_id = ignore_error_path(&error).map(crate::util::redacted_path);
+                tracing::warn!(operation = "watch_scope_walk", error_kind = ignore_error_kind(&error), path_id = ?path_id, "watch scope could not read a directory entry; that subtree is unwatched until the next scope refresh");
+                return;
+            }
+        };
+        let Some(relative) = Self::relative_to_root(root, entry.path()) else {
+            return;
+        };
+        let Some(file_type) = entry.file_type() else {
+            return;
+        };
+        if file_type.is_dir() {
+            self.visit_dir(entry.path(), relative, max_depth);
+        } else if file_type.is_file() {
+            self.visit_file(entry.path(), relative);
+        }
+    }
+
+    /// The walker yields paths under `root`; a path outside it is logged and
+    /// left out (it would otherwise go unwatched).
+    fn relative_to_root<'a>(root: &Path, path: &'a Path) -> Option<&'a Path> {
+        match path.strip_prefix(root) {
+            Ok(relative) => Some(relative),
+            Err(error) => {
+                // The walker yields paths under `root`, so this cannot
+                // happen; if it did, the entry would go unwatched.
+                tracing::warn!(
+                    path_id = %crate::util::redacted_path(path),
+                    error = %error,
+                    "watch scope walked a path outside the project root; it is left out",
+                );
+                None
             }
         }
-        scope.ignore_files.sort();
-        scope.watch_dirs.insert(root.to_path_buf());
-        if entries_limited || depth_limited {
-            scope.limit = Some(WatchScopeLimit {
+    }
+
+    fn visit_dir(&mut self, path: &Path, relative: &Path, max_depth: usize) {
+        let relative_str = relative.to_string_lossy();
+        if is_excluded_dir(&relative_str) {
+            return;
+        }
+        // A directory *at* the depth cap is yielded but never descended
+        // into. If it has any child, that child is unwalked because of the
+        // cap.
+        if relative.components().count() == max_depth {
+            self.note_depth_children(path);
+        }
+        self.scope.watch_dirs.insert(path.to_path_buf());
+    }
+
+    fn note_depth_children(&mut self, path: &Path) {
+        match directory_has_entries(path) {
+            Ok(has_entries) => self.depth_limited |= has_entries,
+            Err(error) => {
+                // Can't prove it is empty: fail closed and report the scope
+                // as partial rather than claim full coverage over children
+                // we could not inspect.
+                self.depth_limited = true;
+                tracing::warn!(
+                    path_id = %crate::util::redacted_path(path),
+                    error = %error,
+                    "could not inspect a directory at the watch-scope depth \
+                     limit; treating its children as unwatched",
+                );
+            }
+        }
+    }
+
+    fn visit_file(&mut self, path: &Path, relative: &Path) {
+        let relative_str = relative.to_string_lossy();
+        if is_excluded_path(&relative_str) {
+            return;
+        }
+        let name = relative.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name == ".gitignore" || name == ".ignore" {
+            self.scope.ignore_files.push(path.to_path_buf());
+        }
+    }
+
+    fn finish(mut self, root: &Path, max_entries: usize, max_depth: usize) -> WatchScope {
+        self.scope.ignore_files.sort();
+        self.scope.watch_dirs.insert(root.to_path_buf());
+        if self.entries_limited || self.depth_limited {
+            self.scope.limit = Some(WatchScopeLimit {
                 max_entries,
                 max_depth,
-                entries_seen,
-                depth_limited,
+                entries_seen: self.entries_seen,
+                depth_limited: self.depth_limited,
             });
         }
-        scope
+        self.scope
     }
 }
 
@@ -188,138 +236,6 @@ impl WatchScope {
 fn directory_has_entries(path: &Path) -> std::io::Result<bool> {
     let mut entries = std::fs::read_dir(path)?;
     Ok(entries.next().is_some())
-}
-
-/// The `ignore::Error` variant as a static, path-free category. `Display`
-/// for `WithPath` is `{path}: {err}` and `Loop` embeds both paths (ignore
-/// 0.4.33, `lib.rs:338-340`), so a walker error is never formatted into a
-/// log line.
-fn ignore_error_kind(error: &ignore::Error) -> &'static str {
-    match error {
-        ignore::Error::WithLineNumber { err, .. }
-        | ignore::Error::WithDepth { err, .. }
-        | ignore::Error::WithPath { err, .. } => ignore_error_kind(err),
-        ignore::Error::Partial(_) => "partial",
-        ignore::Error::Loop { .. } => "loop",
-        ignore::Error::Io(_) => "io",
-        ignore::Error::Glob { .. } => "glob",
-        ignore::Error::UnrecognizedFileType(_) => "unrecognized_file_type",
-        ignore::Error::InvalidDefinition => "invalid_definition",
-    }
-}
-
-/// The path an `ignore::Error` carries, if any, for redacted correlation.
-fn ignore_error_path(error: &ignore::Error) -> Option<&Path> {
-    match error {
-        ignore::Error::WithPath { path, .. } => Some(path),
-        ignore::Error::WithLineNumber { err, .. } | ignore::Error::WithDepth { err, .. } => {
-            ignore_error_path(err)
-        }
-        _ => None,
-    }
-}
-
-/// Applies a precomputed scope and ignore rules to `root` while the manager
-/// lock is held: diffs the watch set, runs the watcher's `unwatch`/`watch`
-/// calls (which must happen on a tool thread under this lock), records the
-/// scope and rules, and moves the health between `Healthy` and `Partial`
-/// when the scope's limitation changed.
-///
-/// - A changed watch set still forces `NeedsVerification`: files may have
-///   been created or modified inside re-added directories while they were
-///   unwatched, and newly-ignored files may still be in the database.
-/// - `Unavailable` is never overwritten: every call must keep full-verifying.
-/// - `needs_scope_refresh` is cleared only when no ignore-file event landed
-///   while the walk was running (`scope_generation` unchanged); otherwise it
-///   stays set so the next tool-thread pass recomputes instead of swallowing
-///   a rule change the walk may not have seen.
-pub(super) fn apply_scope_locked(
-    inner: &mut WatchManagerInner,
-    root: &Path,
-    scope: WatchScope,
-    rules: Arc<IgnoreRules>,
-    generation_before: u64,
-) {
-    let Some(info) = inner.projects.get(root) else {
-        return;
-    };
-    let (new_watches, removed_watches) = watch_dir_changes(info.scope.as_ref(), &scope, root);
-    let scope_changed = !new_watches.is_empty() || !removed_watches.is_empty();
-    let limited = scope.limit.is_some();
-
-    if let Some(limit) = scope.limit.as_ref() {
-        tracing::warn!(
-            root_id = %crate::util::redacted_path(root),
-            max_entries = limit.max_entries,
-            max_depth = limit.max_depth,
-            entries_seen = limit.entries_seen,
-            depth_limited = limit.depth_limited,
-            "watch scope truncated at a documented limit; directories beyond it are \
-             unwatched, and the stat sweep remains the freshness guarantee",
-        );
-    }
-
-    if let Some(watcher) = inner.watcher.as_mut() {
-        // Both arms log. A failure here was previously invisible: the debug
-        // line sat inside the `is_ok()` branch, so a watch that could not be
-        // established left no trace at any level.
-        // A failed unwatch leaves the watcher delivering events for files
-        // the scope no longer includes.
-        for dir in &removed_watches {
-            if let Err(error) = watcher.unwatch(dir) {
-                log_notify_failure("scope_unwatch", &crate::util::redacted_path(dir), &error);
-            }
-        }
-        // A failed watch means changes under that directory go unnoticed
-        // until a full verification.
-        for dir in &new_watches {
-            if let Err(error) = watcher.watch(dir, RecursiveMode::Recursive) {
-                log_notify_failure("scope_watch", &crate::util::redacted_path(dir), &error);
-            }
-        }
-    }
-    // With no notify watcher (unsupported platform or tests) there is
-    // nothing to apply here, but the scope and rules are recorded either way
-    // so event filtering and reconcile can use them.
-
-    let Some(info) = inner.projects.get_mut(root) else {
-        return;
-    };
-    let health = info.state.health();
-    info.scope = Some(scope);
-    info.rules = Some(rules);
-    info.needs_scope_refresh = info.scope_generation != generation_before;
-    if scope_changed && health != WatcherHealth::Unavailable {
-        info.state.set_health(WatcherHealth::NeedsVerification);
-    } else if health == WatcherHealth::Healthy && limited {
-        info.state.set_health(WatcherHealth::Partial);
-    } else if health == WatcherHealth::Partial && !limited {
-        info.state.set_health(WatcherHealth::Healthy);
-    }
-}
-
-/// True when the project registered under `root` has a scope that stopped
-/// at a documented limit. The manager lock must be held by the caller;
-/// [`super::WatchManager::scope_limited`] is the tool-facing entry point.
-pub(super) fn scope_limited(inner: &WatchManagerInner, root: &Path) -> bool {
-    inner
-        .projects
-        .get(root)
-        .and_then(|info| info.scope.as_ref())
-        .is_some_and(|scope| scope.limit.is_some())
-}
-
-impl ProjectWatchInfo {
-    /// Marks the scope stale for the next tool-thread pass. The generation
-    /// lets a walk that started before this call detect that the ignore
-    /// rules it read may already be obsolete, so it leaves the refresh
-    /// pending instead of clearing it.
-    pub(super) fn mark_scope_dirty(&mut self) {
-        self.needs_scope_refresh = true;
-        // Wrapping is intentional: 2^64 ignore-file events cannot occur in
-        // a process lifetime, and a panic on overflow would fail a tool call.
-        self.scope_generation = self.scope_generation.wrapping_add(1);
-    }
 }
 
 #[cfg(test)]

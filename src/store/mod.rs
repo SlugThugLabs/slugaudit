@@ -4,6 +4,7 @@
 //! The store never reads project files; sync/tools own that.
 
 mod connection;
+mod connection_guards;
 mod migrations;
 mod netfs;
 mod sql_functions;
