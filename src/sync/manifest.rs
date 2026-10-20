@@ -89,7 +89,7 @@ pub(crate) const PATH_SET_SUBQUERY: &str = "SELECT value FROM json_each(?)";
 /// size scales with the project: an unbounded path set allocates and binds
 /// proportionally to it. Callers that already hold a caller-sized set split
 /// it and execute once per batch, as `reconcile::queries::query_existing_hashes`
-/// and `revision::invalidate_stale_findings` do.
+/// and `revision_support::invalidate_stale_findings` do.
 pub(crate) fn paths_json_array<'a>(
     paths: impl IntoIterator<Item = &'a str>,
 ) -> Result<String, rusqlite::Error> {

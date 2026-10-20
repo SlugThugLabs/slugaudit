@@ -63,7 +63,7 @@ pub struct FindingRequest {
 
 /// Persists exactly the conclusion the AI supplied — nothing here is
 /// generated. Tied to the file's real current hash so it auto-invalidates
-/// (`sync::revision::invalidate_stale_findings`) the moment that hash
+/// (`sync::revision_support::invalidate_stale_findings`) the moment that hash
 /// changes, without anyone having to remember to check.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct FindingResponse {

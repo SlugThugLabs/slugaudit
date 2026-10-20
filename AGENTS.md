@@ -408,22 +408,25 @@ before replacing the binary (`src/update.rs`).
 
 ### Mutation testing
 
-CI runs `cargo-mutants` (Linux only, fails closed) over exactly five files:
-`src/sync/revision.rs`, `src/sync/publish.rs`, `src/sync/hash.rs`,
-`src/sync/hash_io.rs`, `src/tools/context.rs`. That narrow scope is a decision,
-not an unfinished widening — the plan's *Untrusted-input rigor* item asks for a
-wider scope **or** a written reason for this one, and this is the reason. Those
-five are the publish/revision/context correctness core: revision identity,
-atomic publication, hash types and in-memory digests, bounded `hash_file` /
-`stat_identity` reads, and the freshness-verification entry point every
-state-bearing tool handler shares. A mutant that survives there means a
-revision was published wrong or a stale one was served, which is a class of
-defect no other file can produce.
+CI runs `cargo-mutants` (Linux only, fails closed) over exactly six files:
+`src/sync/revision.rs`, `src/sync/revision_support.rs`, `src/sync/publish.rs`,
+`src/sync/hash.rs`, `src/sync/hash_io.rs`, `src/tools/context.rs`. That narrow
+scope is a decision, not an unfinished widening — the plan's *Untrusted-input
+rigor* item asks for a wider scope **or** a written reason for this one, and
+this is the reason. Those six are the publish/revision/context correctness
+core: revision identity, stale-finding invalidation, atomic publication, hash
+types and in-memory digests, bounded `hash_file` / `stat_identity` reads, and
+the freshness-verification entry point every state-bearing tool handler
+shares. A mutant that survives there means a revision was published wrong or a
+stale one was served, which is a class of defect no other file can produce.
 
-`src/sync/hash_io.rs` is not a widening: the wave-3 R4 split (2026-10-19)
-moved `hash_file` and `stat_identity` out of `hash.rs` into that file without
-changing them, so the five-file scope mutates the same correctness-core
-functions the four-file scope did. The other three files are unchanged.
+`src/sync/hash_io.rs` and `src/sync/revision_support.rs` are not a widening:
+the wave-3 R4 split (2026-10-19) moved `hash_file` and `stat_identity` out of
+`hash.rs` into `hash_io.rs`, and the wave-4 size fix (2026-10-19) moved
+`invalidate_stale_findings` out of `revision.rs` into `revision_support.rs`,
+both without changing them. The six-file scope mutates the same
+correctness-core functions the four-file scope did; `revision.rs`,
+`publish.rs`, `hash.rs`, and `context.rs` keep their original responsibility.
 
 Widening the scope multiplies CI minutes rather than adding a fixed cost:
 `cargo-mutants` rebuilds the crate and re-runs the whole test suite once per
@@ -434,7 +437,7 @@ crate's 2323 mutants (~1 percent); all of `src/sync/**` is 310 and all of
 mutants a wider scope would add sit in code the existing suites already drive
 end to end (`discovery_tests`, `sample_tests`, `sweep_tests`,
 `publish_*_tests`, the `tools/*_tests` suites), so that multiplier re-verifies
-behavior the tests already pin, while the five files above are where a mutation
+behavior the tests already pin, while the six files above are where a mutation
 can slip past a green suite. The scope is defined in the step's comment in
 `.github/workflows/quality.yml`, which carries the same decision — a file that
 moves into the correctness core is added in both places, with the expectation

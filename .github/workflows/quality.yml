@@ -218,23 +218,27 @@ jobs:
         with:
           tool: cargo-mutants
 
-      # SCOPE DECISION — five files on purpose. The plan's *Untrusted-input
+      # SCOPE DECISION — six files on purpose. The plan's *Untrusted-input
       # rigor* item asked for either a wider mutation scope or a written
       # reason for this one; this comment is the written reason, and
       # AGENTS.md's "Testing and QA" section (Mutation testing) carries the
       # same decision for readers who never open this file.
       #
-      # What the five are: `src/sync/revision.rs` and `src/sync/publish.rs`
+      # What the six are: `src/sync/revision.rs` and `src/sync/publish.rs`
       # decide revision identity and atomic publication, `src/sync/hash.rs`
       # owns the hash types and in-memory digests, `src/sync/hash_io.rs`
       # carries the streaming `hash_file` and `stat_identity` that moved out
-      # of `hash.rs` in the wave-3 R4 split (2026-10-19), and
+      # of `hash.rs` in the wave-3 R4 split (2026-10-19),
+      # `src/sync/revision_support.rs` carries the stale-finding
+      # invalidation (`invalidate_stale_findings`) that moved out of
+      # `revision.rs` in the wave-4 size fix (2026-10-19), and
       # `src/tools/context.rs` is the freshness-verification entry point
       # every state-bearing tool handler shares. A mutant that survives in
       # any of them means a revision was published wrong or a stale one was
       # served — the one class of defect no other file can produce, which is
-      # why these five and not the whole crate. hash_io is not a widening:
-      # it is the same correctness-core functions at their new path.
+      # why these six and not the whole crate. Neither moved file is a
+      # widening: hash_io and revision_support hold the same
+      # correctness-core functions at their new paths.
       #
       # What widening would cost, measured with `cargo mutants --list` on
       # 2026-09-30: the original four files hold 23 of the crate's 2323
@@ -246,23 +250,25 @@ jobs:
       # adds are in code the existing suites already drive end to end
       # (`discovery_tests`, `sample_tests`, `sweep_tests`, `publish_*_tests`,
       # the `tools/*_tests` suites), so that multiplier buys verdicts on
-      # behavior the tests pin directly, while the five files above are
+      # behavior the tests pin directly, while the six files above are
       # where a mutation can slip past a green suite.
       #
       # This step FAILS CLOSED: the 2026-08-12 baseline recorded zero
       # surviving mutants on the pre-split four-file surface (17 caught, 0
       # missed, 3 unviable; see .planning/archive/DECISIONS.md). The wave-3
-      # split moved the hash functions to hash_io.rs without changing them,
-      # so a survivor in the five-file scope is a real regression, not an
-      # un-triaged baseline.
+      # split moved the hash functions to hash_io.rs and the wave-4 size fix
+      # moved stale-finding invalidation to revision_support.rs, both
+      # without changing them, so a survivor in the six-file scope is a real
+      # regression, not an un-triaged baseline.
       #
       # Linux-only: cargo-mutants has platform-specific behavior and the
       # baseline was recorded on Linux.
-      - name: Mutation testing (revision, publish, hash, hash_io, context)
+      - name: Mutation testing (revision, revision_support, publish, hash, hash_io, context)
         if: runner.os == 'Linux'
         run: |
           cargo mutants \
             --file src/sync/revision.rs \
+            --file src/sync/revision_support.rs \
             --file src/sync/publish.rs \
             --file src/sync/hash.rs \
             --file src/sync/hash_io.rs \

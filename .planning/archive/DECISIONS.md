@@ -11,6 +11,28 @@ commit, a path, or a command where possible.
 
 ---
 
+## 2026-10-19 — Mutation-testing scope: six files, revision_support added for the moved stale-finding invalidation
+
+- **What:** the `cargo-mutants` step now covers
+  `src/sync/revision.rs`, `src/sync/revision_support.rs`,
+  `src/sync/publish.rs`, `src/sync/hash.rs`, `src/sync/hash_io.rs`, and
+  `src/tools/context.rs`. `revision_support.rs` was added because the wave-4
+  size fix moved `invalidate_stale_findings` out of `revision.rs` into it
+  without changing the logic; the other five are the wave-3 scope. This is
+  not a widening of the correctness core — it is the same stale-finding
+  invalidation at its new path.
+- **Why:** the scope exists to mutate revision identity, atomic publication,
+  CAS/change detection, and the freshness-verification path. Keeping only
+  `revision.rs` after the move would leave the code that marks a changed
+  file's findings `stale` unmutated, so a survivor there could serve a
+  finding against a hash it no longer matches.
+- **Where:** `.github/workflows/quality.yml` (the step comment and the six
+  `--file` flags); `AGENTS.md` *Testing and QA → Mutation testing*;
+  `src/sync/revision_support.rs`; commit `ff63113` for the size fix.
+- **Reversible:** yes, but a file leaving the correctness core needs a new
+  decision and must be updated in the workflow comment and AGENTS.md
+  together.
+
 ## 2026-10-19 — Wave 3 landed: all 40 production R4 entries split
 
 - **What:** the seven wave-3 commits (`0374d60..2dbd703`) split every
