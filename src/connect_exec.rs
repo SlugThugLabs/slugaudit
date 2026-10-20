@@ -94,7 +94,7 @@ fn connect_without_cli(
             agent,
             binary,
             cli,
-            &connect_cli::display_command(cli, &connect_cli::add_args(agent, binary)),
+            &connect_cli::display_command(cli, &connect_cli::add_args(agent, binary)?),
         )),
         (_, None) => Err(guidance::refusal(agent, binary, home)),
     }
@@ -108,7 +108,7 @@ fn run_installed_cli(
     home: Option<&Path>,
     cli: &str,
 ) -> Result<(), ConnectError> {
-    let args = connect_cli::add_args(agent, binary);
+    let args = connect_cli::add_args(agent, binary)?;
     let attempted = connect_cli::display_command(cli, &args);
     match connect_cli::run_add(cli, &args) {
         Ok(()) => {

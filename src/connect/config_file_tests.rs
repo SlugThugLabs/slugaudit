@@ -11,6 +11,43 @@ fn cursor() -> crate::connect_agents::AgentDef {
     find_agent("cursor").expect("cursor is registered")
 }
 
+/// Writes an executable shell script named `name`: it appends its argv (one
+/// line per call) to the file named by `FAKE_ARGV_LOG`, prints `FAKE_STDOUT`
+/// when that is set, and exits with `exit_code`. Tests run it with `PATH`
+/// replaced, never prepended, so no real client can be resolved.
+#[cfg(unix)]
+fn fake_cli(bin_dir: &Path, name: &str, exit_code: i32) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let script = bin_dir.join(name);
+    let body = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FAKE_ARGV_LOG\"\n\
+         if [ -n \"$FAKE_STDOUT\" ]; then printf '%s' \"$FAKE_STDOUT\"; fi\n\
+         exit {exit_code}\n"
+    );
+    std::fs::write(&script, body).expect("write fake cli");
+    let mut permissions = std::fs::metadata(&script)
+        .expect("stat fake cli")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&script, permissions).expect("chmod fake cli");
+}
+
+/// Runs `f` with `PATH` pointing at exactly `bin_dir` and the fake CLI's argv
+/// log at `log`; the inherited entries are dropped so a real client CLI can
+/// neither be found nor executed.
+#[cfg(unix)]
+fn with_fake_cli<T>(bin_dir: &Path, log: &Path, f: impl FnOnce() -> T) -> T {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    temp_env::with_vars(
+        [
+            ("PATH", Some(bin_dir.as_os_str())),
+            ("FAKE_ARGV_LOG", Some(log.as_os_str())),
+            ("FAKE_STDOUT", None::<&std::ffi::OsStr>),
+        ],
+        f,
+    )
+}
+
 #[test]
 fn removing_an_existing_entry_reports_that_it_removed_one() {
     let directory = tempfile::tempdir().expect("temp dir");
@@ -189,6 +226,73 @@ fn directory_path_of_length(base: &Path, target_len: usize) -> PathBuf {
         "the helper must build a path of the requested length"
     );
     path
+}
+
+/// The client's CLI rejects an argv containing a raw non-UTF-8 byte, so a path
+/// no client can represent must be refused before the client is executed or a
+/// config file is written.
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_binary_path_is_refused_before_the_client_cli_runs() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("bin dir");
+    let log = temp.path().join("pi-argv.log");
+    fake_cli(&bin_dir, "pi", 0);
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(&home).expect("home");
+    let binary = PathBuf::from(OsString::from_vec(b"/bin/slug\xffaudit".to_vec()));
+    let pi = find_agent("pi").expect("pi is registered");
+
+    let result = with_fake_cli(&bin_dir, &log, || connect_agent(&pi, &binary, Some(&home)));
+
+    let Err(ConnectError::BinaryPath(error)) = result else {
+        panic!("expected BinaryPath, got {result:?}");
+    };
+    assert_eq!(
+        error.kind(),
+        std::io::ErrorKind::InvalidInput,
+        "the refusal must name the unusable path: {error}"
+    );
+    assert!(
+        error.to_string().contains("not valid UTF-8"),
+        "the refusal must say why: {error}"
+    );
+    assert!(
+        !log.exists(),
+        "the client CLI must not run before the path is refused"
+    );
+    assert!(
+        !home.join(".pi/agent/mcp.json").exists(),
+        "the refusal must happen before any config write"
+    );
+}
+
+/// A lossy rendering would register a command with U+FFFD, which no client can
+/// launch; guidance must carry the refusal text instead.
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_binary_path_is_not_rendered_lossily_in_guidance() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+    let binary = PathBuf::from(OsString::from_vec(b"/bin/slug\xffaudit".to_vec()));
+
+    for id in ["goose", "cursor"] {
+        let agent = find_agent(id).expect(id);
+
+        let text = crate::connect_guidance::refusal(&agent, &binary, None).to_string();
+
+        assert!(
+            text.contains("not valid UTF-8"),
+            "{id} must report the unusable path: {text}"
+        );
+        assert!(
+            !text.contains('\u{FFFD}'),
+            "{id} must not render a lossy replacement character: {text}"
+        );
+    }
 }
 
 /// The config path itself is valid, but the temp name appended beside it

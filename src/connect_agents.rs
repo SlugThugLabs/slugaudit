@@ -16,6 +16,7 @@
 //! `connect` never runs an invented command for a [`Strategy::Unknown`] one. A
 //! probe result ([`Evidence::VerifiedByProbe`]) overrides both doc passes.
 
+use crate::connect::registry_types::binary_text;
 use std::path::Path;
 
 pub use crate::connect::registry_types::{ConfigPath, ConfigShape, Dialect, Evidence, Strategy};
@@ -80,10 +81,17 @@ impl AgentDef {
     }
 
     /// The manual remedy for a refusal, with `{binary}` resolved, or `None`
-    /// when the entry carries no remedy.
+    /// when the entry carries no remedy. A path no client can represent yields
+    /// the refusal text itself, never a lossy rendering.
     pub fn guidance(&self, binary: &Path) -> Option<String> {
         let remedy = self.remedy.trim();
-        (!remedy.is_empty()).then(|| remedy.replace("{binary}", &binary.display().to_string()))
+        if remedy.is_empty() {
+            return None;
+        }
+        Some(match binary_text(binary) {
+            Ok(text) => remedy.replace("{binary}", text),
+            Err(error) => error.to_string(),
+        })
     }
     /// True when this entry registers itself by writing the config file, either
     /// as its primary strategy or as a fallback.

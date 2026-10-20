@@ -10,6 +10,22 @@
 use crate::cli::ConnectError;
 use std::path::{Path, PathBuf};
 
+/// The binary path as text a client can launch, or the typed refusal when it
+/// is not valid UTF-8.
+///
+/// # Errors
+///
+/// A path that is not valid UTF-8 cannot be represented on a client's command
+/// line or in its JSON config, so it is refused before any registration.
+pub(crate) fn binary_text(binary: &Path) -> Result<&str, ConnectError> {
+    binary.to_str().ok_or_else(|| {
+        ConnectError::BinaryPath(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the binary path is not valid UTF-8, so it cannot be registered with a client",
+        ))
+    })
+}
+
 /// How slugaudit can register itself with a client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strategy {
@@ -99,12 +115,7 @@ impl ConfigShape {
     /// cannot carry the raw bytes, and a lossy replacement-character path would
     /// be registered as a command the client cannot launch.
     pub fn entry(self, binary: &Path) -> Result<serde_json::Value, ConnectError> {
-        let command = binary.to_str().ok_or_else(|| {
-            ConnectError::BinaryPath(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "the binary path is not valid UTF-8, so it cannot be written to a client config",
-            ))
-        })?;
+        let command = binary_text(binary)?;
         Ok(match self {
             ConfigShape::McpServersCommandArgs => {
                 serde_json::json!({ "command": command, "args": [] })

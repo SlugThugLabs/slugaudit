@@ -14,6 +14,7 @@
 //! wording stays testable without capturing stdout.
 
 use crate::cli::ConnectError;
+use crate::connect::registry_types::binary_text;
 use crate::connect_agents::{AgentDef, Evidence};
 use std::path::Path;
 
@@ -63,13 +64,16 @@ fn platform_note(agent: &AgentDef) -> Option<String> {
 /// The paste-ready remedy for a refusal, or an honest pointer when the entry
 /// has none.
 fn remedy(agent: &AgentDef, binary: &Path) -> String {
-    agent.guidance(binary).unwrap_or_else(|| {
-        format!(
+    if let Some(remedy) = agent.guidance(binary) {
+        return remedy;
+    }
+    match binary_text(binary) {
+        Ok(text) => format!(
             "no verified automated instructions for this client; re-check the docs link below \
-             and register `{}` by hand",
-            binary.display()
-        )
-    })
+             and register `{text}` by hand"
+        ),
+        Err(error) => error.to_string(),
+    }
 }
 
 /// What the user should do by hand: the registry remedy when documented, else

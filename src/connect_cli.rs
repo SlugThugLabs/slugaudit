@@ -6,6 +6,7 @@
 //! [`crate::connect_guidance`].
 
 use crate::cli::ConnectError;
+use crate::connect::registry_types::binary_text;
 use crate::connect_agents::{AgentDef, Dialect};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -39,8 +40,13 @@ pub(crate) fn list_shows_slugaudit(cli: &str, output: &std::process::Output) -> 
 }
 
 /// The `mcp add` argv for this client's grammar, matching its own usage line.
-pub fn add_args(agent: &AgentDef, binary: &Path) -> Vec<String> {
-    let bin = binary.display().to_string();
+///
+/// # Errors
+///
+/// A binary path that is not valid UTF-8 is refused: no client can represent
+/// it as a command, so no argv is built.
+pub fn add_args(agent: &AgentDef, binary: &Path) -> Result<Vec<String>, ConnectError> {
+    let bin = binary_text(binary)?;
     let mut args = vec!["mcp".to_string(), "add".to_string()];
     match agent.dialect {
         Dialect::Claude => args.extend(["-s", "user", "slugaudit", "--"].map(str::to_string)),
@@ -64,8 +70,8 @@ pub fn add_args(agent: &AgentDef, binary: &Path) -> Vec<String> {
         }
         Dialect::Plain => args.push("slugaudit".to_string()),
     }
-    args.push(bin);
-    args
+    args.push(bin.to_owned());
+    Ok(args)
 }
 
 /// The `mcp remove` argv, only ever run by `disconnect`: a failed remove during
