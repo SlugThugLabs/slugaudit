@@ -410,26 +410,29 @@ fn a_local_filesystem_open_does_not_emit_any_rejection_warnings() {
 }
 
 /// Every variant of `model::EvidenceKind`, derived rather than restated:
-/// `EvidenceKind` carries a test-build-only `JsonSchema` derive, whose schema
-/// has one entry per variant, so the compiler regenerates this list from the
-/// enum definition itself. A variant added to the enum appears here with no
-/// hand-kept copy to forget — and the tests below then ask `evidence::to_row`
-/// for that variant's text and compare it against the CHECK SQLite actually
-/// installed, which is what forces `schema.sql` to gain the text too.
+/// `EvidenceKind` carries a test-build-only `JsonSchema` derive, so the
+/// compiler regenerates this list from the enum definition itself. The schema
+/// lists one entry per variant in either shape schemars emits: a flat `enum`
+/// of names when no variant is documented, or, once variants carry doc
+/// comments, `oneOf` entries naming the variant in `const` (or a
+/// single-element `enum`) beside an ignored `description`. A variant added to
+/// the enum appears here with no hand-kept copy to forget — and the tests
+/// below then ask `evidence::to_row` for that variant's text and compare it
+/// against the CHECK SQLite actually installed, which is what forces
+/// `schema.sql` to gain the text too.
 fn every_evidence_kind() -> Vec<EvidenceKind> {
-    let schema = serde_json::to_value(schemars::schema_for!(EvidenceKind))
-        .expect("the derived EvidenceKind schema serializes as JSON");
-    let names = schema
-        .get("enum")
+    let schema = serde_json::to_value(schemars::schema_for!(EvidenceKind)).expect("schema JSON");
+    schema
+        .get("oneOf")
+        .or_else(|| schema.get("enum"))
         .and_then(serde_json::Value::as_array)
-        .expect("the EvidenceKind schema lists its variants as a flat enum of names");
-
-    names
+        .expect("the EvidenceKind schema lists its variants as oneOf entries or a flat enum")
         .iter()
-        .map(|name| {
-            serde_json::from_value(name.clone())
-                .expect("every variant name in the schema deserializes into an EvidenceKind")
+        .map(|v| {
+            let enum_name = v.get("enum").and_then(|n| n.get(0));
+            v.get("const").or(enum_name).unwrap_or(v)
         })
+        .map(|name| serde_json::from_value(name.clone()).expect("each name is an EvidenceKind"))
         .collect()
 }
 
