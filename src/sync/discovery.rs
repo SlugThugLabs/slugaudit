@@ -13,7 +13,9 @@ const BINARY_SNIFF_BYTES: usize = 8_000;
 /// What the walk concluded about a file before sampling: to be indexed,
 /// binary (content not retained), or skipped with a reason.
 pub enum FileKind {
+    /// Text file whose bytes are read, hashed, and parsed.
     Indexed,
+    /// Binary file: hashed for identity, but its content is not retained.
     Binary,
 }
 
@@ -21,8 +23,11 @@ pub enum FileKind {
 /// One file yielded by the discovery walk: relative and absolute paths, kind,
 /// and the size/mtime signals the sample stage re-checks.
 pub struct DiscoveredFile {
+    /// Project-relative path with `/` separators.
     pub relative_path: String,
+    /// Absolute path used to read the file.
     pub absolute_path: PathBuf,
+    /// Binary/text classification from the walk's sniff.
     pub kind: FileKind,
 }
 
@@ -32,7 +37,10 @@ pub struct DiscoveredFile {
 /// project unqueryable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedFile {
+    /// Absolute path of the skipped entry; the project root for a failed walk
+    /// entry, which has no file behind it.
     pub absolute_path: PathBuf,
+    /// Why the entry was skipped, as carried into the publish report and log.
     pub reason: String,
 }
 
@@ -40,14 +48,19 @@ pub struct SkippedFile {
 /// Walk-level failures. Unrepresentable or unreadable paths become reported
 /// `skipped` entries; a failed root read aborts discovery with the reason.
 pub enum DiscoveryError {
+    /// The underlying walk failed outright.
     #[error("failed to walk project files: {0}")]
     Walk(#[from] ignore::Error),
+    /// A discovered file could not be read while sniffing it.
     #[error("failed to read {path}: {source}")]
     Read {
+        /// Absolute path of the unreadable file.
         path: PathBuf,
+        /// The underlying I/O error.
         #[source]
         source: std::io::Error,
     },
+    /// The walker yielded a path outside the project root.
     #[error("discovered path {0} is not relative to the project root")]
     NotRelative(PathBuf),
     /// Relative paths are stored and queried as UTF-8 text. A non-UTF-8
@@ -55,8 +68,12 @@ pub enum DiscoveryError {
     /// the stored path unusable for round-tripping back to disk.
     #[error("discovered path {0} is not valid UTF-8")]
     NonUtf8Path(PathBuf),
+    /// The walk exceeded its wall-clock deadline.
     #[error("discovery exceeded its wall-clock time budget after {elapsed_ms} ms")]
-    TimeBudgetExceeded { elapsed_ms: u128 },
+    TimeBudgetExceeded {
+        /// Elapsed wall-clock milliseconds when the deadline tripped.
+        elapsed_ms: u128,
+    },
 }
 
 impl DiscoveryError {

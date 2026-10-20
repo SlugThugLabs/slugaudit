@@ -31,18 +31,29 @@ pub(super) use rusqlite::Connection;
 /// Publish-path failures. `TimeBudgetExceeded` carries the elapsed budget so
 /// the tool response can name the knob rather than advise a blind retry.
 pub enum PublishError {
+    /// The discovery walk failed before any sampling or writing began.
     #[error(transparent)]
     Discovery(#[from] discovery::DiscoveryError),
+    /// Sampling a discovered file failed.
     #[error(transparent)]
     Sample(#[from] sample::SampleError),
+    /// Writing the revision failed, including the CAS stale-baseline verdict.
     #[error(transparent)]
     Revision(#[from] revision::RevisionError),
+    /// A SQLite operation failed.
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
+    /// The sampled files' combined bytes exceed the import ceiling, so the
+    /// publish fails before loading them.
     #[error(
         "import would load {total} bytes across sampled files, exceeding the {limit}-byte ceiling"
     )]
-    ImportTooLarge { total: u64, limit: u64 },
+    ImportTooLarge {
+        /// Combined byte length of the sampled files.
+        total: u64,
+        /// The configured per-import byte ceiling.
+        limit: u64,
+    },
     /// A file's on-disk content changed between being sampled and the
     /// publish transaction that would have written it as current. Caught by
     /// `revalidate_unchanged_since_sample` immediately before the write;
@@ -51,19 +62,34 @@ pub enum PublishError {
     /// reaches the caller (after CAS retries are exhausted), the caller
     /// should retry the whole tool call.
     #[error("{path} changed on disk after being sampled; retry the call")]
-    ChangedDuringSample { path: String },
+    ChangedDuringSample {
+        /// Project-relative path of the file that changed.
+        path: String,
+    },
     /// A worker could not hand a sampled file to the result drain (the
     /// receiving end was gone). The file's outcome would have been lost, so
     /// the publish fails instead of omitting it.
     #[error("sampling result for {path} could not be delivered: {reason}")]
-    SamplingResultLost { path: String, reason: String },
+    SamplingResultLost {
+        /// Project-relative path of the file whose outcome was lost.
+        path: String,
+        /// Why the result could not be delivered to the drain.
+        reason: String,
+    },
     /// A sampling worker reported an index outside the discovered file set.
     /// Workers only claim indices below the set's length, so reaching this
     /// means an internal invariant was violated; the publish fails rather
     /// than indexing a file that does not exist or silently dropping a
     /// result.
     #[error("sampling worker reported file index {index}, outside the {total}-file import set")]
-    SamplingIndexOutOfRange { index: usize, total: usize },
+    SamplingIndexOutOfRange {
+        /// The out-of-range index the worker reported.
+        index: usize,
+        /// Number of files in the import set.
+        total: usize,
+    },
+    /// The build's parser pack version is not a non-empty numeric dotted
+    /// version, so a revision cannot be pinned against it.
     #[error("invalid parser pack version {0:?}; expected a non-empty numeric dotted version")]
     InvalidParserPackVersion(String),
     /// `path` is a pre-formatted note naming the file being processed when
@@ -72,7 +98,12 @@ pub enum PublishError {
     /// diff phase). Kept pre-formatted so the error reads cleanly without
     /// a custom Display impl.
     #[error("publish exceeded its wall-clock time budget after {elapsed_ms} ms{path}")]
-    TimeBudgetExceeded { path: String, elapsed_ms: u128 },
+    TimeBudgetExceeded {
+        /// Pre-formatted note naming the file being processed, or empty.
+        path: String,
+        /// Elapsed wall-clock milliseconds when the budget tripped.
+        elapsed_ms: u128,
+    },
 }
 
 impl PublishError {
@@ -151,6 +182,7 @@ impl PublishError {
 /// What one publish attempt changed — added/modified/deleted/unchanged counts
 /// and the per-file skips, ordered deterministically.
 pub struct PublishReport {
+    /// The `rev-N` id of the revision this publish committed.
     pub revision_id: String,
     /// Counts describe the project's *file set* — every discovered file,
     /// including ones only an existence row describes (`skipped`). A skipped
@@ -158,8 +190,11 @@ pub struct PublishReport {
     /// with why. `added + modified + unchanged` is therefore the size of the
     /// current existence set, not the number of indexed files.
     pub added: usize,
+    /// Files whose content hash differs from the previous revision.
     pub modified: usize,
+    /// Files indexed by the previous revision but no longer on disk.
     pub deleted: usize,
+    /// Files whose content hash matches the previous revision.
     pub unchanged: usize,
     /// Files the discovery walk found but could not include (unreadable,
     /// non-UTF8 path, oversize, etc.), with why. Never fails the publish by

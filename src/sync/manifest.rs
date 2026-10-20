@@ -16,15 +16,20 @@ use super::revision_skipped::SkippedRecord;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// How a path differs between the walked tree and the stored revision.
 pub enum ChangeStatus {
+    /// The path exists on disk but not in the stored revision.
     Added,
+    /// The path exists in both, with a different content hash.
     Modified,
+    /// The path exists in the stored revision but not on disk.
     Deleted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// One path's classification in the manifest diff.
 pub struct FileChange {
+    /// Project-relative path that changed.
     pub relative_path: String,
+    /// How the path differs between disk and the stored revision.
     pub status: ChangeStatus,
 }
 

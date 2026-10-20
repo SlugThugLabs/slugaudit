@@ -11,18 +11,29 @@ use thiserror::Error;
 /// One file's fully-sampled state entering a revision: identity, content and
 /// byte length, language and parse outcome, and its extracted evidence.
 pub struct FileRecord {
+    /// Project-relative path with `/` separators.
     pub relative_path: String,
+    /// Whether the walk classified the file as binary; binary files keep no
+    /// `content`.
     pub is_binary: bool,
+    /// Decoded text content, or `None` for a binary file.
     pub content: Option<String>,
+    /// Content identity of the sampled bytes.
     pub identity: SourceIdentity,
+    /// Raw byte length of the file.
     pub byte_len: u64,
     /// File mtime in unix seconds at sample time. The sync sweep's
     /// cheap-change signal: a stored mtime + byte_len that still match one
     /// stat on disk proves the file is unchanged without reading it.
     pub modified_unix_seconds: Option<i64>,
+    /// Detected language name, or `None` when no grammar matched the path.
     pub language: Option<String>,
+    /// Whether `language` was detected from the file's path; false when
+    /// nothing matched.
     pub language_detected: bool,
+    /// Parse and extraction status recorded for this revision.
     pub run: ParserRun,
+    /// Evidence extracted from the file during this revision.
     pub evidence: Vec<EvidenceItem>,
 }
 
@@ -30,17 +41,29 @@ pub struct FileRecord {
 /// Revision publish failures, including the CAS `StaleBaseline` verdict — the
 /// signal to re-sample and retry, never to force the write.
 pub enum RevisionError {
+    /// A SQLite operation failed.
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
+    /// A sampled file's parser run contradicts its language or evidence.
     #[error("{path}: invalid parser run: {reason}")]
-    InvalidParserRun { path: String, reason: &'static str },
+    InvalidParserRun {
+        /// Project-relative path of the file with the invalid run.
+        path: String,
+        /// Static description of the invariant that failed.
+        reason: &'static str,
+    },
     /// Another publisher committed between our filesystem sample and this
     /// write. The caller must re-sample and retry rather than overwrite a
     /// newer revision with older disk state.
     #[error(
         "concurrent publish won the race (expected current {expected}, found {found}); retry the call"
     )]
-    StaleBaseline { expected: String, found: String },
+    StaleBaseline {
+        /// Revision id the publish expected to still be current.
+        expected: String,
+        /// Revision id actually current when the transaction began.
+        found: String,
+    },
 }
 
 /// The inputs one publish transaction needs, grouped by role.

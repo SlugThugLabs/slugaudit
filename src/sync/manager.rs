@@ -24,7 +24,9 @@ use thiserror::Error;
 /// return it without creating a circular module dependency. `tools::context`
 /// re-exports it for backward compatibility.
 pub struct SyncedProject {
+    /// Path of the SQLite database holding the synced project.
     pub database_path: PathBuf,
+    /// The revision the database is current at.
     pub revision_id: String,
 }
 

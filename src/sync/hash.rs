@@ -9,9 +9,12 @@ pub(super) use super::hash_io::stat_identity;
 /// File-identity read failures (gone, unreadable, over-cap) — always
 /// surfaced to the caller, never swallowed.
 pub enum HashError {
+    /// The file could not be opened or read.
     #[error("failed to read {path} for hashing: {source}")]
     Read {
+        /// Path of the file that could not be read.
         path: PathBuf,
+        /// The underlying I/O error.
         #[source]
         source: std::io::Error,
     },
@@ -24,8 +27,12 @@ pub enum HashError {
          at least {observed} bytes were read before the cap stopped the read"
     )]
     TooLarge {
+        /// Path of the oversize file.
         path: PathBuf,
+        /// Bytes read before the cap stopped the read; a lower bound on the
+        /// file's size.
         observed: u64,
+        /// The caller's per-file byte ceiling.
         limit: u64,
     },
 }
