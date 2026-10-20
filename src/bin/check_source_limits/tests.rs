@@ -1,6 +1,6 @@
 //! Unit tests for `check_source_limits`.
 
-use super::approval::reason as exception_reason;
+use super::approval::{Exception, reason as exception_reason};
 use super::counter::{PRODUCTION_CEILING, TEST_FILE_CEILING, Verdict, code_lines, verdict};
 
 #[test]
@@ -107,7 +107,12 @@ fn code_after_block_comment_counts() {
 #[test]
 fn exception_reason_parsed() {
     let src = "// slugaudit-line-exception: approved-by=slugthug; reason=foo bar\nfn x() {}\n";
-    assert_eq!(exception_reason(src).as_deref(), Some("foo bar"));
+    assert_eq!(
+        exception_reason(src)
+            .map(|exception| exception.reason)
+            .as_deref(),
+        Some("foo bar")
+    );
 }
 
 #[test]
@@ -126,7 +131,9 @@ fn dated_human_exception_is_parsed() {
     let src =
         "// slugaudit-line-exception: approved-by=human-user; date=2026-08-28; reason=approved\n";
     assert_eq!(
-        exception_reason(src).as_deref(),
+        exception_reason(src)
+            .map(|exception| exception.reason)
+            .as_deref(),
         Some("[human-approved 2026-08-28] approved")
     );
 }
@@ -136,14 +143,17 @@ fn dated_human_exception_is_parsed() {
 #[test]
 fn test_files_auto_pass_up_to_the_500_ceiling() {
     assert_eq!(verdict(0, None, true), Verdict::Pass);
-    assert_eq!(verdict(300, Some("reason".into()), true), Verdict::Pass);
+    assert_eq!(
+        verdict(300, Some(Exception::agent("reason".to_owned())), true),
+        Verdict::Pass
+    );
     assert_eq!(verdict(500, None, true), Verdict::Pass);
 }
 
 #[test]
 fn test_files_over_500_hard_fail_even_with_an_exception() {
     assert_eq!(
-        verdict(501, Some("reason".into()), true),
+        verdict(501, Some(Exception::agent("reason".to_owned())), true),
         Verdict::FailHard {
             ceiling: TEST_FILE_CEILING
         }
@@ -161,7 +171,7 @@ fn production_files_need_an_exception_from_200_to_300() {
     assert_eq!(verdict(200, None, false), Verdict::FailNeedsException);
     assert_eq!(verdict(300, None, false), Verdict::FailNeedsException);
     assert_eq!(
-        verdict(250, Some("contract".into()), false),
+        verdict(250, Some(Exception::agent("contract".to_owned())), false),
         Verdict::PassWithException {
             reason: "contract".into()
         }
@@ -171,7 +181,7 @@ fn production_files_need_an_exception_from_200_to_300() {
 #[test]
 fn production_files_over_300_hard_fail_even_with_an_exception() {
     assert_eq!(
-        verdict(301, Some("reason".into()), false),
+        verdict(301, Some(Exception::agent("reason".to_owned())), false),
         Verdict::FailHard {
             ceiling: PRODUCTION_CEILING
         }
@@ -185,41 +195,68 @@ const AGENT_ANNOTATION: &str =
 
 #[test]
 fn a_dated_human_exception_passes_a_production_file_at_301_lines() {
-    let reason = exception_reason(HUMAN_ANNOTATION).expect("human annotation parses");
+    let exception = exception_reason(HUMAN_ANNOTATION).expect("human annotation parses");
 
     assert_eq!(
-        verdict(301, Some(reason.clone()), false),
-        Verdict::PassWithException { reason }
+        verdict(301, Some(exception.clone()), false),
+        Verdict::PassWithException {
+            reason: exception.reason
+        }
     );
 }
 
 #[test]
 fn a_dated_human_exception_passes_a_production_file_at_350_lines() {
-    let reason = exception_reason(HUMAN_ANNOTATION).expect("human annotation parses");
+    let exception = exception_reason(HUMAN_ANNOTATION).expect("human annotation parses");
 
     assert_eq!(
-        verdict(350, Some(reason.clone()), false),
-        Verdict::PassWithException { reason }
+        verdict(350, Some(exception.clone()), false),
+        Verdict::PassWithException {
+            reason: exception.reason
+        }
     );
 }
 
 #[test]
 fn an_agent_exception_fails_hard_at_301_and_350_lines() {
-    let reason = exception_reason(AGENT_ANNOTATION).expect("agent annotation parses");
+    let exception = exception_reason(AGENT_ANNOTATION).expect("agent annotation parses");
     let expected = Verdict::FailHard {
         ceiling: PRODUCTION_CEILING,
     };
 
-    assert_eq!(verdict(301, Some(reason.clone()), false), expected);
-    assert_eq!(verdict(350, Some(reason), false), expected);
+    assert_eq!(verdict(301, Some(exception.clone()), false), expected);
+    assert_eq!(verdict(350, Some(exception), false), expected);
+}
+
+#[test]
+fn an_agent_reason_imitating_the_human_display_prefix_fails_hard() {
+    // The band was admitted by testing the *reason text* for the reserved
+    // display prefix, so an agent could write that prefix itself and buy
+    // the 301–350 band. Admission must key on the parsed approver instead.
+    let annotation = "// slugaudit-line-exception: approved-by=slugthug; \
+                      reason=[human-approved 2026-10-19] pretend\n";
+    let exception = exception_reason(annotation).expect("agent annotation parses");
+
+    assert_eq!(
+        verdict(301, Some(exception.clone()), false),
+        Verdict::FailHard {
+            ceiling: PRODUCTION_CEILING
+        }
+    );
+    assert_eq!(
+        verdict(350, Some(exception), false),
+        Verdict::FailHard {
+            ceiling: PRODUCTION_CEILING
+        }
+    );
 }
 
 #[test]
 fn a_dated_human_exception_does_not_rescue_351_lines() {
-    let reason = exception_reason(HUMAN_ANNOTATION).expect("human annotation parses");
+    let exception = exception_reason(HUMAN_ANNOTATION).expect("human annotation parses");
 
     assert_eq!(
-        verdict(351, Some(reason), false),
+        verdict(351, Some(exception), false),
         Verdict::FailHard {
             ceiling: PRODUCTION_CEILING
         }
