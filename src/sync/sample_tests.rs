@@ -260,7 +260,10 @@ fn sample_file_reports_a_file_over_the_cap_as_too_large() {
 /// behavior in isolation, the way downstream consumers
 /// (`manifest::compare`, `aggregate_manifest_hash`,
 /// `build_upserts_and_deletions`) depend on it.
-fn write_files_relative(relative_paths: &[&str]) -> Vec<DiscoveredFile> {
+/// Writes 100 KB files under a fresh temp directory and returns the
+/// directory guard alongside the discovered entries. The caller must keep
+/// the guard alive while it uses the paths: dropping it removes the files.
+fn write_files_relative(relative_paths: &[&str]) -> (tempfile::TempDir, Vec<DiscoveredFile>) {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().to_path_buf();
     let mut out = Vec::new();
@@ -278,10 +281,7 @@ fn write_files_relative(relative_paths: &[&str]) -> Vec<DiscoveredFile> {
             kind: FileKind::Indexed,
         });
     }
-    // Hold the tempdir alive for the rest of the test via the closure
-    // capturing. The test owns `dir` via the leaky `_keep` below.
-    Box::leak(Box::new(dir));
-    out
+    (dir, out)
 }
 
 /// Pins that the worker pool still hands back samples indexed by
@@ -290,7 +290,7 @@ fn write_files_relative(relative_paths: &[&str]) -> Vec<DiscoveredFile> {
 /// publishes produce different hashes per run.
 #[test]
 fn parallel_sampling_preserves_discovered_index_ordering() {
-    let discovered = write_files_relative(&[
+    let (_dir, discovered) = write_files_relative(&[
         "a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs", "h.rs",
     ]);
     let limits = ResourceLimits::default();
@@ -317,7 +317,7 @@ fn parallel_sampling_preserves_discovered_index_ordering() {
 fn parallel_sampling_total_byte_cap_is_enforced_atomically() {
     // 11 files x 100 KB = 1.1 MB body total; set cap to 300 KB so the
     // first 3 workers succeed and the 4th fails the CAS on the total.
-    let discovered = write_files_relative(&[
+    let (_dir, discovered) = write_files_relative(&[
         "f1.rs", "f2.rs", "f3.rs", "f4.rs", "f5.rs", "f6.rs", "f7.rs", "f8.rs", "f9.rs", "f10.rs",
         "f11.rs",
     ]);
@@ -394,7 +394,7 @@ fn oversized_files_are_skipped_and_returned_not_fatal() {
 /// reason to exist is to bound a pathological repo.
 #[test]
 fn expired_deadline_returns_time_budget_exceeded() {
-    let discovered = write_files_relative(&["only.rs"]);
+    let (_dir, discovered) = write_files_relative(&["only.rs"]);
     let limits = ResourceLimits::default();
     let sink = crate::progress::NoopProgressSink;
     let deadline = crate::util::Deadline::after(Duration::from_millis(1));
@@ -416,7 +416,7 @@ fn expired_deadline_returns_time_budget_exceeded() {
 /// channel honest during an initial import.
 #[test]
 fn parallel_sampling_emits_one_progress_event_per_file() {
-    let discovered = write_files_relative(&["p1.rs", "p2.rs", "p3.rs"]);
+    let (_dir, discovered) = write_files_relative(&["p1.rs", "p2.rs", "p3.rs"]);
     let limits = ResourceLimits::default();
 
     #[derive(Default)]
