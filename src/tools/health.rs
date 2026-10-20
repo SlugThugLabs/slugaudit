@@ -50,14 +50,16 @@ use super::health_database::{count_files, read_revision_fields};
 /// Request for the `health` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct HealthRequest {
-    /// Optional project root. When omitted, returns watcher state for
-    /// every project currently registered with the server and skips the
-    /// per-database stats. When supplied, returns stats for that project:
-    /// watcher state if the project is registered with the server's
-    /// watcher, database state if the project's database exists, and the
-    /// counters otherwise. Reading is strictly read-only — this tool
-    /// never syncs, never registers a watch, and never writes, so a
-    /// health check can never perturb the state it is reporting on.
+    /// Optional project root. When omitted, returns the watcher state of a
+    /// project registered with the server (one is registered in the current
+    /// single-project model; if several are, one is reported and which one
+    /// is unspecified) and skips the per-database stats. When supplied,
+    /// returns stats for that project: watcher state if the project is
+    /// registered with the server's watcher, database state if the
+    /// project's database exists, and the counters otherwise. Reading is
+    /// strictly read-only — this tool never syncs, never registers a watch,
+    /// and never writes, so a health check can never perturb the state it
+    /// is reporting on.
     #[schemars(default)]
     pub path: Option<String>,
 }
@@ -183,6 +185,10 @@ pub struct ServerCounters {
 /// - `IndexedUnwatched`: the enabled project has a published revision in
 ///   its database, but this server has no registered watcher for that path.
 ///   Indexed evidence remains readable; no watcher health is implied.
+/// - `Unknown`: no `path` was supplied, so this answer has no project root
+///   to open a database with. The watcher's own health is reported, but
+///   whether a current revision exists is not knowable here — in
+///   particular this never claims the first sync has failed.
 /// - `Disabled`: `request.path` resolved to no enabled project — the
 ///   activation marker is absent — so nothing can serve that path until
 ///   `project_control` enables it. `remedy` names that call. This is a
@@ -198,6 +204,7 @@ pub enum HealthPhase {
     Unavailable,
     NoActiveProject,
     IndexedUnwatched,
+    Unknown,
     Disabled,
 }
 
@@ -352,16 +359,20 @@ fn inactive_fields(phase: HealthPhase) -> ProjectHealthFields {
 
 /// Builds a per-project field set from the global state only — no
 /// `ensure_synced`, no database call. Used when the caller passed no
-/// `path`. `database` is absent because this codepath never opens one.
+/// `path`. `database` is absent because this codepath never opens one: the
+/// watcher snapshot carries no project root, so there is no database path
+/// to open, and the phase accordingly never claims a revision exists or is
+/// missing (see [`derive_global_phase`]).
 fn compute_global_only_state(manager: &sync::SourceSyncManager) -> ProjectHealthFields {
     let snapshots = manager.watch_states_snapshot();
     if snapshots.is_empty() {
         return inactive_fields(HealthPhase::NoActiveProject);
     }
     // In the current single-active-project model, snapshots has one
-    // entry; reduce it to the reported fields. Future multi-project
-    // support would either aggregate or pick "most recently touched"
-    // and document the choice — never silently combine.
+    // entry; reduce it to the reported fields. With more than one
+    // registered project, one snapshot is reported and which one is
+    // unspecified (the manager stores them in a `HashMap`; see the
+    // `health` tool description). Never silently combine them.
     //
     // `is_empty()` was checked above, so `None` here is unreachable by
     // construction — but matching instead of `expect` keeps the "no
@@ -370,7 +381,7 @@ fn compute_global_only_state(manager: &sync::SourceSyncManager) -> ProjectHealth
     let Some(snapshot) = snapshots.into_iter().next() else {
         return inactive_fields(HealthPhase::NoActiveProject);
     };
-    let phase = derive_phase(snapshot.health, &None, snapshot.has_unreconciled_events());
+    let phase = derive_global_phase(snapshot.health, snapshot.has_unreconciled_events());
     ProjectHealthFields {
         phase,
         remedy: None,
@@ -382,6 +393,33 @@ fn compute_global_only_state(manager: &sync::SourceSyncManager) -> ProjectHealth
             last_verified_sequence: snapshot.last_verified_sequence,
         }),
         database: None,
+    }
+}
+
+/// Maps the watcher's health to a phase for the pathless snapshot.
+///
+/// This answer has no project root and therefore no revision to consult, so
+/// it must not claim one: a `Healthy` (or `Partial`) watcher with no
+/// unreconciled events is [`HealthPhase::Unknown`], never `Importing`
+/// ("the first sync has never succeeded") and never `SteadyState` ("a
+/// current revision exists"). The watcher-only conditions carry over from
+/// [`derive_phase`]: `Unavailable` and the two untrusted states, plus
+/// pending reconciliation for a trusted watcher.
+fn derive_global_phase(
+    watcher_health: watch::WatcherHealth,
+    has_unreconciled_events: bool,
+) -> HealthPhase {
+    match watcher_health {
+        watch::WatcherHealth::Unavailable => HealthPhase::Unavailable,
+        watch::WatcherHealth::NeedsVerification | watch::WatcherHealth::Desynced => {
+            HealthPhase::Restoring
+        }
+        watch::WatcherHealth::Healthy | watch::WatcherHealth::Partial
+            if has_unreconciled_events =>
+        {
+            HealthPhase::Restoring
+        }
+        watch::WatcherHealth::Healthy | watch::WatcherHealth::Partial => HealthPhase::Unknown,
     }
 }
 

@@ -59,8 +59,10 @@ pub struct CompletenessCount {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct CompletenessEnvelope {
     /// Every `files` row by `file_kind`. `indexed` is the set with content and
-    /// structural evidence; `binary` was sampled and deliberately not parsed;
-    /// `skipped` was discovered but never read, so it has no content.
+    /// metadata — its structural evidence may still be missing, which
+    /// `indexed_files_without_evidence` counts; `binary` was sampled and
+    /// deliberately not parsed; `skipped` was discovered but never read, so
+    /// it has no content.
     pub file_kind_counts: Vec<FileKindCount>,
     /// Every `files` row by `file_class` — where the code came from, derived
     /// from the path alone (`sync::classify`): `authored` (the project's own
@@ -76,18 +78,25 @@ pub struct CompletenessEnvelope {
     /// project but are not in the index.
     pub skipped_file_count: i64,
     /// Those skipped rows grouped by `skip_reason`. This is the "why" paired
-    /// with `index_partial`; a file the walk could not even name (a non-UTF-8
-    /// path) has no representable `files.path` and cannot appear here — it is
-    /// visible only in the publish report and the server log.
+    /// with `index_partial`. A file with no representable `files.path` (a
+    /// non-UTF-8 name) cannot appear here; it is counted by
+    /// `unrepresentable_path_count` instead.
     pub skipped_by_reason: Vec<SkipReasonCount>,
     /// Every `files` row by `extraction_completeness`, so "text present but
     /// not parsed" (`ContentOnly`) is visible as itself instead of vanishing
     /// into a parser-failure count.
     pub extraction_completeness_counts: Vec<CompletenessCount>,
-    /// True when the index does not cover every file the last publish
-    /// discovered — i.e. `skipped_file_count > 0`. False means every
-    /// discovered file is represented by a row here.
+    /// True when the index does not cover every file discovery found for
+    /// this report: an existence row is `skipped`, or a discovered file's
+    /// path has no UTF-8 representation and therefore no `files` row at all.
+    /// False means every discovered file is represented by a row here.
     pub index_partial: bool,
+    /// Discovered files whose project-relative path is not valid UTF-8, so
+    /// no `files` row can represent them and they cannot be stored, skipped
+    /// or named in this report. Counted by a discovery walk run for this
+    /// report — the index itself cannot hold the path — and included in
+    /// `index_partial`.
+    pub unrepresentable_path_count: i64,
     /// Files whose stored evidence was cut short by an evidence cap: each
     /// carries the `evidence:truncated` diagnostic appended by
     /// `sync::sample::apply_evidence_limits`. Their structural record is
@@ -104,10 +113,18 @@ pub struct CompletenessEnvelope {
 
 /// Builds the envelope from the current revision's `files` table.
 ///
+/// `unrepresentable_path_count` is discovery's count of files whose path
+/// cannot be stored in `files` at all (a non-UTF-8 name); it is passed in
+/// because the index has no row that could carry it, and it makes
+/// `index_partial` truthful when such a file exists.
+///
 /// # Errors
 ///
 /// Returns a database error if any of the grouped counts fails.
-pub(super) fn build(connection: &Transaction<'_>) -> Result<CompletenessEnvelope, rusqlite::Error> {
+pub(super) fn build(
+    connection: &Transaction<'_>,
+    unrepresentable_path_count: i64,
+) -> Result<CompletenessEnvelope, rusqlite::Error> {
     let file_kind_counts = grouped_counts(
         connection,
         "SELECT file_kind, count(*) FROM files GROUP BY file_kind ORDER BY file_kind",
@@ -161,7 +178,8 @@ pub(super) fn build(connection: &Transaction<'_>) -> Result<CompletenessEnvelope
         skipped_file_count,
         skipped_by_reason,
         extraction_completeness_counts,
-        index_partial: skipped_file_count > 0,
+        index_partial: skipped_file_count > 0 || unrepresentable_path_count > 0,
+        unrepresentable_path_count,
         evidence_capped_file_count,
         indexed_files_without_evidence,
     })
@@ -183,4 +201,112 @@ fn grouped_counts<T>(
             Ok(make(value.unwrap_or_default(), row.get(1)?))
         })?
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tools::{ReportRequest, report};
+    use rmcp::handler::server::wrapper::Parameters;
+    use std::fs;
+
+    fn activate(root: &std::path::Path) {
+        fs::create_dir_all(root.join(".planning").join("slugaudit"))
+            .expect("create activation dir");
+    }
+
+    /// A file the walk discovers but deliberately does not index must be
+    /// visible rather than absent: a `skipped` row with its reason and no
+    /// content, plus a response that says the index is partial. Needs the
+    /// real publish path, so the oversize ceiling comes from the project's
+    /// own config.
+    #[test]
+    fn a_discovered_but_skipped_file_is_visible_as_a_skipped_row_and_a_partial_index() {
+        let project = tempfile::tempdir().expect("project dir");
+        activate(project.path());
+        fs::write(
+            project
+                .path()
+                .join(".planning")
+                .join("slugaudit")
+                .join("config.json"),
+            br#"{"max_file_bytes": 50000}"#,
+        )
+        .expect("write project config");
+        fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
+        fs::write(project.path().join("huge.rs"), vec![b'x'; 100_000])
+            .expect("write oversize file");
+
+        let response = report(
+            &Parameters(ReportRequest {
+                path: project.path().to_string_lossy().into_owned(),
+            }),
+            &crate::progress::NoopProgressSink,
+            &crate::sync::SourceSyncManager::default(),
+        )
+        .expect("report succeeds");
+
+        assert_eq!(
+            response.0.file_count, 2,
+            "both discovered files have a row, indexed or not"
+        );
+        let envelope = &response.0.completeness;
+        assert!(
+            envelope.index_partial,
+            "a skipped file makes the index partial"
+        );
+        assert_eq!(envelope.skipped_file_count, 1);
+        assert_eq!(envelope.skipped_by_reason.len(), 1);
+        assert_eq!(envelope.skipped_by_reason[0].reason, "oversize");
+        assert_eq!(envelope.skipped_by_reason[0].count, 1);
+        assert_eq!(
+            envelope
+                .file_kind_counts
+                .iter()
+                .find(|entry| entry.kind == "indexed")
+                .map(|entry| entry.count),
+            Some(1)
+        );
+
+        let database = project
+            .path()
+            .join(".planning")
+            .join("slugaudit")
+            .join("project.db");
+        let connection =
+            crate::store::open_read_only(&database).expect("open the published database read-only");
+        let (kind, reason, content, completeness, outcome, algorithm): (
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+            String,
+        ) = connection
+            .query_row(
+                "SELECT file_kind, skip_reason, content, extraction_completeness, parse_outcome, \
+                        hash_algorithm \
+                 FROM files WHERE path = 'huge.rs'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("the skipped file must have an existence row");
+        assert_eq!(kind, "skipped");
+        assert_eq!(reason.as_deref(), Some("oversize"));
+        assert_eq!(content, None, "no content is retained for a skipped file");
+        assert_eq!(completeness, "Unavailable");
+        assert_eq!(outcome, "NotAttempted");
+        assert_eq!(
+            algorithm, "stat-identity",
+            "the skipped row's identity is stat-derived, never a content hash"
+        );
+    }
 }

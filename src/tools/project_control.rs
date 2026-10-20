@@ -150,12 +150,40 @@ pub fn project_control(
     // `ProjectRoot::resolve`, not `project::resolve_project`: enabling a
     // project must work *before* the activation marker exists, so there
     // is no active project to find yet.
-    let root = ProjectRoot::resolve(&path).map_err(|e| err(format!("resolve: {e}")))?;
+    let root = resolve_root(&path_str, &path)?;
 
     match inner.action {
         ProjectControlAction::On => enable(&root, profile, sink),
         ProjectControlAction::Off => disable(&root, manager),
     }
+}
+
+/// Resolves the caller's project path, separating a bad argument from a
+/// server-side failure.
+///
+/// A missing path or a path that is not a directory will never resolve by
+/// retrying, so those are `invalid_params` naming the caller's path and the
+/// fix. Any other resolution failure (an unreadable parent, an I/O error)
+/// stays an internal error: the argument may be fine and the environment is
+/// the problem.
+fn resolve_root(path_str: &str, path: &std::path::Path) -> Result<ProjectRoot, ErrorData> {
+    ProjectRoot::resolve(path).map_err(|error| match error {
+        project::RootError::NotADirectory => ErrorData::invalid_params(
+            format!("project path `{path_str}` is not a directory; pass a project directory"),
+            None,
+        ),
+        project::RootError::Unresolvable(source)
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            ErrorData::invalid_params(
+                format!("project path `{path_str}` does not exist; pass an existing directory"),
+                None,
+            )
+        }
+        project::RootError::Unresolvable(source) => {
+            err(format!("resolve: failed to resolve project root: {source}"))
+        }
+    })
 }
 
 fn enable(

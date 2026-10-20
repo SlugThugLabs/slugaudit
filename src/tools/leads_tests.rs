@@ -285,25 +285,37 @@ fn files_covered_counts_a_file_split_across_pages_once() {
 }
 
 /// The byte budget replaces the deleted row cap: with no `limit`, rows stop
-/// at the budget, and the response says so rather than reading as a small
-/// mechanic. One row is always returned, so an empty page never means
-/// "budget too small".
+/// at the budget in both row modes, and the response says so rather than
+/// reading as a small mechanic. One row is always returned, so an empty page
+/// never means "budget too small".
 #[test]
-fn the_byte_budget_stops_the_page_and_reports_it() {
+fn the_byte_budget_stops_the_page_in_both_modes_and_reports_it() {
     let project = unwrap_fixture(3, 4);
-    let limits = ResourceLimits {
-        max_query_response_bytes: 8,
-        ..ResourceLimits::default()
-    };
-    let response = run_with_limits(request(project.path(), Some("unwrap_calls")), &limits);
+    for (mode, budget) in [(LeadMode::Full, 8), (LeadMode::Compact, 40)] {
+        let limits = ResourceLimits {
+            max_query_response_bytes: budget,
+            ..ResourceLimits::default()
+        };
+        let mut request = request(project.path(), Some("unwrap_calls"));
+        request.mode = mode;
 
-    assert_eq!(response.returned, 1, "the first row is always returned");
-    assert!(!response.complete);
-    assert_eq!(response.limited_by, PageLimit::Bytes);
-    assert_eq!(response.row_budget_bytes, 8);
-    assert!(response.rows_bytes > 8, "{}", response.rows_bytes);
-    assert_eq!(response.total, 12, "the total is still complete");
-    assert_eq!(response.next_offset, Some(1));
+        let response = run_with_limits(request, &limits);
+
+        assert_eq!(response.returned, 1, "the first row is always returned");
+        assert!(!response.complete);
+        assert_eq!(response.limited_by, PageLimit::Bytes);
+        assert_eq!(response.row_budget_bytes, budget);
+        assert!(response.rows_bytes > budget, "{}", response.rows_bytes);
+        assert_eq!(response.total, 12, "the total is still complete");
+        assert_eq!(response.next_offset, Some(1));
+    }
+    // A byte-limited page cannot grow by raising `limit`; the schema's own
+    // advice must name the knob that acted.
+    let schema = schemars::schema_for!(PageLimit).to_value().to_string();
+    assert!(
+        schema.contains("page_bytes") && !schema.contains("Raise `limit`"),
+        "{schema}"
+    );
 }
 
 #[test]
@@ -554,24 +566,6 @@ fn compact_paging_reports_a_cumulative_file_denominator() {
     assert_eq!((rest.files_covered, rest.files_total), (2, 2));
 }
 
-/// The compact mode spends the same byte budget, keeps one row even when it
-/// alone exceeds the budget, and reports what stopped the page.
-#[test]
-fn the_compact_byte_budget_stops_the_page_and_reports_it() {
-    let project = unwrap_fixture(3, 4);
-    let limits = ResourceLimits {
-        max_query_response_bytes: 40,
-        ..ResourceLimits::default()
-    };
-    let compact = compact_request(project.path(), Some("unwrap_calls"));
-    let response = run_with_limits(compact, &limits);
-    assert_eq!((response.returned, response.total), (1, 12));
-    assert_eq!((response.complete, response.next_offset), (false, Some(1)));
-    assert_eq!(response.limited_by, PageLimit::Bytes);
-    assert_eq!(response.row_budget_bytes, 40);
-    assert!(response.rows_bytes > 40, "{}", response.rows_bytes);
-}
-
 /// The completeness fields mean the same thing in both modes: for one
 /// mechanic they match field for field, the rows are the same places in the
 /// same order, and only the bytes differ.
@@ -599,6 +593,31 @@ fn both_modes_report_the_same_completeness_for_one_mechanic() {
     assert_eq!(cplaces, fplaces, "same rows, same order");
     let (cbytes, fbytes) = (compact.rows_bytes, full.rows_bytes);
     assert!(cbytes < fbytes, "{cbytes} vs {fbytes}");
+}
+
+/// Every caller-supplied string field is bounded before it reaches the
+/// project: an over-cap value is refused with the message naming the field
+/// and its cap, never truncated or passed through.
+#[test]
+fn leads_refuses_inputs_over_their_byte_caps() {
+    let refused = |mutate: fn(&mut LeadsRequest)| {
+        let mut request = request(Path::new("/tmp"), None);
+        mutate(&mut request);
+        try_run(request).expect_err("an over-cap input is refused")
+    };
+    let mut path = refused(|r| r.path = "a".repeat(MAX_PATH_BYTES + 1));
+    assert_eq!(path.message, "path exceeds 32768 bytes");
+    path = refused(|r| r.mechanic = Some("m".repeat(MAX_FILTER_BYTES + 1)));
+    assert_eq!(path.message, "mechanic exceeds 8192 bytes");
+    path = refused(|r| r.pattern = Some("p".repeat(MAX_FILTER_BYTES + 1)));
+    assert_eq!(path.message, "pattern exceeds 8192 bytes");
+    path = refused(|r| r.expected_revision = Some("r".repeat(MAX_REVISION_BYTES + 1)));
+    assert_eq!(path.message, "expected_revision exceeds 256 bytes");
+    assert_eq!(
+        path.code,
+        rmcp::model::ErrorCode::INVALID_PARAMS,
+        "{path:?}"
+    );
 }
 
 #[path = "leads_page_tests.rs"]

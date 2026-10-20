@@ -208,8 +208,10 @@ pub enum PageLimit {
     None,
     /// The caller's `limit` was reached; more rows exist.
     Limit,
-    /// The response byte budget was reached; more rows exist. Raise
-    /// `limit` if one was set, or page on.
+    /// The response byte budget was reached; more rows exist. A
+    /// byte-limited page is by construction at or below any `limit` that
+    /// was set, so raising `limit` returns nothing more: raise `page_bytes`
+    /// to enlarge the page (up to the server ceiling), or page on.
     Bytes,
 }
 
@@ -246,9 +248,13 @@ pub struct LeadsResponse {
     /// `mechanic_counts` entry's `files`.
     pub files_total: i64,
     /// Distinct files represented in rows `0..offset + returned` of the
-    /// scope. Cumulative for a sweep at one revision, because rows are
-    /// ordered by path and a page boundary can split a file but never
-    /// reorder the files. `files_total - files_covered` is what is left.
+    /// scope. Cumulative for a sweep at one revision: rows are read in a
+    /// fixed order — within a single mechanic, by path then line; for a
+    /// compact call with no mechanic, by mechanic declaration order then
+    /// path then line — so a file's rows for one mechanic are contiguous,
+    /// but a file with rows under several mechanics appears in several
+    /// groups and can span several compact pages. It is still counted once.
+    /// `files_total - files_covered` is what is left.
     pub files_covered: i64,
     /// Rows grouped per file for this page only.
     pub page_file_counts: Vec<FileCount>,

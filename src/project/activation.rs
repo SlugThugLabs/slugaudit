@@ -39,8 +39,11 @@ pub enum ActivationError {
          tool calls to finish and retry."
     )]
     CheckpointIncomplete,
-    #[error("could not take an exclusive lock on the database while disabling: {0}")]
-    DatabaseLock(#[source] rusqlite::Error),
+    /// The database opened but a lock/checkpoint statement failed for a
+    /// reason other than contention (for example `SQLITE_IOERR`); the text
+    /// carries the underlying SQLite error.
+    #[error("database operation failed while disabling the project: {0}")]
+    DatabaseOperation(#[source] rusqlite::Error),
 }
 
 /// The SlugAudit-owned runtime directory under a resolved user project:
@@ -242,17 +245,23 @@ pub enum GitignoreOutcome {
 /// `git status` after `project_control {"action":"on"}` does not show the
 /// index database and its sidecars as untracked files.
 ///
-/// The user's file is never rewritten: the rule goes out through an append
-/// handle, so every existing byte survives; a final line without a newline
-/// gets one first, so the rule can never be merged into it; and a file
+/// Every existing byte survives: the new contents are the old contents plus
+/// the rule, a final line without a newline gets one first, and a file
 /// written with CRLF keeps that convention instead of acquiring a mixed one.
+/// The write is atomic — the complete contents go to a temp file in the same
+/// directory (or beside a symlink's target, so a linked `.gitignore` stays a
+/// link) which is then renamed over the path. A failed write therefore
+/// leaves the file byte-identical, which is what
+/// [`GitignoreOutcome::NotWritten`] promises; the trade-off is that a
+/// concurrent writer's change made between the read and the rename is not
+/// merged.
 ///
 /// The file is read through [`read_file_capped_bytes`] with a 1 MiB cap
 /// (`MAX_FOREIGN_TEXT_BYTES`), the same cap used for other foreign text
 /// files. An over-cap file is reported as [`GitignoreOutcome::NotWritten`]
 /// rather than read, and any other read failure is reported the same way:
 /// this guard is non-fatal by design and never undoes the enable. A missing
-/// file is not a failure — the append below creates it.
+/// file is not a failure — the atomic write below creates it.
 ///
 /// Failure is reported through [`GitignoreOutcome::NotWritten`], never
 /// propagated — see [`GitignoreOutcome`].
@@ -288,17 +297,87 @@ pub fn ensure_gitignore(root: &ProjectRoot) -> GitignoreOutcome {
     };
     let entry = format!("{ACTIVATION_RELATIVE_DIR}/");
     let addition = format!("{separator}{entry}{newline}");
-    match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .and_then(|mut file| file.write_all(addition.as_bytes()))
-    {
+    match write_gitignore_atomically(&path, &existing, addition.as_bytes()) {
         Ok(()) => GitignoreOutcome::Added(path),
         Err(error) => GitignoreOutcome::NotWritten {
             path,
             reason: error.to_string(),
         },
+    }
+}
+
+/// Sequence making temp-file names unique within one process.
+static GITIGNORE_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Writes the existing bytes plus `addition` to a temp file beside the real
+/// `.gitignore` and renames it into place.
+///
+/// The destination is the symlink target when `.gitignore` is a symlink, so
+/// the user's link survives; a missing file is created at the original path.
+/// Nothing is renamed until the whole file has been written, so a failure
+/// before the rename leaves the original untouched. The temp file is
+/// removed on failure; a cleanup failure is logged and never replaces the
+/// write error that is already being reported.
+fn write_gitignore_atomically(
+    path: &Path,
+    existing: &[u8],
+    addition: &[u8],
+) -> std::io::Result<()> {
+    let destination = match std::fs::canonicalize(path) {
+        Ok(resolved) => resolved,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(error) => return Err(error),
+    };
+    let directory = destination.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the .gitignore path has no parent directory",
+        )
+    })?;
+    let sequence = GITIGNORE_TEMP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = directory.join(format!(
+        ".gitignore.slugaudit.{}.{sequence}.tmp",
+        std::process::id()
+    ));
+
+    // `create_new` fails rather than following a pre-existing path, so this
+    // process can only ever clean up a temp file it created itself.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)?;
+    let written = file
+        .write_all(existing)
+        .and_then(|()| file.write_all(addition))
+        .and_then(|()| match std::fs::metadata(&destination) {
+            Ok(metadata) => file.set_permissions(metadata.permissions()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        });
+    // Close before the rename: the close surfaces any deferred write error,
+    // and a rename over an open handle is not portable.
+    drop(file);
+    let result = written.and_then(|()| std::fs::rename(&temp, &destination));
+    if let Err(error) = result {
+        remove_abandoned_temp(&temp);
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Removes the temp file left by a failed atomic write. The primary error
+/// is already on its way to the caller; a cleanup failure is logged once
+/// and never replaces it.
+fn remove_abandoned_temp(temp: &Path) {
+    match std::fs::remove_file(temp) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => tracing::warn!(
+            target: "slugaudit::project",
+            path_id = %crate::util::redacted_path(temp),
+            %error,
+            "failed to remove an abandoned .gitignore temp file"
+        ),
     }
 }
 

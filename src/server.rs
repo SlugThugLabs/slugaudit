@@ -27,6 +27,14 @@ use rmcp::{ErrorData, Peer, RoleServer, ServerHandler, tool, tool_handler, tool_
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
+/// Longest resource URI accepted from a client. Resource URIs are a fixed,
+/// compile-time catalogue with no templates, so any longer value is unknown by
+/// construction; capping it keeps a multi-megabyte URI out of the
+/// `resource_not_found` message instead of echoing it back. rmcp's
+/// `JsonRpcMessageCodec` sets no length limit of its own, unlike tool inputs,
+/// which carry their own caps.
+const MAX_RESOURCE_URI_BYTES: usize = 8 * 1024;
+
 const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an index of this project's code — parsed \
     structure, symbols, imports, exports, call sites, comments, diagnostics — that you query instead of reading \
     files. It answers structural and aggregate questions that reading and grep cannot answer cheaply: what a \
@@ -394,7 +402,9 @@ impl SlugAuditServer {
          process-wide tool-call counters. Intended for operators/health checks; safe to call \
          repeatedly and never mutates state. Call `project_control` with `\"on\"` on a path first \
          to surface per-project database state; calling without a path returns global counters \
-         and the most-recently-touched project's watcher health only."
+         and the watcher health of a project registered with this server. Exactly one project is \
+         registered in the current single-project model; if several are registered, one of them \
+         is reported and which one is unspecified."
     )]
     async fn health(
         &self,
@@ -441,10 +451,61 @@ impl ServerHandler for SlugAuditServer {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
-        crate::resources::read(&request.uri)
-            .map(|contents| ReadResourceResult::new(vec![contents]).into())
-            .ok_or_else(|| {
-                ErrorData::resource_not_found(format!("unknown resource `{}`", request.uri), None)
-            })
+        read_resource_contents(&request.uri).map(Into::into)
+    }
+}
+
+/// Resolves one resource URI from the embedded catalogue.
+///
+/// A URI longer than [`MAX_RESOURCE_URI_BYTES`] is refused as invalid
+/// parameters before the catalogue lookup, so an oversized caller value is
+/// never formatted into an error message. Every URI the catalogue does not
+/// serve is `resource_not_found`, including a short but unknown one.
+fn read_resource_contents(uri: &str) -> Result<ReadResourceResult, ErrorData> {
+    if crate::util::exceeds_input_bytes(uri, MAX_RESOURCE_URI_BYTES) {
+        return Err(ErrorData::invalid_params(
+            format!("resource uri exceeds {MAX_RESOURCE_URI_BYTES} bytes"),
+            None,
+        ));
+    }
+    crate::resources::read(uri)
+        .map(|contents| ReadResourceResult::new(vec![contents]))
+        .ok_or_else(|| ErrorData::resource_not_found(format!("unknown resource `{uri}`"), None))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_resource_reports_an_unknown_uri_as_resource_not_found() {
+        let error =
+            read_resource_contents("slugaudit://nope").expect_err("an unknown URI is not served");
+
+        assert_eq!(
+            error.code,
+            rmcp::model::ErrorCode::RESOURCE_NOT_FOUND,
+            "{error:?}"
+        );
+        assert_eq!(error.message, "unknown resource `slugaudit://nope`");
+    }
+
+    #[test]
+    fn read_resource_refuses_a_uri_over_the_cap_without_echoing_it() {
+        let uri = "u".repeat(MAX_RESOURCE_URI_BYTES + 1);
+
+        let error = read_resource_contents(&uri).expect_err("an over-cap URI is refused");
+
+        assert_eq!(
+            error.code,
+            rmcp::model::ErrorCode::INVALID_PARAMS,
+            "{error:?}"
+        );
+        assert_eq!(error.message, "resource uri exceeds 8192 bytes");
+        assert!(
+            !error.message.contains("uuuu"),
+            "an oversized URI must not be echoed into the message: {}",
+            error.message
+        );
     }
 }

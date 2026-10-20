@@ -40,13 +40,15 @@ pub(super) fn acquire_database_lock(
 }
 
 /// Only SQLite's busy/locked codes mean another connection is in the way;
-/// any other failure is reported as itself rather than as contention.
+/// any other failure (an I/O error from the checkpoint, a corrupt page) is
+/// reported as itself. It must never read as contention, because the retry
+/// advice that accompanies contention is wrong for it.
 fn lock_error(error: rusqlite::Error) -> ActivationError {
     match error.sqlite_error_code() {
         Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
             ActivationError::DatabaseBusy(error)
         }
-        _ => ActivationError::DatabaseLock(error),
+        _ => ActivationError::DatabaseOperation(error),
     }
 }
 
@@ -69,8 +71,44 @@ mod tests {
             matches!(locked, ActivationError::DatabaseBusy(_)),
             "{locked:?}"
         );
-        assert!(matches!(io, ActivationError::DatabaseLock(_)), "{io:?}");
+        assert!(
+            matches!(io, ActivationError::DatabaseOperation(_)),
+            "an I/O failure is not contention: {io:?}"
+        );
         assert!(!io.to_string().contains("another connection"), "{io}");
+        assert!(
+            !io.to_string().contains("lock"),
+            "an I/O failure must not read as a lock failure: {io}"
+        );
+    }
+
+    /// The other half of the mapping: the database itself cannot be opened,
+    /// so the failure is reported as a database operation (with the store's
+    /// own reason), never as contention and never as a lock failure.
+    #[cfg(unix)]
+    #[test]
+    fn an_unopenable_database_is_reported_as_a_database_error_not_contention() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let root = ProjectRoot::resolve(directory.path()).expect("resolve root");
+        super::super::activation::enable(&root).expect("enable");
+        let db_path = database_path(&root);
+        std::fs::write(&db_path, b"x").expect("write database file");
+        std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o644))
+            .expect("widen database permissions");
+
+        let result = acquire_database_lock(&root);
+
+        assert!(
+            matches!(
+                result,
+                Err(ActivationError::Database(
+                    crate::store::StoreError::Permissions(_)
+                ))
+            ),
+            "an unopenable database is a database error, got {result:?}"
+        );
     }
 
     #[test]

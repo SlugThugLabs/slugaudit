@@ -164,16 +164,180 @@ fn off_action_when_already_disabled_is_a_noop() {
 }
 
 #[test]
-fn on_action_with_a_nonexistent_path_returns_an_error() {
+fn on_action_with_a_nonexistent_path_returns_invalid_params() {
     let missing = "/definitely/not/a/real/path/for/slugaudit-tests";
-    let result = project_control(
+    let error = project_control(
         &on_request(missing),
         &crate::progress::NoopProgressSink,
         None,
+    )
+    .err()
+    .expect("enable on a nonexistent path must surface an error, not silently create state");
+
+    assert_eq!(
+        error.code,
+        rmcp::model::ErrorCode::INVALID_PARAMS,
+        "a bad caller path is not an internal server failure: {error:?}"
+    );
+    assert_eq!(
+        error.message,
+        format!("project path `{missing}` does not exist; pass an existing directory")
+    );
+}
+
+#[test]
+fn project_control_rejects_a_path_over_the_byte_cap() {
+    let error = project_control(
+        &on_request(&"a".repeat(MAX_PATH_BYTES + 1)),
+        &crate::progress::NoopProgressSink,
+        None,
+    )
+    .err()
+    .expect("an over-cap path is refused");
+
+    assert_eq!(
+        error.code,
+        rmcp::model::ErrorCode::INVALID_PARAMS,
+        "{error:?}"
+    );
+    assert_eq!(error.message, "path exceeds 32768 bytes");
+}
+
+#[test]
+fn project_control_rejects_a_profile_over_the_byte_cap() {
+    let (project, path) = temp_project_with_source();
+    let mut request = on_request(&path);
+    request.0.profile = Some("p".repeat(MAX_PROFILE_BYTES + 1));
+
+    let error = project_control(&request, &crate::progress::NoopProgressSink, None)
+        .err()
+        .expect("an over-cap profile is refused");
+
+    assert_eq!(
+        error.code,
+        rmcp::model::ErrorCode::INVALID_PARAMS,
+        "{error:?}"
+    );
+    assert_eq!(error.message, "profile exceeds 64 bytes");
+    assert!(
+        !activation_dir(&project).exists(),
+        "the refused call must not enable the project"
+    );
+}
+
+/// `project::enable` refuses to create the activation directory through a
+/// symlinked `.planning`, and that refusal reaches the caller as itself.
+#[cfg(unix)]
+#[test]
+fn on_action_reports_a_symlinked_planning_directory() {
+    let (project, path) = temp_project_with_source();
+    let elsewhere = project.path().join("elsewhere");
+    fs::create_dir_all(&elsewhere).expect("create link target");
+    std::os::unix::fs::symlink(&elsewhere, project.path().join(".planning")).expect("symlink");
+
+    let error = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
+        .err()
+        .expect("enable through a symlinked .planning is refused");
+
+    assert!(
+        error
+            .message
+            .contains("enable: refusing a symlinked SlugAudit activation path"),
+        "{}",
+        error.message
+    );
+}
+
+// NEEDS-DECISION: the corrupt-database discard-failure arm has no test. It is
+// unreachable without a production hook or a read-only/immutable filesystem
+// state: a corrupt file is detected while SQLite configures WAL mode, so any
+// obstruction that would make `discard_corrupt_database` fail (a directory at
+// `project.db-wal`) makes the open fail earlier with `SQLITE_CANTOPEN`, which
+// is not the corruption arm. The same was re-verified with an unsupported
+// schema version: WAL configuration still fails at the blocked sidecar first.
+
+/// A database that cannot be opened for a reason other than corruption
+/// (here the path is a directory) is reported as a database failure, not
+/// misread as corruption to discard.
+#[test]
+fn on_action_reports_a_non_corruption_database_open_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (project, path) = temp_project_with_source();
+    let activation = activation_dir(&project);
+    let database = activation.join("project.db");
+    fs::create_dir_all(&database).expect("a directory where the database belongs");
+    fs::set_permissions(&database, fs::Permissions::from_mode(0o700))
+        .expect("owner-only mode so the permission guard passes");
+
+    let error = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
+        .err()
+        .expect("an unopenable database fails the enable");
+
+    assert!(
+        error.message.starts_with("database:"),
+        "the failure is reported as a database error: {}",
+        error.message
     );
     assert!(
-        result.is_err(),
-        "enable on a nonexistent path must surface an error, not silently create state"
+        !error.message.contains("discarding"),
+        "an I/O failure is not corruption: {}",
+        error.message
+    );
+}
+
+/// The initial import runs inside `project_control`; its failure is
+/// reported as an import failure rather than as success.
+#[test]
+fn on_action_reports_an_import_failure() {
+    let (project, path) = temp_project_with_source();
+    let config = activation_dir(&project).join("config.json");
+    fs::create_dir_all(activation_dir(&project)).expect("create activation dir");
+    fs::write(&config, br#"{"max_total_import_bytes": 1}"#).expect("write project config");
+
+    let error = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
+        .err()
+        .expect("an import that exceeds the byte ceiling fails the enable");
+
+    assert!(
+        error.message.contains("import:"),
+        "the failure names the import step: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains("1-byte ceiling"),
+        "the underlying import error survives: {}",
+        error.message
+    );
+}
+
+/// `project::disable` refuses to remove a symlinked activation directory;
+/// that refusal reaches the caller instead of a reported success.
+#[cfg(unix)]
+#[test]
+fn off_action_reports_a_disable_failure() {
+    let (project, path) = temp_project_with_source();
+    project_control(&on_request(&path), &crate::progress::NoopProgressSink, None).expect("enable");
+    let activation = activation_dir(&project);
+    fs::remove_dir_all(&activation).expect("remove the real activation dir");
+    let elsewhere = project.path().join("elsewhere");
+    fs::create_dir_all(&elsewhere).expect("create link target");
+    std::os::unix::fs::symlink(&elsewhere, &activation).expect("symlink the activation dir");
+
+    let error = project_control(
+        &off_request(&path),
+        &crate::progress::NoopProgressSink,
+        None,
+    )
+    .err()
+    .expect("disable through a symlinked activation dir is refused");
+
+    assert!(
+        error
+            .message
+            .contains("disable: refusing a symlinked SlugAudit activation path"),
+        "{}",
+        error.message
     );
 }
 

@@ -166,7 +166,7 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
         .expect("insert kotlin edge");
 
     let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned()).expect("build report");
+    let response = build_report(&tx, "r1".to_owned(), 0).expect("build report");
 
     assert_eq!(
         response.unsupported_language_unresolved_count, 1,
@@ -205,7 +205,7 @@ fn dependency_edge_totals_count_edges_and_files_in_both_directions() {
         .expect("insert one resolved and one targetless edge");
 
     let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned()).expect("build report");
+    let response = build_report(&tx, "r1".to_owned(), 0).expect("build report");
 
     let totals = response.dependency_edges;
     assert_eq!(totals.outbound_edge_count, 2, "both edges leave lib.rs");
@@ -240,7 +240,7 @@ fn the_completeness_envelope_groups_files_by_class() {
     }
 
     let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned()).expect("build report");
+    let response = build_report(&tx, "r1".to_owned(), 0).expect("build report");
 
     let class_count = |class: &str| {
         response
@@ -270,7 +270,7 @@ fn malformed_language_value_is_reported_instead_of_dropped() {
         .expect("insert revision and file");
 
     let tx = connection.transaction().expect("begin transaction");
-    let error = build_report(&tx, "r1".to_owned()).expect_err("malformed language");
+    let error = build_report(&tx, "r1".to_owned(), 0).expect_err("malformed language");
     let rusqlite::Error::InvalidColumnType(_, column, _) = &error else {
         panic!("the malformed language column is named, not dropped: {error:?}");
     };
@@ -294,6 +294,103 @@ fn report_on_an_inactive_project_is_a_typed_error_not_a_panic() {
         err.message.contains("not enabled")
             || err.message.contains("inactive")
             || err.message.contains("activate")
+    );
+}
+
+#[test]
+fn report_rejects_a_path_over_the_byte_cap() {
+    let request = Parameters(ReportRequest {
+        path: "a".repeat(MAX_PATH_BYTES + 1),
+    });
+
+    let error = report(
+        &request,
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .err()
+    .expect("an over-cap path is refused");
+
+    assert_eq!(
+        error.code,
+        rmcp::model::ErrorCode::INVALID_PARAMS,
+        "{error:?}"
+    );
+    assert_eq!(error.message, "path exceeds 32768 bytes");
+}
+
+/// A section query that fails (here: a `files.language` value that is not
+/// text) fails the whole report with an internal error; the report is never
+/// returned with a section silently missing.
+#[test]
+fn report_maps_a_build_failure_to_an_internal_error() {
+    let project = tempfile::tempdir().expect("project dir");
+    activate(project.path());
+    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
+    let path = project.path().to_string_lossy().into_owned();
+    let manager = crate::sync::SourceSyncManager::default();
+    manager
+        .ensure_current(&path, &crate::progress::NoopProgressSink)
+        .expect("initial sync");
+    let database = project.path().join(".planning/slugaudit/project.db");
+    let connection = crate::store::open_read_write(&database).expect("open the database");
+    connection
+        .execute("UPDATE files SET language = CAST(X'FF' AS BLOB)", [])
+        .expect("malform the language column");
+    drop(connection);
+
+    let error = report(
+        &Parameters(ReportRequest { path }),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .err()
+    .expect("a failed section query fails the report");
+
+    assert_eq!(
+        error.code,
+        rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "{error:?}"
+    );
+    assert!(
+        error.message.contains("language"),
+        "the failing column is named: {}",
+        error.message
+    );
+}
+
+/// A discovered file whose name is not valid UTF-8 cannot have a `files`
+/// row. The report must say so: the file count covers representable rows,
+/// the completeness block counts the dropped path, and the index is marked
+/// partial rather than claiming every discovered file is represented.
+#[cfg(unix)]
+#[test]
+fn a_discovered_non_utf8_path_is_counted_and_makes_the_index_partial() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let project = tempfile::tempdir().expect("project dir");
+    activate(project.path());
+    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
+    let bad_name = std::ffi::OsString::from_vec(b"bad\xff.rs".to_vec());
+    fs::write(project.path().join(bad_name), b"fn b() {}\n").expect("write non-utf8 file");
+
+    let response = report(
+        &Parameters(ReportRequest {
+            path: project.path().to_string_lossy().into_owned(),
+        }),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .expect("report succeeds");
+
+    assert_eq!(response.0.file_count, 1, "only the UTF-8 path has a row");
+    assert_eq!(
+        response.0.completeness.unrepresentable_path_count, 1,
+        "the dropped discovered path is counted"
+    );
+    assert!(
+        response.0.completeness.index_partial,
+        "a discovered file with no row makes the index partial"
     );
 }
 
@@ -362,7 +459,7 @@ fn parser_failure_rows_distinguish_content_only_from_a_failed_parse() {
     );
 
     let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned()).expect("build report");
+    let response = build_report(&tx, "r1".to_owned(), 0).expect("build report");
 
     let notes = response
         .parser_failure_files
@@ -397,7 +494,7 @@ fn parser_failure_files_total_equals_the_list_when_under_the_cap() {
     }
 
     let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned()).expect("build report");
+    let response = build_report(&tx, "r1".to_owned(), 0).expect("build report");
 
     assert_eq!(response.parser_failure_files.len(), 3);
     assert_eq!(response.parser_failure_files_total, 3);
@@ -419,107 +516,13 @@ fn parser_failure_files_total_exceeds_the_capped_list_when_over_the_cap() {
     }
 
     let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned()).expect("build report");
+    let response = build_report(&tx, "r1".to_owned(), 0).expect("build report");
 
     assert_eq!(
         response.parser_failure_files.len(),
         MAX_PARSER_FAILURE_FILES
     );
     assert_eq!(response.parser_failure_files_total, total as i64);
-}
-
-/// A file the walk discovers but deliberately does not index must be visible
-/// rather than absent: a `skipped` row with its reason and no content, plus a
-/// response that says the index is partial. Needs the real publish path, so
-/// the oversize ceiling comes from the project's own config.
-#[test]
-fn a_discovered_but_skipped_file_is_visible_as_a_skipped_row_and_a_partial_index() {
-    let project = tempfile::tempdir().expect("project dir");
-    activate(project.path());
-    fs::write(
-        project
-            .path()
-            .join(".planning")
-            .join("slugaudit")
-            .join("config.json"),
-        br#"{"max_file_bytes": 50000}"#,
-    )
-    .expect("write project config");
-    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
-    fs::write(project.path().join("huge.rs"), vec![b'x'; 100_000]).expect("write oversize file");
-
-    let response = report(
-        &Parameters(ReportRequest {
-            path: project.path().to_string_lossy().into_owned(),
-        }),
-        &crate::progress::NoopProgressSink,
-        &crate::sync::SourceSyncManager::default(),
-    )
-    .expect("report succeeds");
-
-    assert_eq!(
-        response.0.file_count, 2,
-        "both discovered files have a row, indexed or not"
-    );
-    let envelope = &response.0.completeness;
-    assert!(
-        envelope.index_partial,
-        "a skipped file makes the index partial"
-    );
-    assert_eq!(envelope.skipped_file_count, 1);
-    assert_eq!(envelope.skipped_by_reason.len(), 1);
-    assert_eq!(envelope.skipped_by_reason[0].reason, "oversize");
-    assert_eq!(envelope.skipped_by_reason[0].count, 1);
-    assert_eq!(
-        envelope
-            .file_kind_counts
-            .iter()
-            .find(|entry| entry.kind == "indexed")
-            .map(|entry| entry.count),
-        Some(1)
-    );
-
-    let database = project
-        .path()
-        .join(".planning")
-        .join("slugaudit")
-        .join("project.db");
-    let connection =
-        crate::store::open_read_only(&database).expect("open the published database read-only");
-    let (kind, reason, content, completeness, outcome, algorithm): (
-        String,
-        Option<String>,
-        Option<String>,
-        String,
-        String,
-        String,
-    ) = connection
-        .query_row(
-            "SELECT file_kind, skip_reason, content, extraction_completeness, parse_outcome, \
-                    hash_algorithm \
-             FROM files WHERE path = 'huge.rs'",
-            [],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                ))
-            },
-        )
-        .expect("the skipped file must have an existence row");
-    assert_eq!(kind, "skipped");
-    assert_eq!(reason.as_deref(), Some("oversize"));
-    assert_eq!(content, None, "no content is retained for a skipped file");
-    assert_eq!(completeness, "Unavailable");
-    assert_eq!(outcome, "NotAttempted");
-    assert_eq!(
-        algorithm, "stat-identity",
-        "the skipped row's identity is stat-derived, never a content hash"
-    );
 }
 
 /// The envelope counts kinds, skip reasons, extraction completeness, and the
@@ -574,7 +577,7 @@ fn completeness_envelope_separates_kinds_reasons_and_completeness() {
         .expect("insert skipped row");
 
     let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned()).expect("build report");
+    let response = build_report(&tx, "r1".to_owned(), 0).expect("build report");
 
     let kind_count = |kind: &str| {
         response

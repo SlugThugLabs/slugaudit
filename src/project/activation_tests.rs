@@ -422,6 +422,44 @@ fn an_unreadable_gitignore_is_reported_rather_than_fatal() {
     }
 }
 
+/// `NotWritten` promises the file was left untouched. The write is atomic
+/// (temp file in the same directory, then rename), so even a failure after
+/// the read cannot have created the path or appended a partial rule — and
+/// no temp file may survive the failure.
+#[test]
+fn a_failed_gitignore_write_leaves_the_original_untouched() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let root = ProjectRoot::resolve(directory.path()).expect("valid root");
+    let path = root.as_path().join(GITIGNORE_FILE);
+    fs::create_dir(&path).expect("a directory where the ignore file belongs");
+    let marker = path.join("keep");
+    fs::write(&marker, b"x").expect("write a marker inside the directory");
+
+    let outcome = ensure_gitignore(&root);
+
+    assert!(matches!(outcome, GitignoreOutcome::NotWritten { .. }));
+    assert!(
+        path.is_dir(),
+        "the original path is still the same directory"
+    );
+    assert_eq!(
+        fs::read(&marker).expect("read the marker"),
+        b"x",
+        "nothing inside the original path was touched"
+    );
+    let leftovers = fs::read_dir(root.as_path())
+        .expect("read the project root")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".gitignore.slugaudit.")
+        })
+        .count();
+    assert_eq!(leftovers, 0, "no temp file survives a failed write");
+}
+
 #[test]
 fn an_oversized_gitignore_is_reported_and_left_byte_identical() {
     let directory = tempfile::tempdir().expect("temp dir");

@@ -182,19 +182,54 @@ fn health_no_path_response_carries_counter_consistency() {
 }
 
 #[test]
-fn health_with_an_unrelated_path_returns_an_error() {
-    // No active project for this path — ensure_current will fail with
-    // a find_project_root error. The health tool surfaces such errors
-    // rather than degrading silently: a path argument is a deliberate
-    // operator query, not a fallback we run rate-limited.
-    let resp = crate::tools::health::health(
-        &req(Some("/definitely/not/a/real/project/that/exists")),
+fn health_rejects_a_path_over_the_byte_cap_before_resolving_it() {
+    let path = "a".repeat(32 * 1024 + 1);
+
+    let error = crate::tools::health::health(
+        &req(Some(&path)),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
+    )
+    .err()
+    .expect("an over-cap path is refused");
+
+    assert_eq!(
+        error.code,
+        rmcp::model::ErrorCode::INVALID_PARAMS,
+        "{error:?}"
+    );
+    assert_eq!(error.message, "path exceeds 32768 bytes");
+}
+
+#[test]
+fn health_with_an_unrelated_path_returns_the_resolution_error() {
+    // No active project for this path — `resolve_project` fails with a
+    // find-project-root error. The health tool surfaces such errors rather
+    // than degrading silently: a path argument is a deliberate operator
+    // query, not a fallback we run rate-limited.
+    let missing = "/definitely/not/a/real/project/that/exists";
+    let error = crate::tools::health::health(
+        &req(Some(missing)),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .err()
+    .expect("health should surface the underlying error for a bad path");
+
+    assert_eq!(
+        error.code,
+        rmcp::model::ErrorCode::INVALID_PARAMS,
+        "{error:?}"
     );
     assert!(
-        resp.is_err(),
-        "health should surface the underlying error for a bad path"
+        error.message.contains("failed to resolve project root"),
+        "the message must name resolution rather than the server: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains("No such file or directory"),
+        "the underlying cause must survive: {}",
+        error.message
     );
 }
 

@@ -85,6 +85,47 @@ fn global_only_state_reports_watcher_fields_when_a_project_is_registered() {
     assert_eq!(fields.database, None);
 }
 
+/// Without a `path` there is no project root to open a database with, so a
+/// healthy watcher with nothing pending says nothing about whether a
+/// revision exists. It must not claim `importing` ("the first sync has
+/// never succeeded") or `steady_state` ("a current revision exists").
+#[test]
+fn global_only_state_with_a_healthy_watcher_reports_an_unknown_phase() {
+    let (project, _path) = activated_temp_project();
+    let manager = SourceSyncManager::new();
+    let state = manager.activate(project.path());
+    state.set_health(WatcherHealth::Healthy);
+
+    let fields = super::compute_global_only_state(&manager);
+
+    assert_eq!(fields.phase, super::HealthPhase::Unknown);
+    assert_eq!(
+        fields.watcher.as_ref().map(|watcher| watcher.health),
+        Some(WatcherHealth::Healthy),
+        "the watcher's own health is still reported"
+    );
+    assert_eq!(
+        fields.database, None,
+        "the global path never opens a database"
+    );
+}
+
+/// A watcher that is healthy but has unreconciled events has a phase the
+/// watcher alone can name: the next call reconciles. No revision claim is
+/// needed for `restoring`.
+#[test]
+fn global_only_state_with_pending_events_reports_restoring() {
+    let (project, _path) = activated_temp_project();
+    let manager = SourceSyncManager::new();
+    let state = manager.activate(project.path());
+    state.set_health(WatcherHealth::Healthy);
+    state.mark_dirty("lib.rs".to_owned());
+
+    let fields = super::compute_global_only_state(&manager);
+
+    assert_eq!(fields.phase, super::HealthPhase::Restoring);
+}
+
 #[test]
 fn revision_helpers_reflect_the_published_database() {
     let (project, path) = activated_temp_project();
@@ -330,5 +371,35 @@ fn an_uninspectable_database_path_is_logged_not_read_as_never_synced() {
     assert!(
         logs.contains("failed to inspect the project database path"),
         "logs: {logs}"
+    );
+}
+
+/// The database opens but its queries fail (here: the schema's `revisions`
+/// table is gone). The whole database group goes absent and the failure is
+/// logged, so a half-read answer is never returned and an operator can tell
+/// an unreadable database from a never-synced one.
+#[test]
+fn a_failed_database_query_is_logged_and_reported_as_absent() {
+    let directory = tempfile::tempdir().expect("db dir");
+    let database = directory.path().join("project.db");
+    let connection = store::open_read_write(&database).expect("open the database");
+    connection
+        .execute_batch("DROP TABLE revisions")
+        .expect("remove the revisions table");
+
+    let (state, logs) =
+        crate::store::test_capture::capture_warns(|| super::read_database(&database));
+
+    assert_eq!(
+        state, None,
+        "an unreadable database is absent, never partial"
+    );
+    assert!(
+        logs.contains("failed to read the project database"),
+        "the query failure must be logged as itself: {logs}"
+    );
+    assert!(
+        logs.contains("no such table"),
+        "the underlying cause must survive: {logs}"
     );
 }
