@@ -1,4 +1,4 @@
-use super::context::{ensure_synced, session_id, with_verified_write};
+use super::context::{ensure_synced, internal_error, session_id, with_verified_write};
 use crate::error_codes::{self, ErrorCode};
 use crate::sync;
 use crate::util;
@@ -225,13 +225,25 @@ fn check_field(name: &str, value: &str, max_chars: usize) -> Result<(), ErrorDat
 }
 
 fn fetch_file(tx: &Transaction<'_>, file: &str) -> Result<(String, String), ErrorData> {
-    let (source_hash, content): (String, Option<String>) = tx
+    // Only "this file is not in the index" is the caller's input being
+    // invalid. A failure to *read* the index — a lock, corruption, or schema
+    // drift — is an operational error and must not be reported as a bad
+    // `file` argument: that tells the caller to fix an input that was fine.
+    let row: Option<(String, Option<String>)> = tx
         .query_row(
             "SELECT content_hash, content FROM files WHERE path = ?1",
             [file],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .map_err(|error| ErrorData::invalid_params(format!("{file}: {error}"), None))?;
+        .optional()
+        .map_err(|error| internal_error("reading the indexed file row", error))?;
+    let Some((source_hash, content)) = row else {
+        let payload = error_codes::payload(ErrorCode::FileNotIndexed);
+        return Err(ErrorData::invalid_params(
+            format!("{file} is not indexed in the current revision"),
+            payload,
+        ));
+    };
     let content = content.ok_or_else(|| {
         let payload = error_codes::payload(ErrorCode::FileNotIndexed);
         ErrorData::invalid_params(format!("{file} has no indexed source content"), payload)

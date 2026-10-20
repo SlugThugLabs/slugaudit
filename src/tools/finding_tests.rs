@@ -206,7 +206,12 @@ fn a_finding_against_an_unindexed_file_is_a_typed_error() {
         Ok(_) => panic!("unindexed file must error"),
         Err(err) => err,
     };
-    assert!(err.message.contains("not indexed") || err.message.contains("does_not_exist.rs"));
+    assert_eq!(
+        err.message,
+        "does_not_exist.rs is not indexed in the current revision"
+    );
+    let data = err.data.expect("an unindexed file carries a payload");
+    assert_eq!(data["code"], "file_not_indexed");
 }
 
 #[test]
@@ -259,8 +264,11 @@ fn an_oversized_description_is_a_typed_error() {
 }
 #[test]
 fn an_empty_file_cannot_have_a_finding() {
-    let project = activated_project("empty.rs", b"");
-    let request = base_request(&project, "empty.rs");
+    // The fixture name deliberately avoids the word the old assertion looked
+    // for, and the assertion is the exact message, so neither the file name
+    // nor a fixture path can satisfy it on its own.
+    let project = activated_project("blank.rs", b"");
+    let request = base_request(&project, "blank.rs");
     let err = match finding(
         &Parameters(request),
         &crate::progress::NoopProgressSink,
@@ -269,7 +277,7 @@ fn an_empty_file_cannot_have_a_finding() {
         Ok(_) => panic!("empty file finding must error"),
         Err(err) => err,
     };
-    assert!(err.message.contains("empty"));
+    assert_eq!(err.message, "blank.rs has no lines to attach a finding to");
 }
 
 /// The session-scoped dedupe's core contract. Two calls that agree on the
@@ -434,4 +442,137 @@ fn a_finding_against_a_binary_file_carries_the_file_not_indexed_code() {
     };
     let data = error.data.expect("a binary file carries a payload");
     assert_eq!(data["code"], "file_not_indexed", "{}", error.message);
+}
+
+fn validation_error(request: FindingRequest) -> ErrorData {
+    let Err(error) = finding(
+        &Parameters(request),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    ) else {
+        panic!("the request must be refused");
+    };
+    error
+}
+
+#[test]
+fn input_caps_refuse_an_oversized_path_file_and_zero_line() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+
+    let mut path = base_request(&project, "lib.rs");
+    path.path = "x".repeat(MAX_PATH_BYTES + 1);
+    assert_eq!(validation_error(path).message, "path exceeds 32768 bytes");
+
+    let mut file = base_request(&project, "lib.rs");
+    file.file = "x".repeat(MAX_FILE_BYTES + 1);
+    assert_eq!(validation_error(file).message, "file exceeds 8192 bytes");
+
+    let mut line = base_request(&project, "lib.rs");
+    line.line_start = 0;
+    assert_eq!(
+        validation_error(line).message,
+        "line_start and line_end are one-based; zero is not a valid line"
+    );
+}
+
+const FILES_SCHEMA: &str = "CREATE TABLE files (path TEXT, content_hash TEXT, content TEXT); \
+     INSERT INTO files VALUES ('lib.rs', 'hash', 'line one');";
+
+/// Runs `insert_finding` against a hand-written schema so one statement can
+/// fail on its own, without a production test hook: the `files` row stays
+/// readable while one `findings` column the statement names is absent
+/// (schema drift).
+fn insert_finding_error(request: &FindingRequest, schema: &str, seed: Option<&str>) -> ErrorData {
+    let mut connection = Connection::open_in_memory().expect("in-memory database");
+    connection
+        .execute_batch(&format!("{FILES_SCHEMA} {schema}"))
+        .expect("create test schema");
+    if let Some(seed) = seed {
+        connection
+            .execute(seed, [session_id().to_string()])
+            .expect("seed the stored finding");
+    }
+    let tx = connection.transaction().expect("transaction");
+    insert_finding(&tx, request, "rev").expect_err("the statement must fail")
+}
+
+/// Each fallible statement in `insert_finding` — the restatement lookup, the
+/// restatement UPDATE, the `created_at_unix` read, and the INSERT — must
+/// surface a database failure as an internal error, never as a bad input.
+#[test]
+fn each_findings_write_statement_failure_is_an_internal_error() {
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
+    let project = tempfile::tempdir().expect("temp dir");
+    let request = base_request(&project, "lib.rs");
+    let cases: &[(&str, &str, Option<&str>, &str)] = &[
+        (
+            "restatement lookup",
+            "CREATE TABLE findings (id INTEGER PRIMARY KEY, path TEXT, source_hash TEXT, \
+             line_start INTEGER, line_end INTEGER, title TEXT, description TEXT, \
+             created_at_unix INTEGER, evidence_revision TEXT, status TEXT, session_id TEXT);",
+            None,
+            "no such column: category",
+        ),
+        (
+            "restatement update",
+            "CREATE TABLE findings (id INTEGER PRIMARY KEY, path TEXT, source_hash TEXT, \
+             line_start INTEGER, line_end INTEGER, category TEXT, title TEXT, description TEXT, \
+             created_at_unix INTEGER, evidence_revision TEXT, status TEXT, session_id TEXT);",
+            Some(
+                "INSERT INTO findings (path, source_hash, line_start, line_end, category, title, \
+                 description, created_at_unix, evidence_revision, status, session_id) \
+                 VALUES ('lib.rs', 'hash', 1, 1, 'correctness', 'Reviewed conclusion', 'old', 1, \
+                 'rev', 'current', ?1)",
+            ),
+            "no such column: severity",
+        ),
+        (
+            "created_at read",
+            "CREATE TABLE findings (id INTEGER PRIMARY KEY, path TEXT, source_hash TEXT, \
+             line_start INTEGER, line_end INTEGER, severity TEXT, category TEXT, title TEXT, \
+             description TEXT, evidence_revision TEXT, status TEXT, session_id TEXT);",
+            None,
+            "no such column: created_at_unix",
+        ),
+        (
+            "finding insert",
+            "CREATE TABLE findings (id INTEGER PRIMARY KEY, path TEXT, source_hash TEXT, \
+             line_start INTEGER, line_end INTEGER, severity TEXT, category TEXT, title TEXT, \
+             description TEXT, created_at_unix INTEGER, status TEXT, session_id TEXT);",
+            None,
+            "evidence_revision",
+        ),
+    ];
+
+    for &(label, schema, seed, expected) in cases {
+        let error = insert_finding_error(&request, schema, seed);
+        assert_eq!(
+            error.code,
+            rmcp::model::ErrorCode::INTERNAL_ERROR,
+            "{label}"
+        );
+        assert!(
+            error.message.contains(expected),
+            "{label}: {}",
+            error.message
+        );
+    }
+}
+
+/// A database that cannot be read is not the caller's `file` argument being
+/// wrong: it must be an internal error that does not blame the input.
+#[test]
+fn a_failed_files_read_is_an_internal_error_not_a_bad_input() {
+    let mut connection = Connection::open_in_memory().expect("in-memory database");
+    let tx = connection.transaction().expect("transaction");
+
+    let error = fetch_file(&tx, "lib.rs").expect_err("a missing files table must fail");
+
+    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+    assert!(
+        error.message.contains("no such table: files"),
+        "{}",
+        error.message
+    );
+    assert!(!error.message.contains("lib.rs"), "{}", error.message);
 }
