@@ -10,7 +10,9 @@ src/
 ├── main.rs                   binary entry: parse args, then serve MCP over stdio
 ├── lib.rs                    crate root: module declarations + crate-wide lint policy
 ├── cli.rs                    Command enum, parse_args, usage text
-├── server.rs                 MCP surface: tool contracts, INSTRUCTIONS, tool router
+├── server.rs                 MCP surface: INSTRUCTIONS, dispatch, resource plumbing + router wiring
+├── server/                   submodule directory of the file module above
+│   └── handlers.rs           #[tool] handlers: wire titles, descriptions, annotations
 ├── server_runner.rs          tool-call execution: semaphore, spawn_blocking, progress
 ├── resources.rs              static MCP resources (cookbook, payload keys, schema)
 ├── progress.rs               ProgressEvent/ProgressSink bridge from sync to a renderer
@@ -18,7 +20,11 @@ src/
 ├── ignore_rules/             submodule directory of the file module above
 │   └── build.rs              per-directory matcher assembly for IgnoreRules::build
 ├── error_codes.rs            stable machine-readable failure codes + remedies
-├── util.rs                   cross-module helpers (lock_or_recover, Deadline, SESSION_ID)
+├── util.rs                   cross-module helpers (lock_or_recover, redaction, re-exports)
+├── util/                     submodule directory of the file module above
+│   ├── capped_read.rs        bounded reads of foreign text files
+│   ├── style.rs              ANSI styling for the human-facing CLI
+│   └── time.rs               process timestamps + cooperative deadlines
 ├── clock.rs                  wall-clock reads that log instead of silently zeroing (unix seconds, saturating millis)
 ├── probe.rs                  client-detection probes: path existence and CLI-on-PATH, logging every non-not-found failure
 ├── menu.rs                   interactive setup menu
@@ -29,17 +35,23 @@ src/
 ├── update.rs                 self-update: fetch release, atomically replace the binary
 ├── update_fetch.rs           network + version helpers for self-update
 ├── connect.rs                register/remove this binary with a target agent
+├── connect/                  submodule directory of the file module above
+│   ├── config_file.rs        JSON config probe/merge/remove for register and disconnect
+│   └── registry_types.rs     client model types (Strategy, ConfigShape, Evidence, Dialect)
 ├── connect_agents.rs         supported agents and editors registry
 ├── connect_cli.rs            per-client `mcp add`/`remove` argv grammar and execution
 ├── connect_exec.rs           registration policy: dispatch, config merging, refusals
 ├── connect_guidance.rs       user-facing instructions, provenance and docs links
 │
 ├── tools/                    MCP tool handlers — thin orchestration
-│   ├── mod.rs                ToolCounters, shared credential predicate, exports
+│   ├── mod.rs                shared credential predicate, module declarations, exports
+│   ├── tool_counters.rs      process-wide tool-call counters exposed by health
 │   ├── context.rs            ensure_synced + revision verification
 │   ├── context_transactions.rs  with_verified_read / with_verified_write
-│   ├── report.rs             automatic project snapshot
+│   ├── report.rs             automatic project snapshot: request/response schema
+│   ├── report_sections.rs    per-section SQL + response assembly for report
 │   ├── report_completeness.rs  the report's index-completeness block
+│   ├── report_envelope.rs    completeness-block schema types (re-exported)
 │   ├── report_edges.rs       the report's inbound/outbound edge totals
 │   ├── query.rs              arbitrary read-only SQL with budgets
 │   ├── query_exec.rs         query execution: single-statement proof, budgets, byte-budgeted page, exact total
@@ -56,10 +68,12 @@ src/
 │   ├── leads_query.rs        the SQL each leads mechanic compiles to
 │   ├── leads_page.rs         one response assembled: counts, a row page, or the compact enumeration
 │   ├── leads_compact.rs      the compact mechanic/file/line row shape over one mechanic or all
-│   ├── finding.rs            the single write tool
+│   ├── finding.rs            the single write tool: request/response contract and caps
+│   ├── finding_insert.rs     validation + session-scoped insert-or-refresh of a finding
 │   ├── finding_read.rs       session-gated finding query
 │   ├── project_control.rs    enable/disable a project
-│   ├── health.rs             operational snapshot
+│   ├── health.rs             operational snapshot: response schema + process fields
+│   ├── health_phase.rs       health's per-project state derivation (no side effects)
 │   └── health_database.rs    health's read-only database read
 │
 ├── sync/                     detection and persistence of what changed on disk
@@ -67,6 +81,7 @@ src/
 │   ├── manager.rs            SourceSyncManager: state, watcher ownership, observability
 │   ├── manager_orchestration.rs  ensure_current: resolve, open/recover, rebuild tail
 │   ├── manager_health.rs     sync_by_health: the WatcherHealth dispatch
+│   ├── manager_health_support.rs  event barrier, post-sync revision read, sweep-error mapping
 │   ├── manager_meta.rs       metadata row, session purge, publish_from_scratch
 │   ├── sweep.rs              the stat sweep — the freshness backstop
 │   ├── sweep_reconcile.rs    apply the sweep's findings under compare-and-swap
@@ -79,7 +94,8 @@ src/
 │   │   ├── barrier.rs        event-barrier sync loop
 │   │   └── queries.rs        SQL the pipeline reads
 │   ├── discovery.rs          filesystem walk with extension/limit filters
-│   ├── hash.rs               BLAKE3 content hashing
+│   ├── hash.rs               hash types + in-memory digests (re-exports hash_file/stat_identity)
+│   ├── hash_io.rs            bounded streaming hash_file + stat_identity
 │   ├── sample.rs             read-file-with-budgets
 │   ├── sample_batch.rs       parallel batch sampling loop
 │   ├── sample_batch_tests.rs undeliverable-result abort for the batch loop
@@ -103,6 +119,7 @@ src/
 │   ├── reference.rs          ImportReference (pre-resolution extraction)
 │   ├── resolve.rs            generic path-arithmetic utilities
 │   ├── resolve_rust.rs       Rust crate::/super::/self:: resolution
+│   ├── rust_paths.rs         Rust module-file candidates + segment-shortening walk
 │   └── resolver/             generic + per-language resolvers
 │       ├── mod.rs            entry point + dispatch
 │       ├── generic.rs        LanguageResolver trait + generic resolver
@@ -118,29 +135,37 @@ src/
 │   ├── normalize.rs          pack node → evidence
 │   ├── normalize_builders.rs payload builders
 │   ├── sql.rs                EvidenceKind ↔ SQL text mirror
+│   ├── bindings.rs           variable-binding / field-declaration walker
 │   ├── calls.rs              Rust call-site walker
 │   └── generic_imports.rs    generic import extraction
 │
 ├── watch/                    filesystem watching
 │   ├── mod.rs                public exports
-│   ├── manager.rs            WatchManager: notify lifecycle + event dispatch
+│   ├── manager.rs            WatchManager: notify lifecycle + per-project state
+│   ├── manager/              submodule directory of the file module above
+│   │   ├── events.rs         lock-held event dispatch + deferred replay
+│   │   └── scopes.rs         scope registration and refresh
+│   ├── errors.rs             static path-free categories for watcher failures
 │   ├── event_filter.rs       scope watch-dir diff + per-path event class
 │   ├── state.rs              WatchState — thread-safe per-project state
 │   ├── types.rs              WatcherHealth + ProjectWatchState
-│   ├── scope.rs              which directories are watched
+│   ├── scope.rs              which directories are watched (pure walk + caps)
+│   ├── scope_apply.rs        applies a computed scope under the manager lock
 │   └── path.rs               relative-path normalization
 │
 ├── project/                  project resolution + activation
 │   ├── mod.rs                exports: resolve_project, enable/disable
 │   ├── root.rs               ProjectRoot
 │   ├── activation.rs         activation-directory marker read/write
+│   ├── gitignore.rs          project-root .gitignore guard for activation
 │   ├── activation_lock.rs    exclusive database lock held while disable removes it
 │   ├── database_path.rs      where this project's project.db lives
 │   └── config.rs             in-repo config (.planning/slugaudit/config.json)
 │
 ├── store/                    SQLite connection boundary
 │   ├── mod.rs                open_read_write / open_read_only / discard_corrupt_database
-│   ├── connection.rs         typed StoreError + symlink/permission/ATTACH guards
+│   ├── connection.rs         typed StoreError + the open entry points
+│   ├── connection_guards.rs  symlink/permission/ATTACH guards, open flags, pragmas
 │   ├── netfs.rs              network-filesystem rejection
 │   ├── sql_functions.rs      line_count / line_range scalar SQL functions registered on every connection
 │   ├── sql_functions_tests.rs line-function edge cases

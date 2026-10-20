@@ -11,6 +11,63 @@ commit, a path, or a command where possible.
 
 ---
 
+## 2026-10-19 — Wave 3 landed: all 40 production R4 entries split
+
+- **What:** the seven wave-3 commits (`0374d60..2dbd703`) split every
+  production R4 entry from the strict audit (40 of 109): 18 files above 200
+  code lines, 17 functions above 50 lines, and 5 functions with cyclomatic
+  complexity above 15. The production `slugaudit-line-exception` annotations
+  were removed; `check_source_limits` passes on the files themselves. The
+  splits added 21 internal modules: `connect/config_file.rs`,
+  `connect/registry_types.rs`, `evidence/bindings.rs`, `graph/rust_paths.rs`,
+  `project/gitignore.rs`, `server/handlers.rs`, `store/connection_guards.rs`,
+  `sync/hash_io.rs`, `sync/manager_health_support.rs`,
+  `tools/finding_insert.rs`, `tools/health_phase.rs`,
+  `tools/report_envelope.rs`, `tools/report_sections.rs`,
+  `tools/tool_counters.rs`, `util/capped_read.rs`, `util/style.rs`,
+  `util/time.rs`, `watch/errors.rs`, `watch/manager/events.rs`,
+  `watch/manager/scopes.rs`, and `watch/scope_apply.rs`. The full library
+  suite was green in each of the seven packages. Wave 3's integrated full
+  gate is **pending** at this record; this entry does not claim it passed.
+  One stale `slugaudit-line-exception` comment remains at
+  `src/tools/health.rs:33` (108 code lines, passes without it); it is source
+  cleanup, not a gate failure.
+- **Why:** R4 was the production half of the remaining P1 debt. The refactor
+  is structural: cohesive helpers move into modules so every file and
+  function meets the R4 targets, without changing tool request/response
+  schemas or runtime behavior. Keeping an annotation on a file that now
+  passes without one would leave a false claim at the annotation site.
+- **Where:** commits `0374d60`, `8a4db15`, `dad37b0`, `00943f5`, `44d19d9`,
+  `2ebddb0`, `2dbd703`; `.planning/MODULE_MAP.md`;
+  `.planning/PLAN.md` *Phase 5*.
+- **Reversible:** the commits are revertible; the split is not a reason to
+  re-inline the modules. Wave 4 (R8 public contract) is next and is **not
+  started**; wave 5 is **not started**.
+
+## 2026-10-19 — Mutation-testing scope: five files, hash_io added for the moved hash functions
+
+- **What:** the `cargo-mutants` step now covers
+  `src/sync/revision.rs`, `src/sync/publish.rs`, `src/sync/hash.rs`,
+  `src/sync/hash_io.rs`, and `src/tools/context.rs`. `hash_io.rs` was added
+  because the wave-3 R4 split moved `hash_file` and `stat_identity` out of
+  `hash.rs` into it without changing them; the other three files are
+  unchanged. This is not a widening of the correctness core — it is the same
+  functions at their new path.
+- **Why:** the scope exists to mutate revision identity, atomic publication,
+  CAS/change detection, and the freshness-verification entry point. Keeping
+  only `hash.rs` after the split would mutate hash types and in-memory
+  digests while leaving the bounded streaming read and stat identity
+  unmutated. The measured widening cost (13x / 21x for all of `src/sync/**`
+  or `src/tools/**`) still argues against covering more files, not for
+  dropping the moved ones.
+- **Where:** `.github/workflows/quality.yml` (the step comment and the five
+  `--file` flags); `AGENTS.md` *Testing and QA → Mutation testing*;
+  `.planning/PLAN.md` *Accepted and held decisions*; commit `8a4db15` for the
+  split.
+- **Reversible:** yes, but a file leaving the correctness core needs a new
+  decision and must be updated in the workflow comment, AGENTS.md, and the
+  plan together.
+
 ## 2026-10-19 — Wave 2 landed; final gate passed on `main` at `6728735`
 
 - **What:** wave 2 closed the six production-state gaps commissioned after

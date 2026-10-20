@@ -408,28 +408,34 @@ before replacing the binary (`src/update.rs`).
 
 ### Mutation testing
 
-CI runs `cargo-mutants` (Linux only, fails closed) over exactly four files:
+CI runs `cargo-mutants` (Linux only, fails closed) over exactly five files:
 `src/sync/revision.rs`, `src/sync/publish.rs`, `src/sync/hash.rs`,
-`src/tools/context.rs`. That narrow scope is a decision, not an unfinished
-widening — the plan's *Untrusted-input rigor* item asks for a wider scope **or**
-a written reason for this one, and this is the reason. Those four are the
-publish/revision/context correctness core: revision identity, atomic
-publication, CAS/change detection, and the freshness-verification entry point
-every state-bearing tool handler shares. A mutant that survives there means a
+`src/sync/hash_io.rs`, `src/tools/context.rs`. That narrow scope is a decision,
+not an unfinished widening — the plan's *Untrusted-input rigor* item asks for a
+wider scope **or** a written reason for this one, and this is the reason. Those
+five are the publish/revision/context correctness core: revision identity,
+atomic publication, hash types and in-memory digests, bounded `hash_file` /
+`stat_identity` reads, and the freshness-verification entry point every
+state-bearing tool handler shares. A mutant that survives there means a
 revision was published wrong or a stale one was served, which is a class of
 defect no other file can produce.
+
+`src/sync/hash_io.rs` is not a widening: the wave-3 R4 split (2026-10-19)
+moved `hash_file` and `stat_identity` out of `hash.rs` into that file without
+changing them, so the five-file scope mutates the same correctness-core
+functions the four-file scope did. The other three files are unchanged.
 
 Widening the scope multiplies CI minutes rather than adding a fixed cost:
 `cargo-mutants` rebuilds the crate and re-runs the whole test suite once per
 mutant, so the step costs mutant count × suite time. Measured with
-`cargo mutants --list` (2026-09-30), the four files hold 23 of the crate's 2323
-mutants (~1 percent); all of `src/sync/**` is 310 and all of `src/tools/**` is
-484, so widening to either is a 13x / 21x multiplier. The mutants a wider scope
-would add sit in code the existing suites already drive end to end
-(`discovery_tests`, `sample_tests`, `sweep_tests`, `publish_*_tests`, the
-`tools/*_tests` suites), so that multiplier re-verifies behavior the tests
-already pin, while the four files above are where a mutation can slip past a
-green suite. The scope is defined in the step's comment in
+`cargo mutants --list` (2026-09-30), the original four files hold 23 of the
+crate's 2323 mutants (~1 percent); all of `src/sync/**` is 310 and all of
+`src/tools/**` is 484, so widening to either is a 13x / 21x multiplier. The
+mutants a wider scope would add sit in code the existing suites already drive
+end to end (`discovery_tests`, `sample_tests`, `sweep_tests`,
+`publish_*_tests`, the `tools/*_tests` suites), so that multiplier re-verifies
+behavior the tests already pin, while the five files above are where a mutation
+can slip past a green suite. The scope is defined in the step's comment in
 `.github/workflows/quality.yml`, which carries the same decision — a file that
 moves into the correctness core is added in both places, with the expectation
 that the step's runtime grows proportionally.

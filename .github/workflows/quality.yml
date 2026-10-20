@@ -218,46 +218,52 @@ jobs:
         with:
           tool: cargo-mutants
 
-      # SCOPE DECISION — four files on purpose. The plan's *Untrusted-input
+      # SCOPE DECISION — five files on purpose. The plan's *Untrusted-input
       # rigor* item asked for either a wider mutation scope or a written
       # reason for this one; this comment is the written reason, and
       # AGENTS.md's "Testing and QA" section (Mutation testing) carries the
       # same decision for readers who never open this file.
       #
-      # What the four are: `src/sync/revision.rs` and `src/sync/publish.rs`
+      # What the five are: `src/sync/revision.rs` and `src/sync/publish.rs`
       # decide revision identity and atomic publication, `src/sync/hash.rs`
-      # is the CAS/change-detection comparison, and `src/tools/context.rs`
-      # is the freshness-verification entry point every state-bearing tool
-      # handler shares. A mutant that survives in any of them means a
-      # revision was published wrong or a stale one was served — the one
-      # class of defect no other file can produce, which is why these four
-      # and not the whole crate.
+      # owns the hash types and in-memory digests, `src/sync/hash_io.rs`
+      # carries the streaming `hash_file` and `stat_identity` that moved out
+      # of `hash.rs` in the wave-3 R4 split (2026-10-19), and
+      # `src/tools/context.rs` is the freshness-verification entry point
+      # every state-bearing tool handler shares. A mutant that survives in
+      # any of them means a revision was published wrong or a stale one was
+      # served — the one class of defect no other file can produce, which is
+      # why these five and not the whole crate. hash_io is not a widening:
+      # it is the same correctness-core functions at their new path.
       #
       # What widening would cost, measured with `cargo mutants --list` on
-      # 2026-09-30: these four files hold 23 of the crate's 2323 mutants
-      # (~1 percent). All of `src/sync/**` is 310 and all of `src/tools/**`
-      # is 484, so widening to either is a 13x / 21x multiplier on this
-      # step — cargo-mutants rebuilds the crate and re-runs the whole test
-      # suite once per mutant, so the step costs mutant count x suite time,
-      # not a one-off. The mutants a wider scope adds are in code the
-      # existing suites already drive end to end (`discovery_tests`,
-      # `sample_tests`, `sweep_tests`, `publish_*_tests`, the `tools/*_tests`
-      # suites), so that multiplier buys verdicts on behavior the tests pin
-      # directly, while the four files above are where a mutation can slip
-      # past a green suite.
+      # 2026-09-30: the original four files hold 23 of the crate's 2323
+      # mutants (~1 percent). All of `src/sync/**` is 310 and all of
+      # `src/tools/**` is 484, so widening to either is a 13x / 21x
+      # multiplier on this step — cargo-mutants rebuilds the crate and
+      # re-runs the whole test suite once per mutant, so the step costs
+      # mutant count x suite time, not a one-off. The mutants a wider scope
+      # adds are in code the existing suites already drive end to end
+      # (`discovery_tests`, `sample_tests`, `sweep_tests`, `publish_*_tests`,
+      # the `tools/*_tests` suites), so that multiplier buys verdicts on
+      # behavior the tests pin directly, while the five files above are
+      # where a mutation can slip past a green suite.
       #
-      # This step FAILS CLOSED: the 2026-08-12 full-crate baseline recorded
-      # zero surviving mutants on this exact surface (17 caught, 0 missed,
-      # 3 unviable; see .planning/archive/DECISIONS.md), so a survivor here
-      # is a real regression, not an un-triaged baseline.
+      # This step FAILS CLOSED: the 2026-08-12 baseline recorded zero
+      # surviving mutants on the pre-split four-file surface (17 caught, 0
+      # missed, 3 unviable; see .planning/archive/DECISIONS.md). The wave-3
+      # split moved the hash functions to hash_io.rs without changing them,
+      # so a survivor in the five-file scope is a real regression, not an
+      # un-triaged baseline.
       #
       # Linux-only: cargo-mutants has platform-specific behavior and the
       # baseline was recorded on Linux.
-      - name: Mutation testing (revision, publish, hash, context)
+      - name: Mutation testing (revision, publish, hash, hash_io, context)
         if: runner.os == 'Linux'
         run: |
           cargo mutants \
             --file src/sync/revision.rs \
             --file src/sync/publish.rs \
             --file src/sync/hash.rs \
+            --file src/sync/hash_io.rs \
             --file src/tools/context.rs

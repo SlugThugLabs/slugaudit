@@ -32,19 +32,24 @@ The durable copies are the source of record. A later claim that cites a
 
 ## Current state (2026-10-19)
 
-- `main` at `6728735` after the wave-2 cherry-picks (`perf: record the
-  current baseline`). Wave 1 landed at `fe923a7`; the base before wave 2 was
+- `main` at `2dbd703` after the wave-3 cherry-picks (`0374d60..2dbd703`).
+  Wave 2 landed at `6728735`; wave 1 at `fe923a7`; the base before wave 2 was
   `6241b43`.
 - Crate `slugaudit-mcp-rust` `1.0.10`, edition 2024, `publish = false`,
   licensed by `LICENSE` (PolyForm Noncommercial 1.0.0 plus the SlugAudit
   Tool-Use Additional Permission).
-- Tests: **1,174 passed, 0 failed, 1 ignored** on the integrated tree (1,030
-  at the strict audit; 1,156 after wave 1).
-- Line coverage: **93.10%** (11,341 / 12,181), gate 83%. Wave 1 measured
-  92.85%; the strict audit measured 90.26%.
-- `check_docs_drift` and `check_mcp_surface` **pass**: the docs are freshly
-  authored and the surface snapshot was recorded from the integrated tree.
-  Nothing was restored from git history.
+- Tests: **1,174 passed, 0 failed, 1 ignored** on the integrated wave-2 tree
+  (1,030 at the strict audit; 1,156 after wave 1). Wave 3 changed structure
+  only: the library suite was green in each of its seven packages, but the
+  integrated full gate (clippy, tests, deny, coverage, gates, perf) has not
+  been run on the combined tree yet.
+- Line coverage: **93.10%** (11,341 / 12,181), gate 83% — the wave-2
+  measurement. Wave 3 has not been re-measured. Wave 1 measured 92.85%; the
+  strict audit measured 90.26%.
+- `check_docs_drift` **passes** on the wave-3 tree after this record (the
+  module map lists the 21 new files). `check_mcp_surface` last passed at
+  `6728735`; wave 3 kept the advertised tool surface byte-identical by
+  construction, but that gate is part of the pending full-gate run.
 
 ## Phase 1 — 2026-10-18 audit and remediation
 
@@ -186,22 +191,61 @@ integrated tree at `6728735`.
 The full wave-2 account is in
 `.planning/archive/audit_2026-10-19_wave2_report.md`.
 
+## Phase 5 — Wave 3 (landed; full gate pending)
+
+State: **landed as refactors at `0374d60..2dbd703`; the integrated full gate
+has not been run**.
+
+- **All 40 production R4 entries fixed** from the strict audit: 18 files above
+  200 code lines split to ≤200, 17 functions above 50 lines split to ≤50, and
+  5 functions with cyclomatic complexity above 15 reduced to ≤15. The
+  production `slugaudit-line-exception` annotations were removed and
+  `check_source_limits` passes without them. One stale annotation comment
+  remains at `src/tools/health.rs:33` even though that file is now 108 code
+  lines and passes without it; removing it is a source cleanup follow-up, not
+  a gate failure.
+- **21 new internal modules**, each listed in `MODULE_MAP.md`:
+  `connect/config_file.rs`, `connect/registry_types.rs`,
+  `evidence/bindings.rs`, `graph/rust_paths.rs`, `project/gitignore.rs`,
+  `server/handlers.rs`, `store/connection_guards.rs`, `sync/hash_io.rs`,
+  `sync/manager_health_support.rs`, `tools/finding_insert.rs`,
+  `tools/health_phase.rs`, `tools/report_envelope.rs`,
+  `tools/report_sections.rs`, `tools/tool_counters.rs`,
+  `util/capped_read.rs`, `util/style.rs`, `util/time.rs`, `watch/errors.rs`,
+  `watch/manager/events.rs`, `watch/manager/scopes.rs`, and
+  `watch/scope_apply.rs`.
+- **Seven packages**, one commit each: `refactor(sync): split publish and
+  reconcile`, `refactor(sync): split core hash and health`,
+  `refactor(watch/store)`, `refactor(connect/project)`,
+  `refactor(tools/query)`, `refactor(tools): split finding, report and
+  health`, and `refactor(server): split server, evidence and util`. The full
+  library suite was green in each package; the refactors were structural, and
+  the tool request/response schemas are unchanged.
+- **Mutation scope**: now five files. `src/sync/hash_io.rs` was added because
+  `hash_file` and `stat_identity` moved there from `hash.rs`; the other three
+  files are unchanged. Recorded in
+  `.planning/archive/DECISIONS.md` (2026-10-19), `.github/workflows/quality.yml`,
+  and `AGENTS.md`.
+- **Next**: wave 4 (R8 public contract) is **not started**. Wave 5 is **not
+  started**; do not read this entry as a claim about either.
+
 ## Remaining P1 debt (still open)
 
 These are production entries from
 `.planning/archive/audit_2026-10-19_report.md` that wave 1 did not close. They
 are recorded here so a later wave does not rediscover them from scratch.
 
-- **R4 — functions/files over size targets: 109 entries, 40 production**
-  (45 functions > 50 lines, 54 files > 200 code lines, 10 functions with
-  cyclomatic complexity > 15). 18 production files are above 200 code lines;
-  several carry `slugaudit-line-exception` annotations because the project
-  gate permits 200–300 with approval. **Still open.** Splitting them is a
-  reviewable refactor, not a mechanical one.
+- **R4 — functions/files over size targets: 109 entries, 40 production.**
+  **Resolved for production at wave 3** (`0374d60..2dbd703`): all 40
+  production entries (18 files > 200 code lines, 17 functions > 50 lines, 5
+  functions with CC > 15) were split. The other 69 entries are 60
+  test/bench/fuzz files and 9 dev-gate files; test files auto-pass to 500 code
+  lines by contract, and the dev-gate entries were outside wave 3's production
+  scope.
 - **R8 — public docs / external use: 258 production entries.** The rustc
   `missing_docs` subset is 239 warnings at 212 unique sites; the audit count
   also includes public items with no external reference (dead public API).
-  **Still open.** Do not claim this is fixed.
+  **Next: wave 4, not started.** Do not claim this is fixed.
 - **R5 — non-boundary failure-path tests: 142 entries (110 production, 32
   dev-gate) at the strict audit.** Wave 1 targeted 107 in-scope entries; wave
   2 closed the boundary/unreachable-arm subset (`ed58a4b`). The remaining
@@ -257,7 +301,10 @@ These are deliberate. Reversing one needs a new entry in
   2026-10-19.
 - The coverage gate is 83%, calibrated against measurement, not aspirational.
 - Mutation testing covers exactly `sync/revision.rs`, `sync/publish.rs`,
-  `sync/hash.rs`, and `tools/context.rs`; widening is a CI-minute decision.
+  `sync/hash.rs`, `sync/hash_io.rs`, and `tools/context.rs`; widening beyond
+  that is a CI-minute decision. `hash_io.rs` carries `hash_file` and
+  `stat_identity`, moved out of `hash.rs` by the wave-3 split (2026-10-19), so
+  this is the same correctness core, not a wider one.
 - Tests are exempt from the production panic ban: a panic is the failure
   signal there.
 - The 2026-10-19 strict audit counts test/bench/fuzz R1/R2 entries, but the
