@@ -71,6 +71,53 @@ fn stale_findings_are_invalidated_when_touched_paths_exceed_the_sqlite_variable_
     assert_eq!(finding_statuses(&connection), expected);
 }
 
+/// Batching must not change which findings go stale: stale findings in
+/// different chunks and a still-matching finding in the last chunk prove the
+/// predicate runs for every batch, not only the first or last.
+#[test]
+fn stale_findings_are_invalidated_across_every_path_batch() {
+    let project = tempfile::tempdir().expect("project dir");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    write(project.path(), "same.rs", b"fn same() {}\n");
+    write(project.path(), "changed.rs", b"fn changed() {}\n");
+    write(project.path(), "untouched.rs", b"fn untouched() {}\n");
+    publish(&mut connection, project.path(), "1.0", &NoopProgressSink).expect("seed publish");
+    let same_hash: String = connection
+        .query_row(
+            "SELECT content_hash FROM files WHERE path = 'same.rs'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("stored hash");
+    insert_finding(&connection, "same.rs", &same_hash);
+    insert_finding(&connection, "changed.rs", "outdated-hash");
+    insert_finding(&connection, "untouched.rs", "outdated-hash");
+    insert_finding(&connection, "gone.rs", "any-hash");
+    // Five touched paths through batches of two: the stale findings land in
+    // different chunks and the still-matching one shares the last chunk.
+    let touched = [
+        "filler/first.rs",
+        "changed.rs",
+        "filler/second.rs",
+        "gone.rs",
+        "same.rs",
+    ];
+    let tx = connection.transaction().expect("transaction");
+
+    invalidate_stale_findings_in_batches(&tx, &touched, 2).expect("invalidate in batches of two");
+    tx.commit().expect("commit");
+
+    let expected = [
+        ("changed.rs", "stale"),
+        ("gone.rs", "stale"),
+        ("same.rs", "current"),
+        ("untouched.rs", "current"),
+    ]
+    .map(|(path, status)| (path.to_owned(), status.to_owned()));
+    assert_eq!(finding_statuses(&connection), expected);
+}
+
 #[test]
 fn the_manifest_hash_excludes_every_path_of_a_set_beyond_the_sqlite_variable_limit() {
     let project = tempfile::tempdir().expect("project dir");

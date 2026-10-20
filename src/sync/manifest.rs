@@ -78,6 +78,13 @@ pub fn compare<'a>(
 pub(crate) const PATH_SET_SUBQUERY: &str = "SELECT value FROM json_each(?)";
 
 /// Serializes `paths` into the JSON array [`PATH_SET_SUBQUERY`] binds.
+///
+/// The whole array becomes ONE SQL parameter, so every caller must pass a
+/// bounded batch (4096 paths is the existing unit) rather than a set whose
+/// size scales with the project: an unbounded path set allocates and binds
+/// proportionally to it. Callers that already hold a caller-sized set split
+/// it and execute once per batch, as `reconcile::queries::query_existing_hashes`
+/// and `revision::invalidate_stale_findings` do.
 pub(crate) fn paths_json_array<'a>(
     paths: impl IntoIterator<Item = &'a str>,
 ) -> Result<String, rusqlite::Error> {
