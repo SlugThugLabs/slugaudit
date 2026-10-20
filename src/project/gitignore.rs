@@ -67,19 +67,19 @@ pub enum GitignoreOutcome {
 /// (`MAX_FOREIGN_TEXT_BYTES`), the same cap used for other foreign text
 /// files. An over-cap file is reported as [`GitignoreOutcome::NotWritten`]
 /// rather than read, and any other read failure is reported the same way:
-/// this guard is non-fatal by design and never undoes the enable. A missing
-/// file is not a failure — the atomic write below creates it.
+/// this guard is non-fatal by design and never undoes the enable. A path
+/// that is not a regular file (following a symlink to its target) is refused
+/// before the read, because opening a FIFO would block forever, and a
+/// dangling symlink is reported rather than replaced. Only a path with no
+/// directory entry counts as missing; the atomic write creates it.
 ///
 /// Failure is reported through [`GitignoreOutcome::NotWritten`], never
 /// propagated — see [`GitignoreOutcome`].
 #[must_use]
 pub fn ensure_gitignore(root: &ProjectRoot) -> GitignoreOutcome {
     let path = root.as_path().join(GITIGNORE_FILE);
-    let existing = match read_file_capped_bytes(&path, MAX_FOREIGN_TEXT_BYTES) {
+    let existing = match read_existing_gitignore(&path) {
         Ok(contents) => contents,
-        Err(CappedReadError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            Vec::new()
-        }
         Err(error) => {
             return GitignoreOutcome::NotWritten {
                 path,
@@ -113,6 +113,45 @@ pub fn ensure_gitignore(root: &ProjectRoot) -> GitignoreOutcome {
     }
 }
 
+/// Reads the existing `.gitignore`, refusing anything that is not a regular
+/// file before it can be opened.
+///
+/// `read_file_capped_bytes` bounds the read, not the open: `File::open` on a
+/// FIFO blocks until a writer appears, so the path is classified first with
+/// `symlink_metadata` and, for a link, its target's metadata. A symlink to a
+/// regular file keeps working; a FIFO, directory, device, or a symlink to one
+/// is refused, and a symlink whose target does not exist is reported rather
+/// than replaced by a rename. A path with no directory entry is not a
+/// failure: the atomic write creates it.
+fn read_existing_gitignore(path: &Path) -> Result<Vec<u8>, CappedReadError> {
+    let entry = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(CappedReadError::Io(error)),
+    };
+    let target = if entry.file_type().is_symlink() {
+        match std::fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(CappedReadError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "the .gitignore path is a symbolic link whose target does not exist",
+                )));
+            }
+            Err(error) => return Err(CappedReadError::Io(error)),
+        }
+    } else {
+        entry
+    };
+    if !target.is_file() {
+        return Err(CappedReadError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the .gitignore path is not a regular file",
+        )));
+    }
+    read_file_capped_bytes(path, MAX_FOREIGN_TEXT_BYTES)
+}
+
 /// Sequence making temp-file names unique within one process.
 static GITIGNORE_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -121,8 +160,9 @@ static GITIGNORE_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic
 ///
 /// The destination is the symlink target when `.gitignore` is a symlink, so
 /// the user's link survives; a missing file is created at the original path.
-/// Nothing is renamed until the whole file has been written, so a failure
-/// before the rename leaves the original untouched. The temp file is
+/// Nothing is renamed until the whole file has been written and synced, so a
+/// failure before the rename — including a deferred write or commit error
+/// surfaced by `sync_all` — leaves the original untouched. The temp file is
 /// removed on failure; a cleanup failure is logged and never replaces the
 /// write error that is already being reported.
 fn write_gitignore_atomically(
@@ -160,9 +200,12 @@ fn write_gitignore_atomically(
             Ok(metadata) => file.set_permissions(metadata.permissions()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error),
-        });
-    // Close before the rename: the close surfaces any deferred write error,
-    // and a rename over an open handle is not portable.
+        })
+        // `File::drop` discards a failed `close(2)`, so a deferred write or
+        // commit error would be lost and a partial temp file renamed into
+        // place. `sync_all` commits the bytes and metadata and surfaces that
+        // error while the rename can still be skipped.
+        .and_then(|()| file.sync_all());
     drop(file);
     let result = written.and_then(|()| std::fs::rename(&temp, &destination));
     if let Err(error) = result {
@@ -210,3 +253,7 @@ fn ignores_activation_dir(contents: &[u8]) -> bool {
         rule.strip_prefix('/').unwrap_or(rule).trim_end_matches('/') == ACTIVATION_RELATIVE_DIR
     })
 }
+
+#[cfg(test)]
+#[path = "gitignore_tests.rs"]
+mod tests;

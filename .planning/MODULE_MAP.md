@@ -165,6 +165,7 @@ src/
 │   ├── root.rs               ProjectRoot
 │   ├── activation.rs         activation-directory marker read/write
 │   ├── gitignore.rs          project-root .gitignore guard for activation
+│   ├── gitignore_tests.rs    guard write-failure and file-type refusal tests
 │   ├── activation_lock.rs    exclusive database lock held while disable removes it
 │   ├── database_path.rs      where this project's project.db lives
 │   └── config.rs             in-repo config (.planning/slugaudit/config.json)
