@@ -175,7 +175,8 @@ impl SourceSyncManager {
         connection: &mut rusqlite::Connection,
     ) -> Result<(), ErrorData> {
         let current_session_id = crate::util::session_id();
-        let mut purged = crate::util::lock_or_recover(&self.session_findings_purged);
+        let mut purged =
+            crate::util::lock_or_recover(&self.session_findings_purged, "session_findings_purged");
         if purged.get(database_path).copied() == Some(current_session_id) {
             return Ok(());
         }

@@ -340,7 +340,7 @@ fn a_resync_after_a_session_change_drops_prior_session_findings() {
 /// by a prior session on its first sync of the project database.
 #[test]
 fn a_fresh_process_first_sync_purges_prior_session_findings() {
-    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     let project = activated_project("fresh.rs", b"pub fn f() {}\n");
     let db_path = database_path(&project);
 
@@ -374,7 +374,7 @@ fn a_fresh_process_first_sync_purges_prior_session_findings() {
 /// the peer's findings mid-session.
 #[test]
 fn a_second_sync_keeps_another_live_sessions_findings() {
-    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     let project = activated_project("peer.rs", b"pub fn p() {}\n");
     let path = project.path().to_string_lossy().into_owned();
     let db_path = database_path(&project);
@@ -410,7 +410,7 @@ fn a_second_sync_keeps_another_live_sessions_findings() {
 /// the session's own writes.
 #[test]
 fn a_second_sync_keeps_the_current_sessions_findings() {
-    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     let project = activated_project("own.rs", b"pub fn o() {}\n");
     let path = project.path().to_string_lossy().into_owned();
     let db_path = database_path(&project);

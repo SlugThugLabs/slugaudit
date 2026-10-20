@@ -183,6 +183,9 @@ fn discovery_error_details(error: &DiscoveryError) -> (&'static str, Option<Stri
         DiscoveryError::NotRelative(path) => ("discovery_not_relative", Some(redacted_path(path))),
         DiscoveryError::NonUtf8Path(path) => ("discovery_non_utf8_path", Some(redacted_path(path))),
         DiscoveryError::TimeBudgetExceeded { .. } => ("discovery_budget_exceeded", None),
+        DiscoveryError::IgnoreRules { path, .. } => {
+            ("discovery_ignore_rules", path.as_deref().map(redacted_path))
+        }
     }
 }
 
