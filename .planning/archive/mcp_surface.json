@@ -113,16 +113,20 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
           "id": {
+            "description": "Row id of the stored finding in this project's `findings` table; a\nrestated finding keeps the id of the row it refreshed.",
             "format": "int64",
             "type": "integer"
           },
           "revision_id": {
+            "description": "Revision id the finding was recorded against (`evidence_revision`).",
             "type": "string"
           },
           "source_hash": {
+            "description": "Content hash of the indexed file the finding was attached to; a later\nhash change marks the finding `stale`.",
             "type": "string"
           },
           "status": {
+            "description": "`current` for every successful write: the file's hash was verified\nwhile the write ran.",
             "type": "string"
           }
         },
@@ -177,9 +181,11 @@
             "description": "One finding row, scoped to the current agent session. Every field is\nexactly what the `finding` tool stored — SlugAudit never generates\nany of this text.",
             "properties": {
               "category": {
+                "description": "Category text exactly as the calling agent supplied it; SlugAudit\ndefines no taxonomy.",
                 "type": "string"
               },
               "description": {
+                "description": "Description text exactly as the calling agent supplied it; possibly\nclipped — see `detail_clipped`.",
                 "type": "string"
               },
               "detail_clipped": {
@@ -187,32 +193,40 @@
                 "type": "boolean"
               },
               "id": {
+                "description": "Row id of the finding in this project's `findings` table; a restated\nfinding keeps its id.",
                 "format": "int64",
                 "type": "integer"
               },
               "line_end": {
+                "description": "One-based, inclusive line where the finding ends.",
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
               },
               "line_start": {
+                "description": "One-based, inclusive line where the finding starts.",
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
               },
               "path": {
+                "description": "Project-relative path of the file the finding is about.",
                 "type": "string"
               },
               "severity": {
+                "description": "Severity text exactly as the calling agent supplied it; SlugAudit\ndefines no scale and adds no judgment.",
                 "type": "string"
               },
               "source_hash": {
+                "description": "Content hash of the file at the revision the finding was written\nagainst; a sync that sees a different hash marks the finding `stale`.",
                 "type": "string"
               },
               "status": {
+                "description": "`current` while the file's content hash still equals `source_hash`;\n`stale` once a sync sees a different hash.",
                 "type": "string"
               },
               "title": {
+                "description": "One-line title exactly as the calling agent supplied it.",
                 "type": "string"
               }
             },
@@ -263,6 +277,7 @@
             "type": "integer"
           },
           "revision_id": {
+            "description": "Revision id the page was read from; compare it across pages to detect\na change that invalidates paging.",
             "type": "string"
           }
         },
@@ -506,7 +521,7 @@
           },
           "phase": {
             "$ref": "#/$defs/HealthPhase",
-            "description": "Coarse classification of what the server is doing right now.\nDerivation rule documented on [`HealthPhase`]."
+            "description": "Coarse classification of what the server is doing right now.\nDerivation rule documented on `HealthPhase`."
           },
           "remedy": {
             "description": "The next action to take when no project is being served by this\nanswer: the same static sentence the `project_not_enabled` error\ncarries in `ErrorData.data.remedy`, so a caller can treat \"health\nsays `disabled`\" and \"every tool fails with `project_not_enabled`\"\nas one instruction. `Some` exactly when `phase` is `disabled`, or\nwhen no `path` was supplied and this server has no project at all;\n`None` whenever a project is actually being served.",
@@ -716,12 +731,14 @@
           "LeadRows": {
             "anyOf": [
               {
+                "description": "Each row is a [`LeadRow`] carrying the mechanic's clipped `detail`\ntext.",
                 "items": {
                   "$ref": "#/$defs/LeadRow"
                 },
                 "type": "array"
               },
               {
+                "description": "Each row is a [`CompactLeadRow`] carrying no per-row text.",
                 "items": {
                   "$ref": "#/$defs/CompactLeadRow"
                 },
@@ -1230,6 +1247,7 @@
             "type": "string"
           },
           "rows": {
+            "description": "This page's rows, one JSON object per row with column names as keys,\nin the query's own row order.",
             "items": true,
             "type": "array"
           },
@@ -1255,6 +1273,7 @@
             ]
           },
           "truncated": {
+            "description": "True when the page byte budget stopped the result before it ended;\n`next_offset` then continues from the next row.",
             "type": "boolean"
           }
         },
@@ -1297,6 +1316,7 @@
             "description": "Row count for one extraction-completeness value.",
             "properties": {
               "count": {
+                "description": "Number of `files` rows with this `extraction_completeness` value.",
                 "format": "int64",
                 "type": "integer"
               },
@@ -1437,6 +1457,7 @@
                 "type": "string"
               },
               "count": {
+                "description": "Number of `files` rows carrying this `file_class`.",
                 "format": "int64",
                 "type": "integer"
               }
@@ -1451,6 +1472,7 @@
             "description": "Row count for one `files.file_kind` value.",
             "properties": {
               "count": {
+                "description": "Number of `files` rows carrying this `file_kind`.",
                 "format": "int64",
                 "type": "integer"
               },
@@ -1537,6 +1559,7 @@
             "description": "Row count for one recorded skip reason.",
             "properties": {
               "count": {
+                "description": "Number of skipped `files` rows with this `reason`.",
                 "format": "int64",
                 "type": "integer"
               },
@@ -1573,6 +1596,7 @@
             "type": "integer"
           },
           "evidence_counts": {
+            "description": "Evidence rows by `kind` across the current revision, ordered by kind.",
             "items": {
               "$ref": "#/$defs/EvidenceKindCount"
             },
@@ -1591,16 +1615,19 @@
             "type": "array"
           },
           "languages": {
+            "description": "Detected language of each `files` row, with its file count; grouped by\nlanguage and ordered by language name. Rows with no detected language\nare not listed.",
             "items": {
               "$ref": "#/$defs/LanguageCount"
             },
             "type": "array"
           },
           "open_finding_count": {
+            "description": "Rows in `findings` with `status = 'current'`: findings whose file\ncontent hash still matches the hash they were written against.\nFindings invalidated by a later content change are `stale` and are not\ncounted.",
             "format": "int64",
             "type": "integer"
           },
           "parser_failure_count": {
+            "description": "Indexed files whose parser was unavailable or whose parse failed — the\nsame predicate `parser_failure_files` lists, without the list cap.",
             "format": "int64",
             "type": "integer"
           },
@@ -1617,6 +1644,7 @@
             "type": "integer"
           },
           "revision_id": {
+            "description": "Revision id of the index this snapshot was read from.",
             "type": "string"
           },
           "unsupported_language_unresolved_count": {
@@ -1821,9 +1849,11 @@
             "type": "integer"
           },
           "language": {
+            "description": "The grammar this query ran against.",
             "type": "string"
           },
           "matches": {
+            "description": "This page's matches in scan order. The first match is always returned,\nso paging always advances.",
             "items": {
               "$ref": "#/$defs/StructureMatch"
             },
@@ -1867,6 +1897,7 @@
             ]
           },
           "revision_id": {
+            "description": "Revision id the matches were read from; pass it back as\n`expected_revision` when paging.",
             "type": "string"
           },
           "truncated": {
