@@ -11,6 +11,12 @@
     licenses  - one entry per unique licence *text*; fields name, id,
                 first_of_kind, text, source_path, used_by
     used_by   - entries with `crate` (a cargo_metadata Package) and `path`
+
+  `source_path` is deliberately not rendered: it is an absolute path into the
+  build machine's cargo registry (`/home/runner/.cargo/...` on CI, a different
+  path on every other machine), so printing it would put a machine-specific
+  location the recipient cannot check into a consumer-facing document. The
+  licence text itself is rendered in full below.
 --}}
 THIRD-PARTY LICENCE SUMMARY
 ===========================
@@ -32,10 +38,6 @@ Applies to:
 {{#each used_by}}
   * {{crate.name}} {{crate.version}}{{#if crate.repository}} <{{{crate.repository}}}>{{/if}}
 {{/each}}
-{{#if source_path}}
-
-Licence text sourced from: {{{source_path}}}
-{{/if}}
 
 {{{text}}}
 {{/each}}
