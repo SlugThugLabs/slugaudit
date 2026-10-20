@@ -451,7 +451,7 @@ cargo mutants --file src/sync/hash.rs
   `tree-sitter-language-pack = "=1.18.0"` is the only exact pin (number verified
   against `Cargo.toml` on 2026-10-16; this sentence has drifted before — re-check
   it whenever the pack moves);
-  `src/parse/PACK_VERSION` is a hand-duplicated string that
+  `src/parse/mod.rs`'s `pub const PACK_VERSION` is a hand-duplicated string that
   the `check_version_consistency` gate asserts against the manifest pin —
   update both together.
 - Supply chain (`deny.toml`): no advisories ignored, no wildcards, duplicate
@@ -464,7 +464,7 @@ cargo mutants --file src/sync/hash.rs
   therefore re-pinned by hand. The exact-pinned parser pack has no other automated
   bump path — `cargo update` cannot move an `=` requirement — so its only
   automatic bump arrives as a Dependabot PR, and that PR must move
-  `src/parse/PACK_VERSION` with it.
+  `src/parse/mod.rs`'s `PACK_VERSION` with it.
   One dependency was considered and rejected on those grounds, and should not be
   re-proposed without new evidence: a **YAML writer** for `goose`'s config.
   `serde_yaml` was archived in 2024, and its maintained continuation `yaml_serde`
