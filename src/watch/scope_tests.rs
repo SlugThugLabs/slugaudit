@@ -220,11 +220,13 @@ fn a_failed_scope_unwatch_logs_no_raw_path() {
         notify::Config::default(),
     )
     .expect("watcher");
-    let mut info = ProjectWatchInfo::default();
-    info.scope = Some(WatchScope {
-        watch_dirs: HashSet::from([root.clone(), never_watched.clone()]),
-        ..WatchScope::default()
-    });
+    let info = ProjectWatchInfo {
+        scope: Some(WatchScope {
+            watch_dirs: HashSet::from([root.clone(), never_watched.clone()]),
+            ..WatchScope::default()
+        }),
+        ..ProjectWatchInfo::default()
+    };
     let mut inner = WatchManagerInner {
         projects: HashMap::from([(root.clone(), info)]),
         watcher: Some(watcher),
