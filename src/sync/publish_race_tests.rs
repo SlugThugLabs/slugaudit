@@ -4,6 +4,7 @@
 //! `publish_tests.rs` to keep both files under the source-size gate.
 use super::*;
 use crate::store::open_read_write;
+use crate::store::test_capture::capture_at_level;
 use crate::sync::test_support::{stored_paths, write};
 
 // --- File-changed-during-sample (TOCTOU) coverage ---
@@ -279,5 +280,50 @@ fn a_noop_retry_after_losing_the_cas_race_converges_on_the_winners_revision() {
     assert_eq!(
         report_a.revision_id, report_b.revision_id,
         "a no-op retry must return the actual current revision, not error or diverge"
+    );
+}
+
+/// The retry line must not log `ChangedDuringSample`'s Display, which
+/// embeds the changed file's path; it correlates the retry through the
+/// category and a redacted path id instead.
+#[test]
+fn a_retry_logs_the_changed_file_under_a_redacted_path_id() {
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "lib.rs", b"version one\n");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    let project_path = project.path().to_path_buf();
+    race_hook::set(project.path(), move || {
+        write(&project_path, "lib.rs", b"version two\n");
+    });
+
+    let (result, logs) = capture_at_level(
+        || {
+            publish(
+                &mut connection,
+                project.path(),
+                "1.0.0",
+                &crate::progress::NoopProgressSink,
+            )
+        },
+        tracing::Level::INFO,
+    );
+
+    result.expect("the retry converges on the latest content");
+    let retry_line = logs
+        .lines()
+        .find(|line| line.contains("publish retrying"))
+        .expect("the changed-during-sample hazard must log a retry");
+    assert!(
+        retry_line.contains("error_kind=\"changed_during_sample\""),
+        "got: {retry_line}"
+    );
+    assert!(
+        retry_line.contains(&crate::util::redacted_path(std::path::Path::new("lib.rs"))),
+        "the redacted path id must identify the file: {retry_line}"
+    );
+    assert!(
+        !retry_line.contains("lib.rs"),
+        "the raw project-relative path must not be logged: {retry_line}"
     );
 }

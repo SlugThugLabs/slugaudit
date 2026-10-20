@@ -95,3 +95,27 @@ fn load_failure_classification_is_disjoint_from_parse_failure() {
     assert!(is_load_failure(&load_failure));
     assert!(!is_load_failure(&parse_failure));
 }
+
+/// Per-file parse logs identify the file by a redacted path id, not by the
+/// raw project-relative path.
+#[test]
+fn a_parser_load_failure_logs_the_redacted_path_not_the_raw_one() {
+    let relative = "src/private-name.rs";
+    let (_, logs) = crate::store::test_capture::capture_warns(|| {
+        load_failed_result(
+            relative,
+            "rust".to_owned(),
+            &PackError::LanguageNotFound("x".into()),
+        );
+    });
+
+    assert!(logs.contains("parser failed to load"), "got: {logs}");
+    assert!(
+        logs.contains(&crate::util::redacted_path(std::path::Path::new(relative))),
+        "the redacted path id must identify the file: {logs}"
+    );
+    assert!(
+        !logs.contains(relative),
+        "the raw project-relative path must not be logged: {logs}"
+    );
+}

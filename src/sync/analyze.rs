@@ -64,19 +64,19 @@ fn is_load_failure(error: &PackError) -> bool {
 /// with no content at all is `Unavailable`.
 pub(super) fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult {
     let Some(content) = content else {
-        tracing::trace!(path = relative_path, "no content; parser not invoked");
+        tracing::trace!(path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)), "no content; parser not invoked");
         return ParseResult::without_content();
     };
     let Some(language) = crate::parse::detect_language(relative_path) else {
         tracing::trace!(
-            path = relative_path,
+            path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
             "no language detected; parser not invoked"
         );
         return ParseResult::content_only(None, false);
     };
     if !crate::parse::language_available(&language) {
         tracing::debug!(
-            path = relative_path,
+            path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
             language = %language,
             "detected language has no parser loaded in the pack; recording ContentOnly",
         );
@@ -115,7 +115,7 @@ fn succeeded_result(
             // logged with the cause rather than reported as an exact count.
             count: u32::try_from(diagnostic_count).unwrap_or_else(|error| {
                 tracing::warn!(
-                    path = relative_path,
+                    path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
                     diagnostic_count,
                     error = %error,
                     "diagnostic count exceeds u32; the recorded syntax-error count saturates",
@@ -132,7 +132,7 @@ fn succeeded_result(
         ExtractionCompleteness::Full
     };
     tracing::debug!(
-        path = relative_path,
+        path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
         language = %language,
         diagnostic_count,
         outcome = ?outcome,
@@ -155,7 +155,7 @@ fn succeeded_result(
 /// reason (see [`is_load_failure`] on why this stays distinct from `Failed`).
 fn load_failed_result(relative_path: &str, language: String, error: &PackError) -> ParseResult {
     tracing::warn!(
-        path = relative_path,
+        path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
         language = %language,
         error = %error,
         "parser failed to load; recording LoadFailed",
@@ -178,7 +178,7 @@ fn load_failed_result(relative_path: &str, language: String, error: &PackError) 
 /// `Available`; the outcome carries the failure.
 fn parse_failed_result(relative_path: &str, language: String, error: &PackError) -> ParseResult {
     tracing::debug!(
-        path = relative_path,
+        path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
         language = %language,
         error = %error,
         "parser ran but extraction failed; recording Failed",

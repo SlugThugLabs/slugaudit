@@ -3,6 +3,7 @@
 //! delete.
 use super::*;
 use crate::store::open_read_write;
+use crate::store::test_capture::capture_warns;
 use crate::sync::test_support::{stored_paths, write};
 use std::fs;
 
@@ -274,4 +275,135 @@ fn deleting_a_file_cascades_its_evidence() {
         .query_row("SELECT count(*) FROM evidence", [], |row| row.get(0))
         .expect("count evidence");
     assert_eq!(remaining_evidence, 0);
+}
+
+/// Both public entry points reject a parser pack version that is not a
+/// non-empty numeric dotted version before discovery, so a malformed pin
+/// can never reach the revision row.
+#[test]
+fn an_invalid_parser_pack_version_is_rejected_by_both_publish_entry_points() {
+    let project = tempfile::tempdir().expect("project dir");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+
+    let via_limits = publish_with_limits(
+        &mut connection,
+        project.path(),
+        "1.x",
+        &crate::progress::NoopProgressSink,
+        &ResourceLimits::default(),
+    )
+    .expect_err("a non-numeric version must be rejected");
+    assert_eq!(
+        via_limits.to_string(),
+        "invalid parser pack version \"1.x\"; expected a non-empty numeric dotted version"
+    );
+
+    let via_public = publish(
+        &mut connection,
+        project.path(),
+        "",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect_err("an empty version must be rejected");
+    match via_public {
+        PublishError::InvalidParserPackVersion(version) => assert_eq!(version, ""),
+        other => panic!("expected InvalidParserPackVersion, got {other:?}"),
+    }
+}
+
+/// The baseline revision read is the first database operation of a publish;
+/// its `rusqlite::Error` must surface as the exact `PublishError::Database`
+/// variant with the SQLite cause preserved, not a generic failure.
+#[test]
+fn a_publish_whose_baseline_read_fails_is_the_database_variant() {
+    let project = tempfile::tempdir().expect("project dir");
+    write(project.path(), "lib.rs", b"fn a() {}\n");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection =
+        rusqlite::Connection::open(db_dir.path().join("project.db")).expect("open bare db");
+
+    let error = publish_with_limits(
+        &mut connection,
+        project.path(),
+        "1.0",
+        &crate::progress::NoopProgressSink,
+        &ResourceLimits::default(),
+    )
+    .expect_err("a database without the schema cannot read the baseline revision");
+
+    match error {
+        PublishError::Database(error) => assert!(
+            error.to_string().contains("no such table: revisions"),
+            "the source error must be preserved: {error}"
+        ),
+        other => panic!("expected PublishError::Database, got {other:?}"),
+    }
+}
+
+/// A sampling skip's report reason is `SampleError::TooLarge`'s Display,
+/// which embeds the absolute path. The warn line must correlate the file
+/// through the redacted path id and the static reason kind only.
+#[test]
+fn a_sampling_skip_logs_the_redacted_path_not_the_absolute_skip_message() {
+    let project = tempfile::tempdir().expect("project dir");
+    let huge = project.path().join("huge.rs");
+    std::fs::write(&huge, vec![b'x'; 100_000]).expect("write oversized file");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    let limits = ResourceLimits {
+        max_file_bytes: 50_000,
+        ..ResourceLimits::default()
+    };
+
+    let (result, logs) = capture_warns(|| {
+        publish_with_limits(
+            &mut connection,
+            project.path(),
+            "1.0",
+            &crate::progress::NoopProgressSink,
+            &limits,
+        )
+    });
+
+    result.expect("an oversized file is skipped, not fatal");
+    let raw = huge.to_string_lossy();
+    assert!(
+        !logs.contains(raw.as_ref()),
+        "the absolute path must not be logged: {logs}"
+    );
+    assert!(
+        logs.contains(&crate::util::redacted_path(&huge)),
+        "the redacted path id must identify the skipped file: {logs}"
+    );
+    assert!(
+        logs.contains("reason_kind=\"oversize\""),
+        "the static reason must be logged: {logs}"
+    );
+}
+
+/// A failed publish logs its category and a redacted path id, never the
+/// error's Display: `SampleError::Read` embeds an absolute path there.
+#[test]
+fn a_failed_publish_logs_the_redacted_path_and_category_not_the_error_display() {
+    let root = std::path::Path::new("/tmp/once-probe-project");
+    let absolute = std::path::Path::new("/home/private-user/secret-repo/src/lib.rs");
+    let result: Result<PublishReport, PublishError> =
+        Err(PublishError::Sample(sample::SampleError::Read {
+            path: absolute.to_path_buf(),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "gone"),
+        }));
+
+    let (_, logs) = capture_warns(|| crate::sync::publish_log::log_outcome(root, &result, 0));
+
+    assert!(logs.contains("publish failed"), "got: {logs}");
+    assert!(logs.contains("error_kind=\"sample_read\""), "got: {logs}");
+    assert!(
+        logs.contains(&crate::util::redacted_path(absolute)),
+        "the redacted path id must identify the file: {logs}"
+    );
+    assert!(
+        !logs.contains("/home/private-user"),
+        "the raw path must not be logged: {logs}"
+    );
 }

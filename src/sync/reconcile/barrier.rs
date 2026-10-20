@@ -19,10 +19,11 @@ use std::collections::HashSet;
 /// sequence stabilizes, then acknowledges through the final sequence.
 ///
 /// Bounded by [`MAX_BARRIER_LOOPS`]: exceeding the cap signals an
-/// external producer racing reconciliation, which is logged and surfaced
-/// as a [`ReconcileError::BarrierCapExceeded`] after marking the watcher
+/// external producer racing reconciliation and surfaces as a
+/// [`ReconcileError::BarrierCapExceeded`] after marking the watcher
 /// `Desynced` so subsequent calls do a full verification rather than
-/// spinning.
+/// spinning. The error is not logged here — the caller's terminal failure
+/// handler logs it once, so one failure never produces two warn lines.
 ///
 /// If `reconcile_fn` fails, the error propagates and the dirty sets remain
 /// unacknowledged — the caller is responsible for marking the watcher
@@ -78,10 +79,6 @@ pub(crate) fn sync_with_barrier_with_deadline(
         iterations += 1;
 
         if iterations >= MAX_BARRIER_LOOPS {
-            tracing::warn!(
-                iterations,
-                "barrier sync hit its iteration cap; marking watcher Desynced",
-            );
             state.set_health(crate::watch::WatcherHealth::Desynced);
             return Err(ReconcileError::BarrierCapExceeded {
                 iterations: MAX_BARRIER_LOOPS,

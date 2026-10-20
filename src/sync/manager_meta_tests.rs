@@ -1,9 +1,12 @@
 //! Tests for the metadata helpers split out of `manager.rs`.
 
 use super::{
-    current_revision_id, ensure_project_row, map_publish_error, purge_prior_session_findings_with,
+    current_revision_id, ensure_project_row, map_publish_error, publish_from_scratch, publish_full,
+    purge_prior_session_findings_with,
 };
+use crate::progress::NoopProgressSink;
 use crate::store;
+use crate::store::test_capture::capture_warns;
 use crate::util::{SESSION_TEST_LOCK, override_session_id_for_test};
 use std::path::Path;
 use tempfile::TempDir;
@@ -281,4 +284,180 @@ fn publish_failures_classify_into_the_documented_error_codes() {
         other.data.is_none(),
         "a failure no caller can act on differently must not carry a code"
     );
+}
+
+/// A damaged `findings` table must surface the purge failure as its own
+/// `ErrorData`, with the SQLite cause preserved, rather than being folded
+/// into one of the later metadata arms.
+#[test]
+fn a_failed_prior_session_purge_surfaces_the_purge_error() {
+    let (_dir, mut connection) = open_temp_db();
+    connection
+        .execute_batch("DROP TABLE findings")
+        .expect("drop the findings table");
+
+    let error = purge_prior_session_findings_with(
+        &mut connection,
+        Uuid::parse_str("77777777-7777-7777-7777-777777777777").expect("uuid"),
+    )
+    .expect_err("the purge must fail on a damaged schema");
+
+    assert!(
+        error
+            .message
+            .starts_with("purging prior-session findings: "),
+        "got: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains("no such table: findings"),
+        "the source error must be preserved: {}",
+        error.message
+    );
+}
+
+/// A failed metadata INSERT must be reported as the recording arm, not
+/// misattributed to the purge or the verification read.
+#[test]
+fn a_failed_metadata_write_surfaces_the_recording_error() {
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
+    let (_dir, mut connection) = open_temp_db();
+    connection
+        .execute_batch("DROP TABLE project")
+        .expect("drop the project table");
+
+    let error = ensure_project_row(&mut connection, Path::new("/tmp/example-project"))
+        .expect_err("the metadata insert must fail");
+
+    match error {
+        super::ProjectMetaError::Other(error) => {
+            assert!(
+                error.message.starts_with("recording project metadata: "),
+                "got: {}",
+                error.message
+            );
+            assert!(
+                error.message.contains("no such table: project"),
+                "the source error must be preserved: {}",
+                error.message
+            );
+        }
+        other => panic!("expected ProjectMetaError::Other, got {other:?}"),
+    }
+}
+
+/// A failed metadata SELECT must be reported as the reading arm. The
+/// INSERT succeeds; the authorizer denies only the `project.root_path`
+/// read the verification query performs.
+#[test]
+fn a_failed_metadata_read_surfaces_the_reading_error() {
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
+    let (_dir, mut connection) = open_temp_db();
+    connection.authorizer(Some(
+        |context: rusqlite::hooks::AuthContext<'_>| match context.action {
+            rusqlite::hooks::AuthAction::Read {
+                table_name,
+                column_name,
+            } if table_name == "project" && column_name == "root_path" => {
+                rusqlite::hooks::Authorization::Deny
+            }
+            _ => rusqlite::hooks::Authorization::Allow,
+        },
+    ));
+
+    let error = ensure_project_row(&mut connection, Path::new("/tmp/example-project"))
+        .expect_err("the metadata read must be denied");
+
+    match error {
+        super::ProjectMetaError::Other(error) => {
+            assert!(
+                error.message.starts_with("reading project metadata: "),
+                "got: {}",
+                error.message
+            );
+            assert!(
+                error
+                    .message
+                    .contains("access to project.root_path is prohibited"),
+                "the source error must be preserved: {}",
+                error.message
+            );
+        }
+        other => panic!("expected ProjectMetaError::Other, got {other:?}"),
+    }
+}
+
+/// `publish_from_scratch` after corruption or staleness must surface an
+/// unopenable replacement database as the recreation arm, with the store's
+/// open failure preserved.
+#[test]
+fn a_failed_database_recreation_surfaces_the_open_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let project = tempfile::tempdir().expect("project dir");
+    let root = crate::project::ProjectRoot::resolve(project.path()).expect("resolve root");
+    let database_path = project.path().join("database-is-a-directory");
+    std::fs::create_dir(&database_path).expect("create the database directory");
+    // Owner-only, so the store's permission guard passes and the open
+    // itself is what fails.
+    std::fs::set_permissions(&database_path, std::fs::Permissions::from_mode(0o700))
+        .expect("restrict the directory mode");
+
+    let error = match publish_from_scratch(&root, database_path, &NoopProgressSink) {
+        Ok(_) => panic!("opening a directory as a database must fail"),
+        Err(error) => error,
+    };
+
+    assert!(
+        error
+            .message
+            .starts_with("recreating the project database: "),
+        "got: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains("failed to open database"),
+        "the store's open failure must be preserved: {}",
+        error.message
+    );
+}
+
+/// One failed manager-path publish must emit exactly one warn line. The
+/// publish log emits "publish failed" and `map_publish_error` used to log
+/// the same failure again; both sites use the same message, so a duplicate
+/// is counted whichever site emits it.
+#[test]
+fn a_failed_manager_publish_emits_exactly_one_warn_line() {
+    let project = tempfile::tempdir().expect("project dir");
+    std::fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection =
+        store::open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER once_probe_publish_failure BEFORE INSERT ON revisions \
+             BEGIN SELECT RAISE(ABORT, 'injected publish failure'); END;",
+        )
+        .expect("install the failing trigger");
+
+    let (result, logs) = capture_warns(|| {
+        tracing::warn!("once-probe-capture-control");
+        publish_full(
+            &mut connection,
+            project.path(),
+            &NoopProgressSink,
+            "publish failed",
+        )
+    });
+
+    assert!(
+        logs.contains("once-probe-capture-control"),
+        "the capture must be live: {logs}"
+    );
+    let warnings = logs
+        .lines()
+        .filter(|line| line.contains("publish failed"))
+        .count();
+    assert_eq!(warnings, 1, "one failed publish, one warn line: {logs}");
+    assert!(result.is_err(), "the trigger must fail the publish");
 }

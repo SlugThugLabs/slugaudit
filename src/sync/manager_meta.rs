@@ -9,6 +9,7 @@
 
 use super::SyncedProject;
 use super::publish;
+use super::publish_log;
 use crate::error_codes::{self, ErrorCode};
 use crate::parse;
 use crate::project;
@@ -17,7 +18,6 @@ use crate::util::{redacted_path, session_id};
 use rmcp::ErrorData;
 use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
-#[cfg(test)]
 use uuid::Uuid;
 
 /// Deletes every `findings` row whose `session_id` does not match the
@@ -34,10 +34,19 @@ use uuid::Uuid;
 /// (`&mut Connection`), so this composes naturally into the same
 /// transaction that `ensure_project_row` opens.
 pub(crate) fn purge_prior_session_findings(connection: &mut Connection) -> Result<(), ErrorData> {
+    purge_findings_for_session(connection, session_id())
+}
+
+/// The one cleanup implementation both entry points share, so the SQL and
+/// error text cannot drift between the production and test forms.
+fn purge_findings_for_session(
+    connection: &mut Connection,
+    current_session_id: Uuid,
+) -> Result<(), ErrorData> {
     connection
         .execute(
             "DELETE FROM findings WHERE session_id != ?1",
-            rusqlite::params![session_id().to_string()],
+            rusqlite::params![current_session_id.to_string()],
         )
         .map_err(|error| {
             ErrorData::internal_error(format!("purging prior-session findings: {error}"), None)
@@ -54,15 +63,7 @@ pub(crate) fn purge_prior_session_findings_with(
     connection: &mut Connection,
     current_session_id: Uuid,
 ) -> Result<(), ErrorData> {
-    connection
-        .execute(
-            "DELETE FROM findings WHERE session_id != ?1",
-            rusqlite::params![current_session_id.to_string()],
-        )
-        .map_err(|error| {
-            ErrorData::internal_error(format!("purging prior-session findings: {error}"), None)
-        })?;
-    Ok(())
+    purge_findings_for_session(connection, current_session_id)
 }
 
 /// Returns the `revision_id` of the current revision, or `None` if no
@@ -219,18 +220,36 @@ pub(crate) fn ensure_project_row(
     Ok(())
 }
 
-/// Single source of truth for "publish returned `Err` -> log a `warn!`
-/// line and return an `ErrorData::internal_error`". Used by every
-/// `ensure_current` branch that calls `publish` so a wire-shape change
-/// lands in one place rather than three. `warn_message` ties the log
-/// line back to the calling branch; the returned `ErrorData` always
-/// surfaces the publish error verbatim.
+/// Single source of truth for "publish returned `Err` -> attach the
+/// manager operation's context and return an `ErrorData::internal_error`".
+/// Used by every `ensure_current` branch that calls `publish` so a
+/// wire-shape change lands in one place rather than three.
+///
+/// The terminal warn for a failed publish is emitted once by
+/// `publish_log::log_outcome`, which every `publish` caller reaches; this
+/// site adds the manager operation and project id at debug level only, so
+/// one failure never produces two warn lines.
 pub(crate) fn map_publish_error(
     root: &Path,
     error: publish::PublishError,
     warn_message: &str,
 ) -> ErrorData {
-    tracing::warn!(root_id = %redacted_path(root), error = %error, "{warn_message}");
+    // Correlate by category and redacted path id, never by `Display`, whose
+    // text embeds absolute or project-relative paths.
+    let (error_kind, path) = publish_log::failure_fields(&error);
+    match path {
+        Some(path) => tracing::debug!(
+            root_id = %redacted_path(root),
+            error_kind,
+            path_id = %redacted_path(path),
+            "{warn_message}"
+        ),
+        None => tracing::debug!(
+            root_id = %redacted_path(root),
+            error_kind,
+            "{warn_message}"
+        ),
+    }
     // The two publish failures a caller would do something different about.
     // A spent budget is permanent on a repo too big for the limit, so its
     // remedy names the knob rather than advising the retry that fails

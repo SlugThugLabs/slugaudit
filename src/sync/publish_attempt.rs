@@ -52,9 +52,13 @@ fn collect_skipped(
 }
 
 fn warn_skipped(file: &discovery::SkippedFile, reason: &str) {
+    // `file.reason` is the skip message itself: for a sampling skip it is
+    // `SampleError::TooLarge`'s Display, which embeds the raw absolute path
+    // and would defeat the redacted `path_id`. The static class is enough to
+    // correlate the skip; the specific cause is carried by the report.
     tracing::warn!(
         path_id = %crate::util::redacted_path(&file.absolute_path),
-        reason = %file.reason,
+        reason_kind = reason,
         "skipped file during {reason}"
     );
 }
