@@ -27,7 +27,8 @@ use std::path::Path;
 /// happened. Split out so tests can verify the warning site fires
 /// without standing up a real NFS mount — the verdict determination
 /// still goes through [`reject_network_filesystem`] in production code,
-/// which calls this helper on the positive case.
+/// which passes the verdict to [`reject_if_network`], the helper that
+/// calls this one on the positive case.
 ///
 /// `pub(super)` so the test module can call it directly with a known
 /// `path` argument and assert the emitted event format without making
@@ -65,7 +66,15 @@ pub(super) fn log_rejected_network_filesystem(path: &Path) {
 /// unsupported by the product and fail closed rather than silently accepting
 /// an unknown mount.
 pub(super) fn reject_network_filesystem(path: &Path) -> Result<(), StoreError> {
-    if is_on_network_filesystem(path)? {
+    reject_if_network(path, is_on_network_filesystem(path)?)
+}
+
+/// The rejection decision once the filesystem verdict is known. Split out
+/// so the positive branch — the typed `NetworkFilesystem` refusal and its
+/// warning — is testable with a synthetic verdict, without standing up a
+/// real network mount.
+fn reject_if_network(path: &Path, on_network: bool) -> Result<(), StoreError> {
+    if on_network {
         log_rejected_network_filesystem(path);
         return Err(StoreError::NetworkFilesystem);
     }

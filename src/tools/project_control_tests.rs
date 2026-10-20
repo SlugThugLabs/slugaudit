@@ -248,13 +248,50 @@ fn on_action_reports_a_symlinked_planning_directory() {
     );
 }
 
-// NEEDS-DECISION: the corrupt-database discard-failure arm has no test. It is
-// unreachable without a production hook or a read-only/immutable filesystem
-// state: a corrupt file is detected while SQLite configures WAL mode, so any
-// obstruction that would make `discard_corrupt_database` fail (a directory at
-// `project.db-wal`) makes the open fail earlier with `SQLITE_CANTOPEN`, which
-// is not the corruption arm. The same was re-verified with an unsupported
-// schema version: WAL configuration still fails at the blocked sidecar first.
+/// The recovery path discards the corrupt database before reopening it. A
+/// directory at the database path cannot be unlinked, so the discard failure
+/// must reach the caller with the underlying cause intact.
+#[test]
+fn corrupt_database_recovery_reports_a_failed_discard() {
+    let directory = tempfile::tempdir().expect("db dir");
+    let database = directory.path().join("project.db");
+    fs::create_dir(&database).expect("directory at the database path");
+
+    let error = recover_corrupt_database(&database)
+        .expect_err("a directory at the database path cannot be discarded");
+
+    let discard_error =
+        fs::remove_file(&database).expect_err("the directory at the database path must not unlink");
+    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+    assert_eq!(
+        error.message,
+        format!("discarding outdated database: {discard_error}")
+    );
+}
+
+/// After a successful discard the reopen must still fail closed with the
+/// database context. A database under a missing parent directory reaches the
+/// reopen arm on every platform, including when the tests run as root.
+#[cfg(unix)]
+#[test]
+fn corrupt_database_recovery_reports_a_failed_reopen() {
+    let directory = tempfile::tempdir().expect("db dir");
+    let database = directory.path().join("missing-parent").join("project.db");
+
+    let error = recover_corrupt_database(&database)
+        .expect_err("a database under a missing parent cannot be recreated");
+
+    let open_error = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&database)
+        .expect_err("the parent directory is missing");
+    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+    assert_eq!(
+        error.message,
+        format!("database: failed to set database file permissions: {open_error}")
+    );
+}
 
 /// A database that cannot be opened for a reason other than corruption
 /// (here the path is a directory) is reported as a database failure, not
@@ -356,7 +393,10 @@ fn on_action_with_profile_writes_config_json() {
     let cfg_file = activation_dir(&project).join("config.json");
     assert!(cfg_file.exists(), "config.json should be written");
     let content = fs::read_to_string(cfg_file).expect("read config");
-    assert!(content.contains("\"audit\""));
+    assert_eq!(
+        content, "{\n  \"profile\": \"audit\"\n}",
+        "the profile config keeps the pretty-printed shape and the exact profile name"
+    );
 }
 
 #[test]

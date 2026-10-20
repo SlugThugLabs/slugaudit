@@ -171,6 +171,36 @@ fn verified_write_reports_a_failed_commit() {
     );
 }
 
+/// `BEGIN DEFERRED` on a connection that already has an open transaction is
+/// the one reachable start failure: the wrapper must translate SQLite's
+/// refusal with the start context and keep the cause, not panic.
+#[test]
+fn verified_read_reports_a_failed_transaction_start_with_an_active_transaction() {
+    let mut connection = rusqlite::Connection::open_in_memory().expect("open connection");
+    connection
+        .execute_batch("BEGIN DEFERRED")
+        .expect("open the outer transaction");
+    let cause = connection
+        .execute_batch("BEGIN DEFERRED")
+        .expect_err("SQLite refuses a second BEGIN");
+
+    let error = super::context_transactions::start_read_transaction(&mut connection)
+        .expect_err("starting a nested read transaction must fail");
+
+    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+    assert_eq!(
+        error.message,
+        format!(
+            "starting a read transaction: {cause}. This is often transient (a concurrent sync, \
+             publish, or disable) — retry the call. If it keeps happening, the project may need \
+             to be disabled and re-enabled."
+        )
+    );
+    connection
+        .execute_batch("ROLLBACK")
+        .expect("close the outer transaction");
+}
+
 /// Another connection holds the database's write lock, so `BEGIN IMMEDIATE`
 /// exhausts the busy timeout and the start arm translates the failure.
 #[test]

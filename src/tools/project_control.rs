@@ -202,19 +202,18 @@ fn enable(
             .join("slugaudit")
             .join("config.json");
         let cfg = serde_json::json!({ "profile": profile });
-        let encoded = serde_json::to_string_pretty(&cfg)
-            .map_err(|e| err(format!("serialize profile config: {e}")))?;
+        // `{:#}` renders a `Value` through `Display` with the same pretty
+        // formatter `to_string_pretty` uses, but without a fallible call:
+        // serializing a `Value` cannot fail, so there is no error arm to
+        // leave untested.
+        let encoded = format!("{cfg:#}");
         std::fs::write(&conf_path, encoded)
             .map_err(|e| err(format!("write profile config {}: {e}", conf_path.display())))?;
     }
     let db_path = project::database_path(root);
     let mut connection = match store::open_read_write(&db_path) {
         Ok(conn) => conn,
-        Err(error) if error.is_corruption() => {
-            store::discard_corrupt_database(&db_path)
-                .map_err(|e| err(format!("discarding outdated database: {e}")))?;
-            store::open_read_write(&db_path).map_err(|e| err(format!("database: {e}")))?
-        }
+        Err(error) if error.is_corruption() => recover_corrupt_database(&db_path)?,
         Err(e) => return Err(err(format!("database: {e}"))),
     };
     let report = sync::publish(&mut connection, root.as_path(), parse::PACK_VERSION, sink)
@@ -229,6 +228,16 @@ fn enable(
         }),
         gitignore: Some(gitignore),
     }))
+}
+
+/// Discards a database SQLite reported as corrupt or outdated, then recreates
+/// it. Kept separate from the open that detects the corruption so both
+/// failure arms — the discard and the reopen — can be driven with real
+/// filesystem fixtures rather than a production-only hook.
+fn recover_corrupt_database(path: &std::path::Path) -> Result<rusqlite::Connection, ErrorData> {
+    store::discard_corrupt_database(path)
+        .map_err(|e| err(format!("discarding outdated database: {e}")))?;
+    store::open_read_write(path).map_err(|e| err(format!("database: {e}")))
 }
 
 /// `off` never touches `.gitignore` — removing a rule can unhide paths

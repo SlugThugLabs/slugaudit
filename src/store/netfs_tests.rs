@@ -169,9 +169,7 @@ missing dash separator / rw ext4
 /// Verifies that rejecting an open against an NFS mount emits a
 /// `tracing::warn!` event tagged with the path and a machine-readable
 /// reason so an operator can find which mount triggered the failure
-/// without parsing MCP errors. Tested via the warn-helper rather
-/// than `reject_network_filesystem` directly because standing up a
-/// real NFS mount in tests is not portable.
+/// without parsing MCP errors.
 #[test]
 fn network_filesystem_rejection_emits_a_warning_for_auditing() {
     let (_, logs) = capture_warns(|| {
@@ -197,6 +195,54 @@ fn unsupported_targets_fail_closed() {
     let error = is_on_network_filesystem(Path::new("project.db"))
         .expect_err("unsupported targets must fail closed");
     assert!(matches!(error, StoreError::NetworkFilesystemCheck(_)));
+}
+
+/// The positive verdict is the branch that returns the typed refusal: a
+/// synthetic "this path is on a network filesystem" verdict must produce
+/// exactly `StoreError::NetworkFilesystem` and the operator warning, with
+/// no real network mount involved.
+#[test]
+fn a_positive_network_verdict_is_rejected_with_the_typed_error() {
+    let path = Path::new("/mnt/nfs/project.db");
+    let (result, logs) = capture_warns(|| reject_if_network(path, true));
+
+    assert!(
+        matches!(&result, Err(StoreError::NetworkFilesystem)),
+        "a positive verdict must be refused, got: {result:?}"
+    );
+    assert!(
+        logs.contains("network_filesystem"),
+        "the refusal must be logged with its machine-readable reason, captured logs: {logs}"
+    );
+    assert!(
+        logs.contains("/mnt/nfs/project.db"),
+        "the warning must name the offending path, captured logs: {logs}"
+    );
+}
+
+/// The negative control: a local verdict is accepted and emits no
+/// rejection warning. The liveness line proves the absence check is not
+/// passing because the capture went blind.
+#[test]
+fn a_local_verdict_is_accepted_without_a_rejection_warning() {
+    let path = Path::new("/home/user/project.db");
+    let (result, logs) = capture_warns(|| {
+        tracing::warn!("verdict liveness control");
+        reject_if_network(path, false)
+    });
+
+    assert!(
+        matches!(result, Ok(())),
+        "a local verdict must be accepted, got: {result:?}"
+    );
+    assert!(
+        logs.contains("verdict liveness control"),
+        "the capture must see this thread's events, captured logs: {logs}"
+    );
+    assert!(
+        !logs.contains("network_filesystem"),
+        "a local verdict must not emit the rejection warning, captured logs: {logs}"
+    );
 }
 
 #[test]

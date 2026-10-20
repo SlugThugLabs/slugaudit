@@ -100,7 +100,7 @@ impl SourceSyncManager {
         }
     }
 
-    fn verify_metadata_or_rebuild(
+    pub(super) fn verify_metadata_or_rebuild(
         &self,
         root: &project::ProjectRoot,
         database_path: &Path,

@@ -13,7 +13,6 @@ mod health;
 mod orchestration;
 
 use super::reconcile;
-use super::revision;
 use crate::watch::{WatchManager, WatchState};
 pub(crate) use orchestration::map_activation_error;
 use std::path::{Path, PathBuf};
@@ -34,8 +33,6 @@ pub struct SyncedProject {
 pub enum SyncError {
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
-    #[error("revision error: {0}")]
-    Revision(#[from] revision::RevisionError),
     #[error("reconcile error: {0}")]
     Reconcile(#[from] reconcile::ReconcileError),
     /// The watcher-driven reconcile needs the stat sweep's on-disk path
@@ -51,12 +48,6 @@ pub enum SyncError {
     /// variant.
     #[error("stat sweep exceeded its wall-clock time budget after {elapsed_ms} ms")]
     SweepBudgetExceeded { elapsed_ms: u128 },
-    #[error("IO error reading {path}: {source}")]
-    Read {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
 }
 
 impl SyncError {
@@ -207,6 +198,51 @@ impl SourceSyncManager {
             .store(crate::util::now_unix(), Ordering::Relaxed);
         self.last_sync_duration_ms
             .store(duration_ms, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use crate::progress::NoopProgressSink;
+
+    /// A valid database whose metadata names a different project root is
+    /// stale, and the recovery path discards it. When the database path is a
+    /// directory the discard cannot unlink it, so the failure must reach the
+    /// caller with the underlying discard error intact.
+    #[test]
+    fn a_failed_stale_database_discard_reports_the_exact_error() {
+        let project = crate::sync::test_support::create_project();
+        let root = crate::project::ProjectRoot::resolve(project.path()).expect("project root");
+        let database_path = crate::project::database_path(&root);
+        let connection = crate::store::open_read_write(&database_path).expect("open database");
+        connection
+            .execute(
+                "INSERT INTO project VALUES (1, 'default', '/elsewhere', 1, 1, 0)",
+                [],
+            )
+            .expect("stale metadata row");
+        std::fs::remove_file(&database_path).expect("unlink the database file");
+        std::fs::create_dir(&database_path).expect("directory at the database path");
+        let manager = SourceSyncManager::default();
+
+        let Err(error) = manager.verify_metadata_or_rebuild(
+            &root,
+            &database_path,
+            connection,
+            std::time::Instant::now(),
+            &NoopProgressSink,
+        ) else {
+            panic!("the directory at the database path cannot be discarded");
+        };
+
+        let discard_error = std::fs::remove_file(&database_path)
+            .expect_err("the directory at the database path must not unlink");
+        assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+        assert_eq!(
+            error.message,
+            format!("discarding the stale project database: {discard_error}")
+        );
     }
 }
 

@@ -319,6 +319,12 @@ pub fn open_read_only(path: &Path) -> Result<Connection, StoreError> {
     reject_insecure_permissions(path)?;
     let connection =
         Connection::open_with_flags(path, open_flags(false)).map_err(StoreError::Open)?;
+    // `sqlite3_busy_timeout` and `sqlite3_create_function_v2` fail only on
+    // SQLITE_NOMEM or SQLITE_MISUSE from a NULL/invalid handle. The safe
+    // rusqlite API above cannot hand either call an invalid handle, and
+    // allocation failure is not a hermetic input, so these arms are
+    // defensive: they keep an allocator or engine failure typed as
+    // `Configure` rather than letting it become a panic.
     connection
         .busy_timeout(BUSY_TIMEOUT)
         .map_err(StoreError::Configure)?;
