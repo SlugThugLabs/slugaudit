@@ -255,6 +255,67 @@ fn connect_emits_the_documented_argv_for_every_client_dialect() {
     }
 }
 
+/// A disconnect that removes nothing must not report "Done.": goose has no
+/// writable section and no client CLI, so there is nothing this tool can take
+/// out.
+#[test]
+fn disconnecting_an_entry_with_nothing_to_remove_says_so() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&home).expect("mkdir home");
+    fs::create_dir_all(&bin_dir).expect("mkdir bin");
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_slugaudit"));
+
+    let output = hermetic_output(&binary, &home, &bin_dir, &["disconnect", "goose"]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "a no-op disconnect is not an error: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("Nothing to disconnect."),
+        "a no-op must be reported as one: {stdout}"
+    );
+    assert!(!stdout.contains("Done."), "nothing was done: {stdout}");
+}
+
+/// A warning raised by a CLI command must reach the subscriber installed
+/// before dispatch; `connect` probes the client config and logs why an
+/// unparsable one is treated as unregistered.
+#[test]
+fn connect_logs_a_client_config_parse_warning_to_stderr() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(home.join(".cursor")).expect("mkdir cursor");
+    fs::create_dir_all(&bin_dir).expect("mkdir bin");
+    fs::write(home.join(".cursor/mcp.json"), "{ not json").expect("write malformed config");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_slugaudit"))
+        .args(["connect", "cursor"])
+        .env("HOME", &home)
+        .env("SLUGTHUG_HOME", home.join(".slugthug"))
+        .env("SLUGTHUG_CONFIG_HOME", &home)
+        .env("PATH", &bin_dir)
+        .env("RUST_LOG", "info")
+        .env_remove("SLUGAUDIT_LOG_FORMAT")
+        .output()
+        .expect("spawn slugaudit");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "a malformed config must fail the connect"
+    );
+    assert!(
+        stderr.contains("client config is not valid JSON"),
+        "the warning must reach stderr: {stderr}"
+    );
+}
+
 /// A closed stdin during the interactive agent choice is "input ended", not an
 /// empty answer that surfaces as "invalid agent choice".
 #[test]

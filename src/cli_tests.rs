@@ -177,3 +177,122 @@ fn version_parses_in_all_three_spellings() {
         );
     }
 }
+
+#[test]
+fn help_names_the_installed_binary_connect_registers() {
+    assert!(
+        USAGE.contains("Register the installed SlugAudit binary"),
+        "connect prefers the installed binary, so the help must say so"
+    );
+    assert!(
+        !USAGE.contains("Register this binary"),
+        "the running binary is only used when no installed copy exists"
+    );
+}
+
+#[test]
+fn a_serde_failure_converts_to_the_json_error_variant() {
+    let source = serde_json::from_str::<serde_json::Value>("{").expect_err("invalid JSON");
+
+    let error = ConnectError::from(source);
+
+    match error {
+        ConnectError::Json(inner) => {
+            assert!(inner.is_eof(), "the parse error must be kept: {inner}");
+        }
+        other => panic!("expected Json, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_config_write_without_a_home_reports_the_home_unavailable() {
+    let cursor = crate::connect_agents::find_agent("cursor").expect("cursor is registered");
+
+    let error =
+        crate::connect_exec::connect_agent(&cursor, std::path::Path::new("/bin/slugaudit"), None)
+            .expect_err("a config write has nowhere to go without a home");
+
+    assert!(
+        matches!(error, ConnectError::HomeUnavailable),
+        "expected HomeUnavailable, got {error:?}"
+    );
+}
+
+#[test]
+fn a_config_parent_that_cannot_be_created_is_an_io_error() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    std::fs::write(temp.path().join(".cursor"), b"not a directory").expect("blocking file");
+    let cursor = crate::connect_agents::find_agent("cursor").expect("cursor is registered");
+
+    let error = crate::connect_exec::connect_agent(
+        &cursor,
+        std::path::Path::new("/bin/slugaudit"),
+        Some(temp.path()),
+    )
+    .expect_err("create_dir_all must fail on a file");
+
+    assert!(
+        matches!(error, ConnectError::Io(_)),
+        "expected Io, got {error:?}"
+    );
+}
+
+#[test]
+fn a_config_path_that_is_a_directory_is_an_io_error() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    std::fs::create_dir_all(temp.path().join(".cursor/mcp.json")).expect("config as directory");
+    let cursor = crate::connect_agents::find_agent("cursor").expect("cursor is registered");
+
+    let error = crate::connect_exec::connect_agent(
+        &cursor,
+        std::path::Path::new("/bin/slugaudit"),
+        Some(temp.path()),
+    )
+    .expect_err("reading a directory as a config must fail");
+
+    assert!(
+        matches!(error, ConnectError::Io(_)),
+        "expected Io, got {error:?}"
+    );
+}
+
+#[test]
+fn a_rejected_add_with_output_keeps_the_pointer_to_it() {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let bin_dir = tempfile::tempdir().expect("bin dir");
+    let script = bin_dir.path().join("claude");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\necho 'client rejected it' >&2\nexit 1\n",
+    )
+    .expect("write fake cli");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).expect("chmod fake cli");
+    }
+
+    let result = temp_env::with_vars(
+        [
+            ("PATH", Some(bin_dir.path().as_os_str())),
+            ("SLUGTHUG_CONFIG_HOME", Some(temp.path().as_os_str())),
+            ("SLUGTHUG_HOME", Some(temp.path().as_os_str())),
+        ],
+        || crate::connect::run_connect(Some("claude")),
+    );
+
+    let error = result.expect_err("expected AddFailed, got Ok");
+    match &error {
+        ConnectError::AddFailed { cli, .. } => {
+            assert_eq!(cli, "claude");
+            assert!(
+                error.to_string().contains("see the output above"),
+                "captured client output makes the pointer true: {error}"
+            );
+        }
+        other => panic!("expected AddFailed, got {other:?}"),
+    }
+}

@@ -12,7 +12,7 @@
 
 use super::*;
 use crate::connect_agents::{ConfigShape, Strategy, find_agent};
-use crate::connect_exec::{connect_agent, disconnect_agent};
+use crate::connect_exec::{DisconnectOutcome, connect_agent, disconnect_agent};
 use crate::util::TEST_ENV_LOCK;
 use std::fs;
 use std::path::PathBuf;
@@ -71,7 +71,8 @@ fn json_agent_connect_and_disconnect_modifies_config() {
         assert!(content.contains("slugaudit"));
         assert!(content.contains("/bin/slugaudit"));
 
-        disconnect_agent(&agent, Some(home)).expect("disconnect cursor");
+        let outcome = disconnect_agent(&agent, Some(home)).expect("disconnect cursor");
+        assert_eq!(outcome, DisconnectOutcome::Disconnected);
         assert!(!agent.is_connected(Some(home)));
         let after = fs::read_to_string(&cfg_path).expect("read config after");
         assert!(!after.contains("/bin/slugaudit"));
@@ -177,11 +178,15 @@ fn connect_surfaces_an_add_failure_from_the_agent_cli() {
     with_fake_clis_on_path(bin_dir.path(), || {
         with_config_home(temp.path(), || {
             let result = run_connect(Some("claude"));
-            match result {
-                Err(ConnectError::AddFailed { cli, .. }) => {
+            match &result {
+                Err(error @ ConnectError::AddFailedNoOutput { cli, .. }) => {
                     assert_eq!(cli, "claude");
+                    assert!(
+                        error.to_string().contains("printed no output"),
+                        "a silent client must not be described as having output: {error}"
+                    );
                 }
-                other => panic!("expected AddFailed, got {other:?}"),
+                other => panic!("expected AddFailedNoOutput, got {other:?}"),
             }
         });
     });
@@ -520,4 +525,43 @@ fn an_agent_cli_that_cannot_be_executed_is_reported_as_a_command_failure() {
         panic!("expected AgentCommand, got {result:?}");
     };
     assert_eq!(cli, "claude");
+}
+
+#[test]
+fn end_of_input_at_a_prompt_is_the_dedicated_error() {
+    let error = answer_from(None).expect_err("end of input must not read as an answer");
+
+    assert!(
+        matches!(&error, ConnectError::EndOfInput),
+        "expected EndOfInput, got {error:?}"
+    );
+    assert_eq!(error.to_string(), "input ended before an answer was given");
+}
+
+#[test]
+fn a_stat_failure_for_the_installed_binary_is_an_io_error() {
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("temp dir");
+    // A file where the slugthug home should be makes the installed binary's
+    // stat fail with ENOTDIR; the stat must not read as "not installed".
+    let slugthug_home = temp.path().join("slugthug-home");
+    fs::write(&slugthug_home, b"x").expect("write file");
+    let config_home = temp.path().join("config-home");
+    fs::create_dir_all(&config_home).expect("config home");
+    let cursor = find_agent("cursor").expect("cursor agent");
+
+    temp_env::with_vars(
+        [
+            ("SLUGTHUG_HOME", Some(slugthug_home.as_os_str())),
+            ("SLUGTHUG_CONFIG_HOME", Some(config_home.as_os_str())),
+        ],
+        || {
+            let error = connect_one(cursor).expect_err("the installed-path stat must fail");
+
+            assert!(
+                matches!(error, ConnectError::Io(_)),
+                "expected Io, got {error:?}"
+            );
+        },
+    );
 }

@@ -133,6 +133,42 @@ fn menu_dispatches_the_other_client_instructions_step() {
     );
 }
 
+/// A stdin that cannot be read at all is a propagated I/O error, not an
+/// endless menu loop.
+#[test]
+fn menu_reports_a_stdin_read_failure() {
+    let binary = env!("CARGO_BIN_EXE_slugaudit");
+    let sandbox = tempfile::tempdir().expect("temp dir");
+    let home = sandbox.path().join("home");
+    let empty_path = sandbox.path().join("bin");
+    std::fs::create_dir_all(&home).expect("mkdir home");
+    std::fs::create_dir_all(&empty_path).expect("mkdir empty path");
+    // A directory opens as stdin but reading it fails with EISDIR.
+    let unreadable = std::fs::File::open(sandbox.path()).expect("open directory as stdin");
+
+    let output = Command::new(binary)
+        .arg("menu")
+        .env("HOME", &home)
+        .env("SLUGTHUG_CONFIG_HOME", &home)
+        .env("PATH", &empty_path)
+        .stdin(Stdio::from(unreadable))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn slugaudit menu");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a propagated I/O error must exit 1, not panic: {stderr}"
+    );
+    assert!(
+        stderr.contains("Is a directory") || stderr.contains("IsADirectory"),
+        "the I/O cause must be reported: {stderr}"
+    );
+}
+
 #[test]
 fn menu_runs_the_install_step_into_the_slugthug_home() {
     let temp = tempfile::tempdir().expect("temp dir");

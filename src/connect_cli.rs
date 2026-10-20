@@ -110,13 +110,20 @@ pub fn run_add(cli: &str, args: &[String]) -> Result<(), ConnectError> {
             inner,
         })?;
     if !output.status.success() {
+        let status = output.status.to_string();
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.is_empty() {
-            eprintln!("{stderr}");
+        if stderr.is_empty() {
+            // `AddFailed` tells the user to look above; with no captured
+            // output that instruction would be false.
+            return Err(ConnectError::AddFailedNoOutput {
+                cli: cli.to_string(),
+                status,
+            });
         }
+        eprintln!("{stderr}");
         return Err(ConnectError::AddFailed {
             cli: cli.to_string(),
-            status: output.status.to_string(),
+            status,
         });
     }
     Ok(())
@@ -179,5 +186,26 @@ mod tests {
 
         assert!(connected);
         assert!(logs.contains("exited unsuccessfully"), "{logs}");
+    }
+
+    #[test]
+    fn an_add_that_cannot_be_spawned_is_reported_as_an_agent_command_failure() {
+        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+        let empty = tempfile::tempdir().expect("empty bin dir");
+        let args = ["mcp", "add", "slugaudit", "--", "/bin/slugaudit"].map(str::to_string);
+
+        let result = temp_env::with_var("PATH", Some(empty.path().as_os_str()), || {
+            run_add("claude", &args)
+        });
+
+        let Err(ConnectError::AgentCommand { cli, inner }) = result else {
+            panic!("expected AgentCommand, got {result:?}");
+        };
+        assert_eq!(cli, "claude");
+        assert_eq!(
+            inner.kind(),
+            std::io::ErrorKind::NotFound,
+            "the missing executable must be the cause: {inner}"
+        );
     }
 }

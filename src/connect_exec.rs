@@ -266,10 +266,26 @@ fn write_json_server(
     write_atomic(path, serde_json::to_string_pretty(&root)?.as_bytes())
 }
 
+/// What a disconnect actually did, so the caller does not report success for
+/// a no-op.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisconnectOutcome {
+    /// At least one registration route was touched.
+    Disconnected,
+    /// There was no home, config entry, or installed client CLI to remove.
+    NothingToDo,
+}
+
 /// Removes SlugAudit from one agent: the CLI route when its binary is present,
 /// and the file entry only for configs this tool writes.
-pub fn disconnect_agent(agent: &AgentDef, home: Option<&Path>) -> Result<(), ConnectError> {
-    let Some(home) = home else { return Ok(()) };
+pub fn disconnect_agent(
+    agent: &AgentDef,
+    home: Option<&Path>,
+) -> Result<DisconnectOutcome, ConnectError> {
+    let Some(home) = home else {
+        return Ok(DisconnectOutcome::NothingToDo);
+    };
+    let mut touched = false;
     // Only entries slugaudit actually writes to carry a removable file entry,
     // and only where the written shape is established; detection-only paths
     // (`.claude.json`, `config.yaml`, `config.toml`) are left untouched.
@@ -277,28 +293,74 @@ pub fn disconnect_agent(agent: &AgentDef, home: Option<&Path>) -> Result<(), Con
         && agent.shape.write_section().is_some()
         && let Some(path) = agent.config.resolve(home)
     {
-        remove_json_slugaudit(&path, agent.shape.sections())?;
+        touched = remove_json_slugaudit(&path, agent.shape.sections())?;
     }
     if matches!(agent.strategy, Strategy::CliDirect)
         && let Some(cli) = agent.cli
         && crate::probe::cli_on_path(cli)
     {
         connect_cli::run_remove(agent, cli)?;
+        touched = true;
     }
-    Ok(())
+    Ok(if touched {
+        DisconnectOutcome::Disconnected
+    } else {
+        DisconnectOutcome::NothingToDo
+    })
 }
 
-fn remove_json_slugaudit(path: &Path, keys: &[&str]) -> Result<(), ConnectError> {
+/// Removes the entry from `path` when the file exists; reports whether there
+/// was a file to touch.
+fn remove_json_slugaudit(path: &Path, keys: &[&str]) -> Result<bool, ConnectError> {
     // A stat failure (e.g. an unreadable parent directory) fails the
     // disconnect instead of skipping the file and reporting success.
-    if path.try_exists()? {
-        let mut root = load_json_or_empty(path)?;
-        for key in keys {
-            if let Some(s) = root.get_mut(*key).and_then(|s| s.as_object_mut()) {
-                s.remove("slugaudit");
-            }
-        }
-        write_atomic(path, serde_json::to_string_pretty(&root)?.as_bytes())?;
+    if !path.try_exists()? {
+        return Ok(false);
     }
-    Ok(())
+    let mut root = load_json_or_empty(path)?;
+    for key in keys {
+        if let Some(s) = root.get_mut(*key).and_then(|s| s.as_object_mut()) {
+            s.remove("slugaudit");
+        }
+    }
+    write_atomic(path, serde_json::to_string_pretty(&root)?.as_bytes())?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connect_agents::find_agent;
+
+    #[test]
+    fn an_atomic_write_for_a_path_without_a_parent_reports_the_home_unavailable() {
+        let error = write_atomic(Path::new("/"), b"{}").expect_err("root has no parent");
+
+        assert!(
+            matches!(error, ConnectError::HomeUnavailable),
+            "expected HomeUnavailable, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn disconnecting_without_a_config_home_reports_nothing_to_do() {
+        let goose = find_agent("goose").expect("goose is registered");
+
+        let outcome = disconnect_agent(&goose, None).expect("a missing home is not a failure");
+
+        assert_eq!(outcome, DisconnectOutcome::NothingToDo);
+    }
+
+    #[test]
+    fn disconnecting_an_entry_with_no_writable_section_or_cli_reports_nothing_to_do() {
+        let temp = tempfile::tempdir().expect("temp dir");
+
+        for id in ["goose", "crush"] {
+            let agent = find_agent(id).expect(id);
+            let outcome =
+                disconnect_agent(&agent, Some(temp.path())).expect("the no-op must not fail");
+
+            assert_eq!(outcome, DisconnectOutcome::NothingToDo, "{id}");
+        }
+    }
 }

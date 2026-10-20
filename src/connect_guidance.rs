@@ -73,15 +73,17 @@ fn remedy(agent: &AgentDef, binary: &Path) -> String {
 }
 
 /// What the user should do by hand: the registry remedy when documented, else
-/// the exact command we would have run, else a pointer to the docs.
-fn hand_instructions(agent: &AgentDef, binary: &Path, hint: Option<&str>) -> String {
+/// advice that matches what actually happened. `attempted` is the command a
+/// client CLI rejected — a CLI that ran is already installed, so advising an
+/// install there would describe work that is done.
+fn hand_instructions(agent: &AgentDef, binary: &Path, attempted: Option<&str>) -> String {
     if let Some(remedy) = agent.guidance(binary) {
         return remedy;
     }
-    match hint {
+    match attempted {
         Some(command) => format!(
-            "install `{}` and re-run `slugaudit connect {}`, or run this yourself:\n  {command}",
-            agent.cli.unwrap_or("the client's CLI"),
+            "the client rejected the registration; read the failure above, fix the cause, \
+             and re-run `slugaudit connect {}`. The command it rejected was:\n  {command}",
             agent.id
         ),
         None => format!(
@@ -89,6 +91,18 @@ fn hand_instructions(agent: &AgentDef, binary: &Path, hint: Option<&str>) -> Str
             agent.id
         ),
     }
+}
+
+/// The manual advice when the client's own CLI is absent from `PATH`:
+/// installing it is the missing step.
+fn absent_instructions(agent: &AgentDef, binary: &Path, cli: &str, command: &str) -> String {
+    if let Some(remedy) = agent.guidance(binary) {
+        return remedy;
+    }
+    format!(
+        "install `{cli}` and re-run `slugaudit connect {}`, or run this yourself:\n  {command}",
+        agent.id
+    )
 }
 
 /// True when the automated path may touch the config file at all: an
@@ -133,7 +147,7 @@ pub fn cli_absent(agent: &AgentDef, binary: &Path, cli: &str, command: &str) -> 
     let mut reason = format!(
         "`{cli}` was not found on PATH, so slugaudit cannot register with {} automatically.\n{}",
         agent.display_name,
-        hand_instructions(agent, binary, Some(command))
+        absent_instructions(agent, binary, cli, command)
     );
     push_provenance(&mut reason, agent);
     ConnectError::UnsupportedAgent {
@@ -175,4 +189,49 @@ pub fn fallback_note(agent: &AgentDef, home: Option<&Path>, cli: &str, why: &str
         "`{cli}` was {why}, so slugaudit wrote {} instead.",
         target(agent, home)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connect_agents::find_agent;
+
+    #[test]
+    fn a_rejected_add_points_at_the_client_output_instead_of_an_install() {
+        let pi = find_agent("pi").expect("pi is registered");
+        let attempted = "pi mcp add slugaudit -- /bin/slugaudit";
+
+        let lines = failure_lines(
+            &pi,
+            Path::new("/bin/slugaudit"),
+            attempted,
+            Some(attempted),
+            "exit status: 1",
+        );
+        let text = lines.join("\n");
+
+        assert!(text.contains("rejected the registration"), "{text}");
+        assert!(text.contains("read the failure above"), "{text}");
+        assert!(
+            !text.contains("install `pi`"),
+            "an installed CLI must not be described as missing: {text}"
+        );
+    }
+
+    #[test]
+    fn only_an_absent_cli_is_advised_to_install() {
+        let pi = find_agent("pi").expect("pi is registered");
+
+        let error = cli_absent(
+            &pi,
+            Path::new("/bin/slugaudit"),
+            "pi",
+            "pi mcp add slugaudit -- /bin/slugaudit",
+        );
+        let text = error.to_string();
+
+        assert!(text.contains("`pi` was not found on PATH"), "{text}");
+        assert!(text.contains("install `pi`"), "{text}");
+        assert!(!text.contains("rejected the registration"), "{text}");
+    }
 }

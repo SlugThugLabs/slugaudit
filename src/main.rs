@@ -28,6 +28,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     };
+    // The subscriber is installed before dispatch: CLI commands log too
+    // (probe/install/update warnings), and a warning raised before this ran
+    // reached no subscriber and was dropped. Serve mode keeps its subscriber
+    // because the same initialization serves both paths; installing it twice
+    // would panic, so this is the only call.
+    init_logging();
     // `std::process::exit` is deliberate here and confined to `main` (the
     // one place the denied `clippy::exit` lint permits it): the four
     // side-effecting CLI commands report `Error: {reason}` and exit 1.
@@ -40,7 +46,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         CommandOutcome::Propagated(error) => return Err(error),
     }
-    init_logging();
     SlugAuditServer::new()
         .serve(stdio())
         .await?
@@ -124,20 +129,20 @@ fn log_settings(
             EnvFilter::new("info")
         }),
         Err(std::env::VarError::NotPresent) => EnvFilter::new("info"),
-        Err(error @ std::env::VarError::NotUnicode(_)) => {
-            rejected.push(format!(
-                "RUST_LOG was rejected and the filter is `info`: {error}"
-            ));
+        // `VarError`'s Display quotes the raw environment value, so the
+        // rejection is reported as a static message; the value itself is
+        // never logged.
+        Err(std::env::VarError::NotUnicode(_)) => {
+            rejected.push("RUST_LOG is not valid Unicode; ignoring it".to_owned());
             EnvFilter::new("info")
         }
     };
     let json = match format {
         Ok(value) => value.eq_ignore_ascii_case("json"),
         Err(std::env::VarError::NotPresent) => false,
-        Err(error @ std::env::VarError::NotUnicode(_)) => {
-            rejected.push(format!(
-                "SLUGAUDIT_LOG_FORMAT was rejected and logs stay plain text: {error}"
-            ));
+        // As above: never interpolate the value-carrying `VarError` Display.
+        Err(std::env::VarError::NotUnicode(_)) => {
+            rejected.push("SLUGAUDIT_LOG_FORMAT is not valid Unicode; using text".to_owned());
             false
         }
     };
@@ -148,7 +153,8 @@ fn log_settings(
     }
 }
 
-/// Installs the stderr tracing subscriber for `serve`. Logs go to stderr
+/// Installs the process-wide stderr tracing subscriber, before any command is
+/// dispatched, so CLI warnings are not dropped. Logs go to stderr
 /// only — stdout is the JSON-RPC transport. `SLUGAUDIT_LOG_FORMAT=json`
 /// switches the formatter to JSON; anything else stays the plain writer
 /// with ANSI off (stderr may be a captured file, not a terminal).
@@ -213,7 +219,7 @@ mod tests {
     #[test]
     fn a_non_utf8_log_format_is_reported_not_treated_as_plain() {
         use std::os::unix::ffi::OsStringExt as _;
-        let bad = std::ffi::OsString::from_vec(vec![0xff]);
+        let bad = std::ffi::OsString::from_vec(b"SLUGAUDIT_LEAK_MARKER\xff".to_vec());
 
         let settings = log_settings(
             Err(std::env::VarError::NotPresent),
@@ -223,5 +229,30 @@ mod tests {
         assert!(!settings.json);
         assert_eq!(settings.rejected.len(), 1);
         assert!(settings.rejected[0].contains("SLUGAUDIT_LOG_FORMAT"));
+        assert!(
+            !settings.rejected[0].contains("SLUGAUDIT_LEAK_MARKER"),
+            "the raw environment value must not reach the log: {:?}",
+            settings.rejected[0]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_rust_log_is_reported_without_echoing_its_value() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let bad = std::ffi::OsString::from_vec(b"RUST_LOG_LEAK_MARKER\xff".to_vec());
+
+        let settings = log_settings(
+            Err(std::env::VarError::NotUnicode(bad)),
+            Err(std::env::VarError::NotPresent),
+        );
+
+        assert_eq!(settings.rejected.len(), 1);
+        assert!(settings.rejected[0].contains("RUST_LOG"));
+        assert!(
+            !settings.rejected[0].contains("RUST_LOG_LEAK_MARKER"),
+            "the raw environment value must not reach the log: {:?}",
+            settings.rejected[0]
+        );
     }
 }

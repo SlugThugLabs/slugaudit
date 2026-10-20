@@ -1,5 +1,6 @@
 //! The `slugaudit` binary's command-line surface: `serve` (the MCP server,
-//! the default with no arguments). `connect` registers the running binary
+//! the default with no arguments). `connect` registers the installed
+//! SlugAudit binary — or the running binary when no installed copy exists —
 //! as a stdio MCP server named `slugaudit` in an AI agent or editor.
 //! `disconnect` removes it. `install` copies the binary to a stable path.
 #![allow(clippy::print_stdout)]
@@ -73,8 +74,9 @@ COMMANDS:
     menu          Interactive setup: install the binary, connect to an AI
                   agent, get a config snippet for any other MCP client,
                   or run the server for testing. Recommended for first-time setup.
-    connect       Register this binary as the `slugaudit` MCP server in
-                  an AI agent or editor. With an agent name (e.g. `agy`,
+    connect       Register the installed SlugAudit binary as the `slugaudit`
+                  MCP server in an AI agent or editor (or this binary when no
+                  installed copy exists). With an agent name (e.g. `agy`,
                   `claude`, `gemini`, `cursor`) it connects directly; without
                   one it shows detected installed agents.
     disconnect    Remove SlugAudit registration from an AI agent or editor.
@@ -150,6 +152,10 @@ pub enum ConnectError {
     RemoveFailed { cli: String, status: String },
     #[error("`{cli} mcp add` exited with {status} — see the output above")]
     AddFailed { cli: String, status: String },
+    /// The client rejected `mcp add` and printed nothing, so there is no
+    /// "output above" to point the user at.
+    #[error("`{cli} mcp add` exited with {status} and printed no output")]
+    AddFailedNoOutput { cli: String, status: String },
     #[error("{agent} cannot be connected automatically: {reason}")]
     UnsupportedAgent { agent: String, reason: String },
     #[error(

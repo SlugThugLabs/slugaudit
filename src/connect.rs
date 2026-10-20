@@ -3,7 +3,7 @@
 
 use crate::cli::ConnectError;
 use crate::connect_agents::{AgentDef, detected_agents, find_agent};
-use crate::connect_exec::{connect_agent, disconnect_agent};
+use crate::connect_exec::{DisconnectOutcome, connect_agent, disconnect_agent};
 use crate::install::{config_home, running_binary, slugaudit_dir};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -51,7 +51,13 @@ pub(crate) fn prefer_slugthug_binary(current: &Path) -> Result<PathBuf, std::io:
 /// The answer to an interactive prompt; end of input is an error, not an
 /// empty answer.
 fn read_answer() -> Result<String, ConnectError> {
-    crate::prompt::read_prompt_line()?.ok_or(ConnectError::EndOfInput)
+    answer_from(crate::prompt::read_prompt_line()?)
+}
+
+/// Maps a prompt read onto its answer, keeping end of input distinct from an
+/// empty line so a closed stdin never reads as an invalid choice.
+fn answer_from(line: Option<String>) -> Result<String, ConnectError> {
+    line.ok_or(ConnectError::EndOfInput)
 }
 
 fn connect_one(agent: AgentDef) -> Result<(), ConnectError> {
@@ -77,8 +83,10 @@ fn connect_one(agent: AgentDef) -> Result<(), ConnectError> {
 fn disconnect_one(agent: AgentDef) -> Result<(), ConnectError> {
     let home = config_home();
     println!("Disconnecting SlugAudit from {}...", agent.display_name);
-    disconnect_agent(&agent, home.as_deref())?;
-    println!("Done.");
+    match disconnect_agent(&agent, home.as_deref())? {
+        DisconnectOutcome::Disconnected => println!("Done."),
+        DisconnectOutcome::NothingToDo => println!("Nothing to disconnect."),
+    }
     Ok(())
 }
 
