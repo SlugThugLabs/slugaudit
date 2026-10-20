@@ -367,7 +367,11 @@ fn an_uninspectable_database_path_is_logged_not_read_as_never_synced() {
         super::read_database(&file.join("project.db"))
     });
 
-    assert!(state.is_none());
+    assert_eq!(
+        state,
+        crate::tools::health_database::DatabaseRead::Unreadable,
+        "an uninspectable path is not the same fact as a never-synced project"
+    );
     assert!(
         logs.contains("failed to inspect the project database path"),
         "logs: {logs}"
@@ -391,7 +395,8 @@ fn a_failed_database_query_is_logged_and_reported_as_absent() {
         crate::store::test_capture::capture_warns(|| super::read_database(&database));
 
     assert_eq!(
-        state, None,
+        state,
+        crate::tools::health_database::DatabaseRead::Unreadable,
         "an unreadable database is absent, never partial"
     );
     assert!(
@@ -401,5 +406,43 @@ fn a_failed_database_query_is_logged_and_reported_as_absent() {
     assert!(
         logs.contains("no such table"),
         "the underlying cause must survive: {logs}"
+    );
+}
+
+/// The defect this pins: a healthy watcher plus a database that exists but
+/// cannot be read used to reach `derive_phase` as `revision_id = None`,
+/// which reports `Importing` — "the first sync has never succeeded" — for a
+/// project whose first sync did succeed. The answer must say the revision
+/// is unknown and carry the read failure as its own field.
+#[test]
+fn an_unreadable_database_after_a_successful_sync_reports_unknown_not_importing() {
+    let (project, path) = activated_temp_project();
+    let manager = synced_manager(&project, &path);
+    let state = manager.activate(project.path());
+    state.set_health(WatcherHealth::Healthy);
+    let database = project.path().join(".planning/slugaudit/project.db");
+    fs::write(&database, b"this is not a sqlite database").expect("corrupt the database");
+
+    let response = crate::tools::health::health(
+        &Parameters(super::HealthRequest { path: Some(path) }),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .expect("an unreadable database degrades to fields, not an error");
+
+    assert_eq!(
+        response.0.phase,
+        super::HealthPhase::Unknown,
+        "an unreadable database must not claim the first sync never succeeded"
+    );
+    assert!(
+        response.0.database_read_failed,
+        "the response must carry that the database read failed"
+    );
+    assert_eq!(response.0.database, None);
+    assert_eq!(
+        response.0.watcher.as_ref().map(|watcher| watcher.health),
+        Some(WatcherHealth::Healthy),
+        "the watcher's own health is still reported"
     );
 }

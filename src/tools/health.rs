@@ -21,7 +21,9 @@
 //!    project is registered with this server.
 //! 2. **`database`** — what the project database holds: current revision
 //!    id, parser pack version, file count, skipped-file count. `null` when
-//!    the project has never been synced or the database could not be read.
+//!    the project has never been synced or the database could not be read;
+//!    `database_read_failed` says which, because the two states have
+//!    different meanings.
 //! 3. **`server`** — what this process has done since it started: tool
 //!    call counts and total milliseconds, last sync time and duration, and
 //!    the consecutive-full-publish counter that signals an untrusted
@@ -87,7 +89,17 @@ pub struct HealthResponse {
     /// been synced, or if the database could not be read. Either every
     /// field inside is present or the whole object is absent: a partial
     /// read is not representable, so no number here is ever a placeholder.
+    /// `database_read_failed` distinguishes the two cases.
     pub database: Option<DatabaseState>,
+    /// True when the project database exists but could not be read — an
+    /// unopenable file (permissions, symlink, network filesystem),
+    /// corruption, a lock or timeout, or schema drift. `database` is then
+    /// `null` and `phase` is `unknown`: the index may still hold a current
+    /// revision, but this answer cannot see it, and the phase never claims
+    /// the first sync failed. False when the database was read or does not
+    /// exist yet (never synced); `database: null` with this false means
+    /// exactly "never synced".
+    pub database_read_failed: bool,
     /// What this server process has done since it started.
     pub server: ServerCounters,
     /// Host physical and available memory. Reported because it sets the
@@ -185,10 +197,12 @@ pub struct ServerCounters {
 /// - `IndexedUnwatched`: the enabled project has a published revision in
 ///   its database, but this server has no registered watcher for that path.
 ///   Indexed evidence remains readable; no watcher health is implied.
-/// - `Unknown`: no `path` was supplied, so this answer has no project root
-///   to open a database with. The watcher's own health is reported, but
-///   whether a current revision exists is not knowable here — in
-///   particular this never claims the first sync has failed.
+/// - `Unknown`: whether a current revision exists is not knowable from
+///   this answer — either no `path` was supplied (so there is no project
+///   root to open a database with), or the project database exists but
+///   could not be read (`database_read_failed` is true). The watcher's own
+///   health is still reported; in particular this never claims the first
+///   sync has failed.
 /// - `Disabled`: `request.path` resolved to no enabled project — the
 ///   activation marker is absent — so nothing can serve that path until
 ///   `project_control` enables it. `remedy` names that call. This is a
@@ -251,6 +265,7 @@ pub fn health(
         remedy: fields.remedy,
         watcher: fields.watcher,
         database: fields.database,
+        database_read_failed: fields.database_read_failed,
         server: ServerCounters {
             tool_call_count: counters.call_count,
             tool_call_error_count: counters.error_count,

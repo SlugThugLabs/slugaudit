@@ -1,22 +1,41 @@
 //! The `health` tool's read of the project database: one read-only open,
-//! every query it needs, and a single absent answer on any failure.
+//! every query it needs, and an explicit outcome that keeps "never synced"
+//! separate from "exists but could not be read".
 
 use super::health::DatabaseState;
 use crate::store;
 use rusqlite::OptionalExtension;
+
+/// The outcome of one read-only database inspection.
+///
+/// "Never synced" and "unreadable" are different facts: the first explains
+/// an absent `database` group, while the second must never be read as it.
+/// Both used to arrive as `None`, which let the phase report claim a cause
+/// that was false.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum DatabaseRead {
+    /// No database file: the project has never been synced.
+    NeverSynced,
+    /// The database exists but could not be inspected, opened, or queried.
+    /// The failure is logged, so an operator can tell permissions,
+    /// corruption, symlink, NFS, and schema drift apart; the health answer
+    /// only needs to know that the read failed.
+    Unreadable,
+    /// The database was opened and every field was read.
+    Read(DatabaseState),
+}
 
 /// Reads the database state read-only, degrading gracefully when the
 /// database doesn't exist yet (project enabled but never synced) or can't
 /// be read — a health check must never fail on transient DB state.
 ///
 /// A read failure is logged (unlike the never-synced case, which is an
-/// expected, silent absence), so an operator looking at a payload full of
-/// empty fields can tell "not synced yet" from "the database is unreadable"
-/// (permissions, corruption, symlink, NFS).
-pub(super) fn read_database(database_path: &std::path::Path) -> Option<DatabaseState> {
+/// expected, silent absence) and returned as [`DatabaseRead::Unreadable`],
+/// not folded into [`DatabaseRead::NeverSynced`].
+pub(super) fn read_database(database_path: &std::path::Path) -> DatabaseRead {
     match database_path.try_exists() {
         Ok(true) => {}
-        Ok(false) => return None,
+        Ok(false) => return DatabaseRead::NeverSynced,
         Err(error) => {
             tracing::warn!(
                 database_id = %crate::util::redacted_path(database_path),
@@ -24,7 +43,7 @@ pub(super) fn read_database(database_path: &std::path::Path) -> Option<DatabaseS
                 "health: failed to inspect the project database path; \
                  reporting empty database fields",
             );
-            return None;
+            return DatabaseRead::Unreadable;
         }
     }
     let mut connection = match store::open_read_only(database_path) {
@@ -36,11 +55,11 @@ pub(super) fn read_database(database_path: &std::path::Path) -> Option<DatabaseS
                 "health: failed to open the project database read-only; \
                  reporting empty database fields",
             );
-            return None;
+            return DatabaseRead::Unreadable;
         }
     };
     match query_database_state(&mut connection) {
-        Ok(state) => Some(state),
+        Ok(state) => DatabaseRead::Read(state),
         Err(error) => {
             tracing::warn!(
                 database_id = %crate::util::redacted_path(database_path),
@@ -48,7 +67,7 @@ pub(super) fn read_database(database_path: &std::path::Path) -> Option<DatabaseS
                 "health: failed to read the project database; \
                  reporting empty database fields",
             );
-            None
+            DatabaseRead::Unreadable
         }
     }
 }

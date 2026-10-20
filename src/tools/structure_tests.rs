@@ -104,15 +104,26 @@ fn an_invalid_query_is_a_typed_error_not_a_panic() {
     );
 }
 
+/// A file absent from the index is the caller's input being wrong, and the
+/// error must say *which* condition with the machine-readable code — not
+/// merely echo the filename, which is true of every error on this path.
 #[test]
-fn a_missing_file_is_a_typed_error() {
+fn a_missing_file_is_refused_with_the_file_not_indexed_code() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let result = ask(&project, "does_not_exist.rs", "(function_item) @f");
-    let error = result.expect_err("missing file must return ErrorData");
-    assert!(
-        error.message.contains("not indexed") || error.message.contains("does_not_exist.rs"),
-        "unexpected error message: {}",
-        error.message
+
+    let error = ask(&project, "does_not_exist.rs", "(function_item) @f")
+        .expect_err("missing file must return ErrorData");
+
+    assert_eq!(
+        error.code,
+        rmcp::model::ErrorCode::INVALID_PARAMS,
+        "{error:?}"
+    );
+    let data = error.data.expect("a missing file carries a payload");
+    assert_eq!(data["code"], "file_not_indexed", "{}", error.message);
+    assert_eq!(
+        error.message.as_ref(),
+        "does_not_exist.rs is not indexed in the current revision"
     );
 }
 
@@ -393,6 +404,83 @@ fn a_file_with_no_detected_language_is_refused_by_name() {
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     assert_eq!(error.message.as_ref(), "lib.rs has no detected language");
+}
+
+/// A failure to read the index is operational, not the caller's input. An
+/// in-memory database with no `files` table is a hermetically reproducible
+/// schema-drift failure: it must be `internal_error` (with the operation
+/// named and the source preserved), never `invalid_params` blaming the
+/// `file` argument.
+#[test]
+fn a_database_failure_reading_a_file_is_an_internal_error_not_a_bad_argument() {
+    let connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
+
+    let error = crate::tools::structure_source::fetch_source(&connection, "lib.rs")
+        .expect_err("a missing files table must fail");
+
+    assert_eq!(
+        error.code,
+        rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "{error:?}"
+    );
+    assert!(
+        error.message.contains("reading the indexed file row"),
+        "the operation must be named: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains("no such table: files"),
+        "the underlying cause must survive: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains("retry the call"),
+        "the standard transient-failure hint must be present: {}",
+        error.message
+    );
+    assert!(
+        error.data.is_none(),
+        "an operational failure carries no caller-input code: {:?}",
+        error.data
+    );
+}
+
+/// The multi-file scan's database failures must also reach the caller as
+/// operational errors. Before this, `internal()` dropped both the operation
+/// and the retry hint, and the same helper had no test at all.
+#[test]
+fn a_database_failure_loading_files_is_an_internal_error_not_an_empty_scan() {
+    let connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
+
+    let error = crate::tools::structure_source::fetch_sources_for_language(
+        &connection,
+        "rust",
+        None,
+        None,
+        MAX_MULTI_FILE_TOTAL_BYTES,
+    )
+    .expect_err("a missing files table must fail, not scan nothing");
+
+    assert_eq!(
+        error.code,
+        rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "{error:?}"
+    );
+    assert!(
+        error.message.contains("preparing the indexed-file scan"),
+        "the operation must be named: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains("no such table: files"),
+        "the underlying cause must survive: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains("retry the call"),
+        "the standard transient-failure hint must be present: {}",
+        error.message
+    );
 }
 
 #[test]

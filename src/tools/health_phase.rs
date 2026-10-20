@@ -6,7 +6,7 @@
 //! publish, register a watch, or change watcher health.
 
 use super::health::{DatabaseState, HealthPhase, WatcherState};
-use super::health_database::read_database;
+use super::health_database::{DatabaseRead, read_database};
 use crate::error_codes::ErrorCode;
 use crate::sync;
 use crate::watch;
@@ -22,6 +22,9 @@ pub(super) struct ProjectHealthFields {
     pub(super) remedy: Option<String>,
     pub(super) watcher: Option<WatcherState>,
     pub(super) database: Option<DatabaseState>,
+    /// True when the database exists but could not be read. `database` is
+    /// then `None` and the phase never claims the index is empty.
+    pub(super) database_read_failed: bool,
 }
 
 /// Computes every per-project field of the health response **without any
@@ -41,16 +44,21 @@ pub(super) fn compute_project_state(
         .watch_state_for(root.as_path())
         .map(|state| state.snapshot());
 
-    let database = read_database(&database_path);
-    let revision_id = database
-        .as_ref()
-        .and_then(|state| state.revision_id.clone());
+    let (database, revision_id, database_read_failed) = match read_database(&database_path) {
+        DatabaseRead::Read(state) => {
+            let revision_id = state.revision_id.clone();
+            (Some(state), revision_id, false)
+        }
+        DatabaseRead::NeverSynced => (None, None, false),
+        DatabaseRead::Unreadable => (None, None, true),
+    };
 
     Ok(ProjectHealthFields {
-        phase: project_phase(snapshot.as_ref(), &revision_id),
+        phase: project_phase(snapshot.as_ref(), &revision_id, database_read_failed),
         remedy: None,
         watcher: snapshot.as_ref().map(watcher_state),
         database,
+        database_read_failed,
     })
 }
 
@@ -74,10 +82,28 @@ fn resolve_active_project(
 /// was never registered with this server's watcher (or the server just
 /// started); database fields, if any, are still surfaced, distinguishing a
 /// queryable indexed project from one that has never published a revision.
+///
+/// When the database exists but could not be read, the current revision is
+/// unknowable. [`derive_phase`] would read `revision_id == None` as "the
+/// first sync has never succeeded" and claim `Importing`, so the
+/// revision-dependent branches become [`HealthPhase::Unknown`] instead.
+/// The watcher-only phases (`Unavailable`, `Restoring`) do not depend on a
+/// revision and stay truthful.
 fn project_phase(
     snapshot: Option<&watch::ProjectWatchState>,
     revision_id: &Option<String>,
+    database_read_failed: bool,
 ) -> HealthPhase {
+    let revision_dependent = match snapshot {
+        Some(snapshot) => matches!(
+            snapshot.health,
+            watch::WatcherHealth::Healthy | watch::WatcherHealth::Partial
+        ),
+        None => true,
+    };
+    if database_read_failed && revision_dependent {
+        return HealthPhase::Unknown;
+    }
     match snapshot {
         Some(snapshot) => derive_phase(
             snapshot.health,
@@ -115,6 +141,7 @@ fn inactive_fields(phase: HealthPhase) -> ProjectHealthFields {
         remedy: Some(ErrorCode::ProjectNotEnabled.remedy().to_owned()),
         watcher: None,
         database: None,
+        database_read_failed: false,
     }
 }
 
@@ -144,6 +171,7 @@ pub(super) fn compute_global_only_state(manager: &sync::SourceSyncManager) -> Pr
         remedy: None,
         watcher: Some(watcher_state(&snapshot)),
         database: None,
+        database_read_failed: false,
     }
 }
 

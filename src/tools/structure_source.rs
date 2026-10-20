@@ -1,39 +1,53 @@
-use super::context::{SyncedProject, with_verified_read};
+use super::context::{SyncedProject, internal_error, with_verified_read};
 use super::structure::StructureRequest;
 use crate::error_codes::{self, ErrorCode};
 use rmcp::ErrorData;
+use rusqlite::OptionalExtension;
 
 pub(super) const MAX_TEXT_BYTES: usize = 1_000_000;
 pub(super) const MAX_SNIPPET_BYTES: usize = 120;
 pub(super) const MAX_MULTI_FILE_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 
+/// The indexed file's `(content, language)`.
+///
+/// Only "this file is not in the index" is the caller's input being invalid.
+/// A failure to *read* the index — a lock, corruption, or schema drift — is
+/// an operational error and must not be reported as a bad `file` argument:
+/// that tells the caller to fix an input that was fine and hides a failure
+/// the next call may not hit.
 pub(super) fn fetch_source(
     connection: &rusqlite::Connection,
     file: &str,
 ) -> Result<(String, String), ErrorData> {
-    connection
+    let row: Option<(Option<String>, Option<String>)> = connection
         .query_row(
             "SELECT content, language FROM files WHERE path = ?1",
             [file],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .map_err(|error| ErrorData::invalid_params(format!("{file}: {error}"), None))
-        .and_then(|(content, language): (Option<String>, Option<String>)| {
-            let c = content.ok_or_else(|| {
-                ErrorData::invalid_params(
-                    format!("{file} has no indexed source content"),
-                    error_codes::payload(ErrorCode::FileNotIndexed),
-                )
-            })?;
-            let l = language.ok_or_else(|| {
-                ErrorData::invalid_params(format!("{file} has no detected language"), None)
-            })?;
-            Ok((c, l))
-        })
+        .optional()
+        .map_err(|error| internal_error("reading the indexed file row", error))?;
+    let Some((content, language)) = row else {
+        return Err(ErrorData::invalid_params(
+            format!("{file} is not indexed in the current revision"),
+            error_codes::payload(ErrorCode::FileNotIndexed),
+        ));
+    };
+    let content = content.ok_or_else(|| {
+        ErrorData::invalid_params(
+            format!("{file} has no indexed source content"),
+            error_codes::payload(ErrorCode::FileNotIndexed),
+        )
+    })?;
+    let language = language.ok_or_else(|| {
+        ErrorData::invalid_params(format!("{file} has no detected language"), None)
+    })?;
+    Ok((content, language))
 }
 
 /// One memory-bounded window of a multi-file scan: the files loaded, and
 /// what the window cut left unloaded (never silently).
+#[derive(Debug)]
 pub(super) struct SourceWindow {
     /// `(path, content)` in path order.
     pub(super) files: Vec<(String, String)>,
@@ -82,8 +96,12 @@ fn file_filter(
     (sql, params)
 }
 
-fn internal(error: rusqlite::Error) -> ErrorData {
-    ErrorData::internal_error(error.to_string(), None)
+/// A database failure on the multi-file read is operational, never a bad
+/// request. Each call site names the operation it was doing so the caller
+/// gets the same recovery hint as every other tool ([`internal_error`])
+/// and the underlying cause survives.
+fn internal(context: &str, error: rusqlite::Error) -> ErrorData {
+    internal_error(context, error)
 }
 
 /// Loads matching files in path order, strictly after `start_after`, until
@@ -101,16 +119,23 @@ pub(super) fn fetch_sources_for_language(
         .prepare(&format!(
             "SELECT path, content FROM files WHERE {filter} ORDER BY path ASC"
         ))
-        .map_err(internal)?;
+        .map_err(|error| internal("preparing the indexed-file scan", error))?;
     let mut rows = stmt
         .query(rusqlite::params_from_iter(params.iter()))
-        .map_err(internal)?;
+        .map_err(|error| internal("starting the indexed-file scan", error))?;
     let mut files = Vec::new();
     let mut total_bytes: usize = 0;
     let mut window_full = false;
-    while let Some(row) = rows.next().map_err(internal)? {
-        let path: String = row.get(0).map_err(internal)?;
-        let content: String = row.get(1).map_err(internal)?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|error| internal("reading indexed files", error))?
+    {
+        let path: String = row
+            .get(0)
+            .map_err(|error| internal("reading an indexed file path", error))?;
+        let content: String = row
+            .get(1)
+            .map_err(|error| internal("reading an indexed file's content", error))?;
         total_bytes = total_bytes.saturating_add(content.len());
         files.push((path, content));
         if total_bytes >= window_bytes {
@@ -131,7 +156,7 @@ pub(super) fn fetch_sources_for_language(
                 rusqlite::params_from_iter(rest_params.iter()),
                 |row| Ok((row.get::<_, usize>(0)?, row.get::<_, u64>(1)?)),
             )
-            .map_err(internal)?;
+            .map_err(|error| internal("counting files past the scan window", error))?;
     }
     Ok(SourceWindow {
         files,

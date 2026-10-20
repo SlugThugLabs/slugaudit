@@ -89,6 +89,33 @@ fn on_action_enables_the_project_and_runs_the_initial_import() {
     );
 }
 
+/// A file discovery cannot include is a producer gap; the enable response
+/// must carry it rather than report an import as if every discovered file
+/// had been read. A non-UTF-8 name is the hermetic fixture: it can never
+/// get a `files` row, so the publish report must list it in `skipped`.
+#[cfg(unix)]
+#[test]
+fn on_action_reports_files_the_initial_import_skipped() {
+    use std::os::unix::ffi::OsStrExt;
+    let (project, path) = temp_project_with_source();
+    let unrepresentable = std::ffi::OsStr::from_bytes(b"bad\xffname.rs");
+    fs::write(project.path().join(unrepresentable), b"pub fn b() {}\n")
+        .expect("write non-UTF-8 file");
+
+    let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
+        .expect("enable succeeds");
+
+    let import = response.0.import.expect("import report present");
+    assert_eq!(
+        import.skipped, 1,
+        "the skipped file must be reported in the response, not dropped"
+    );
+    assert!(
+        import.added >= 1,
+        "the representable source is still imported"
+    );
+}
+
 #[test]
 fn on_action_is_idempotent_when_already_enabled() {
     let (project, path) = temp_project_with_source();

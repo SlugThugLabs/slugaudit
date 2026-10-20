@@ -235,7 +235,8 @@ fn health_with_an_unrelated_path_returns_the_resolution_error() {
 
 #[test]
 #[cfg(unix)]
-fn read_database_is_absent_when_the_database_cannot_be_opened() {
+fn read_database_is_unreadable_when_the_database_cannot_be_opened() {
+    use crate::tools::health_database::DatabaseRead;
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().expect("temp dir");
     let db = directory.path().join("project.db");
@@ -244,21 +245,23 @@ fn read_database_is_absent_when_the_database_cannot_be_opened() {
     // broadened past owner-only (group/world bits set) — exactly the open
     // failure `read_database` must degrade on, not propagate: the health
     // payload stays actionable (the whole `database` group goes absent)
-    // and the failure is logged rather than surfacing as an error.
+    // and the failure is logged rather than surfacing as an error. It is
+    // "unreadable", never "never synced": the file is right there.
     std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o644))
         .expect("widen database permissions");
     assert_eq!(
         crate::tools::health::read_database(&db),
-        None,
+        DatabaseRead::Unreadable,
         "an unopenable database is absent, never a half-filled group"
     );
 }
 
 #[test]
-fn read_database_is_absent_when_no_database_exists_yet() {
+fn read_database_is_never_synced_when_no_database_exists_yet() {
+    use crate::tools::health_database::DatabaseRead;
     let directory = tempfile::tempdir().expect("temp dir");
     assert_eq!(
         crate::tools::health::read_database(&directory.path().join("never-synced.db")),
-        None
+        DatabaseRead::NeverSynced
     );
 }

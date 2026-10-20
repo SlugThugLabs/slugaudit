@@ -22,6 +22,7 @@ mod leads_page;
 mod leads_query;
 mod page_size;
 mod project_control;
+mod project_control_types;
 mod query;
 mod query_clip;
 mod query_exec;
@@ -53,7 +54,8 @@ pub use leads::{
     CompactLeadRow, FileCount, LeadMode, LeadRow, LeadRows, LeadsRequest, LeadsResponse,
     MechanicCount, MechanicCoverage, PageLimit, leads,
 };
-pub use project_control::{ProjectControlRequest, ProjectControlResponse, project_control};
+pub use project_control::project_control;
+pub use project_control_types::{ProjectControlRequest, ProjectControlResponse};
 pub use query::{QueryRequest, QueryResponse, query};
 pub use query_clip::ClippedCell;
 pub use query_value::NonFiniteCell;

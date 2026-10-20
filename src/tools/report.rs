@@ -1,4 +1,4 @@
-use super::context::{ensure_synced, with_verified_read};
+use super::context::{ensure_synced, internal_error, with_verified_read};
 use super::report_completeness::CompletenessEnvelope;
 use super::report_edges::DependencyEdgeTotals;
 #[cfg(test)]
@@ -159,7 +159,7 @@ pub fn report(
     let revision_id = synced.revision_id.clone();
     let response = with_verified_read(&synced, |tx| {
         build_report(tx, revision_id.clone())
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+            .map_err(|error| internal_error("building the report", error))
     })?;
     Ok(Json(response))
 }

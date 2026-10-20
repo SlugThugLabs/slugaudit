@@ -349,7 +349,7 @@
             "type": "object"
           },
           "HealthPhase": {
-            "description": "Coarse-grained operational phase. Derived from existing state rather\nthan tracked separately so it can't drift.\n\n- `Importing`: no current revision — the first sync has never succeeded.\n- `Restoring`: watcher is `NeedsVerification` or `Desynced`; the next\n  call will do a full verification rather than incremental reconcile.\n- `SteadyState`: watcher `Healthy`, no unreconciled events, a current\n  revision exists, the project is fully served from disk.\n- `Degraded`: watcher `Partial`, no unreconciled events, a current\n  revision exists. The project is served and the stat sweep keeps it\n  fresh, but part of the tree (beyond the documented watch-scope limit)\n  carries no watcher — this is not full steady state.\n- `Unavailable`: watcher could not be initialized; every call will\n  full-publish.\n- `NoActiveProject`: server has been initialized but no `ensure_current`\n  call has succeeded, so the watcher state can't be summarized.\n- `IndexedUnwatched`: the enabled project has a published revision in\n  its database, but this server has no registered watcher for that path.\n  Indexed evidence remains readable; no watcher health is implied.\n- `Unknown`: no `path` was supplied, so this answer has no project root\n  to open a database with. The watcher's own health is reported, but\n  whether a current revision exists is not knowable here — in\n  particular this never claims the first sync has failed.\n- `Disabled`: `request.path` resolved to no enabled project — the\n  activation marker is absent — so nothing can serve that path until\n  `project_control` enables it. `remedy` names that call. This is a\n  state, not an error: a diagnostic tool that fails when there is\n  nothing to diagnose is useless.",
+            "description": "Coarse-grained operational phase. Derived from existing state rather\nthan tracked separately so it can't drift.\n\n- `Importing`: no current revision — the first sync has never succeeded.\n- `Restoring`: watcher is `NeedsVerification` or `Desynced`; the next\n  call will do a full verification rather than incremental reconcile.\n- `SteadyState`: watcher `Healthy`, no unreconciled events, a current\n  revision exists, the project is fully served from disk.\n- `Degraded`: watcher `Partial`, no unreconciled events, a current\n  revision exists. The project is served and the stat sweep keeps it\n  fresh, but part of the tree (beyond the documented watch-scope limit)\n  carries no watcher — this is not full steady state.\n- `Unavailable`: watcher could not be initialized; every call will\n  full-publish.\n- `NoActiveProject`: server has been initialized but no `ensure_current`\n  call has succeeded, so the watcher state can't be summarized.\n- `IndexedUnwatched`: the enabled project has a published revision in\n  its database, but this server has no registered watcher for that path.\n  Indexed evidence remains readable; no watcher health is implied.\n- `Unknown`: whether a current revision exists is not knowable from\n  this answer — either no `path` was supplied (so there is no project\n  root to open a database with), or the project database exists but\n  could not be read (`database_read_failed` is true). The watcher's own\n  health is still reported; in particular this never claims the first\n  sync has failed.\n- `Disabled`: `request.path` resolved to no enabled project — the\n  activation marker is absent — so nothing can serve that path until\n  `project_control` enables it. `remedy` names that call. This is a\n  state, not an error: a diagnostic tool that fails when there is\n  nothing to diagnose is useless.",
             "enum": [
               "importing",
               "restoring",
@@ -517,7 +517,11 @@
                 "type": "null"
               }
             ],
-            "description": "What the project database holds. `None` if the project has never\nbeen synced, or if the database could not be read. Either every\nfield inside is present or the whole object is absent: a partial\nread is not representable, so no number here is ever a placeholder."
+            "description": "What the project database holds. `None` if the project has never\nbeen synced, or if the database could not be read. Either every\nfield inside is present or the whole object is absent: a partial\nread is not representable, so no number here is ever a placeholder.\n`database_read_failed` distinguishes the two cases."
+          },
+          "database_read_failed": {
+            "description": "True when the project database exists but could not be read — an\nunopenable file (permissions, symlink, network filesystem),\ncorruption, a lock or timeout, or schema drift. `database` is then\n`null` and `phase` is `unknown`: the index may still hold a current\nrevision, but this answer cannot see it, and the phase never claims\nthe first sync failed. False when the database was read or does not\nexist yet (never synced); `database: null` with this false means\nexactly \"never synced\".",
+            "type": "boolean"
           },
           "phase": {
             "$ref": "#/$defs/HealthPhase",
@@ -552,6 +556,7 @@
         },
         "required": [
           "phase",
+          "database_read_failed",
           "server",
           "system_memory"
         ],
@@ -930,11 +935,18 @@
         "$defs": {
           "ProjectControlAction": {
             "description": "The action to take — on enables, off disables.",
-            "enum": [
-              "on",
-              "off"
-            ],
-            "type": "string"
+            "oneOf": [
+              {
+                "const": "on",
+                "description": "Create the activation marker (`.planning/slugaudit`) and run the\ninitial import, so the first evidence call finds a fresh index.",
+                "type": "string"
+              },
+              {
+                "const": "off",
+                "description": "Remove the activation marker and purge the project database,\nevidence, and findings. An already-disabled project is a no-op\nreported as `\"already_disabled\"`.",
+                "type": "string"
+              }
+            ]
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -995,25 +1007,57 @@
           },
           "GitignoreStatus": {
             "description": "Outcome of the `.gitignore` guard, as a closed set.",
-            "enum": [
-              "added",
-              "already_ignored",
-              "not_written"
-            ],
-            "type": "string"
+            "oneOf": [
+              {
+                "const": "added",
+                "description": "The ignore rule was appended to the project-root `.gitignore`.",
+                "type": "string"
+              },
+              {
+                "const": "already_ignored",
+                "description": "An equivalent rule was already present; the file was left untouched.",
+                "type": "string"
+              },
+              {
+                "const": "not_written",
+                "description": "Nothing was written and the project is enabled anyway; the\nreport's `error` field says why.",
+                "type": "string"
+              }
+            ]
           },
           "ImportReport": {
-            "description": "Summary of an initial import that ran on enable.",
+            "description": "Summary of an initial import that ran on enable.\n\nThe counts describe the project's discovered file set, not only the\nfiles that produced indexed content: a file skipped as oversize or\nunreadable still counts in `added`, and `skipped` reports how many such\nfiles the import could not include.",
             "properties": {
               "added": {
+                "description": "Files discovered on disk that had no row in the previous revision —\nincluding files the import then skipped (they are counted again in\n`skipped`). `added + modified + unchanged` is the size of the\ncurrent discovered file set.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "deleted": {
+                "description": "Files the previous revision indexed but that are no longer on disk.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "modified": {
+                "description": "Files whose content hash differs from the previous revision.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
               },
               "revision_id": {
+                "description": "The `rev-N` id of the revision this import committed. Pass it back\nas `expected_revision` when resuming a paged read.",
                 "type": "string"
               },
+              "skipped": {
+                "description": "Files discovery found but could not include — oversize, unreadable,\nor a path that is not valid UTF-8 — so this import holds no content\nfor them. A non-zero value means the import is incomplete; `report`'s\n`completeness` carries the per-reason breakdown after the import.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
               "unchanged": {
+                "description": "Files whose content hash matches the previous revision.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -1021,7 +1065,10 @@
             },
             "required": [
               "added",
+              "modified",
+              "deleted",
               "unchanged",
+              "skipped",
               "revision_id"
             ],
             "type": "object"

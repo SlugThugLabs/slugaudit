@@ -4,77 +4,18 @@
 //! `on` creates the activation directory and runs the initial import.
 //! `off` removes the activation directory and purges the project database.
 
+use super::project_control_types::{
+    GitignoreReport, GitignoreStatus, ImportReport, ProjectControlAction, ProjectControlRequest,
+    ProjectControlResponse,
+};
 use crate::parse;
 use crate::project::{self, ProjectRoot};
 use crate::{store, sync};
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
 const MAX_PATH_BYTES: usize = 32 * 1024;
 const MAX_PROFILE_BYTES: usize = 64;
-
-/// Request for the `project_control` tool.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ProjectControlRequest {
-    /// Project root path. Defaults to the current directory when omitted.
-    #[schemars(default)]
-    pub path: Option<String>,
-    /// Action to perform: `"on"` enables the project, `"off"` disables it.
-    pub action: ProjectControlAction,
-    /// Optional audit profile to configure: `"audit"`, `"lean"`, or `"adaptive"`.
-    #[schemars(default)]
-    pub profile: Option<String>,
-}
-
-/// The action to take — on enables, off disables.
-#[derive(Debug, Deserialize, JsonSchema, PartialEq, Eq)]
-pub enum ProjectControlAction {
-    #[serde(rename = "on")]
-    On,
-    #[serde(rename = "off")]
-    Off,
-}
-
-/// Response from the `project_control` tool.
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct ProjectControlResponse {
-    /// One of `"enabled"`, `"disabled"`, or `"already_disabled"` (no-op).
-    pub status: String,
-    /// Absolute path of the project root that was affected.
-    pub path: String,
-    /// Present when action was `"on"` and an initial import ran.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub import: Option<ImportReport>,
-    /// What `"on"` did about the project-root `.gitignore`. Absent for
-    /// `"off"`, which never touches that file.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gitignore: Option<GitignoreReport>,
-}
-
-/// What enabling a project did about its root `.gitignore`.
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct GitignoreReport {
-    /// One of `"added"` (the ignore rule was appended), `"already_ignored"`
-    /// (an equivalent rule was present; file untouched), or `"not_written"`
-    /// (the file was left untouched and the project is enabled anyway).
-    pub status: GitignoreStatus,
-    /// Absolute path of the project-root `.gitignore` that was inspected.
-    pub path: String,
-    /// Why nothing was written. Present only for `"not_written"`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-/// Outcome of the `.gitignore` guard, as a closed set.
-#[derive(Debug, Serialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum GitignoreStatus {
-    Added,
-    AlreadyIgnored,
-    NotWritten,
-}
 
 /// Renders an activation outcome as the response's machine-readable field.
 fn gitignore_report(outcome: project::GitignoreOutcome) -> GitignoreReport {
@@ -92,14 +33,6 @@ fn gitignore_report(outcome: project::GitignoreOutcome) -> GitignoreReport {
         path: path.to_string_lossy().into_owned(),
         error,
     }
-}
-
-/// Summary of an initial import that ran on enable.
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct ImportReport {
-    pub added: usize,
-    pub unchanged: usize,
-    pub revision_id: String,
 }
 
 /// Wraps any error into a user-friendly `ErrorData` message.
@@ -223,7 +156,10 @@ fn enable(
         path: root.as_path().to_string_lossy().to_string(),
         import: Some(ImportReport {
             added: report.added,
+            modified: report.modified,
+            deleted: report.deleted,
             unchanged: report.unchanged,
+            skipped: report.skipped.len(),
             revision_id: report.revision_id,
         }),
         gitignore: Some(gitignore),

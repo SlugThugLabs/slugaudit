@@ -78,6 +78,7 @@ src/
 │   ├── finding_insert.rs     validation + session-scoped insert-or-refresh of a finding
 │   ├── finding_read.rs       session-gated finding query
 │   ├── project_control.rs    enable/disable a project
+│   ├── project_control_types.rs  its request/response schema types
 │   ├── health.rs             operational snapshot: response schema + process fields
 │   ├── health_phase.rs       health's per-project state derivation (no side effects)
 │   └── health_database.rs    health's read-only database read

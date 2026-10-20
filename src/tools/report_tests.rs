@@ -353,8 +353,11 @@ fn report_maps_a_build_failure_to_an_internal_error() {
         "{error:?}"
     );
     assert!(
-        error.message.contains("language"),
-        "the failing column is named: {}",
+        error.message.starts_with("building the report:")
+            && error.message.contains("language")
+            && error.message.contains("retry the call")
+            && error.data.is_none(),
+        "the operation, cause, retry hint and no caller-input code must survive: {}",
         error.message
     );
 }
