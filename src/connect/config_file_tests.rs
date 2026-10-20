@@ -295,6 +295,54 @@ fn a_non_utf8_binary_path_is_not_rendered_lossily_in_guidance() {
     }
 }
 
+/// A client that explains its rejection on stdout still leaves output to look
+/// at above the error, so it must not be reported as silent.
+#[cfg(unix)]
+#[test]
+fn an_add_failure_printed_only_to_stdout_is_not_reported_as_silent() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("bin dir");
+    let log = temp.path().join("pi-argv.log");
+    fake_cli(&bin_dir, "pi", 1);
+    let args = ["mcp", "add", "slugaudit", "--", "/bin/slugaudit"].map(str::to_string);
+
+    let result = with_fake_cli(&bin_dir, &log, || {
+        temp_env::with_var("FAKE_STDOUT", Some("the client rejected it"), || {
+            crate::connect_cli::run_add("pi", &args)
+        })
+    });
+
+    let Err(ConnectError::AddFailed { cli, .. }) = result else {
+        panic!("stdout-only output must be reported as visible: {result:?}");
+    };
+    assert_eq!(cli, "pi");
+}
+
+/// A closed pipe while relaying the client's output must not replace the
+/// failure that produced it.
+#[test]
+fn a_failed_failure_output_print_keeps_the_source_error() {
+    let source = ConnectError::AddFailed {
+        cli: "claude".into(),
+        status: "exit status: 1".into(),
+    };
+    let print_failure = Err(ConnectError::Io(std::io::ErrorKind::BrokenPipe.into()));
+
+    let (kept, logs) = crate::store::test_capture::capture_warns(|| {
+        crate::connect_guidance::keep_source_error(source, print_failure)
+    });
+
+    assert!(
+        kept.to_string().contains("see the output above"),
+        "the source error must survive the failed print: {kept}"
+    );
+    assert!(
+        logs.contains("could not print the failure output"),
+        "the lost output must be logged: {logs}"
+    );
+}
+
 /// The config path itself is valid, but the temp name appended beside it
 /// crosses Linux's `PATH_MAX`, so creating the staging file fails. The
 /// failure is reported as the typed I/O error and no temp is left behind.

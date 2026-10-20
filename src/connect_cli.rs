@@ -8,6 +8,7 @@
 use crate::cli::ConnectError;
 use crate::connect::registry_types::binary_text;
 use crate::connect_agents::{AgentDef, Dialect};
+use crate::connect_guidance as guidance;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -97,8 +98,24 @@ fn remove_args(agent: &AgentDef) -> Vec<String> {
 }
 
 /// The command line as the user would type it, for the "Tried:"/"Ran:" lines.
+/// Every argument is shell-quoted, so a copied line cannot split or expand.
 pub fn display_command(cli: &str, args: &[String]) -> String {
-    format!("{cli} {}", args.join(" "))
+    let quoted: Vec<String> = args.iter().map(|arg| shell_quote(arg)).collect();
+    format!("{cli} {}", quoted.join(" "))
+}
+
+/// Quotes one argv element for display: safe characters stay bare, while an
+/// empty value or anything a shell could split or expand is single-quoted,
+/// with an embedded `'` rendered as `'\''`.
+fn shell_quote(arg: &str) -> String {
+    if !arg.is_empty()
+        && arg
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:=@%+,/".contains(&byte))
+    {
+        return arg.to_owned();
+    }
+    format!("'{}'", arg.replace('\'', "'\\''"))
 }
 
 /// Runs the client's own `mcp add` command line for one agent registration.
@@ -118,7 +135,9 @@ pub fn run_add(cli: &str, args: &[String]) -> Result<(), ConnectError> {
     if !output.status.success() {
         let status = output.status.to_string();
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.is_empty() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let captured = if stderr.is_empty() { &stdout } else { &stderr };
+        if captured.is_empty() {
             // `AddFailed` tells the user to look above; with no captured
             // output that instruction would be false.
             return Err(ConnectError::AddFailedNoOutput {
@@ -126,11 +145,14 @@ pub fn run_add(cli: &str, args: &[String]) -> Result<(), ConnectError> {
                 status,
             });
         }
-        crate::cli::err(format_args!("{stderr}\n"))?;
-        return Err(ConnectError::AddFailed {
-            cli: cli.to_string(),
-            status,
-        });
+        let printed = crate::cli::err(format_args!("{captured}\n")).map_err(ConnectError::Io);
+        return Err(guidance::keep_source_error(
+            ConnectError::AddFailed {
+                cli: cli.to_string(),
+                status,
+            },
+            printed,
+        ));
     }
     Ok(())
 }
@@ -213,5 +235,19 @@ mod tests {
             std::io::ErrorKind::NotFound,
             "the missing executable must be the cause: {inner}"
         );
+    }
+
+    #[test]
+    fn a_displayed_command_quotes_arguments_a_shell_would_split() {
+        let split = display_command(
+            "claude",
+            &["mcp", "add", "slugaudit", "--", "/bin/slug audit"].map(str::to_string),
+        );
+
+        assert_eq!(split, "claude mcp add slugaudit -- '/bin/slug audit'");
+
+        let apostrophe = display_command("claude", &["it's".to_string()]);
+
+        assert_eq!(apostrophe, "claude 'it'\\''s'");
     }
 }

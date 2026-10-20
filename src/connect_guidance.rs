@@ -195,6 +195,21 @@ pub fn fallback_note(agent: &AgentDef, home: Option<&Path>, cli: &str, why: &str
     )
 }
 
+/// Keeps the failure that caused the output printing: a closed pipe while
+/// relaying the client's own output must never replace the real error.
+pub(crate) fn keep_source_error(
+    source: ConnectError,
+    print_result: Result<(), ConnectError>,
+) -> ConnectError {
+    if let Err(error) = print_result {
+        tracing::warn!(
+            error = %error,
+            "could not print the failure output; keeping the source error"
+        );
+    }
+    source
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
