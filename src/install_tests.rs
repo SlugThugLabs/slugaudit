@@ -431,6 +431,62 @@ fn retaining_the_previous_binary_reports_a_stat_failure() {
     assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
 }
 
+/// Builds a nested directory path of exactly `target_len` bytes, with every
+/// component within `NAME_MAX` (255) so the path itself is valid.
+#[cfg(target_os = "linux")]
+fn directory_path_of_length(base: &Path, target_len: usize) -> PathBuf {
+    let base_len = base.as_os_str().len();
+    assert!(
+        target_len > base_len + 2,
+        "target length must leave room for a component"
+    );
+    let available = target_len - base_len;
+    // Each component contributes its bytes plus one separator; 256 is the
+    // largest possible contribution (255-byte name + separator).
+    let components = available.div_ceil(256);
+    let names_total = available - components;
+    let mut path = base.to_path_buf();
+    for index in 0..components {
+        let extra = usize::from(index < names_total % components);
+        let name_len = names_total / components + extra;
+        path.push("d".repeat(name_len));
+    }
+    assert_eq!(
+        path.as_os_str().len(),
+        target_len,
+        "the helper must build a path of the requested length"
+    );
+    path
+}
+
+/// The staged copy is `<install dir>/.slugaudit.<pid>.<stamp>.tmp`. Linux's
+/// `PATH_MAX` is 4096 bytes including the NUL, so an install directory just
+/// under that limit is created successfully while the longer staged name
+/// fails: the failure is reported as `Copy` naming the staged path.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_install_that_cannot_stage_the_binary_reports_the_copy_step() {
+    // The install directory is `$SLUGTHUG_HOME/slugaudit`; keep it at 4090
+    // bytes so its creation succeeds but the staged name (fixed suffix plus
+    // pid and timestamp) exceeds the 4095-byte maximum.
+    const INSTALL_DIR_LEN: usize = 4090;
+    let directory = tempfile::tempdir().expect("temp dir");
+    let home_len = INSTALL_DIR_LEN - "slugaudit".len() - 1;
+    let home = directory_path_of_length(directory.path(), home_len);
+    std::fs::create_dir_all(&home).expect("create the deep home");
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+
+    let result = temp_env::with_var("SLUGTHUG_HOME", Some(home.as_os_str()), run_install);
+
+    let Err(InstallError::Copy { path, .. }) = result else {
+        panic!("expected Copy, got {result:?}");
+    };
+    assert!(
+        Path::new(&path).starts_with(home.join("slugaudit")),
+        "the reported path names the staged copy: {path}"
+    );
+}
+
 #[test]
 fn an_uncanonicalizable_path_entry_is_compared_as_written_and_logged() {
     let _guard = TEST_ENV_LOCK.lock().expect("env lock");
