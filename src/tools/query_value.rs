@@ -2,11 +2,39 @@
 //! cap before a TEXT/BLOB value is JSON-cloned or hex-expanded. Kept separate
 //! from `query` itself so that module stays focused on orchestrating
 //! execution (budgets, response-size shrinking) rather than value framing.
+//! The page-level result shapes ([`Collected`], [`RowTotal`]) live here too,
+//! beside the converted rows they describe.
+use super::query_clip::ClippedCell;
 use crate::util;
 use rusqlite::Row;
 use rusqlite::types::{Type as SqlType, Value as SqlValue, ValueRef};
 use schemars::JsonSchema;
 use serde::Serialize;
+
+/// The size of the whole result, independent of the page that was returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RowTotal {
+    /// Exact row count of the whole result.
+    Exact(i64),
+    /// Counting did not finish; the static reason names the budget that
+    /// stopped it. No estimate is ever substituted.
+    Unavailable(&'static str),
+}
+
+/// One page of a result plus the facts that make it quotable.
+pub(super) struct Collected {
+    pub(super) rows: Vec<serde_json::Value>,
+    /// True when more rows remain past this page.
+    pub(super) truncated: bool,
+    /// Serialized JSON bytes of `rows`, measured per row.
+    pub(super) rows_bytes: usize,
+    pub(super) total: RowTotal,
+    /// The cells cut from the first row because it alone exceeded the page.
+    pub(super) clipped: Vec<ClippedCell>,
+    /// The REAL cells that are `null` in `rows` only because JSON cannot carry
+    /// them (see [`NonFiniteCell`]).
+    pub(super) non_finite: Vec<NonFiniteCell>,
+}
 
 /// One REAL cell whose value JSON cannot carry (an infinity; SQLite turns NaN
 /// into NULL itself). JSON has no such number, so the cell is `null` in `rows`;

@@ -1,11 +1,13 @@
 //! The inputs and outputs of one structure run: how matches are rendered,
 //! which slice of the ordered match stream is returned, and what came back.
 
-use super::structure::StructureMatch;
-use super::structure_source::{MAX_SNIPPET_BYTES, truncate_snippet, truncate_text};
+use super::page_size::PageSize;
+use super::structure::{StructureMatch, StructureResponse};
+use super::structure_source::{MAX_SNIPPET_BYTES, SourceWindow, truncate_snippet, truncate_text};
 use crate::model::{LineIndex, saturating_u32};
 use rmcp::ErrorData;
-use tree_sitter::Query;
+use rmcp::handler::server::wrapper::Json;
+use tree_sitter::{Query, QueryCapture, QueryMatch};
 
 /// How a run reports its matches.
 pub(super) struct OutputMode {
@@ -97,4 +99,83 @@ pub(super) fn node_to_match(
         text_truncated,
         extraction_failed: text_extraction_failed || capture_name.is_none(),
     }
+}
+
+/// The capture at `index`, or the internal error for an index the match does
+/// not hold.
+pub(super) fn capture_at<'tree>(
+    query_match: &QueryMatch<'_, 'tree>,
+    index: usize,
+) -> Result<QueryCapture<'tree>, ErrorData> {
+    query_match.captures.get(index).copied().ok_or_else(|| {
+        ErrorData::internal_error(
+            format!(
+                "tree-sitter reported capture index {index} but the match has {} captures",
+                query_match.captures.len()
+            ),
+            None,
+        )
+    })
+}
+
+/// Maps one capture back to a match and measures its serialized size.
+pub(super) fn capture_to_match(
+    file_path: &str,
+    content: &str,
+    lines: &LineIndex<'_>,
+    capture: QueryCapture<'_>,
+    capture_name: Option<&str>,
+    full_text: bool,
+) -> Result<(StructureMatch, usize), ErrorData> {
+    let found = node_to_match(
+        file_path,
+        capture.node,
+        content,
+        lines,
+        capture_name,
+        full_text,
+    );
+    let found_bytes = serde_json::to_vec(&found)
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+        .len();
+    Ok((found, found_bytes))
+}
+
+/// Logs the run's facts and assembles the response, including the paging
+/// continuation for a cut page.
+pub(super) fn structure_response(
+    revision_id: String,
+    language: String,
+    window: SourceWindow,
+    run: RunOutput,
+    page: PageSize,
+    offset: usize,
+) -> Json<StructureResponse> {
+    let next_offset = run
+        .truncated
+        .then_some(offset.saturating_add(run.matches.len()));
+    tracing::info!(
+        match_count = run.matches.len(),
+        truncated = run.truncated,
+        files_not_scanned = window.files_not_scanned,
+        unparsed = run.unparsed_files.len(),
+        page_bytes = page.bytes,
+        clamped = page.clamped_from.is_some(),
+        "structure executed"
+    );
+
+    Json(StructureResponse {
+        revision_id,
+        language,
+        matches: run.matches,
+        truncated: run.truncated,
+        next_offset,
+        page_bytes: page.bytes,
+        page_bytes_clamped_from: page.clamped_from,
+        matches_bytes: run.matches_bytes,
+        files_not_scanned: window.files_not_scanned,
+        bytes_not_scanned: window.bytes_not_scanned,
+        next_start_after_file: window.next_start_after_file,
+        unparsed_files: run.unparsed_files,
+    })
 }

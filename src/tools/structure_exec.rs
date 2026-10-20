@@ -4,7 +4,9 @@
 
 use super::query_exec::deadline_after;
 use super::structure::StructureMatch;
-use super::structure_page::{OutputMode, Paging, RunOutput, node_to_match, require_captures};
+use super::structure_page::{
+    OutputMode, Paging, RunOutput, capture_at, capture_to_match, require_captures,
+};
 use crate::model::{LineIndex, ResourceLimits};
 use rmcp::ErrorData;
 use std::ops::ControlFlow;
@@ -145,8 +147,7 @@ impl Run<'_> {
             content.as_bytes(),
             options,
         );
-        // One index per file: columns cost O(log lines), not the line's length,
-        // so many matches on one long (minified) line stay linear.
+        // One index per file: columns are O(log lines), not line length.
         let lines = LineIndex::new(content);
         let mut more_remain = false;
         while let Some((query_match, capture_index)) = captures.next() {
@@ -158,26 +159,15 @@ impl Run<'_> {
                 more_remain = true;
                 break;
             }
-            let capture = *query_match.captures.get(*capture_index).ok_or_else(|| {
-                ErrorData::internal_error(
-                    format!(
-                        "tree-sitter reported capture index {capture_index} but the match has {} captures",
-                        query_match.captures.len()
-                    ),
-                    None,
-                )
-            })?;
-            let found = node_to_match(
+            let capture = capture_at(query_match, *capture_index)?;
+            let (found, found_bytes) = capture_to_match(
                 file_path,
-                capture.node,
                 content,
                 &lines,
+                capture,
                 capture_names.get(capture.index as usize).copied(),
                 self.mode.full_text,
-            );
-            let found_bytes = serde_json::to_vec(&found)
-                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
-                .len();
+            )?;
             if !self.matches.is_empty()
                 && self.matches_bytes.saturating_add(found_bytes) > self.page_bytes
             {

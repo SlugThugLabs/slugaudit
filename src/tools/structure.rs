@@ -5,7 +5,7 @@
 use super::context::{ensure_synced, guard_expected_revision};
 use super::page_size;
 use super::structure_exec::run_query;
-use super::structure_page::{OutputMode, Paging};
+use super::structure_page::{OutputMode, Paging, structure_response};
 use crate::model::ResourceLimits;
 use crate::sync;
 use rmcp::ErrorData;
@@ -162,11 +162,7 @@ fn structure_with_limits(
     let synced = ensure_synced(&request.path, sink, manager)?;
     guard_expected_revision(&synced.revision_id, request.expected_revision.as_deref())?;
     let (target_language, window) = load_targets(&synced, request, window_bytes)?;
-
-    let ts_language = tree_sitter_language_pack::get_language(&target_language)
-        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-    let compiled_query = Query::new(&ts_language, &request.query)
-        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+    let (ts_language, compiled_query) = compile_query(&target_language, &request.query)?;
 
     let single_file = request.file.is_some();
     let mode = OutputMode {
@@ -185,33 +181,24 @@ fn structure_with_limits(
         &mode,
         &paging,
     )?;
-    let next_offset = run
-        .truncated
-        .then_some(request.offset.saturating_add(run.matches.len()));
-    tracing::info!(
-        match_count = run.matches.len(),
-        truncated = run.truncated,
-        files_not_scanned = window.files_not_scanned,
-        unparsed = run.unparsed_files.len(),
-        page_bytes = page.bytes,
-        clamped = page.clamped_from.is_some(),
-        "structure executed"
-    );
+    Ok(structure_response(
+        synced.revision_id,
+        target_language,
+        window,
+        run,
+        page,
+        request.offset,
+    ))
+}
 
-    Ok(Json(StructureResponse {
-        revision_id: synced.revision_id,
-        language: target_language,
-        matches: run.matches,
-        truncated: run.truncated,
-        next_offset,
-        page_bytes: page.bytes,
-        page_bytes_clamped_from: page.clamped_from,
-        matches_bytes: run.matches_bytes,
-        files_not_scanned: window.files_not_scanned,
-        bytes_not_scanned: window.bytes_not_scanned,
-        next_start_after_file: window.next_start_after_file,
-        unparsed_files: run.unparsed_files,
-    }))
+/// Compiles the requested grammar and query, mapping failures to contract
+/// errors.
+fn compile_query(language: &str, text: &str) -> Result<(tree_sitter::Language, Query), ErrorData> {
+    let ts_language = tree_sitter_language_pack::get_language(language)
+        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+    let compiled_query = Query::new(&ts_language, text)
+        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+    Ok((ts_language, compiled_query))
 }
 
 /// Rejects oversized or empty inputs before any sync or parse work.

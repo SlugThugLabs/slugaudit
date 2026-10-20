@@ -1,8 +1,8 @@
 use super::context::{ensure_synced, guard_expected_revision, with_verified_read};
 use super::page_size;
 use super::query_clip::ClippedCell;
-use super::query_exec::{RowTotal, run_query};
-use super::query_value::NonFiniteCell;
+use super::query_exec::run_query;
+use super::query_value::{NonFiniteCell, RowTotal};
 
 use crate::error_codes::{self, ErrorCode};
 use crate::model::ResourceLimits;
@@ -11,9 +11,17 @@ use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 const MAX_PATH_BYTES: usize = 32 * 1024;
 const MAX_REVISION_BYTES: usize = 256;
+
+/// Which budget, if any, the progress handler recorded before the statement
+/// stopped. Shared with `query_exec`, which installs the handler.
+pub(super) const ABORT_NONE: u8 = 0;
+pub(super) const ABORT_STEP_BUDGET: u8 = 1;
+pub(super) const ABORT_WALL_CLOCK: u8 = 2;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 /// A read-only SQL question over the project's own database, with stable
@@ -147,44 +155,8 @@ fn query_with_limits(
         expected_revision,
         page_bytes,
     } = &request.0;
-    if crate::util::exceeds_input_bytes(path, MAX_PATH_BYTES) {
-        return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
-    }
-    if expected_revision
-        .as_deref()
-        .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_REVISION_BYTES))
-    {
-        return Err(ErrorData::invalid_params(
-            "expected_revision exceeds 256 bytes",
-            None,
-        ));
-    }
+    validate_query_request(request, limits)?;
     let trimmed = sql.trim().trim_end_matches(';');
-    if trimmed.is_empty() {
-        return Err(ErrorData::invalid_params("sql must not be empty", None));
-    }
-    if sql.len() > limits.max_query_sql_bytes {
-        return Err(ErrorData::invalid_params(
-            format!("sql exceeds {} bytes", limits.max_query_sql_bytes),
-            error_codes::payload(ErrorCode::SqlTooLarge),
-        ));
-    }
-    // SQLite stores an integer literal too large for i64 as a REAL, so an
-    // `OFFSET` past i64::MAX silently becomes a floating-point offset and pages
-    // from an unpredictable position instead of failing. Refuse it here as a
-    // contract error, before the wrapper is built. No error code: this is
-    // one-off validation prose a caller cannot act on beyond fixing its own
-    // arithmetic (see the deliberate list in `error_codes`).
-    if *offset as u64 > i64::MAX as u64 {
-        return Err(ErrorData::invalid_params(
-            format!(
-                "offset {offset} exceeds the maximum supported page offset ({}); \
-                 page from the start or from a returned next_offset",
-                i64::MAX
-            ),
-            None,
-        ));
-    }
 
     let page = page_size::resolve(*page_bytes, limits)?;
 
@@ -227,6 +199,102 @@ fn query_with_limits(
         clipped_cells: collected.clipped,
         non_finite_cells: collected.non_finite,
     }))
+}
+
+/// Rejects oversized or empty inputs before any sync or SQL work, in the
+/// order the tool contract documents.
+fn validate_query_request(
+    request: &Parameters<QueryRequest>,
+    limits: &ResourceLimits,
+) -> Result<(), ErrorData> {
+    let QueryRequest {
+        path,
+        sql,
+        offset,
+        expected_revision,
+        ..
+    } = &request.0;
+    if crate::util::exceeds_input_bytes(path, MAX_PATH_BYTES) {
+        return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
+    }
+    if expected_revision
+        .as_deref()
+        .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_REVISION_BYTES))
+    {
+        return Err(ErrorData::invalid_params(
+            "expected_revision exceeds 256 bytes",
+            None,
+        ));
+    }
+    let trimmed = sql.trim().trim_end_matches(';');
+    if trimmed.is_empty() {
+        return Err(ErrorData::invalid_params("sql must not be empty", None));
+    }
+    if sql.len() > limits.max_query_sql_bytes {
+        return Err(ErrorData::invalid_params(
+            format!("sql exceeds {} bytes", limits.max_query_sql_bytes),
+            error_codes::payload(ErrorCode::SqlTooLarge),
+        ));
+    }
+    // SQLite stores an integer literal too large for i64 as a REAL, so an
+    // `OFFSET` past i64::MAX silently becomes a floating-point offset and pages
+    // from an unpredictable position instead of failing. Refuse it here as a
+    // contract error, before the wrapper is built. No error code: this is
+    // one-off validation prose a caller cannot act on beyond fixing its own
+    // arithmetic (see the deliberate list in `error_codes`).
+    if *offset as u64 > i64::MAX as u64 {
+        return Err(ErrorData::invalid_params(
+            format!(
+                "offset {offset} exceeds the maximum supported page offset ({}); \
+                 page from the start or from a returned next_offset",
+                i64::MAX
+            ),
+            None,
+        ));
+    }
+    Ok(())
+}
+
+/// Proves `sql` is exactly one statement and returns its text without the
+/// terminating `;`, so it can sit inside the wrapper's parentheses.
+///
+/// SQLite's own parser decides: `Connection::prepare` compiles the first
+/// statement and, when input remains after it, prepares that remainder and
+/// fails with `Error::MultipleStatement` only if the remainder holds a real
+/// statement (rusqlite 0.37.0 `src/lib.rs:770-775`). Whitespace, comments and
+/// bare `;` after the first statement are therefore accepted, and a `;`
+/// inside a literal, quoted identifier or comment never counts. No SQL is
+/// lexed here. `expanded_sql` (no parameters are bound) is the statement text
+/// SQLite consumed, which excludes any trailing comment after the `;`.
+pub(super) fn single_statement_body(
+    tx: &rusqlite::Transaction<'_>,
+    sql: &str,
+    abort_reason: &Arc<AtomicU8>,
+) -> Result<String, ErrorData> {
+    let statement = tx.prepare(sql).map_err(|error| match error {
+        rusqlite::Error::MultipleStatement => ErrorData::invalid_params(
+            "sql contains more than one statement; \
+             only a single read-only statement is supported",
+            None,
+        ),
+        other => describe_error(&other, abort_reason),
+    })?;
+    let text = statement.expanded_sql().ok_or_else(|| {
+        ErrorData::invalid_params("sql must contain a statement, not only comments", None)
+    })?;
+    Ok(text.trim_end().trim_end_matches(';').to_owned())
+}
+
+/// Converts an aborted-query error into a message naming which budget was
+/// hit, rather than surfacing SQLite's generic "interrupted" text as if it
+/// were always the step budget.
+pub(super) fn describe_error(error: &rusqlite::Error, abort_reason: &Arc<AtomicU8>) -> ErrorData {
+    let message = match abort_reason.load(Ordering::Relaxed) {
+        ABORT_STEP_BUDGET => format!("query exceeded its virtual-machine step budget: {error}"),
+        ABORT_WALL_CLOCK => format!("query exceeded its wall-clock time budget: {error}"),
+        _ => error.to_string(),
+    };
+    ErrorData::invalid_params(message, None)
 }
 
 #[cfg(test)]

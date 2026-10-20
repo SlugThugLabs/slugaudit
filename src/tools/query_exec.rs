@@ -1,53 +1,27 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=the row lower-bound pre-check and the single-statement/VM-budget/paging path are one execution contract; splitting them would duplicate the budget accounting
-//! Executing one `query` statement: the single-statement proof, the VM-step
-//! and wall-clock budgets, the byte-budgeted page, and the exact total.
+//! Executing one `query` statement: the VM-step and wall-clock budgets, the
+//! byte-budgeted page, and the exact total.
 //!
 //! Split from `query.rs` so that file stays the tool contract (request and
-//! response shapes, validation order) and this one owns what runs under the
-//! progress handler.
+//! response shapes, validation order, statement validation and error text)
+//! and this one owns what runs under the progress handler.
 
 use super::query_clip::{ClippedCell, clip_row};
 use super::query_value::{
-    NonFiniteCell, non_finite_cells, read_row, row_serialized_lower_bound, row_to_json,
+    Collected, RowTotal, non_finite_cells, read_row, row_serialized_lower_bound, row_to_json,
 };
 
 use super::context::internal_error;
+use super::query::{
+    ABORT_NONE, ABORT_STEP_BUDGET, ABORT_WALL_CLOCK, describe_error, single_statement_body,
+};
 use crate::model::ResourceLimits;
 use crate::util::serialized_len;
 use rmcp::ErrorData;
-use rusqlite::Transaction;
+use rusqlite::types::Value as SqlValue;
+use rusqlite::{MappedRows, Row, Transaction};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
-
-const ABORT_NONE: u8 = 0;
-const ABORT_STEP_BUDGET: u8 = 1;
-const ABORT_WALL_CLOCK: u8 = 2;
-
-/// The size of the whole result, independent of the page that was returned.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum RowTotal {
-    /// Exact row count of the whole result.
-    Exact(i64),
-    /// Counting did not finish; the static reason names the budget that
-    /// stopped it. No estimate is ever substituted.
-    Unavailable(&'static str),
-}
-
-/// One page of a result plus the facts that make it quotable.
-pub(super) struct Collected {
-    pub(super) rows: Vec<serde_json::Value>,
-    /// True when more rows remain past this page.
-    pub(super) truncated: bool,
-    /// Serialized JSON bytes of `rows`, measured per row.
-    pub(super) rows_bytes: usize,
-    pub(super) total: RowTotal,
-    /// The cells cut from the first row because it alone exceeded the page.
-    pub(super) clipped: Vec<ClippedCell>,
-    /// The REAL cells that are `null` in `rows` only because JSON cannot carry
-    /// them (see [`NonFiniteCell`]).
-    pub(super) non_finite: Vec<NonFiniteCell>,
-}
 
 /// `now + budget`, or `None` when that instant cannot be represented (a
 /// configured budget of centuries). `None` means no wall-clock deadline: an
@@ -189,6 +163,19 @@ fn execute_and_collect(
     let mapped = statement
         .query_map([], move |row| read_row(row, column_count, value_cap))
         .map_err(|error| describe_error(&error, abort_reason))?;
+    let collected = collect_page(mapped, &column_names, offset, page_bytes, abort_reason)?;
+    Ok((body, collected))
+}
+
+/// Fills one page from the mapped rows, cutting it at `page_bytes` and
+/// reporting whether a row was seen past the page.
+fn collect_page(
+    mapped: MappedRows<'_, impl FnMut(&Row<'_>) -> rusqlite::Result<Vec<SqlValue>>>,
+    column_names: &[String],
+    offset: usize,
+    page_bytes: usize,
+    abort_reason: &Arc<AtomicU8>,
+) -> Result<Collected, ErrorData> {
     let mut rows = Vec::new();
     let mut clipped = Vec::new();
     let mut non_finite = Vec::new();
@@ -207,87 +194,63 @@ fn execute_and_collect(
             }
             // The first row is always kept so paging makes progress; it needs
             // only the raw values for clipping.
-            let cut = clip_row(&column_names, &values, page_bytes, row_index)
-                .map_err(|error| internal_error("clipping an oversized query row", error))?;
-            clipped = cut.cells;
-            let row_bytes = serialized_len(&cut.row)
-                .map_err(|error| internal_error("measuring query row size", error))?;
+            let (row, row_bytes, cells) =
+                clip_oversized_row(column_names, &values, page_bytes, row_index)?;
+            clipped = cells;
             total_bytes = total_bytes.saturating_add(row_bytes);
-            non_finite.extend(non_finite_cells(&column_names, &values, row_index));
-            rows.push(cut.row);
+            non_finite.extend(non_finite_cells(column_names, &values, row_index));
+            rows.push(row);
             continue;
         }
-        let mut value = row_to_json(&column_names, &values);
-        let mut row_bytes = serialized_len(&value)
-            .map_err(|error| internal_error("measuring query row size", error))?;
+        let (mut value, mut row_bytes) = json_row(column_names, &values)?;
         if rows.is_empty() && row_bytes > page_bytes {
             // The first row is always kept so paging makes progress, but its
             // TEXT/BLOB cells are cut to the page and each cut is reported.
-            let cut = clip_row(&column_names, &values, page_bytes, row_index)
-                .map_err(|error| internal_error("clipping an oversized query row", error))?;
-            value = cut.row;
-            clipped = cut.cells;
-            row_bytes = serialized_len(&value)
-                .map_err(|error| internal_error("measuring query row size", error))?;
+            let (row, bytes, cells) =
+                clip_oversized_row(column_names, &values, page_bytes, row_index)?;
+            value = row;
+            row_bytes = bytes;
+            clipped = cells;
         } else if !rows.is_empty() && total_bytes.saturating_add(row_bytes) > page_bytes {
             size_truncated = true;
             break;
         }
         total_bytes = total_bytes.saturating_add(row_bytes);
-        non_finite.extend(non_finite_cells(&column_names, &values, row_index));
+        non_finite.extend(non_finite_cells(column_names, &values, row_index));
         rows.push(value);
     }
-    Ok((
-        body,
-        Collected {
-            rows,
-            truncated: size_truncated,
-            rows_bytes: total_bytes,
-            total: RowTotal::Exact(0),
-            clipped,
-            non_finite,
-        },
-    ))
+    Ok(Collected {
+        rows,
+        truncated: size_truncated,
+        rows_bytes: total_bytes,
+        total: RowTotal::Exact(0),
+        clipped,
+        non_finite,
+    })
 }
 
-/// Proves `sql` is exactly one statement and returns its text without the
-/// terminating `;`, so it can sit inside the wrapper's parentheses.
-///
-/// SQLite's own parser decides: `Connection::prepare` compiles the first
-/// statement and, when input remains after it, prepares that remainder and
-/// fails with `Error::MultipleStatement` only if the remainder holds a real
-/// statement (rusqlite 0.37.0 `src/lib.rs:770-775`). Whitespace, comments and
-/// bare `;` after the first statement are therefore accepted, and a `;`
-/// inside a literal, quoted identifier or comment never counts. No SQL is
-/// lexed here. `expanded_sql` (no parameters are bound) is the statement text
-/// SQLite consumed, which excludes any trailing comment after the `;`.
-fn single_statement_body(
-    tx: &Transaction<'_>,
-    sql: &str,
-    abort_reason: &Arc<AtomicU8>,
-) -> Result<String, ErrorData> {
-    let statement = tx.prepare(sql).map_err(|error| match error {
-        rusqlite::Error::MultipleStatement => ErrorData::invalid_params(
-            "sql contains more than one statement; \
-             only a single read-only statement is supported",
-            None,
-        ),
-        other => describe_error(&other, abort_reason),
-    })?;
-    let text = statement.expanded_sql().ok_or_else(|| {
-        ErrorData::invalid_params("sql must contain a statement, not only comments", None)
-    })?;
-    Ok(text.trim_end().trim_end_matches(';').to_owned())
+/// Converts a row that alone exceeds the page into its clipped JSON, its
+/// serialized size, and the cells that were cut.
+fn clip_oversized_row(
+    column_names: &[String],
+    values: &[SqlValue],
+    page_bytes: usize,
+    row_index: usize,
+) -> Result<(serde_json::Value, usize, Vec<ClippedCell>), ErrorData> {
+    let cut = clip_row(column_names, values, page_bytes, row_index)
+        .map_err(|error| internal_error("clipping an oversized query row", error))?;
+    let row_bytes = serialized_len(&cut.row)
+        .map_err(|error| internal_error("measuring query row size", error))?;
+    Ok((cut.row, row_bytes, cut.cells))
 }
 
-/// Converts an aborted-query error into a message naming which budget was
-/// hit, rather than surfacing SQLite's generic "interrupted" text as if it
-/// were always the step budget.
-fn describe_error(error: &rusqlite::Error, abort_reason: &Arc<AtomicU8>) -> ErrorData {
-    let message = match abort_reason.load(Ordering::Relaxed) {
-        ABORT_STEP_BUDGET => format!("query exceeded its virtual-machine step budget: {error}"),
-        ABORT_WALL_CLOCK => format!("query exceeded its wall-clock time budget: {error}"),
-        _ => error.to_string(),
-    };
-    ErrorData::invalid_params(message, None)
+/// Converts one row to its JSON form and serialized size.
+fn json_row(
+    column_names: &[String],
+    values: &[SqlValue],
+) -> Result<(serde_json::Value, usize), ErrorData> {
+    let value = row_to_json(column_names, values);
+    let row_bytes = serialized_len(&value)
+        .map_err(|error| internal_error("measuring query row size", error))?;
+    Ok((value, row_bytes))
 }

@@ -75,6 +75,40 @@ pub(super) fn clip_row(
     page_bytes: usize,
     row_index: usize,
 ) -> Result<ClippedRow, serde_json::Error> {
+    let (mut object, variables) = base_object(column_names, values);
+    let room = page_bytes.saturating_sub(serialized_len(&object)?);
+    let granted = share_room(&variables, room);
+
+    let mut cells = Vec::new();
+    for (variable, budget) in variables.iter().zip(granted) {
+        let name = &column_names[variable.index];
+        let Some((content, returned, kind, unit)) = clip_value(&values[variable.index], budget)
+        else {
+            continue;
+        };
+        if returned < variable.units {
+            cells.push(clipped_cell(
+                row_index,
+                name,
+                (kind, unit),
+                returned,
+                variable.units,
+            ));
+        }
+        object.insert(name.clone(), serde_json::Value::String(content));
+    }
+    Ok(ClippedRow {
+        row: serde_json::Value::Object(object),
+        cells,
+    })
+}
+
+/// The row with every TEXT/BLOB cell replaced by an empty string, plus the
+/// measured variables those cells will be clipped from.
+fn base_object(
+    column_names: &[String],
+    values: &[SqlValue],
+) -> (serde_json::Map<String, serde_json::Value>, Vec<Variable>) {
     let mut object = serde_json::Map::with_capacity(column_names.len());
     let mut variables = Vec::new();
     for (index, (name, value)) in column_names.iter().zip(values).enumerate() {
@@ -101,7 +135,13 @@ pub(super) fn clip_row(
         };
         object.insert(name.clone(), cell);
     }
-    let mut room = page_bytes.saturating_sub(serialized_len(&object)?);
+    (object, variables)
+}
+
+/// Shares `room` among the variables as evenly as the smaller cells allow,
+/// smallest first, returning each variable's granted budget by index.
+fn share_room(variables: &[Variable], room: usize) -> Vec<usize> {
+    let mut room = room;
     let mut order: Vec<usize> = (0..variables.len()).collect();
     order.sort_by_key(|position| variables[*position].cost);
     let mut granted = vec![0; variables.len()];
@@ -110,42 +150,32 @@ pub(super) fn clip_row(
         granted[*position] = variables[*position].cost.min(share);
         room -= granted[*position];
     }
+    granted
+}
 
-    let mut cells = Vec::new();
-    for (variable, budget) in variables.iter().zip(granted) {
-        let name = &column_names[variable.index];
-        let (content, returned, kind, unit) = match &values[variable.index] {
-            SqlValue::Text(text) => {
-                let (prefix, chars) = text_prefix(text, budget);
-                if text.contains('\0') {
-                    // SQLite's text functions stop at a NUL, so the rest is
-                    // reachable only as bytes of the value cast to a blob.
-                    (prefix.to_owned(), prefix.len(), "text", "bytes")
-                } else {
-                    (prefix.to_owned(), chars, "text", "characters")
-                }
+/// Cuts one TEXT/BLOB cell to `budget` units, returning the content, how
+/// many units were kept, and the kind/unit labels. Other cells yield `None`.
+fn clip_value(
+    value: &SqlValue,
+    budget: usize,
+) -> Option<(String, usize, &'static str, &'static str)> {
+    match value {
+        SqlValue::Text(text) => {
+            let (prefix, chars) = text_prefix(text, budget);
+            if text.contains('\0') {
+                // SQLite's text functions stop at a NUL, so the rest is
+                // reachable only as bytes of the value cast to a blob.
+                Some((prefix.to_owned(), prefix.len(), "text", "bytes"))
+            } else {
+                Some((prefix.to_owned(), chars, "text", "characters"))
             }
-            SqlValue::Blob(bytes) => {
-                let keep = (budget / 2).max(1).min(bytes.len());
-                (hex_encode(&bytes[..keep]), keep, "blob", "bytes")
-            }
-            _ => continue,
-        };
-        if returned < variable.units {
-            cells.push(clipped_cell(
-                row_index,
-                name,
-                (kind, unit),
-                returned,
-                variable.units,
-            ));
         }
-        object.insert(name.clone(), serde_json::Value::String(content));
+        SqlValue::Blob(bytes) => {
+            let keep = (budget / 2).max(1).min(bytes.len());
+            Some((hex_encode(&bytes[..keep]), keep, "blob", "bytes"))
+        }
+        _ => None,
     }
-    Ok(ClippedRow {
-        row: serde_json::Value::Object(object),
-        cells,
-    })
 }
 
 fn clipped_cell(
