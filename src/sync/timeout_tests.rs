@@ -406,3 +406,96 @@ fn analyze_has_no_per_file_wall_clock_budget_of_its_own() {
         "real rust source produces real evidence"
     );
 }
+
+/// The public `reconcile` entry point must propagate a failed publish as
+/// the exact error rather than flattening or swallowing it: the caller
+/// decides whether the watcher becomes untrusted. The failure is driven
+/// with a database trigger so the arm is deterministic; the timeout
+/// contract above pins the same propagate-don't-swallow shape for the
+/// budget variant, which the public entry point derives from process-wide
+/// limits and therefore cannot be given a spent deadline.
+#[test]
+fn public_reconcile_surfaces_a_failed_publish_as_the_exact_error() {
+    let manager = SourceSyncManager::with_watcher();
+    let project = create_project();
+    write(project.path(), "a.rs", b"fn a() {}\n");
+    let synced = sync_project(&manager, &project);
+    let state = manager
+        .watch_state_for(project.path())
+        .expect("the synced project is registered");
+    assert_eq!(state.health(), crate::watch::WatcherHealth::Healthy);
+
+    rusqlite::Connection::open(&synced.database_path)
+        .expect("open database")
+        .execute_batch(
+            "CREATE TRIGGER abort_public_reconcile BEFORE INSERT ON files \
+             BEGIN SELECT RAISE(ABORT, 'injected public reconcile failure'); END;",
+        )
+        .expect("install failing trigger");
+
+    write(project.path(), "a.rs", b"fn a_changed() {}\n");
+    state.mark_dirty("a.rs".to_owned());
+
+    let mut connection =
+        open_read_write(&synced.database_path).expect("open the reconcile connection");
+    let error = manager
+        .reconcile(project.path(), &state, &mut connection)
+        .expect_err("a failed publish must propagate from the public reconcile");
+    assert!(
+        matches!(
+            &error,
+            super::manager::SyncError::Reconcile(ReconcileError::Revision(
+                RevisionError::Database(_)
+            ))
+        ),
+        "expected the publish's database failure to stay typed, got {error:?}"
+    );
+    assert_eq!(
+        error.to_string(),
+        "reconcile error: database error: injected public reconcile failure"
+    );
+}
+
+/// The sweep-failure contract must preserve the typed budget payload: a
+/// spent `max_sync_wall_clock` is permanent and actionable, so the response
+/// must carry `sync_budget_exhausted` rather than a generic message, and
+/// the watcher must be marked `Desynced`. The spent deadline is injected
+/// directly because the production deadline comes from the process-wide
+/// `OnceLock` limits.
+#[test]
+fn a_spent_sweep_budget_keeps_the_sync_budget_payload_and_marks_desynced() {
+    let project = create_project();
+    write(project.path(), "a.rs", b"fn a() {}\n");
+    let synced = sync_project(&SourceSyncManager::new(), &project);
+    let connection = open_read_write(&synced.database_path).expect("open db");
+    let state = crate::watch::WatchState::new();
+    state.set_health(crate::watch::WatcherHealth::Healthy);
+
+    let error =
+        match super::sweep_reconcile::sweep_tree(project.path(), &connection, &tiny_budget()) {
+            Ok(_) => panic!("a spent budget must abort the sweep"),
+            Err(error) => error,
+        };
+    assert_eq!(
+        error.data,
+        crate::error_codes::budget_payload(Some(0)),
+        "the sweep's budget exhaustion must carry sync_budget_exhausted"
+    );
+
+    let error = super::sweep_reconcile::sweep_failed(
+        project.path(),
+        &state,
+        &crate::progress::NoopProgressSink,
+        error,
+    );
+    assert_eq!(
+        error.data,
+        crate::error_codes::budget_payload(Some(0)),
+        "the failure contract must not flatten the typed budget payload"
+    );
+    assert_eq!(
+        state.health(),
+        crate::watch::WatcherHealth::Desynced,
+        "a failed sweep leaves freshness ambiguous"
+    );
+}

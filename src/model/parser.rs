@@ -179,6 +179,20 @@ mod tests {
     }
 
     #[test]
+    fn successful_parsing_cannot_claim_unavailable_extraction() {
+        let run = ParserRun {
+            availability: ParserAvailability::Available,
+            outcome: ParseOutcome::Succeeded,
+            completeness: ExtractionCompleteness::Unavailable,
+        };
+
+        assert_eq!(
+            run.validate(),
+            Err("successful parsing cannot have unavailable extraction")
+        );
+    }
+
+    #[test]
     fn sql_text_ignores_variant_payloads() {
         assert_eq!(
             ParserAvailability::LoadFailed { reason: "x".into() }.as_sql_text(),

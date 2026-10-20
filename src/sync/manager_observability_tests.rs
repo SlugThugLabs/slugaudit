@@ -14,6 +14,26 @@ fn open_db(project: &tempfile::TempDir) -> rusqlite::Connection {
     crate::store::open_read_write(&database).expect("open db")
 }
 
+/// Removes a file, tolerating its absence. Used by the corruption fixtures
+/// to clear SQLite sidecars before replacing one with a directory.
+fn remove_if_present(path: &std::path::Path) {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("remove {}: {error}", path.display()),
+    }
+}
+
+/// The stored content of one indexed file, for tests that assert the
+/// reconcile landed.
+fn content_of(connection: &rusqlite::Connection, path: &str) -> Option<String> {
+    connection
+        .query_row("SELECT content FROM files WHERE path = ?1", [path], |row| {
+            row.get(0)
+        })
+        .expect("read file content")
+}
+
 #[test]
 fn last_sync_timestamp_is_zero_before_first_sync_and_stamped_after() {
     let manager = SourceSyncManager::new();
@@ -360,14 +380,38 @@ fn an_unopenable_database_surfaces_as_an_error_not_a_panic() {
 
     let database = project.path().join(".planning/slugaudit/project.db");
     fs::create_dir_all(&database).expect("make the db path a directory");
+    // The dev-only permission guard would otherwise reject the 0755
+    // directory before SQLite is asked to open it; owner-only makes the
+    // failure the SQLite open itself, which is the arm under test.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&database, fs::Permissions::from_mode(0o600))
+            .expect("restrict the database directory to owner-only");
+    }
 
     let result = manager.ensure_current(
         &project.path().to_string_lossy(),
         &crate::progress::NoopProgressSink,
     );
+    let error = match result {
+        Ok(_) => panic!("an unopenable database must error, not panic"),
+        Err(error) => error,
+    };
+    // The store's own error is the only place the platform-specific SQLite
+    // text and path live; asserting the exact wrapper around it proves the
+    // non-corruption arm surfaces the open failure rather than a generic
+    // message or a different error source.
+    let open_error = crate::store::open_read_write(&database)
+        .expect_err("the database path is still a directory");
+    assert_eq!(
+        error.message,
+        format!("opening the project database for sync: {open_error}"),
+        "the exact non-corruption open failure must reach the caller"
+    );
     assert!(
-        result.is_err(),
-        "an unopenable database must error, not panic"
+        error.data.is_none(),
+        "an unopenable database is not a coded, recoverable condition"
     );
 }
 
@@ -401,13 +445,224 @@ fn a_failed_incremental_reconcile_marks_the_watcher_desynced() {
         &project.path().to_string_lossy(),
         &crate::progress::NoopProgressSink,
     );
+    let error = match result {
+        Ok(_) => panic!("a failed reconcile must surface as an error"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.message,
+        "reconciling watcher events: reconcile error: database error: \
+         injected reconcile failure",
+        "the exact drain failure must reach the caller"
+    );
     assert!(
-        result.is_err(),
-        "a failed reconcile must surface as an error"
+        error.data.is_none(),
+        "a database failure is not a coded budget condition"
     );
     assert_eq!(
         state.health(),
         WatcherHealth::Desynced,
         "the watcher must be marked untrusted so the next call re-verifies"
+    );
+}
+
+/// A second event that arrives while the first barrier iteration is
+/// publishing must be reconciled in the same call. The barrier loop runs
+/// another iteration when the watcher sequence advances, and that
+/// iteration must publish against the revision the prior iteration just
+/// produced — not a baseline read before the loop. Otherwise a change the
+/// call could reconcile fails `StaleBaseline` and (on the Healthy path)
+/// marks the watcher `Desynced`.
+#[test]
+fn an_event_arriving_during_a_barrier_publish_is_reconciled_in_the_same_call() {
+    let manager = SourceSyncManager::with_watcher();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+    write_file(&project, "second.rs", b"pub fn second_v1() {}\n");
+    let _synced = sync_project(&manager, &project);
+    let state = manager
+        .watch_state_for(project.path())
+        .expect("the synced project is registered");
+    assert_eq!(state.health(), WatcherHealth::Healthy);
+
+    let mut connection = open_db(&project);
+    // The commit hook fires inside iteration 1's publish transaction —
+    // after the revision is written, before the barrier loop checks for
+    // new events. That is exactly the window an editor's save lands in,
+    // and unlike a background thread it is deterministic.
+    let hook_root = project.path().to_path_buf();
+    let hook_state = state.clone();
+    let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hook_fired = std::sync::Arc::clone(&fired);
+    connection.commit_hook(Some(move || {
+        if !hook_fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            fs::write(hook_root.join("second.rs"), b"pub fn second_v2() {}\n")
+                .expect("write the second file while the first publish commits");
+            hook_state.mark_dirty("second.rs".to_owned());
+        }
+        // rusqlite's contract: returning true rolls the commit back.
+        false
+    }));
+
+    write_file(&project, "lib.rs", b"pub fn a_changed() {}\n");
+    state.mark_dirty("lib.rs".to_owned());
+
+    manager
+        .reconcile(project.path(), &state, &mut connection)
+        .expect("both events must reconcile in one call");
+
+    assert!(
+        fired.load(std::sync::atomic::Ordering::SeqCst),
+        "hook did not fire"
+    );
+    assert_eq!(state.health(), WatcherHealth::Healthy, "must stay Healthy");
+    let lib_rs = content_of(&connection, "lib.rs").expect("lib.rs indexed");
+    assert!(lib_rs.contains("a_changed"), "lib.rs must be published");
+    let second_rs = content_of(&connection, "second.rs").expect("second.rs indexed");
+    assert!(
+        second_rs.contains("second_v2"),
+        "the in-publish change must be reconciled too"
+    );
+    let revisions: i64 = connection
+        .query_row("SELECT count(*) FROM revisions", [], |row| row.get(0))
+        .expect("count revisions");
+    assert_eq!(
+        revisions, 3,
+        "the baseline plus one revision per publishing barrier iteration"
+    );
+}
+
+/// The post-verification drain is a second failure surface: the full
+/// publish can succeed and the events that arrived while it ran can still
+/// fail to reconcile. The exact failure must reach the caller instead of
+/// being swallowed as a healthy result.
+#[test]
+fn a_failed_post_verification_drain_surfaces_the_exact_error() {
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+    let manager1 = SourceSyncManager::with_watcher();
+    sync_project(&manager1, &project);
+    drop(manager1);
+
+    let manager2 = SourceSyncManager::with_watcher();
+    let state = manager2.activate(project.path());
+    // Abort only the reconcile's insert. The full publish below has
+    // nothing to publish (the disk state still matches the stored
+    // revision), so it never touches `files`; the drain does.
+    {
+        let connection = open_db(&project);
+        connection
+            .execute_batch(
+                "CREATE TRIGGER abort_drain_insert BEFORE INSERT ON files \
+                 BEGIN SELECT RAISE(ABORT, 'injected drain failure'); END;",
+            )
+            .expect("install the failing trigger");
+    }
+
+    // Change a file after the publish sampled it: the publish still sees
+    // the old content, so its diff is empty and it commits nothing; the
+    // event lands in the post-verification drain, which then fails.
+    let hook_root = project.path().to_path_buf();
+    let hook_state = state.clone();
+    crate::sync::race_hook::set(project.path(), move || {
+        fs::write(hook_root.join("lib.rs"), b"pub fn drained_change() {}\n")
+            .expect("write during the full publish");
+        hook_state.mark_dirty("lib.rs".to_owned());
+    });
+
+    let result = manager2.ensure_current(
+        &project.path().to_string_lossy(),
+        &crate::progress::NoopProgressSink,
+    );
+    let error = match result {
+        Ok(_) => panic!("a failed post-verification drain must surface an error"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.message,
+        "draining events after verification: reconcile error: database error: \
+         injected drain failure",
+        "the exact drain failure must reach the caller"
+    );
+    assert!(
+        error.data.is_none(),
+        "a database failure is not a coded budget condition"
+    );
+}
+
+/// The corrupt-open recovery must not swallow a failure to discard the
+/// broken database: the exact discard error reaches the caller, and no
+/// half-recovered database is published into.
+#[test]
+fn a_failure_to_discard_a_corrupt_database_surfaces_the_exact_discard_error() {
+    let manager = SourceSyncManager::new();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+    sync_project(&manager, &project);
+
+    let database = project.path().join(".planning/slugaudit/project.db");
+    let wal = std::path::PathBuf::from(format!("{}-wal", database.display()));
+    let shm = std::path::PathBuf::from(format!("{}-shm", database.display()));
+    remove_if_present(&wal);
+    remove_if_present(&shm);
+    // A directory at the sidecar path lets SQLite read the main file
+    // first and report it as not-a-database (the corruption branch),
+    // while the recovery's sidecar removal then fails with EISDIR.
+    fs::create_dir(&shm).expect("make the shm sidecar a directory");
+    fs::write(&database, b"this is not a sqlite database").expect("corrupt the database");
+
+    let result = manager.ensure_current(
+        &project.path().to_string_lossy(),
+        &crate::progress::NoopProgressSink,
+    );
+    let error = match result {
+        Ok(_) => panic!("a failed discard must surface an error"),
+        Err(error) => error,
+    };
+
+    let discard_error = fs::remove_file(&shm).expect_err("removing a directory sidecar must fail");
+    assert_eq!(
+        error.message,
+        format!("discarding the corrupt or outdated project database: {discard_error}"),
+        "the exact discard failure must reach the caller"
+    );
+    assert!(
+        error.data.is_none(),
+        "a discard failure is not a coded, recoverable condition"
+    );
+}
+
+/// A metadata failure that is neither a stale root nor an incompatible
+/// version is surfaced unchanged (no discard/rebuild), with its exact
+/// message — an operator must see why the database could not be verified.
+#[test]
+fn a_non_stale_metadata_failure_is_surfaced_unchanged() {
+    let manager = SourceSyncManager::new();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+    let synced = sync_project(&manager, &project);
+
+    {
+        let connection = crate::store::open_read_write(&synced.database_path).expect("open db");
+        connection
+            .execute_batch("ALTER TABLE project RENAME TO project_backing")
+            .expect("hide the project metadata table");
+    }
+
+    let result = manager.ensure_current(
+        &project.path().to_string_lossy(),
+        &crate::progress::NoopProgressSink,
+    );
+    let error = match result {
+        Ok(_) => panic!("an unreadable metadata table must surface an error"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.message, "recording project metadata: no such table: project",
+        "a non-stale metadata failure must surface unchanged"
+    );
+    assert!(
+        error.data.is_none(),
+        "the untouched metadata failure carries no code"
     );
 }

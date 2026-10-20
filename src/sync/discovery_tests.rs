@@ -136,6 +136,48 @@ fn a_non_utf8_filename_is_skipped_not_a_panic_or_a_whole_walk_failure() {
         1,
         "the bad filename must be recorded as skipped"
     );
+    let skipped_file = &skipped[0];
+    assert_eq!(
+        skipped_file.absolute_path,
+        root.join(&bad_name),
+        "the skip must name the file that was left out"
+    );
+    assert_eq!(
+        skipped_file.reason,
+        DiscoveryError::NonUtf8Path(root.join(&bad_name)).to_string(),
+        "the skip reason must be the typed non-UTF-8 reason, not a generic one"
+    );
+}
+
+/// The walker is expected to yield only paths beneath the root. If it ever
+/// yields one outside it, the file must be reported with the typed
+/// `NotRelative` reason rather than dropped silently; a path that cannot be
+/// named relative to the project has no safe `files.path` value.
+#[test]
+fn a_path_outside_the_root_is_skipped_with_the_not_relative_reason() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let outside = tempfile::tempdir().expect("outside dir");
+    let outside_file = outside.path().join("escaped.rs");
+
+    let skipped = strip_project_prefix(directory.path(), &outside_file)
+        .expect_err("a path outside the root must be reported, not stripped");
+
+    assert_eq!(
+        skipped.absolute_path, outside_file,
+        "the skip must carry the path that could not be made relative"
+    );
+    assert_eq!(
+        skipped.reason,
+        DiscoveryError::NotRelative(outside_file.clone()).to_string(),
+        "the skip reason must be the typed not-relative reason"
+    );
+    assert!(
+        skipped
+            .reason
+            .contains("is not relative to the project root"),
+        "the reason must explain why the file was left out: {}",
+        skipped.reason
+    );
 }
 
 /// A regular file discovered in one sync can be replaced by a symlink

@@ -282,9 +282,9 @@ fn revision_after_sync(connection: &Connection, database_path: &Path) -> Result<
 /// Reconciles watcher events under a caller-supplied deadline and on-disk
 /// path set. The `Healthy` path walks the tree once for the sweep and passes
 /// that report's `on_disk` here, so this never walks. The expected revision
-/// is read here — at the point this step publishes — so the CAS baseline is
-/// never shared with another publishing step (the sweep apply reads its own
-/// immediately before it publishes).
+/// is read inside the barrier loop, immediately before each iteration
+/// publishes, so the CAS baseline is never shared with another publishing
+/// step (the sweep apply reads its own immediately before it publishes).
 ///
 /// # Errors
 ///
@@ -296,7 +296,6 @@ fn reconcile_events(
     options: &ReconcileOptions,
     on_disk: &HashSet<String>,
 ) -> Result<(), SyncError> {
-    let expected_current = current_revision_id(connection)?;
     let started = std::time::Instant::now();
     // Accumulated across every barrier iteration so the log line below
     // reports the total skip count, not just the last pass's.
@@ -306,6 +305,13 @@ fn reconcile_events(
         state,
         &options.deadline,
         |dirty, deleted| {
+            // Re-read the baseline for every iteration: an earlier
+            // iteration may have published a revision, and a path that
+            // changed again during that publish must be reconciled against
+            // the revision that publication produced. Hoisting this read
+            // out of the loop makes the second publishing iteration fail
+            // with `RevisionError::StaleBaseline` instead of converging.
+            let expected_current = current_revision_id(connection)?;
             let report = super::super::reconcile::reconcile_dirty_paths_with_deadline(
                 connection,
                 root,

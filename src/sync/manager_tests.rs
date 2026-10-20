@@ -534,3 +534,120 @@ fn a_full_verification_of_an_untruncated_watch_scope_ends_healthy() {
         "a complete scope restores Healthy after verification"
     );
 }
+
+/// A failed stat sweep on the Healthy path is fatal: the exact sweep
+/// failure reaches the caller, and the watcher is marked `Desynced` so the
+/// next call re-verifies instead of serving a tree the sweep could not
+/// verify.
+#[test]
+fn a_failed_stat_sweep_on_the_healthy_path_surfaces_the_exact_error() {
+    let manager = SourceSyncManager::with_watcher();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+    let synced = sync_project(&manager, &project);
+    let state = manager
+        .watch_state_for(project.path())
+        .expect("the synced project is registered");
+    assert_eq!(state.health(), crate::watch::WatcherHealth::Healthy);
+
+    {
+        let connection = crate::store::open_read_write(&synced.database_path).expect("open db");
+        connection
+            .execute_batch("ALTER TABLE files RENAME TO files_backing")
+            .expect("hide the files table from the sweep");
+    }
+
+    let result = manager.ensure_current(
+        &project.path().to_string_lossy(),
+        &crate::progress::NoopProgressSink,
+    );
+    let error = match result {
+        Ok(_) => panic!("a failed stat sweep must surface an error"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.message, "stat sweep: no such table: files",
+        "the exact sweep failure must reach the caller"
+    );
+    assert!(
+        error.data.is_none(),
+        "a database sweep failure is not a budget exhaustion"
+    );
+    assert_eq!(
+        state.health(),
+        crate::watch::WatcherHealth::Desynced,
+        "an unverified tree must not stay Healthy"
+    );
+}
+
+/// The final revision read after a successful healthy pass must fail
+/// loudly, with the exact cause, when the revisions table cannot be read:
+/// a sync that cannot name its revision is a bug an operator must see.
+#[test]
+fn a_failed_post_sync_revision_read_surfaces_the_exact_error() {
+    let manager = SourceSyncManager::with_watcher();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+    let synced = sync_project(&manager, &project);
+
+    {
+        let connection = crate::store::open_read_write(&synced.database_path).expect("open db");
+        connection
+            .execute_batch("ALTER TABLE revisions RENAME TO revisions_backing")
+            .expect("hide the revisions table");
+    }
+
+    let result = manager.ensure_current(
+        &project.path().to_string_lossy(),
+        &crate::progress::NoopProgressSink,
+    );
+    let error = match result {
+        Ok(_) => panic!("a failed revision read must surface an error"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.message, "reading the current revision: no such table: revisions",
+        "the exact read failure must reach the caller"
+    );
+    assert!(
+        error.data.is_none(),
+        "a database read failure is not a coded condition"
+    );
+}
+
+/// A healthy pass that ends with no current revision must report the named
+/// inconsistency rather than returning a project whose revision cannot be
+/// named.
+#[test]
+fn a_sync_that_ends_without_a_current_revision_surfaces_the_exact_error() {
+    let manager = SourceSyncManager::with_watcher();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+    let synced = sync_project(&manager, &project);
+
+    {
+        let connection = crate::store::open_read_write(&synced.database_path).expect("open db");
+        connection
+            .execute_batch("UPDATE revisions SET is_current = 0")
+            .expect("clear the current revision pointer");
+    }
+
+    let result = manager.ensure_current(
+        &project.path().to_string_lossy(),
+        &crate::progress::NoopProgressSink,
+    );
+    let error = match result {
+        Ok(_) => panic!("a sync without a current revision must surface an error"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.message,
+        "no current revision found after sync — this is unexpected; \
+         try disabling and re-enabling the project",
+        "the exact missing-revision message must reach the caller"
+    );
+    assert!(
+        error.data.is_none(),
+        "a missing revision is not a coded, recoverable condition"
+    );
+}

@@ -137,6 +137,18 @@ pub fn discover(root: &Path) -> Result<(Vec<DiscoveredFile>, Vec<SkippedFile>), 
     discover_with_deadline(root, &Deadline::after(process_limits().max_sync_wall_clock))
 }
 
+/// The walked path's project-relative form, or the skip to report when the
+/// walker yielded a path outside the root. `strip_prefix` is lexical, so
+/// this should always succeed for the crate's own walker; a walker (or
+/// future walker) that normalizes paths differently is surfaced in
+/// `skipped` instead of being dropped silently.
+fn strip_project_prefix<'a>(root: &Path, absolute_path: &'a Path) -> Result<&'a Path, SkippedFile> {
+    absolute_path.strip_prefix(root).map_err(|_| SkippedFile {
+        reason: DiscoveryError::NotRelative(absolute_path.to_path_buf()).to_string(),
+        absolute_path: absolute_path.to_path_buf(),
+    })
+}
+
 /// [`discover`] under an explicit wall-clock [`Deadline`], checked once per
 /// walked entry so a pathological tree (huge, or on a hung network
 /// filesystem) fails closed with [`DiscoveryError::TimeBudgetExceeded`]
@@ -174,13 +186,10 @@ pub(crate) fn discover_with_deadline(
             continue;
         }
         let absolute_path = entry.path().to_path_buf();
-        let relative_path = match absolute_path.strip_prefix(root) {
+        let relative_path = match strip_project_prefix(root, &absolute_path) {
             Ok(relative_path) => relative_path,
-            Err(_) => {
-                skipped.push(SkippedFile {
-                    reason: DiscoveryError::NotRelative(absolute_path.clone()).to_string(),
-                    absolute_path,
-                });
+            Err(skipped_file) => {
+                skipped.push(skipped_file);
                 continue;
             }
         };
