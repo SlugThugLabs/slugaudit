@@ -278,3 +278,131 @@ fn sniff_kind_reports_an_error_for_an_unreadable_path() {
     let error = sniff_kind(&dir).expect_err("reading a directory must error");
     assert!(matches!(error, DiscoveryError::Read { .. }));
 }
+
+/// A root the walker cannot list yields one walk error and no entries.
+/// Discovery must fail closed: returning `Ok` with an empty file set would
+/// let the publish diff delete every stored row.
+#[test]
+fn a_missing_project_root_fails_discovery_with_the_walk_error() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let missing = directory.path().join("gone");
+
+    let error = discover(&missing).expect_err("an unlistable root must fail discovery");
+
+    assert!(
+        matches!(error, DiscoveryError::Walk(_)),
+        "the typed walk failure must survive, got {error:?}"
+    );
+    assert!(
+        error.to_string().contains("failed to walk project files"),
+        "the failure must name the walk: {error}"
+    );
+}
+
+/// An unreadable directory deep in the tree is walked as an `Err` entry,
+/// not as a file. It must name the failing directory (carried by the
+/// walker's error), never the project root, and must not become a skip.
+#[test]
+fn a_walk_error_is_returned_with_the_failing_subdirectory_not_the_root() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let root = directory.path();
+    let failing = root.join("private-dir");
+    let error = ignore::Error::WithPath {
+        path: failing.clone(),
+        err: Box::new(ignore::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "permission denied",
+        ))),
+    };
+    let mut discovered = Vec::new();
+    let mut skipped = Vec::new();
+
+    let error = collect_walk_entry(root, Err(error), &mut discovered, &mut skipped)
+        .expect_err("a walk error must fail discovery");
+
+    match error {
+        DiscoveryError::Walk(error) => assert_eq!(
+            crate::watch::errors::ignore_error_path(&error),
+            Some(failing.as_path()),
+            "the failure must name the directory the walker could not read"
+        ),
+        other => panic!("expected DiscoveryError::Walk, got {other:?}"),
+    }
+    assert!(
+        discovered.is_empty() && skipped.is_empty(),
+        "a walk error is not a per-file skip: discovered={discovered:?} skipped={skipped:?}"
+    );
+}
+
+/// A malformed `.gitignore` is attached to a walked entry as an error while
+/// the walk continues with that rule dropped. Discovery must fail closed
+/// instead of indexing a file set the user's ignore rules refute.
+#[test]
+fn a_malformed_gitignore_fails_discovery_instead_of_dropping_its_rules() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let root = directory.path();
+    write(root, ".gitignore", b"[z-a]\n");
+    write(root, "kept.rs", b"fn kept() {}");
+
+    let error = discover(root).expect_err("an unapplied ignore file must fail discovery");
+
+    match error {
+        DiscoveryError::IgnoreRules { kind, path } => {
+            assert_eq!(kind, "glob", "the static category names the parse failure");
+            let path = path.expect("the walker names the ignore file");
+            assert_eq!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some(".gitignore")
+            );
+        }
+        other => panic!("expected DiscoveryError::IgnoreRules, got {other:?}"),
+    }
+}
+
+/// The end-to-end consequence the fail-closed rule exists for: after a
+/// successful publish, a root the walker cannot list must not produce a
+/// revision that deletes the stored rows or shrinks the index.
+#[test]
+fn a_failed_walk_publishes_no_revision_and_deletes_no_stored_rows() {
+    use crate::progress::NoopProgressSink;
+    use crate::store::open_read_write;
+    use crate::sync::PublishError;
+    use crate::sync::publish::publish;
+    use crate::sync::test_support::stored_paths;
+
+    let base = tempfile::tempdir().expect("base dir");
+    let root = base.path().join("root");
+    fs::create_dir_all(&root).expect("create project root");
+    write(&root, "a.rs", b"fn a() {}");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open database");
+    let first = publish(&mut connection, &root, "1.0", &NoopProgressSink)
+        .expect("initial publish succeeds");
+
+    let moved = base.path().join("moved-away");
+    fs::rename(&root, &moved).expect("move the project root away");
+
+    let error = publish(&mut connection, &root, "1.0", &NoopProgressSink)
+        .expect_err("an unlistable root must fail the publish");
+
+    assert!(
+        matches!(error, PublishError::Discovery(DiscoveryError::Walk(_))),
+        "the publish must carry the typed discovery failure: {error:?}"
+    );
+    assert_eq!(
+        stored_paths(&connection),
+        ["a.rs"],
+        "no stored row may be deleted by a partial walk"
+    );
+    let current: String = connection
+        .query_row(
+            "SELECT revision_id FROM revisions WHERE is_current = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read the current revision");
+    assert_eq!(
+        current, first.revision_id,
+        "no revision may be published from a partial walk"
+    );
+}

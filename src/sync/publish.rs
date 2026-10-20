@@ -173,6 +173,13 @@ impl PublishError {
                 | discovery::DiscoveryError::NotRelative(path)
                 | discovery::DiscoveryError::NonUtf8Path(path),
             ) => Some(crate::util::redacted_path(path)),
+            PublishError::Discovery(discovery::DiscoveryError::Walk(error)) => {
+                crate::watch::errors::ignore_error_path(error).map(crate::util::redacted_path)
+            }
+            PublishError::Discovery(discovery::DiscoveryError::IgnoreRules {
+                path: Some(path),
+                ..
+            }) => Some(crate::util::redacted_path(path)),
             _ => None,
         }
     }

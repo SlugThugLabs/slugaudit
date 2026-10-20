@@ -245,12 +245,58 @@ fn sample_file_reports_a_file_over_the_cap_as_too_large() {
     let error = sample_file(&file, &limits).expect_err("an over-cap file is refused");
 
     match error {
-        SampleError::TooLarge { size, limit, .. } => {
-            assert_eq!(size, 17, "the observed size is reported, not truncated");
+        SampleError::TooLarge {
+            observed, limit, ..
+        } => {
+            assert_eq!(
+                observed, 17,
+                "the stat size is reported as a lower bound, not truncated"
+            );
             assert_eq!(limit, 16);
         }
         other => panic!("expected SampleError::TooLarge, got {other:?}"),
     }
+}
+
+/// A file can grow between `sample_file`'s stat and its bounded read. The
+/// read stops at `cap + 1` bytes, so that length is only a lower bound on
+/// the file's size; the skip reason must say so rather than claim an exact
+/// size the read never established. A procfs file has stat size 0 but
+/// content longer than the cap, which drives the bounded-read arm
+/// deterministically without a race.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_file_that_grows_past_the_cap_is_reported_as_a_lower_bound_not_an_exact_size() {
+    let file = DiscoveredFile {
+        relative_path: "status".to_owned(),
+        absolute_path: std::path::PathBuf::from("/proc/self/status"),
+        kind: FileKind::Indexed,
+    };
+    let limits = ResourceLimits {
+        max_file_bytes: 10,
+        ..ResourceLimits::default()
+    };
+
+    let error = sample_file(&file, &limits).expect_err("proc status exceeds the cap");
+    let message = error.to_string();
+
+    match error {
+        SampleError::TooLarge {
+            observed, limit, ..
+        } => {
+            assert_eq!(observed, 11, "the bounded read stops at the cap + 1");
+            assert_eq!(limit, 10);
+        }
+        other => panic!("expected SampleError::TooLarge, got {other:?}"),
+    }
+    assert!(
+        message.contains("at least 11 bytes"),
+        "the report must state a lower bound: {message}"
+    );
+    assert!(
+        !message.contains("is 11 bytes"),
+        "the bounded read length is not the file's size: {message}"
+    );
 }
 
 /// Parallel-sampling tests below. They construct `DiscoveredFile`s
@@ -382,7 +428,7 @@ fn oversized_files_are_skipped_and_returned_not_fatal() {
     );
     assert_eq!(skipped[0].absolute_path, discovered[0].absolute_path);
     assert!(
-        skipped[0].reason.contains("exceeding"),
+        skipped[0].reason.contains("per-file import ceiling"),
         "skip reason names the ceiling: {}",
         skipped[0].reason
     );

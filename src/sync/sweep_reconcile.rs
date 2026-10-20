@@ -17,6 +17,7 @@ use crate::error_codes;
 use crate::ignore_rules::is_excluded_path;
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::util::{Deadline, redacted_path};
+use crate::watch::errors::{ignore_error_kind, ignore_error_path};
 use crate::watch::{WatchState, WatcherHealth};
 use rmcp::ErrorData;
 use rusqlite::Connection;
@@ -43,6 +44,26 @@ pub(super) fn sweep_tree(
         let data = error_codes::budget_payload(error.budget_elapsed_ms());
         ErrorData::internal_error(sweep_error_text(error), data)
     })
+}
+
+/// Logs a sweep walker or ignore-file failure with the static category and
+/// the redacted path id, matching the watch-scope walker's fields.
+/// `ignore::Error` formats a path into `Display` for `WithPath`/`Loop`, so
+/// the error itself is never formatted. This is diagnostic context at debug
+/// level: the single warn for the failure is [`mark_sweep_failed`]'s
+/// operation line, so one failure never produces two warn lines. Returns the
+/// category for the typed sweep failure.
+pub(super) fn log_walk_failure(error: &ignore::Error) -> &'static str {
+    let kind = ignore_error_kind(error);
+    let path_id = ignore_error_path(error).map(redacted_path);
+    tracing::debug!(
+        operation = "stat_sweep_walk",
+        error_kind = kind,
+        path_id = ?path_id,
+        "sweep could not read a directory entry or apply an ignore file; failing the \
+         sweep so no row is deleted under an unverified subtree",
+    );
+    kind
 }
 
 /// The project-relative path a swept entry should be compared under, or
@@ -269,5 +290,8 @@ fn sweep_error_text(error: SweepError) -> String {
             format!("stat sweep exceeded its wall-clock budget ({elapsed_ms} ms)")
         }
         SweepError::Database(database_error) => format!("stat sweep: {database_error}"),
+        SweepError::IncompleteWalk { kind } => {
+            format!("stat sweep could not verify the tree ({kind}); no rows were deleted")
+        }
     }
 }

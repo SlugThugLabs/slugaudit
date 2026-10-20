@@ -36,6 +36,15 @@ pub(super) enum SweepError {
     Database(#[from] rusqlite::Error),
     #[error("stat sweep exceeded its wall-clock time budget after {elapsed_ms} ms")]
     TimeBudgetExceeded { elapsed_ms: u128 },
+    /// The walker could not list a directory (or the root), or could not
+    /// apply an ignore file. Paths under the unverified subtree are unknown,
+    /// so `stored - on_disk` would publish still-existing rows as deleted;
+    /// the sweep fails closed instead.
+    #[error("stat sweep could not verify the tree ({kind}); no rows were deleted")]
+    IncompleteWalk {
+        /// Static `ignore::Error` category, never its path-bearing Display.
+        kind: &'static str,
+    },
 }
 
 impl SweepError {
@@ -44,7 +53,7 @@ impl SweepError {
     pub(crate) fn budget_elapsed_ms(&self) -> Option<u128> {
         match self {
             SweepError::TimeBudgetExceeded { elapsed_ms } => Some(*elapsed_ms),
-            SweepError::Database(_) => None,
+            SweepError::Database(_) | SweepError::IncompleteWalk { .. } => None,
         }
     }
 }
@@ -77,9 +86,11 @@ pub(super) struct SweepReport {
 /// # Errors
 ///
 /// Returns [`SweepError::Database`] if the stored stat state can't be read,
-/// or [`SweepError::TimeBudgetExceeded`] when `deadline` is spent mid-walk —
-/// failing closed, because a partial sweep that silently skipped the rest of
-/// the tree would serve exactly the staleness the sweep exists to prevent.
+/// [`SweepError::TimeBudgetExceeded`] when `deadline` is spent mid-walk, or
+/// [`SweepError::IncompleteWalk`] when the walker could not list a directory
+/// or apply an ignore file — failing closed, because a partial sweep that
+/// silently skipped part of the tree would both serve staleness and publish
+/// still-existing rows as deleted.
 pub(super) fn sweep(
     connection: &Connection,
     root: &Path,
@@ -87,15 +98,7 @@ pub(super) fn sweep(
 ) -> Result<SweepReport, SweepError> {
     note_walk(root);
     let stored = stored_signatures(connection)?;
-
-    // Every file the walk could stat successfully, by relative path. The
-    // deleted set is then `stored.keys() - on_disk`: a database row whose
-    // file vanished mid-walk, was deleted, or is no longer yielded by the
-    // indexable walker (gitignored, excluded) all converge out uniformly.
-    let mut on_disk: HashSet<String> = HashSet::new();
-    let mut candidates: HashSet<String> = HashSet::new();
-    let mut unrepresentable: HashSet<Vec<u8>> = HashSet::new();
-    let mut unchanged = 0_usize;
+    let mut findings = SweepFindings::default();
 
     for entry in indexable_walker(root) {
         if let Some(elapsed) = deadline.exceeded() {
@@ -103,49 +106,78 @@ pub(super) fn sweep(
                 elapsed_ms: elapsed.as_millis(),
             });
         }
-        let (relative, metadata) = match walked_file(root, entry, &mut unrepresentable) {
-            Walked::Stat(relative, metadata) => (relative, metadata),
-            Walked::Unverifiable(relative) => {
-                // The file exists but could not be stat'd: keep its stored
-                // row (on disk, neither a candidate nor proven unchanged)
-                // rather than classing it deleted.
-                if stored.contains_key(&relative) {
-                    on_disk.insert(relative);
-                }
-                continue;
-            }
-            Walked::Skipped => continue,
-        };
-        let mtime = crate::util::mtime_unix_seconds(&metadata);
-        // A size beyond `i64::MAX` cannot equal any stored size, so it is
-        // never proven unchanged; it stays a candidate and reconcile skips it.
-        let unchanged_match = i64::try_from(metadata.len()).is_ok_and(|byte_len| {
-            matches!(
-                stored.get(&relative),
-                Some((stored_mtime, Some(stored_len))) if *stored_mtime == mtime && *stored_len == byte_len
-            )
-        });
-        if unchanged_match {
-            unchanged += 1;
-        } else {
-            candidates.insert(relative.clone());
-        }
-        on_disk.insert(relative);
+        classify_entry(root, entry, &stored, &mut findings)?;
     }
 
+    // `stored.keys() - on_disk`: a database row whose file vanished
+    // mid-walk, was deleted, or is no longer yielded by the indexable
+    // walker (gitignored, excluded) all converge out uniformly.
     let deleted: HashSet<String> = stored
         .keys()
-        .filter(|path| !on_disk.contains(*path))
+        .filter(|path| !findings.on_disk.contains(*path))
         .cloned()
         .collect();
 
     Ok(SweepReport {
-        candidates,
+        candidates: findings.candidates,
         deleted,
-        on_disk,
-        unchanged,
-        unrepresentable,
+        on_disk: findings.on_disk,
+        unchanged: findings.unchanged,
+        unrepresentable: findings.unrepresentable,
     })
+}
+
+/// What one walk has found so far. Kept out of [`sweep`] so the walk loop
+/// and the per-entry classification each read as one stage.
+#[derive(Default)]
+struct SweepFindings {
+    /// Every file the walk could stat successfully, by relative path.
+    on_disk: HashSet<String>,
+    candidates: HashSet<String>,
+    unrepresentable: HashSet<Vec<u8>>,
+    unchanged: usize,
+}
+
+/// Classifies one walked entry against the stored stat signatures and folds
+/// it into `findings`. A walker or ignore-file failure aborts the whole
+/// sweep: an unreadable subtree makes every path under it unknown, so no
+/// deletion may be published from this walk.
+fn classify_entry(
+    root: &Path,
+    entry: Result<ignore::DirEntry, ignore::Error>,
+    stored: &HashMap<String, StoredSignature>,
+    findings: &mut SweepFindings,
+) -> Result<(), SweepError> {
+    let (relative, metadata) = match walked_file(root, entry, &mut findings.unrepresentable) {
+        Ok(Walked::Stat(relative, metadata)) => (relative, metadata),
+        Ok(Walked::Unverifiable(relative)) => {
+            // The file exists but could not be stat'd: keep its stored
+            // row (on disk, neither a candidate nor proven unchanged)
+            // rather than classing it deleted.
+            if stored.contains_key(&relative) {
+                findings.on_disk.insert(relative);
+            }
+            return Ok(());
+        }
+        Ok(Walked::Skipped) => return Ok(()),
+        Err(kind) => return Err(SweepError::IncompleteWalk { kind }),
+    };
+    let mtime = crate::util::mtime_unix_seconds(&metadata);
+    // A size beyond `i64::MAX` cannot equal any stored size, so it is
+    // never proven unchanged; it stays a candidate and reconcile skips it.
+    let unchanged_match = i64::try_from(metadata.len()).is_ok_and(|byte_len| {
+        matches!(
+            stored.get(&relative),
+            Some((stored_mtime, Some(stored_len))) if *stored_mtime == mtime && *stored_len == byte_len
+        )
+    });
+    if unchanged_match {
+        findings.unchanged += 1;
+    } else {
+        findings.candidates.insert(relative.clone());
+    }
+    findings.on_disk.insert(relative);
+    Ok(())
 }
 
 /// Stored `(mtime, byte_len)`; `byte_len` is `None` for an unknown size.
@@ -179,39 +211,36 @@ enum Walked {
     /// A file whose stat failed for a reason other than it being gone
     /// (permissions, I/O error): it exists, so a stored row must stay.
     Unverifiable(String),
-    /// Nothing to compare: unreadable directories, non-files, excluded or
-    /// non-UTF-8 paths, and files that vanished between walk and stat. The
-    /// cases that are otherwise invisible warn.
+    /// Nothing to compare: non-files, excluded or non-UTF-8 paths, and
+    /// files that vanished between walk and stat. Walk-level failures are
+    /// returned as errors instead, so a skipped entry can never authorize a
+    /// deletion under a subtree the walk could not read.
     Skipped,
 }
 
-/// One walked entry, reduced to what the comparison needs.
+/// One walked entry, reduced to what the comparison needs. The error is the
+/// static `ignore::Error` category for a directory or ignore-file failure;
+/// its path-bearing `Display` is never returned or logged.
 fn walked_file(
     root: &Path,
     entry: Result<ignore::DirEntry, ignore::Error>,
     unrepresentable: &mut HashSet<Vec<u8>>,
-) -> Walked {
+) -> Result<Walked, &'static str> {
     let entry = match entry {
         Ok(entry) => entry,
-        Err(error) => {
-            // Discovery turns these into skipped rows; the sweep has no
-            // row to write, so the log is the only place the gap shows.
-            tracing::warn!(
-                error = %error,
-                "sweep could not read a directory entry; its subtree is not part of \
-                 this comparison and files under it cannot be verified",
-            );
-            return Walked::Skipped;
-        }
+        Err(error) => return Err(super::sweep_reconcile::log_walk_failure(&error)),
     };
+    if let Some(error) = entry.error() {
+        return Err(super::sweep_reconcile::log_walk_failure(error));
+    }
     if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-        return Walked::Skipped;
+        return Ok(Walked::Skipped);
     }
     let absolute_path = entry.path();
     let Some(relative) =
         super::sweep_reconcile::walked_relative_path(root, absolute_path, unrepresentable)
     else {
-        return Walked::Skipped;
+        return Ok(Walked::Skipped);
     };
 
     // Only a stat that fails with NotFound means the file vanished between
@@ -219,13 +248,13 @@ fn walked_file(
     // deleted. Any other stat error (permissions, I/O) leaves the file
     // unverifiable, not gone: its stored row is kept and the cause is logged.
     match std::fs::metadata(absolute_path) {
-        Ok(metadata) => Walked::Stat(relative, metadata),
+        Ok(metadata) => Ok(Walked::Stat(relative, metadata)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             tracing::debug!(
                 path_id = %crate::util::redacted_path(absolute_path),
                 "sweep walked a file that vanished before it could be stat'd",
             );
-            Walked::Skipped
+            Ok(Walked::Skipped)
         }
         Err(error) => {
             tracing::warn!(
@@ -233,59 +262,25 @@ fn walked_file(
                 error = %error,
                 "sweep could not stat a file it walked; its stored row is kept unverified",
             );
-            Walked::Unverifiable(relative)
+            Ok(Walked::Unverifiable(relative))
         }
     }
 }
 
-/// Test-only per-root walk counters, so the Healthy-path regression can
-/// prove one whole-tree walk per call. Keyed by canonical root (the same
-/// per-root keying `race_hook` uses) so tests running in parallel never
-/// share a counter.
+/// Test-only walk counters live in their own file so this one stays under
+/// the small-file budget. Release builds count nothing.
 #[cfg(test)]
-static WALK_COUNTERS: std::sync::Mutex<
-    Option<
-        std::collections::HashMap<
-            std::path::PathBuf,
-            std::sync::Arc<std::sync::atomic::AtomicUsize>,
-        >,
-    >,
-> = std::sync::Mutex::new(None);
-
-/// Arms walk counting for `root` and returns the counter [`sweep`] bumps on
-/// every walk of that root.
+#[path = "sweep_walks.rs"]
+mod walks;
 #[cfg(test)]
-pub(super) fn count_walks(root: &Path) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
-    let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let mut guard = crate::util::lock_or_recover(&WALK_COUNTERS);
-    guard
-        .get_or_insert_with(std::collections::HashMap::new)
-        .insert(
-            crate::util::canonical_or_self(root),
-            std::sync::Arc::clone(&counter),
-        );
-    counter
-}
-
-/// Bumps the armed counter for `root`, if any; a no-op for any root nobody
-/// armed a counter for. Counting exists only in test builds.
-#[cfg(test)]
-fn note_walk(root: &Path) {
-    let guard = crate::util::lock_or_recover(&WALK_COUNTERS);
-    // Canonical like the watcher's keys, so a counter armed with a tempdir
-    // path matches the walk's resolved root.
-    if let Some(counter) = guard
-        .as_ref()
-        .and_then(|counters| counters.get(&crate::util::canonical_or_self(root)))
-    {
-        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-/// Release builds count nothing.
+use walks::note_walk;
 #[cfg(not(test))]
 fn note_walk(_root: &Path) {}
 
 #[cfg(test)]
 #[path = "sweep_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "sweep_walk_tests.rs"]
+mod walk_tests;

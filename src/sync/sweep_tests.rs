@@ -289,7 +289,7 @@ fn healthy_sync_walks_the_tree_exactly_once_with_unreconciled_events() {
         .expect("project registered by the first sync");
     state.set_health(WatcherHealth::Healthy);
 
-    let walks = super::count_walks(project.path());
+    let walks = super::walks::count_walks(project.path());
     write(project.path(), "lib.rs", b"fn changed_and_longer() {}\n");
     state.mark_dirty("lib.rs".to_owned());
     let _second = sync_project(&manager, &project);
@@ -477,7 +477,7 @@ fn a_stat_failing_with_something_other_than_not_found_leaves_the_file_unverifiab
     let walked = super::walked_file(project.path(), Ok(entry), &mut HashSet::new());
 
     assert!(
-        matches!(&walked, super::Walked::Unverifiable(path) if path == "d/a.rs"),
+        matches!(&walked, Ok(super::Walked::Unverifiable(path)) if path == "d/a.rs"),
         "a non-NotFound stat failure must not classify the file as gone"
     );
 }
@@ -492,7 +492,7 @@ fn a_walked_file_that_vanished_before_its_stat_is_skipped_so_its_row_is_deleted(
     let walked = super::walked_file(project.path(), Ok(entry), &mut HashSet::new());
 
     assert!(
-        matches!(walked, super::Walked::Skipped),
+        matches!(walked, Ok(super::Walked::Skipped)),
         "NotFound is the one stat error that means deleted"
     );
 }

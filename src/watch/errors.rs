@@ -35,7 +35,7 @@ pub(super) fn log_notify_failure(op: &'static str, root_id: &str, error: &notify
 /// for `WithPath` is `{path}: {err}` and `Loop` embeds both paths (ignore
 /// 0.4.33, `lib.rs:338-340`), so a walker error is never formatted into a
 /// log line.
-pub(super) fn ignore_error_kind(error: &ignore::Error) -> &'static str {
+pub(crate) fn ignore_error_kind(error: &ignore::Error) -> &'static str {
     match error {
         ignore::Error::WithLineNumber { err, .. }
         | ignore::Error::WithDepth { err, .. }
@@ -50,7 +50,7 @@ pub(super) fn ignore_error_kind(error: &ignore::Error) -> &'static str {
 }
 
 /// The path an `ignore::Error` carries, if any, for redacted correlation.
-pub(super) fn ignore_error_path(error: &ignore::Error) -> Option<&Path> {
+pub(crate) fn ignore_error_path(error: &ignore::Error) -> Option<&Path> {
     match error {
         ignore::Error::WithPath { path, .. } => Some(path),
         ignore::Error::WithLineNumber { err, .. } | ignore::Error::WithDepth { err, .. } => {

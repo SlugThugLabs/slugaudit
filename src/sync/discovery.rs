@@ -1,4 +1,4 @@
-use crate::ignore_rules::{indexable_walker, is_excluded_path};
+use crate::ignore_rules::indexable_walker;
 use crate::model::process_limits;
 use crate::util::Deadline;
 use std::collections::HashSet;
@@ -34,23 +34,39 @@ pub struct DiscoveredFile {
 /// A file the walk found but could not include, with why. Discovery
 /// continues past these rather than failing the entire project — one
 /// unreadable or non-UTF8-named file must not make every file in the
-/// project unqueryable.
+/// project unqueryable. Never produced for a walk-level error: a directory
+/// (or the root) that could not be listed fails discovery instead, because
+/// its absence is indistinguishable from deletion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedFile {
-    /// Absolute path of the skipped entry; the project root for a failed walk
-    /// entry, which has no file behind it.
+    /// Absolute path of the skipped file.
     pub absolute_path: PathBuf,
     /// Why the entry was skipped, as carried into the publish report and log.
     pub reason: String,
 }
 
 #[derive(Debug, Error)]
-/// Walk-level failures. Unrepresentable or unreadable paths become reported
-/// `skipped` entries; a failed root read aborts discovery with the reason.
+/// Walk-level failures. Unrepresentable or unreadable *files* become
+/// reported `skipped` entries; a walk error or an ignore file the walker
+/// could not apply aborts discovery with the reason, because those leave
+/// the walked set incomplete in a way no skip entry can represent.
 pub enum DiscoveryError {
-    /// The underlying walk failed outright.
+    /// The walker could not list a directory (or the project root).
     #[error("failed to walk project files: {0}")]
     Walk(#[from] ignore::Error),
+    /// The walker could not apply an ignore file: its rules were dropped,
+    /// so the walked set may include paths the project meant to exclude.
+    /// Fails closed rather than index a set the ignore rules refute.
+    #[error(
+        "failed to apply the project's ignore rules ({kind}); refusing to index a file set \
+         those rules may exclude"
+    )]
+    IgnoreRules {
+        /// Static `ignore::Error` category, never its path-bearing Display.
+        kind: &'static str,
+        /// The ignore file the walker could not apply, when it named one.
+        path: Option<PathBuf>,
+    },
     /// A discovered file could not be read while sniffing it.
     #[error("failed to read {path}: {source}")]
     Read {
@@ -89,13 +105,9 @@ impl DiscoveryError {
     }
 }
 
-fn is_excluded(relative: &Path) -> bool {
-    // The hardcoded exclusion set (SlugAudit's own data dir, VCS
-    // internals, scratch files) lives in `crate::ignore_rules` and is
-    // shared with the watcher and incremental reconcile, so all three
-    // paths agree on what is indexable.
-    is_excluded_path(&relative.to_string_lossy())
-}
+pub(super) use super::discovery_collect::collect_walk_entry;
+#[cfg(test)]
+pub(super) use super::discovery_collect::strip_project_prefix;
 
 /// The project-relative path of a file the walk skipped, when that path can
 /// be stored as text. `None` for a non-UTF-8 name, a path outside the root,
@@ -174,88 +186,12 @@ pub(crate) fn sniff_kind(path: &Path) -> Result<FileKind, DiscoveryError> {
 ///
 /// # Errors
 ///
-/// Returns an error only if the walk itself fails outright (e.g. the
-/// project root isn't readable at all).
+/// Returns an error if the walk cannot list a directory (or the root), or
+/// cannot apply an ignore file. A partial walked set is not a file set — a
+/// publish would read the missing paths as deleted — so discovery fails
+/// closed instead.
 pub fn discover(root: &Path) -> Result<(Vec<DiscoveredFile>, Vec<SkippedFile>), DiscoveryError> {
     discover_with_deadline(root, &Deadline::after(process_limits().max_sync_wall_clock))
-}
-
-/// The walked path's project-relative form, or the skip to report when the
-/// walker yielded a path outside the root. `strip_prefix` is lexical, so
-/// this should always succeed for the crate's own walker; a walker (or
-/// future walker) that normalizes paths differently is surfaced in
-/// `skipped` instead of being dropped silently.
-fn strip_project_prefix<'a>(root: &Path, absolute_path: &'a Path) -> Result<&'a Path, SkippedFile> {
-    absolute_path.strip_prefix(root).map_err(|_| SkippedFile {
-        reason: DiscoveryError::NotRelative(absolute_path.to_path_buf()).to_string(),
-        absolute_path: absolute_path.to_path_buf(),
-    })
-}
-
-/// Routes one walker entry into `discovered` or `skipped`, preserving the
-/// walk's per-file skip reasons. A non-file entry (a directory, a symlink)
-/// is ignored.
-fn collect_walk_entry(
-    root: &Path,
-    entry: Result<ignore::DirEntry, ignore::Error>,
-    discovered: &mut Vec<DiscoveredFile>,
-    skipped: &mut Vec<SkippedFile>,
-) {
-    let entry = match entry {
-        Ok(entry) => entry,
-        Err(error) => {
-            skipped.push(SkippedFile {
-                absolute_path: root.to_path_buf(),
-                reason: DiscoveryError::Walk(error).to_string(),
-            });
-            return;
-        }
-    };
-    if entry.file_type().is_some_and(|kind| kind.is_file()) {
-        collect_file_entry(root, entry.path(), discovered, skipped);
-    }
-}
-
-/// Applies the include rules to one regular file and records it, or the
-/// reason it was skipped.
-fn collect_file_entry(
-    root: &Path,
-    entry_path: &Path,
-    discovered: &mut Vec<DiscoveredFile>,
-    skipped: &mut Vec<SkippedFile>,
-) {
-    let absolute_path = entry_path.to_path_buf();
-    let relative_path = match strip_project_prefix(root, &absolute_path) {
-        Ok(relative_path) => relative_path,
-        Err(skipped_file) => {
-            skipped.push(skipped_file);
-            return;
-        }
-    };
-    if is_excluded(relative_path) {
-        return;
-    }
-    let kind = match sniff_kind(&absolute_path) {
-        Ok(kind) => kind,
-        Err(error) => {
-            skipped.push(SkippedFile {
-                reason: error.to_string(),
-                absolute_path,
-            });
-            return;
-        }
-    };
-    match relative_path.to_str() {
-        Some(relative_path) => discovered.push(DiscoveredFile {
-            relative_path: relative_path.replace('\\', "/"),
-            absolute_path,
-            kind,
-        }),
-        None => skipped.push(SkippedFile {
-            reason: DiscoveryError::NonUtf8Path(absolute_path.clone()).to_string(),
-            absolute_path,
-        }),
-    }
 }
 
 /// [`discover`] under an explicit wall-clock [`Deadline`], checked once per
@@ -281,7 +217,7 @@ pub(crate) fn discover_with_deadline(
                 elapsed_ms: elapsed.as_millis(),
             });
         }
-        collect_walk_entry(root, entry, &mut discovered, &mut skipped);
+        collect_walk_entry(root, entry, &mut discovered, &mut skipped)?;
     }
     discovered.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     skipped.sort_by(|a, b| a.absolute_path.cmp(&b.absolute_path));

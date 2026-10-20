@@ -30,7 +30,7 @@
 //! reconciliation). If so, it takes another barrier and reconciles again.
 //! This loops until the watcher sequence stabilizes.
 
-mod errors;
+pub(crate) mod errors;
 mod event_filter;
 mod manager;
 mod path;

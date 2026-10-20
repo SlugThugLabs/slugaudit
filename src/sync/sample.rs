@@ -35,10 +35,15 @@ pub enum SampleError {
         #[source]
         source: std::io::Error,
     },
-    #[error("{path} is {size} bytes, exceeding the {limit}-byte per-file import ceiling")]
+    /// `observed` is the exact stat size when the stat itself exceeded the
+    /// cap, or the bounded read length (`limit + 1`) when the file grew in
+    /// the stat/read window. It is a lower bound on the file's size in the
+    /// growth case and never an exact size there, so the message says
+    /// "at least" rather than claiming a size the read did not establish.
+    #[error("{path} exceeds the {limit}-byte per-file import ceiling (at least {observed} bytes)")]
     TooLarge {
         path: PathBuf,
-        size: u64,
+        observed: u64,
         limit: u64,
     },
 }
@@ -79,7 +84,7 @@ pub(super) fn sample_file(
     if size > limits.max_file_bytes {
         return Err(SampleError::TooLarge {
             path: file.absolute_path.clone(),
-            size,
+            observed: size,
             limit: limits.max_file_bytes,
         });
     }
@@ -96,7 +101,7 @@ pub(super) fn sample_file(
             },
             util::CappedReadError::TooLarge { limit, observed } => SampleError::TooLarge {
                 path: file.absolute_path.clone(),
-                size: observed,
+                observed,
                 limit,
             },
         },

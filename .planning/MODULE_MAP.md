@@ -90,6 +90,8 @@ src/
 │   ├── manager_health_support.rs  event barrier, post-sync revision read, sweep-error mapping
 │   ├── manager_meta.rs       metadata row, session purge, publish_from_scratch
 │   ├── sweep.rs              the stat sweep — the freshness backstop
+│   ├── sweep_walks.rs        test-only per-root walk counters for the sweep
+│   ├── sweep_walk_tests.rs   fail-closed walk coverage for the stat sweep
 │   ├── sweep_reconcile.rs    apply the sweep's findings under compare-and-swap
 │   ├── reconcile/            dirty/deleted reconciliation
 │   │   ├── mod.rs            re-exports + MAX_BARRIER_LOOPS
@@ -100,6 +102,7 @@ src/
 │   │   ├── barrier.rs        event-barrier sync loop
 │   │   └── queries.rs        SQL the pipeline reads
 │   ├── discovery.rs          filesystem walk with extension/limit filters
+│   ├── discovery_collect.rs  walker entry routing; walk/ignore failures fail discovery
 │   ├── hash.rs               hash types + in-memory digests (re-exports hash_file/stat_identity)
 │   ├── hash_io.rs            bounded streaming hash_file + stat_identity
 │   ├── sample.rs             read-file-with-budgets

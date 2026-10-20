@@ -77,7 +77,11 @@ pub(super) fn failure_fields(error: &PublishError) -> (&'static str, Option<&Pat
 
 fn discovery_failure_fields(error: &DiscoveryError) -> (&'static str, Option<&Path>) {
     match error {
-        DiscoveryError::Walk(_) => ("discovery_walk", None),
+        DiscoveryError::Walk(error) => (
+            "discovery_walk",
+            crate::watch::errors::ignore_error_path(error),
+        ),
+        DiscoveryError::IgnoreRules { path, .. } => ("discovery_ignore_rules", path.as_deref()),
         DiscoveryError::Read { path, .. } => ("discovery_read", Some(path)),
         DiscoveryError::NotRelative(path) => ("discovery_not_relative", Some(path)),
         DiscoveryError::NonUtf8Path(path) => ("discovery_non_utf8_path", Some(path)),

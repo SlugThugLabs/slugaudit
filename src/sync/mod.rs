@@ -5,6 +5,7 @@
 mod analyze;
 mod classify;
 mod discovery;
+mod discovery_collect;
 mod hash;
 mod hash_io;
 mod manager;
