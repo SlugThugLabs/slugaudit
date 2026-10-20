@@ -39,15 +39,17 @@ pub(crate) const SQLITE_MAX_VALUE_BYTES: u64 = 1_000_000_000;
 /// Process-wide resource ceilings for import, query, and structure work.
 /// Defaults are intentionally conservative for a single-project MCP server.
 ///
-/// Every field can be overridden at startup via an environment variable
-/// (see [`ResourceLimits::from_env`]). When no override is present, the
-/// compile-time default is used. The pattern is `SLUGAUDIT_<FIELD>` where
-/// `<FIELD>` is the snake_case name of the field — e.g.
-/// `SLUGAUDIT_MAX_FILE_BYTES=134217728` doubles the per-file size cap.
+/// Every field except `evidence` can be overridden at startup via an
+/// environment variable (see [`process_limits`]). When no override is
+/// present, the compile-time default is used. The pattern is
+/// `SLUGAUDIT_<FIELD>` where `<FIELD>` is the snake_case name of the field —
+/// e.g. `SLUGAUDIT_MAX_FILE_BYTES=134217728` doubles the per-file size cap.
 /// Duration fields accept a number of seconds (whole seconds only).
-/// Only explicitly-set variables override; defaults are never altered.
-/// Single-value overrides are clamped to `SQLITE_MAX_VALUE_BYTES` with a
-/// warning, because SQLite cannot store a larger value.
+/// Only explicitly-set variables override; defaults are never altered. A
+/// variable that is set but cannot be read or parsed logs a warning naming
+/// the variable, and the default applies. Single-value overrides are
+/// clamped to `SQLITE_MAX_VALUE_BYTES` with a warning, because SQLite
+/// cannot store a larger value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceLimits {
     /// Largest single file that will be fully read into memory for hashing
@@ -152,15 +154,16 @@ pub fn process_limits() -> &'static ResourceLimits {
 impl ResourceLimits {
     /// Creates limits by taking the compile-time default and overriding
     /// any fields that have a corresponding `SLUGAUDIT_*` env var set.
-    /// Unset or unparseable env vars are silently ignored (the default
-    /// is used), so a typo in an env var name is harmless — the old
-    /// limit applies. Duration fields are parsed as whole seconds.
+    /// Unset variables leave the default unchanged, so a typo in a
+    /// variable name is harmless — the old limit applies. A variable that
+    /// is set but cannot be read or parsed logs a warning naming it, and
+    /// the default applies; an operator's intended override is never
+    /// discarded silently. Duration fields are parsed as whole seconds.
     ///
-    /// This is the intended production entry point: callers that
-    /// currently use `ResourceLimits::default()` should switch to
-    /// `ResourceLimits::from_env()`.
+    /// Internal to [`process_limits`], the production entry point that
+    /// caches the result; this is not public API.
     #[must_use]
-    pub fn from_env() -> Self {
+    fn from_env() -> Self {
         let mut limits = base_limits();
         apply_import_overrides(&mut limits);
         apply_query_overrides(&mut limits);

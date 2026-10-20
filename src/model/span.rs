@@ -9,10 +9,10 @@ pub struct Position {
     /// A **character** offset from the start of the line (counting Unicode
     /// scalar values, i.e. `str::chars()`), not a byte offset. Tree-sitter's
     /// own `Point::column` is a byte offset, so every caller that derives a
-    /// `Position` from a Tree-sitter node must convert via [`char_column`]
-    /// rather than copying `Point::column` directly — otherwise any source
-    /// line containing a multi-byte UTF-8 character reports a column too
-    /// large for everything after it on that line.
+    /// `Position` from a Tree-sitter node must convert via
+    /// [`LineIndex::position`] rather than copying `Point::column` directly —
+    /// otherwise any source line containing a multi-byte UTF-8 character
+    /// reports a column too large for everything after it on that line.
     pub column: u32,
 }
 
@@ -41,8 +41,13 @@ pub fn saturating_u32(value: usize) -> u32 {
 /// or past the end of the source, is floored to the nearest boundary rather
 /// than panicking. A `structure` call that dies on real project content is
 /// worse than a column measured one character early.
+///
+/// Used as the test oracle for [`LineIndex`]; production callers use
+/// [`LineIndex::position`], which answers in O(log lines + 256 bytes)
+/// instead of walking back to the line start on every call.
+#[cfg(test)]
 #[must_use]
-pub fn char_column(source: &str, byte_offset: usize) -> u32 {
+pub(crate) fn char_column(source: &str, byte_offset: usize) -> u32 {
     let mut offset = byte_offset.min(source.len());
     // Offset 0 is always a char boundary, so this terminates.
     while !source.is_char_boundary(offset) {
@@ -61,12 +66,13 @@ const BLOCK_BYTES: usize = 256;
 /// Per-file line/column lookup, built once in O(n) and answering each query
 /// in O(log lines + `BLOCK_BYTES`) — independent of line length.
 ///
-/// [`char_column`] walks back to the line start per call, so a minified
-/// single-line file with one evidence item per token costs line-length
-/// steps per item: quadratic in file size. This index replaces it for every
-/// bulk caller. Results are identical to [`char_column`] and to counting
-/// `\n` bytes before the offset, including for offsets past the end of the
-/// source or inside a multi-byte character (floored to the boundary).
+/// Counting characters back to the line start on every call costs
+/// line-length steps per query, so a minified single-line file with one
+/// evidence item per token is quadratic in file size. This index replaces
+/// that for every bulk caller. Results are identical to the per-call count
+/// and to counting `\n` bytes before the offset, including for offsets past
+/// the end of the source or inside a multi-byte character (floored to the
+/// boundary).
 #[derive(Debug)]
 pub struct LineIndex<'a> {
     source: &'a str,
@@ -115,8 +121,8 @@ impl<'a> LineIndex<'a> {
         saturating_u32(self.line_index(byte_offset.min(self.source.len())))
     }
 
-    /// Character column of `byte_offset`; equal to
-    /// [`char_column`]`(source, byte_offset)`.
+    /// Character column of `byte_offset`, counted in Unicode scalar values
+    /// from the start of its line.
     #[must_use]
     pub fn column(&self, byte_offset: usize) -> u32 {
         self.position(byte_offset).column
@@ -220,9 +226,10 @@ impl Span {
 
     /// Length of the span in bytes, or `None` when `end_byte` precedes
     /// `start_byte` (possible for a deserialized `Span`, which bypasses
-    /// [`Span::new`]).
+    /// [`Span::new`]). Used by the span tests; no production caller.
+    #[cfg(test)]
     #[must_use]
-    pub fn byte_len(self) -> Option<u64> {
+    pub(crate) fn byte_len(self) -> Option<u64> {
         self.end_byte.checked_sub(self.start_byte)
     }
 }

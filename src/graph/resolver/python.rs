@@ -72,7 +72,16 @@ pub(crate) fn resolve_python_relative(
     if remainder.is_empty() {
         // `from . import` → `__init__.py` in the current package.
         if let Some(index) = config.index_filename {
-            let init_path = format!("{path}/{index}.py");
+            // The project root is itself a package when the walk reaches
+            // it: `.` from a root-level file, or `..` from a first-level
+            // package, leaves `path` empty. Its marker is `__init__.py`,
+            // not `/__init__.py` — the latter can never equal a stored
+            // project-relative path, so the edge was reported Unresolved.
+            let init_path = if path.is_empty() {
+                format!("{index}.py")
+            } else {
+                format!("{path}/{index}.py")
+            };
             if known_paths.contains(init_path.as_str()) {
                 return Resolution {
                     kind: ResolutionKind::Resolved,

@@ -236,3 +236,23 @@ fn python_double_dot_from_a_first_level_package_reaches_the_root_module() {
 
     assert_eq!(result.to_relative_path.as_deref(), Some("bar.py"));
 }
+
+#[test]
+fn python_dot_import_at_the_project_root_resolves_the_root_package_init() {
+    let known = paths(&["__init__.py", "a.py"]);
+
+    let result = resolve_one("python", "a.py", ".", &known);
+
+    assert_eq!(result.kind.as_sql_text(), "Resolved");
+    assert_eq!(result.to_relative_path.as_deref(), Some("__init__.py"));
+}
+
+#[test]
+fn python_double_dot_from_a_first_level_package_resolves_the_root_package_init() {
+    let known = paths(&["__init__.py", "pkg/a.py"]);
+
+    let result = resolve_one("python", "pkg/a.py", "..", &known);
+
+    assert_eq!(result.kind.as_sql_text(), "Resolved");
+    assert_eq!(result.to_relative_path.as_deref(), Some("__init__.py"));
+}

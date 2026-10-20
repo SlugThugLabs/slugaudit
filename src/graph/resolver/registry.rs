@@ -72,15 +72,6 @@ pub(crate) fn get_resolver(language: &str) -> &'static dyn LanguageResolver {
     registry().get(language)
 }
 
-/// Returns true if a language-specific resolver (not the generic
-/// fallback) supports `language`.
-pub(crate) fn is_supported_language(language: &str) -> bool {
-    registry()
-        .specific_resolvers
-        .iter()
-        .any(|r| r.supports(language))
-}
-
 /// Resolves a single raw import source. Returns a `Resolution` — never
 /// panics or returns an error.
 pub(crate) fn resolve_one(

@@ -17,8 +17,7 @@
 //!   (`extract_quoted_string`, `module_path_to_fs_path`,
 //!   `candidate_paths`, `resolve_relative_path`).
 //! - [`registry`] — the `OnceLock`-backed resolver lookup and the
-//!   public entry points (`get_resolver`, `is_supported_language`,
-//!   `resolve_one`).
+//!   public entry points (`get_resolver`, `resolve_one`).
 //!
 //! Public API re-exported below so callers continue to use
 //! `crate::graph::resolver::Resolution` etc. without caring which
@@ -44,5 +43,5 @@ mod gate_tests;
 // are used by callers of this module, not directly inside `mod.rs`,
 // so the unused-import lint would otherwise flag every name here.
 pub(crate) use generic::LanguageResolver;
-pub(crate) use registry::{get_resolver, is_supported_language, resolve_one};
+pub(crate) use registry::{get_resolver, resolve_one};
 pub(crate) use types::{Resolution, ResolutionKind, external, pick, unresolved};

@@ -15,6 +15,6 @@ pub use parser::{
     EvidenceOrigin, ExtractionCompleteness, ParseOutcome, ParserAvailability, ParserRun,
 };
 pub use profile::{AuditProfile, limits_for_profile};
-pub use source::{FileMetadata, LanguageSelection, SourceIdentity, SourceSnapshot};
-pub use span::{LineIndex, Position, Span, SpanError, char_column, saturating_u32};
+pub use source::SourceIdentity;
+pub use span::{LineIndex, Position, Span, SpanError, saturating_u32};
 pub use system_ram::{SystemMemoryInfo, detect_system_memory};

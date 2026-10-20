@@ -40,8 +40,8 @@ impl AuditProfile {
 /// applies and nothing needs saying. A variable that IS set but is not a
 /// known profile (or cannot be read) is operator intent that would
 /// otherwise vanish silently, so it warns — the same rule
-/// `ResourceLimits::from_env` applies to the numeric overrides, and the
-/// same rule AGENTS.md non-negotiable #3 states: reported, or it is a bug.
+/// `process_limits` applies to the numeric overrides, and the same rule
+/// AGENTS.md non-negotiable #3 states: reported, or it is a bug.
 #[must_use]
 pub(crate) fn profile_from_env() -> Option<AuditProfile> {
     match std::env::var("SLUGAUDIT_PROFILE") {
