@@ -183,7 +183,10 @@ pub struct CompactLeadRow {
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum LeadRows {
+    /// Each row is a [`LeadRow`] carrying the mechanic's clipped `detail`
+    /// text.
     Full(Vec<LeadRow>),
+    /// Each row is a [`CompactLeadRow`] carrying no per-row text.
     Compact(Vec<CompactLeadRow>),
 }
 

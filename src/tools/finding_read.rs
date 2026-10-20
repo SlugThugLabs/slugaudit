@@ -49,19 +49,35 @@ pub struct FindingReadRequest {
 /// any of this text.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct FindingReadEntry {
+    /// Row id of the finding in this project's `findings` table; a restated
+    /// finding keeps its id.
     pub id: i64,
+    /// Project-relative path of the file the finding is about.
     pub path: String,
+    /// One-based, inclusive line where the finding starts.
     pub line_start: u32,
+    /// One-based, inclusive line where the finding ends.
     pub line_end: u32,
+    /// Severity text exactly as the calling agent supplied it; SlugAudit
+    /// defines no scale and adds no judgment.
     pub severity: String,
+    /// Category text exactly as the calling agent supplied it; SlugAudit
+    /// defines no taxonomy.
     pub category: String,
+    /// One-line title exactly as the calling agent supplied it.
     pub title: String,
+    /// Description text exactly as the calling agent supplied it; possibly
+    /// clipped — see `detail_clipped`.
     pub description: String,
     /// True when `description` was clipped to fit this page's byte budget:
     /// the returned text is then a character-boundary prefix of the stored
     /// description. False means the whole stored text is present.
     pub detail_clipped: bool,
+    /// `current` while the file's content hash still equals `source_hash`;
+    /// `stale` once a sync sees a different hash.
     pub status: String,
+    /// Content hash of the file at the revision the finding was written
+    /// against; a sync that sees a different hash marks the finding `stale`.
     pub source_hash: String,
 }
 
@@ -69,6 +85,8 @@ pub struct FindingReadEntry {
 /// One page of the current session's findings, read against the current
 /// revision.
 pub struct FindingReadResponse {
+    /// Revision id the page was read from; compare it across pages to detect
+    /// a change that invalidates paging.
     pub revision_id: String,
     /// This page's findings, ordered by id.
     pub findings: Vec<FindingReadEntry>,

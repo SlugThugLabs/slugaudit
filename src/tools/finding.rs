@@ -67,9 +67,16 @@ pub struct FindingRequest {
 /// changes, without anyone having to remember to check.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct FindingResponse {
+    /// Row id of the stored finding in this project's `findings` table; a
+    /// restated finding keeps the id of the row it refreshed.
     pub id: i64,
+    /// Revision id the finding was recorded against (`evidence_revision`).
     pub revision_id: String,
+    /// Content hash of the indexed file the finding was attached to; a later
+    /// hash change marks the finding `stale`.
     pub source_hash: String,
+    /// `current` for every successful write: the file's hash was verified
+    /// while the write ran.
     pub status: &'static str,
 }
 

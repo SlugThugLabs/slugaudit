@@ -82,7 +82,11 @@ pub struct QueryResponse {
     /// a revision change that invalidates `next_offset` paging, or pass it
     /// back as `expected_revision` to have the change refused.
     pub revision_id: String,
+    /// This page's rows, one JSON object per row with column names as keys,
+    /// in the query's own row order.
     pub rows: Vec<serde_json::Value>,
+    /// True when the page byte budget stopped the result before it ended;
+    /// `next_offset` then continues from the next row.
     pub truncated: bool,
     /// Use this as the next request's `offset` when present. Only valid
     /// while `revision_id` is unchanged (see the paging contract above).

@@ -42,8 +42,15 @@ static TOOL_CALL_TOTAL_MS: AtomicU64 = AtomicU64::new(0);
 /// lifetime of the process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolCounters {
+    /// Tool calls served since process start, successful and errored alike.
     pub call_count: u64,
+    /// Tool calls that returned an error since process start. Only call-level
+    /// errors are counted; a consumer disconnect or malformed MCP framing
+    /// never reaches the work closure and does not bump this counter.
     pub error_count: u64,
+    /// Total time spent inside tool-call work closures, in milliseconds.
+    /// Divide by `call_count` for an average; permit-wait latency is not
+    /// included.
     pub total_ms: u64,
 }
 

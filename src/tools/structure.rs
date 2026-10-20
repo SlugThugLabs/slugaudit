@@ -93,8 +93,13 @@ pub struct StructureMatch {
 /// The matches for one structure call, the revision they were read from,
 /// and every cut that bounded them, each with the way past it.
 pub struct StructureResponse {
+    /// Revision id the matches were read from; pass it back as
+    /// `expected_revision` when paging.
     pub revision_id: String,
+    /// The grammar this query ran against.
     pub language: String,
+    /// This page's matches in scan order. The first match is always returned,
+    /// so paging always advances.
     pub matches: Vec<StructureMatch>,
     /// True when more matches exist past this page (page bytes or the match
     /// cap); `next_offset` continues. False means this scan window is done.

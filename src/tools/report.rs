@@ -73,6 +73,7 @@ const MAX_PATH_BYTES: usize = 32 * 1024;
 /// about it. No score, no risk leads, no safe/unsafe claim.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ReportResponse {
+    /// Revision id of the index this snapshot was read from.
     pub revision_id: String,
     /// Rows in `files`: every discovered file whose project-relative path is
     /// representable as UTF-8, whether or not it was indexed. A discovered
@@ -86,8 +87,14 @@ pub struct ReportResponse {
     /// rows by reason, rows by extraction completeness, and a partial-index
     /// flag. See [`CompletenessEnvelope`].
     pub completeness: CompletenessEnvelope,
+    /// Detected language of each `files` row, with its file count; grouped by
+    /// language and ordered by language name. Rows with no detected language
+    /// are not listed.
     pub languages: Vec<LanguageCount>,
+    /// Evidence rows by `kind` across the current revision, ordered by kind.
     pub evidence_counts: Vec<EvidenceKindCount>,
+    /// Indexed files whose parser was unavailable or whose parse failed — the
+    /// same predicate `parser_failure_files` lists, without the list cap.
     pub parser_failure_count: i64,
     /// Up to `MAX_PARSER_FAILURE_FILES` files with parse failures, so the
     /// AI can see whether failures are concentrated in scratch/temp files
@@ -97,6 +104,10 @@ pub struct ReportResponse {
     /// Larger than the returned list's length means the list was truncated at
     /// `MAX_PARSER_FAILURE_FILES`; equal means the list is complete.
     pub parser_failure_files_total: i64,
+    /// Rows in `findings` with `status = 'current'`: findings whose file
+    /// content hash still matches the hash they were written against.
+    /// Findings invalidated by a later content change are `stale` and are not
+    /// counted.
     pub open_finding_count: i64,
     /// How many import edges are Resolved vs Unresolved vs External — a
     /// key asymmetry signal. A project with mostly External/Unresolved

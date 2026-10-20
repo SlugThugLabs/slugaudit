@@ -25,6 +25,7 @@ use serde::Serialize;
 pub struct FileKindCount {
     /// One of `indexed`, `binary`, `skipped` — `files.file_kind`.
     pub kind: String,
+    /// Number of `files` rows carrying this `file_kind`.
     pub count: i64,
 }
 
@@ -33,6 +34,7 @@ pub struct FileKindCount {
 pub struct FileClassCount {
     /// One of `authored`, `generated`, `vendored` — `files.file_class`.
     pub class: String,
+    /// Number of `files` rows carrying this `file_class`.
     pub count: i64,
 }
 
@@ -44,6 +46,7 @@ pub struct SkipReasonCount {
     /// `stat_failed` (the stat failed, so `files.byte_len` is NULL: size
     /// unknown, not 0). Empty when a skipped row carries no recorded reason.
     pub reason: String,
+    /// Number of skipped `files` rows with this `reason`.
     pub count: i64,
 }
 
@@ -55,6 +58,7 @@ pub struct CompletenessCount {
     /// — the file is readable even though it has no structural evidence.
     /// `Unavailable` means no content is retained at all (binary, or skipped).
     pub extraction_completeness: String,
+    /// Number of `files` rows with this `extraction_completeness` value.
     pub count: i64,
 }
 

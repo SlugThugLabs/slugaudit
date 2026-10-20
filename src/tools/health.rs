@@ -30,7 +30,6 @@
 //!
 //! `phase` and `remedy` summarize the first two groups. `system_memory` is
 //! host state, reported because it sizes the adaptive import budget.
-// slugaudit-line-exception: approved-by=slugthug; reason=health is the schema-defining tool; Request+Response+phase+derivation live together so the schema isn't split from its only consumer
 
 use crate::sync;
 use crate::watch;
