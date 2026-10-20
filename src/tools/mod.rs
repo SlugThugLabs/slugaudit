@@ -270,13 +270,13 @@ mod tests {
         ]);
     }
 
-    #[test]
-    fn fetches_a_fresh_snapshot_with_zero_initial_state() {
-        // The counters are all-zero at process start; this test verifies
-        // the accessor surface compiles and returns a snapshot rather
-        // than racing other tests. The exact accumulated value is not
-        // asserted — other tests bump the counters, and we cannot reset
-        // them without forking the AtomicU64 to per-test locals.
-        let _snapshot = ToolCounters::snapshot();
-    }
+    // `ToolCounters` is deliberately not tested here. Its three counters are
+    // process-wide `AtomicU64`s that any test in this binary may bump and
+    // there is no reset (adding one would be a production test hook), so a
+    // zero-initial-state assertion cannot be pinned in the shared test
+    // process. The snapshot/record delta contract is covered by
+    // `tool_counters_record_bumps_call_and_total_counts`,
+    // `tool_counters_record_bumps_error_count_on_error` and
+    // `tool_counters_always_return_non_decreasing_after_a_bump` in
+    // `src/tools/health_tests.rs`.
 }
