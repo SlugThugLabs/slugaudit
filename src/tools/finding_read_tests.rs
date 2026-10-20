@@ -232,6 +232,50 @@ fn an_oversized_read_path_or_file_is_a_typed_error() {
 }
 
 #[test]
+fn finding_read_refuses_an_offset_past_the_supported_maximum() {
+    // SQLite reads an integer literal too large for i64 as a REAL, which
+    // would page from an unpredictable position instead of failing — the
+    // current session's rows would come back wrong with no error.
+    with_stable_session(|| {
+        let project = activated_project("lib.rs", b"fn main() {}\n");
+        let manager = sync::SourceSyncManager::default();
+        write_finding(&project, "lib.rs", "paging guard", &manager);
+
+        let at = |offset: usize| {
+            finding_read(
+                &Parameters(FindingReadRequest {
+                    path: project.path().to_string_lossy().into_owned(),
+                    file: None,
+                    offset,
+                }),
+                &crate::progress::NoopProgressSink,
+                &manager,
+            )
+            .map(|Json(response)| response)
+        };
+
+        let error = at(i64::MAX as usize + 1).expect_err("an out-of-range offset is refused");
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert_eq!(
+            error.message,
+            format!(
+                "offset {} exceeds the maximum supported page offset ({}); \
+                 page from the start or from a returned next_offset",
+                i64::MAX as usize + 1,
+                i64::MAX
+            ),
+            "the guard names the offending value and the bound",
+        );
+
+        // The bound itself is still usable and yields no rows at all, not
+        // rows from a floating-point position.
+        let page = at(i64::MAX as usize).expect("the maximum offset is accepted");
+        assert!(page.findings.is_empty(), "no finding lives at that offset");
+        assert!(page.next_offset.is_none());
+    });
+}
+
+#[test]
 fn a_missing_findings_table_is_an_internal_error() {
     let mut connection = Connection::open_in_memory().expect("in-memory database");
     let tx = connection.transaction().expect("transaction");

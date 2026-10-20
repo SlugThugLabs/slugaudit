@@ -2,7 +2,9 @@
 //! it, and that a fresh session wipes the prior session's notes.
 //! Pulled out of `finding_tests.rs` to keep that file under the
 //! 200-code-line soft cap while still exercising the cross-session
-//! poisoning defense end to end.
+//! poisoning defense end to end. It also holds the per-field text-cap
+//! assertions, which no longer fit under `finding_tests.rs`'s 500-code-line
+//! test cap.
 use super::*;
 use crate::tools::context::override_session_id_for_test;
 use crate::tools::test_support::activated_project;
@@ -22,6 +24,46 @@ fn base_request(project: &tempfile::TempDir, file: &str) -> FindingRequest {
         category: "correctness".to_owned(),
         title: "Reviewed conclusion".to_owned(),
         description: "A conclusion the AI actually checked.".to_owned(),
+    }
+}
+
+/// `check_field` caps every caller-supplied text field at its own limit.
+/// The exact message is asserted so a swapped cap (for example `severity`
+/// checked against `MAX_TITLE_CHARS`) cannot pass.
+#[test]
+fn each_text_field_is_bounded_by_its_own_character_cap() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let cases = [
+        ("title", MAX_TITLE_CHARS),
+        ("description", MAX_DESCRIPTION_CHARS),
+        ("severity", MAX_SEVERITY_CHARS),
+        ("category", MAX_CATEGORY_CHARS),
+    ];
+    for (field, cap) in cases {
+        let mut request = base_request(&project, "lib.rs");
+        let value = "x".repeat(cap + 1);
+        match field {
+            "title" => request.title = value,
+            "description" => request.description = value,
+            "severity" => request.severity = value,
+            _ => request.category = value,
+        }
+
+        let error = match finding(
+            &Parameters(request),
+            &crate::progress::NoopProgressSink,
+            &crate::sync::SourceSyncManager::default(),
+        ) {
+            Ok(_) => panic!("{field} past its cap must error"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert_eq!(
+            error.message,
+            format!("{field} exceeds {cap} characters"),
+            "the message must name {field} and its own cap",
+        );
     }
 }
 

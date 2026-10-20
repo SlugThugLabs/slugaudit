@@ -8,6 +8,10 @@
 //! provides, so a future `tracing::info!(sql = %sql)` or
 //! `debug!(content = ...)` regression fails the suite instead of silently
 //! shipping source code into the server's stderr log.
+//!
+//! Each test captures at `DEBUG` (so a `debug!` regression is visible) and
+//! emits a control event that it then asserts was captured. An absence-only
+//! check on a blind capture would pass while proving nothing.
 
 use crate::store::test_capture::capture_at_level;
 use crate::tools::test_support::activated_project;
@@ -20,6 +24,21 @@ const SQL_SENTINEL: &str = "SENTINEL_SQL_9147";
 const FINDING_TITLE_SENTINEL: &str = "SENTINEL_TITLE_9147";
 const FINDING_DESC_SENTINEL: &str = "SENTINEL_DESC_9147";
 const SOURCE_SENTINEL: &str = "SENTINEL_SOURCE_9147";
+
+/// Emitted inside every capture below. Asserting it was captured proves the
+/// DEBUG capture is live, so the absence assertions cannot pass blind.
+const CAPTURE_CONTROL: &str = "SENTINEL_CAPTURE_CONTROL_9147";
+
+fn emit_capture_control() {
+    tracing::debug!(control = CAPTURE_CONTROL, "redaction capture control");
+}
+
+fn assert_capture_is_live(logs: &str) {
+    assert!(
+        logs.contains(CAPTURE_CONTROL),
+        "the DEBUG capture went blind; a leaked debug-level event would pass unseen:\n{logs}"
+    );
+}
 
 fn manager() -> crate::sync::SourceSyncManager {
     crate::sync::SourceSyncManager::default()
@@ -38,15 +57,17 @@ fn query_logging_never_emits_sql_text() {
     };
     let (result, logs) = capture_at_level(
         || {
+            emit_capture_control();
             crate::tools::query(
                 &Parameters(request),
                 &crate::progress::NoopProgressSink,
                 &manager(),
             )
         },
-        Level::INFO,
+        Level::DEBUG,
     );
     result.expect("query succeeds");
+    assert_capture_is_live(&logs);
     assert!(
         !logs.contains(SQL_SENTINEL),
         "the query tool leaked SQL text into logs:\n{logs}"
@@ -68,15 +89,17 @@ fn finding_logging_never_emits_finding_content() {
     };
     let (result, logs) = capture_at_level(
         || {
+            emit_capture_control();
             crate::tools::finding(
                 &Parameters(request),
                 &crate::progress::NoopProgressSink,
                 &manager(),
             )
         },
-        Level::INFO,
+        Level::DEBUG,
     );
     result.expect("finding records");
+    assert_capture_is_live(&logs);
     assert!(
         !logs.contains(FINDING_TITLE_SENTINEL) && !logs.contains(FINDING_DESC_SENTINEL),
         "the finding tool leaked AI-authored judgment content into logs:\n{logs}"
@@ -97,15 +120,17 @@ fn sync_and_report_logging_never_emits_source_content() {
     };
     let (result, logs) = capture_at_level(
         || {
+            emit_capture_control();
             crate::tools::report(
                 &Parameters(request),
                 &crate::progress::NoopProgressSink,
                 &manager(),
             )
         },
-        Level::INFO,
+        Level::DEBUG,
     );
     result.expect("report builds");
+    assert_capture_is_live(&logs);
     assert!(
         !logs.contains(SOURCE_SENTINEL),
         "the sync/report path leaked source content into logs:\n{logs}"
