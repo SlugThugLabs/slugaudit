@@ -52,14 +52,14 @@ fn write_and_report(
     note: Option<&str>,
 ) -> Result<(), ConnectError> {
     if let Err(err) = write_agent_config(agent, binary, home, note) {
-        report_failure(
+        return Err(report_failure(
             agent,
             binary,
             &write_action(agent, home),
             None,
-            &err.to_string(),
-        )?;
-        return Err(err);
+            None,
+            err,
+        ));
     }
     Ok(())
 }
@@ -125,27 +125,25 @@ fn run_installed_cli(
                 Ok(()) => Ok(()),
                 Err(file_err) => {
                     let why = format!("{cli_err}; the file fallback failed too: {file_err}");
-                    report_failure(
+                    return Err(report_failure(
                         agent,
                         binary,
                         &write_action(agent, home),
                         Some(&attempted),
-                        &why,
-                    )?;
-                    Err(cli_err)
+                        Some(why),
+                        cli_err,
+                    ));
                 }
             }
         }
-        Err(cli_err) => {
-            report_failure(
-                agent,
-                binary,
-                &attempted,
-                Some(&attempted),
-                &cli_err.to_string(),
-            )?;
-            Err(cli_err)
-        }
+        Err(cli_err) => Err(report_failure(
+            agent,
+            binary,
+            &attempted,
+            Some(&attempted),
+            None,
+            cli_err,
+        )),
     }
 }
 
@@ -154,18 +152,23 @@ fn write_action(agent: &AgentDef, home: Option<&Path>) -> String {
 }
 
 /// A failed attempt still ends with instructions, the source it came from, and
-/// the docs page — never a bare error. A failure to write that guidance is
-/// returned rather than dropped.
+/// the docs page — never a bare error. The source error is always returned; a
+/// failure to print the guidance is logged once instead of replacing it.
 fn report_failure(
     agent: &AgentDef,
     binary: &Path,
     attempted: &str,
     hint: Option<&str>,
-    why: &str,
-) -> Result<(), ConnectError> {
-    guidance::print_lines(&guidance::failure_lines(
-        agent, binary, attempted, hint, why,
-    ))
+    detail: Option<String>,
+    source: ConnectError,
+) -> ConnectError {
+    let why = detail.unwrap_or_else(|| source.to_string());
+    guidance::keep_source_error(
+        source,
+        guidance::print_lines(&guidance::failure_lines(
+            agent, binary, attempted, hint, &why,
+        )),
+    )
 }
 
 /// What a disconnect actually did, so the caller does not report success for
@@ -174,7 +177,7 @@ fn report_failure(
 pub enum DisconnectOutcome {
     /// At least one registration route was touched.
     Disconnected,
-    /// There was no home, config entry, or installed client CLI to remove.
+    /// There was no config entry and no installed client CLI to remove.
     NothingToDo,
 }
 
@@ -184,14 +187,12 @@ pub fn disconnect_agent(
     agent: &AgentDef,
     home: Option<&Path>,
 ) -> Result<DisconnectOutcome, ConnectError> {
-    let Some(home) = home else {
-        return Ok(DisconnectOutcome::NothingToDo);
-    };
     let mut touched = false;
     // Only entries slugaudit actually writes to carry a removable file entry,
     // and only where the written shape is established; detection-only paths
     // (`.claude.json`, `config.yaml`, `config.toml`) are left untouched.
-    if agent.writes_config_file()
+    if let Some(home) = home
+        && agent.writes_config_file()
         && agent.shape.write_section().is_some()
         && let Some(path) = agent.config.resolve(home)
     {

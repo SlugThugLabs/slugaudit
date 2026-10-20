@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::connect_agents::find_agent;
-use crate::connect_exec::connect_agent;
+use crate::connect_exec::{DisconnectOutcome, connect_agent, disconnect_agent};
 use std::path::{Path, PathBuf};
 
 fn cursor() -> crate::connect_agents::AgentDef {
@@ -382,6 +382,29 @@ fn a_failed_failure_output_print_keeps_the_source_error() {
     assert!(
         logs.contains("could not print the failure output"),
         "the lost output must be logged: {logs}"
+    );
+}
+
+/// The CLI remove route never needs a home, so a missing home must not suppress
+/// the installed client's own `mcp remove`.
+#[cfg(unix)]
+#[test]
+fn disconnecting_without_a_home_still_runs_the_installed_client_remove() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("bin dir");
+    let log = temp.path().join("claude-argv.log");
+    fake_cli(&bin_dir, "claude", 0);
+    let claude = find_agent("claude").expect("claude is registered");
+
+    let outcome = with_fake_cli(&bin_dir, &log, || disconnect_agent(&claude, None))
+        .expect("disconnect without a home");
+
+    assert_eq!(outcome, DisconnectOutcome::Disconnected);
+    assert_eq!(
+        std::fs::read_to_string(&log).expect("read argv log"),
+        "mcp remove -s user slugaudit\n",
+        "the installed client must run its own remove even without a home"
     );
 }
 
