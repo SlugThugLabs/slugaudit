@@ -11,6 +11,138 @@ commit, a path, or a command where possible.
 
 ---
 
+## 2026-10-19 — Wave 2 landed; final gate passed on `main` at `6728735`
+
+- **What:** wave 2 closed the six production-state gaps commissioned after
+  wave 1. The integrated tree at `6728735` (base `6241b43`) passed the full
+  gate: `cargo fmt --all -- --check`; `cargo clippy --all-targets
+  --all-features --locked -- -D warnings`; **1,174 tests passed, 0 failed, 1
+  ignored**; `cargo deny check` (one unmatched license exception warning);
+  `cargo machete`; **93.10%** line coverage (11,341 / 12,181; gate 83%);
+  `check_source_limits`; `check_no_duplicates`; `check_producer_coverage`;
+  `check_governance`; `check_version_consistency`; `check_docs_drift`;
+  `check_mcp_surface`; and `check_performance` at 0.98x–1.14x against the
+  20% threshold. All pass.
+- **Why:** the wave-1 tree could not pass `check_docs_drift` or
+  `check_mcp_surface` and carried a report walk, a closed-pipe CLI panic,
+  untested defensive arms, and a stale baseline. The final gate is the
+  acceptance evidence for closing them; a future reader should not have to
+  re-run the wave to learn the outcome.
+- **Where:** `.planning/archive/audit_2026-10-19_wave2_report.md`;
+  `.planning/PLAN.md` *Phase 4* and *Final gate*; commits `7a782de`,
+  `326ec9a`, `5d77856`, `b19f4a0`, `bac3d0a`, `1b2b671`, `ed58a4b`,
+  `6728735`.
+- **Reversible:** n/a — this records a gate result, not a design choice.
+
+## 2026-10-19 — Persist the unrepresentable-path count; schema version 7 → 8
+
+- **What:** `b19f4a0` added a disposable
+  `unrepresentable_paths (path BLOB PRIMARY KEY)` table and bumped
+  `CURRENT_SCHEMA_VERSION` from 7 to 8. Paths are raw bytes because a non-UTF-8
+  name has no text form. Full-publish discovery
+  (`src/sync/publish_attempt.rs`) and the healthy-path stat sweep
+  (`SweepReport.unrepresentable`, persisted in `src/sync/manager_health.rs`)
+  replace the set exactly, including removals; the public reconcile/drain
+  paths persist the sweep's set too. `report` now reads
+  `SELECT count(*) FROM unrepresentable_paths` inside its verified read
+  transaction and no longer calls `sync::discover`. Tests cover add → 1 →
+  remove → 0 through both full and watcher-backed syncs. `index_partial`
+  remains `count > 0 || skipped > 0`.
+- **Why:** the report was doing a bounded filesystem walk on every read path to
+  count paths the index cannot store. The count is derived, disposable state,
+  so persisting it keeps the database disposable (it is recomputed by sync) and
+  removes I/O from a read. A schema bump is the documented discard-and-rebuild
+  path, so an existing version-7 database rebuilds on first use; no migration
+  code is written.
+- **Where:** `b19f4a0`; `src/store/schema.sql`;
+  `src/store/migrations.rs`; `src/sync/publish.rs`
+  (`replace_unrepresentable_paths`); `src/sync/publish_attempt.rs`;
+  `src/sync/sweep.rs`; `src/sync/manager_health.rs`;
+  `src/tools/report.rs`; `src/tools/report_completeness.rs`.
+- **Reversible:** the table can be dropped with another schema bump; the
+  public response fields (`unrepresentable_path_count`, `index_partial`) stay.
+
+## 2026-10-19 — CLI output is fallible; a closed pipe is a clean exit
+
+- **What:** `bac3d0a` + `1b2b671` added `cli::out`, `cli::err`, `write_to`, and
+  `is_broken_pipe`. Every production `print!`/`println!`/`eprint!`/`eprintln!`
+  in the CLI, connect, install, and update files was replaced with a fallible
+  write and flush. A `BrokenPipe` anywhere in the error chain exits with status
+  0 and no error log; any other write failure propagates through the module's
+  typed error. `ConnectError::Io` and `InstallError::Io` expose their I/O error
+  through `source()` (Display unchanged) so the chain walk can classify it.
+  End to end: menu output piped into `head -c 10` exits 0 with empty stderr,
+  and `slugaudit help >/dev/full` exits 1 with the I/O error.
+- **Why:** a reader that closes the pipe has gone away; that is not a command
+  failure, and the previous `print!`/`println!` panicked on `EPIPE`. Other
+  write failures are real failures and must still be reported. The typed-error
+  `source()` change keeps the cause without changing user-facing messages.
+- **Where:** `bac3d0a`, `1b2b671`; `src/cli.rs`; `src/main.rs`;
+  `src/connect.rs`; `src/connect_exec.rs`; `src/install.rs`; `src/menu.rs`;
+  `src/prompt.rs`; `src/update.rs`; `src/lib.rs`.
+- **Reversible:** do not restore panicking writes; a new CLI output site must
+  use `cli::out`/`cli::err` or return its module's typed error.
+
+## 2026-10-19 — Failure-arm disposition: remove the dead, retain the live, accept the rest with a reason
+
+- **What:** `ed58a4b` closed the wave-1 unreachable-arm list:
+  - `SyncError::Revision` and `SyncError::Read` **removed** as provably
+    unused.
+  - `DiscoveryError::Walk` **retained**: it is constructed in
+    `src/sync/discovery.rs`'s skip path (`DiscoveryError::Walk(error)`), so
+    the wave-1 premise that it was dead was wrong.
+  - The connection `Configure` arms for `busy_timeout` and function
+    registration **accepted as unreachable/documented**: they fail only on
+    `SQLITE_NOMEM`/`SQLITE_MISUSE` from a NULL or invalid handle, which the
+    safe rusqlite API cannot produce hermetically; the 5-second timeout
+    behavior remains tested.
+  - The `finding` u32 line-count conversion and the `finding_read`
+    query-map bind failure remain **accepted** from wave 1 as unreachable for
+    storable content / valid bound parameters.
+  - Tested through pure helpers rather than production hooks: install's
+    `CurrentExe`/`Clock`, connect's `BinaryPath`, prompt flush, and update's
+    platform predicate (`ensure_platform_supported`).
+  - Tested through clean refactors: the stale-metadata discard path, the netfs
+    positive rejection (`reject_if_network(path, on_network)`), the context
+    read-transaction start, and project-control's discard/reopen path (its
+    serialize arm was removed by constructing the value directly).
+- **Why:** dead code should go; live code must not be removed because an audit
+  thought it was dead; a defensive arm that cannot be reached without an
+  invalid handle or OOM stays, documented at the site, rather than growing a
+  production-only test hook. No lint suppression was added.
+- **Where:** `ed58a4b`; `src/sync/manager.rs`; `src/sync/discovery.rs`;
+  `src/store/connection.rs`; `src/store/netfs.rs`;
+  `src/tools/context_transactions.rs`; `src/tools/project_control.rs`;
+  `src/tools/finding.rs`; `src/tools/finding_read.rs`; `src/install.rs`;
+  `src/connect.rs`; `src/update.rs`.
+- **Reversible:** re-add a removed variant only with a constructor and a test;
+  changing an acceptance needs a new decision entry.
+
+## 2026-10-19 — Fresh docs, generated surface and baseline, and durable audit evidence
+
+- **What:** the canonical docs were authored fresh at `7a782de`; nothing was
+  restored from the deleted 2026-10-18 planning paths. `326ec9a` corrected
+  AGENTS.md's parser-pack location to `src/parse/mod.rs`'s `pub const
+  PACK_VERSION`. The MCP surface was recorded from the integrated tree at
+  `5d77856` (8 tools, 8 resources), and the performance baseline at `6728735`
+  (12 benchmarks: discovery 4, parsing 4, search 4) using the default
+  `target/` because `check_performance` hardcodes `target/criterion`. The four
+  audit records were copied as **new** 2026-10-19 files under
+  `.planning/archive/`: `audit_2026-10-19_report.md`,
+  `audit_2026-10-19_ledger.md`, `audit_2026-10-19_wave_report.md`, and
+  `audit_2026-10-19_wave2_report.md`.
+- **Why:** the docs must describe current behavior, not a deleted record.
+  Generated artifacts are reviewable evidence only if they are emitted by the
+  tree that passed the gate, and audit evidence in `/tmp` disappears with the
+  session. Copying it into the repository makes every count in `PLAN.md`
+  re-checkable.
+- **Where:** `7a782de`, `326ec9a`, `5d77856`, `6728735`;
+  `.planning/archive/mcp_surface.json`;
+  `.planning/archive/perf_baseline.json`; `.planning/archive/audit_2026-10-19_*`.
+- **Reversible:** the surface and baseline are re-recordable after a deliberate
+  change; the copied audit records are historical and must not be edited or
+  deleted.
+
 ## 2026-10-19 — Wave 2: fresh canonical docs, recorded surface, persisted report count, closed-pipe handling, failure arms, new baseline
 
 - **What:** the wave-2 packages close six production-state gaps:

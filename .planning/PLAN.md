@@ -12,33 +12,39 @@ item with no state reads as "unknown" to the next reader, which is worse than
 "known bad". Checkable claims carry a commit hash, a path, a command, or a
 date.
 
-The two audit reports this plan refers to are session artifacts outside the
-repository:
+The four audit records this plan refers to are copied into the repository so
+they survive `/tmp` cleanup. They are new 2026-10-19 records; nothing is
+restored from the deleted 2026-10-18 planning paths:
 
-- `/tmp/audit2/AUDIT_REPORT.md` — the 2026-10-19 strict audit of `main` at
-  `26ecdb4`: 259/259 `.rs` files (50,325 lines), 2,550 confirmed violations.
-- `/tmp/audit3/WAVE_REPORT.md` — the wave-1 integrated report: commit map,
-  findings fixed, public-schema changes, accepted unreachable arms, and the
-  final gate at `fe923a7`.
+- `.planning/archive/audit_2026-10-19_report.md` — the strict audit of `main`
+  at `26ecdb4`: 259/259 `.rs` files (50,325 lines), 2,550 confirmed
+  violations.
+- `.planning/archive/audit_2026-10-19_ledger.md` — the full verified
+  violation ledger (2,550 lines, one per confirmed violation).
+- `.planning/archive/audit_2026-10-19_wave_report.md` — the wave-1
+  integrated report: commit map, findings fixed, public-schema changes,
+  accepted unreachable arms, and the final gate at `fe923a7`.
+- `.planning/archive/audit_2026-10-19_wave2_report.md` — the wave-2
+  integration and final-gate report: `main` at `6728735`, all gates pass.
 
-Anything from those reports that must survive belongs in this file, because
-`/tmp` is not durable.
+The durable copies are the source of record. A later claim that cites a
+`/tmp` path instead of one of these files is not durable.
 
 ## Current state (2026-10-19)
 
-- `main` at `6241b43` (`docs: remove the superseded planning records`).
-  Wave 1 landed at `fe923a7`; the only later commit is the deliberate deletion
-  of the superseded planning record.
+- `main` at `6728735` after the wave-2 cherry-picks (`perf: record the
+  current baseline`). Wave 1 landed at `fe923a7`; the base before wave 2 was
+  `6241b43`.
 - Crate `slugaudit-mcp-rust` `1.0.10`, edition 2024, `publish = false`,
   licensed by `LICENSE` (PolyForm Noncommercial 1.0.0 plus the SlugAudit
   Tool-Use Additional Permission).
-- Tests: **1,156 passed, 0 failed, 1 ignored** at `fe923a7` (1,030 before
-  wave 1; wave 1 added 126).
-- Line coverage: **92.85%** (11,212 / 12,075), gate 83%; the strict audit
-  measured 90.26% before wave 1.
-- `check_docs_drift` and `check_mcp_surface` fail in the wave-1 tree only
-  because their inputs were deliberately deleted. Wave 2 restores both as
-  **freshly authored** artifacts; nothing is restored from git history.
+- Tests: **1,174 passed, 0 failed, 1 ignored** on the integrated tree (1,030
+  at the strict audit; 1,156 after wave 1).
+- Line coverage: **93.10%** (11,341 / 12,181), gate 83%. Wave 1 measured
+  92.85%; the strict audit measured 90.26%.
+- `check_docs_drift` and `check_mcp_surface` **pass**: the docs are freshly
+  authored and the surface snapshot was recorded from the integrated tree.
+  Nothing was restored from git history.
 
 ## Phase 1 — 2026-10-18 audit and remediation
 
@@ -113,7 +119,7 @@ State: **landed at `fe923a7`; residue listed below is still open**.
 
 - **55 confirmed production findings fixed** from the strict audit:
   R1 3, R2 1, R6 22, R7 5, R10 3, R12 21. The per-package map is in
-  `/tmp/audit3/WAVE_REPORT.md`.
+  `.planning/archive/audit_2026-10-19_wave_report.md`.
 - **Top-10 item #10 fixed**: the CAS baseline in `src/sync/manager_health.rs`
   is re-read on every barrier iteration, so a change during iteration 1 is
   reconciled in the same call instead of aborting with `StaleBaseline` and
@@ -129,37 +135,62 @@ State: **landed at `fe923a7`; residue listed below is still open**.
   `ConnectError::AddFailedNoOutput`, `DisconnectOutcome`, and several schema
   descriptions.
 
-Still open from wave 1:
+Wave 1 residue and its wave-2 disposition:
 
 - The unreachable/untestable arms listed under *NEEDS-DECISION* in
-  `/tmp/audit3/WAVE_REPORT.md` (install/update hooks, `finding` line-count
-  conversion, read-transaction start, a discard path with no seam, the netfs
-  positive rejection, `Configure` arms, `project_control` serialize/discard/
-  reopen arms, `connect` binary path and stdout-flush arms).
+  `.planning/archive/audit_2026-10-19_wave_report.md` were dispositioned by
+  wave 2 at `ed58a4b`: the testable ones now have tests through pure helpers,
+  `SyncError::Revision` and `SyncError::Read` were removed,
+  `DiscoveryError::Walk` was retained as live code, and the remaining
+  acceptances are listed under *Accepted arms and discarded variants* below.
 - `report` counted non-UTF-8 paths with a bounded discovery walk on every
-  call. Truthful, but I/O on a read path; wave 2 persists the count at sync.
+  call. Wave 2 replaced the walk with a persisted count (`b19f4a0`); see
+  *Phase 4*.
 - `check_docs_drift` and `check_mcp_surface` failed because their inputs had
-  been deleted, not because of code.
+  been deleted. Wave 2 authored the docs (`7a782de`, `326ec9a`) and recorded
+  the surface (`5d77856`); both gates now pass.
 
-## Phase 4 — Wave 2 (in progress)
+## Phase 4 — Wave 2 (landed)
 
-Each item was commissioned on 2026-10-19 and is **in progress** until the lead
-runs the full gate and closes it.
+All six items are **landed** on `main`; the final gate below was run on the
+integrated tree at `6728735`.
 
-| Item | Package | State | Acceptance |
+| Item | Package | State | Evidence |
 |---|---|---|---|
-| Canonical docs authored fresh (this file, `archive/DECISIONS.md`, `docs/CLIENTS.md`, `docs/TROUBLESHOOTING.md`, `docs/RELEASING.md`, `docs/about.toml`, `docs/third-party-notices.hbs`) | wave2-docs | in progress | `cargo run --quiet --bin check_docs_drift --locked` PASS; no deleted doc restored from git |
-| MCP surface snapshot recorded from the live surface | wave2-surface | in progress | `check_mcp_surface --locked` PASS against a newly recorded `.planning/archive/mcp_surface.json` |
-| Persist the non-UTF-8 path count at sync; `report` reads it from the database instead of walking the filesystem | wave2-report | in progress | report responses keep `unrepresentable_path_count` / `index_partial`; no per-call discovery walk |
-| CLI writes fail gracefully on a closed pipe (`BrokenPipe` is a clean exit; no panic) | wave2-cli | in progress | closed-pipe test; write errors propagated or logged once |
-| Remaining unreachable failure arms tested through a clean refactor, or explicitly accepted/removed; no production-only test hooks, no lint suppressions | wave2-failure | in progress | every arm has a test, a documented acceptance, or is removed |
-| Fresh performance baseline recorded after the code changes | lead, after integration | in progress | `check_performance -- --record` against the integrated tree; baseline carries its machine |
+| Canonical docs authored fresh (this file, `archive/DECISIONS.md`, `docs/CLIENTS.md`, `docs/TROUBLESHOOTING.md`, `docs/RELEASING.md`, `docs/about.toml`, `docs/third-party-notices.hbs`) | wave2-docs | landed | `7a782de`, plus `326ec9a` correcting AGENTS.md's parser-pack path; this record adds the durable audit copies |
+| MCP surface snapshot recorded from the live surface | wave2-surface | landed | `5d77856`: 8 tools, 8 resources, including the `finding_read` paging fields, the persisted `unrepresentable_path_count` description, and `HealthPhase::unknown`; `check_mcp_surface` PASS |
+| Persist the non-UTF-8 path count at sync; `report` reads it from the database instead of walking the filesystem | wave2-report | landed | `b19f4a0`: `unrepresentable_paths (path BLOB PRIMARY KEY)`, schema 7 → 8, full-publish and stat-sweep refresh; tests cover add → 1 → remove → 0 through full and watcher-backed syncs |
+| CLI writes fail gracefully on a closed pipe (`BrokenPipe` is a clean exit; no panic) | wave2-cli | landed | `bac3d0a` + `1b2b671`: `cli::out` / `cli::err` / `write_to` / `is_broken_pipe`; `menu \| head -c 10` exits 0 with empty stderr, `help >/dev/full` exits 1 with the I/O error |
+| Remaining unreachable failure arms tested through a clean refactor, or explicitly accepted/removed; no production-only test hooks, no lint suppressions | wave2-failure | landed | `ed58a4b`: resolutions and acceptances under *Accepted arms and discarded variants* below |
+| Fresh performance baseline recorded after the code changes | lead, after integration | landed | `6728735`: 12 benchmarks (discovery 4, parsing 4, search 4) recorded to `.planning/archive/perf_baseline.json`; comparison 0.98x–1.14x, threshold 20% |
+
+### Final gate (2026-10-19, `main` at `6728735`)
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --all -- --check` | pass |
+| `cargo clippy --all-targets --all-features --locked -- -D warnings` | pass |
+| tests | **1,174 passed, 0 failed, 1 ignored** |
+| `cargo deny check` | pass (advisories/bans/licenses/sources; one unmatched license exception warning) |
+| `cargo machete` | pass |
+| coverage | **93.10%** line coverage (11,341 / 12,181; gate 83%) |
+| `check_source_limits` | pass |
+| `check_no_duplicates` | pass |
+| `check_producer_coverage` | pass |
+| `check_governance` | pass |
+| `check_version_consistency` | pass |
+| `check_docs_drift` | **pass** |
+| `check_mcp_surface` | **pass** |
+| `check_performance` | **pass** (0.98x–1.14x, threshold 20%) |
+
+The full wave-2 account is in
+`.planning/archive/audit_2026-10-19_wave2_report.md`.
 
 ## Remaining P1 debt (still open)
 
-These are production entries from `/tmp/audit2/AUDIT_REPORT.md` that wave 1
-did not close. They are recorded here so a later wave does not rediscover
-them from scratch.
+These are production entries from
+`.planning/archive/audit_2026-10-19_report.md` that wave 1 did not close. They
+are recorded here so a later wave does not rediscover them from scratch.
 
 - **R4 — functions/files over size targets: 109 entries, 40 production**
   (45 functions > 50 lines, 54 files > 200 code lines, 10 functions with
@@ -171,12 +202,40 @@ them from scratch.
   `missing_docs` subset is 239 warnings at 212 unique sites; the audit count
   also includes public items with no external reference (dead public API).
   **Still open.** Do not claim this is fixed.
-- **R5 — failure-path tests: 142 entries (110 production, 32 dev-gate).**
-  Wave 1 targeted 107 in-scope entries and added 126 tests. The dev-gate/
-  test-side remainder and the accepted unreachable arms above are
-  **still open** unless individually resolved by wave 2's failure-arm package.
-- **Report walk on the read path** — superseded by wave 2's report-count item;
-  keep it listed until that item lands.
+- **R5 — non-boundary failure-path tests: 142 entries (110 production, 32
+  dev-gate) at the strict audit.** Wave 1 targeted 107 in-scope entries; wave
+  2 closed the boundary/unreachable-arm subset (`ed58a4b`). The remaining
+  **non-boundary R5** entries and the two still-accepted finding arms under
+  *Accepted arms and discarded variants* are **still open**.
+
+## Accepted arms and discarded variants
+
+Disposition from `ed58a4b` (wave 2), so a later reader does not re-open an
+arm that was already decided. "Accepted" means the arm stays in production
+code as defensive handling and is documented at the site; it is not an
+untested path waiting for a test hook.
+
+- **Removed (provably unused):** `SyncError::Revision` and
+  `SyncError::Read`.
+- **Retained (live, not dead):** `DiscoveryError::Walk`. It is constructed in
+  `src/sync/discovery.rs`'s skip path (`DiscoveryError::Walk(error)`), so the
+  wave-1 premise that it was unreachable was wrong. Do not remove it.
+- **Accepted as unreachable/documented:** the connection `Configure` arms for
+  `busy_timeout` and function registration in `src/store/connection.rs`.
+  They fail only on `SQLITE_NOMEM`/`SQLITE_MISUSE` from a NULL or invalid
+  handle; the safe rusqlite API cannot produce either hermetically, and the
+  5-second timeout behavior itself remains tested.
+- **Still accepted from wave 1:** the `finding` u32 line-count conversion
+  (`src/tools/finding.rs`) and the `finding_read` query-map bind failure
+  (`src/tools/finding_read.rs`). Both are unreachable for storable content /
+  valid bound parameters; wave 2 did not revisit them.
+- **Tested through pure helpers, not production hooks:** install's
+  `CurrentExe`/`Clock`, connect's `BinaryPath`, prompt flush, and update's
+  platform predicate (`ensure_platform_supported`).
+- **Tested through clean refactors:** the stale-metadata discard path, the
+  netfs positive rejection (`reject_if_network(path, on_network)`), the
+  context read-transaction start, and project-control's discard/reopen path
+  (its serialize arm was removed by constructing the value directly).
 
 ## Accepted and held decisions
 
@@ -207,8 +266,9 @@ These are deliberate. Reversing one needs a new entry in
 
 ## Documentation policy
 
-State: **in progress** — the documents are authored in this wave; the lead
-closes the item after the full gate and integration.
+State: **landed (wave 2)** — authored at `7a782de`, with the AGENTS.md
+parser-pack path corrected at `326ec9a`; this record adds the four durable
+audit copies under `.planning/archive/`.
 
 The canonical doc set is fixed by
 `src/bin/check_docs_drift/canonical_docs.rs`:
@@ -226,9 +286,10 @@ docs/TROUBLESHOOTING.md
 
 The previous planning record was deleted deliberately at `6241b43`. The
 surviving canonical documents are authored from current behavior; no deleted
-document is restored or copied from git history. `check_docs_drift` enforces
-existence, the module-map paths, and the `*_tests.rs` count claim. The release
-docs (`docs/RELEASING.md`, `docs/about.toml`,
-`docs/third-party-notices.hbs`) are consumed by
+document is restored or copied from git history. `check_docs_drift` passes on
+the integrated tree; it enforces existence, the module-map paths, and the
+`*_tests.rs` count claim. The release docs (`docs/RELEASING.md`,
+`docs/about.toml`, `docs/third-party-notices.hbs`) are consumed by
 `.github/workflows/release.yml` and are not part of the drift gate's checked
-set.
+set. The four `audit_2026-10-19_*` files in `.planning/archive/` are
+historical evidence copies, not canonical docs, and are not read by the gate.

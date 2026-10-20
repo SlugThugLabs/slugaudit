@@ -135,9 +135,11 @@ operator action:
   `database is corrupt or outdated; discarding and re-publishing from
   scratch` (the path is a redacted id) and rebuilds from source.
 - **Unsupported schema version** — a database whose `PRAGMA user_version` is
-  neither fresh (`0`) nor current (`CURRENT_SCHEMA_VERSION`, currently `7`) is
+  neither fresh (`0`) nor current (`CURRENT_SCHEMA_VERSION`, currently `8`) is
   treated as corruption and discarded. There is no migration path; the schema
-  is discard-and-rebuild.
+  is discard-and-rebuild. The 7 → 8 bump added the derived
+  `unrepresentable_paths` table, so an existing version-7 database rebuilds
+  from source on its first tool call.
 - **Stale metadata** — a different project root, or an incompatible
   contract/schema version, is logged as `project database is stale;
   discarding and rebuilding from source` and rebuilt.
@@ -374,7 +376,7 @@ truth. Quote `file_count` together with this block, not alone.
 | `completeness.skipped_by_reason` | Those rows grouped by `skip_reason`: `oversize`, `unreadable`, `stat_failed` (size unknown, `byte_len` NULL), or empty when no reason was recorded. |
 | `completeness.extraction_completeness_counts` | Every row by `Full`, `Partial`, `ContentOnly` (text indexed, no parser ran), `Unavailable` (no content retained). |
 | `completeness.index_partial` | True when an existence row is skipped or a discovered path has no UTF-8 representation, so the index does not cover every discovered file. |
-| `completeness.unrepresentable_path_count` | Discovered files whose path is not valid UTF-8, so no `files` row can represent them. Included in `index_partial`. |
+| `completeness.unrepresentable_path_count` | Discovered files whose path is not valid UTF-8, so no `files` row can represent them. The count is persisted in the derived `unrepresentable_paths` table, refreshed exactly by every full publish and every incremental stat sweep (including removals), and read as `COUNT(*)` inside the report's verified read transaction — `report` does not walk the filesystem. Included in `index_partial`. |
 | `completeness.evidence_capped_file_count` | Files whose stored evidence was cut short by an evidence cap (`evidence:truncated`). Evidence counts for these are a floor, not a total. |
 | `completeness.indexed_files_without_evidence` | `indexed` rows with no evidence at all: content is readable but nothing structural was extracted (no parser, or parsed to nothing). Binary and skipped rows are excluded. |
 | `parser_failure_count` / `parser_failure_files_total` | Failure entries and their uncapped total. `parser_failure_files` lists at most 20; a total larger than the list length means the list was truncated. |
@@ -398,15 +400,21 @@ cargo run --quiet --bin check_mcp_surface --locked
 cargo run --bin check_mcp_surface -- --record
 ```
 
-A failing check means the binary and the committed snapshot disagree. If the
-change is intentional, record it in the same commit as the surface change so
-the diff is reviewable. If it is not, do not re-record to make the gate green.
-The snapshot pins the surface; it is not a runtime file a client reads.
+A failing check means the binary and the committed snapshot disagree. The
+committed snapshot currently records 8 tools and 8 resources; it was recorded
+from the integrated tree, and both gates pass. If the change is intentional,
+record it in the same commit as the surface change so the diff is reviewable.
+If it is not, do not re-record to make the gate green. The snapshot pins the
+surface; it is not a runtime file a client reads.
 
 ## Exit codes and error reporting
 
 - CLI commands exit `0` on success; a reported CLI failure prints
   `Error: <reason>` to stderr and exits `1`.
+- CLI output is written fallibly. A **closed pipe** (`BrokenPipe`, for example
+  `slugaudit menu | head -c 10`) exits `0` with no error log: the reader went
+  away, not the command. Any other write failure (for example
+  `slugaudit help >/dev/full`) is reported and exits `1`.
 - In serve mode there is no process-level error for a failed tool call: the
   call returns an MCP error response, and the process exits when the host
   closes stdin (end of the session).
