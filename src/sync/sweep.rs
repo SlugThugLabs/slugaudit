@@ -23,8 +23,7 @@
 //! stored stat *and* produces no watcher event — is documented in
 //! ARCHITECTURE.md as accepted, and is covered whenever either layer fires.
 
-use super::discovery::unrepresentable_relative_bytes;
-use crate::ignore_rules::{indexable_walker, is_excluded_path};
+use crate::ignore_rules::indexable_walker;
 use crate::util::Deadline;
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
@@ -209,29 +208,9 @@ fn walked_file(
         return Walked::Skipped;
     }
     let absolute_path = entry.path();
-    let relative = match absolute_path.strip_prefix(root) {
-        Ok(relative) => relative,
-        Err(error) => {
-            // The walker yields paths under `root`, so this cannot happen;
-            // if it did, the entry is omitted and its stored row (if any)
-            // would be classed deleted, so say so with the cause.
-            tracing::warn!(
-                path_id = %crate::util::redacted_path(absolute_path),
-                error = %error,
-                "sweep walked a path outside the project root; it is left out of the comparison",
-            );
-            return Walked::Skipped;
-        }
-    };
-    if is_excluded_path(&relative.to_string_lossy()) {
-        return Walked::Skipped;
-    }
-    // Non-UTF-8 paths are never in the database (discovery rejects
-    // them), so there is nothing to compare and nothing to delete — but
-    // they must still reach the persisted set `report` counts, or the
-    // count would go stale between full publishes.
-    let Some(relative) = relative.to_str().map(str::to_owned) else {
-        unrepresentable.extend(unrepresentable_relative_bytes(root, absolute_path));
+    let Some(relative) =
+        super::sweep_reconcile::walked_relative_path(root, absolute_path, unrepresentable)
+    else {
         return Walked::Skipped;
     };
 

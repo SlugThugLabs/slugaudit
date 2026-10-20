@@ -9,15 +9,18 @@
 //! watcher is marked `Desynced` and the progress lifecycle is closed before
 //! the error propagates.
 
+use super::discovery::unrepresentable_relative_bytes;
 use super::manager_meta::current_revision_id;
 use super::reconcile::{ReconcileOptions, reconcile_dirty_paths_with_deadline};
 use super::sweep::{SweepError, SweepReport, sweep};
 use crate::error_codes;
+use crate::ignore_rules::is_excluded_path;
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::util::{Deadline, redacted_path};
 use crate::watch::{WatchState, WatcherHealth};
 use rmcp::ErrorData;
 use rusqlite::Connection;
+use std::collections::HashSet;
 use std::path::Path;
 
 /// Walks `root` once under `deadline`, mapping the sweep's typed error into
@@ -40,6 +43,41 @@ pub(super) fn sweep_tree(
         let data = error_codes::budget_payload(error.budget_elapsed_ms());
         ErrorData::internal_error(sweep_error_text(error), data)
     })
+}
+
+/// The project-relative path a swept entry should be compared under, or
+/// `None` when the entry is skipped: excluded, outside the root, or
+/// non-UTF-8. A non-UTF-8 path is recorded in `unrepresentable` first —
+/// discovery rejects such paths, so there is nothing to compare and nothing
+/// to delete, but the persisted set `report` counts must stay current
+/// between full publishes.
+pub(super) fn walked_relative_path(
+    root: &Path,
+    absolute_path: &Path,
+    unrepresentable: &mut HashSet<Vec<u8>>,
+) -> Option<String> {
+    let relative = match absolute_path.strip_prefix(root) {
+        Ok(relative) => relative,
+        Err(error) => {
+            // The walker yields paths under `root`, so this cannot happen;
+            // if it did, the entry is omitted and its stored row (if any)
+            // would be classed deleted, so say so with the cause.
+            tracing::warn!(
+                path_id = %redacted_path(absolute_path),
+                error = %error,
+                "sweep walked a path outside the project root; it is left out of the comparison",
+            );
+            return None;
+        }
+    };
+    if is_excluded_path(&relative.to_string_lossy()) {
+        return None;
+    }
+    let Some(relative) = relative.to_str().map(str::to_owned) else {
+        unrepresentable.extend(unrepresentable_relative_bytes(root, absolute_path));
+        return None;
+    };
+    Some(relative)
 }
 
 /// Which step of the sweep-driven reconcile failed. The walk and the apply

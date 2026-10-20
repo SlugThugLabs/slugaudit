@@ -175,6 +175,72 @@ fn strip_project_prefix<'a>(root: &Path, absolute_path: &'a Path) -> Result<&'a 
     })
 }
 
+/// Routes one walker entry into `discovered` or `skipped`, preserving the
+/// walk's per-file skip reasons. A non-file entry (a directory, a symlink)
+/// is ignored.
+fn collect_walk_entry(
+    root: &Path,
+    entry: Result<ignore::DirEntry, ignore::Error>,
+    discovered: &mut Vec<DiscoveredFile>,
+    skipped: &mut Vec<SkippedFile>,
+) {
+    let entry = match entry {
+        Ok(entry) => entry,
+        Err(error) => {
+            skipped.push(SkippedFile {
+                absolute_path: root.to_path_buf(),
+                reason: DiscoveryError::Walk(error).to_string(),
+            });
+            return;
+        }
+    };
+    if entry.file_type().is_some_and(|kind| kind.is_file()) {
+        collect_file_entry(root, entry.path(), discovered, skipped);
+    }
+}
+
+/// Applies the include rules to one regular file and records it, or the
+/// reason it was skipped.
+fn collect_file_entry(
+    root: &Path,
+    entry_path: &Path,
+    discovered: &mut Vec<DiscoveredFile>,
+    skipped: &mut Vec<SkippedFile>,
+) {
+    let absolute_path = entry_path.to_path_buf();
+    let relative_path = match strip_project_prefix(root, &absolute_path) {
+        Ok(relative_path) => relative_path,
+        Err(skipped_file) => {
+            skipped.push(skipped_file);
+            return;
+        }
+    };
+    if is_excluded(relative_path) {
+        return;
+    }
+    let kind = match sniff_kind(&absolute_path) {
+        Ok(kind) => kind,
+        Err(error) => {
+            skipped.push(SkippedFile {
+                reason: error.to_string(),
+                absolute_path,
+            });
+            return;
+        }
+    };
+    match relative_path.to_str() {
+        Some(relative_path) => discovered.push(DiscoveredFile {
+            relative_path: relative_path.replace('\\', "/"),
+            absolute_path,
+            kind,
+        }),
+        None => skipped.push(SkippedFile {
+            reason: DiscoveryError::NonUtf8Path(absolute_path.clone()).to_string(),
+            absolute_path,
+        }),
+    }
+}
+
 /// [`discover`] under an explicit wall-clock [`Deadline`], checked once per
 /// walked entry so a pathological tree (huge, or on a hung network
 /// filesystem) fails closed with [`DiscoveryError::TimeBudgetExceeded`]
@@ -198,52 +264,7 @@ pub(crate) fn discover_with_deadline(
                 elapsed_ms: elapsed.as_millis(),
             });
         }
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                skipped.push(SkippedFile {
-                    absolute_path: root.to_path_buf(),
-                    reason: DiscoveryError::Walk(error).to_string(),
-                });
-                continue;
-            }
-        };
-        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-            continue;
-        }
-        let absolute_path = entry.path().to_path_buf();
-        let relative_path = match strip_project_prefix(root, &absolute_path) {
-            Ok(relative_path) => relative_path,
-            Err(skipped_file) => {
-                skipped.push(skipped_file);
-                continue;
-            }
-        };
-        if is_excluded(relative_path) {
-            continue;
-        }
-        let kind = match sniff_kind(&absolute_path) {
-            Ok(kind) => kind,
-            Err(error) => {
-                skipped.push(SkippedFile {
-                    reason: error.to_string(),
-                    absolute_path,
-                });
-                continue;
-            }
-        };
-        let Some(relative_path) = relative_path.to_str() else {
-            skipped.push(SkippedFile {
-                reason: DiscoveryError::NonUtf8Path(absolute_path.clone()).to_string(),
-                absolute_path,
-            });
-            continue;
-        };
-        discovered.push(DiscoveredFile {
-            relative_path: relative_path.replace('\\', "/"),
-            absolute_path,
-            kind,
-        });
+        collect_walk_entry(root, entry, &mut discovered, &mut skipped);
     }
     discovered.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     skipped.sort_by(|a, b| a.absolute_path.cmp(&b.absolute_path));

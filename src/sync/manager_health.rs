@@ -3,11 +3,10 @@
 //! This module owns the health state machine and the incremental barrier
 //! reconcile. It is a child of `manager`, so it can coordinate the manager's
 //! private counters and watcher state without exposing implementation fields.
-// slugaudit-line-exception: approved-by=slugthug; reason=the watcher-health state machine — the dispatch, the per-branch paths, the shared event drain, and the post-sync revision read — must be read together because the health transitions and their failure semantics are the invariant; a sibling file would hide which arm owns which transition
-
-use super::super::manager_meta::current_revision_id;
+use super::super::manager_health_support::{
+    reconcile_events, revision_after_sync, sweep_error_to_sync,
+};
 use super::super::reconcile::ReconcileOptions;
-use super::super::sweep::SweepError;
 use super::{SourceSyncManager, SyncError};
 use crate::error_codes;
 use crate::progress::{ProgressEvent, ProgressSink};
@@ -261,101 +260,5 @@ impl SourceSyncManager {
             .map_err(sweep_error_to_sync)?;
         super::super::publish::replace_unrepresentable_paths(connection, &report.unrepresentable)?;
         reconcile_events(root, state, connection, &options, &report.on_disk)
-    }
-}
-
-/// Reads the revision id the sync operation just converged on. Every field
-/// is present or the call errors with a named reason — a successful sync
-/// that cannot name its revision is a bug an operator must be able to see.
-fn revision_after_sync(connection: &Connection, database_path: &Path) -> Result<String, ErrorData> {
-    current_revision_id(connection)
-        .map_err(|error| {
-            tracing::warn!(
-                database_id = %crate::util::redacted_path(database_path),
-                error = %error,
-                "failed to read the current revision",
-            );
-            ErrorData::internal_error(format!("reading the current revision: {error}"), None)
-        })?
-        .ok_or_else(|| {
-            tracing::warn!(
-                database_id = %crate::util::redacted_path(database_path),
-                "no current revision found after sync",
-            );
-            ErrorData::internal_error(
-                "no current revision found after sync — this is unexpected; \
-                 try disabling and re-enabling the project",
-                None,
-            )
-        })
-}
-
-/// Reconciles watcher events under a caller-supplied deadline and on-disk
-/// path set. The `Healthy` path walks the tree once for the sweep and passes
-/// that report's `on_disk` here, so this never walks. The expected revision
-/// is read inside the barrier loop, immediately before each iteration
-/// publishes, so the CAS baseline is never shared with another publishing
-/// step (the sweep apply reads its own immediately before it publishes).
-///
-/// # Errors
-///
-/// Returns an error if the barrier loop or any per-path reconcile fails.
-fn reconcile_events(
-    root: &Path,
-    state: &WatchState,
-    connection: &mut Connection,
-    options: &ReconcileOptions,
-    on_disk: &HashSet<String>,
-) -> Result<(), SyncError> {
-    let started = std::time::Instant::now();
-    // Accumulated across every barrier iteration so the log line below
-    // reports the total skip count, not just the last pass's.
-    let mut skipped_total = 0usize;
-
-    super::super::reconcile::sync_with_barrier_with_deadline(
-        state,
-        &options.deadline,
-        |dirty, deleted| {
-            // Re-read the baseline for every iteration: an earlier
-            // iteration may have published a revision, and a path that
-            // changed again during that publish must be reconciled against
-            // the revision that publication produced. Hoisting this read
-            // out of the loop makes the second publishing iteration fail
-            // with `RevisionError::StaleBaseline` instead of converging.
-            let expected_current = current_revision_id(connection)?;
-            let report = super::super::reconcile::reconcile_dirty_paths_with_deadline(
-                connection,
-                root,
-                dirty,
-                deleted,
-                expected_current.as_deref(),
-                options,
-                on_disk,
-            )?;
-            skipped_total += report.skipped;
-            Ok(())
-        },
-    )?;
-
-    tracing::debug!(
-        root_id = %crate::util::redacted_path(root),
-        elapsed_ms = started.elapsed().as_millis(),
-        skipped = skipped_total,
-        "incremental reconcile phase complete",
-    );
-    Ok(())
-}
-
-/// The one sweep failure that must stay typed on its way into
-/// [`SyncError`]: a spent budget carries `sync_budget_exhausted` and the
-/// knob that raises it, and that code cannot be recovered from a flattened
-/// string. Every other sweep failure converts losslessly to text, which is
-/// all its response needs.
-fn sweep_error_to_sync(error: SweepError) -> SyncError {
-    match error {
-        SweepError::TimeBudgetExceeded { elapsed_ms } => {
-            SyncError::SweepBudgetExceeded { elapsed_ms }
-        }
-        other => SyncError::Sweep(other.to_string()),
     }
 }
