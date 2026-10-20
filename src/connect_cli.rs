@@ -120,7 +120,7 @@ pub fn run_add(cli: &str, args: &[String]) -> Result<(), ConnectError> {
                 status,
             });
         }
-        eprintln!("{stderr}");
+        crate::cli::err(format_args!("{stderr}\n"))?;
         return Err(ConnectError::AddFailed {
             cli: cli.to_string(),
             status,

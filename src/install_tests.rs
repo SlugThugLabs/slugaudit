@@ -488,6 +488,35 @@ fn an_install_that_cannot_stage_the_binary_reports_the_copy_step() {
 }
 
 #[test]
+fn a_failed_running_binary_lookup_is_the_current_exe_error() {
+    let source = std::io::Error::new(std::io::ErrorKind::NotFound, "no executable path");
+
+    let error = running_binary_path(Err(source)).expect_err("a lookup failure must surface");
+
+    let InstallError::CurrentExe(inner) = error else {
+        panic!("expected CurrentExe, got {error:?}");
+    };
+    assert_eq!(inner.kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(inner.to_string(), "no executable path");
+}
+
+#[test]
+fn a_pre_epoch_clock_is_the_typed_clock_error() {
+    let before_epoch = std::time::UNIX_EPOCH - std::time::Duration::from_secs(1);
+
+    let error = elapsed_since_epoch(before_epoch).expect_err("a pre-epoch time cannot be stamped");
+
+    assert!(
+        matches!(error, InstallError::Clock(_)),
+        "expected Clock, got {error:?}"
+    );
+    assert!(
+        error.to_string().contains("system clock"),
+        "the message must name the clock: {error}"
+    );
+}
+
+#[test]
 fn an_uncanonicalizable_path_entry_is_compared_as_written_and_logged() {
     let _guard = TEST_ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("temp dir");

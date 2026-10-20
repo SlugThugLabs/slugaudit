@@ -1,5 +1,4 @@
 //! Low-level command execution and JSON config file modification for agent connect.
-#![allow(clippy::print_stdout)]
 // slugaudit-line-exception: approved-by=slugthug; reason=one cohesive concern - the registration policy for 23 clients (probe-or-fallback dispatch, single-key config merging, and the wiring of every refusal/failure into actionable guidance); it reads as one decision table and moving any branch out scatters the policy that is verified entry-by-entry against the registry
 
 use crate::cli::ConnectError;
@@ -53,19 +52,33 @@ pub fn connect_agent(
     }
     match agent.strategy {
         Strategy::ConfigFile | Strategy::CliInteractiveOnly => {
-            write_agent_config(agent, binary, home, None).inspect_err(|err| {
-                report_failure(
-                    agent,
-                    binary,
-                    &write_action(agent, home),
-                    None,
-                    &err.to_string(),
-                );
-            })
+            write_and_report(agent, binary, home, None)
         }
         Strategy::CliDirect => connect_via_cli(agent, binary, home),
         Strategy::Unknown => Err(guidance::refusal(agent, binary, home)),
     }
+}
+
+/// Writes the client config and, when the write fails, prints the failure
+/// guidance before returning the error. One unit because every caller treats
+/// a failed write as "report why, then fail".
+fn write_and_report(
+    agent: &AgentDef,
+    binary: &Path,
+    home: Option<&Path>,
+    note: Option<&str>,
+) -> Result<(), ConnectError> {
+    if let Err(err) = write_agent_config(agent, binary, home, note) {
+        report_failure(
+            agent,
+            binary,
+            &write_action(agent, home),
+            None,
+            &err.to_string(),
+        )?;
+        return Err(err);
+    }
+    Ok(())
 }
 
 /// The CLI route. Probed entries run the grammar recorded at probe time;
@@ -92,15 +105,7 @@ fn connect_without_cli(
     match (agent.file_fallback, agent.cli) {
         (true, Some(cli)) if guidance::config_writable(agent) => {
             let note = guidance::fallback_note(agent, home, cli, "not found on PATH");
-            write_agent_config(agent, binary, home, Some(&note)).inspect_err(|err| {
-                report_failure(
-                    agent,
-                    binary,
-                    &write_action(agent, home),
-                    None,
-                    &err.to_string(),
-                );
-            })
+            write_and_report(agent, binary, home, Some(&note))
         }
         (_, Some(cli)) => Err(guidance::cli_absent(
             agent,
@@ -127,7 +132,7 @@ fn run_installed_cli(
             print_lines(&guidance::success_lines(
                 agent,
                 &format!("Ran: {attempted}"),
-            ));
+            ))?;
             Ok(())
         }
         Err(cli_err) if agent.file_fallback && guidance::config_writable(agent) => {
@@ -143,7 +148,7 @@ fn run_installed_cli(
                         &write_action(agent, home),
                         Some(&attempted),
                         &why,
-                    );
+                    )?;
                     Err(cli_err)
                 }
             }
@@ -155,7 +160,7 @@ fn run_installed_cli(
                 &attempted,
                 Some(&attempted),
                 &cli_err.to_string(),
-            );
+            )?;
             Err(cli_err)
         }
     }
@@ -188,25 +193,32 @@ fn write_agent_config(
         .ok_or_else(|| guidance::refusal(agent, binary, Some(home)))?;
     write_json_server(&path, section, agent.shape.entry(binary))?;
     if let Some(note) = note {
-        println!("{note}");
+        crate::cli::out(format_args!("{note}\n"))?;
     }
     let action = format!("Wrote {section}.slugaudit to {}", path.display());
-    print_lines(&guidance::success_lines(agent, &action));
-    Ok(())
+    print_lines(&guidance::success_lines(agent, &action))
 }
 
 /// A failed attempt still ends with instructions, the source it came from, and
-/// the docs page — never a bare error.
-fn report_failure(agent: &AgentDef, binary: &Path, attempted: &str, hint: Option<&str>, why: &str) {
+/// the docs page — never a bare error. A failure to write that guidance is
+/// returned rather than dropped.
+fn report_failure(
+    agent: &AgentDef,
+    binary: &Path,
+    attempted: &str,
+    hint: Option<&str>,
+    why: &str,
+) -> Result<(), ConnectError> {
     print_lines(&guidance::failure_lines(
         agent, binary, attempted, hint, why,
-    ));
+    ))
 }
 
-fn print_lines(lines: &[String]) {
+fn print_lines(lines: &[String]) -> Result<(), ConnectError> {
     for line in lines {
-        println!("{line}");
+        crate::cli::out(format_args!("{line}\n"))?;
     }
+    Ok(())
 }
 
 static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);

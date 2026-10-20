@@ -1,13 +1,12 @@
 //! Interactive setup menu — one command that walks a human through the
 //! whole SlugAudit onboarding: install the binary, connect to an agent,
 //! disconnect, get instructions for any other client, or start the server.
-#![allow(clippy::print_stdout)]
 
+use crate::cli;
 use crate::connect;
 use crate::install;
 use crate::menu_render::{other_agent_instructions, render_menu};
 use crate::util::Style;
-use std::io::Write as _;
 
 /// Interactive setup menu. Returns `Ok(true)` when the user chooses to start
 /// the MCP server, `Ok(false)` to exit without serving; input problems are
@@ -19,14 +18,13 @@ use std::io::Write as _;
 pub fn run_menu() -> Result<bool, Box<dyn std::error::Error>> {
     loop {
         let style = Style::stdout();
-        print!("{}", render_menu(&style));
-        std::io::stdout().flush()?;
+        cli::out(format_args!("{}", render_menu(&style)))?;
         let line = crate::prompt::read_prompt_line()?;
         match menu_choice(line.as_deref()) {
-            MenuChoice::Install => install_step(),
-            MenuChoice::Connect => connect_step(),
-            MenuChoice::Disconnect => disconnect_step(),
-            MenuChoice::OtherClient => other_client_step(),
+            MenuChoice::Install => install_step()?,
+            MenuChoice::Connect => connect_step()?,
+            MenuChoice::Disconnect => disconnect_step()?,
+            MenuChoice::OtherClient => other_client_step()?,
             MenuChoice::Serve => {
                 if confirm_serve()? {
                     return Ok(true);
@@ -34,11 +32,13 @@ pub fn run_menu() -> Result<bool, Box<dyn std::error::Error>> {
             }
             MenuChoice::Exit => return Ok(false),
             MenuChoice::Invalid => {
-                println!("\nInvalid choice; pick a number from the list.");
+                cli::out(format_args!(
+                    "\nInvalid choice; pick a number from the list.\n"
+                ))?;
                 continue;
             }
         }
-        println!();
+        cli::out(format_args!("\n"))?;
     }
 }
 
@@ -71,52 +71,63 @@ fn menu_choice(line: Option<&str>) -> MenuChoice {
     }
 }
 
-fn install_step() {
-    println!();
+fn install_step() -> Result<(), Box<dyn std::error::Error>> {
+    cli::out(format_args!("\n"))?;
     match install::run_install() {
-        Ok(()) => {}
-        Err(error) => eprintln!("Install failed: {error}"),
+        Ok(()) => Ok(()),
+        Err(error) => {
+            cli::err(format_args!("Install failed: {error}\n"))?;
+            Ok(())
+        }
     }
 }
 
-fn connect_step() {
-    println!();
+fn connect_step() -> Result<(), Box<dyn std::error::Error>> {
+    cli::out(format_args!("\n"))?;
     match connect::run_connect_interactive() {
-        Ok(()) => {}
-        Err(error) => eprintln!("Connect failed: {error}"),
+        Ok(()) => Ok(()),
+        Err(error) => {
+            cli::err(format_args!("Connect failed: {error}\n"))?;
+            Ok(())
+        }
     }
 }
 
-fn disconnect_step() {
-    println!();
+fn disconnect_step() -> Result<(), Box<dyn std::error::Error>> {
+    cli::out(format_args!("\n"))?;
     match connect::run_disconnect_interactive() {
-        Ok(()) => {}
-        Err(error) => eprintln!("Disconnect failed: {error}"),
+        Ok(()) => Ok(()),
+        Err(error) => {
+            cli::err(format_args!("Disconnect failed: {error}\n"))?;
+            Ok(())
+        }
     }
 }
 
-fn other_client_step() {
-    println!();
+fn other_client_step() -> Result<(), Box<dyn std::error::Error>> {
+    cli::out(format_args!("\n"))?;
     let binary = match install::running_binary()
         .and_then(|current| connect::prefer_slugthug_binary(&current))
     {
         Ok(binary) => binary,
         Err(error) => {
-            eprintln!("could not locate the slugaudit binary: {error}");
-            return;
+            cli::err(format_args!(
+                "could not locate the slugaudit binary: {error}\n"
+            ))?;
+            return Ok(());
         }
     };
-    print!("{}", other_agent_instructions(&binary));
-    if let Err(error) = std::io::stdout().flush() {
-        eprintln!("could not flush instructions to stdout: {error}");
-    }
+    Ok(cli::out(format_args!(
+        "{}",
+        other_agent_instructions(&binary)
+    ))?)
 }
 
 fn confirm_serve() -> Result<bool, Box<dyn std::error::Error>> {
-    println!();
-    println!("The MCP server (`serve`) is normally started automatically by your AI agent.");
-    print!("Start the server now? [y/N]: ");
-    std::io::stdout().flush()?;
+    cli::out(format_args!(
+        "\nThe MCP server (`serve`) is normally started automatically by your AI agent.\n\
+         Start the server now? [y/N]: "
+    ))?;
     // End of input declines: `[y/N]` defaults to no, and the menu loop exits on
     // the same end of input at its next read.
     Ok(crate::prompt::read_prompt_line()?.is_some_and(|line| crate::prompt::is_yes(&line)))

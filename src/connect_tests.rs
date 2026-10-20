@@ -538,6 +538,46 @@ fn end_of_input_at_a_prompt_is_the_dedicated_error() {
     assert_eq!(error.to_string(), "input ended before an answer was given");
 }
 
+/// A writer that reports a closed pipe, standing in for a stdout whose reader
+/// (e.g. `head`) has exited.
+struct PipeClosingWriter;
+
+impl std::io::Write for PipeClosingWriter {
+    fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::ErrorKind::BrokenPipe.into())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_prompt_written_to_a_closed_stdout_is_the_typed_io_error() {
+    let mut writer = PipeClosingWriter;
+
+    let error = write_prompt(&mut writer, format_args!("Choose an agent [1-2]: "))
+        .expect_err("a closed stdout must not be ignored");
+
+    let ConnectError::Io(inner) = error else {
+        panic!("expected Io, got {error:?}");
+    };
+    assert_eq!(inner.kind(), std::io::ErrorKind::BrokenPipe);
+}
+
+#[test]
+fn a_failed_running_binary_lookup_is_the_binary_path_error() {
+    let source = std::io::Error::new(std::io::ErrorKind::NotFound, "no executable path");
+
+    let error = binary_path(Err(source)).expect_err("a lookup failure must surface");
+
+    let ConnectError::BinaryPath(inner) = error else {
+        panic!("expected BinaryPath, got {error:?}");
+    };
+    assert_eq!(inner.kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(inner.to_string(), "no executable path");
+}
+
 #[test]
 fn a_stat_failure_for_the_installed_binary_is_an_io_error() {
     let _guard = TEST_ENV_LOCK.lock().expect("env lock");

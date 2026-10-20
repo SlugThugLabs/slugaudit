@@ -3,7 +3,9 @@
 //! SlugAudit binary — or the running binary when no installed copy exists —
 //! as a stdio MCP server named `slugaudit` in an AI agent or editor.
 //! `disconnect` removes it. `install` copies the binary to a stable path.
-#![allow(clippy::print_stdout)]
+//!
+//! CLI output goes through [`out`] and [`err`] rather than `print!`:
+//! a write to a closed pipe must not panic the binary.
 
 use crate::util::Style;
 use thiserror::Error;
@@ -133,6 +135,54 @@ fn render_usage(style: &Style) -> String {
     out
 }
 
+/// Writes `args` to `writer` and flushes it. Private so tests can drive the
+/// failure paths with an injected writer; [`out`] and [`err`] are the process
+/// wrappers the CLI actually calls.
+pub(crate) fn write_to(
+    writer: &mut impl std::io::Write,
+    args: std::fmt::Arguments<'_>,
+) -> std::io::Result<()> {
+    writer.write_fmt(args)?;
+    writer.flush()
+}
+
+/// Writes formatted text to stdout, returning a closed pipe or any other
+/// write failure instead of panicking.
+///
+/// # Errors
+///
+/// Returns the underlying I/O error; `BrokenPipe` means the reader went away.
+pub fn out(args: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+    write_to(&mut std::io::stdout().lock(), args)
+}
+
+/// Writes formatted text to stderr, returning the write failure instead of
+/// panicking.
+///
+/// # Errors
+///
+/// Returns the underlying I/O error.
+pub fn err(args: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+    write_to(&mut std::io::stderr().lock(), args)
+}
+
+/// Whether `error` or a cause in its chain is a closed pipe (`EPIPE`). The
+/// CLI treats that as a clean exit: the reader went away, not the command.
+#[must_use]
+pub fn is_broken_pipe(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
+        {
+            return true;
+        }
+        current = error.source();
+    }
+    false
+}
+
 /// Errors encountered while connecting or disconnecting an agent client.
 #[derive(Debug, Error)]
 pub enum ConnectError {
@@ -178,7 +228,10 @@ pub enum ConnectError {
     },
     #[error("JSON config error: {0}")]
     Json(#[from] serde_json::Error),
-    #[error(transparent)]
+    // Spelled out rather than `transparent`: transparent forwards `source()`
+    // through the io::Error, which hides the error itself from
+    // `is_broken_pipe`'s chain walk.
+    #[error("{0}")]
     Io(#[from] std::io::Error),
 }
 

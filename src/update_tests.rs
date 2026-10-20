@@ -294,6 +294,25 @@ fn only_the_published_platform_may_self_update() {
     assert!(!platform_supported("macos", "aarch64"));
 }
 
+/// The refusal `run_update` takes on an unsupported machine is reachable on
+/// this one through the same pure check, with the actual platform kept.
+#[test]
+fn an_unsupported_platform_is_the_exact_unsupported_variant() {
+    let error = ensure_platform_supported("macos", "aarch64")
+        .expect_err("a platform with no published asset must be refused");
+
+    let UpdateError::UnsupportedPlatform { os, arch } = error else {
+        panic!("expected UnsupportedPlatform, got {error:?}");
+    };
+    assert_eq!(os, "macos");
+    assert_eq!(arch, "aarch64");
+}
+
+#[test]
+fn the_published_platform_is_accepted() {
+    ensure_platform_supported("linux", "x86_64").expect("the published asset must be accepted");
+}
+
 #[test]
 fn the_unsupported_platform_error_names_both_sides() {
     let message = UpdateError::UnsupportedPlatform {

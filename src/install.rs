@@ -1,5 +1,4 @@
 //! Stable binary installation and executable-path discovery.
-#![allow(clippy::print_stdout)]
 
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -55,7 +54,10 @@ pub enum InstallError {
     ShellNotUnicode,
     #[error(transparent)]
     Place(#[from] crate::install_place::PlaceError),
-    #[error(transparent)]
+    // Spelled out rather than `transparent`: transparent forwards `source()`
+    // through the io::Error, which hides the error itself from
+    // `cli::is_broken_pipe`'s chain walk.
+    #[error("{0}")]
     Io(#[from] std::io::Error),
 }
 
@@ -99,12 +101,26 @@ pub(crate) fn retain_previous_binary(target: &Path) -> Result<Option<PathBuf>, s
     Ok(Some(previous))
 }
 
+/// Maps the running-binary lookup onto its install failure. Split from
+/// [`run_install`] so the `CurrentExe` arm is testable without faking the
+/// process that owns the executable path.
+fn running_binary_path(result: Result<PathBuf, std::io::Error>) -> Result<PathBuf, InstallError> {
+    result.map_err(InstallError::CurrentExe)
+}
+
+/// The time elapsed since the Unix epoch, kept as the typed clock failure so a
+/// pre-epoch clock is reported rather than panicked on.
+fn elapsed_since_epoch(now: std::time::SystemTime) -> Result<std::time::Duration, InstallError> {
+    now.duration_since(std::time::UNIX_EPOCH)
+        .map_err(InstallError::Clock)
+}
+
 /// Installs a complete executable and publishes it with an atomic rename,
 /// then offers to put `bin_dir` on `PATH` (interactively). Adding to PATH is
 /// always opt-in: an unattended install (piped stdin / CI) keeps the manual
 /// hint instead of editing a shell config it can't confirm.
 pub fn run_install() -> Result<(), InstallError> {
-    let source = running_binary().map_err(InstallError::CurrentExe)?;
+    let source = running_binary_path(running_binary())?;
     let bin_dir = slugaudit_dir().ok_or(InstallError::NoHome)?;
     let target = bin_dir.join("slugaudit");
     std::fs::create_dir_all(&bin_dir).map_err(|inner| InstallError::Mkdir {
@@ -112,10 +128,7 @@ pub fn run_install() -> Result<(), InstallError> {
         inner,
     })?;
 
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(InstallError::Clock)?
-        .as_nanos();
+    let stamp = elapsed_since_epoch(std::time::SystemTime::now())?.as_nanos();
     let temporary = bin_dir.join(format!(".slugaudit.{}.{stamp}.tmp", std::process::id()));
     std::fs::copy(&source, &temporary).map_err(|inner| {
         crate::install_place::remove_leftover(&temporary, "could not remove staged binary");
@@ -126,7 +139,10 @@ pub fn run_install() -> Result<(), InstallError> {
     })?;
     crate::install_place::place_staged_binary(&temporary, &target)?;
 
-    println!("Installed slugaudit to {}", target.display());
+    crate::cli::out(format_args!(
+        "Installed slugaudit to {}\n",
+        target.display()
+    ))?;
     // `install` is human-facing; `connect` follows naturally after PATH has
     // it, so offer to add the dir rather than forcing the user to type an
     // export by hand. No-op when stdin isn't a terminal or already on PATH.
@@ -136,18 +152,18 @@ pub fn run_install() -> Result<(), InstallError> {
         match add_to_path(&bin_dir) {
             Ok(()) => {}
             Err(error) => {
-                eprintln!("could not update shell config: {error}");
-                println!(
-                    "Add {} to your PATH, then run: slugaudit connect",
+                crate::cli::err(format_args!("could not update shell config: {error}\n"))?;
+                crate::cli::out(format_args!(
+                    "Add {} to your PATH, then run: slugaudit connect\n",
                     bin_dir.display()
-                );
+                ))?;
             }
         }
     } else if !on_path(&bin_dir) {
-        println!(
-            "Add {} to your PATH, then run: slugaudit connect",
+        crate::cli::out(format_args!(
+            "Add {} to your PATH, then run: slugaudit connect\n",
             bin_dir.display()
-        );
+        ))?;
     }
     Ok(())
 }
@@ -196,7 +212,10 @@ fn add_to_path(bin_dir: &Path) -> Result<(), InstallError> {
     contents.push_str(&line);
     contents.push('\n');
     std::fs::write(&config_path, contents).map_err(InstallError::Io)?;
-    eprintln!("Added SlugAudit to your PATH in {}", config_path.display());
+    crate::cli::err(format_args!(
+        "Added SlugAudit to your PATH in {}\n",
+        config_path.display()
+    ))?;
     Ok(())
 }
 

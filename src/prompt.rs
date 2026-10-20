@@ -41,7 +41,17 @@ pub(crate) fn confirm(msg: &str) -> bool {
         match ask_yes_no(&mut std::io::stdout(), &mut std::io::stdin().lock(), msg) {
             Ok(accepted) => accepted,
             Err(error) => {
-                eprintln!("could not read your answer: {error}");
+                // The question failed, so the answer is "no"; a failure to
+                // report that is logged to stderr, which is the only channel
+                // left and cannot itself be escalated from here.
+                if let Err(write_error) =
+                    crate::cli::err(format_args!("could not read your answer: {error}\n"))
+                {
+                    tracing::warn!(
+                        error = %write_error,
+                        "could not report a prompt read failure on stderr",
+                    );
+                }
                 false
             }
         }

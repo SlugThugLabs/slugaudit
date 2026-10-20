@@ -27,7 +27,6 @@
 //!   version it replaced can therefore be undone without a download — see
 //!   `docs/TROUBLESHOOTING.md`. The copy is overwritten by the next install or
 //!   update, and nothing else reads it.
-#![allow(clippy::print_stdout)]
 
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -216,6 +215,16 @@ fn update_decision(current: &str, latest: &str) -> UpdateDecision {
     }
 }
 
+/// Refuses a platform the single published asset cannot run on. Takes the
+/// OS/architecture so the refusal is testable on the supported platform.
+fn ensure_platform_supported(os: &'static str, arch: &'static str) -> Result<(), UpdateError> {
+    if platform_supported(os, arch) {
+        Ok(())
+    } else {
+        Err(UpdateError::UnsupportedPlatform { os, arch })
+    }
+}
+
 /// Entry point for `slugaudit update`. Prints human-facing progress to
 /// stdout; never touches the MCP transport.
 pub fn run_update() -> Result<(), UpdateError> {
@@ -223,12 +232,7 @@ pub fn run_update() -> Result<(), UpdateError> {
 
     // Refused before any network call: the only published asset is for one
     // platform, and its checksum would pass on any other.
-    if !platform_supported(std::env::consts::OS, std::env::consts::ARCH) {
-        return Err(UpdateError::UnsupportedPlatform {
-            os: std::env::consts::OS,
-            arch: std::env::consts::ARCH,
-        });
-    }
+    ensure_platform_supported(std::env::consts::OS, std::env::consts::ARCH)?;
 
     let latest = fetch_latest_release()?;
 
@@ -237,14 +241,16 @@ pub fn run_update() -> Result<(), UpdateError> {
     // what we want and proceed to fetch it.
     match update_decision(current, &latest.version) {
         UpdateDecision::UpToDate => {
-            println!("slugaudit is already up to date (v{current}).");
+            crate::cli::out(format_args!(
+                "slugaudit is already up to date (v{current}).\n"
+            ))?;
             return Ok(());
         }
         UpdateDecision::Newer => {
-            println!(
-                "A newer release (tag {}) is available; fetching...",
+            crate::cli::out(format_args!(
+                "A newer release (tag {}) is available; fetching...\n",
                 latest.tag
-            );
+            ))?;
         }
         UpdateDecision::Incomparable => {
             // The comparison could not be made — one side is not a plain
@@ -252,24 +258,26 @@ pub fn run_update() -> Result<(), UpdateError> {
             // fetching is deliberate (the comment above records that), but
             // saying "a newer release is available" would assert a comparison
             // that never happened.
-            println!(
+            crate::cli::out(format_args!(
                 "This build's version ({current}) could not be compared with the \
-                 published {tag}; fetching it as though it were newer.",
+                 published {tag}; fetching it as though it were newer.\n",
                 tag = latest.tag
-            );
+            ))?;
         }
     }
 
     let target = target_binary()?;
-    println!(
-        "Updating slugaudit v{current} -> {} at {}...",
+    crate::cli::out(format_args!(
+        "Updating slugaudit v{current} -> {} at {}...\n",
         latest.version,
         target.display()
-    );
+    ))?;
 
     apply_update(&latest, &target)?;
 
-    println!("Done. Restart any running AI sessions so they launch the new binary.");
+    crate::cli::out(format_args!(
+        "Done. Restart any running AI sessions so they launch the new binary.\n"
+    ))?;
     Ok(())
 }
 

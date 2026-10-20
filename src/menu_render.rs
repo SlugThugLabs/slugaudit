@@ -1,5 +1,4 @@
 //! ANSI rendering and formatting helpers for the interactive setup menu.
-#![allow(clippy::print_stdout)]
 
 use crate::util::Style;
 use std::path::Path;

@@ -1,11 +1,10 @@
 //! Registering or removing this binary as the `slugaudit` MCP server in an AI agent or editor.
-#![allow(clippy::print_stdout)]
 
+use crate::cli;
 use crate::cli::ConnectError;
 use crate::connect_agents::{AgentDef, detected_agents, find_agent};
 use crate::connect_exec::{DisconnectOutcome, connect_agent, disconnect_agent};
 use crate::install::{config_home, running_binary, slugaudit_dir};
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 /// Registers SlugAudit as an MCP server for the named agent, or prompts interactively.
@@ -60,32 +59,55 @@ fn answer_from(line: Option<String>) -> Result<String, ConnectError> {
     line.ok_or(ConnectError::EndOfInput)
 }
 
+/// Maps the running-binary lookup onto the connect error, keeping the I/O
+/// cause. Split from [`connect_one`] so the failure arm is testable without
+/// faking the process that owns the executable path.
+fn binary_path(result: Result<PathBuf, std::io::Error>) -> Result<PathBuf, ConnectError> {
+    result.map_err(ConnectError::BinaryPath)
+}
+
+/// Writes an interactive prompt to `out` and flushes it, keeping a closed
+/// stdout as the typed I/O error. `out` is a parameter so a failing writer can
+/// drive the error arm without a test-only production branch.
+fn write_prompt(
+    out: &mut impl std::io::Write,
+    text: std::fmt::Arguments<'_>,
+) -> Result<(), ConnectError> {
+    cli::write_to(out, text).map_err(ConnectError::Io)
+}
+
 fn connect_one(agent: AgentDef) -> Result<(), ConnectError> {
-    let binary = running_binary().map_err(ConnectError::BinaryPath)?;
+    let binary = binary_path(running_binary())?;
     let binary = prefer_slugthug_binary(&binary)?;
     let home = config_home();
     if agent.is_connected(home.as_deref()) {
-        println!(
-            "SlugAudit is already registered with {}. Updating connection...",
+        cli::out(format_args!(
+            "SlugAudit is already registered with {}. Updating connection...\n",
             agent.display_name
-        );
+        ))?;
     } else {
-        println!("Connecting SlugAudit to {}...", agent.display_name);
+        cli::out(format_args!(
+            "Connecting SlugAudit to {}...\n",
+            agent.display_name
+        ))?;
     }
     connect_agent(&agent, &binary, home.as_deref())?;
-    println!("Done.");
-    if let Some(cli) = agent.cli {
-        println!("Verify with: {} mcp list", cli);
+    cli::out(format_args!("Done.\n"))?;
+    if let Some(client) = agent.cli {
+        cli::out(format_args!("Verify with: {client} mcp list\n"))?;
     }
     Ok(())
 }
 
 fn disconnect_one(agent: AgentDef) -> Result<(), ConnectError> {
     let home = config_home();
-    println!("Disconnecting SlugAudit from {}...", agent.display_name);
+    cli::out(format_args!(
+        "Disconnecting SlugAudit from {}...\n",
+        agent.display_name
+    ))?;
     match disconnect_agent(&agent, home.as_deref())? {
-        DisconnectOutcome::Disconnected => println!("Done."),
-        DisconnectOutcome::NothingToDo => println!("Nothing to disconnect."),
+        DisconnectOutcome::Disconnected => cli::out(format_args!("Done.\n"))?,
+        DisconnectOutcome::NothingToDo => cli::out(format_args!("Nothing to disconnect.\n"))?,
     }
     Ok(())
 }
@@ -95,22 +117,35 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
     let home = config_home();
     let detected = detected_agents(home.as_deref());
     if detected.is_empty() {
-        println!("No supported AI agents or editors were detected on this machine.");
-        println!("Install an agent (e.g. agy, claude, gemini, cursor) or use manual setup.");
+        cli::out(format_args!(
+            "No supported AI agents or editors were detected on this machine.\n"
+        ))?;
+        cli::out(format_args!(
+            "Install an agent (e.g. agy, claude, gemini, cursor) or use manual setup.\n"
+        ))?;
         return Ok(());
     }
-    println!("Connect SlugAudit to an AI agent or editor:\n");
+    cli::out(format_args!(
+        "Connect SlugAudit to an AI agent or editor:\n\n"
+    ))?;
     for (i, agent) in detected.iter().enumerate() {
         let status = if agent.is_connected(home.as_deref()) {
             " [Connected ✅]"
         } else {
             ""
         };
-        println!("  {}) {:<24}{}", i + 1, agent.display_name, status);
+        cli::out(format_args!(
+            "  {}) {:<24}{}\n",
+            i + 1,
+            agent.display_name,
+            status
+        ))?;
     }
-    println!();
-    print!("Choose an agent [1-{}]: ", detected.len());
-    std::io::stdout().flush()?;
+    cli::out(format_args!("\n"))?;
+    write_prompt(
+        &mut std::io::stdout(),
+        format_args!("Choose an agent [1-{}]: ", detected.len()),
+    )?;
 
     let choice = read_answer()?;
     let index = parse_choice(&choice, detected.len())?;
@@ -119,14 +154,16 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
         .copied()
         .ok_or(ConnectError::InvalidChoice)?;
     if agent.is_connected(home.as_deref()) {
-        print!(
-            "{} is already connected. Re-connect / update path? [y/N]: ",
-            agent.display_name
-        );
-        std::io::stdout().flush()?;
+        write_prompt(
+            &mut std::io::stdout(),
+            format_args!(
+                "{} is already connected. Re-connect / update path? [y/N]: ",
+                agent.display_name
+            ),
+        )?;
         let confirm = read_answer()?;
         if !crate::prompt::is_yes(&confirm) {
-            println!("Skipped.");
+            cli::out(format_args!("Skipped.\n"))?;
             return Ok(());
         }
     }
@@ -142,16 +179,18 @@ pub fn run_disconnect_interactive() -> Result<(), ConnectError> {
         .filter(|a| a.is_connected(home.as_deref()))
         .collect();
     if connected.is_empty() {
-        println!("No active SlugAudit connections found.");
+        cli::out(format_args!("No active SlugAudit connections found.\n"))?;
         return Ok(());
     }
-    println!("Connected AI agents and editors:\n");
+    cli::out(format_args!("Connected AI agents and editors:\n\n"))?;
     for (i, agent) in connected.iter().enumerate() {
-        println!("  {}) {}", i + 1, agent.display_name);
+        cli::out(format_args!("  {}) {}\n", i + 1, agent.display_name))?;
     }
-    println!();
-    print!("Choose an agent to disconnect [1-{}]: ", connected.len());
-    std::io::stdout().flush()?;
+    cli::out(format_args!("\n"))?;
+    write_prompt(
+        &mut std::io::stdout(),
+        format_args!("Choose an agent to disconnect [1-{}]: ", connected.len()),
+    )?;
 
     let choice = read_answer()?;
     let index = parse_choice(&choice, connected.len())?;

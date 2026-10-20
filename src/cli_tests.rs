@@ -256,6 +256,72 @@ fn a_config_path_that_is_a_directory_is_an_io_error() {
     );
 }
 
+/// A writer that fails every write with `kind`; the CLI's output helper must
+/// return that failure rather than panic.
+struct FailingWriter(std::io::ErrorKind);
+
+impl std::io::Write for FailingWriter {
+    fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::new(self.0, "injected write failure"))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_closed_pipe_write_is_reported_as_broken_pipe_not_a_panic() {
+    let mut writer = FailingWriter(std::io::ErrorKind::BrokenPipe);
+
+    let error = write_to(&mut writer, format_args!("partial output"))
+        .expect_err("a closed pipe must surface as an error");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+    assert!(is_broken_pipe(&error));
+}
+
+#[test]
+fn a_non_pipe_write_failure_is_reported_and_not_classified_as_a_clean_exit() {
+    let mut writer = FailingWriter(std::io::ErrorKind::StorageFull);
+
+    let error = write_to(&mut writer, format_args!("partial output"))
+        .expect_err("a write failure must surface as an error");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::StorageFull);
+    assert_eq!(error.to_string(), "injected write failure");
+    assert!(!is_broken_pipe(&error));
+}
+
+#[test]
+fn a_successful_write_keeps_the_exact_output_text() {
+    let mut writer = Vec::new();
+
+    write_to(&mut writer, format_args!("slugaudit {}\n", "1.0.10")).expect("the write succeeds");
+
+    assert_eq!(writer, b"slugaudit 1.0.10\n");
+}
+
+#[test]
+fn a_closed_pipe_is_found_through_every_cli_error_wrapper() {
+    let broken = || std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed pipe");
+
+    assert!(is_broken_pipe(&ConnectError::Io(broken())));
+    assert!(is_broken_pipe(&crate::install::InstallError::Io(broken())));
+    assert!(is_broken_pipe(&crate::update::UpdateError::Io(broken())));
+}
+
+#[test]
+fn a_non_pipe_io_failure_in_a_wrapper_is_not_a_clean_exit() {
+    let refused = || std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+
+    assert!(!is_broken_pipe(&ConnectError::Io(refused())));
+    assert!(!is_broken_pipe(
+        &crate::install::InstallError::Io(refused())
+    ));
+    assert!(!is_broken_pipe(&crate::update::UpdateError::Io(refused())));
+}
+
 #[test]
 fn a_rejected_add_with_output_keeps_the_pointer_to_it() {
     let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");

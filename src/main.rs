@@ -1,5 +1,4 @@
 #![forbid(unsafe_code)]
-#![allow(clippy::print_stdout)]
 
 use rmcp::{ServiceExt, transport::stdio};
 use slugaudit_mcp_rust::cli::{self, Command};
@@ -24,7 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let command = match cli::parse_args(args) {
         Ok(cmd) => cmd,
         Err(error) => {
-            eprintln!("Error: {error}");
+            cli::err(format_args!("Error: {error}\n"))?;
             std::process::exit(1);
         }
     };
@@ -40,10 +39,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match run_command(command) {
         CommandOutcome::Serve => {}
         CommandOutcome::Done => return Ok(()),
+        CommandOutcome::Reported(error) if cli::is_broken_pipe(error.as_ref()) => return Ok(()),
         CommandOutcome::Reported(error) => {
-            eprintln!("Error: {error}");
+            cli::err(format_args!("Error: {error}\n"))?;
             std::process::exit(1);
         }
+        CommandOutcome::Propagated(error) if cli::is_broken_pipe(error.as_ref()) => return Ok(()),
         CommandOutcome::Propagated(error) => return Err(error),
     }
     SlugAuditServer::new()
@@ -62,8 +63,8 @@ enum CommandOutcome {
     /// The command finished; exit 0.
     Done,
     /// The command failed with a human-reportable error: print
-    /// `Error: {0}` and exit 1.
-    Reported(String),
+    /// `Error: {0}` and exit 1, unless the cause is a closed stdout.
+    Reported(Box<dyn std::error::Error>),
     /// The `menu` path failed with a boxed error; propagate out of `main`
     /// exactly as the old `run_menu()?` did.
     Propagated(Box<dyn std::error::Error>),
@@ -77,14 +78,11 @@ fn run_command(command: Command) -> CommandOutcome {
         Command::Disconnect { agent } => reported(connect::run_disconnect(agent.as_deref())),
         Command::Install => reported(install::run_install()),
         Command::Update => reported(update::run_update()),
-        Command::Help => {
-            print!("{}", cli::usage());
-            CommandOutcome::Done
-        }
-        Command::Version => {
-            println!("slugaudit {}", env!("CARGO_PKG_VERSION"));
-            CommandOutcome::Done
-        }
+        Command::Help => reported(cli::out(format_args!("{}", cli::usage()))),
+        Command::Version => reported(cli::out(format_args!(
+            "slugaudit {}\n",
+            env!("CARGO_PKG_VERSION")
+        ))),
         Command::Menu => match menu::run_menu() {
             Ok(true) => CommandOutcome::Serve,
             Ok(false) => CommandOutcome::Done,
@@ -95,10 +93,10 @@ fn run_command(command: Command) -> CommandOutcome {
 }
 
 /// Maps a side-effecting command's `Result` onto its exit contract.
-fn reported(result: Result<(), impl std::fmt::Display>) -> CommandOutcome {
+fn reported(result: Result<(), impl std::error::Error + 'static>) -> CommandOutcome {
     match result {
         Ok(()) => CommandOutcome::Done,
-        Err(error) => CommandOutcome::Reported(error.to_string()),
+        Err(error) => CommandOutcome::Reported(Box::new(error)),
     }
 }
 
