@@ -97,19 +97,32 @@ fn load_failure_classification_is_disjoint_from_parse_failure() {
 }
 
 /// Per-file parse logs identify the file by a redacted path id, not by the
-/// raw project-relative path.
+/// raw project-relative path, and a pack error's `Display` (which embeds the
+/// absolute grammar-library path) must never be formatted into the record.
 #[test]
 fn a_parser_load_failure_logs_the_redacted_path_not_the_raw_one() {
     let relative = "src/private-name.rs";
+    let raw_library_path =
+        "/home/private-user/.cache/tree-sitter-language-pack/libtree-sitter-rust.so";
+    let error = PackError::DynamicLoad(format!("Failed to load library {raw_library_path}"));
     let (_, logs) = crate::store::test_capture::capture_warns(|| {
-        load_failed_result(
-            relative,
-            "rust".to_owned(),
-            &PackError::LanguageNotFound("x".into()),
-        );
+        tracing::warn!("capture liveness control for parser_load");
+        load_failed_result(relative, "rust".to_owned(), &error);
     });
 
+    assert!(
+        logs.contains("capture liveness control for parser_load"),
+        "the capture must see this thread's events, captured: {logs}"
+    );
     assert!(logs.contains("parser failed to load"), "got: {logs}");
+    assert!(
+        logs.contains("operation=\"parser_load\""),
+        "the record must name the phase: {logs}"
+    );
+    assert!(
+        logs.contains("error_kind=\"dynamic_load\""),
+        "the record must carry the static error category: {logs}"
+    );
     assert!(
         logs.contains(&crate::util::redacted_path(std::path::Path::new(relative))),
         "the redacted path id must identify the file: {logs}"
@@ -117,5 +130,9 @@ fn a_parser_load_failure_logs_the_redacted_path_not_the_raw_one() {
     assert!(
         !logs.contains(relative),
         "the raw project-relative path must not be logged: {logs}"
+    );
+    assert!(
+        !logs.contains(raw_library_path) && !logs.contains("private-user"),
+        "the pack's absolute library path must not be logged: {logs}"
     );
 }

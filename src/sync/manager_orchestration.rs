@@ -72,8 +72,9 @@ impl SourceSyncManager {
             Ok(connection) => Ok(Ok(connection)),
             Err(error) if error.is_corruption() => {
                 tracing::warn!(
+                    operation = "open_project_database",
                     database_id = %crate::util::redacted_path(database_path),
-                    error = %error,
+                    error_kind = store_error_kind(&error),
                     "database is corrupt or outdated; discarding and re-publishing from scratch",
                 );
                 store::discard_corrupt_database(database_path).map_err(|err| {
@@ -87,8 +88,9 @@ impl SourceSyncManager {
             }
             Err(error) => {
                 tracing::warn!(
+                    operation = "open_project_database",
                     database_id = %crate::util::redacted_path(database_path),
-                    error = %error,
+                    error_kind = store_error_kind(&error),
                     "failed to open project database for sync",
                 );
                 sink.emit(ProgressEvent::Completed {
@@ -112,36 +114,41 @@ impl SourceSyncManager {
     ) -> Result<Result<rusqlite::Connection, SyncedProject>, ErrorData> {
         self.purge_prior_session_findings_once(database_path, &mut connection)?;
         if let Err(metadata_error) = ensure_project_row(&mut connection, root.as_path()) {
-            let stale_reason = match &metadata_error {
+            match metadata_error {
                 ProjectMetaError::RootMismatch { stored_root } => {
-                    Some(format!("different project root ({stored_root})"))
+                    tracing::warn!(
+                        operation = "verify_project_database",
+                        database_id = %crate::util::redacted_path(database_path),
+                        error_kind = "root_mismatch",
+                        stored_root_id = %crate::util::redacted_path(Path::new(&stored_root)),
+                        "project database is stale; discarding and rebuilding from source",
+                    );
                 }
                 ProjectMetaError::IncompatibleVersion {
                     contract_version,
                     schema_version,
-                } => Some(format!(
-                    "unsupported contract/schema version ({contract_version}/{schema_version})"
-                )),
-                ProjectMetaError::Other(_) => None,
-            };
-            if let Some(reason) = stale_reason {
-                tracing::warn!(
-                    database_id = %crate::util::redacted_path(database_path),
-                    reason = %reason,
-                    "project database is stale; discarding and rebuilding from source",
-                );
-                drop(connection);
-                store::discard_corrupt_database(database_path).map_err(|discard| {
-                    ErrorData::internal_error(
-                        format!("discarding the stale project database: {discard}"),
-                        None,
-                    )
-                })?;
-                return self
-                    .rebuild_and_finish(root, database_path.to_path_buf(), start, sink)
-                    .map(Err);
+                } => {
+                    tracing::warn!(
+                        operation = "verify_project_database",
+                        database_id = %crate::util::redacted_path(database_path),
+                        error_kind = "incompatible_version",
+                        contract_version,
+                        schema_version,
+                        "project database is stale; discarding and rebuilding from source",
+                    );
+                }
+                other @ ProjectMetaError::Other(_) => return Err(ErrorData::from(other)),
             }
-            return Err(ErrorData::from(metadata_error));
+            drop(connection);
+            store::discard_corrupt_database(database_path).map_err(|discard| {
+                ErrorData::internal_error(
+                    format!("discarding the stale project database: {discard}"),
+                    None,
+                )
+            })?;
+            return self
+                .rebuild_and_finish(root, database_path.to_path_buf(), start, sink)
+                .map(Err);
         }
         Ok(Ok(connection))
     }
@@ -225,6 +232,24 @@ impl SourceSyncManager {
             phase: "ensuring_current",
         });
         Ok(synced)
+    }
+}
+
+/// The `StoreError` variant as a static, path-free category. `StoreError`
+/// wraps dependency errors whose `Display` is not a controlled diagnostic
+/// (rusqlite can embed the database path on non-Unix targets), so a database
+/// failure is never formatted into a log line.
+fn store_error_kind(error: &store::StoreError) -> &'static str {
+    match error {
+        store::StoreError::Open(_) => "open",
+        store::StoreError::Configure(_) => "configure",
+        store::StoreError::Migration(_) => "migration",
+        store::StoreError::Symlink => "symlink",
+        store::StoreError::Inspect(_) => "inspect",
+        store::StoreError::WalUnavailable { .. } => "wal_unavailable",
+        store::StoreError::Permissions(_) => "permissions",
+        store::StoreError::NetworkFilesystem => "network_filesystem",
+        store::StoreError::NetworkFilesystemCheck(_) => "network_filesystem_check",
     }
 }
 

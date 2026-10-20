@@ -268,3 +268,7 @@ mod tests;
 #[cfg(test)]
 #[path = "manager_observability_tests.rs"]
 mod observability_tests;
+
+#[cfg(test)]
+#[path = "manager_log_tests.rs"]
+mod log_tests;

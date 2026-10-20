@@ -551,7 +551,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 74 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 75 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only

@@ -4,9 +4,94 @@
 //! query path so each file states one concern; the precedence and
 //! descend-and-prune semantics live in the parent module's docs.
 
+use crate::util::redacted_path;
+use ignore::Error;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+/// The ignore-file class a build failure came from. Static, so a diagnostic
+/// identifies the source without logging any user path.
+#[derive(Clone, Copy)]
+enum Source {
+    ProjectGitignore,
+    ProjectIgnore,
+    GlobalGitignore,
+    GitExclude,
+}
+
+impl Source {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Source::ProjectGitignore => "project_gitignore",
+            Source::ProjectIgnore => "project_ignore",
+            Source::GlobalGitignore => "global_gitignore",
+            Source::GitExclude => "git_exclude",
+        }
+    }
+}
+
+/// Logs an `ignore::Error` without its `Display` form.
+///
+/// `Display` for `WithPath`/`WithLineNumber`/`Glob` embeds the walker's
+/// absolute path and the offending ignore-file line, and `Loop` embeds both
+/// paths (ignore 0.4.33, `lib.rs:338-343`), so formatting the error would put
+/// an absolute project or home path and user ignore-file content into the
+/// server log. The record carries static `source`/`error_kind` fields and a
+/// non-reversible `path_id` (plus `ancestor_id` for a loop) for correlation.
+///
+/// `Error::Partial` joins its members with newlines, so each member is logged
+/// as its own one-line record instead of one multi-line field.
+fn log_build_failure(source: Source, context: Option<&Path>, error: &Error) {
+    match error {
+        Error::Partial(errors) => {
+            for error in errors {
+                log_build_failure(source, context, error);
+            }
+        }
+        Error::WithLineNumber { err, .. } | Error::WithDepth { err, .. } => {
+            log_build_failure(source, context, err);
+        }
+        Error::WithPath { path, err } => log_one_failure(source, Some(path), error_kind(err)),
+        Error::Loop { ancestor, child } => tracing::warn!(
+            operation = "ignore_rules_build",
+            source = source.as_str(),
+            error_kind = "loop",
+            path_id = ?Some(redacted_path(child)),
+            ancestor_id = %redacted_path(ancestor),
+            "failed to build ignore rules; the affected rules are not applied",
+        ),
+        other => log_one_failure(source, context, error_kind(other)),
+    }
+}
+
+fn log_one_failure(source: Source, path: Option<&Path>, error_kind: &'static str) {
+    let path_id = path.map(redacted_path);
+    tracing::warn!(
+        operation = "ignore_rules_build",
+        source = source.as_str(),
+        error_kind = error_kind,
+        path_id = ?path_id,
+        "failed to build ignore rules; the affected rules are not applied",
+    );
+}
+
+/// The `ignore::Error` variant as a static, path-free category, unwrapping
+/// the decorating variants (`WithPath`, `WithLineNumber`, `WithDepth`) so the
+/// record names the underlying cause.
+fn error_kind(error: &Error) -> &'static str {
+    match error {
+        Error::WithLineNumber { err, .. }
+        | Error::WithDepth { err, .. }
+        | Error::WithPath { err, .. } => error_kind(err),
+        Error::Partial(_) => "partial",
+        Error::Loop { .. } => "loop",
+        Error::Io(_) => "io",
+        Error::Glob { .. } => "glob",
+        Error::UnrecognizedFileType(_) => "unrecognized_file_type",
+        Error::InvalidDefinition => "invalid_definition",
+    }
+}
 
 /// Compiles every per-directory matcher plus the global gitignore.
 /// Returns the two precedence classes (`.ignore` first, `.gitignore`
@@ -22,12 +107,12 @@ pub(super) fn assemble_matchers(
 ) {
     let mut ignore_by_dir: HashMap<PathBuf, Gitignore> = HashMap::new();
     let mut gitignore_by_dir: HashMap<PathBuf, Gitignore> = HashMap::new();
-    // Matcher diagnostics log the project-relative path: the offending
-    // ignore file is fully identified, and the operator's home directory
-    // never enters a server log (the blanket rule in `util::redacted_path`
-    // docs; relative form keeps the line diagnosable, which a hash would not).
+    // Matcher diagnostics carry a static source and error category plus a
+    // redacted path id: the offending ignore file is correlatable, and neither
+    // the operator's home directory nor the project path enters a server log
+    // (the blanket rule in `util::redacted_path` docs).
     for (dir, (gitignores, ignores)) in group_files_by_dir(ignore_files) {
-        if let Some(matcher) = compile_ignore_matcher(root, &dir, &ignores) {
+        if let Some(matcher) = compile_ignore_matcher(&dir, &ignores) {
             ignore_by_dir.insert(dir.clone(), matcher);
         }
         if let Some(matcher) = compile_gitignore_matcher(root, &dir, &gitignores) {
@@ -43,10 +128,7 @@ pub(super) fn assemble_matchers(
 
     let (global, error) = GitignoreBuilder::new(root).build_global();
     if let Some(error) = error {
-        tracing::warn!(
-            error = %error,
-            "failed to load the global gitignore; continuing without it",
-        );
+        log_build_failure(Source::GlobalGitignore, None, &error);
     }
     (ignore_by_dir, gitignore_by_dir, global)
 }
@@ -61,7 +143,7 @@ pub(super) fn group_files_by_dir(
     for file in ignore_files {
         let Some(parent) = file.parent() else {
             tracing::warn!(
-                path = %file.display(),
+                path_id = %redacted_path(file),
                 "ignore file has no parent directory; its rules are not applied",
             );
             continue;
@@ -79,21 +161,15 @@ pub(super) fn group_files_by_dir(
 /// Compiles the `.ignore` matcher for one directory; `None` (with the failure
 /// warned) when there are no files or the matcher will not compile — the
 /// directory then falls back to its ancestors, matching the walker.
-fn compile_ignore_matcher(root: &Path, dir: &Path, files: &[PathBuf]) -> Option<Gitignore> {
+fn compile_ignore_matcher(dir: &Path, files: &[PathBuf]) -> Option<Gitignore> {
     if files.is_empty() {
         return None;
     }
     let mut builder = GitignoreBuilder::new(dir);
-    add_files(root, &mut builder, files, ".ignore");
+    add_files(&mut builder, files, Source::ProjectIgnore);
     builder
         .build()
-        .map_err(|err| {
-            tracing::warn!(
-                dir = %rel(root, dir),
-                error = %err,
-                "failed to compile .ignore matcher",
-            );
-        })
+        .map_err(|err| log_build_failure(Source::ProjectIgnore, Some(dir), &err))
         .ok()
 }
 
@@ -108,11 +184,7 @@ fn compile_gitignore_matcher(root: &Path, dir: &Path, files: &[PathBuf]) -> Opti
         match exclude.try_exists() {
             Ok(true) => {
                 if let Some(err) = builder.add(&exclude) {
-                    tracing::warn!(
-                        path = ".git/info/exclude",
-                        error = %err,
-                        "failed to add .git/info/exclude to matcher",
-                    );
+                    log_build_failure(Source::GitExclude, Some(&exclude), &err);
                 }
             }
             Ok(false) => {}
@@ -123,38 +195,19 @@ fn compile_gitignore_matcher(root: &Path, dir: &Path, files: &[PathBuf]) -> Opti
             ),
         }
     }
-    add_files(root, &mut builder, files, ".gitignore");
+    add_files(&mut builder, files, Source::ProjectGitignore);
     builder
         .build()
-        .map_err(|err| {
-            tracing::warn!(
-                dir = %rel(root, dir),
-                error = %err,
-                "failed to compile .gitignore matcher",
-            );
-        })
+        .map_err(|err| log_build_failure(Source::ProjectGitignore, Some(dir), &err))
         .ok()
 }
 
 /// Adds each file to the builder, warning on per-file failures (a malformed
 /// ignore file degrades to being skipped; the walker would refuse it too).
-fn add_files(root: &Path, builder: &mut GitignoreBuilder, files: &[PathBuf], class: &str) {
+fn add_files(builder: &mut GitignoreBuilder, files: &[PathBuf], source: Source) {
     for file in files {
         if let Some(err) = builder.add(file) {
-            tracing::warn!(
-                path = %rel(root, file),
-                error = %err,
-                "failed to add {class} file to matcher",
-            );
+            log_build_failure(source, Some(file), &err);
         }
     }
-}
-
-/// Project-relative display form for a path under `root` (see the
-/// redaction note in [`assemble_matchers`]).
-fn rel(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .display()
-        .to_string()
 }

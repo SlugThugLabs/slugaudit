@@ -58,6 +58,36 @@ fn is_load_failure(error: &PackError) -> bool {
     )
 }
 
+/// The pack error as a static, path-free category.
+///
+/// `DynamicLoad` and `LanguageNotFound` format the grammar-library path into
+/// their `Display` (the runtime download cache under the user's home, or the
+/// installed-library directory; tree-sitter-language-pack 1.18.0,
+/// `registry.rs:326-337`), so a parser failure is never logged by formatting
+/// the error itself.
+fn pack_error_kind(error: &PackError) -> &'static str {
+    match error {
+        PackError::LanguageNotFound(_) => "language_not_found",
+        PackError::DynamicLoad(_) => "dynamic_load",
+        PackError::NullLanguagePointer(_) => "null_language_pointer",
+        PackError::ParserSetup(_) => "parser_setup",
+        PackError::LockPoisoned(_) => "lock_poisoned",
+        PackError::Config(_) => "config",
+        PackError::ParseFailed => "parse_failed",
+        PackError::ParseTimeout { .. } => "parse_timeout",
+        PackError::QueryError(_) => "query_error",
+        PackError::InvalidRange(_) => "invalid_range",
+        PackError::Io(_) => "io",
+        PackError::Json(_) => "json",
+        PackError::Download(_) => "download",
+        PackError::ChecksumMismatch { .. } => "checksum_mismatch",
+        PackError::CacheLock(_) => "cache_lock",
+        // `Error` is `#[non_exhaustive]`: a future pack release can add a
+        // variant, which must not make the failure log fall back to Display.
+        _ => "other",
+    }
+}
+
 /// Detects a file's language and runs pack extraction when possible. Never
 /// invents completeness: a file the pack can't identify or doesn't support
 /// gets `ContentOnly`/`NotAttempted` — its text is indexed — and only a file
@@ -155,9 +185,10 @@ fn succeeded_result(
 /// reason (see [`is_load_failure`] on why this stays distinct from `Failed`).
 fn load_failed_result(relative_path: &str, language: String, error: &PackError) -> ParseResult {
     tracing::warn!(
+        operation = "parser_load",
         path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
         language = %language,
-        error = %error,
+        error_kind = pack_error_kind(error),
         "parser failed to load; recording LoadFailed",
     );
     ParseResult {
@@ -178,9 +209,10 @@ fn load_failed_result(relative_path: &str, language: String, error: &PackError) 
 /// `Available`; the outcome carries the failure.
 fn parse_failed_result(relative_path: &str, language: String, error: &PackError) -> ParseResult {
     tracing::debug!(
+        operation = "parser_extract",
         path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
         language = %language,
-        error = %error,
+        error_kind = pack_error_kind(error),
         "parser ran but extraction failed; recording Failed",
     );
     ParseResult {

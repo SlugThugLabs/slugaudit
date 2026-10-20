@@ -7,11 +7,32 @@
 
 use super::*;
 use crate::sync::discover;
+use crate::util::TEST_ENV_LOCK;
 use crate::watch::WatchScope;
 use std::fs;
 
 fn project() -> tempfile::TempDir {
     tempfile::tempdir().expect("project dir")
+}
+
+/// The structured ignore-rule build records for one source in a captured
+/// log; there is one per failure.
+fn build_failure_records<'a>(logs: &'a str, source: &str) -> Vec<&'a str> {
+    let source_field = format!("source=\"{source}\"");
+    logs.lines()
+        .filter(|line| {
+            line.contains("operation=\"ignore_rules_build\"") && line.contains(&source_field)
+        })
+        .collect()
+}
+
+/// A capture that went blind would make every absence assertion below pass
+/// vacuously; each test emits this control line inside its closure.
+fn assert_capture_live(logs: &str) {
+    assert!(
+        logs.contains("capture liveness control for ignore_rules_build"),
+        "the capture must see this thread's events, captured: {logs}"
+    );
 }
 
 /// Builds rules the way production does: scope walk first (collects the
@@ -178,6 +199,67 @@ fn cross_type_precedence_matches_the_walker() {
     }
 }
 
+/// R7: the walker applies parent-directory ignore files (`parents(true)`)
+/// but the scope only collects ignore files under the root, so discovery
+/// could exclude a file the watcher's incremental path indexes. Both paths
+/// must use the same project-scoped rule set.
+#[test]
+fn a_parent_gitignore_does_not_diverge_from_the_incremental_rules() {
+    let repo = project();
+    fs::write(repo.path().join(".gitignore"), "dist/\n").expect("parent gitignore");
+    let root = repo.path().join("nested-project");
+    fs::create_dir_all(root.join("dist")).expect("dist dir");
+    fs::write(root.join("dist/out.rs"), "fn out() {}\n").expect("dist file");
+    fs::create_dir_all(root.join("src")).expect("src dir");
+    fs::write(root.join("src/lib.rs"), "fn lib() {}\n").expect("lib file");
+
+    let (files, _skipped) = discover(&root).expect("discover");
+    let indexed: std::collections::HashSet<&str> = files
+        .iter()
+        .map(|file| file.relative_path.as_str())
+        .collect();
+    let rules = rules_for(&root);
+
+    assert!(
+        indexed.contains("dist/out.rs"),
+        "the walker must not apply a parent ignore file: {indexed:?}"
+    );
+    assert!(
+        !rules.should_ignore("dist/out.rs"),
+        "the incremental rules must agree with the walker"
+    );
+}
+
+/// R7: excluded directories must be pruned at descent time. Filtering their
+/// yielded files keeps them out of the index, but walking a large `.git` or
+/// data directory still consumes the watch-scope entry cap and can report
+/// the scope Partial before source directories are reached.
+#[test]
+fn the_walker_does_not_descend_into_excluded_directories() {
+    let project = project();
+    let root = project.path();
+    fs::create_dir_all(root.join(".git/objects")).expect("git objects");
+    for index in 0..32 {
+        fs::write(root.join(format!(".git/objects/{index:02}")), "x").expect("git object");
+    }
+    fs::create_dir_all(root.join(".planning/slugaudit")).expect("data dir");
+    for index in 0..32 {
+        fs::write(root.join(format!(".planning/slugaudit/{index:02}.db")), "x").expect("data");
+    }
+    fs::create_dir_all(root.join("src")).expect("src dir");
+
+    // Root, `.planning`, and `src` are the only yielded entries; descending
+    // into either excluded subtree would exceed this cap.
+    let scope = WatchScope::compute_with_limits(root, 3, 8);
+
+    assert!(
+        scope.limit.is_none(),
+        "excluded directories must not consume the walk: {:?}",
+        scope.limit
+    );
+    assert!(scope.watch_dirs.contains(&root.join("src")));
+}
+
 /// The heart of the fix: incremental reconcile must skip exactly what a
 /// fresh `discover()` would skip. Every discovered file must be allowed
 /// by the rules, and every rule-ignored file must be absent from
@@ -276,5 +358,179 @@ fn an_unstattable_git_exclude_is_reported_not_skipped_silently() {
     assert!(
         logs.contains("could not stat .git/info/exclude"),
         "stat failure must be logged:\n{logs}"
+    );
+}
+
+/// R12: `ignore::Error`'s `Display` for a `WithPath`/`Glob` error is
+/// `"<absolute ignore-file path>: line N: error parsing glob '<glob>': ..."`,
+/// so a malformed project `.gitignore` must emit structured fields rather
+/// than the error text.
+#[test]
+fn a_malformed_project_gitignore_logs_no_path_or_glob_text() {
+    let project = project();
+    let gitignore = project.path().join(".gitignore");
+    fs::write(&gitignore, "[z-a]\n").expect("malformed gitignore");
+    let raw_root = project.path().to_string_lossy().to_string();
+    let expected_id = crate::util::redacted_path(&gitignore);
+
+    let (_rules, logs) = crate::store::test_capture::capture_warns(|| {
+        tracing::warn!("capture liveness control for ignore_rules_build");
+        IgnoreRules::build(project.path(), std::slice::from_ref(&gitignore))
+    });
+
+    assert_capture_live(&logs);
+    let records = build_failure_records(&logs, "project_gitignore");
+    assert_eq!(records.len(), 1, "one failure is one record:\n{logs}");
+    assert!(
+        records[0].contains("source=\"project_gitignore\""),
+        "the source must be named:\n{logs}"
+    );
+    assert!(
+        records[0].contains("error_kind=\"glob\""),
+        "the error category must be named:\n{logs}"
+    );
+    assert!(
+        records[0].contains(&format!("path_id=Some(\"{expected_id}\")")),
+        "the redacted path id must be present:\n{logs}"
+    );
+    assert!(
+        !logs.contains(&raw_root),
+        "the project path leaked:\n{logs}"
+    );
+    assert!(!logs.contains("[z-a]"), "the glob text leaked:\n{logs}");
+}
+
+/// R12: the global gitignore normally lives under `$HOME`/XDG, so the same
+/// error `Display` would put the operator's home directory in a server log.
+#[test]
+fn a_malformed_global_gitignore_logs_no_home_path_or_glob_text() {
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+    let home = project();
+    let xdg = tempfile::tempdir().expect("xdg config dir");
+    let global = xdg.path().join("git/ignore");
+    fs::create_dir_all(global.parent().expect("git config dir")).expect("git config dir");
+    fs::write(&global, "[z-a]\n").expect("malformed global ignore");
+    let missing_config = home.path().join("absent-gitconfig");
+    let raw_home = home.path().to_string_lossy().to_string();
+    let raw_xdg = xdg.path().to_string_lossy().to_string();
+    let expected_id = crate::util::redacted_path(&global);
+
+    let (_rules, logs) = temp_env::with_vars(
+        [
+            ("HOME", Some(home.path().as_os_str())),
+            ("XDG_CONFIG_HOME", Some(xdg.path().as_os_str())),
+            // Keep machine-level git config, which could name another
+            // `core.excludesFile`, out of the resolution path.
+            ("GIT_CONFIG_GLOBAL", Some(missing_config.as_os_str())),
+            ("GIT_CONFIG_SYSTEM", Some(missing_config.as_os_str())),
+        ],
+        || {
+            crate::store::test_capture::capture_warns(|| {
+                tracing::warn!("capture liveness control for ignore_rules_build");
+                IgnoreRules::build(home.path(), &[])
+            })
+        },
+    );
+
+    assert_capture_live(&logs);
+    let records = build_failure_records(&logs, "global_gitignore");
+    assert_eq!(records.len(), 1, "one failure is one record:\n{logs}");
+    assert!(
+        records[0].contains("source=\"global_gitignore\""),
+        "the source must be named:\n{logs}"
+    );
+    assert!(
+        records[0].contains("error_kind=\"glob\""),
+        "the error category must be named:\n{logs}"
+    );
+    assert!(
+        records[0].contains(&format!("path_id=Some(\"{expected_id}\")")),
+        "the redacted path id must be present:\n{logs}"
+    );
+    assert!(!logs.contains(&raw_home), "the home path leaked:\n{logs}");
+    assert!(!logs.contains(&raw_xdg), "the XDG path leaked:\n{logs}");
+    assert!(!logs.contains("[z-a]"), "the glob text leaked:\n{logs}");
+}
+
+/// R12: `.git/info/exclude` is added from an absolute path (`root.join`), so
+/// its malformed glob must not reach the log either.
+#[test]
+fn a_malformed_git_exclude_logs_no_path_or_glob_text() {
+    let project = project();
+    let gitignore = project.path().join(".gitignore");
+    fs::write(&gitignore, "*.tmp\n").expect("valid gitignore");
+    let exclude = project.path().join(".git/info/exclude");
+    fs::create_dir_all(exclude.parent().expect("exclude dir")).expect("git info dir");
+    fs::write(&exclude, "[z-a]\n").expect("malformed exclude");
+    let raw_root = project.path().to_string_lossy().to_string();
+    let expected_id = crate::util::redacted_path(&exclude);
+
+    let (_rules, logs) = crate::store::test_capture::capture_warns(|| {
+        tracing::warn!("capture liveness control for ignore_rules_build");
+        IgnoreRules::build(project.path(), std::slice::from_ref(&gitignore))
+    });
+
+    assert_capture_live(&logs);
+    let records = build_failure_records(&logs, "git_exclude");
+    assert_eq!(records.len(), 1, "one failure is one record:\n{logs}");
+    assert!(
+        records[0].contains("source=\"git_exclude\""),
+        "the source must be named:\n{logs}"
+    );
+    assert!(
+        records[0].contains("error_kind=\"glob\""),
+        "the error category must be named:\n{logs}"
+    );
+    assert!(
+        records[0].contains(&format!("path_id=Some(\"{expected_id}\")")),
+        "the redacted path id must be present:\n{logs}"
+    );
+    assert!(
+        !logs.contains(&raw_root),
+        "the project path leaked:\n{logs}"
+    );
+    assert!(!logs.contains("[z-a]"), "the glob text leaked:\n{logs}");
+}
+
+/// R12: `Error::Partial` joins its members with newlines, so each failure
+/// must be logged as its own one-line record rather than one multi-line
+/// field.
+#[test]
+fn a_partially_malformed_gitignore_logs_one_record_per_failure() {
+    let project = project();
+    let gitignore = project.path().join(".gitignore");
+    fs::write(&gitignore, "[z-a]\n[9-0]\n").expect("malformed gitignore");
+    let raw_root = project.path().to_string_lossy().to_string();
+    let expected_id = crate::util::redacted_path(&gitignore);
+
+    let (_rules, logs) = crate::store::test_capture::capture_warns(|| {
+        tracing::warn!("capture liveness control for ignore_rules_build");
+        IgnoreRules::build(project.path(), std::slice::from_ref(&gitignore))
+    });
+
+    assert_capture_live(&logs);
+    let records = build_failure_records(&logs, "project_gitignore");
+    assert_eq!(records.len(), 2, "one record per failure:\n{logs}");
+    for record in records {
+        assert!(
+            record.contains("source=\"project_gitignore\""),
+            "the source must be named:\n{logs}"
+        );
+        assert!(
+            record.contains("error_kind=\"glob\""),
+            "the error category must be named:\n{logs}"
+        );
+        assert!(
+            record.contains(&format!("path_id=Some(\"{expected_id}\")")),
+            "the redacted path id must be present:\n{logs}"
+        );
+    }
+    assert!(
+        !logs.contains(&raw_root),
+        "the project path leaked:\n{logs}"
+    );
+    assert!(
+        !logs.contains("[z-a]") && !logs.contains("[9-0]"),
+        "the glob text leaked:\n{logs}"
     );
 }

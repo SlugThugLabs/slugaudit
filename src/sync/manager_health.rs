@@ -4,7 +4,7 @@
 //! reconcile. It is a child of `manager`, so it can coordinate the manager's
 //! private counters and watcher state without exposing implementation fields.
 use super::super::manager_health_support::{
-    reconcile_events, revision_after_sync, sweep_error_to_sync,
+    log_sync_failure, reconcile_events, revision_after_sync, sweep_error_to_sync,
 };
 use super::super::reconcile::ReconcileOptions;
 use super::{SourceSyncManager, SyncError};
@@ -91,10 +91,11 @@ impl SourceSyncManager {
         // reconciled, leaving the database stale in the interim.
         self.reconcile(root.as_path(), state, connection)
             .map_err(|error| {
-                tracing::warn!(
-                    root_id = %crate::util::redacted_path(root.as_path()),
-                    error = %error,
+                log_sync_failure(
+                    "verify_drain",
+                    root.as_path(),
                     "post-verification drain failed; events remain unreconciled",
+                    &error,
                 );
                 let data = error_codes::budget_payload(error.budget_elapsed_ms());
                 ErrorData::internal_error(
@@ -198,10 +199,11 @@ impl SourceSyncManager {
                 Ok(())
             }
             Err(error) => {
-                tracing::warn!(
-                    root_id = %crate::util::redacted_path(root.as_path()),
-                    error = %error,
+                log_sync_failure(
+                    "reconcile_drain",
+                    root.as_path(),
                     "incremental reconcile failed; marking watcher Desynced so next call re-verifies",
+                    &error,
                 );
                 state.set_health(WatcherHealth::Desynced);
                 sink.emit(ProgressEvent::Completed {

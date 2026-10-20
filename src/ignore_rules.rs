@@ -92,11 +92,33 @@ pub(crate) fn indexable_walker_with_max_depth(
     max_depth: Option<usize>,
 ) -> ignore::Walk {
     let mut builder = ignore::WalkBuilder::new(root);
+    let filter_root = root.to_path_buf();
     builder
         .standard_filters(true)
+        // `standard_filters` enables `parents`, which makes the walker apply
+        // `.gitignore`/`.ignore` files above the project root. The watcher's
+        // rule matcher (`IgnoreRules::build`) only sees ignore files the
+        // scope walk found under the root, so honoring parent files would
+        // exclude a file from a full publish that the incremental path still
+        // indexes. Project-scoped rules are the shared contract.
+        .parents(false)
         .follow_links(false)
+        // Hidden files stay indexable (`.github/`, `.env.example`); VCS
+        // internals and SlugAudit's own data directory are pruned below
+        // instead of being walked and filtered per file.
         .hidden(false)
-        .require_git(false);
+        .require_git(false)
+        // Prune excluded directories at descent time. Without this the walk
+        // still pays for `.git` and `.planning/slugaudit`, and a large
+        // object store or database journal can consume the watch-scope
+        // entry cap before later source directories are enumerated.
+        .filter_entry(move |entry| {
+            let relative = entry
+                .path()
+                .strip_prefix(&filter_root)
+                .unwrap_or_else(|_| entry.path());
+            !is_excluded_dir(&relative.to_string_lossy())
+        });
     if let Some(max_depth) = max_depth {
         builder.max_depth(Some(max_depth));
     }

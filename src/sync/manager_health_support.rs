@@ -6,10 +6,15 @@
 //! post-sync revision read, and the typed sweep-error conversion. Keeping
 //! them here leaves the state machine itself readable in one file.
 
+use super::discovery::DiscoveryError;
+use super::hash::HashError;
 use super::manager::SyncError;
 use super::manager_meta::current_revision_id;
-use super::reconcile::ReconcileOptions;
+use super::reconcile::{ReconcileError, ReconcileOptions};
+use super::revision::RevisionError;
+use super::sample::SampleError;
 use super::sweep::SweepError;
+use crate::util::redacted_path;
 use crate::watch::WatchState;
 use rmcp::ErrorData;
 use std::collections::HashSet;
@@ -111,5 +116,83 @@ pub(super) fn sweep_error_to_sync(error: SweepError) -> SyncError {
             SyncError::SweepBudgetExceeded { elapsed_ms }
         }
         other => SyncError::Sweep(other.to_string()),
+    }
+}
+
+/// Logs a sync failure without its `Display` form.
+///
+/// `SyncError`'s `Display` chains dependency errors, and several variants
+/// embed an absolute or project-relative path: `HashError::Read`,
+/// `SampleError::Read`, `DiscoveryError::Read`, and
+/// `ReconcileError::TimeBudgetExceeded` all format the path they were
+/// processing. The record therefore carries a static `error_kind` plus
+/// redacted ids (`root_id`, and `path_id` when the variant names one) and
+/// never the error text.
+pub(super) fn log_sync_failure(
+    operation: &'static str,
+    root: &Path,
+    message: &'static str,
+    error: &SyncError,
+) {
+    let (error_kind, path_id) = sync_error_details(error);
+    tracing::warn!(
+        operation = operation,
+        root_id = %crate::util::redacted_path(root),
+        error_kind = error_kind,
+        path_id = ?path_id,
+        "{}",
+        message,
+    );
+}
+
+/// The static category and redacted path id for a sync failure.
+fn sync_error_details(error: &SyncError) -> (&'static str, Option<String>) {
+    match error {
+        SyncError::Database(_) => ("database", None),
+        SyncError::Reconcile(error) => reconcile_error_details(error),
+        SyncError::Sweep(_) => ("sweep", None),
+        SyncError::SweepBudgetExceeded { .. } => ("sweep_budget_exceeded", None),
+    }
+}
+
+fn reconcile_error_details(error: &ReconcileError) -> (&'static str, Option<String>) {
+    match error {
+        ReconcileError::Discovery(error) => discovery_error_details(error),
+        ReconcileError::Database(_) => ("database", None),
+        ReconcileError::Hash(error) => match error {
+            HashError::Read { path, .. } => ("hash_read", Some(redacted_path(path))),
+            HashError::TooLarge { path, .. } => ("hash_too_large", Some(redacted_path(path))),
+        },
+        ReconcileError::Sample(error) => match error {
+            SampleError::Read { path, .. } => ("sample_read", Some(redacted_path(path))),
+            SampleError::TooLarge { path, .. } => ("sample_too_large", Some(redacted_path(path))),
+        },
+        ReconcileError::Revision(error) => revision_error_details(error),
+        ReconcileError::BarrierCapExceeded { .. } => ("barrier_cap_exceeded", None),
+        ReconcileError::TimeBudgetExceeded { path, .. } => (
+            "reconcile_budget_exceeded",
+            (!path.trim().is_empty()).then(|| crate::util::redacted_log_id(path.trim())),
+        ),
+    }
+}
+
+fn discovery_error_details(error: &DiscoveryError) -> (&'static str, Option<String>) {
+    match error {
+        DiscoveryError::Walk(_) => ("discovery_walk", None),
+        DiscoveryError::Read { path, .. } => ("discovery_read", Some(redacted_path(path))),
+        DiscoveryError::NotRelative(path) => ("discovery_not_relative", Some(redacted_path(path))),
+        DiscoveryError::NonUtf8Path(path) => ("discovery_non_utf8_path", Some(redacted_path(path))),
+        DiscoveryError::TimeBudgetExceeded { .. } => ("discovery_budget_exceeded", None),
+    }
+}
+
+fn revision_error_details(error: &RevisionError) -> (&'static str, Option<String>) {
+    match error {
+        RevisionError::Database(_) => ("revision_database", None),
+        RevisionError::InvalidParserRun { path, .. } => (
+            "revision_invalid_parser_run",
+            Some(crate::util::redacted_log_id(path)),
+        ),
+        RevisionError::StaleBaseline { .. } => ("revision_stale_baseline", None),
     }
 }
