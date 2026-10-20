@@ -27,6 +27,27 @@ fn base_request(project: &tempfile::TempDir, file: &str) -> FindingRequest {
     }
 }
 
+/// Runs `finding` with one text field replaced and returns its error.
+/// Validation runs before any session or database work, so this needs no
+/// session lock.
+fn finding_error_for(project: &tempfile::TempDir, field: &str, value: String) -> rmcp::ErrorData {
+    let mut request = base_request(project, "lib.rs");
+    match field {
+        "title" => request.title = value,
+        "description" => request.description = value,
+        "severity" => request.severity = value,
+        _ => request.category = value,
+    }
+    match finding(
+        &Parameters(request),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    ) {
+        Ok(_) => panic!("a finding with an invalid {field} must error"),
+        Err(error) => error,
+    }
+}
+
 /// `check_field` caps every caller-supplied text field at its own limit.
 /// The exact message is asserted so a swapped cap (for example `severity`
 /// checked against `MAX_TITLE_CHARS`) cannot pass.
@@ -40,29 +61,31 @@ fn each_text_field_is_bounded_by_its_own_character_cap() {
         ("category", MAX_CATEGORY_CHARS),
     ];
     for (field, cap) in cases {
-        let mut request = base_request(&project, "lib.rs");
-        let value = "x".repeat(cap + 1);
-        match field {
-            "title" => request.title = value,
-            "description" => request.description = value,
-            "severity" => request.severity = value,
-            _ => request.category = value,
-        }
-
-        let error = match finding(
-            &Parameters(request),
-            &crate::progress::NoopProgressSink,
-            &crate::sync::SourceSyncManager::default(),
-        ) {
-            Ok(_) => panic!("{field} past its cap must error"),
-            Err(error) => error,
-        };
+        let error = finding_error_for(&project, field, "x".repeat(cap + 1));
 
         assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert_eq!(
             error.message,
             format!("{field} exceeds {cap} characters"),
             "the message must name {field} and its own cap",
+        );
+    }
+}
+
+/// Every text field rejects a whitespace-only value through `trim()`, and
+/// the message names the field, so one field cannot be checked against
+/// another field's branch.
+#[test]
+fn each_text_field_rejects_an_empty_value() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    for field in ["title", "description", "severity", "category"] {
+        let error = finding_error_for(&project, field, "   ".to_owned());
+
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert_eq!(
+            error.message,
+            format!("{field} must not be empty"),
+            "the message must name {field}",
         );
     }
 }
