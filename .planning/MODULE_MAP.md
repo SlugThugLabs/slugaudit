@@ -9,7 +9,9 @@ For the system architecture, subsystem boundaries, data flow, and design invaria
 src/
 ├── main.rs                   binary entry: parse args, then serve MCP over stdio
 ├── lib.rs                    crate root: module declarations + crate-wide lint policy
-├── cli.rs                    Command enum, parse_args, usage text
+├── cli.rs                    Command enum, parse_args, CLI text output helpers
+├── cli/                      submodule directory of the file module above
+│   └── usage.rs              USAGE help text + styled usage() rendering
 ├── server.rs                 MCP surface: INSTRUCTIONS, dispatch, resource plumbing + router wiring
 ├── server/                   submodule directory of the file module above
 │   └── handlers.rs           #[tool] handlers: wire titles, descriptions, annotations
@@ -110,6 +112,7 @@ src/
 │   ├── revision_edges.rs     dependency_edges writes for upserted files
 │   ├── revision_files.rs     files/evidence writes for one upserted file
 │   ├── revision_skipped.rs   existence rows for discovered-but-skipped files
+│   ├── revision_support.rs   stale-finding invalidation inside a publish transaction
 │   ├── analyze.rs            tree-sitter parse + evidence extraction for one file
 │   ├── classify.rs           path-derived authored/generated/vendored file class
 │   └── race_hook.rs          test-only race-injection hook

@@ -23,6 +23,7 @@ mod revision;
 mod revision_edges;
 mod revision_files;
 mod revision_skipped;
+mod revision_support;
 mod sample;
 mod sample_batch;
 mod sweep;
