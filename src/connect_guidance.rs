@@ -10,8 +10,9 @@
 //! * ends with the `Reference:` the information comes from (a probed version,
 //!   or the docs date) and the vendor `Docs:` page to re-check.
 //!
-//! The functions are pure string builders: callers own the I/O so the exact
-//! wording stays testable without capturing stdout.
+//! The functions are string builders: callers own the I/O so the exact
+//! wording stays testable without capturing stdout. [`print_lines`] is the
+//! one writer, and it only emits lines the builders produced.
 
 use crate::cli::ConnectError;
 use crate::connect::registry_types::binary_text;
@@ -193,6 +194,15 @@ pub fn fallback_note(agent: &AgentDef, home: Option<&Path>, cli: &str, why: &str
         "`{cli}` was {why}, so slugaudit wrote {} instead.",
         target(agent, home)
     )
+}
+
+/// Writes already-built guidance lines to the CLI's stdout. This is the one
+/// I/O helper in this module; the wording itself is built and tested above.
+pub(crate) fn print_lines(lines: &[String]) -> Result<(), ConnectError> {
+    for line in lines {
+        crate::cli::out(format_args!("{line}\n"))?;
+    }
+    Ok(())
 }
 
 /// Keeps the failure that caused the output printing: a closed pipe while

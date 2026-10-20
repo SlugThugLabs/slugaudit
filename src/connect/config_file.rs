@@ -62,14 +62,7 @@ pub(crate) fn write_agent_config(
         crate::cli::out(format_args!("{note}\n"))?;
     }
     let action = format!("Wrote {section}.slugaudit to {}", path.display());
-    print_lines(&guidance::success_lines(agent, &action))
-}
-
-pub(crate) fn print_lines(lines: &[String]) -> Result<(), ConnectError> {
-    for line in lines {
-        crate::cli::out(format_args!("{line}\n"))?;
-    }
-    Ok(())
+    guidance::print_lines(&guidance::success_lines(agent, &action))
 }
 
 static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -95,6 +88,28 @@ fn write_destination(path: &Path) -> Result<PathBuf, ConnectError> {
 /// group/world-readable. The destination inode is replaced atomically; a
 /// failed write or rename removes the temp, and a cleanup failure is logged.
 pub(crate) fn write_atomic(path: &Path, content: &[u8]) -> Result<(), ConnectError> {
+    write_atomic_with(
+        path,
+        content,
+        |file| file.sync_all(),
+        |parent| fs::File::open(parent)?.sync_all(),
+    )
+}
+
+/// The atomic write with its durability steps injected, so both failure arms
+/// are testable without a production-only branch.
+///
+/// `sync_file` runs after the bytes are written and before the rename: it
+/// observes any deferred write error while the destination is still untouched.
+/// The rename is the commit point. `sync_directory` is durability for the
+/// rename itself; its failure happens after the write is already visible, so
+/// it is logged and the successful write is still reported as successful.
+fn write_atomic_with(
+    path: &Path,
+    content: &[u8],
+    sync_file: impl FnOnce(&fs::File) -> std::io::Result<()>,
+    sync_directory: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), ConnectError> {
     let destination = write_destination(path)?;
     let parent = destination.parent().ok_or(ConnectError::HomeUnavailable)?;
     let count = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -108,8 +123,13 @@ pub(crate) fn write_atomic(path: &Path, content: &[u8]) -> Result<(), ConnectErr
     }
     let mut file = options.open(&temp)?;
     if let Err(error) = file.write_all(content) {
-        // Close before removing: the close surfaces any deferred write error,
-        // and an open handle would make removal fail on some platforms.
+        // Close before removing: an open handle would make removal fail on
+        // some platforms.
+        drop(file);
+        remove_abandoned_temp(&temp);
+        return Err(ConnectError::Io(error));
+    }
+    if let Err(error) = sync_file(&file) {
         drop(file);
         remove_abandoned_temp(&temp);
         return Err(ConnectError::Io(error));
@@ -118,6 +138,12 @@ pub(crate) fn write_atomic(path: &Path, content: &[u8]) -> Result<(), ConnectErr
     if let Err(error) = fs::rename(&temp, &destination) {
         remove_abandoned_temp(&temp);
         return Err(ConnectError::Io(error));
+    }
+    if let Err(error) = sync_directory(parent) {
+        tracing::warn!(
+            error = %error,
+            "client config renamed but its directory was not synced; the file is on disk, but the rename may not survive a crash"
+        );
     }
     Ok(())
 }

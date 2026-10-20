@@ -5,7 +5,7 @@
 //! `crate::connect::config_file`; the user-facing wording in
 //! [`crate::connect_guidance`].
 use crate::cli::ConnectError;
-use crate::connect::config_file::{print_lines, remove_json_slugaudit, write_agent_config};
+use crate::connect::config_file::{remove_json_slugaudit, write_agent_config};
 use crate::connect_agents::{AgentDef, Strategy};
 use crate::connect_cli;
 use crate::connect_guidance as guidance;
@@ -112,7 +112,7 @@ fn run_installed_cli(
     let attempted = connect_cli::display_command(cli, &args);
     match connect_cli::run_add(cli, &args) {
         Ok(()) => {
-            print_lines(&guidance::success_lines(
+            guidance::print_lines(&guidance::success_lines(
                 agent,
                 &format!("Ran: {attempted}"),
             ))?;
@@ -163,7 +163,7 @@ fn report_failure(
     hint: Option<&str>,
     why: &str,
 ) -> Result<(), ConnectError> {
-    print_lines(&guidance::failure_lines(
+    guidance::print_lines(&guidance::failure_lines(
         agent, binary, attempted, hint, why,
     ))
 }

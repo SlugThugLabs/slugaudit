@@ -48,6 +48,20 @@ fn with_fake_cli<T>(bin_dir: &Path, log: &Path, f: impl FnOnce() -> T) -> T {
     )
 }
 
+/// Counts the staging files an atomic write may have left behind.
+fn temp_leftovers(directory: &Path) -> usize {
+    std::fs::read_dir(directory)
+        .expect("list the directory")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".slugaudit-tmp")
+        })
+        .count()
+}
+
 #[test]
 fn removing_an_existing_entry_reports_that_it_removed_one() {
     let directory = tempfile::tempdir().expect("temp dir");
@@ -340,6 +354,65 @@ fn a_failed_failure_output_print_keeps_the_source_error() {
     assert!(
         logs.contains("could not print the failure output"),
         "the lost output must be logged: {logs}"
+    );
+}
+
+/// A file sync failure must fail the write before the rename, leaving the
+/// destination bytes untouched and no staging file behind.
+#[test]
+fn a_config_write_whose_file_sync_fails_leaves_the_destination_untouched() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("mcp.json");
+    std::fs::write(&path, b"original").expect("pre-write the destination");
+
+    let error = write_atomic_with(
+        &path,
+        b"replacement",
+        |_| Err(std::io::Error::other("injected file sync failure")),
+        |_| Ok(()),
+    )
+    .expect_err("a failed file sync must fail the write");
+
+    let ConnectError::Io(error) = error else {
+        panic!("expected Io, got {error:?}");
+    };
+    assert_eq!(error.to_string(), "injected file sync failure");
+    assert_eq!(
+        std::fs::read(&path).expect("read destination"),
+        b"original",
+        "a failed sync must leave the destination untouched"
+    );
+    assert_eq!(temp_leftovers(directory.path()), 0, "no temp may remain");
+}
+
+/// The rename is already committed when the directory sync runs, so its
+/// failure is logged once and the visible write still succeeds.
+#[test]
+fn a_directory_sync_failure_after_the_rename_is_logged_and_kept() {
+    const SENTENCE: &str = "client config renamed but its directory was not synced; the file is on disk, but the rename may not survive a crash";
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("mcp.json");
+
+    let (result, logs) = crate::store::test_capture::capture_warns(|| {
+        write_atomic_with(
+            &path,
+            b"replacement",
+            |file| file.sync_all(),
+            |_| Err(std::io::Error::other("injected directory failure")),
+        )
+    });
+
+    result.expect("the committed write must still be reported as successful");
+    assert_eq!(
+        std::fs::read(&path).expect("read destination"),
+        b"replacement",
+        "the renamed file must remain on disk"
+    );
+    assert_eq!(temp_leftovers(directory.path()), 0, "no temp may remain");
+    assert_eq!(
+        logs.lines().filter(|line| line.contains(SENTENCE)).count(),
+        1,
+        "the post-commit failure must be logged exactly once: {logs}"
     );
 }
 
