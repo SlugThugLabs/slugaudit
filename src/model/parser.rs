@@ -8,7 +8,10 @@ pub enum ParserAvailability {
     /// No parser exists for this file type.
     Unavailable,
     /// A parser exists for this file type but failed to initialize or load.
-    LoadFailed { reason: String },
+    LoadFailed {
+        /// Why the parser failed to initialize or load.
+        reason: String,
+    },
 }
 
 impl ParserAvailability {
@@ -33,9 +36,15 @@ pub enum ParseOutcome {
     /// Parsing succeeded with no syntax errors.
     Succeeded,
     /// Parsing produced syntax errors.
-    SyntaxErrors { count: u32 },
+    SyntaxErrors {
+        /// Number of syntax errors reported by the parse.
+        count: u32,
+    },
     /// Parsing failed catastrophically.
-    Failed { reason: String },
+    Failed {
+        /// Why parsing failed.
+        reason: String,
+    },
 }
 
 impl ParseOutcome {

@@ -108,8 +108,10 @@ impl<'a> LineIndex<'a> {
     }
 
     /// Zero-based line of `byte_offset` (clamped to the source length).
+    /// Used by `span_tests`; production callers use [`LineIndex::position`].
+    #[cfg(test)]
     #[must_use]
-    pub fn line(&self, byte_offset: usize) -> u32 {
+    pub(crate) fn line(&self, byte_offset: usize) -> u32 {
         saturating_u32(self.line_index(byte_offset.min(self.source.len())))
     }
 

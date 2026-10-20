@@ -31,9 +31,15 @@ pub fn is_supported_language(language: &str) -> bool {
 /// `dependency_edges` row. `to_relative_path` is `None` unless
 /// `resolution_kind` is `"Resolved"`.
 pub struct ResolvedEdge {
+    /// Verbatim import statement text taken from the evidence payload.
     pub raw_import_text: String,
+    /// Resolution outcome as stored in `dependency_edges.resolution_kind`
+    /// (`Resolved`, `External`, or `Unresolved`).
     pub resolution_kind: &'static str,
+    /// Resolver confidence tag (`High` or `Low`) when the resolver reports one.
     pub confidence: Option<&'static str>,
+    /// Project-relative target path; `None` unless `resolution_kind` is
+    /// `Resolved`.
     pub to_relative_path: Option<String>,
 }
 

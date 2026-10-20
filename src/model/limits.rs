@@ -5,8 +5,14 @@ use std::time::Duration;
 /// Bounds applied when normalizing pack output into evidence rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvidenceLimits {
+    /// Largest number of evidence items kept per file; excess items are
+    /// discarded and recorded in a truncation `Diagnostic`.
     pub max_items_per_file: usize,
+    /// Largest serialized JSON payload kept for one evidence item; larger
+    /// items are discarded.
     pub max_payload_bytes_per_item: usize,
+    /// Largest cumulative serialized payload kept per file; once reached,
+    /// remaining items are discarded.
     pub max_payload_bytes_per_file: usize,
 }
 
@@ -127,6 +133,7 @@ pub struct ResourceLimits {
     /// partial, and the per-call stat sweep remains the freshness guarantee
     /// for the unwatched subtrees. Env: `SLUGAUDIT_MAX_WATCH_DEPTH` (usize).
     pub max_watch_depth: usize,
+    /// Per-file bounds applied when normalizing evidence into rows.
     pub evidence: EvidenceLimits,
 }
 

@@ -6,9 +6,16 @@ use serde_json::Value;
 /// Whether an evidence item's span was computed — or the honest reason it
 /// was not. An absent span is reported as absence, never invented.
 pub enum SpanAvailability {
+    /// A span was computed and is available.
     Present(Span),
+    /// The language pack supplied no span for the item.
     PackOmitted,
-    NormalizerUnavailable { reason: String },
+    /// A span was computed by a walker but failed local range validation.
+    NormalizerUnavailable {
+        /// The validation failure that made the span unavailable.
+        reason: String,
+    },
+    /// The item is derived from other evidence and has no source span of its own.
     DerivedEvidence,
 }
 
@@ -22,13 +29,21 @@ pub enum SpanAvailability {
 /// The categories of evidence SlugAudit extracts from parsed source.
 /// Observed syntax only — no category carries a judgment.
 pub enum EvidenceKind {
+    /// A structural syntax element reported by a language pack.
     Structure,
+    /// An import, include, or equivalent dependency statement.
     Import,
+    /// An exported symbol or declaration.
     Export,
+    /// A source comment.
     Comment,
+    /// A documentation string attached to a declaration.
     Docstring,
+    /// A symbol definition or reference.
     Symbol,
+    /// A parser- or extractor-reported problem.
     Diagnostic,
+    /// A call site.
     Call,
 }
 
@@ -36,9 +51,14 @@ pub enum EvidenceKind {
 /// One extracted evidence item before SQL conversion: kind, extraction origin,
 /// span availability, and the JSON payload the `evidence` table stores.
 pub struct EvidenceItem {
+    /// Per-file item key of the form `<kind>:<index>`, unique within the file.
     pub key: String,
+    /// Evidence category.
     pub kind: EvidenceKind,
+    /// Extractor that produced the item.
     pub origin: EvidenceOrigin,
+    /// Span coordinates, or the reason none are available.
     pub span: SpanAvailability,
+    /// Category-specific JSON payload persisted in the `evidence` table.
     pub payload: Value,
 }

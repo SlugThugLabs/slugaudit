@@ -4,16 +4,27 @@ use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, SpanAvailability}
 /// the single implementation other code must reuse — never re-derive these
 /// strings ad hoc when writing or reading evidence rows.
 pub struct EvidenceRow {
+    /// Per-file item key, unique within the file.
     pub key: String,
+    /// `EvidenceKind` rendered as its SQL text tag.
     pub kind: &'static str,
+    /// `EvidenceOrigin` rendered as its SQL text tag.
     pub origin: &'static str,
+    /// `SpanAvailability` rendered as its SQL text tag.
     pub span_availability: &'static str,
+    /// Zero-based inclusive start byte, or `None` when no span is available.
     pub start_byte: Option<i64>,
+    /// Zero-based exclusive end byte, or `None` when no span is available.
     pub end_byte: Option<i64>,
+    /// Zero-based start line, or `None` when no span is available.
     pub start_line: Option<i64>,
+    /// Zero-based character start column, or `None` when no span is available.
     pub start_column: Option<i64>,
+    /// Zero-based end line, or `None` when no span is available.
     pub end_line: Option<i64>,
+    /// Zero-based character end column, or `None` when no span is available.
     pub end_column: Option<i64>,
+    /// Category-specific JSON payload serialized as text.
     pub payload: String,
 }
 

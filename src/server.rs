@@ -150,9 +150,9 @@ pub struct SlugAuditServer {
 
 impl SlugAuditServer {
     /// Constructs a server with a real `notify` watcher (when supported
-    /// on the host platform). Production entry point; tests that don't
-    /// need watcher-based incremental reconcile should use
-    /// [`SlugAuditServer::with_manager`] with a `SourceSyncManager::default()`
+    /// on the host platform). Production entry point; crate-internal tests
+    /// that don't need watcher-based incremental reconcile should use
+    /// `SlugAuditServer::with_manager` with a `SourceSyncManager::default()`
     /// so the watcher is bypassed and the tests can't leak `notify`
     /// handles between cases.
     #[must_use]
@@ -160,11 +160,11 @@ impl SlugAuditServer {
         Self::with_manager(sync::SourceSyncManager::with_watcher())
     }
 
-    /// Constructs a server with an explicit `SourceSyncManager`. The
-    /// composition root for tests and for any caller that wants to
-    /// inject a mock / custom manager.
+    /// Constructs a server with an explicit `SourceSyncManager`. Used by
+    /// [`SlugAuditServer::new`] and by `tool_surface`; not part of the
+    /// advertised MCP surface.
     #[must_use]
-    pub fn with_manager(manager: sync::SourceSyncManager) -> Self {
+    pub(crate) fn with_manager(manager: sync::SourceSyncManager) -> Self {
         Self {
             tool_router: Self::tool_router(),
             blocking_ops: Arc::new(Semaphore::new(MAX_CONCURRENT_BLOCKING_OPS)),
