@@ -15,9 +15,12 @@ mod orchestration;
 use super::reconcile;
 use crate::watch::{WatchManager, WatchState};
 pub(crate) use orchestration::map_activation_error;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
+use uuid::Uuid;
 
 /// A project brought fully up to date, ready for a tool to query. Defined
 /// here (rather than in `tools::context`) so that `SourceSyncManager` can
@@ -94,6 +97,15 @@ pub struct SourceSyncManager {
     /// every tool call is paying a full-publish cost — see the
     /// full-publish runbook in `docs/TROUBLESHOOTING.md`.
     consecutive_full_publishes: std::sync::Arc<AtomicU64>,
+    /// Project databases whose prior-session findings purge has already
+    /// run in this process, mapped to the session UUID that ran it. This
+    /// is the "purge done" guard for the session-start transition: the
+    /// purge must not repeat on every tool call, or one live MCP session
+    /// would delete another live session's findings mid-session. Keyed by
+    /// database path because one manager can serve several projects, and
+    /// valued by session so a (test-only) session change re-arms it.
+    /// Clones share the state.
+    session_findings_purged: Arc<Mutex<HashMap<PathBuf, Uuid>>>,
 }
 
 impl SourceSyncManager {
@@ -113,6 +125,7 @@ impl SourceSyncManager {
             last_sync_unix_seconds: std::sync::Arc::new(AtomicI64::new(0)),
             last_sync_duration_ms: std::sync::Arc::new(AtomicU64::new(0)),
             consecutive_full_publishes: std::sync::Arc::new(AtomicU64::new(0)),
+            session_findings_purged: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

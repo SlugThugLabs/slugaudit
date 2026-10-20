@@ -5,7 +5,9 @@
 //! synchronized connection to the watcher-health module. Watcher state
 //! transitions and incremental reconciliation live in `manager_health.rs`.
 
-use super::super::manager_meta::{ProjectMetaError, ensure_project_row, publish_from_scratch};
+use super::super::manager_meta::{
+    ProjectMetaError, ensure_project_row, publish_from_scratch, purge_prior_session_findings,
+};
 use super::{SourceSyncManager, SyncedProject};
 use crate::error_codes::{self, ErrorCode};
 use crate::progress::{ProgressEvent, ProgressSink};
@@ -108,6 +110,7 @@ impl SourceSyncManager {
         start: std::time::Instant,
         sink: &dyn ProgressSink,
     ) -> Result<Result<rusqlite::Connection, SyncedProject>, ErrorData> {
+        self.purge_prior_session_findings_once(database_path, &mut connection)?;
         if let Err(metadata_error) = ensure_project_row(&mut connection, root.as_path()) {
             let stale_reason = match &metadata_error {
                 ProjectMetaError::RootMismatch { stored_root } => {
@@ -141,6 +144,37 @@ impl SourceSyncManager {
             return Err(ErrorData::from(metadata_error));
         }
         Ok(Ok(connection))
+    }
+
+    /// Purges findings left by other agent sessions exactly once per
+    /// project database in this process/session.
+    ///
+    /// `ensure_current` runs on every tool call, but a live MCP process may
+    /// be only one of several sessions sharing the project database. Purging
+    /// on every call would delete another live session's findings
+    /// mid-session, and no response carries that deletion. The guard is
+    /// keyed by database path (one manager can serve several projects) and
+    /// records the session UUID the purge ran for, so the documented
+    /// cross-session defense still fires on this process's first sync of
+    /// each project and a test-only session change re-arms it.
+    ///
+    /// A failed purge aborts the call with its own error and leaves the
+    /// guard unarmed, so the next sync retries the session-start
+    /// transition instead of serving a database that still holds prior
+    /// sessions' findings.
+    fn purge_prior_session_findings_once(
+        &self,
+        database_path: &Path,
+        connection: &mut rusqlite::Connection,
+    ) -> Result<(), ErrorData> {
+        let current_session_id = crate::util::session_id();
+        let mut purged = crate::util::lock_or_recover(&self.session_findings_purged);
+        if purged.get(database_path).copied() == Some(current_session_id) {
+            return Ok(());
+        }
+        purge_prior_session_findings(connection, current_session_id)?;
+        purged.insert(database_path.to_path_buf(), current_session_id);
+        Ok(())
     }
 
     fn reconcile_and_finish(

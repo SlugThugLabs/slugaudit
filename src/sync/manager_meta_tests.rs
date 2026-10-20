@@ -2,22 +2,15 @@
 
 use super::{
     current_revision_id, ensure_project_row, map_publish_error, publish_from_scratch, publish_full,
-    purge_prior_session_findings_with,
+    purge_prior_session_findings,
 };
 use crate::progress::NoopProgressSink;
 use crate::store;
 use crate::store::test_capture::capture_warns;
-use crate::util::{SESSION_TEST_LOCK, override_session_id_for_test};
 use std::path::Path;
 use tempfile::TempDir;
 use uuid::Uuid;
 
-/// `SESSION_TEST_LOCK` is shared across every test module that depends
-/// on the process-global `SESSION_ID` (see `util.rs`). Held by every
-/// test in this module that drives `override_session_id_for_test`, and
-/// by the session-lock-dependent tests that go through
-/// `ensure_project_row`'s production cleanup path (which calls
-/// `purge_prior_session_findings` and therefore reads the global/// session once).
 fn open_temp_db() -> (TempDir, rusqlite::Connection) {
     let dir = tempfile::tempdir().expect("temp dir");
     let db_path = dir.path().join("project.db");
@@ -124,7 +117,7 @@ fn purge_deletes_only_prior_session_rows() {
     }
 
     // A second agent boots with its own UUID and runs the purge.
-    purge_prior_session_findings_with(
+    purge_prior_session_findings(
         &mut connection,
         Uuid::parse_str("33333333-3333-3333-3333-333333333333").expect("new uuid"),
     )
@@ -162,7 +155,7 @@ fn purge_deletes_only_prior_session_rows() {
             ],
         )
         .expect("insert alive");
-    purge_prior_session_findings_with(
+    purge_prior_session_findings(
         &mut connection,
         Uuid::parse_str("44444444-4444-4444-4444-444444444444").expect("alive uuid"),
     )
@@ -173,18 +166,15 @@ fn purge_deletes_only_prior_session_rows() {
     assert_eq!(count, 1, "alive row must survive a matching-session purge");
 }
 
-/// `ensure_project_row` is responsible for both metadata-row creation
-/// AND session-scoped finding cleanup on every call — so the
-/// cross-session defense runs even when the project-row branch is
-/// itself a no-op (already initialized). This pins that the purge runs
-/// unconditionally on the session-start path, not buried behind any
-/// "is the project row new?" check.
+/// `ensure_project_row` is metadata-only: the findings purge belongs to
+/// the session-start transition owned by `SourceSyncManager`, not to the
+/// per-sync metadata row. If this function purged, every tool call would
+/// delete a concurrent live session's findings.
 #[test]
-fn ensure_project_row_purges_findings_on_a_warm_cache_too() {
-    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
+fn ensure_project_row_leaves_findings_to_the_session_start_transition() {
     let (_dir, mut connection) = open_temp_db();
 
-    let root = Path::new("/tmp/warm-example");
+    let root = Path::new("/tmp/meta-only-example");
     ensure_project_row(&mut connection, root).expect("first ensure");
 
     let prior_session =
@@ -197,31 +187,17 @@ fn ensure_project_row_purges_findings_on_a_warm_cache_too() {
              VALUES ('stale.rs', 'h', 1, 1, 'low', 'c', 't', 'd', 0, 'r', 'current', ?1)",
             rusqlite::params![prior_session.to_string()],
         )
-        .expect("seed stale finding");
+        .expect("seed prior-session finding");
 
-    // A change in SESSION_ID between two `ensure_project_row` calls
-    // exercises the contract: the second call must drop the row tagged
-    // with the previous session id even though the project row was
-    // already there.
-    override_session_id_for_test(
-        Uuid::parse_str("55555555-5555-5555-5555-555555555555").expect("warm session"),
-    );
-    ensure_project_row(&mut connection, root).expect("warm-path with matching session");
+    ensure_project_row(&mut connection, root).expect("second ensure");
 
-    let count_matching: i64 = connection
+    let count: i64 = connection
         .query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
-        .expect("count after warm");
-    assert_eq!(count_matching, 1, "matching session → row stays");
-
-    override_session_id_for_test(
-        Uuid::parse_str("66666666-6666-6666-6666-666666666666").expect("different session"),
+        .expect("count");
+    assert_eq!(
+        count, 1,
+        "the metadata row helper must not delete another session's findings"
     );
-    ensure_project_row(&mut connection, root).expect("warm-path with new session");
-
-    let count_cleaned: i64 = connection
-        .query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
-        .expect("count after cross-session");
-    assert_eq!(count_cleaned, 0, "different session → row must be purged");
 }
 
 /// The publish half of the machine-readable failure contract. A spent sync
@@ -296,7 +272,7 @@ fn a_failed_prior_session_purge_surfaces_the_purge_error() {
         .execute_batch("DROP TABLE findings")
         .expect("drop the findings table");
 
-    let error = purge_prior_session_findings_with(
+    let error = purge_prior_session_findings(
         &mut connection,
         Uuid::parse_str("77777777-7777-7777-7777-777777777777").expect("uuid"),
     )
@@ -320,7 +296,6 @@ fn a_failed_prior_session_purge_surfaces_the_purge_error() {
 /// misattributed to the purge or the verification read.
 #[test]
 fn a_failed_metadata_write_surfaces_the_recording_error() {
-    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
     let (_dir, mut connection) = open_temp_db();
     connection
         .execute_batch("DROP TABLE project")
@@ -351,7 +326,6 @@ fn a_failed_metadata_write_surfaces_the_recording_error() {
 /// read the verification query performs.
 #[test]
 fn a_failed_metadata_read_surfaces_the_reading_error() {
-    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
     let (_dir, mut connection) = open_temp_db();
     connection.authorizer(Some(
         |context: rusqlite::hooks::AuthContext<'_>| match context.action {

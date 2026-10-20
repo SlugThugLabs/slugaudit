@@ -117,6 +117,32 @@ fn count_findings(db_path: &std::path::Path) -> i64 {
         .expect("count findings")
 }
 
+fn database_path(project: &tempfile::TempDir) -> std::path::PathBuf {
+    project
+        .path()
+        .join(".planning")
+        .join("slugaudit")
+        .join("project.db")
+}
+
+/// Inserts a finding tagged with `session` directly. This simulates a
+/// different live MCP process writing to the shared database between this
+/// process's syncs, without going through a tool call that would itself
+/// sync.
+fn seed_finding_for_session(db_path: &std::path::Path, path: &str, session: Uuid) {
+    let connection = crate::store::open_read_write(db_path).expect("open the database to seed");
+    connection
+        .execute(
+            "INSERT INTO findings (\
+                path, source_hash, line_start, line_end, severity, category, title, \
+                description, created_at_unix, evidence_revision, status, session_id\
+             ) VALUES (?1, 'h', 1, 1, 'low', 'correctness', 'Peer conclusion', \
+                'written by another live session', 0, 'rev', 'current', ?2)",
+            rusqlite::params![path, session.to_string()],
+        )
+        .expect("seed the finding row");
+}
+
 /// Every newly inserted finding row must carry the current process's
 /// session UUID. No row in the table may be un-tagged; the
 /// `default ''` fallback is only ever used by a legacy DB whose
@@ -190,8 +216,8 @@ fn a_new_session_drops_prior_session_findings_but_keeps_its_own() {
         "after the first session, exactly one finding exists",
     );
 
-    // Simulate a fresh process boot: a totally new UUID, then any
-    // tool call that goes through `ensure_synced` triggers the purge.
+    // Simulate a fresh process boot: a totally new UUID plus a fresh
+    // manager, whose first sync runs the session-start purge.
     let next_session = Uuid::new_v4();
     assert_ne!(
         next_session, prior_session,
@@ -291,12 +317,11 @@ fn a_resync_after_a_session_change_drops_prior_session_findings() {
     override_session_id_for_test(next_session);
 
     // `ensure_synced_no_progress` is the production entry point
-    // without the progress-sink argument, exercised here to drive the
-    // manager's `ensure_current` → `ensure_project_row` →
-    // `purge_prior_session_findings` chain under a fresh session.
-    // A direct `sync::publish` would NOT exercise this path because
-    // it operates on an already-cleaned connection that was opened
-    // under a prior session.
+    // without the progress-sink argument, exercised here with a fresh
+    // manager (the fresh process) to drive `ensure_current` →
+    // `purge_prior_session_findings_once` → `purge_prior_session_findings`
+    // under the new session. A direct `sync::publish` would NOT exercise
+    // this path because it never runs the session-start transition.
     crate::tools::context::ensure_synced_no_progress(
         &project.path().to_string_lossy(),
         &crate::sync::SourceSyncManager::default(),
@@ -307,6 +332,118 @@ fn a_resync_after_a_session_change_drops_prior_session_findings() {
         count_findings(&db_path),
         0,
         "ensure_synced during a new session must drop the prior session's findings"
+    );
+}
+
+/// The documented cross-session defense still fires at the process
+/// boundary: a fresh manager (a fresh MCP process) purges rows written
+/// by a prior session on its first sync of the project database.
+#[test]
+fn a_fresh_process_first_sync_purges_prior_session_findings() {
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
+    let project = activated_project("fresh.rs", b"pub fn f() {}\n");
+    let db_path = database_path(&project);
+
+    let prior_session = Uuid::new_v4();
+    // Create the schema without syncing, then seed the prior session's
+    // conclusion: this is the database a fresh process boots against.
+    drop(crate::store::open_read_write(&db_path).expect("create the database"));
+    seed_finding_for_session(&db_path, "fresh.rs", prior_session);
+    assert_eq!(count_findings(&db_path), 1);
+
+    let next_session = Uuid::new_v4();
+    assert_ne!(next_session, prior_session);
+    override_session_id_for_test(next_session);
+    let fresh_manager = crate::sync::SourceSyncManager::default();
+    crate::tools::context::ensure_synced_no_progress(
+        &project.path().to_string_lossy(),
+        &fresh_manager,
+    )
+    .expect("first sync of the fresh process");
+
+    assert_eq!(
+        count_findings(&db_path),
+        0,
+        "a fresh process's first sync must purge the prior session's findings",
+    );
+}
+
+/// A second sync in the same process must not purge rows another live
+/// session wrote between calls. Before the once-per-session guard, every
+/// tool call ran `DELETE ... WHERE session_id != me` and silently deleted
+/// the peer's findings mid-session.
+#[test]
+fn a_second_sync_keeps_another_live_sessions_findings() {
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
+    let project = activated_project("peer.rs", b"pub fn p() {}\n");
+    let path = project.path().to_string_lossy().into_owned();
+    let db_path = database_path(&project);
+
+    override_session_id_for_test(Uuid::new_v4());
+    let manager = crate::sync::SourceSyncManager::default();
+    crate::tools::context::ensure_synced_no_progress(&path, &manager).expect("first sync");
+
+    // Another live MCP session writes a finding between this process's
+    // two syncs.
+    let live_peer = Uuid::new_v4();
+    seed_finding_for_session(&db_path, "peer.rs", live_peer);
+
+    crate::tools::context::ensure_synced_no_progress(&path, &manager).expect("second sync");
+
+    assert_eq!(
+        count_findings(&db_path),
+        1,
+        "a second sync must not delete another live session's finding",
+    );
+    let surviving_session: String = read_only_connection(&db_path)
+        .query_row("SELECT session_id FROM findings", [], |row| row.get(0))
+        .expect("read the surviving session id");
+    assert_eq!(
+        surviving_session,
+        live_peer.to_string(),
+        "the surviving row must still belong to the peer session",
+    );
+}
+
+/// The current session's own findings survive its later syncs: the purge
+/// is a session-start transition, not a repeated cleanup that could race
+/// the session's own writes.
+#[test]
+fn a_second_sync_keeps_the_current_sessions_findings() {
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
+    let project = activated_project("own.rs", b"pub fn o() {}\n");
+    let path = project.path().to_string_lossy().into_owned();
+    let db_path = database_path(&project);
+
+    override_session_id_for_test(Uuid::new_v4());
+    let manager = crate::sync::SourceSyncManager::default();
+    let response = finding(
+        &Parameters(base_request(&project, "own.rs")),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .expect("the session's own finding lands");
+
+    // The finding's own `ensure_synced` was the session-start sync; this
+    // is a later tool-call sync under the same manager.
+    crate::tools::context::ensure_synced_no_progress(&path, &manager).expect("second sync");
+
+    assert_eq!(
+        count_findings(&db_path),
+        1,
+        "the current session's finding must survive a later sync",
+    );
+    let stored_session: String = read_only_connection(&db_path)
+        .query_row(
+            "SELECT session_id FROM findings WHERE id = ?1",
+            [response.0.id],
+            |row| row.get(0),
+        )
+        .expect("read the surviving row's session id");
+    assert_eq!(
+        stored_session,
+        session_id().to_string(),
+        "the surviving row must still belong to the current session",
     );
 }
 

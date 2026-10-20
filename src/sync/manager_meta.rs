@@ -14,32 +14,31 @@ use crate::error_codes::{self, ErrorCode};
 use crate::parse;
 use crate::project;
 use crate::store;
-use crate::util::{redacted_path, session_id};
+use crate::util::redacted_path;
 use rmcp::ErrorData;
 use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-/// Deletes every `findings` row whose `session_id` does not match the
-/// caller's current session UUID. This is the cross-session
-/// poisoning defense: a fresh `slugaudit-mcp` process sees the prior
-/// session's reasoning conclusions wiped on its first `ensure_current`,
-/// so a new agent (new chat, new model, new reasoning context) is not
-/// silently inheriting the audit conclusions of whoever was here last.
+/// Deletes every `findings` row whose `session_id` does not match
+/// `current_session_id`. This is the cross-session poisoning defense: a
+/// fresh `slugaudit-mcp` process sees the prior session's reasoning
+/// conclusions wiped at its session-start sync, so a new agent (new chat,
+/// new model, new reasoning context) is not silently inheriting the audit
+/// conclusions of whoever was here last.
+///
+/// The caller decides *when* this runs, and must run it only once per
+/// process/session per project database: a live MCP session shares the
+/// database with other live sessions, so repeating the purge on every
+/// tool call would delete their findings mid-session with no response
+/// carrying that deletion. `SourceSyncManager` owns that once-per-session
+/// guard; this function is the single SQL statement it gates.
 ///
 /// Side-effect-free against an empty `findings` table; against a large
 /// table the cleanup is bounded to the index-assisted `DELETE` whose
 /// cost matches a `DELETE WHERE session_id = ?` — both run on the
-/// existing `idx_findings_session` index. Caller controls concurrency
-/// (`&mut Connection`), so this composes naturally into the same
-/// transaction that `ensure_project_row` opens.
-pub(crate) fn purge_prior_session_findings(connection: &mut Connection) -> Result<(), ErrorData> {
-    purge_findings_for_session(connection, session_id())
-}
-
-/// The one cleanup implementation both entry points share, so the SQL and
-/// error text cannot drift between the production and test forms.
-fn purge_findings_for_session(
+/// existing `idx_findings_session` index.
+pub(crate) fn purge_prior_session_findings(
     connection: &mut Connection,
     current_session_id: Uuid,
 ) -> Result<(), ErrorData> {
@@ -52,18 +51,6 @@ fn purge_findings_for_session(
             ErrorData::internal_error(format!("purging prior-session findings: {error}"), None)
         })?;
     Ok(())
-}
-
-/// Same semantics as [`purge_prior_session_findings`] but takes the
-/// session UUID explicitly so tests can drive the cleanup without
-/// touching the live `SESSION_ID` mutex.
-/// Production-only callers should use the no-arg form.
-#[cfg(test)]
-pub(crate) fn purge_prior_session_findings_with(
-    connection: &mut Connection,
-    current_session_id: Uuid,
-) -> Result<(), ErrorData> {
-    purge_findings_for_session(connection, current_session_id)
 }
 
 /// Returns the `revision_id` of the current revision, or `None` if no
@@ -141,14 +128,12 @@ impl From<ProjectMetaError> for ErrorData {
 /// doesn't already exist, then verifies the stored `root_path` still
 /// matches the canonical root this process resolved on later syncs.
 ///
-/// Also purges findings left by any prior agent session before doing
-/// either — a fresh `slugaudit-mcp` boot sees the prior reasoning
-/// session's findings wiped on its first sync so a different agent
-/// (different chat, different model, different chain of thought) does
-/// not silently inherit the audit conclusions of whoever was here
-/// last. Both the metadata row creation and the session-scoped finding
-/// cleanup run on the same `&mut Connection`, so callers get a single
-/// all-or-nothing session-start state transition.
+/// This function is metadata-only. The session-scoped findings purge is
+/// the caller's session-start transition: `SourceSyncManager` runs
+/// [`purge_prior_session_findings`] once per project database per
+/// process/session, then calls this on every sync. Keeping the purge out
+/// of here is what stops a second tool call from deleting another live
+/// session's findings.
 ///
 /// The `INSERT OR IGNORE` is safe across concurrent first syncs because
 /// the row is keyed on `id = 1`, a fixed constant. The subsequent
@@ -163,13 +148,6 @@ pub(crate) fn ensure_project_row(
 ) -> Result<(), ProjectMetaError> {
     const CONTRACT_VERSION: i64 = 1;
     const SCHEMA_VERSION: i64 = 1;
-
-    // Session-scoped finding cleanup runs first so any violation of
-    // the prior-session invariant is surfaced before we touch the
-    // project metadata row. A failure here aborts the whole
-    // session-start, matching the rest of `ensure_project_row`'s
-    // all-or-nothing semantics.
-    purge_prior_session_findings(connection).map_err(ProjectMetaError::Other)?;
 
     let root_path = root.to_string_lossy();
     let created_at = crate::util::now_unix();

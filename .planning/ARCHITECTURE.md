@@ -162,7 +162,8 @@ Caller                             SlugAudit server
       │                              <!-- mcp://progress: ensuring_current -->
       ├─ project::resolve_project    walk parents for `.planning/slugaudit`
       ├─ store::open_read_write      symlink/NFS/permission guards; WAL; schema
-      ├─ ensure_project_row          INSERT OR IGNORE the singleton row; purge prior-session findings
+      ├─ session-start purge         once per database/process: DELETE findings from other sessions
+      ├─ ensure_project_row          INSERT OR IGNORE the singleton row; verify the stored root
       ├─ watch_manager.watch         register or reuse the project's WatchState
       └─ sync_by_health branch
          ├─ NeedsVerification│Desynced → full publish + drain events → Healthy|Partial
@@ -688,9 +689,13 @@ something else loudly.
    compile error, not a corrupted stream.
 9. **Findings are scoped to the agent session that wrote them.** Every finding
    row carries the active `session_id` (a UUID generated once per process);
-   `purge_prior_session_findings` runs as part of the first sync,
-   deleting rows from any other session. A new agent starts with a clean
-   finding set rather than silently inheriting another's conclusions.
+   `purge_prior_session_findings` runs once per project database at the
+   process/session's first sync, deleting rows from any other session. The
+   `SourceSyncManager` guard keys on the database path and the session UUID,
+   so later tool calls in the same process never repeat the purge — sibling
+   MCP sessions share the database, and a repeated purge would delete a live
+   peer's findings mid-session. A new agent starts with a clean finding set
+   rather than silently inheriting another's conclusions.
 10. **The database is disposable derived data.** Every row in `files`,
     `evidence`, `dependency_edges`, and `revisions` is computed from project
     source and can be regenerated: `rm -rf .planning/slugaudit` followed by any
