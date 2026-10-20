@@ -12,13 +12,52 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Classifies `path` before anything opens it: `false` when there is no file,
+/// `true` only for a regular file (following a symlink), and an error for
+/// anything a read or write must not touch. `File::open` on a FIFO blocks
+/// until a writer appears, so the type is judged from metadata first.
+fn regular_config(path: &Path) -> std::io::Result<bool> {
+    let target = match fs::symlink_metadata(path) {
+        Ok(entry) if entry.file_type().is_symlink() => match fs::metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            result => result?,
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        result => result?,
+    };
+    if target.is_file() {
+        return Ok(true);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "the client config path is not a regular file",
+    ))
+}
+
+/// Reads a client config for detection: `None` for an absent file or one that
+/// is not a regular file, with the latter logged once. A FIFO must never be
+/// opened by a probe.
+pub(crate) fn readable_config_or_warn(path: &Path) -> Option<String> {
+    match regular_config(path) {
+        Ok(true) => crate::probe::read_config_or_warn(path),
+        Ok(false) => None,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "could not inspect client config; treating it as not registered",
+            );
+            None
+        }
+    }
+}
+
 /// True when the JSON config at `path` carries a `slugaudit` entry under any
 /// of `sections`.
 pub fn has_slugaudit(path: &Path, keys: &[&str]) -> bool {
     // Advisory probe: an oversized, unreadable or malformed config reads as
-    // "not registered", logged with the cause by `read_config_or_warn` / below;
-    // the write path bounds the same file again and fails explicitly.
-    let Some(contents) = crate::probe::read_config_or_warn(path) else {
+    // "not registered", logged with the cause by `readable_config_or_warn` /
+    // below; the write path bounds the same file again and fails explicitly.
+    let Some(contents) = readable_config_or_warn(path) else {
         return false;
     };
     match serde_json::from_str::<serde_json::Value>(&contents) {
@@ -58,9 +97,8 @@ pub(crate) fn write_agent_config(
         .write_section()
         .ok_or_else(|| guidance::refusal(agent, binary, Some(home)))?;
     write_json_server(&path, section, agent.shape.entry(binary)?)?;
-    if let Some(note) = note {
-        crate::cli::out(format_args!("{note}\n"))?;
-    }
+    note.map(|note| crate::cli::out(format_args!("{note}\n")))
+        .transpose()?;
     let action = format!("Wrote {section}.slugaudit to {}", path.display());
     guidance::print_lines(&guidance::success_lines(agent, &action))
 }
@@ -88,12 +126,9 @@ fn write_destination(path: &Path) -> Result<PathBuf, ConnectError> {
 /// group/world-readable. The destination inode is replaced atomically; a
 /// failed write or rename removes the temp, and a cleanup failure is logged.
 pub(crate) fn write_atomic(path: &Path, content: &[u8]) -> Result<(), ConnectError> {
-    write_atomic_with(
-        path,
-        content,
-        |file| file.sync_all(),
-        |parent| fs::File::open(parent)?.sync_all(),
-    )
+    let sync_file = |file: &fs::File| file.sync_all();
+    let sync_directory = |parent: &Path| fs::File::open(parent)?.sync_all();
+    write_atomic_with(path, content, sync_file, sync_directory)
 }
 
 /// The atomic write with its durability steps injected, so both failure arms
@@ -164,6 +199,11 @@ fn remove_abandoned_temp(temp: &Path) {
 }
 
 fn load_json_or_empty(path: &Path) -> Result<serde_json::Value, ConnectError> {
+    // A path that exists but is not a regular file (a FIFO, directory, or
+    // device) is refused before the read, which could block or misread it.
+    if !regular_config(path)? {
+        return Ok(serde_json::json!({}));
+    }
     match crate::util::read_file_capped(path, crate::util::MAX_FOREIGN_TEXT_BYTES) {
         Ok(c) if c.trim().is_empty() => Ok(serde_json::json!({})),
         Ok(c) => serde_json::from_str(&c).map_err(|source| ConnectError::InvalidConfig {
@@ -180,9 +220,7 @@ fn write_json_server(
     section: &str,
     val: serde_json::Value,
 ) -> Result<(), ConnectError> {
-    if let Some(p) = path.parent() {
-        fs::create_dir_all(p)?;
-    }
+    path.parent().map(fs::create_dir_all).transpose()?;
     let mut root = load_json_or_empty(path)?;
     let map = root
         .as_object_mut()

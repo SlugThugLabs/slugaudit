@@ -62,6 +62,30 @@ fn temp_leftovers(directory: &Path) -> usize {
         .count()
 }
 
+/// `mkfifo(1)` creates the fixture because std exposes no safe FIFO
+/// constructor and `unsafe` is forbidden; it exists on both supported targets.
+#[cfg(unix)]
+fn create_fifo(path: &Path) {
+    let status = std::process::Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .expect("run mkfifo");
+    assert!(status.success(), "mkfifo creates the fixture: {status}");
+}
+
+/// Runs `f` on a thread so a regression to a blocking open fails the test
+/// instead of hanging the whole suite.
+#[cfg(unix)]
+fn within_ten_seconds<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        sender.send(f()).expect("the test receives the result");
+    });
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the config probe must not block on a non-regular file")
+}
+
 #[test]
 fn removing_an_existing_entry_reports_that_it_removed_one() {
     let directory = tempfile::tempdir().expect("temp dir");
@@ -182,7 +206,7 @@ fn a_non_utf8_binary_path_is_refused_before_the_config_is_written() {
 }
 
 #[test]
-fn a_config_path_that_is_a_directory_reports_the_read_error() {
+fn a_config_path_that_is_a_directory_is_refused_before_reading() {
     let home = tempfile::tempdir().expect("temp dir");
     let config = home.path().join(".cursor/mcp.json");
     std::fs::create_dir_all(&config).expect("plant a directory at the config path");
@@ -194,8 +218,12 @@ fn a_config_path_that_is_a_directory_reports_the_read_error() {
     };
     assert_eq!(
         error.kind(),
-        std::io::ErrorKind::IsADirectory,
-        "the read failure's cause must reach the caller: {error}"
+        std::io::ErrorKind::InvalidInput,
+        "a non-regular config must be refused before the read: {error}"
+    );
+    assert!(
+        error.to_string().contains("not a regular file"),
+        "the refusal must name the file type: {error}"
     );
 }
 
@@ -413,6 +441,95 @@ fn a_directory_sync_failure_after_the_rename_is_logged_and_kept() {
         logs.lines().filter(|line| line.contains(SENTENCE)).count(),
         1,
         "the post-commit failure must be logged exactly once: {logs}"
+    );
+}
+
+/// Opening a FIFO blocks until a writer appears, so a connect must refuse it
+/// from metadata alone and leave it untouched.
+#[cfg(unix)]
+#[test]
+fn a_fifo_config_is_refused_by_a_connect_without_blocking() {
+    use std::os::unix::fs::FileTypeExt as _;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(home.join(".cursor")).expect("cursor dir");
+    let config = home.join(".cursor/mcp.json");
+    create_fifo(&config);
+    let cursor = find_agent("cursor").expect("cursor is registered");
+    let probe_home = home.clone();
+
+    let result = within_ten_seconds(move || {
+        connect_agent(&cursor, Path::new("/bin/slugaudit"), Some(&probe_home))
+    });
+
+    let Err(ConnectError::Io(error)) = result else {
+        panic!("expected Io, got {result:?}");
+    };
+    assert_eq!(
+        error.kind(),
+        std::io::ErrorKind::InvalidInput,
+        "the FIFO must be refused before the read: {error}"
+    );
+    assert!(
+        error.to_string().contains("not a regular file"),
+        "the refusal must name the file type: {error}"
+    );
+    assert!(
+        config
+            .symlink_metadata()
+            .expect("stat the FIFO")
+            .file_type()
+            .is_fifo(),
+        "the FIFO is left untouched"
+    );
+}
+
+/// Detection probes the config path too, so cursor and goose must both judge a
+/// FIFO from metadata instead of opening it.
+#[cfg(unix)]
+#[test]
+fn a_fifo_config_is_not_opened_by_connection_detection() {
+    use std::os::unix::fs::FileTypeExt as _;
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("temp dir");
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(home.join(".cursor")).expect("cursor dir");
+    std::fs::create_dir_all(home.join(".config/goose")).expect("goose dir");
+    let cursor_fifo = home.join(".cursor/mcp.json");
+    let goose_fifo = home.join(".config/goose/config.yaml");
+    create_fifo(&cursor_fifo);
+    create_fifo(&goose_fifo);
+    let empty = tempfile::tempdir().expect("empty bin dir");
+    let cursor = find_agent("cursor").expect("cursor is registered");
+    let goose = find_agent("goose").expect("goose is registered");
+    let cursor_home = home.clone();
+    let goose_home = home.clone();
+
+    let (cursor_connected, goose_connected) =
+        temp_env::with_var("PATH", Some(empty.path().as_os_str()), || {
+            (
+                within_ten_seconds(move || cursor.is_connected(Some(&cursor_home))),
+                within_ten_seconds(move || goose.is_connected(Some(&goose_home))),
+            )
+        });
+
+    assert!(!cursor_connected, "a FIFO must not read as connected");
+    assert!(!goose_connected, "a FIFO must not read as connected");
+    for fifo in [&cursor_fifo, &goose_fifo] {
+        assert!(
+            fifo.symlink_metadata()
+                .expect("stat the FIFO")
+                .file_type()
+                .is_fifo(),
+            "the FIFO is left untouched"
+        );
+    }
+    let (readable, logs) =
+        crate::store::test_capture::capture_warns(|| readable_config_or_warn(&cursor_fifo));
+    assert_eq!(readable, None, "a non-regular config has no contents");
+    assert!(
+        logs.contains("could not inspect client config"),
+        "the refusal must be logged once: {logs}"
     );
 }
 
