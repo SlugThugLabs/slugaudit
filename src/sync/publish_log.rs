@@ -84,7 +84,23 @@ pub(super) fn failure_fields(error: &PublishError) -> (&'static str, Option<&Pat
         PublishError::SamplingResultLost { path, .. } => {
             ("sampling_result_lost", Some(Path::new(path)))
         }
+        PublishError::SamplingIndexOutOfRange { .. } => ("sampling_index_out_of_range", None),
         PublishError::InvalidParserPackVersion(_) => ("invalid_parser_pack_version", None),
         PublishError::TimeBudgetExceeded { .. } => ("time_budget_exceeded", None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_sampling_index_error_maps_to_its_static_category_without_a_path() {
+        let error = PublishError::SamplingIndexOutOfRange { index: 7, total: 3 };
+
+        let (error_kind, path) = failure_fields(&error);
+
+        assert_eq!(error_kind, "sampling_index_out_of_range");
+        assert_eq!(path, None);
     }
 }
