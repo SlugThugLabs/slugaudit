@@ -51,7 +51,7 @@ impl ProjectConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigError`] if the file exists but cannot be read or parsed.
+    /// Returns `ConfigError` if the file exists but cannot be read or parsed.
     pub fn load(project_root: &Path) -> Result<Option<Self>, ConfigError> {
         let config_path = project_root
             .join(".planning")

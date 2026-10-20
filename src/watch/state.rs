@@ -33,7 +33,7 @@ impl WatchState {
 
     /// Record a modify or create event for `relative_path`. Returns the
     /// new watcher sequence, which callers can use to barrier-synchronize
-    /// — see [`crate::sync::reconcile`].
+    /// — see [`crate::sync::SourceSyncManager::reconcile`].
     pub fn mark_dirty(&self, relative_path: String) -> u64 {
         let mut guard = lock_or_recover(&self.inner);
         guard.dirty_paths.insert(relative_path);

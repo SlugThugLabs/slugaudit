@@ -59,7 +59,7 @@ pub fn char_column(source: &str, byte_offset: usize) -> u32 {
 const BLOCK_BYTES: usize = 256;
 
 /// Per-file line/column lookup, built once in O(n) and answering each query
-/// in O(log lines + [`BLOCK_BYTES`]) — independent of line length.
+/// in O(log lines + `BLOCK_BYTES`) — independent of line length.
 ///
 /// [`char_column`] walks back to the line start per call, so a minified
 /// single-line file with one evidence item per token costs line-length

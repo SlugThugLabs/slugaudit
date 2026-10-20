@@ -68,7 +68,7 @@ pub struct HealthRequest {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct HealthResponse {
     /// Coarse classification of what the server is doing right now.
-    /// Derivation rule documented on [`HealthPhase`].
+    /// Derivation rule documented on `HealthPhase`.
     pub phase: HealthPhase,
     /// The next action to take when no project is being served by this
     /// answer: the same static sentence the `project_not_enabled` error

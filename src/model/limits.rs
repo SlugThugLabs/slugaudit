@@ -46,13 +46,13 @@ pub(crate) const SQLITE_MAX_VALUE_BYTES: u64 = 1_000_000_000;
 /// `SLUGAUDIT_MAX_FILE_BYTES=134217728` doubles the per-file size cap.
 /// Duration fields accept a number of seconds (whole seconds only).
 /// Only explicitly-set variables override; defaults are never altered.
-/// Single-value overrides are clamped to [`SQLITE_MAX_VALUE_BYTES`] with a
+/// Single-value overrides are clamped to `SQLITE_MAX_VALUE_BYTES` with a
 /// warning, because SQLite cannot store a larger value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceLimits {
     /// Largest single file that will be fully read into memory for hashing
     /// and indexing. Larger files are rejected rather than loaded. Clamped
-    /// to [`SQLITE_MAX_VALUE_BYTES`] so a stored content value cannot exceed
+    /// to `SQLITE_MAX_VALUE_BYTES` so a stored content value cannot exceed
     /// what the bundled SQLite can hold.
     /// Env: `SLUGAUDIT_MAX_FILE_BYTES` (u64).
     pub max_file_bytes: u64,

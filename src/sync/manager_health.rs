@@ -225,7 +225,7 @@ impl SourceSyncManager {
     /// This is the entry point for a watcher that holds no sweep report of
     /// its own (the `NeedsVerification`/`Desynced` post-verification drain):
     /// it walks once to obtain `on_disk`. The `Healthy` path walks once up
-    /// front and reuses that report via [`reconcile_events`], so it never
+    /// front and reuses that report via `reconcile_events`, so it never
     /// picks up a second whole-tree walk here.
     ///
     /// # Errors

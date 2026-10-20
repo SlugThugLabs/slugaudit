@@ -2,7 +2,7 @@
 //! dispatch and client command execution.
 //!
 //! JSON config-file reads and atomic writes live in
-//! [`crate::connect::config_file`]; the user-facing wording in
+//! `crate::connect::config_file`; the user-facing wording in
 //! [`crate::connect_guidance`].
 use crate::cli::ConnectError;
 use crate::connect::config_file::{print_lines, remove_json_slugaudit, write_agent_config};

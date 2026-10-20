@@ -128,7 +128,7 @@ impl IgnoreRules {
     /// crate resolves the last matching pattern and the files are added
     /// `.gitignore`-first.
     ///
-    /// Matcher assembly lives in [`build`]; this is the thin constructor.
+    /// Matcher assembly lives in `build`; this is the thin constructor.
     pub fn build(root: &Path, ignore_files: &[PathBuf]) -> IgnoreRules {
         let (ignore_by_dir, gitignore_by_dir, global) =
             build::assemble_matchers(root, ignore_files);
