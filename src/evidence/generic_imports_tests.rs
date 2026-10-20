@@ -1,5 +1,5 @@
 use super::*;
-use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin};
+use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, SpanAvailability};
 
 fn import_sources(items: &[EvidenceItem]) -> Vec<&str> {
     items

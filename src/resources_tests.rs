@@ -136,3 +136,86 @@ fn unknown_uris_are_not_served() {
     assert!(read("slugaudit://nope").is_none());
     assert!(read("file:///etc/passwd").is_none());
 }
+
+/// The recipe promises call sites, so it must match the callee and not any
+/// text in the payload: a call whose *caller* is named `handle_expect` is
+/// not an expect call site. `start_line` is each fixture row's identity in
+/// the recipe's output.
+#[test]
+fn the_unhandled_panics_recipe_matches_the_callee_not_the_caller() {
+    let connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
+    connection
+        .execute_batch(include_str!("store/schema.sql"))
+        .expect("the canonical schema applies");
+    connection
+        .execute(
+            "INSERT INTO revisions \
+             (revision_id, manifest_hash, parser_pack_version, created_at_unix, is_current) \
+             VALUES ('r1', 'h', '1.0.0', 0, 1)",
+            [],
+        )
+        .expect("insert revision");
+    connection
+        .execute(
+            "INSERT INTO files \
+             (path, file_kind, content, content_hash, hash_algorithm, byte_len, \
+              language, language_detected, parser_availability, parse_outcome, \
+              extraction_completeness, last_revision_id) \
+             VALUES ('lib.rs', 'indexed', '', 'h', 'blake3', 0, \
+                     'rust', 1, 'Available', 'Succeeded', 'Full', 1)",
+            [],
+        )
+        .expect("insert file");
+    let file_id: i64 = connection
+        .query_row("SELECT id FROM files WHERE path = 'lib.rs'", [], |row| {
+            row.get(0)
+        })
+        .expect("lib.rs id");
+
+    for (key, start_line, callee_name, caller) in [
+        ("call:0", 1_i64, "unwrap", Some("handle_unexpected")),
+        ("call:1", 2, "expect", Some("main")),
+        ("call:2", 3, "panic", None),
+        // The negative: `expect` appears only in the payload's caller name.
+        ("call:3", 4, "helper", Some("handle_expect")),
+    ] {
+        let payload = serde_json::json!({
+            "language": "rust",
+            "callee_text": callee_name,
+            "callee_name": callee_name,
+            "caller": caller,
+            "resolution": "unresolved-syntactic",
+            "confidence": "medium",
+        });
+        connection
+            .execute(
+                "INSERT INTO evidence \
+                 (file_id, key, kind, origin, span_availability, start_line, payload) \
+                 VALUES (?1, ?2, 'Call', 'RustCallWalker', 'Present', ?3, ?4)",
+                rusqlite::params![file_id, key, start_line, payload.to_string()],
+            )
+            .expect("insert call evidence");
+    }
+
+    let Some(ResourceContents::TextResourceContents { text, .. }) =
+        read("slugaudit://queries/find_unhandled_panics.sql")
+    else {
+        panic!("the recipe is served as text");
+    };
+    let statement = statements(&text)
+        .into_iter()
+        .next()
+        .expect("the recipe holds one statement");
+    let mut prepared = connection.prepare(&statement).expect("recipe compiles");
+    let matched: Vec<i64> = prepared
+        .query_map([], |row| row.get(1))
+        .expect("recipe runs")
+        .collect::<rusqlite::Result<_>>()
+        .expect("recipe rows");
+
+    assert_eq!(
+        matched,
+        vec![1, 2, 3],
+        "the recipe must match the three callee rows and not the caller-only `handle_expect` row"
+    );
+}

@@ -71,6 +71,33 @@ pub(super) fn span_unavailable(
     }
 }
 
+/// The one constructor for a tree-sitter node's
+/// [`crate::model::SpanAvailability`]: derives the byte range and the
+/// start/end positions, validates the range, and reports a failure through
+/// [`span_unavailable`] under `context`. Every walker that emits a node span
+/// (`normalize`, `generic_imports`, `calls`) shares it, so byte, row, and
+/// column behavior cannot drift between them.
+pub(super) fn node_span(
+    node: &tree_sitter_language_pack::Node,
+    lines: &crate::model::LineIndex<'_>,
+    context: &'static str,
+) -> crate::model::SpanAvailability {
+    let start_byte = node.start_byte();
+    let end_byte = node.end_byte();
+    let start = crate::model::Position {
+        line: crate::model::saturating_u32(node.start_position().row),
+        column: lines.column(start_byte),
+    };
+    let end = crate::model::Position {
+        line: crate::model::saturating_u32(node.end_position().row),
+        column: lines.column(end_byte),
+    };
+    match crate::model::Span::new(start_byte as u64, end_byte as u64, start, end) {
+        Ok(span) => crate::model::SpanAvailability::Present(span),
+        Err(error) => span_unavailable(context, error),
+    }
+}
+
 /// A node byte range that does not slice the source: it is out of bounds or
 /// lands inside a UTF-8 code point. A well-formed parse never produces one,
 /// so seeing it means a grammar or scanner defect; callers report the

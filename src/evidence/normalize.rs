@@ -220,7 +220,7 @@ fn push_binding(
         key,
         kind: EvidenceKind::Symbol,
         origin: EvidenceOrigin::PackSymbol,
-        span: node_span(node, lines),
+        span: super::node_span(node, lines, "binding"),
         payload: json!({
             "name": name,
             "kind": format!("{sym_kind:?}"),
@@ -315,23 +315,6 @@ fn named_children(
     node: &tree_sitter_language_pack::Node,
 ) -> impl Iterator<Item = tree_sitter_language_pack::Node> {
     (0..node.named_child_count() as u32).filter_map(move |i| node.named_child(i))
-}
-
-fn node_span(node: &tree_sitter_language_pack::Node, lines: &LineIndex<'_>) -> SpanAvailability {
-    let start_byte = node.start_byte();
-    let end_byte = node.end_byte();
-    let start = Position {
-        line: saturating_u32(node.start_position().row),
-        column: lines.column(start_byte),
-    };
-    let end = Position {
-        line: saturating_u32(node.end_position().row),
-        column: lines.column(end_byte),
-    };
-    match Span::new(start_byte as u64, end_byte as u64, start, end) {
-        Ok(span) => SpanAvailability::Present(span),
-        Err(error) => super::span_unavailable("binding", error),
-    }
 }
 
 pub(super) fn convert_span(span: &PackSpan, lines: &LineIndex<'_>) -> SpanAvailability {

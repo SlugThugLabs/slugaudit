@@ -5,10 +5,7 @@
 //! expression and gives us its span; name resolution can still be ambiguous
 //! for traits, generics, function pointers, macros, and dynamic dispatch.
 
-use crate::model::{
-    EvidenceItem, EvidenceKind, EvidenceOrigin, LineIndex, Position, Span, SpanAvailability,
-    saturating_u32,
-};
+use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, LineIndex};
 use serde_json::json;
 use std::collections::HashSet;
 
@@ -133,7 +130,7 @@ fn emit_call(
             key,
             kind: EvidenceKind::Call,
             origin: EvidenceOrigin::RustCallWalker,
-            span: node_span(node, lines),
+            span: super::node_span(node, lines, "Rust call"),
             payload: json!({
                 "language": "rust",
                 "callee_text": parts.callee_text,
@@ -208,21 +205,6 @@ fn function_name(node: &Node, source: &str) -> Result<Option<String>, TextRangeE
 
 fn named_children(node: &Node) -> impl Iterator<Item = Node> {
     (0..node.named_child_count() as u32).filter_map(move |index| node.named_child(index))
-}
-
-fn node_span(node: &Node, lines: &LineIndex<'_>) -> SpanAvailability {
-    let start = Position {
-        line: saturating_u32(node.start_position().row),
-        column: lines.column(node.start_byte()),
-    };
-    let end = Position {
-        line: saturating_u32(node.end_position().row),
-        column: lines.column(node.end_byte()),
-    };
-    Span::new(node.start_byte() as u64, node.end_byte() as u64, start, end).map_or_else(
-        |error| super::span_unavailable("Rust call", error),
-        SpanAvailability::Present,
-    )
 }
 
 #[cfg(test)]

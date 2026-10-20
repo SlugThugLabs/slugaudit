@@ -20,7 +20,7 @@
 //! resulting `source` text is the raw statement sliced from the original
 //! source, exactly like the pack's own `ImportInfo.source`.
 
-use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, Position, Span, SpanAvailability};
+use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin};
 use serde_json::json;
 use tree_sitter_language_pack::Node;
 #[cfg(test)]
@@ -163,7 +163,7 @@ fn push_import(
         key,
         kind: EvidenceKind::Import,
         origin: EvidenceOrigin::GenericWalker,
-        span: node_span(node, lines),
+        span: super::node_span(node, lines, "generic import"),
         payload: json!({
             "source": text,
             "items": [],
@@ -171,23 +171,6 @@ fn push_import(
             "is_wildcard": text.contains('*'),
         }),
     });
-}
-
-fn node_span(node: &Node, lines: &crate::model::LineIndex<'_>) -> SpanAvailability {
-    let start_byte = node.start_byte();
-    let end_byte = node.end_byte();
-    let start = Position {
-        line: crate::model::saturating_u32(node.start_position().row),
-        column: lines.column(start_byte),
-    };
-    let end = Position {
-        line: crate::model::saturating_u32(node.end_position().row),
-        column: lines.column(end_byte),
-    };
-    match Span::new(start_byte as u64, end_byte as u64, start, end) {
-        Ok(span) => SpanAvailability::Present(span),
-        Err(error) => super::span_unavailable("generic import", error),
-    }
 }
 
 #[cfg(test)]

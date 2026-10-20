@@ -41,7 +41,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         uri: "slugaudit://queries/find_unhandled_panics.sql",
         name: "find-unhandled-panics",
-        description: "Find unwrap/expect/panic call sites across the codebase.",
+        description: "Find Rust call sites whose callee is unwrap, expect, or panic.",
         mime_type: "application/sql",
         content: include_str!("../examples/queries/find_unhandled_panics.sql"),
     },

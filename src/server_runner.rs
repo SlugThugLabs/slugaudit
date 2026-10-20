@@ -60,9 +60,11 @@ fn next_call_id() -> u64 {
 /// counters cannot be reset and concurrent calls bump them too, so they
 /// are logged as deltas rather than as this call's exclusive share.
 /// Never logs `work`'s actual arguments or return value — only the tool
-/// name and timing/outcome, so SQL text, file content, and finding text
-/// never reach the log. `work` itself may add its own fields to the
-/// current span (e.g. revision id, row/edge counts) by calling
+/// name, timing/outcome, and on failure the static error class and
+/// machine-readable code, so SQL text, file content, finding text, and an
+/// error message that embeds a path never reach the log. `work` itself may
+/// add its own fields to the current span (e.g. revision id, row/edge
+/// counts) by calling
 /// `tracing::Span::current()` from inside `tools::*` — the span is entered
 /// for the full duration of the blocking closure via
 /// `blocking_span.enter()`, a sync guard, since `spawn_blocking` runs on a
@@ -152,9 +154,17 @@ async fn acquire_and_run<T: Send + 'static>(
     .map_err(|error| ErrorData::internal_error(format!("tool task failed: {error}"), None))?
 }
 
-/// One completion line per call, both outcomes: a failure keeps WARN (and
-/// keeps the error message), a success stays INFO, and `outcome` makes the
-/// single marker greppable for the sequence log.
+/// One completion line per call, both outcomes: a failure keeps WARN, a
+/// success stays INFO, and `outcome` makes the single marker greppable for
+/// the sequence log.
+///
+/// A failure line carries only static, non-user data: the JSON-RPC error
+/// class (`error_class`), the closed-set machine code from `ErrorData.data`
+/// when the producer attached one (`code`, `"none"` otherwise), and the
+/// counters. `ErrorData::message` is deliberately never logged — producers
+/// embed project paths and SQL fragments in it (e.g.
+/// `tools::structure_source`, `tools::finding`, `tools::query_exec`) — but
+/// it still reaches the caller unchanged.
 fn log_completion(
     span: &tracing::Span,
     counters_before: crate::tools::ToolCounters,
@@ -162,38 +172,44 @@ fn log_completion(
     error: Option<&ErrorData>,
 ) {
     let elapsed_ms = crate::clock::saturating_millis(started.elapsed());
-    let succeeded = error.is_none();
     // `record_call` bumps the process-wide counters and returns the
     // post-bump snapshot; `counters_before` was taken before the work
     // started. The difference is the movement observed across this call's
     // lifetime — concurrent calls' bumps are included, which is why it is
     // logged as a delta and never as an absolute or as this call's share.
-    let counters_after = crate::tools::ToolCounters::record_call(succeeded, elapsed_ms);
+    let counters_after = crate::tools::ToolCounters::record_call(error.is_none(), elapsed_ms);
     let calls_delta = counters_after
         .call_count
         .saturating_sub(counters_before.call_count);
     let errors_delta = counters_after
         .error_count
         .saturating_sub(counters_before.error_count);
-    let outcome = if succeeded { "success" } else { "error" };
     let _guard = span.enter();
     match error {
         None => tracing::info!(
             elapsed_ms,
-            outcome,
+            outcome = "success",
             calls_delta,
             errors_delta,
             "tool call completed",
         ),
         Some(error) => tracing::warn!(
             elapsed_ms,
-            outcome,
-            error = %error.message,
+            outcome = "error",
+            error_class = error.code.0,
+            code = machine_code(error).unwrap_or("none"),
             calls_delta,
             errors_delta,
             "tool call completed",
         ),
     }
+}
+
+/// The machine-readable failure code a producer attached to `ErrorData.data`
+/// (`error_codes::payload`), if any. The set is closed and static, so the
+/// value is safe to log; the human message beside it is not.
+fn machine_code(error: &ErrorData) -> Option<&str> {
+    error.data.as_ref()?.get("code")?.as_str()
 }
 
 /// Sends one MCP `/notifications/progress` notification when the caller

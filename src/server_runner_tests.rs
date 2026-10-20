@@ -66,9 +66,47 @@ async fn a_panic_inside_the_blocking_closure_surfaces_as_a_typed_error_not_a_cra
     let semaphore = Arc::new(Semaphore::new(4));
     let result: Result<(), ErrorData> =
         run_blocking(Arc::clone(&semaphore), "test", || panic!("boom"), None).await;
+
+    let error = result.expect_err("a panicking tool must fail the call, not take down the process");
+    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
     assert!(
-        result.is_err(),
-        "a panicking tool must fail the call, not take down the process"
+        error.message.starts_with("tool task failed: "),
+        "the call must carry the runner's wrapper, not a bare join error: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains("panicked with message \"boom\""),
+        "the join error's cause must be preserved: {}",
+        error.message
+    );
+}
+
+/// `Semaphore::acquire_owned` fails only once the semaphore is closed. That
+/// arm has its own typed error and must not run the work without a permit.
+#[tokio::test]
+async fn a_closed_semaphore_fails_the_call_with_its_own_typed_error_before_running_the_work() {
+    let semaphore = Arc::new(Semaphore::new(4));
+    semaphore.close();
+    let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let work_ran = Arc::clone(&ran);
+
+    let result: Result<(), ErrorData> = run_blocking(
+        Arc::clone(&semaphore),
+        "test_closed_semaphore",
+        move || {
+            work_ran.store(true, Ordering::SeqCst);
+            Ok(())
+        },
+        None,
+    )
+    .await;
+
+    let error = result.expect_err("a closed semaphore must fail the call");
+    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+    assert_eq!(error.message, "semaphore closed");
+    assert!(
+        !ran.load(Ordering::SeqCst),
+        "the work must not run without a permit"
     );
 }
 
@@ -369,5 +407,144 @@ fn tool_call_logging_never_emits_the_calls_argument_or_result() {
     assert!(
         !logs.contains(SENTINEL),
         "the query text leaked into the tool-call log:\n{logs}"
+    );
+}
+
+/// A tool error's message routinely embeds user input — here the identifier
+/// in SQLite's `no such column: <identifier>`. The caller must receive it,
+/// but the completion line must carry only the static failure shape, or a
+/// path or SQL fragment reaches the log through `error.message`.
+#[test]
+fn a_failed_tool_call_logs_the_static_error_class_but_never_the_message() {
+    let _session_guard = crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK);
+    // Scoped to this test's own tool name so the one completion line it
+    // counts can only be the one its own call emitted.
+    const TOOL: &str = "query_error_logging_redaction";
+    const SECRET: &str = "SENTINEL_ERROR_LOG_7231";
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let request = QueryRequest {
+        path: project.path().to_string_lossy().into_owned(),
+        sql: format!("SELECT {SECRET} FROM files"),
+        offset: 0,
+        expected_revision: None,
+        page_bytes: None,
+    };
+
+    let (result, logs) = capture_at_level(
+        || {
+            current_thread_runtime().block_on(run_blocking(
+                Arc::new(Semaphore::new(4)),
+                TOOL,
+                move || {
+                    crate::tools::query(
+                        &Parameters(request),
+                        &crate::progress::NoopProgressSink,
+                        &crate::sync::SourceSyncManager::default(),
+                    )
+                },
+                None,
+            ))
+        },
+        Level::INFO,
+    );
+
+    let error = result
+        .err()
+        .expect("the unknown column must fail the query");
+    assert!(
+        error.message.contains(SECRET),
+        "control: the caller still receives the full message: {}",
+        error.message
+    );
+
+    let completions = completion_lines(&logs, TOOL);
+    assert_eq!(
+        completions.len(),
+        1,
+        "the completion line must be captured, or this test proves nothing:\n{logs}"
+    );
+    let line = completions[0];
+    assert!(
+        line.contains(&format!("tool=\"{TOOL}\"")),
+        "the operation must be identifiable: {line}"
+    );
+    assert_eq!(logged_field(line, "outcome"), "error");
+    assert_eq!(
+        logged_field(line, "error_class"),
+        "-32602",
+        "the static JSON-RPC class must be present: {line}"
+    );
+    assert_eq!(
+        logged_field(line, "code"),
+        "none",
+        "this failure carries no machine code: {line}"
+    );
+    assert!(
+        !logs.contains(SECRET),
+        "the error message leaked into the tool-call log:\n{logs}"
+    );
+}
+
+/// The machine-readable code from `ErrorData.data` is the one free-form
+/// failure fact that is safe to log; it must reach the completion line when
+/// the producer attached one, while the message beside it stays out.
+#[test]
+fn a_failed_tool_call_logs_the_machine_readable_code_but_not_the_pinned_revision_id() {
+    let _session_guard = crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK);
+    const TOOL: &str = "query_error_logging_machine_code";
+    const STALE_REVISION: &str = "SENTINEL_STALE_REVISION_4187";
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let request = QueryRequest {
+        path: project.path().to_string_lossy().into_owned(),
+        sql: "SELECT path FROM files".to_owned(),
+        offset: 0,
+        expected_revision: Some(STALE_REVISION.to_owned()),
+        page_bytes: None,
+    };
+
+    let (result, logs) = capture_at_level(
+        || {
+            current_thread_runtime().block_on(run_blocking(
+                Arc::new(Semaphore::new(4)),
+                TOOL,
+                move || {
+                    crate::tools::query(
+                        &Parameters(request),
+                        &crate::progress::NoopProgressSink,
+                        &crate::sync::SourceSyncManager::default(),
+                    )
+                },
+                None,
+            ))
+        },
+        Level::INFO,
+    );
+
+    let error = result
+        .err()
+        .expect("a stale expected_revision must fail the query");
+    assert!(
+        error.message.contains(STALE_REVISION),
+        "control: the caller still receives the offending revision id: {}",
+        error.message
+    );
+
+    let completions = completion_lines(&logs, TOOL);
+    assert_eq!(
+        completions.len(),
+        1,
+        "the completion line must be captured, or this test proves nothing:\n{logs}"
+    );
+    let line = completions[0];
+    assert_eq!(logged_field(line, "outcome"), "error");
+    assert_eq!(
+        logged_field(line, "code"),
+        "stale_revision",
+        "the machine-readable code must be logged: {line}"
+    );
+    assert_eq!(logged_field(line, "error_class"), "-32602");
+    assert!(
+        !logs.contains(STALE_REVISION),
+        "the revision id leaked into the tool-call log:\n{logs}"
     );
 }
