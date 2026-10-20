@@ -33,12 +33,16 @@ src/
 ├── prompt.rs                 bounded line input for the setup prompts
 ├── menu_render.rs            ANSI rendering helpers for the setup menu
 ├── install.rs                stable binary installation into ~/.slugthug
+├── install/                  submodule directory of the file module above
+│   ├── path.rs               shell PATH line selection, quoting, idempotent append
+│   └── path_tests.rs         PATH-line shell quoting and idempotency
 ├── install_place.rs          staged-binary placement shared by install and update
 ├── update.rs                 self-update: fetch release, atomically replace the binary
 ├── update_fetch.rs           network + version helpers for self-update
 ├── connect.rs                register/remove this binary with a target agent
 ├── connect/                  submodule directory of the file module above
 │   ├── config_file.rs        JSON config probe/merge/remove for register and disconnect
+│   ├── config_file_tests.rs  removal truthfulness, atomic mode/symlink, typed I/O failures
 │   └── registry_types.rs     client model types (Strategy, ConfigShape, Evidence, Dialect)
 ├── connect_agents.rs         supported agents and editors registry
 ├── connect_cli.rs            per-client `mcp add`/`remove` argv grammar and execution

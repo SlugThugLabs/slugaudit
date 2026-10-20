@@ -8,7 +8,8 @@ use crate::cli::ConnectError;
 use crate::connect_agents::AgentDef;
 use crate::connect_guidance as guidance;
 use std::fs;
-use std::path::Path;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// True when the JSON config at `path` carries a `slugaudit` entry under any
@@ -56,7 +57,7 @@ pub(crate) fn write_agent_config(
         .shape
         .write_section()
         .ok_or_else(|| guidance::refusal(agent, binary, Some(home)))?;
-    write_json_server(&path, section, agent.shape.entry(binary))?;
+    write_json_server(&path, section, agent.shape.entry(binary)?)?;
     if let Some(note) = note {
         crate::cli::out(format_args!("{note}\n"))?;
     }
@@ -73,20 +74,67 @@ pub(crate) fn print_lines(lines: &[String]) -> Result<(), ConnectError> {
 
 static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// The file an atomic write must replace. A config reached through a symlink
+/// (a dotfiles setup) is written through to its target, so the link survives;
+/// a dangling link is refused rather than replaced.
+fn write_destination(path: &Path) -> Result<PathBuf, ConnectError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            fs::canonicalize(path).map_err(ConnectError::Io)
+        }
+        Ok(_) => Ok(path.to_path_buf()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(error) => Err(ConnectError::Io(error)),
+    }
+}
+
+/// Replaces `path` with `content` through a temp file in the same directory.
+///
+/// The temp is created owner-only (0600 on Unix) before any bytes are written,
+/// so a client config holding other servers' credentials never becomes
+/// group/world-readable. The destination inode is replaced atomically; a
+/// failed write or rename removes the temp, and a cleanup failure is logged.
 pub(crate) fn write_atomic(path: &Path, content: &[u8]) -> Result<(), ConnectError> {
-    let parent = path.parent().ok_or(ConnectError::HomeUnavailable)?;
+    let destination = write_destination(path)?;
+    let parent = destination.parent().ok_or(ConnectError::HomeUnavailable)?;
     let count = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp = parent.join(format!(".slugaudit-tmp-{}-{}", std::process::id(), count));
-    fs::write(&temp, content)?;
-    if let Err(err) = fs::rename(&temp, path) {
-        if let Err(remove_err) = fs::remove_file(&temp) {
-            // Deliberate raw path: one-shot diagnostic naming the leftover
-            // temp file beside the config it was meant to replace.
-            tracing::warn!(error = %remove_err, path = %temp.display(), "failed to remove temporary file after rename error");
-        }
-        return Err(ConnectError::Io(err));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temp)?;
+    if let Err(error) = file.write_all(content) {
+        // Close before removing: the close surfaces any deferred write error,
+        // and an open handle would make removal fail on some platforms.
+        drop(file);
+        remove_abandoned_temp(&temp);
+        return Err(ConnectError::Io(error));
+    }
+    drop(file);
+    if let Err(error) = fs::rename(&temp, &destination) {
+        remove_abandoned_temp(&temp);
+        return Err(ConnectError::Io(error));
     }
     Ok(())
+}
+
+/// Removes the temp left by a failed atomic write. The write error is already
+/// on its way to the caller; a cleanup failure is logged once and never
+/// replaces it.
+fn remove_abandoned_temp(temp: &Path) {
+    match fs::remove_file(temp) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            // Deliberate raw path: one-shot diagnostic naming the leftover
+            // temp file beside the config it was meant to replace.
+            tracing::warn!(error = %error, path = %temp.display(), "failed to remove temporary file after a failed config write");
+        }
+    }
 }
 
 fn load_json_or_empty(path: &Path) -> Result<serde_json::Value, ConnectError> {
@@ -128,8 +176,9 @@ fn write_json_server(
     write_atomic(path, serde_json::to_string_pretty(&root)?.as_bytes())
 }
 
-/// Removes the entry from `path` when the file exists; reports whether there
-/// was a file to touch.
+/// Removes the entry from `path` when the file exists; reports whether an
+/// entry was actually removed. A file with no slugaudit entry is left
+/// untouched — never rewritten merely because it exists.
 pub(crate) fn remove_json_slugaudit(path: &Path, keys: &[&str]) -> Result<bool, ConnectError> {
     // A stat failure (e.g. an unreadable parent directory) fails the
     // disconnect instead of skipping the file and reporting success.
@@ -137,11 +186,18 @@ pub(crate) fn remove_json_slugaudit(path: &Path, keys: &[&str]) -> Result<bool, 
         return Ok(false);
     }
     let mut root = load_json_or_empty(path)?;
+    let mut removed = false;
     for key in keys {
         if let Some(s) = root.get_mut(*key).and_then(|s| s.as_object_mut()) {
-            s.remove("slugaudit");
+            removed |= s.remove("slugaudit").is_some();
         }
     }
-    write_atomic(path, serde_json::to_string_pretty(&root)?.as_bytes())?;
-    Ok(true)
+    if removed {
+        write_atomic(path, serde_json::to_string_pretty(&root)?.as_bytes())?;
+    }
+    Ok(removed)
 }
+
+#[cfg(test)]
+#[path = "config_file_tests.rs"]
+mod tests;

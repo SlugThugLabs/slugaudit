@@ -7,6 +7,7 @@
 //! [`crate::connect_agents`] re-exports every type at its historical path; the
 //! registry table and its lookups stay there.
 
+use crate::cli::ConnectError;
 use std::path::{Path, PathBuf};
 
 /// How slugaudit can register itself with a client.
@@ -91,9 +92,20 @@ impl ConfigShape {
     }
 
     /// The `slugaudit` value a client reads for this shape.
-    pub fn entry(self, binary: &Path) -> serde_json::Value {
-        let command = binary.to_string_lossy();
-        match self {
+    ///
+    /// # Errors
+    ///
+    /// A binary path that is not valid UTF-8 is refused before any write: JSON
+    /// cannot carry the raw bytes, and a lossy replacement-character path would
+    /// be registered as a command the client cannot launch.
+    pub fn entry(self, binary: &Path) -> Result<serde_json::Value, ConnectError> {
+        let command = binary.to_str().ok_or_else(|| {
+            ConnectError::BinaryPath(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the binary path is not valid UTF-8, so it cannot be written to a client config",
+            ))
+        })?;
+        Ok(match self {
             ConfigShape::McpServersCommandArgs => {
                 serde_json::json!({ "command": command, "args": [] })
             }
@@ -107,7 +119,7 @@ impl ConfigShape {
                 serde_json::json!({ "type": "stdio", "cmd": command, "args": [] })
             }
             ConfigShape::Unknown => serde_json::Value::Null,
-        }
+        })
     }
 }
 

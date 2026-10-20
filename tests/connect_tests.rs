@@ -282,6 +282,84 @@ fn disconnecting_an_entry_with_nothing_to_remove_says_so() {
     assert!(!stdout.contains("Done."), "nothing was done: {stdout}");
 }
 
+/// An existing client config with no slugaudit entry is a no-op: the tool must
+/// say so and must not rewrite (or reformat) the user's file.
+#[test]
+fn disconnecting_a_config_without_an_entry_leaves_it_untouched() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(home.join(".cursor")).expect("mkdir cursor");
+    fs::create_dir_all(&bin_dir).expect("mkdir bin");
+    let config = home.join(".cursor/mcp.json");
+    let original = "{\n  \"mcpServers\": {\"other\": {\"command\": \"/bin/other\"}}\n}";
+    fs::write(&config, original).expect("write config without slugaudit");
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_slugaudit"));
+
+    let output = hermetic_output(&binary, &home, &bin_dir, &["disconnect", "cursor"]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "a no-op disconnect is not an error: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("Nothing to disconnect."),
+        "a config without an entry must be reported as nothing to do: {stdout}"
+    );
+    assert!(!stdout.contains("Done."), "nothing was done: {stdout}");
+    assert_eq!(
+        fs::read_to_string(&config).expect("read config"),
+        original,
+        "an untouched config must not be rewritten or reformatted"
+    );
+}
+
+/// The replacement temp is created owner-only before any bytes are written, so
+/// a permissive umask cannot expose another server's credentials in the same
+/// config file.
+#[cfg(unix)]
+#[test]
+fn connect_writes_a_client_config_owner_only_under_a_permissive_umask() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&home).expect("mkdir home");
+    fs::create_dir_all(&bin_dir).expect("mkdir bin");
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_slugaudit"));
+    // `exec` keeps the command's own pid and exit status; `umask 000` would
+    // give a plain `fs::write` temp mode 0666.
+    let script = format!("umask 000; exec '{}' connect cursor", binary.display());
+
+    let output = Command::new("/bin/sh")
+        .args(["-c", &script])
+        .env("HOME", &home)
+        .env("SLUGTHUG_HOME", home.join(".slugthug"))
+        .env("SLUGTHUG_CONFIG_HOME", &home)
+        .env("PATH", &bin_dir)
+        .output()
+        .expect("spawn slugaudit");
+
+    assert!(
+        output.status.success(),
+        "connect failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let config = home.join(".cursor/mcp.json");
+    let mode = fs::metadata(&config)
+        .expect("stat the written config")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "another user's umask must not make a credential-bearing config readable"
+    );
+}
+
 /// A warning raised by a CLI command must reach the subscriber installed
 /// before dispatch; `connect` probes the client config and logs why an
 /// unparsable one is treated as unregistered.

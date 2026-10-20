@@ -250,7 +250,10 @@ fn registry_cli_argument_grammar_is_preserved_per_client() {
 fn registry_shape_and_path_models_match_the_documented_forms() {
     let zed = find_agent("zed").expect("zed");
     assert_eq!(zed.shape, ConfigShape::ZedContextServer);
-    let zed_entry = zed.shape.entry(Path::new("/bin/slugaudit"));
+    let zed_entry = zed
+        .shape
+        .entry(Path::new("/bin/slugaudit"))
+        .expect("UTF-8 binary path");
     assert_eq!(
         zed_entry["command"], "/bin/slugaudit",
         "zed's command is a string, not a nested object"
@@ -270,7 +273,9 @@ fn registry_shape_and_path_models_match_the_documented_forms() {
         ConfigPath::Home(".config/opencode/opencode.jsonc"),
         "the probe wrote the .jsonc variant"
     );
-    let opencode_entry = ConfigShape::OpenCodeLocal.entry(Path::new("/bin/slugaudit"));
+    let opencode_entry = ConfigShape::OpenCodeLocal
+        .entry(Path::new("/bin/slugaudit"))
+        .expect("UTF-8 binary path");
     assert_eq!(opencode_entry["type"], "local");
     assert_eq!(opencode_entry["command"][0], "/bin/slugaudit");
     assert_eq!(opencode_entry["enabled"], true);
@@ -506,9 +511,13 @@ fn disconnect_fails_when_the_client_config_cannot_be_stat_ed() {
 
     let result = crate::connect_exec::disconnect_agent(&cursor, Some(home.path()));
 
-    assert!(
-        result.is_err(),
-        "a stat failure must fail the disconnect, not print Done"
+    let Err(crate::cli::ConnectError::Io(error)) = result else {
+        panic!("expected Io, got {result:?}");
+    };
+    assert_eq!(
+        error.kind(),
+        std::io::ErrorKind::NotADirectory,
+        "the stat failure's cause must reach the caller: {error}"
     );
 }
 
