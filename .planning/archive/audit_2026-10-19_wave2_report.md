@@ -82,7 +82,7 @@ End-to-end: menu output piped into `head -c 10` exits 0 with empty stderr;
 
 `6728735` recorded 12 benchmarks to `.planning/archive/perf_baseline.json`
 using the default `target/` (the gate hardcodes `target/criterion`). The
-comparison passed: every measured ratio was between 0.98x and 1.03x, threshold
+comparison passed: every measured ratio was between 0.98x and 1.14x, threshold
 20%. The benchmark groups are discovery (4), parsing (4), and search (4).
 
 ## Validation — full gate, all pass
