@@ -23,7 +23,7 @@ static HOOKS: std::sync::Mutex<Option<Hooks>> = std::sync::Mutex::new(None);
 /// (run 38949456424, 2026-10-16, cancelled at the 6-hour job limit).
 #[cfg(test)]
 pub(crate) fn set(root: &Path, hook: impl FnOnce() + Send + 'static) {
-    let mut guard = crate::util::lock_or_recover(&HOOKS);
+    let mut guard = crate::util::lock_or_recover(&HOOKS, "test_race_hooks");
     guard
         .get_or_insert_with(std::collections::HashMap::new)
         .insert(crate::util::canonical_or_self(root), Box::new(hook));
@@ -33,7 +33,7 @@ pub(crate) fn set(root: &Path, hook: impl FnOnce() + Send + 'static) {
 /// root nobody armed a hook for.
 #[cfg(test)]
 pub(crate) fn fire(root: &Path) {
-    let hook = crate::util::lock_or_recover(&HOOKS)
+    let hook = crate::util::lock_or_recover(&HOOKS, "test_race_hooks")
         .as_mut()
         .and_then(|hooks| hooks.remove(&crate::util::canonical_or_self(root)));
     if let Some(hook) = hook {

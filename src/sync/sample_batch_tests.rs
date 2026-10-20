@@ -36,7 +36,7 @@ fn a_result_that_cannot_be_delivered_aborts_the_run_with_the_file_named() {
     let delivered = batch.deliver(&tx, 0, Err("skipped".to_owned()));
 
     assert!(!delivered, "a closed channel must stop the worker");
-    let recorded = lock_or_recover(&batch.error_slot).take();
+    let recorded = lock_or_recover(&batch.error_slot, "sample_batch_error_slot").take();
     assert!(
         matches!(&recorded, Some(PublishError::SamplingResultLost { path, .. }) if path == "lib.rs"),
         "expected SamplingResultLost naming lib.rs, got {recorded:?}"
@@ -57,7 +57,7 @@ fn a_delivery_at_the_end_of_the_discovered_set_fails_with_the_index_error() {
     let delivered = batch.deliver(&tx, discovered.len(), Err("skipped".to_owned()));
 
     assert!(!delivered, "an out-of-range index must stop the worker");
-    let recorded = lock_or_recover(&batch.error_slot).take();
+    let recorded = lock_or_recover(&batch.error_slot, "sample_batch_error_slot").take();
     assert!(
         matches!(
             &recorded,
@@ -117,7 +117,7 @@ fn a_later_distinct_sampling_error_is_logged_without_leaking_its_path() {
                 path: SUPERSEDED_PATH.to_owned(),
             },
         );
-        lock_or_recover(&slot).take()
+        lock_or_recover(&slot, "sample_batch_error_slot").take()
     });
 
     assert!(

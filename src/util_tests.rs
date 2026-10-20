@@ -77,7 +77,7 @@ fn lock_or_recover_returns_inner_state_after_a_panic_in_a_critical_section() {
     // `lock_or_recover` must succeed and yield the original value
     // (the string may be in a logically-uncertain state, which is the
     // trade-off of recovery — but it must not be lost).
-    let mut guard = lock_or_recover(&mutex);
+    let mut guard = lock_or_recover(&mutex, "util_tests_string");
     assert_eq!(*guard, "uncorrupted");
     guard.push_str(" and recoverable");
     assert_eq!(*guard, "uncorrupted and recoverable");
@@ -95,14 +95,14 @@ fn lock_or_recover_returns_inner_state_after_a_panic_in_a_critical_section() {
 #[test]
 fn lock_or_recover_on_a_healthy_mutex_returns_a_normal_guard() {
     let mutex: Mutex<Vec<u32>> = Mutex::new(vec![10, 20, 30]);
-    let mut guard = lock_or_recover(&mutex);
+    let mut guard = lock_or_recover(&mutex, "util_tests_vec");
     assert_eq!(*guard, vec![10, 20, 30]);
     guard.push(40);
     assert_eq!(*guard, vec![10, 20, 30, 40]);
 
     drop(guard);
     // Re-acquiring must continue to work — recovery is not sticky.
-    let guard2 = lock_or_recover(&mutex);
+    let guard2 = lock_or_recover(&mutex, "util_tests_vec");
     assert_eq!(*guard2, vec![10, 20, 30, 40]);
 }
 
@@ -119,19 +119,55 @@ fn lock_or_recover_recovers_multiple_sequential_poisons() {
     for iteration in 1..=3_i64 {
         let inner_clone = Arc::clone(&inner);
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-            let mut g = lock_or_recover(&inner_clone);
+            let mut g = lock_or_recover(&inner_clone, "util_tests_i64");
             *g = iteration;
             panic!("simulated panic {iteration}");
         }));
         assert!(panic_result.is_err());
 
-        let mut guard = lock_or_recover(&inner);
+        let mut guard = lock_or_recover(&inner, "util_tests_i64");
         assert_eq!(
             *guard, iteration,
             "value set before the panic must survive a recovery, even after multiple poisonings"
         );
         *guard += 1000;
     }
+}
+
+/// The poison-recovery line must identify which state was recovered. An
+/// operator reading "a mutex was poisoned" without a label cannot tell
+/// whether the session id, the watch state, or the sampling throttle is
+/// suspect.
+#[test]
+fn lock_or_recover_logs_the_mutex_label_it_was_given() {
+    let mutex: Mutex<u32> = Mutex::new(7);
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = mutex.lock().expect("unpoisoned at first");
+        panic!("simulated panic inside the labelled critical section");
+    }));
+    assert!(panic_result.is_err(), "the panic must have happened");
+
+    let (value, logs) = crate::store::test_capture::capture_at_level(
+        || {
+            tracing::error!("capture liveness control for lock_or_recover");
+            *lock_or_recover(&mutex, "labelled_probe_mutex")
+        },
+        tracing::Level::ERROR,
+    );
+
+    assert_eq!(value, 7, "the recovered value must be returned");
+    assert!(
+        logs.contains("capture liveness control for lock_or_recover"),
+        "the capture must see this thread's events, captured: {logs}"
+    );
+    assert!(
+        logs.contains("operation=\"lock_or_recover\""),
+        "the recovery line must name the operation, captured: {logs}"
+    );
+    assert!(
+        logs.contains("mutex=\"labelled_probe_mutex\""),
+        "the recovery line must carry the caller's label, captured: {logs}"
+    );
 }
 
 #[test]

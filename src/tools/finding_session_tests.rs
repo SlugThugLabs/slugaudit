@@ -149,7 +149,7 @@ fn seed_finding_for_session(db_path: &std::path::Path, path: &str, session: Uuid
 /// next `ensure_current` is the cleanup path.
 #[test]
 fn finding_carries_the_current_session_id() {
-    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     let project = activated_project("tagged.rs", b"pub fn t() {}\n");
 
     let response = finding(
@@ -193,7 +193,7 @@ fn finding_carries_the_current_session_id() {
 /// inheriting a prior session's audit conclusions.
 #[test]
 fn a_new_session_drops_prior_session_findings_but_keeps_its_own() {
-    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     let project = activated_project("cross.rs", b"pub fn x() {}\n");
 
     let prior_session = Uuid::new_v4();
@@ -287,7 +287,7 @@ fn a_new_session_drops_prior_session_findings_but_keeps_its_own() {
 /// also runs the cleanup — not just a no-op read tool trigger.
 #[test]
 fn a_resync_after_a_session_change_drops_prior_session_findings() {
-    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     let project = activated_project("resync.rs", b"pub fn r() {}\n");
 
     let first_session = Uuid::new_v4();
@@ -455,7 +455,7 @@ fn a_second_sync_keeps_the_current_sessions_findings() {
 /// foreign-session row pre-seeded: exactly the state the purge guards against.
 #[test]
 fn dedupe_is_scoped_to_the_writing_session() {
-    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     let project = activated_project("scoped.rs", b"pub fn s() {}\n");
 
     crate::tools::context::ensure_synced_no_progress(

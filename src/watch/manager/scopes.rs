@@ -34,7 +34,7 @@ impl WatchManager {
         let canonical = canonical_or_self(root);
 
         let state = {
-            let mut guard = lock_or_recover(&self.inner);
+            let mut guard = lock_or_recover(&self.inner, "watch_manager_inner");
             self.apply_deferred(&mut guard);
 
             // If we already have a state for this project, return it.
@@ -44,9 +44,13 @@ impl WatchManager {
 
             let state = WatchState::new();
 
-            // Try to add the watch.
+            // Try to add the watch. Registration is non-recursive: the scope
+            // walk already enumerates every indexable directory, and notify's
+            // recursive mode adds a kernel watch for every directory in the
+            // subtree — including gitignored trees the scope excludes — which
+            // is how `max_watch_entries` was defeated and inotify exhausted.
             if let Some(ref mut watcher) = guard.watcher {
-                match watcher.watch(&canonical, RecursiveMode::Recursive) {
+                match watcher.watch(&canonical, RecursiveMode::NonRecursive) {
                     Ok(()) => {
                         tracing::info!(root_id = %redacted_path(&canonical), "watching project");
                     }
@@ -91,7 +95,7 @@ impl WatchManager {
         let scope = WatchScope::compute_with_limits(&canonical, max_entries, max_depth);
         let rules = Arc::new(IgnoreRules::build(&canonical, &scope.ignore_files));
 
-        let mut guard = lock_or_recover(&self.inner);
+        let mut guard = lock_or_recover(&self.inner, "watch_manager_inner");
         self.apply_deferred(&mut guard);
         scope::apply_scope_locked(&mut guard, &canonical, scope, rules, 0);
         // Events that arrived while the scope was being applied.
@@ -116,7 +120,7 @@ impl WatchManager {
         // from. Before the check: a deferred ignore-file event is what sets
         // `needs_scope_refresh`.
         let generation_before = {
-            let mut guard = lock_or_recover(&self.inner);
+            let mut guard = lock_or_recover(&self.inner, "watch_manager_inner");
             self.apply_deferred(&mut guard);
             match guard.projects.get(&canonical) {
                 Some(info) if info.scope.is_none() || info.needs_scope_refresh => {
@@ -129,7 +133,7 @@ impl WatchManager {
         let scope = WatchScope::compute_with_limits(&canonical, max_entries, max_depth);
         let rules = Arc::new(IgnoreRules::build(&canonical, &scope.ignore_files));
 
-        let mut guard = lock_or_recover(&self.inner);
+        let mut guard = lock_or_recover(&self.inner, "watch_manager_inner");
         // Ignore-file events that arrived during the walk bumped the
         // generation; `apply_scope_locked` leaves the refresh pending in
         // that case, so the next tool-thread pass recomputes instead of

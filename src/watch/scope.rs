@@ -20,6 +20,14 @@
 //! reports `WatcherHealth::Partial`, and the per-call stat sweep remains
 //! the freshness guarantee for the directories beyond the limit.
 //!
+//! Watches are registered one scoped directory at a time, non-recursively:
+//! notify's recursive mode walks the whole subtree and adds a kernel watch
+//! per directory (ignored trees included), which exhausts inotify regardless
+//! of the entry cap. Because each directory in the scope is watched
+//! directly, the entry cap is also the kernel-watch bound. A directory
+//! created later is detected from its parent's event and added by the next
+//! scope refresh.
+//!
 //! The scope and the rules built from it are computed **outside** the
 //! manager lock; [`apply_scope_locked`] runs under it and is the only part
 //! that touches the watcher. That split is what keeps a large walk from

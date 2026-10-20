@@ -15,7 +15,7 @@ static WALK_COUNTERS: Mutex<Option<HashMap<PathBuf, Arc<AtomicUsize>>>> = Mutex:
 /// bumps on every walk of that root.
 pub(super) fn count_walks(root: &Path) -> Arc<AtomicUsize> {
     let counter = Arc::new(AtomicUsize::new(0));
-    let mut guard = crate::util::lock_or_recover(&WALK_COUNTERS);
+    let mut guard = crate::util::lock_or_recover(&WALK_COUNTERS, "walk_counters");
     guard
         .get_or_insert_with(HashMap::new)
         .insert(crate::util::canonical_or_self(root), Arc::clone(&counter));
@@ -25,7 +25,7 @@ pub(super) fn count_walks(root: &Path) -> Arc<AtomicUsize> {
 /// Bumps the armed counter for `root`, if any; a no-op for any root nobody
 /// armed a counter for. Counting exists only in test builds.
 pub(super) fn note_walk(root: &Path) {
-    let guard = crate::util::lock_or_recover(&WALK_COUNTERS);
+    let guard = crate::util::lock_or_recover(&WALK_COUNTERS, "walk_counters");
     // Canonical like the watcher's keys, so a counter armed with a tempdir
     // path matches the walk's resolved root.
     if let Some(counter) = guard

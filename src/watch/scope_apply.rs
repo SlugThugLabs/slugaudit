@@ -68,9 +68,12 @@ pub(super) fn apply_scope_locked(
             }
         }
         // A failed watch means changes under that directory go unnoticed
-        // until a full verification.
+        // until a full verification. Non-recursive: every directory the scope
+        // includes is registered individually, so the number of kernel
+        // watches is bounded by the scope walk's entry cap instead of by the
+        // whole subtree notify would otherwise walk (ignored trees included).
         for dir in &new_watches {
-            if let Err(error) = watcher.watch(dir, RecursiveMode::Recursive) {
+            if let Err(error) = watcher.watch(dir, RecursiveMode::NonRecursive) {
                 log_notify_failure("scope_watch", &redacted_path(dir), &error);
             }
         }

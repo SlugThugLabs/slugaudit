@@ -274,6 +274,7 @@ fn walked_file(
 mod walks;
 #[cfg(test)]
 use walks::note_walk;
+/// Release builds count nothing.
 #[cfg(not(test))]
 fn note_walk(_root: &Path) {}
 

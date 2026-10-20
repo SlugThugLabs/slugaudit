@@ -172,6 +172,7 @@ fn purge_deletes_only_prior_session_rows() {
 /// delete a concurrent live session's findings.
 #[test]
 fn ensure_project_row_leaves_findings_to_the_session_start_transition() {
+    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     let (_dir, mut connection) = open_temp_db();
 
     let root = Path::new("/tmp/meta-only-example");

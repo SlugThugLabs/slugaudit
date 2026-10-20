@@ -63,11 +63,6 @@ pub struct ProjectWatchState {
 }
 
 impl ProjectWatchState {
-    /// A blank per-project watch record before any event or scope is recorded.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Returns true if there are unreconciled events.
     ///
     /// "Unreconciled" means either dirty or deleted sets contain a path,
@@ -82,13 +77,6 @@ impl ProjectWatchState {
             || !self.dirty_paths.is_empty()
             || !self.deleted_paths.is_empty()
     }
-
-    /// Returns the number of unreconciled events (dirty + deleted). Useful
-    /// to expose through the `health` MCP tool so an operator can see how
-    /// many events are queued without enumerating them.
-    pub fn unreconciled_count(&self) -> usize {
-        self.dirty_paths.len() + self.deleted_paths.len()
-    }
 }
 
 #[cfg(test)]
@@ -99,7 +87,8 @@ mod tests {
     fn a_fresh_state_has_no_unreconciled_events() {
         let state = ProjectWatchState::default();
         assert!(!state.has_unreconciled_events());
-        assert_eq!(state.unreconciled_count(), 0);
+        assert!(state.dirty_paths.is_empty());
+        assert!(state.deleted_paths.is_empty());
     }
 
     #[test]
@@ -108,7 +97,7 @@ mod tests {
         state.dirty_paths.insert("a.rs".to_owned());
         state.dirty_paths.insert("b.rs".to_owned());
         assert!(state.has_unreconciled_events());
-        assert_eq!(state.unreconciled_count(), 2);
+        assert_eq!(state.dirty_paths.len(), 2);
     }
 
     #[test]
@@ -116,7 +105,7 @@ mod tests {
         let mut state = ProjectWatchState::default();
         state.deleted_paths.insert("a.rs".to_owned());
         assert!(state.has_unreconciled_events());
-        assert_eq!(state.unreconciled_count(), 1);
+        assert_eq!(state.deleted_paths.len(), 1);
     }
 
     /// After `snapshot_dirty` clears the sets but before `acknowledge_through`
@@ -137,10 +126,9 @@ mod tests {
         // where events arrived between snapshot and acknowledge.
         assert_eq!(state.last_verified_sequence, 0);
         assert!(state.has_unreconciled_events());
-        assert_eq!(
-            state.unreconciled_count(),
-            0,
-            "but pending count is zero this exact instant"
+        assert!(
+            state.dirty_paths.is_empty() && state.deleted_paths.is_empty(),
+            "the cleared sets are empty this exact instant, so only the sequence flags it"
         );
     }
 }

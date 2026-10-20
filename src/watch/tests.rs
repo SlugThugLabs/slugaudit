@@ -6,13 +6,32 @@
 //! `manager::handle_event` exercises the same path end-to-end here, so
 //! one path through the watcher is enough to prove it and the unit
 //! coverage stays simple.
+//!
+//! Event assertions wait for the notify thread instead of sleeping for a
+//! fixed 100 ms. A fixed sleep flakes on a loaded machine, and guarding the
+//! assertion behind `health == Healthy` made the test pass vacuously: the
+//! manager starts a project at `NeedsVerification`, so that branch was
+//! never taken. The only precondition is an available watcher; `Unavailable`
+//! means the platform has none and the test returns explicitly.
 
-use crate::watch::{WatchManager, WatchState, WatcherHealth};
+use crate::watch::{WatchManager, WatcherHealth};
 use std::fs;
+use std::time::{Duration, Instant};
 
-/// Create a temporary project with the activation directory.
+/// How long the notify thread gets to deliver an event before the test
+/// fails. Generous enough for a loaded CI machine; a missing event still
+/// fails instead of passing silently.
+const EVENT_WAIT: Duration = Duration::from_secs(10);
+
+/// Create a temporary project with the activation directory. Created under
+/// the canonical temp directory: `watch` keys a project by its canonical
+/// root and real watcher events carry canonical paths, while on macOS the
+/// default temp dir runs through the `/var -> /private/var` link.
 fn create_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp dir");
+    let base = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonical temp dir");
+    let dir = tempfile::tempdir_in(base).expect("create temp dir");
     fs::create_dir_all(dir.path().join(".planning").join("slugaudit"))
         .expect("create activation dir");
     dir
@@ -27,6 +46,19 @@ fn write_file(project: &tempfile::TempDir, relative: &str, content: &[u8]) {
     fs::write(path, content).expect("write file");
 }
 
+/// Polls `predicate` until it holds or the event budget expires, and
+/// reports the final verdict.
+fn wait_until(mut predicate: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + EVENT_WAIT;
+    while Instant::now() < deadline {
+        if predicate() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    predicate()
+}
+
 #[test]
 fn watch_manager_tracks_file_modifications() {
     let project = create_project();
@@ -34,23 +66,20 @@ fn watch_manager_tracks_file_modifications() {
 
     let manager = WatchManager::with_watcher();
     let state = manager.watch(project.path());
+    if state.health() == WatcherHealth::Unavailable {
+        return;
+    }
+    // The sync layer moves the state to Healthy after its first full
+    // verification; steady-state event tracking is what this test covers.
+    state.set_health(WatcherHealth::Healthy);
 
-    // Initially no events.
-    assert!(!state.has_unreconciled_events());
-
-    // Modify the file.
     write_file(&project, "lib.rs", b"fn main() { changed() }\n");
 
-    // Give the watcher a moment to process the event.
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    // Now there should be an unreconciled event.
-    // Note: This may be flaky on some platforms if the watcher is slow.
-    if state.health() == WatcherHealth::Healthy {
-        assert!(state.has_unreconciled_events());
-        let snapshot = state.snapshot();
-        assert!(snapshot.dirty_paths.contains("lib.rs"));
-    }
+    assert!(
+        wait_until(|| state.snapshot().dirty_paths.contains("lib.rs")),
+        "a modify event must be recorded within {EVENT_WAIT:?}; health: {:?}",
+        state.health()
+    );
 }
 
 #[test]
@@ -60,16 +89,18 @@ fn watch_manager_tracks_file_deletion() {
 
     let manager = WatchManager::with_watcher();
     let state = manager.watch(project.path());
+    if state.health() == WatcherHealth::Unavailable {
+        return;
+    }
+    state.set_health(WatcherHealth::Healthy);
 
-    // Delete the file.
     fs::remove_file(project.path().join("lib.rs")).expect("delete file");
 
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    if state.health() == WatcherHealth::Healthy {
-        let snapshot = state.snapshot();
-        assert!(snapshot.deleted_paths.contains("lib.rs"));
-    }
+    assert!(
+        wait_until(|| state.snapshot().deleted_paths.contains("lib.rs")),
+        "a delete event must be recorded within {EVENT_WAIT:?}; health: {:?}",
+        state.health()
+    );
 }
 
 #[test]
@@ -79,20 +110,82 @@ fn watch_manager_ignores_slugaudit_activation_dir() {
 
     let manager = WatchManager::with_watcher();
     let state = manager.watch(project.path());
+    if state.health() == WatcherHealth::Unavailable {
+        return;
+    }
+    state.set_health(WatcherHealth::Healthy);
 
-    // Write a file in the activation directory.
     write_file(&project, ".planning/slugaudit/project.db", b"fake db");
-
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    // Liveness control: a tracked file changed in the same window must be
+    // delivered, so the absence assertion below is not vacuously true just
+    // because no event reached the manager.
+    write_file(&project, "lib.rs", b"fn main() { changed() }\n");
+    assert!(
+        wait_until(|| state.snapshot().dirty_paths.contains("lib.rs")),
+        "the control event must be delivered within {EVENT_WAIT:?}; health: {:?}",
+        state.health()
+    );
 
     let snapshot = state.snapshot();
-    // The activation dir file should be excluded.
-    assert!(!snapshot.dirty_paths.iter().any(|p| p.contains("slugaudit")));
+    assert!(
+        !snapshot.dirty_paths.iter().any(|p| p.contains("slugaudit")),
+        "the activation dir file must never be marked dirty: {:?}",
+        snapshot.dirty_paths
+    );
+    assert!(
+        !snapshot
+            .deleted_paths
+            .iter()
+            .any(|p| p.contains("slugaudit")),
+        "the activation dir file must never be marked deleted: {:?}",
+        snapshot.deleted_paths
+    );
+}
+
+/// The scope's configured cap is also the kernel-watch bound: registration
+/// is one non-recursive watch per scoped directory, so a directory past
+/// `max_depth` carries no watch. With a recursive root watch (the previous
+/// behavior), notify walked the whole subtree and delivered this file's
+/// event — while taking a kernel watch for every directory in it, which is
+/// how a large `node_modules/` or `target/` exhausted inotify despite the
+/// scope limit.
+#[test]
+fn a_directory_past_the_scope_depth_cap_carries_no_watch() {
+    let project = create_project();
+    write_file(&project, "src/live.rs", b"fn live() {}\n");
+    write_file(&project, "deep/nested/late.rs", b"fn late() {}\n");
+
+    let manager = WatchManager::with_watcher();
+    // max_depth = 1: `src` and `deep` are watched, `deep/nested` is not.
+    let state = manager.watch_with_scope_limits_for_test(project.path(), 100, 1);
+    if state.health() == WatcherHealth::Unavailable {
+        return;
+    }
+    state.set_health(WatcherHealth::Healthy);
+
+    // Positive control: an event from a scoped directory is delivered.
+    write_file(&project, "src/live.rs", b"fn live() { changed }\n");
+    assert!(
+        wait_until(|| state.snapshot().dirty_paths.contains("src/live.rs")),
+        "the in-scope event must be delivered within {EVENT_WAIT:?}; health: {:?}",
+        state.health()
+    );
+
+    write_file(&project, "deep/nested/late.rs", b"fn late() { changed }\n");
+    let grace = Instant::now() + Duration::from_millis(250);
+    while Instant::now() < grace {
+        assert!(
+            !state.snapshot().dirty_paths.contains("deep/nested/late.rs"),
+            "a directory past the scope cap must carry no kernel watch: {:?}",
+            state.snapshot().dirty_paths
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[test]
 fn watch_state_collapses_repeated_events() {
-    let state = WatchState::new();
+    let state = crate::watch::WatchState::new();
 
     // Same file modified multiple times.
     for i in 0..10 {
@@ -108,7 +201,7 @@ fn watch_state_collapses_repeated_events() {
 
 #[test]
 fn watch_state_sequence_is_monotonic() {
-    let state = WatchState::new();
+    let state = crate::watch::WatchState::new();
 
     let mut prev_seq = 0u64;
     for i in 0..100 {

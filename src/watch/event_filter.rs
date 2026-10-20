@@ -7,8 +7,10 @@ use crate::ignore_rules::{IgnoreRules, is_excluded_path};
 use std::path::{Path, PathBuf};
 
 /// The directories to start and stop watching when `old` becomes `new`.
-/// With no previous scope, the recursive root watch is the only thing
-/// registered, so every indexable directory except the root is new.
+/// With no previous scope, the root is the only directory already
+/// registered (by `watch_with_scope_limits`), so every other indexable
+/// directory is new. Registration is non-recursive in both places, so this
+/// difference is exactly the set of kernel watches.
 pub(super) fn watch_dir_changes(
     old: Option<&WatchScope>,
     new: &WatchScope,

@@ -156,6 +156,7 @@ src/
 │   ├── manager/              submodule directory of the file module above
 │   │   ├── events.rs         lock-held event dispatch + deferred replay
 │   │   └── scopes.rs         scope registration and refresh
+│   ├── manager_callback_tests.rs  notify error callback: non-blocking Desynced marker
 │   ├── errors.rs             static path-free categories for watcher failures
 │   ├── event_filter.rs       scope watch-dir diff + per-path event class
 │   ├── state.rs              WatchState — thread-safe per-project state

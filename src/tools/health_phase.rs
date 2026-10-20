@@ -1,9 +1,11 @@
 //! The `health` tool's per-project field derivation: resolve the project,
-//! read watcher and database state read-only, and map that state to a phase.
-//! Split from `health.rs` so the response schema stays separate from the
-//! derivation that fills it. Nothing here has a side effect — in particular
-//! it never calls `ensure_current`, so a health call can never trigger a
-//! publish, register a watch, or change watcher health.
+//! read watcher and database state, and map that state to a phase. Split
+//! from `health.rs` so the response schema stays separate from the
+//! derivation that fills it. It never calls `ensure_current`, so a health
+//! call can never trigger a publish or register a watch. Reading the watch
+//! state does drain events/errors the notify thread queued behind the
+//! manager lock, so the report reflects what already happened instead of
+//! staying stale; it does not change health on its own.
 
 use super::health::{DatabaseState, HealthPhase, WatcherState};
 use super::health_database::{DatabaseRead, read_database};
@@ -27,10 +29,11 @@ pub(super) struct ProjectHealthFields {
     pub(super) database_read_failed: bool,
 }
 
-/// Computes every per-project field of the health response **without any
-/// side effect**: it resolves the project root, reads the watcher state if
-/// the project is already registered, and reads the database read-only if
-/// it exists.
+/// Computes every per-project field of the health response without
+/// publishing or registering a watch: it resolves the project root, reads
+/// the watcher state if the project is already registered (draining events
+/// the notify thread queued behind the manager lock), and reads the
+/// database read-only if it exists.
 pub(super) fn compute_project_state(
     path: &str,
     manager: &sync::SourceSyncManager,

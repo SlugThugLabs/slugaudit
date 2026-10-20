@@ -8,6 +8,7 @@
 
 use super::{Deferred, MAX_DEFERRED_EVENTS, WatchManager, WatchManagerInner};
 use crate::util::{lock_or_recover, redacted_path};
+use crate::watch::errors::log_notify_failure;
 use crate::watch::event_filter::{PathClass, classify_path};
 use crate::watch::path::normalize_relative_path;
 use crate::watch::types::WatcherHealth;
@@ -22,7 +23,14 @@ impl WatchManager {
     /// every project that is not `Unavailable` becomes `Desynced` and the
     /// sync that follows does a full verification.
     pub(super) fn apply_deferred(&self, inner: &mut WatchManagerInner) {
-        let Deferred { events, overflowed } = std::mem::take(&mut *lock_or_recover(&self.deferred));
+        let Deferred {
+            events,
+            desync_requested,
+            overflowed,
+        } = std::mem::take(&mut *lock_or_recover(
+            &self.deferred,
+            "watch_manager_deferred",
+        ));
         if overflowed > 0 {
             tracing::warn!(
                 overflowed,
@@ -35,6 +43,9 @@ impl WatchManager {
                     info.state.set_health(WatcherHealth::Desynced);
                 }
             }
+        }
+        if desync_requested {
+            Self::apply_desync(inner);
         }
         if !events.is_empty() {
             tracing::debug!(
@@ -98,11 +109,54 @@ impl WatchManager {
         }
     }
 
+    /// Handles a `notify` watcher error (for example inotify
+    /// `MaxFilesWatch` exhaustion): every project becomes `Desynced` so the
+    /// next `ensure_current` runs a full verification. The event loop covers
+    /// every project, so there is no single root to attribute it to.
+    ///
+    /// Never blocks on `inner`, for the same reason [`Self::handle_event`]
+    /// does not: a tool thread holds `inner` across notify's blocking
+    /// `watch`/`unwatch`, which waits for this callback's own event loop.
+    /// Blocking here would deadlock the tool call and leave the `Desynced`
+    /// recovery unapplied. A busy lock records the request in `deferred`
+    /// instead; the next thread that holds `inner` applies it before its
+    /// sync decision.
+    pub(super) fn handle_notify_error(&self, error: &notify::Error) {
+        log_notify_failure("watcher_event_loop", "unscoped", error);
+        let mut guard = match self.inner.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::WouldBlock) => {
+                lock_or_recover(&self.deferred, "watch_manager_deferred").desync_requested = true;
+                return;
+            }
+            Err(TryLockError::Poisoned(poisoned)) => {
+                // The event covers every project, so no single root exists.
+                tracing::error!(
+                    operation = "handle_notify_error_lock_recovery",
+                    mutex = "watch_manager_inner",
+                    root_id = "unscoped",
+                    "watch manager mutex was poisoned; recovering the inner value"
+                );
+                poisoned.into_inner()
+            }
+        };
+        // A previous error may already have been queued behind this lock.
+        self.apply_deferred(&mut guard);
+        Self::apply_desync(&mut guard);
+    }
+
+    /// Marks every project `Desynced`. The caller holds the manager lock.
+    fn apply_desync(inner: &mut WatchManagerInner) {
+        for info in inner.projects.values() {
+            info.state.set_health(WatcherHealth::Desynced);
+        }
+    }
+
     /// Holds `event` back until a thread that owns the manager lock applies
     /// it. Never blocks on `inner`; `deferred` is only ever held for a push
     /// or a take, so the notify thread cannot wait on a tool thread here.
     fn defer(&self, event: Event) {
-        let mut deferred = lock_or_recover(&self.deferred);
+        let mut deferred = lock_or_recover(&self.deferred, "watch_manager_deferred");
         if deferred.events.len() < MAX_DEFERRED_EVENTS {
             deferred.events.push(event);
         } else {
@@ -125,6 +179,14 @@ impl WatchManager {
                             info.state.mark_deleted(relative);
                         }
                         EventKind::Modify(_) | EventKind::Create(_) => {
+                            // A directory created inside the tree has no watch
+                            // of its own (watches are per scoped directory, not
+                            // recursive), so the next tool-thread pass must add
+                            // it to the scope. Without this, files created
+                            // inside it would produce no events until a sweep.
+                            if matches!(event.kind, EventKind::Create(_)) && path.is_dir() {
+                                info.mark_scope_dirty();
+                            }
                             info.state.mark_dirty(relative);
                         }
                         _ => {}

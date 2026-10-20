@@ -18,7 +18,6 @@ mod scopes;
 use super::errors::log_notify_failure;
 use super::scope::{self, WatchScope};
 use super::state::WatchState;
-use super::types::WatcherHealth;
 use crate::ignore_rules::IgnoreRules;
 use crate::util::{lock_or_recover, redacted_path};
 #[cfg(test)]
@@ -34,10 +33,10 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone, Default)]
 pub struct WatchManager {
     inner: Arc<Mutex<WatchManagerInner>>,
-    /// Events that arrived while a tool thread held `inner`. They wait here
-    /// (a lock that is never held across anything that blocks, so the notify
-    /// thread can always take it) and are applied, in order, by whichever
-    /// thread next holds `inner`.
+    /// Events and watcher errors that arrived while a tool thread held
+    /// `inner`. They wait here (a lock that is never held across anything
+    /// that blocks, so the notify thread can always take it) and are
+    /// applied, in order, by whichever thread next holds `inner`.
     deferred: Arc<Mutex<Deferred>>,
 }
 
@@ -49,6 +48,9 @@ const MAX_DEFERRED_EVENTS: usize = 4096;
 #[derive(Default)]
 struct Deferred {
     events: Vec<Event>,
+    /// A watcher error arrived while a tool thread held `inner`. Drained by
+    /// the next lock holder, which marks every project `Desynced`.
+    desync_requested: bool,
     /// Events that did not fit under `MAX_DEFERRED_EVENTS`.
     overflowed: u64,
 }
@@ -86,8 +88,12 @@ pub(super) struct ProjectWatchInfo {
 
 impl WatchManager {
     /// Creates a `WatchManager` with **no** `notify` watcher running — the
-    /// default for tests; `with_watcher` opts in.
-    pub fn new() -> Self {
+    /// default for this module's tests; production constructs through
+    /// [`Self::with_watcher`] (or `Default`, which `SourceSyncManager`
+    /// derives). Not public: a second name for `default()` on the shipped
+    /// surface had no caller.
+    #[cfg(test)]
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
@@ -109,28 +115,17 @@ impl WatchManager {
         // every call.
         let manager_clone = manager.clone();
         match RecommendedWatcher::new(
-            move |result: Result<Event, notify::Error>| {
-                match result {
-                    Ok(event) => {
-                        manager_clone.handle_event(event);
-                    }
-                    Err(error) => {
-                        // Watcher error (e.g., queue overflow, watch removed).
-                        // Mark all projects as Desynced so the next ensure_current
-                        // does a full verification. The event loop covers every
-                        // project, so there is no single root to attribute it to.
-                        log_notify_failure("watcher_event_loop", "unscoped", &error);
-                        let guard = lock_or_recover(&manager_clone.inner);
-                        for info in guard.projects.values() {
-                            info.state.set_health(WatcherHealth::Desynced);
-                        }
-                    }
-                }
+            move |result: Result<Event, notify::Error>| match result {
+                Ok(event) => manager_clone.handle_event(event),
+                // Watcher error (e.g., queue overflow, watch removed): mark
+                // every project `Desynced` without ever blocking this event
+                // loop on the manager lock — see `handle_notify_error`.
+                Err(error) => manager_clone.handle_notify_error(&error),
             },
             Config::default(),
         ) {
             Ok(watcher) => {
-                let mut guard = lock_or_recover(&manager.inner);
+                let mut guard = lock_or_recover(&manager.inner, "watch_manager_inner");
                 guard.watcher = Some(watcher);
             }
             Err(error) => {
@@ -157,7 +152,7 @@ impl WatchManager {
     pub fn unwatch(&self, root: &Path) {
         let canonical = crate::util::canonical_or_self(root);
 
-        let mut guard = lock_or_recover(&self.inner);
+        let mut guard = lock_or_recover(&self.inner, "watch_manager_inner");
 
         // The project is dropped from `projects` either way, so a failed
         // unwatch leaves the watcher delivering events for a project this
@@ -172,9 +167,14 @@ impl WatchManager {
     }
 
     /// Get the `WatchState` for `root`, if it exists.
+    ///
+    /// Drains queued events/errors first: `health` reads through here and
+    /// must not report a watcher `Healthy` after an error that was queued
+    /// while a tool thread held the lock.
     pub fn get(&self, root: &Path) -> Option<WatchState> {
         let canonical = crate::util::canonical_or_self(root);
-        let guard = lock_or_recover(&self.inner);
+        let mut guard = lock_or_recover(&self.inner, "watch_manager_inner");
+        self.apply_deferred(&mut guard);
         guard
             .projects
             .get(&canonical)
@@ -189,7 +189,8 @@ impl WatchManager {
     /// alive). Each clone is independent of the manager's lifetime;
     /// dropping, cloning, and querying are all safe.
     pub fn iter(&self) -> Vec<(PathBuf, WatchState)> {
-        let guard = lock_or_recover(&self.inner);
+        let mut guard = lock_or_recover(&self.inner, "watch_manager_inner");
+        self.apply_deferred(&mut guard);
         guard
             .projects
             .iter()
@@ -201,7 +202,8 @@ impl WatchManager {
     /// holding the lock across the iteration. Used for observability
     /// where the caller wants an immediate cross-project view.
     pub fn snapshot_all(&self) -> Vec<crate::watch::ProjectWatchState> {
-        let guard = lock_or_recover(&self.inner);
+        let mut guard = lock_or_recover(&self.inner, "watch_manager_inner");
+        self.apply_deferred(&mut guard);
         guard
             .projects
             .values()
@@ -225,7 +227,10 @@ impl WatchManager {
     /// the stat sweep still runs on every call, so freshness is not lost.
     pub fn scope_limited(&self, root: &Path) -> bool {
         let canonical = crate::util::canonical_or_self(root);
-        scope::scope_limited(&lock_or_recover(&self.inner), &canonical)
+        scope::scope_limited(
+            &lock_or_recover(&self.inner, "watch_manager_inner"),
+            &canonical,
+        )
     }
 
     /// The `IgnoreRules` currently in effect for `root`, if the project
@@ -233,13 +238,17 @@ impl WatchManager {
     /// indexing them.
     pub fn rules_for(&self, root: &Path) -> Option<Arc<IgnoreRules>> {
         let canonical = crate::util::canonical_or_self(root);
-        let guard = lock_or_recover(&self.inner);
+        let guard = lock_or_recover(&self.inner, "watch_manager_inner");
         guard
             .projects
             .get(&canonical)
             .and_then(|info| info.rules.clone())
     }
 }
+
+#[cfg(test)]
+#[path = "manager_callback_tests.rs"]
+mod callback_tests;
 
 #[cfg(test)]
 #[path = "manager_event_tests.rs"]

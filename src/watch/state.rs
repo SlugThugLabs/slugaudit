@@ -35,7 +35,7 @@ impl WatchState {
     /// new watcher sequence, which callers can use to barrier-synchronize
     /// — see [`crate::sync::SourceSyncManager::reconcile`].
     pub fn mark_dirty(&self, relative_path: String) -> u64 {
-        let mut guard = lock_or_recover(&self.inner);
+        let mut guard = lock_or_recover(&self.inner, "watch_state_inner");
         guard.dirty_paths.insert(relative_path);
         guard.watcher_sequence += 1;
         guard.watcher_sequence
@@ -47,7 +47,7 @@ impl WatchState {
     /// for the same path in the same window, so the next reconcile removes
     /// it cleanly rather than re-sampling a file that's gone.
     pub fn mark_deleted(&self, relative_path: String) -> u64 {
-        let mut guard = lock_or_recover(&self.inner);
+        let mut guard = lock_or_recover(&self.inner, "watch_state_inner");
         guard.dirty_paths.remove(&relative_path);
         guard.deleted_paths.insert(relative_path);
         guard.watcher_sequence += 1;
@@ -60,7 +60,7 @@ impl WatchState {
     /// `acknowledge_through` after reconciliation succeeds. Returns the
     /// current sequence so the caller can later acknowledge through it.
     pub fn snapshot_dirty(&self) -> (u64, HashSet<String>, HashSet<String>) {
-        let mut guard = lock_or_recover(&self.inner);
+        let mut guard = lock_or_recover(&self.inner, "watch_state_inner");
         let seq = guard.watcher_sequence;
         let dirty = std::mem::take(&mut guard.dirty_paths);
         let deleted = std::mem::take(&mut guard.deleted_paths);
@@ -74,7 +74,7 @@ impl WatchState {
     /// a stale sequence carries no actionable information for the caller
     /// beyond "more events arrived during my reconcile, loop again".
     pub fn acknowledge_through(&self, seq: u64) {
-        let mut guard = lock_or_recover(&self.inner);
+        let mut guard = lock_or_recover(&self.inner, "watch_state_inner");
         if guard.watcher_sequence == seq {
             guard.last_verified_sequence = seq;
         }
@@ -82,32 +82,27 @@ impl WatchState {
 
     /// Returns the current watcher sequence.
     pub fn current_sequence(&self) -> u64 {
-        lock_or_recover(&self.inner).watcher_sequence
+        lock_or_recover(&self.inner, "watch_state_inner").watcher_sequence
     }
 
     /// Returns the current health.
     pub fn health(&self) -> WatcherHealth {
-        lock_or_recover(&self.inner).health
+        lock_or_recover(&self.inner, "watch_state_inner").health
     }
 
     /// Sets the health.
     pub fn set_health(&self, health: WatcherHealth) {
-        lock_or_recover(&self.inner).health = health;
+        lock_or_recover(&self.inner, "watch_state_inner").health = health;
     }
 
     /// Returns true if there are unreconciled events.
     pub fn has_unreconciled_events(&self) -> bool {
-        lock_or_recover(&self.inner).has_unreconciled_events()
-    }
-
-    /// Returns the number of unreconciled events (dirty + deleted).
-    pub fn unreconciled_count(&self) -> usize {
-        lock_or_recover(&self.inner).unreconciled_count()
+        lock_or_recover(&self.inner, "watch_state_inner").has_unreconciled_events()
     }
 
     /// Returns a snapshot of the current state.
     pub fn snapshot(&self) -> ProjectWatchState {
-        lock_or_recover(&self.inner).clone()
+        lock_or_recover(&self.inner, "watch_state_inner").clone()
     }
 }
 
@@ -195,48 +190,36 @@ mod tests {
     /// instead of forever rejecting the next caller with `PoisonError`.
     /// This is the WatchState-specific recovery test — the generic
     /// `Mutex<T>` recovery tests for `lock_or_recover` itself live in
-    /// `crate::util::tests`.
+    /// `crate::util::tests`. It poisons the state's own inner mutex, so a
+    /// regression that swaps `lock_or_recover` for a panicking `lock()` in
+    /// `mark_dirty` or `snapshot` fails here.
     #[test]
     fn watch_state_recovers_from_a_poisoned_inner_mutex() {
-        use std::sync::Mutex;
+        let state = WatchState::new();
+        state.mark_dirty("before-panic".to_owned());
 
-        // Reproduce the exact lock pattern `WatchState` uses internally:
-        // an `Arc<Mutex<ProjectWatchState>>` whose first guard panicked.
-        let inner: Arc<Mutex<ProjectWatchState>> =
-            Arc::new(Mutex::new(ProjectWatchState::default()));
-        let inner_clone = Arc::clone(&inner);
+        let inner = Arc::clone(&state.inner);
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut g = inner_clone.lock().expect("unpoisoned");
-            g.dirty_paths.insert("before-panic".to_owned());
-            // Hold the guard through a deliberate panic so the mutex
-            // ends up poisoned after this closure returns.
+            let _guard = inner.lock().expect("unpoisoned");
+            // Hold the guard through a deliberate panic so the state's own
+            // mutex ends up poisoned after this closure returns.
             std::panic::panic_any("simulated panic inside WatchState's critical section");
         }));
-
         assert!(panic_result.is_err());
 
-        // A std `lock()` would now fail with PoisonError. The
-        // `lock_or_recover` helper returns the underlying state,
-        // including the path inserted before the panic.
-        let snapshot_guard = lock_or_recover(&inner);
+        // A std `lock()` would now fail with `PoisonError`; both the
+        // mutator and the reader must recover the underlying state.
+        let seq = state.mark_dirty("after-panic".to_owned());
+        let snapshot = state.snapshot();
+
+        assert_eq!(seq, 2, "the recovered state must keep recording events");
         assert!(
-            snapshot_guard.dirty_paths.contains("before-panic"),
+            snapshot.dirty_paths.contains("before-panic"),
             "the dirty path inserted before the panic must survive"
         );
-    }
-
-    /// `unreconciled_count` exposed at the wrapper level for the `health`
-    /// MCP tool must agree with the equivalent query against the
-    /// `ProjectWatchState` snapshot, so operators can trust either
-    /// reporting path.
-    #[test]
-    fn unreconciled_count_at_the_wrapper_matches_a_snapshot() {
-        let state = WatchState::new();
-        for path in ["a.rs", "b.rs", "c.rs"] {
-            state.mark_dirty(path.to_owned());
-        }
-        state.mark_deleted("d.rs".to_owned());
-        assert_eq!(state.unreconciled_count(), 4);
-        assert_eq!(state.snapshot().unreconciled_count(), 4);
+        assert!(
+            snapshot.dirty_paths.contains("after-panic"),
+            "an event recorded after the poison must be visible"
+        );
     }
 }

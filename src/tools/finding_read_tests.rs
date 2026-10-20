@@ -19,7 +19,7 @@ use rusqlite::Connection;
 /// for the whole write→sync→read cycle keeps the session stable and
 /// keeps the purge from ever targeting these rows.
 fn with_stable_session<T>(f: impl FnOnce() -> T) -> T {
-    let _guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK);
+    let _guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     f()
 }
 

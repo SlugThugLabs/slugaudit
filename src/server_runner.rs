@@ -333,7 +333,8 @@ impl ProgressSink for McpProgressSink {
                 // The last Sampling of a burst is allowed to be dropped:
                 // `Completed` (1.0) always sends, so a consumer never
                 // stalls at a stale intermediate percentage.
-                let mut throttle = crate::util::lock_or_recover(&self.sampling_throttle);
+                let mut throttle =
+                    crate::util::lock_or_recover(&self.sampling_throttle, "sampling_throttle");
                 if !throttle.should_emit(std::time::Instant::now()) {
                     return;
                 }

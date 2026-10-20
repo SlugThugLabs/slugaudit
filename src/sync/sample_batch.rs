@@ -295,7 +295,7 @@ impl Batch<'_> {
                 }
             }
         }
-        if let Some(err) = lock_or_recover(&self.error_slot).take() {
+        if let Some(err) = lock_or_recover(&self.error_slot, "sample_batch_error_slot").take() {
             return Err(err);
         }
         // A skipped (oversized) file leaves its slot empty; when no error
@@ -324,7 +324,7 @@ impl Batch<'_> {
 /// return value. Its raw `Display` never enters the log: several variants
 /// embed a path.
 fn record_error(slot: &Mutex<Option<PublishError>>, error: PublishError) {
-    let mut guard = lock_or_recover(slot);
+    let mut guard = lock_or_recover(slot, "sample_batch_error_slot");
     if guard.is_none() {
         *guard = Some(error);
         return;

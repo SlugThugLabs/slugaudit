@@ -80,7 +80,7 @@ static SESSION_ID: Mutex<Option<uuid::Uuid>> = Mutex::new(None);
 /// subsequent call is a single lock + clone and never regenerates.
 #[must_use]
 pub(crate) fn session_id() -> uuid::Uuid {
-    let mut guard = lock_or_recover(&SESSION_ID);
+    let mut guard = lock_or_recover(&SESSION_ID, "session_id");
     *guard.get_or_insert_with(uuid::Uuid::new_v4)
 }
 
@@ -88,7 +88,7 @@ pub(crate) fn session_id() -> uuid::Uuid {
 /// without spawning a new binary. Production code never calls this.
 #[cfg(test)]
 pub(crate) fn override_session_id_for_test(id: uuid::Uuid) {
-    let mut guard = lock_or_recover(&SESSION_ID);
+    let mut guard = lock_or_recover(&SESSION_ID, "session_id");
     *guard = Some(id);
 }
 
@@ -106,9 +106,20 @@ pub(crate) fn override_session_id_for_test(id: uuid::Uuid) {
 /// recovered data may be in a logically inconsistent state (a partially-
 /// applied mutation that panicked mid-step), so callers that mutate
 /// multiple fields atomically document and test that invariant.
-pub(crate) fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+///
+/// `mutex_name` is the static label emitted with the recovery line. Without
+/// it the operator sees that *a* mutex was poisoned but not which state was
+/// recovered, which is the only actionable part of the message.
+pub(crate) fn lock_or_recover<'a, T>(
+    mutex: &'a Mutex<T>,
+    mutex_name: &'static str,
+) -> std::sync::MutexGuard<'a, T> {
     mutex.lock().unwrap_or_else(|poisoned| {
-        tracing::error!("mutex was poisoned; recovering inner value");
+        tracing::error!(
+            operation = "lock_or_recover",
+            mutex = mutex_name,
+            "mutex was poisoned; recovering inner value",
+        );
         poisoned.into_inner()
     })
 }

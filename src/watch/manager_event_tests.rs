@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::store::test_capture::capture_warns;
+use crate::watch::WatcherHealth;
 use notify::event::{AccessKind, CreateKind, ModifyKind, RemoveKind};
 
 /// Created under the canonical temp directory: `watch` keys a project by its
@@ -314,6 +315,56 @@ fn overflowing_the_deferred_queue_desyncs_the_project_instead_of_losing_events_s
         state.health(),
         WatcherHealth::Desynced,
         "events past the queue cap must force a full re-verification"
+    );
+}
+
+/// Watches are registered per scoped directory, not recursively, so a
+/// directory created after the scope was computed has no watch of its own.
+/// Its create event must flag the scope for the next tool-thread pass;
+/// otherwise files created inside it would never produce an event.
+#[test]
+fn a_created_directory_marks_the_scope_for_refresh() {
+    let project = temp_project();
+    let manager = WatchManager::new();
+    manager.watch(project.path());
+    let created = project.path().join("new-dir");
+    std::fs::create_dir(&created).expect("create new directory");
+
+    manager.handle_event(event_with(EventKind::Create(CreateKind::Folder), &created));
+    manager.refresh_scope(project.path());
+
+    let canonical = crate::util::canonical_or_self(project.path());
+    let guard = manager.inner.lock().expect("manager lock");
+    let info = guard.projects.get(&canonical).expect("registered project");
+    assert!(
+        info.scope
+            .as_ref()
+            .expect("a scope is computed on registration")
+            .watch_dirs
+            .contains(&created),
+        "a created directory must be added to the scope on the next refresh"
+    );
+}
+
+/// The scope-refresh flag is for created *directories*. A created file is
+/// already covered by its parent's watch, and re-walking the tree for every
+/// file write would turn the notify thread into an O(tree) producer.
+#[test]
+fn a_created_file_does_not_mark_the_scope_for_refresh() {
+    let project = temp_project();
+    let manager = WatchManager::new();
+    manager.watch(project.path());
+    let created = project.path().join("lib.rs");
+    std::fs::write(&created, "fn lib() {}\n").expect("create file");
+
+    manager.handle_event(event_with(EventKind::Create(CreateKind::File), &created));
+
+    let canonical = crate::util::canonical_or_self(project.path());
+    let guard = manager.inner.lock().expect("manager lock");
+    let info = guard.projects.get(&canonical).expect("registered project");
+    assert!(
+        !info.needs_scope_refresh,
+        "a file create must not force a scope walk"
     );
 }
 

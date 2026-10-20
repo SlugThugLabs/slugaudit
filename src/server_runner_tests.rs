@@ -250,7 +250,8 @@ fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() 
     // The span stamps the live `util::SESSION_ID`, and the tests that flip
     // it (`sync::manager_meta_tests`) hold this lock while doing so — taking
     // it keeps the session stable across the two calls asserted below.
-    let _session_guard = crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK);
+    let _session_guard =
+        crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK, "session_test_lock");
     let (_, logs) = capture_at_level(
         || {
             current_thread_runtime().block_on(async {
@@ -321,7 +322,8 @@ fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() 
 /// not silently skip the calls that errored.
 #[test]
 fn a_failed_tool_call_logs_one_completion_line_marked_error() {
-    let _session_guard = crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK);
+    let _session_guard =
+        crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK, "session_test_lock");
     // Scoped to this test's own tool name, so the single completion line it
     // counts can only be the one its own call emitted.
     const TOOL: &str = "probe_failed_call";
@@ -365,7 +367,8 @@ fn a_failed_tool_call_logs_one_completion_line_marked_error() {
 /// vacuously.
 #[test]
 fn tool_call_logging_never_emits_the_calls_argument_or_result() {
-    let _session_guard = crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK);
+    let _session_guard =
+        crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK, "session_test_lock");
     const SENTINEL: &str = "SENTINEL_TOOLCALL_9147";
 
     // Scoped to this test's own tool name, so the completion line it counts
@@ -416,7 +419,8 @@ fn tool_call_logging_never_emits_the_calls_argument_or_result() {
 /// path or SQL fragment reaches the log through `error.message`.
 #[test]
 fn a_failed_tool_call_logs_the_static_error_class_but_never_the_message() {
-    let _session_guard = crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK);
+    let _session_guard =
+        crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK, "session_test_lock");
     // Scoped to this test's own tool name so the one completion line it
     // counts can only be the one its own call emitted.
     const TOOL: &str = "query_error_logging_redaction";
@@ -490,7 +494,8 @@ fn a_failed_tool_call_logs_the_static_error_class_but_never_the_message() {
 /// the producer attached one, while the message beside it stays out.
 #[test]
 fn a_failed_tool_call_logs_the_machine_readable_code_but_not_the_pinned_revision_id() {
-    let _session_guard = crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK);
+    let _session_guard =
+        crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK, "session_test_lock");
     const TOOL: &str = "query_error_logging_machine_code";
     const STALE_REVISION: &str = "SENTINEL_STALE_REVISION_4187";
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
