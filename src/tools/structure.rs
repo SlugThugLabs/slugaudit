@@ -16,6 +16,7 @@ use tree_sitter::Query;
 
 const MAX_PATH_BYTES: usize = 32 * 1024;
 const MAX_FILTER_BYTES: usize = 8 * 1024;
+const MAX_REVISION_BYTES: usize = 256;
 
 #[cfg(test)]
 pub(super) use super::structure_source::MAX_TEXT_BYTES;
@@ -109,11 +110,15 @@ pub struct StructureResponse {
     pub page_bytes_clamped_from: Option<usize>,
     /// Serialized JSON bytes of the returned `matches`.
     pub matches_bytes: usize,
-    /// Multi-file only: matching files past the memory window that were NOT
-    /// scanned by this call (0 means every matching file after
-    /// `start_after_file` was scanned). When above 0 the result is incomplete
-    /// even if `truncated` is false: finish `next_offset` paging, then repeat
-    /// with `start_after_file` = `next_start_after_file` and offset 0.
+    /// Multi-file only: matching files past the memory window that were not
+    /// loaded into this call's scan window, so certainly not scanned. Zero
+    /// means every matching file after `start_after_file` was loaded into the
+    /// window — it does not mean every loaded file was scanned, because a page
+    /// cut (`truncated` true) can stop inside the window and leave later
+    /// loaded files contributing nothing to this page. When above 0 the result
+    /// is incomplete even if `truncated` is false: finish `next_offset` paging,
+    /// then repeat with `start_after_file` = `next_start_after_file` and offset
+    /// 0.
     pub files_not_scanned: usize,
     /// Content bytes of those unscanned files.
     pub bytes_not_scanned: u64,
@@ -214,14 +219,24 @@ fn validate_request(request: &StructureRequest, limits: &ResourceLimits) -> Resu
     if crate::util::exceeds_input_bytes(&request.path, MAX_PATH_BYTES) {
         return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
     }
-    for (name, value) in [
-        ("file", request.file.as_deref()),
-        ("language", request.language.as_deref()),
-        ("pattern", request.pattern.as_deref()),
+    for (name, value, max_bytes) in [
+        ("file", request.file.as_deref(), MAX_FILTER_BYTES),
+        ("language", request.language.as_deref(), MAX_FILTER_BYTES),
+        ("pattern", request.pattern.as_deref(), MAX_FILTER_BYTES),
+        (
+            "start_after_file",
+            request.start_after_file.as_deref(),
+            MAX_PATH_BYTES,
+        ),
+        (
+            "expected_revision",
+            request.expected_revision.as_deref(),
+            MAX_REVISION_BYTES,
+        ),
     ] {
-        if value.is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_FILTER_BYTES)) {
+        if value.is_some_and(|value| crate::util::exceeds_input_bytes(value, max_bytes)) {
             return Err(ErrorData::invalid_params(
-                format!("{name} exceeds 8192 bytes"),
+                format!("{name} exceeds {max_bytes} bytes"),
                 None,
             ));
         }

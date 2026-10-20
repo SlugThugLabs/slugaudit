@@ -22,9 +22,11 @@ pub struct QueryRequest {
     /// Any path inside the active project.
     pub path: String,
     /// Read-only SQL against the project's own database — arbitrary joins,
-    /// CTEs, and window functions are fine. Only writes are rejected, and
-    /// that comes from the connection itself, not from inspecting this
-    /// text: there is no keyword blocklist or table allowlist.
+    /// CTEs, and window functions are fine. Only SELECT is accepted: the
+    /// statement is wrapped in a subquery, so writes and other statement
+    /// forms (PRAGMA, EXPLAIN, VACUUM, ...) are rejected by the wrapper.
+    /// There is no keyword blocklist or table allowlist, and the connection
+    /// itself is read-only as a second boundary.
     pub sql: String,
     /// Number of matching rows to skip when paging through a result.
     /// Combined with the response's `next_offset`, and valid only while
@@ -114,9 +116,9 @@ pub struct QueryResponse {
 /// # Errors
 ///
 /// Returns an error if `request.path` isn't an active project, `sql` is
-/// empty or too long, the query fails to parse or execute (including any
-/// attempted write, which SQLite itself rejects on this connection), the
-/// VM-step or wall-clock budget is exhausted, or a result value can't be
+/// empty or too long, the query fails to parse or execute (including a
+/// write or any other non-SELECT statement, which the wrapper refuses),
+/// the VM-step or wall-clock budget is exhausted, or a result value can't be
 /// represented (including a single TEXT/BLOB value over the per-value cap).
 pub fn query(
     request: &Parameters<QueryRequest>,

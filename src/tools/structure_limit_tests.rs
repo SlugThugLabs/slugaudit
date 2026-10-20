@@ -282,6 +282,154 @@ fn a_window_that_ends_exactly_at_the_last_file_reports_nothing_unscanned() {
     assert_eq!(response.matches.len(), 1);
 }
 
+fn multi_file_request(project: &tempfile::TempDir, offset: usize) -> Parameters<StructureRequest> {
+    Parameters(StructureRequest {
+        path: project.path().to_string_lossy().into_owned(),
+        language: Some("rust".to_owned()),
+        query: "(function_item name: (identifier) @name)".to_owned(),
+        offset,
+        ..Default::default()
+    })
+}
+
+/// A page cut inside a multi-file scan window leaves `files_not_scanned` at
+/// 0 even though later loaded files were not scanned by this call. The cut is
+/// signaled by `truncated`/`next_offset` — `files_not_scanned` only counts
+/// files the memory window left unloaded — and the next page resumes into the
+/// later file.
+#[test]
+fn a_page_cut_inside_a_multi_file_window_is_signaled_by_truncated_not_files_not_scanned() {
+    let project = activated_project("a.rs", b"pub fn alpha() {}\n");
+    std::fs::write(project.path().join("b.rs"), b"pub fn beta() {}\n").expect("write b.rs");
+    let limits = ResourceLimits {
+        max_structure_matches: 1,
+        ..ResourceLimits::default()
+    };
+
+    let first = run_with(&multi_file_request(&project, 0), &limits, usize::MAX);
+
+    assert!(
+        first.truncated,
+        "the page stopped at the match cap inside a.rs"
+    );
+    assert_eq!(first.next_offset, Some(1));
+    assert_eq!(first.files_not_scanned, 0);
+    assert_eq!(first.next_start_after_file, None);
+    assert_eq!(first.matches.len(), 1);
+    assert_eq!(first.matches[0].file, "a.rs");
+
+    let second = run_with(&multi_file_request(&project, 1), &limits, usize::MAX);
+
+    assert!(!second.truncated);
+    assert_eq!(second.matches.len(), 1);
+    assert_eq!(second.matches[0].file, "b.rs");
+    assert_eq!(second.matches[0].text, "beta");
+}
+
+fn single_file_request(project: &tempfile::TempDir) -> StructureRequest {
+    StructureRequest {
+        path: project.path().to_string_lossy().into_owned(),
+        file: Some("lib.rs".to_owned()),
+        query: "(function_item name: (identifier) @name)".to_owned(),
+        ..Default::default()
+    }
+}
+
+fn refusal(request: StructureRequest) -> ErrorData {
+    structure(
+        &Parameters(request),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .err()
+    .expect("the request must be refused")
+}
+
+#[test]
+fn a_path_over_the_cap_is_refused_before_any_sync() {
+    let mut request = single_file_request(&activated_project("lib.rs", b"pub fn a() {}\n"));
+    request.path = "x".repeat(32 * 1024 + 1);
+
+    let error = structure_with_limits(
+        &Parameters(request),
+        &ResourceLimits::default(),
+        MAX_MULTI_FILE_TOTAL_BYTES,
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .err()
+    .expect("an oversized path must be refused");
+
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(error.message.as_ref(), "path exceeds 32768 bytes");
+}
+
+#[test]
+fn an_oversized_start_after_file_is_refused_with_its_cap() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let mut request = single_file_request(&project);
+    request.file = None;
+    request.language = Some("rust".to_owned());
+    request.start_after_file = Some("x".repeat(32 * 1024 + 1));
+
+    let error = refusal(request);
+
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(
+        error.message.as_ref(),
+        "start_after_file exceeds 32768 bytes"
+    );
+}
+
+#[test]
+fn an_oversized_expected_revision_is_refused_with_its_cap() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let mut request = single_file_request(&project);
+    request.expected_revision = Some("x".repeat(257));
+
+    let error = refusal(request);
+
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(
+        error.message.as_ref(),
+        "expected_revision exceeds 256 bytes"
+    );
+}
+
+#[test]
+fn an_oversized_file_filter_is_refused_by_name() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let mut request = single_file_request(&project);
+    request.file = Some("x".repeat(8 * 1024 + 1));
+
+    let error = refusal(request);
+
+    assert_eq!(error.message.as_ref(), "file exceeds 8192 bytes");
+}
+
+#[test]
+fn an_oversized_language_filter_is_refused_by_name() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let mut request = single_file_request(&project);
+    request.file = None;
+    request.language = Some("x".repeat(8 * 1024 + 1));
+
+    let error = refusal(request);
+
+    assert_eq!(error.message.as_ref(), "language exceeds 8192 bytes");
+}
+
+#[test]
+fn an_oversized_pattern_filter_is_refused_by_name() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let mut request = single_file_request(&project);
+    request.pattern = Some("x".repeat(8 * 1024 + 1));
+
+    let error = refusal(request);
+
+    assert_eq!(error.message.as_ref(), "pattern exceeds 8192 bytes");
+}
+
 #[test]
 fn an_unrepresentable_execution_budget_means_no_deadline_not_a_panic() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");

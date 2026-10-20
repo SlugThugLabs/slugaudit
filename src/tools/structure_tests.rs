@@ -309,3 +309,112 @@ fn a_structure_query_against_a_binary_file_carries_the_file_not_indexed_code() {
     let data = error.data.expect("a binary file carries a payload");
     assert_eq!(data["code"], "file_not_indexed", "{}", error.message);
 }
+
+#[test]
+fn a_stale_expected_revision_refuses_a_structure_page() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let query = "(function_item name: (identifier) @name)";
+    let first = ask(&project, "lib.rs", query).expect("the first page succeeds");
+
+    fs::write(
+        project.path().join("lib.rs"),
+        b"pub fn a() {}\npub fn b() {}\n",
+    )
+    .expect("modify fixture");
+    let result = structure(
+        &Parameters(StructureRequest {
+            path: project.path().to_string_lossy().into_owned(),
+            file: Some("lib.rs".to_owned()),
+            query: query.to_owned(),
+            expected_revision: Some(first.revision_id.clone()),
+            ..Default::default()
+        }),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    );
+
+    let error = result
+        .err()
+        .expect("a page pinned to a superseded revision is refused");
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    let data = error.data.expect("the refusal carries a payload");
+    assert_eq!(data["code"], "stale_revision");
+    assert!(
+        error.message.contains(&format!(
+            "expected_revision `{}` is not the current revision",
+            first.revision_id
+        )),
+        "got: {}",
+        error.message
+    );
+}
+
+#[test]
+fn an_unsupported_language_is_refused_with_the_pack_error() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let pack_error = tree_sitter_language_pack::get_language("not-a-real-language")
+        .expect_err("the pack must reject an unknown language")
+        .to_string();
+
+    let result = structure(
+        &Parameters(StructureRequest {
+            path: project.path().to_string_lossy().into_owned(),
+            language: Some("not-a-real-language".to_owned()),
+            query: "(identifier) @name".to_owned(),
+            ..Default::default()
+        }),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    );
+
+    let error = result
+        .err()
+        .expect("an unsupported language must be a typed refusal");
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(error.message.as_ref(), pack_error);
+}
+
+#[test]
+fn a_file_with_no_detected_language_is_refused_by_name() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let synced = ensure_synced(
+        &project.path().to_string_lossy(),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .expect("sync");
+    let connection = crate::store::open_read_write(&synced.database_path).expect("open database");
+    connection
+        .execute("UPDATE files SET language = NULL WHERE path = 'lib.rs'", [])
+        .expect("clear the detected language");
+
+    let error = crate::tools::structure_source::fetch_source(&connection, "lib.rs")
+        .expect_err("a file with no detected language must be refused");
+
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(error.message.as_ref(), "lib.rs has no detected language");
+}
+
+#[test]
+fn a_multi_file_request_without_file_or_language_is_refused() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+
+    let result = structure(
+        &Parameters(StructureRequest {
+            path: project.path().to_string_lossy().into_owned(),
+            query: "(identifier) @name".to_owned(),
+            ..Default::default()
+        }),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    );
+
+    let error = result
+        .err()
+        .expect("neither file nor language cannot select any target");
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(
+        error.message.as_ref(),
+        "structure request without 'file' must specify 'language'"
+    );
+}

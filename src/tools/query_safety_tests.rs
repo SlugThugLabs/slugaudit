@@ -277,3 +277,96 @@ fn legal_reads_of_the_schema_and_pragma_table_functions_are_allowed() {
         empty.rows
     );
 }
+
+/// The request schema says only SELECT is accepted. `PRAGMA table_info` and
+/// `EXPLAIN SELECT 1` are read-only, but neither is a SELECT, so the wrapper
+/// refuses each before execution with the compile error SQLite reports for
+/// the wrapped statement.
+#[test]
+fn read_only_non_select_statements_are_refused_by_the_wrapper() {
+    let project = project();
+
+    for (sql, expected) in [
+        (
+            "PRAGMA table_info(files)",
+            "near \"(\": syntax error in SELECT * FROM (\nPRAGMA table_info(files)\n) \
+             LIMIT -1 OFFSET 0 at offset 33",
+        ),
+        (
+            "EXPLAIN SELECT 1",
+            "near \"SELECT\": syntax error in SELECT * FROM (\nEXPLAIN SELECT 1\n) \
+             LIMIT -1 OFFSET 0 at offset 24",
+        ),
+    ] {
+        let error = refused(&project, sql, "a read-only non-SELECT statement");
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{sql}");
+        assert_eq!(error.message.as_ref(), expected, "{sql}");
+        assert!(
+            error.data.is_none(),
+            "{sql}: a wrapper refusal carries no machine-readable code"
+        );
+    }
+}
+
+#[test]
+fn a_comments_only_statement_is_refused_rather_than_run_as_an_empty_query() {
+    let project = project();
+
+    let error = refused(
+        &project,
+        "-- only a comment, no statement",
+        "a comments-only statement",
+    );
+
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(
+        error.message.as_ref(),
+        "sql must contain a statement, not only comments"
+    );
+}
+
+#[test]
+fn a_query_path_over_the_cap_is_refused_before_any_sync() {
+    let error = query_with_limits(
+        &Parameters(QueryRequest {
+            path: "x".repeat(32 * 1024 + 1),
+            sql: "SELECT 1".to_owned(),
+            offset: 0,
+            expected_revision: None,
+            page_bytes: None,
+        }),
+        &ResourceLimits::default(),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .err()
+    .expect("an oversized path must be refused");
+
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(error.message.as_ref(), "path exceeds 32768 bytes");
+}
+
+#[test]
+fn an_expected_revision_over_the_query_cap_is_refused_before_any_sync() {
+    let directory = tempfile::tempdir().expect("project dir");
+    let error = query_with_limits(
+        &Parameters(QueryRequest {
+            path: directory.path().to_string_lossy().into_owned(),
+            sql: "SELECT 1".to_owned(),
+            offset: 0,
+            expected_revision: Some("x".repeat(257)),
+            page_bytes: None,
+        }),
+        &ResourceLimits::default(),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .err()
+    .expect("an oversized expected_revision must be refused");
+
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(
+        error.message.as_ref(),
+        "expected_revision exceeds 256 bytes"
+    );
+}
