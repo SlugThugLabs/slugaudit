@@ -28,10 +28,63 @@ commit, a path, or a command where possible.
   finding against a hash it no longer matches.
 - **Where:** `.github/workflows/quality.yml` (the step comment and the six
   `--file` flags); `AGENTS.md` *Testing and QA → Mutation testing*;
-  `src/sync/revision_support.rs`; commit `ff63113` for the size fix.
+  `src/sync/revision_support.rs`; commit `ff63113` for the size fix and
+  `4b765e1` for recording the six-file scope in the workflow and AGENTS.md.
 - **Reversible:** yes, but a file leaving the correctness core needs a new
   decision and must be updated in the workflow comment and AGENTS.md
   together.
+
+## 2026-10-19 — Wave 4 landed: R8 closed, surface re-recorded, notices render validated
+
+- **What:** wave 4 (`3dc9e42..976dc2e`, doc-link fix `27ae582`, surface
+  re-record `cf1475e`) closed all 258 R8 production entries: 241 current
+  `missing_docs` sites were documented (241 → 0), `cargo doc --no-deps --lib`
+  reports **0 warnings**, and six external-use items were made crate-private,
+  test-only, or removed from the re-export (`cli::USAGE`,
+  `SlugAuditServer::with_manager`, `LineIndex::line`, `ErrorCode::as_str`,
+  `WatchScopeLimit`/`WatchScope::limit`, `ErrorCode::ALL`). The MCP surface
+  was re-recorded from the integrated tree (8 tools, 8 resources). The
+  third-party notices were rendered through the exact workflow command with
+  `cargo-about 0.9.2`: 6,558 lines / 340,298 bytes, exit 0, no warnings;
+  HTML escaping fixed (`{{{name}}}`), the machine-specific `source_path`
+  block removed, and `ring` 0.17.14's upstream ISC
+  source-header/code-fragment limitation recorded as a tool limitation.
+  Final gate on `main` at `4b765e1`: fmt, clippy, deny, machete, source
+  limits, duplicate checks, producer coverage, governance, version, docs
+  drift, and MCP surface pass; **1,176 tests passed, 0 failed, 1 ignored**;
+  **93.27%** line coverage (11,661 / 12,503; gate 83%); performance
+  0.97x–1.09x against the 20% threshold.
+- **Why:** R8 was the last production half of the strict-audit debt. A public
+  item kept public only for its own test is a contract the crate does not
+  mean to offer, so the six external-use items were reduced rather than
+  documented as supported API. The notices render is release evidence: it
+  proves the checked-in template and `about.toml` produce a complete,
+  path-free file under the version the workflow actually runs.
+- **Where:** `.planning/archive/audit_2026-10-19_wave4_report.md`;
+  `.planning/PLAN.md` *Phase 6* and *Remaining P1 debt*;
+  `.planning/ARCHITECTURE.md` (the error-code comparison sentence);
+  `.planning/archive/mcp_surface.json`; `docs/RELEASING.md`; commits
+  `3dc9e42..976dc2e`, `27ae582`, `cf1475e`, `4b765e1`.
+- **Reversible:** the external-use reductions can be re-opened, but a
+  re-publicized item needs a documented external caller; the notices fixes
+  must stay (see `docs/RELEASING.md`).
+
+## 2026-10-19 — Wave 3 gate passed on the integrated tree
+
+- **What:** the integrated full gate at `2dbd703` + `d669848` passed: fmt,
+  clippy, deny, machete, source limits, duplicate checks, producer coverage,
+  governance, and version; **1,176 tests passed, 0 failed, 1 ignored**;
+  coverage **93.27%** (11,661 / 12,503; gate 83%); performance 0.97x–1.06x
+  against the 20% threshold; **0 production files over 200 code lines**. The
+  only remaining clippy `too_many_lines` warning is a test function inside an
+  inline test module in `tools/report_completeness.rs`, not production code.
+- **Why:** the wave-3 landed entry below recorded only per-package library
+  suites and explicitly left the integrated gate pending. This entry records
+  its outcome so a later reader neither re-runs it to learn the answer nor
+  mistakes the structural split for an unvalidated one.
+- **Where:** `.planning/archive/audit_2026-10-19_wave3_report.md`;
+  `.planning/PLAN.md` *Phase 5*; commits `0374d60..2dbd703`, `d669848`.
+- **Reversible:** n/a — this records a gate result, not a design choice.
 
 ## 2026-10-19 — Wave 3 landed: all 40 production R4 entries split
 

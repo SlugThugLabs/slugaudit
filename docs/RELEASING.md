@@ -181,6 +181,22 @@ development-only `libfuzzer-sys` NCSA exception does not appear here.
 missing or invalid, the release job fails rather than publishing a release
 without notices.
 
+The template was validated by a full render through the workflow command with
+`cargo-about 0.9.2` (the workflow's version): 6,558 lines / 340,298 bytes,
+exit 0, no warnings. Two output defects found in that render are fixed and
+must stay fixed. License names use the raw `{{{name}}}` expression, so a name
+containing `&` or `"` is not emitted as an HTML entity (`&quot;`). The
+template also no longer writes cargo-about's `source_path` block, so
+machine-specific registry paths (`/root/.cargo/...`, `/home/runner/...`) do
+not ship to consumers.
+
+One limitation is upstream and deliberately not patched around: `ring`
+0.17.14's ISC licence text is extracted from source-file headers and carries
+trailing code fragments into the notices. `ring`'s `LICENSE` points only to
+`LICENSE-other-bits`, so cargo-about falls back to scanning the sources; the
+fragment is cargo-about behavior, not a template defect. Do not hand-edit the
+generated file — a template change would not remove it.
+
 ## Verifying a release
 
 The release body repeats these four commands.

@@ -12,7 +12,7 @@ item with no state reads as "unknown" to the next reader, which is worse than
 "known bad". Checkable claims carry a commit hash, a path, a command, or a
 date.
 
-The four audit records this plan refers to are copied into the repository so
+The six audit records this plan refers to are copied into the repository so
 they survive `/tmp` cleanup. They are new 2026-10-19 records; nothing is
 restored from the deleted 2026-10-18 planning paths:
 
@@ -26,30 +26,32 @@ restored from the deleted 2026-10-18 planning paths:
   accepted unreachable arms, and the final gate at `fe923a7`.
 - `.planning/archive/audit_2026-10-19_wave2_report.md` — the wave-2
   integration and final-gate report: `main` at `6728735`, all gates pass.
+- `.planning/archive/audit_2026-10-19_wave3_report.md` — the wave-3 R4
+  maintainability report: all 40 production entries split, 21 new modules,
+  and the integrated gate at `2dbd703` + `d669848`.
+- `.planning/archive/audit_2026-10-19_wave4_report.md` — the wave-4 R8
+  public-contract report: `missing_docs` 241 → 0, the external-use decisions,
+  the notices render, and the final gate at `4b765e1`.
 
 The durable copies are the source of record. A later claim that cites a
 `/tmp` path instead of one of these files is not durable.
 
 ## Current state (2026-10-19)
 
-- `main` at `2dbd703` after the wave-3 cherry-picks (`0374d60..2dbd703`).
-  Wave 2 landed at `6728735`; wave 1 at `fe923a7`; the base before wave 2 was
-  `6241b43`.
+- `main` at `4b765e1` after wave 4 (`3dc9e42..976dc2e`, plus the doc-link fix
+  `27ae582` and the surface re-record `cf1475e`). Wave 3 landed at `2dbd703`
+  (`0374d60..2dbd703`, module map `d669848`); wave 2 landed at `6728735`;
+  wave 1 at `fe923a7`; the base before wave 2 was `6241b43`.
 - Crate `slugaudit-mcp-rust` `1.0.10`, edition 2024, `publish = false`,
   licensed by `LICENSE` (PolyForm Noncommercial 1.0.0 plus the SlugAudit
   Tool-Use Additional Permission).
-- Tests: **1,174 passed, 0 failed, 1 ignored** on the integrated wave-2 tree
-  (1,030 at the strict audit; 1,156 after wave 1). Wave 3 changed structure
-  only: the library suite was green in each of its seven packages, but the
-  integrated full gate (clippy, tests, deny, coverage, gates, perf) has not
-  been run on the combined tree yet.
-- Line coverage: **93.10%** (11,341 / 12,181), gate 83% — the wave-2
-  measurement. Wave 3 has not been re-measured. Wave 1 measured 92.85%; the
-  strict audit measured 90.26%.
-- `check_docs_drift` **passes** on the wave-3 tree after this record (the
-  module map lists the 21 new files). `check_mcp_surface` last passed at
-  `6728735`; wave 3 kept the advertised tool surface byte-identical by
-  construction, but that gate is part of the pending full-gate run.
+- Tests: **1,176 passed, 0 failed, 1 ignored** on the integrated wave-4 tree
+  (1,174 after wave 2; 1,156 after wave 1; 1,030 at the strict audit).
+- Line coverage: **93.27%** (11,661 / 12,503), gate 83% — the integrated
+  wave-3 and wave-4 measurement. Wave 2 measured 93.10%; wave 1 measured
+  92.85%; the strict audit measured 90.26%.
+- `check_docs_drift` and `check_mcp_surface` **pass** on `4b765e1`; the MCP
+  surface was re-recorded at `cf1475e` (8 tools, 8 resources).
 
 ## Phase 1 — 2026-10-18 audit and remediation
 
@@ -191,10 +193,9 @@ integrated tree at `6728735`.
 The full wave-2 account is in
 `.planning/archive/audit_2026-10-19_wave2_report.md`.
 
-## Phase 5 — Wave 3 (landed; full gate pending)
+## Phase 5 — Wave 3 (landed)
 
-State: **landed as refactors at `0374d60..2dbd703`; the integrated full gate
-has not been run**.
+State: **landed**; the integrated full gate passed at `2dbd703` + `d669848`.
 
 - **All 40 production R4 entries fixed** from the strict audit: 18 files above
   200 code lines split to ≤200, 17 functions above 50 lines split to ≤50, and
@@ -221,13 +222,78 @@ has not been run**.
   health`, and `refactor(server): split server, evidence and util`. The full
   library suite was green in each package; the refactors were structural, and
   the tool request/response schemas are unchanged.
-- **Mutation scope**: now five files. `src/sync/hash_io.rs` was added because
-  `hash_file` and `stat_identity` moved there from `hash.rs`; the other three
-  files are unchanged. Recorded in
-  `.planning/archive/DECISIONS.md` (2026-10-19), `.github/workflows/quality.yml`,
-  and `AGENTS.md`.
-- **Next**: wave 4 (R8 public contract) is **not started**. Wave 5 is **not
-  started**; do not read this entry as a claim about either.
+- **Integrated gate (2026-10-19, `2dbd703` + `d669848`)**: fmt, clippy, deny,
+  machete, source limits, duplicate checks, producer coverage, governance, and
+  version pass; **1,176 tests passed, 0 failed, 1 ignored**; coverage
+  **93.27%** (11,661 / 12,503; gate 83%); performance pass at 0.97x–1.06x
+  against the 20% threshold; **0 production files over 200 code lines**; docs
+  drift and `check_mcp_surface` pass. The only remaining clippy
+  `too_many_lines` warning is a test function in
+  `tools/report_completeness.rs`, not production code.
+- **Mutation scope**: now six files. `src/sync/hash_io.rs` was added because
+  `hash_file` and `stat_identity` moved there from `hash.rs`;
+  `src/sync/revision_support.rs` was added in wave 4 because
+  `invalidate_stale_findings` moved there from `revision.rs`. The other four
+  files are unchanged. Recorded in `.planning/archive/DECISIONS.md`
+  (2026-10-19), `.github/workflows/quality.yml` (`4b765e1`), and `AGENTS.md`.
+
+## Phase 6 — Wave 4 (landed)
+
+State: **landed at `3dc9e42..976dc2e`** (doc-link fix `27ae582`, surface
+re-record `cf1475e`); the integrated full gate passed on `main` at `4b765e1`.
+
+- **All 258 production R8 entries closed**: 241 current `missing_docs` sites
+  were documented (`241 → 0`), and six external-use items were made
+  crate-private, test-only, or removed from the public surface.
+  `cargo doc --no-deps --lib` reports **0 warnings** after the final 10
+  intra-doc link fixes.
+- **External-use decisions**: `cli::USAGE`,
+  `SlugAuditServer::with_manager`, and `ErrorCode::as_str` → `pub(crate)`;
+  `LineIndex::line` → `pub(crate)` plus `#[cfg(test)]`;
+  `WatchScopeLimit` → `pub(crate)` and removed from the watch re-export, with
+  `WatchScope::limit` crate-private; `ErrorCode::ALL` → `#[cfg(test)]
+  pub(crate)`, so the `ARCHITECTURE.md` comparison sentence now names the
+  test-local enumeration.
+- **Surface**: the final `.planning/archive/mcp_surface.json` was re-recorded
+  from the integrated tree at `cf1475e` (8 tools, 8 resources), including the
+  doc comments that become JSON-Schema descriptions.
+- **Release notices**: a full `cargo-about 0.9.2` render through the exact
+  workflow command produced 6,558 lines / 340,298 bytes with exit 0 and no
+  warnings. The render fixed HTML escaping (license names use `{{{name}}}`,
+  no `&quot;` entities), removed the machine-specific `source_path` block,
+  and recorded the upstream `ring` 0.17.14 ISC
+  source-header/code-fragment limitation in `docs/RELEASING.md` as a tool
+  limitation, not a template defect.
+- The stale source-limit annotation comment in `src/tools/health.rs` was
+  removed.
+
+### Final gate (2026-10-19, `main` at `4b765e1`)
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --all -- --check` | pass |
+| `cargo clippy --all-targets --all-features --locked -- -D warnings` | pass |
+| tests | **1,176 passed, 0 failed, 1 ignored** |
+| `cargo deny check` | pass |
+| `cargo machete` | pass |
+| coverage | **93.27%** line coverage (11,661 / 12,503; gate 83%) |
+| `check_source_limits` | pass (0 production files over 200 code lines) |
+| `check_no_duplicates` | pass |
+| `check_producer_coverage` | pass |
+| `check_governance` | pass |
+| `check_version_consistency` | pass |
+| `check_docs_drift` | **pass** |
+| `check_mcp_surface` | **pass** |
+| `check_performance` | **pass** (0.97x–1.09x, threshold 20%) |
+| `missing_docs` / `cargo doc --no-deps --lib` | **0 warnings** |
+
+The full wave-4 account is in
+`.planning/archive/audit_2026-10-19_wave4_report.md`.
+
+## Phase 7 — Wave 5 (in progress)
+
+State: **in progress** — a fresh audit of the wave-4 tree. No result is
+claimed here; this entry records only that the wave has started.
 
 ## Remaining P1 debt (still open)
 
@@ -242,10 +308,12 @@ are recorded here so a later wave does not rediscover them from scratch.
   test/bench/fuzz files and 9 dev-gate files; test files auto-pass to 500 code
   lines by contract, and the dev-gate entries were outside wave 3's production
   scope.
-- **R8 — public docs / external use: 258 production entries.** The rustc
-  `missing_docs` subset is 239 warnings at 212 unique sites; the audit count
-  also includes public items with no external reference (dead public API).
-  **Next: wave 4, not started.** Do not claim this is fixed.
+- **R8 — public docs / external use: 258 production entries.** **Resolved at
+  wave 4** (`3dc9e42..976dc2e`, `27ae582`): the 241 `missing_docs` sites were
+  documented to 0, `cargo doc --no-deps --lib` reports 0 warnings, and the
+  six external-use items were made crate-private, test-only, or removed from
+  the public surface. The audit count also included public items with no
+  external reference (dead public API), which are no longer public.
 - **R5 — non-boundary failure-path tests: 142 entries (110 production, 32
   dev-gate) at the strict audit.** Wave 1 targeted 107 in-scope entries; wave
   2 closed the boundary/unreachable-arm subset (`ed58a4b`). The remaining
@@ -300,11 +368,14 @@ These are deliberate. Reversing one needs a new entry in
   grammar-distribution path; the 2026-10-18 static bundle was reverted on
   2026-10-19.
 - The coverage gate is 83%, calibrated against measurement, not aspirational.
-- Mutation testing covers exactly `sync/revision.rs`, `sync/publish.rs`,
-  `sync/hash.rs`, `sync/hash_io.rs`, and `tools/context.rs`; widening beyond
-  that is a CI-minute decision. `hash_io.rs` carries `hash_file` and
-  `stat_identity`, moved out of `hash.rs` by the wave-3 split (2026-10-19), so
-  this is the same correctness core, not a wider one.
+- Mutation testing covers exactly `sync/revision.rs`,
+  `sync/revision_support.rs`, `sync/publish.rs`, `sync/hash.rs`,
+  `sync/hash_io.rs`, and `tools/context.rs`; widening beyond that is a
+  CI-minute decision. `hash_io.rs` carries `hash_file` and `stat_identity`,
+  moved out of `hash.rs` by the wave-3 split, and `revision_support.rs`
+  carries `invalidate_stale_findings`, moved out of `revision.rs` by the
+  wave-4 size fix (2026-10-19), so this is the same correctness core, not a
+  wider one.
 - Tests are exempt from the production panic ban: a panic is the failure
   signal there.
 - The 2026-10-19 strict audit counts test/bench/fuzz R1/R2 entries, but the
@@ -338,5 +409,5 @@ the integrated tree; it enforces existence, the module-map paths, and the
 `*_tests.rs` count claim. The release docs (`docs/RELEASING.md`,
 `docs/about.toml`, `docs/third-party-notices.hbs`) are consumed by
 `.github/workflows/release.yml` and are not part of the drift gate's checked
-set. The four `audit_2026-10-19_*` files in `.planning/archive/` are
+set. The six `audit_2026-10-19_*` files in `.planning/archive/` are
 historical evidence copies, not canonical docs, and are not read by the gate.

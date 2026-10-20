@@ -727,8 +727,9 @@ something else loudly.
 ### Machine-readable failure codes
 
 The closed set lives in `src/error_codes.rs`; this table is checked against
-`ErrorCode::ALL` in both directions by a unit test there, so a code cannot be
-added without its row and a row cannot outlive its code. Codes are lowercase
+the test-local `#[cfg(test)] pub(crate) const ALL` in both directions by a
+unit test there, so a code cannot be added without its row and a row cannot
+outlive its code. Codes are lowercase
 `snake_case`, name the condition rather than the call site, and are stable
 once shipped — renaming one breaks every caller that branches on it. Remedies
 are static strings: **never** interpolate a path, SQL, query string, finding
@@ -738,8 +739,9 @@ surface).
 
 <!-- error-codes:begin -->
 <!-- Machine-read: `src/error_codes.rs::the_documented_table_matches_the_code_set_exactly`
-     parses this block and asserts the rows below are exactly `ErrorCode::ALL`, in
-     declaration order. Add, remove or reorder a code here in the same change that
+     parses this block and asserts the rows below are exactly the test-local
+     `#[cfg(test)] pub(crate) const ALL`, in declaration order. Add, remove or
+     reorder a code here in the same change that
      changes the enum, or `cargo test` fails. The module map above and the
      `*_tests.rs` count sentence are read the same way, by `check_docs_drift`. -->
 | code | meaning | attached where |
