@@ -82,6 +82,48 @@ fn a_zero_page_bytes_is_refused_not_substituted() {
 }
 
 #[test]
+fn a_duplicate_result_column_name_is_refused_without_a_partial_page() {
+    let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
+
+    let error = ask_page(
+        &project,
+        "SELECT * FROM files f JOIN evidence e ON e.file_id = f.id",
+        0,
+        None,
+        &ResourceLimits::default(),
+    )
+    .expect_err("two `id` columns cannot share one JSON key");
+
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(
+        error.message,
+        "duplicate column name \"id\" in query result; alias the columns"
+    );
+}
+
+#[test]
+fn a_join_with_aliased_ids_returns_both_columns() {
+    let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
+
+    let response = ask_page(
+        &project,
+        "SELECT f.id AS file_id, e.id AS evidence_id \
+         FROM files f JOIN evidence e ON e.file_id = f.id",
+        0,
+        None,
+        &ResourceLimits::default(),
+    )
+    .expect("unique column names produce distinct JSON keys");
+
+    assert!(!response.rows.is_empty(), "the join must produce rows");
+    for row in &response.rows {
+        assert!(row["file_id"].is_number(), "missing files.id: {row}");
+        assert!(row["evidence_id"].is_number(), "missing evidence.id: {row}");
+    }
+    assert!(!response.truncated);
+}
+
+#[test]
 fn total_rows_is_exact_on_every_page_and_matches_the_rows_actually_paged() {
     let project = activated_project(&[]);
     let limits = ResourceLimits::default();
@@ -157,6 +199,33 @@ fn an_exhausted_count_budget_omits_total_rows_and_says_why() {
         .total_rows_unavailable
         .expect("the omission carries a reason");
     assert!(reason.contains("max_query_vm_steps"), "{reason}");
+}
+
+#[test]
+fn an_exhausted_count_wall_clock_budget_omits_total_rows_and_says_why() {
+    let project = activated_project(&[]);
+    // The page stops after two cheap rows, below the progress handler's
+    // 1,000-VM-step interval, so the page query never observes the expired
+    // deadline; counting all 200,000 rows does reach a callback.
+    let sql = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 200000) \
+         SELECT x, hex(zeroblob(500)) AS pad FROM c";
+    let limits = ResourceLimits {
+        max_query_wall_clock: std::time::Duration::from_nanos(1),
+        ..ResourceLimits::default()
+    };
+
+    let response = ask_page(&project, sql, 0, Some(100), &limits)
+        .expect("the page query stays under its own budget");
+
+    assert!(
+        response.truncated,
+        "the page must be cut for a count to run"
+    );
+    assert_eq!(response.total_rows, None);
+    assert_eq!(
+        response.total_rows_unavailable.as_deref(),
+        Some("counting the whole result exceeded the wall-clock budget (max_query_wall_clock)")
+    );
 }
 
 #[test]
@@ -253,7 +322,10 @@ fn a_first_row_oversized_blob_is_clipped_with_the_continuation_metadata() {
         (0, "b", "blob", "bytes")
     );
     assert_eq!((cell.returned, cell.total, cell.next_start), (46, 5000, 47));
-    assert_eq!(cell.continue_with, "substr(\"b\", 47, 46)");
+    assert_eq!(
+        cell.continue_with, "substr(\"b\", 47, 4954)",
+        "the hint returns the remaining 4,954 bytes, not another 46-byte chunk"
+    );
     let returned = page.rows[0]["b"].as_str().expect("hex string");
     assert_eq!(returned.len(), cell.returned * 2);
     assert!(returned.bytes().all(|byte| byte == b'0'));

@@ -237,8 +237,7 @@ fn clip_oversized_row(
     page_bytes: usize,
     row_index: usize,
 ) -> Result<(serde_json::Value, usize, Vec<ClippedCell>), ErrorData> {
-    let cut = clip_row(column_names, values, page_bytes, row_index)
-        .map_err(|error| internal_error("clipping an oversized query row", error))?;
+    let cut = clip_row(column_names, values, page_bytes, row_index)?;
     let row_bytes = serialized_len(&cut.row)
         .map_err(|error| internal_error("measuring query row size", error))?;
     Ok((cut.row, row_bytes, cut.cells))
@@ -249,7 +248,7 @@ fn json_row(
     column_names: &[String],
     values: &[SqlValue],
 ) -> Result<(serde_json::Value, usize), ErrorData> {
-    let value = row_to_json(column_names, values);
+    let value = row_to_json(column_names, values)?;
     let row_bytes = serialized_len(&value)
         .map_err(|error| internal_error("measuring query row size", error))?;
     Ok((value, row_bytes))

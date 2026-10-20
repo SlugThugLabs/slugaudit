@@ -6,6 +6,7 @@
 //! beside the converted rows they describe.
 use super::query_clip::ClippedCell;
 use crate::util;
+use rmcp::ErrorData;
 use rusqlite::Row;
 use rusqlite::types::{Type as SqlType, Value as SqlValue, ValueRef};
 use schemars::JsonSchema;
@@ -121,13 +122,41 @@ pub(super) fn row_serialized_lower_bound(values: &[SqlValue]) -> usize {
     })
 }
 
+/// Rejects a result whose column names are not unique.
+///
+/// Both row builders ([`row_to_json`] and `query_clip::base_object`) key a JSON
+/// object by column name, so a repeated name would silently keep one column
+/// and drop the other. Called from each builder so neither path can diverge.
+pub(super) fn ensure_unique_column_names(column_names: &[String]) -> Result<(), ErrorData> {
+    let mut seen = std::collections::HashSet::with_capacity(column_names.len());
+    for name in column_names {
+        if !seen.insert(name.as_str()) {
+            return Err(ErrorData::invalid_params(
+                format!("duplicate column name {name:?} in query result; alias the columns"),
+                None,
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// One row as a JSON object, column names as keys, BLOBs hex-encoded.
-pub(super) fn row_to_json(column_names: &[String], values: &[SqlValue]) -> serde_json::Value {
+///
+/// # Errors
+///
+/// Returns `invalid_params` when a column name repeats: the object cannot carry
+/// both columns, and keeping only one would be a wrong answer, so the caller is
+/// told to alias the columns instead.
+pub(super) fn row_to_json(
+    column_names: &[String],
+    values: &[SqlValue],
+) -> Result<serde_json::Value, ErrorData> {
+    ensure_unique_column_names(column_names)?;
     let mut object = serde_json::Map::with_capacity(column_names.len());
     for (name, value) in column_names.iter().zip(values) {
         object.insert(name.clone(), sql_value_to_json(value));
     }
-    serde_json::Value::Object(object)
+    Ok(serde_json::Value::Object(object))
 }
 
 /// A non-finite REAL becomes `null`; [`non_finite_cells`] reports it.

@@ -80,8 +80,9 @@ fn a_5mb_file_is_walked_with_substr_hints_and_reassembles_byte_for_byte() {
         format!(
             "substr(\"content\", {}, {})",
             cell.returned + 1,
-            cell.returned
-        )
+            cell.total - cell.returned
+        ),
+        "the hint covers every remaining unit, not one more chunk"
     );
     assert_eq!(
         first_string(&first, "content").chars().count(),
@@ -109,7 +110,7 @@ fn a_5mb_file_is_walked_with_substr_hints_and_reassembles_byte_for_byte() {
 }
 
 #[test]
-fn the_first_pages_own_hint_returns_exactly_the_next_characters() {
+fn the_first_pages_own_hint_returns_the_whole_rest_of_the_cell() {
     let (project, original) = big_project();
     let manager = SourceSyncManager::default();
     let select = format!("SELECT content FROM files WHERE path = '{BIG}'");
@@ -122,12 +123,18 @@ fn the_first_pages_own_hint_returns_exactly_the_next_characters() {
     );
     let next = ask_at(&project, &manager, &sql, 0, Some(10_000_000)).expect("hinted page");
 
-    let expected: String = original
-        .chars()
-        .skip(cell.returned)
-        .take(cell.returned)
-        .collect();
-    assert_eq!(first_string(&next, "content"), expected);
+    let expected: String = original.chars().skip(cell.returned).collect();
+    assert!(
+        expected.chars().count() > cell.returned,
+        "the fixture must leave more than one page-sized chunk: {} remaining after {}",
+        expected.chars().count(),
+        cell.returned
+    );
+    assert_eq!(
+        first_string(&next, "content"),
+        expected,
+        "one run of continue_with must return the remainder, not the next chunk"
+    );
 }
 
 #[test]
@@ -350,8 +357,48 @@ fn a_text_with_a_nul_is_continued_as_bytes_because_sqlite_text_functions_stop_at
     let expected: String = "ab\0cdefghij"
         .bytes()
         .skip(cell.returned)
-        .take(cell.returned)
         .map(|byte| format!("{byte:02X}"))
         .collect();
     assert_eq!(first_string(&rest, "h"), expected);
+}
+
+#[test]
+fn a_duplicate_column_name_is_refused_before_a_row_is_clipped() {
+    let project = activated_project(&[]);
+    let manager = SourceSyncManager::default();
+    // The projection is refused before any row is read, so a first row that
+    // would otherwise have to be clipped never reaches the clipper.
+    let sql = "SELECT zeroblob(5000) AS id, zeroblob(5000) AS id";
+
+    let error = ask_at(&project, &manager, sql, 0, Some(100))
+        .expect_err("the row cannot carry two `id` columns");
+
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(
+        error.message,
+        "duplicate column name \"id\" in query result; alias the columns"
+    );
+}
+
+#[test]
+fn both_row_builders_reject_duplicate_column_names() {
+    let names = vec!["id".to_owned(), "id".to_owned()];
+    let values = [
+        rusqlite::types::Value::Integer(1),
+        rusqlite::types::Value::Integer(2),
+    ];
+
+    let plain = crate::tools::query_value::row_to_json(&names, &values)
+        .expect_err("the unclipped builder cannot key two columns by one name");
+    let clipped = crate::tools::query_clip::clip_row(&names, &values, 100, 0)
+        .err()
+        .expect("the clipped builder cannot key two columns by one name");
+
+    for error in [plain, clipped] {
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert_eq!(
+            error.message,
+            "duplicate column name \"id\" in query result; alias the columns"
+        );
+    }
 }

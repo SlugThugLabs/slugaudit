@@ -1128,7 +1128,7 @@
                 "type": "string"
               },
               "continue_with": {
-                "description": "A ready-to-use expression for the rest, `substr(\"<column>\", start,\nlength)`. The column name is quoted as an identifier; apply the same\n`substr` to the expression that produced the column.",
+                "description": "A ready-to-use expression for the rest of the value,\n`substr(\"<column>\", start, length)`: running it returns every remaining\nunit, not another page-sized chunk. The column name is quoted as an\nidentifier; apply the same `substr` to the expression that produced the\ncolumn. If that continuation row is itself larger than the page, its\nresponse's `clipped_cells` entry carries the next expression, and so on\nuntil the value is complete.",
                 "type": "string"
               },
               "kind": {

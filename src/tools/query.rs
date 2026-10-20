@@ -2,7 +2,7 @@ use super::context::{ensure_synced, guard_expected_revision, with_verified_read}
 use super::page_size;
 use super::query_clip::ClippedCell;
 use super::query_exec::run_query;
-use super::query_value::{NonFiniteCell, RowTotal};
+use super::query_value::{NonFiniteCell, RowTotal, ensure_unique_column_names};
 
 use crate::error_codes::{self, ErrorCode};
 use crate::model::ResourceLimits;
@@ -130,7 +130,8 @@ pub struct QueryResponse {
 /// Returns an error if `request.path` isn't an active project, `sql` is
 /// empty or too long, the query fails to parse or execute (including a
 /// write or any other non-SELECT statement, which the wrapper refuses),
-/// the VM-step or wall-clock budget is exhausted, or a result value can't be
+/// the VM-step or wall-clock budget is exhausted, the result's column names
+/// repeat (the caller must alias them), or a result value can't be
 /// represented (including a single TEXT/BLOB value over the per-value cap).
 pub fn query(
     request: &Parameters<QueryRequest>,
@@ -283,6 +284,16 @@ pub(super) fn single_statement_body(
         ),
         other => describe_error(&other, abort_reason),
     })?;
+    // Check the caller's own projection, before the wrapper turns it into a
+    // subquery: SQLite renames the second `id` of a subquery to `id:1`, so
+    // checking only the wrapped result would miss the duplicate and hand back
+    // a renamed key the caller never asked for.
+    let column_names: Vec<String> = statement
+        .column_names()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    ensure_unique_column_names(&column_names)?;
     let text = statement.expanded_sql().ok_or_else(|| {
         ErrorData::invalid_params("sql must contain a statement, not only comments", None)
     })?;

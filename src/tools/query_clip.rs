@@ -11,8 +11,10 @@
 //! (the JSON value is hex, two characters per byte). Budgets are measured in
 //! serialized JSON bytes — string escapes and BLOB hex included.
 
-use super::query_value::sql_value_to_json;
+use super::context::internal_error;
+use super::query_value::{ensure_unique_column_names, sql_value_to_json};
 use crate::util::{hex_encode, serialized_len};
+use rmcp::ErrorData;
 use rusqlite::types::Value as SqlValue;
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -39,9 +41,13 @@ pub struct ClippedCell {
     pub total: usize,
     /// 1-based position of the first unit not returned, ready for `substr`.
     pub next_start: usize,
-    /// A ready-to-use expression for the rest, `substr("<column>", start,
-    /// length)`. The column name is quoted as an identifier; apply the same
-    /// `substr` to the expression that produced the column.
+    /// A ready-to-use expression for the rest of the value,
+    /// `substr("<column>", start, length)`: running it returns every remaining
+    /// unit, not another page-sized chunk. The column name is quoted as an
+    /// identifier; apply the same `substr` to the expression that produced the
+    /// column. If that continuation row is itself larger than the page, its
+    /// response's `clipped_cells` entry carries the next expression, and so on
+    /// until the value is complete.
     pub continue_with: String,
 }
 
@@ -68,15 +74,20 @@ struct Variable {
 ///
 /// # Errors
 ///
-/// Returns the serializer's error if the base row cannot be measured.
+/// Returns `invalid_params` when a column name repeats (see
+/// [`ensure_unique_column_names`]); the row cannot carry both columns.
+/// Returns `internal_error` if the base row cannot be measured.
 pub(super) fn clip_row(
     column_names: &[String],
     values: &[SqlValue],
     page_bytes: usize,
     row_index: usize,
-) -> Result<ClippedRow, serde_json::Error> {
-    let (mut object, variables) = base_object(column_names, values);
-    let room = page_bytes.saturating_sub(serialized_len(&object)?);
+) -> Result<ClippedRow, ErrorData> {
+    let (mut object, variables) = base_object(column_names, values)?;
+    let room = page_bytes.saturating_sub(
+        serialized_len(&object)
+            .map_err(|error| internal_error("clipping an oversized query row", error))?,
+    );
     let granted = share_room(&variables, room);
 
     let mut cells = Vec::new();
@@ -104,11 +115,14 @@ pub(super) fn clip_row(
 }
 
 /// The row with every TEXT/BLOB cell replaced by an empty string, plus the
-/// measured variables those cells will be clipped from.
+/// measured variables those cells will be clipped from. Shares the duplicate
+/// column check with [`super::query_value::row_to_json`] so the clipped and
+/// unclipped paths cannot disagree on which results are representable.
 fn base_object(
     column_names: &[String],
     values: &[SqlValue],
-) -> (serde_json::Map<String, serde_json::Value>, Vec<Variable>) {
+) -> Result<(serde_json::Map<String, serde_json::Value>, Vec<Variable>), ErrorData> {
+    ensure_unique_column_names(column_names)?;
     let mut object = serde_json::Map::with_capacity(column_names.len());
     let mut variables = Vec::new();
     for (index, (name, value)) in column_names.iter().zip(values).enumerate() {
@@ -135,7 +149,7 @@ fn base_object(
         };
         object.insert(name.clone(), cell);
     }
-    (object, variables)
+    Ok((object, variables))
 }
 
 /// Shares `room` among the variables as evenly as the smaller cells allow,
@@ -186,7 +200,10 @@ fn clipped_cell(
     total: usize,
 ) -> ClippedCell {
     let next_start = returned + 1;
-    let length = (total - returned).min(returned.max(1));
+    // The rest of the value, not just another chunk the size of the first: the
+    // field promises the caller the remainder, and a chunk-sized continuation
+    // would let an agent stop early and silently miss most of a large cell.
+    let length = total - returned;
     let quoted = format!("\"{}\"", column.replace('"', "\"\""));
     // Text with a NUL is continued as bytes of the value cast to a blob.
     let target = if kind == "text" && unit == "bytes" {
