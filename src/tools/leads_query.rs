@@ -10,12 +10,27 @@
 //! Every read accepts the same optional `pattern`; it is compiled once by
 //! [`compile_pattern`] and bound as a SQL parameter, never interpolated.
 
-use super::leads::{FileCount, LeadRow, MechanicCount, PageLimit, clip_detail};
+use super::leads::{FileCount, LeadRow, MechanicCount, PageLimit};
 use super::leads_mechanics::{MECHANICS, Mechanic};
 use crate::util::serialized_len;
 use rmcp::ErrorData;
 use rusqlite::types::Value;
 use rusqlite::{Transaction, params_from_iter};
+
+/// Longest `detail` string returned per row. Callee text and comment lines
+/// can be arbitrarily long; the caller can always read the file itself.
+pub(super) const MAX_DETAIL_CHARS: usize = 200;
+
+/// Clips a row's `detail` to `MAX_DETAIL_CHARS` characters on a char
+/// boundary, setting `detail_clipped` only when characters were removed.
+/// No shared truncation helper exists in `crate::util`.
+pub(super) fn clip_detail(row: &mut LeadRow) {
+    if row.detail.chars().count() <= MAX_DETAIL_CHARS {
+        return;
+    }
+    row.detail = row.detail.chars().take(MAX_DETAIL_CHARS).collect();
+    row.detail_clipped = true;
+}
 
 /// Compiles the caller's `pattern` exactly the way `structure` does — a
 /// GLOB over the project-relative path, with a pattern containing no `*` or

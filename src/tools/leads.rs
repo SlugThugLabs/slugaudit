@@ -33,9 +33,8 @@ use rmcp::handler::server::wrapper::{Json, Parameters};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Longest `detail` string returned per row. Callee text and comment lines
-/// can be arbitrarily long; the caller can always read the file itself.
-pub(super) const MAX_DETAIL_CHARS: usize = 200;
+#[cfg(test)]
+pub(super) use super::leads_query::{MAX_DETAIL_CHARS, clip_detail};
 const MAX_PATH_BYTES: usize = 32 * 1024;
 const MAX_FILTER_BYTES: usize = 8 * 1024;
 const MAX_REVISION_BYTES: usize = 256;
@@ -285,17 +284,6 @@ pub struct LeadsResponse {
     pub next_offset: Option<usize>,
 }
 
-/// Clips a row's `detail` to `MAX_DETAIL_CHARS` characters on a char
-/// boundary, setting `detail_clipped` only when characters were removed.
-/// No shared truncation helper exists in `crate::util`.
-pub(super) fn clip_detail(row: &mut LeadRow) {
-    if row.detail.chars().count() <= MAX_DETAIL_CHARS {
-        return;
-    }
-    row.detail = row.detail.chars().take(MAX_DETAIL_CHARS).collect();
-    row.detail_clipped = true;
-}
-
 /// Unranked mechanical observations from the project's current revision.
 ///
 /// # Errors
@@ -323,46 +311,19 @@ fn leads_with_limits(
     sink: &dyn ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<LeadsResponse>, ErrorData> {
-    let LeadsRequest {
-        path,
-        mechanic,
-        pattern,
-        limit,
-        offset,
-        expected_revision,
-        mode,
-        page_bytes,
-    } = &request.0;
-    if crate::util::exceeds_input_bytes(path, MAX_PATH_BYTES) {
-        return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
-    }
-    for (name, value) in [
-        ("mechanic", mechanic.as_deref()),
-        ("pattern", pattern.as_deref()),
-    ] {
-        if value.is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_FILTER_BYTES)) {
-            return Err(ErrorData::invalid_params(
-                format!("{name} exceeds 8192 bytes"),
-                None,
-            ));
-        }
-    }
-    if expected_revision
-        .as_deref()
-        .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_REVISION_BYTES))
-    {
-        return Err(ErrorData::invalid_params(
-            "expected_revision exceeds 256 bytes",
-            None,
-        ));
-    }
-    let page = super::page_size::resolve(*page_bytes, limits)?;
-    let synced = ensure_synced(path, sink, manager)?;
-    guard_expected_revision(&synced.revision_id, expected_revision.as_deref())?;
-    let selected = resolve_mechanic(mechanic.as_deref())?;
+    validate_leads_request(
+        &request.0.path,
+        request.0.mechanic.as_deref(),
+        request.0.pattern.as_deref(),
+        request.0.expected_revision.as_deref(),
+    )?;
+    let page = super::page_size::resolve(request.0.page_bytes, limits)?;
+    let synced = ensure_synced(&request.0.path, sink, manager)?;
+    guard_expected_revision(&synced.revision_id, request.0.expected_revision.as_deref())?;
+    let selected = resolve_mechanic(request.0.mechanic.as_deref())?;
     let paging = Paging {
-        limit: limit.map(|rows| rows.max(1)),
-        offset: offset.unwrap_or(0),
+        limit: request.0.limit.map(|rows| rows.max(1)),
+        offset: request.0.offset.unwrap_or(0),
         budget_bytes: page.bytes,
         clamped_from: page.clamped_from,
     };
@@ -371,8 +332,8 @@ fn leads_with_limits(
             tx,
             &synced.revision_id,
             selected,
-            *mode,
-            pattern.as_deref(),
+            request.0.mode,
+            request.0.pattern.as_deref(),
             paging,
         )
     })?;
@@ -385,6 +346,36 @@ fn leads_with_limits(
         "leads built"
     );
     Ok(response)
+}
+
+/// Validates the byte caps on the request's free-form fields before any
+/// database work. Error text is part of the tool contract.
+fn validate_leads_request(
+    path: &str,
+    mechanic: Option<&str>,
+    pattern: Option<&str>,
+    expected_revision: Option<&str>,
+) -> Result<(), ErrorData> {
+    if crate::util::exceeds_input_bytes(path, MAX_PATH_BYTES) {
+        return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
+    }
+    for (name, value) in [("mechanic", mechanic), ("pattern", pattern)] {
+        if value.is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_FILTER_BYTES)) {
+            return Err(ErrorData::invalid_params(
+                format!("{name} exceeds 8192 bytes"),
+                None,
+            ));
+        }
+    }
+    if expected_revision
+        .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_REVISION_BYTES))
+    {
+        return Err(ErrorData::invalid_params(
+            "expected_revision exceeds 256 bytes",
+            None,
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

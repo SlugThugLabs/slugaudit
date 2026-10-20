@@ -98,31 +98,7 @@ pub fn finding_read(
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<FindingReadResponse>, ErrorData> {
     let request = &request.0;
-    if crate::util::exceeds_input_bytes(&request.path, MAX_PATH_BYTES)
-        || request
-            .file
-            .as_deref()
-            .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_FILE_BYTES))
-    {
-        return Err(ErrorData::invalid_params(
-            "path or file exceeds its input size limit",
-            None,
-        ));
-    }
-    // SQLite treats an integer literal too large for i64 as a REAL, which
-    // would page from an unpredictable position instead of failing. This is
-    // a contract error in the caller's own arithmetic, so it carries no code.
-    if request.offset as u64 > i64::MAX as u64 {
-        return Err(ErrorData::invalid_params(
-            format!(
-                "offset {} exceeds the maximum supported page offset ({}); \
-                 page from the start or from a returned next_offset",
-                request.offset,
-                i64::MAX
-            ),
-            None,
-        ));
-    }
+    validate_read_request(request)?;
     let limits = resolve_limits(&request.path)?;
     let page_bytes = limits
         .default_page_bytes
@@ -151,6 +127,37 @@ pub fn finding_read(
     }))
 }
 
+/// Rejects an input that cannot be served before any database work: an
+/// oversized `path`/`file`, or an `offset` outside SQLite's integer range.
+fn validate_read_request(request: &FindingReadRequest) -> Result<(), ErrorData> {
+    if crate::util::exceeds_input_bytes(&request.path, MAX_PATH_BYTES)
+        || request
+            .file
+            .as_deref()
+            .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_FILE_BYTES))
+    {
+        return Err(ErrorData::invalid_params(
+            "path or file exceeds its input size limit",
+            None,
+        ));
+    }
+    // SQLite treats an integer literal too large for i64 as a REAL, which
+    // would page from an unpredictable position instead of failing. This is
+    // a contract error in the caller's own arithmetic, so it carries no code.
+    if request.offset as u64 > i64::MAX as u64 {
+        return Err(ErrorData::invalid_params(
+            format!(
+                "offset {} exceeds the maximum supported page offset ({}); \
+                 page from the start or from a returned next_offset",
+                request.offset,
+                i64::MAX
+            ),
+            None,
+        ));
+    }
+    Ok(())
+}
+
 /// Reads at most one byte-budgeted page of the session's findings. Returns
 /// the page, its serialized-JSON size, and whether rows remain after it.
 fn read_session_findings(
@@ -160,6 +167,25 @@ fn read_session_findings(
     offset: usize,
     page_bytes: usize,
 ) -> Result<(Vec<FindingReadEntry>, usize, bool), ErrorData> {
+    let (sql, query_params) = session_findings_sql(current_session, file_filter, offset);
+    let mut statement = tx
+        .prepare(&sql)
+        .map_err(|error| internal_error("preparing the session findings read", error))?;
+    let rows = statement
+        .query_map(
+            rusqlite::params_from_iter(query_params.iter()),
+            finding_entry,
+        )
+        .map_err(|error| internal_error("executing the session findings read", error))?;
+    collect_page(rows, page_bytes)
+}
+
+/// The SELECT and bound parameters for one session-scoped findings read.
+fn session_findings_sql(
+    current_session: &str,
+    file_filter: Option<&str>,
+    offset: usize,
+) -> (String, Vec<rusqlite::types::Value>) {
     let mut sql = String::from(
         "SELECT id, path, line_start, line_end, severity, category, \
              title, description, status, source_hash \
@@ -174,28 +200,32 @@ fn read_session_findings(
     // (SQLite requires a LIMIT before OFFSET) and the byte budget cuts the
     // page instead.
     sql.push_str(&format!(" ORDER BY id LIMIT -1 OFFSET {offset}"));
+    (sql, query_params)
+}
 
-    let mut statement = tx
-        .prepare(&sql)
-        .map_err(|error| internal_error("preparing the session findings read", error))?;
-    let rows = statement
-        .query_map(rusqlite::params_from_iter(query_params.iter()), |row| {
-            Ok(FindingReadEntry {
-                id: row.get(0)?,
-                path: row.get(1)?,
-                line_start: row.get(2)?,
-                line_end: row.get(3)?,
-                severity: row.get(4)?,
-                category: row.get(5)?,
-                title: row.get(6)?,
-                description: row.get(7)?,
-                detail_clipped: false,
-                status: row.get(8)?,
-                source_hash: row.get(9)?,
-            })
-        })
-        .map_err(|error| internal_error("executing the session findings read", error))?;
+/// Maps one findings row to its response entry.
+fn finding_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<FindingReadEntry> {
+    Ok(FindingReadEntry {
+        id: row.get(0)?,
+        path: row.get(1)?,
+        line_start: row.get(2)?,
+        line_end: row.get(3)?,
+        severity: row.get(4)?,
+        category: row.get(5)?,
+        title: row.get(6)?,
+        description: row.get(7)?,
+        detail_clipped: false,
+        status: row.get(8)?,
+        source_hash: row.get(9)?,
+    })
+}
 
+/// Cuts the byte-budgeted page from the row stream, always keeping the
+/// first row so paging makes progress.
+fn collect_page(
+    rows: impl Iterator<Item = rusqlite::Result<FindingReadEntry>>,
+    page_bytes: usize,
+) -> Result<(Vec<FindingReadEntry>, usize, bool), ErrorData> {
     let mut findings = Vec::new();
     let mut findings_bytes = 0usize;
     let mut more = false;
@@ -249,8 +279,7 @@ fn clip_description(entry: &mut FindingReadEntry, budget: usize) -> Result<(), E
 }
 
 fn serialized_len(entry: &FindingReadEntry) -> Result<usize, ErrorData> {
-    serde_json::to_vec(entry)
-        .map(|bytes| bytes.len())
+    crate::util::serialized_len(entry)
         .map_err(|error| internal_error("measuring a session finding's response size", error))
 }
 

@@ -32,7 +32,6 @@
 //! host state, reported because it sizes the adaptive import budget.
 // slugaudit-line-exception: approved-by=slugthug; reason=health is the schema-defining tool; Request+Response+phase+derivation live together so the schema isn't split from its only consumer
 
-use crate::error_codes::ErrorCode;
 use crate::sync;
 use crate::watch;
 use rmcp::ErrorData;
@@ -43,9 +42,11 @@ use serde::{Deserialize, Serialize};
 const MAX_PATH_BYTES: usize = 32 * 1024;
 
 use super::ToolCounters;
-use super::health_database::read_database;
 #[cfg(test)]
-use super::health_database::{count_files, read_revision_fields};
+use super::health_database::{count_files, read_database, read_revision_fields};
+#[cfg(test)]
+use super::health_phase::derive_phase;
+use super::health_phase::{compute_global_only_state, compute_project_state};
 
 /// Request for the `health` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -261,204 +262,6 @@ pub fn health(
         },
         system_memory: crate::model::detect_system_memory(),
     }))
-}
-
-/// The per-project half of a [`HealthResponse`]: everything that depends on
-/// which project is being served. The two builders below return one of
-/// these and `health` fills in the process-wide remainder, so neither
-/// builder has to know about counters or host memory.
-#[derive(Debug, PartialEq, Eq)]
-struct ProjectHealthFields {
-    phase: HealthPhase,
-    remedy: Option<String>,
-    watcher: Option<WatcherState>,
-    database: Option<DatabaseState>,
-}
-
-/// Computes every per-project field of the health response **without any
-/// side effect**: it resolves the project root, reads the watcher state if
-/// the project is already registered, and reads the database read-only if
-/// it exists. It never calls `ensure_current`, so a health call can never
-/// trigger a publish, register a watch, or change watcher health — the
-/// snapshot is whatever the last real tool call left behind, which is
-/// exactly what a caller wants from a health check.
-fn compute_project_state(
-    path: &str,
-    manager: &sync::SourceSyncManager,
-) -> Result<ProjectHealthFields, ErrorData> {
-    let (root, database_path) = match crate::project::resolve_project(std::path::Path::new(path)) {
-        Ok(resolved) => resolved,
-        // No activation marker: report the state instead of failing on it.
-        // `health` is the tool a caller reaches for precisely when nothing
-        // works, so "this path is not an enabled project, here is the call
-        // that enables it" must be an answer, not another opaque failure.
-        // Any *other* resolution failure (an unreadable parent, a symlinked
-        // activation component) stays an error: enabling the project would
-        // not fix it.
-        Err(crate::project::ActivationError::NotActive) => {
-            return Ok(inactive_fields(HealthPhase::Disabled));
-        }
-        Err(error) => return Err(ErrorData::invalid_params(error.to_string(), None)),
-    };
-    // Read-only: `watch_state_for` never registers a watch and never
-    // changes watcher health (unlike `activate`).
-    let snapshot = manager
-        .watch_state_for(root.as_path())
-        .map(|state| state.snapshot());
-
-    let database = read_database(&database_path);
-    let revision_id = database
-        .as_ref()
-        .and_then(|state| state.revision_id.clone());
-
-    let phase = match snapshot.as_ref() {
-        Some(snapshot) => derive_phase(
-            snapshot.health,
-            &revision_id,
-            snapshot.has_unreconciled_events(),
-        ),
-        // No watcher state: the project was never registered with this
-        // server's watcher (or the server just started). Database fields,
-        // if any, are still surfaced; distinguish a queryable indexed
-        // project from one that has never published a revision.
-        None if revision_id.is_some() => HealthPhase::IndexedUnwatched,
-        None => HealthPhase::NoActiveProject,
-    };
-
-    Ok(ProjectHealthFields {
-        phase,
-        remedy: None,
-        watcher: snapshot.as_ref().map(|s| WatcherState {
-            health: s.health,
-            pending_dirty: s.dirty_paths.len(),
-            pending_deleted: s.deleted_paths.len(),
-            sequence: s.watcher_sequence,
-            last_verified_sequence: s.last_verified_sequence,
-        }),
-        database,
-    })
-}
-
-/// The field set for a project this server is not serving: nothing to
-/// report but the phase and the way out of it. Both per-project groups are
-/// absent for the same reason — there is no watcher to ask and no database
-/// to open.
-///
-/// The two callers reach this with the same absence and differ only in
-/// which phase names it: `Disabled` when the path has no activation
-/// marker, `NoActiveProject` when no path was supplied and nothing is
-/// registered. The remedy is the same either way.
-fn inactive_fields(phase: HealthPhase) -> ProjectHealthFields {
-    ProjectHealthFields {
-        phase,
-        remedy: Some(ErrorCode::ProjectNotEnabled.remedy().to_owned()),
-        watcher: None,
-        database: None,
-    }
-}
-
-/// Builds a per-project field set from the global state only — no
-/// `ensure_synced`, no database call. Used when the caller passed no
-/// `path`. `database` is absent because this codepath never opens one: the
-/// watcher snapshot carries no project root, so there is no database path
-/// to open, and the phase accordingly never claims a revision exists or is
-/// missing (see [`derive_global_phase`]).
-fn compute_global_only_state(manager: &sync::SourceSyncManager) -> ProjectHealthFields {
-    let snapshots = manager.watch_states_snapshot();
-    if snapshots.is_empty() {
-        return inactive_fields(HealthPhase::NoActiveProject);
-    }
-    // In the current single-active-project model, snapshots has one
-    // entry; reduce it to the reported fields. With more than one
-    // registered project, one snapshot is reported and which one is
-    // unspecified (the manager stores them in a `HashMap`; see the
-    // `health` tool description). Never silently combine them.
-    //
-    // `is_empty()` was checked above, so `None` here is unreachable by
-    // construction — but matching instead of `expect` keeps the "no
-    // panic in production code" invariant literal rather than relying
-    // on the guard staying in place.
-    let Some(snapshot) = snapshots.into_iter().next() else {
-        return inactive_fields(HealthPhase::NoActiveProject);
-    };
-    let phase = derive_global_phase(snapshot.health, snapshot.has_unreconciled_events());
-    ProjectHealthFields {
-        phase,
-        remedy: None,
-        watcher: Some(WatcherState {
-            health: snapshot.health,
-            pending_dirty: snapshot.dirty_paths.len(),
-            pending_deleted: snapshot.deleted_paths.len(),
-            sequence: snapshot.watcher_sequence,
-            last_verified_sequence: snapshot.last_verified_sequence,
-        }),
-        database: None,
-    }
-}
-
-/// Maps the watcher's health to a phase for the pathless snapshot.
-///
-/// This answer has no project root and therefore no revision to consult, so
-/// it must not claim one: a `Healthy` (or `Partial`) watcher with no
-/// unreconciled events is [`HealthPhase::Unknown`], never `Importing`
-/// ("the first sync has never succeeded") and never `SteadyState` ("a
-/// current revision exists"). The watcher-only conditions carry over from
-/// [`derive_phase`]: `Unavailable` and the two untrusted states, plus
-/// pending reconciliation for a trusted watcher.
-fn derive_global_phase(
-    watcher_health: watch::WatcherHealth,
-    has_unreconciled_events: bool,
-) -> HealthPhase {
-    match watcher_health {
-        watch::WatcherHealth::Unavailable => HealthPhase::Unavailable,
-        watch::WatcherHealth::NeedsVerification | watch::WatcherHealth::Desynced => {
-            HealthPhase::Restoring
-        }
-        watch::WatcherHealth::Healthy | watch::WatcherHealth::Partial
-            if has_unreconciled_events =>
-        {
-            HealthPhase::Restoring
-        }
-        watch::WatcherHealth::Healthy | watch::WatcherHealth::Partial => HealthPhase::Unknown,
-    }
-}
-
-/// Maps `(watcher_health, current_revision, has_unreconciled_events)`
-/// to a coarse `HealthPhase`. Pure function over existing state — no
-/// I/O — so the phase agrees with the watcher-snapshot fields it
-/// derives from.
-fn derive_phase(
-    watcher_health: watch::WatcherHealth,
-    revision_id: &Option<String>,
-    has_unreconciled_events: bool,
-) -> HealthPhase {
-    match watcher_health {
-        watch::WatcherHealth::Unavailable => HealthPhase::Unavailable,
-        watch::WatcherHealth::NeedsVerification | watch::WatcherHealth::Desynced => {
-            HealthPhase::Restoring
-        }
-        watch::WatcherHealth::Healthy => {
-            if revision_id.is_none() {
-                HealthPhase::Importing
-            } else if has_unreconciled_events {
-                HealthPhase::Restoring
-            } else {
-                HealthPhase::SteadyState
-            }
-        }
-        watch::WatcherHealth::Partial => {
-            // SteadyState means the project is fully served from disk; a
-            // partial watch scope means part of the tree has no watcher, so
-            // the same revision/event conditions yield Degraded instead.
-            if revision_id.is_none() {
-                HealthPhase::Importing
-            } else if has_unreconciled_events {
-                HealthPhase::Restoring
-            } else {
-                HealthPhase::Degraded
-            }
-        }
-    }
 }
 
 #[cfg(test)]

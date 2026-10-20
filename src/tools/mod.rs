@@ -2,21 +2,19 @@
 //! synced, and format a response. They own no parsing, SQL, or storage
 //! logic themselves — that lives in `sync`, `store`, and `evidence`.
 //!
-//! This module also owns the **tool-level call counters**: process-wide
-//! `AtomicU64` counts of total calls, error calls, and total elapsed
-//! wall-clock time across every tool. The `health` tool exposes these
-//! counters for observability without changing anything about how the
-//! other tools execute. The counters live here rather than in
-//! `server.rs` so they're reachable without going through the MCP tool
-//! router — a future non-MCP entry point (a CLI subcommand, a watchdog,
-//! etc.) bumps the same counters and the `health` tool sees them
-//! consistently.
+//! This module also owns the **tool-level call counters** (defined in
+//! `tool_counters`): process-wide `AtomicU64` counts of total calls, error
+//! calls, and total elapsed wall-clock time across every tool. The `health`
+//! tool exposes these counters for observability without changing anything
+//! about how the other tools execute.
 
 pub(crate) mod context;
 mod finding;
+mod finding_insert;
 mod finding_read;
 mod health;
 mod health_database;
+mod health_phase;
 mod leads;
 mod leads_compact;
 mod leads_mechanics;
@@ -32,10 +30,13 @@ mod query_value;
 mod report;
 mod report_completeness;
 mod report_edges;
+mod report_envelope;
+mod report_sections;
 mod structure;
 mod structure_exec;
 mod structure_page;
 mod structure_source;
+mod tool_counters;
 
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -62,10 +63,10 @@ pub use report_completeness::{
 };
 pub use report_edges::DependencyEdgeTotals;
 pub use structure::{StructureRequest, StructureResponse, structure};
+pub use tool_counters::ToolCounters;
 
 use crate::model::{ResourceLimits, process_limits};
 use rmcp::ErrorData;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Single definition of "this path looks like a credential file". Shared by
 /// `report`'s count and `leads`' `credential_files` rows so the two surfaces
@@ -132,74 +133,6 @@ pub(super) fn resolve_limits(path: &str) -> Result<ResourceLimits, ErrorData> {
     )
 }
 
-/// Total number of tool calls the MCP server has served since process
-/// start. Includes both successful and errored calls — operators
-/// monitoring rate-limited or failing integrations want the denominator.
-static TOOL_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// Number of tool calls that returned any `ErrorData` (transport-
-/// independent error, regardless of code). Errors counted here are
-/// surfaced through `health` so operators can see rate/severity without
-/// reading MCP logs.
-///
-/// Counts only call-level errors (the work result). Network-level
-/// failures (consumer disconnect, malformed MCP framing) are not
-/// counted — they don't reach the work closure and so don't bump this
-/// counter.
-static TOOL_CALL_ERROR_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// Sum of all `run_blocking` work durations in milliseconds. Average
-/// latency is then `total_ms / count` if `count > 0` — exposed via the
-/// `health` tool so operators can see a simple moving-average trend
-/// without pulling in a metrics backend.
-///
-/// Saturating on overflow at the conversion boundary; using
-/// `u128`-based math under the hood avoids spurious overflow on
-/// long-running servers.
-static TOOL_CALL_TOTAL_MS: AtomicU64 = AtomicU64::new(0);
-
-/// Snapshot of process-wide tool-call counters for the `health` tool.
-///
-/// Saturates each value to its underlying atomic so a `Relaxed` load on
-/// a 32-bit architecture produces a consistent 64-bit value; on a
-/// 64-bit architecture this is atomic. The fields are returned as
-/// `u64` because every value is bounded only by `u64::MAX` over the
-/// lifetime of the process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ToolCounters {
-    pub call_count: u64,
-    pub error_count: u64,
-    pub total_ms: u64,
-}
-
-impl ToolCounters {
-    /// Returns the current value of every process-wide tool counter.
-    pub fn snapshot() -> Self {
-        Self {
-            call_count: TOOL_CALL_COUNT.load(Ordering::Relaxed),
-            error_count: TOOL_CALL_ERROR_COUNT.load(Ordering::Relaxed),
-            total_ms: TOOL_CALL_TOTAL_MS.load(Ordering::Relaxed),
-        }
-    }
-
-    /// Increments the cumulative counters after a tool call completes.
-    /// `succeeded` reflects the work's outcome (transport-independent).
-    /// `duration_ms` is the wall-clock time spent inside the blocking
-    /// work closure, exclusive of permit-acquire latency.
-    ///
-    /// Returns the post-bump snapshot so the caller can log the same
-    /// counters in a single span without a second `snapshot()` call —
-    /// useful for the standard "tool call completed" log line.
-    pub(crate) fn record_call(succeeded: bool, duration_ms: u64) -> ToolCounters {
-        if !succeeded {
-            TOOL_CALL_ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
-        }
-        TOOL_CALL_TOTAL_MS.fetch_add(duration_ms, Ordering::Relaxed);
-        TOOL_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
-        Self::snapshot()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,12 +180,21 @@ mod tests {
         matched != 0
     }
 
-    /// Table over (path, expected) for the whole equivalence the predicate
-    /// claims, run through SQLite rather than a Rust re-implementation, so
-    /// the test cannot pass while `report` and `leads` behave differently.
+    /// Asserts each `(path, expected)` verdict through the real SQLite engine,
+    /// so the test cannot pass while `report` and `leads` behave differently.
+    fn assert_predicate_cases(cases: &[(&str, bool)]) {
+        for &(path, expected) in cases {
+            assert_eq!(
+                credential_path_predicate_matches(path),
+                expected,
+                "predicate verdict for {path}"
+            );
+        }
+    }
+
     #[test]
-    fn credential_path_predicate_matches_through_sqlite() {
-        let cases: &[(&str, bool)] = &[
+    fn credential_path_predicate_matches_credential_shaped_paths() {
+        assert_predicate_cases(&[
             // The rules that already existed.
             (".env", true),
             (".env.local", true),
@@ -281,6 +223,12 @@ mod tests {
             ("service-account.json", true),
             ("keys/service-account.json", true),
             ("service-account-prod.json", true),
+        ]);
+    }
+
+    #[test]
+    fn credential_path_predicate_matches_ssh_private_keys() {
+        assert_predicate_cases(&[
             // Widened: root-level SSH keys, which the old rule missed
             // because it required a leading slash.
             ("id_rsa", true),
@@ -291,6 +239,12 @@ mod tests {
             ("home/.ssh/id_ecdsa", true),
             ("backup/id_rsa_bak", true),
             ("ID_RSA", true),
+        ]);
+    }
+
+    #[test]
+    fn credential_path_predicate_rejects_public_keys_and_lookalikes() {
+        assert_predicate_cases(&[
             // Tightened: a public key is not a secret.
             ("id_rsa.pub", false),
             ("id_ed25519.pub", false),
@@ -313,14 +267,7 @@ mod tests {
             // Public SSH material.
             ("authorized_keys", false),
             ("known_hosts", false),
-        ];
-        for &(path, expected) in cases {
-            assert_eq!(
-                credential_path_predicate_matches(path),
-                expected,
-                "predicate verdict for {path}"
-            );
-        }
+        ]);
     }
 
     #[test]
