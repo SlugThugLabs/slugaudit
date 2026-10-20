@@ -63,7 +63,7 @@ pub enum GitignoreOutcome {
 /// concurrent writer's change made between the read and the rename is not
 /// merged.
 ///
-/// The file is read through [`read_file_capped_bytes`] with a 1 MiB cap
+/// The file is read through `read_file_capped_bytes` with a 1 MiB cap
 /// (`MAX_FOREIGN_TEXT_BYTES`), the same cap used for other foreign text
 /// files. An over-cap file is reported as [`GitignoreOutcome::NotWritten`]
 /// rather than read, and any other read failure is reported the same way:

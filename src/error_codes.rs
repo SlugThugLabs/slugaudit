@@ -24,7 +24,7 @@
 //!
 //! The codes are documented in `.planning/ARCHITECTURE.md` (the table
 //! between the `error-codes` markers) and checked against
-//! [`ErrorCode::ALL`] in both directions by the inline test below: a code
+//! `ErrorCode::ALL` in both directions by the inline test below: a code
 //! cannot be added without its row, and a row cannot outlive its code.
 
 use serde_json::{Value, json};
@@ -58,11 +58,13 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    /// Every code, in documentation order — the public enumeration of the
-    /// closed wire contract that callers branch on. The `ARCHITECTURE.md`
-    /// table is checked against this list in both directions, so adding a
-    /// code means adding its row in the same change.
-    pub const ALL: &'static [ErrorCode] = &[
+    /// Every code, in documentation order. The `ARCHITECTURE.md` table is
+    /// checked against this list in both directions, so adding a code means
+    /// adding its row in the same change. Test-only: the closed set's
+    /// caller-facing contract is the enum and its payloads, not this Rust
+    /// enumeration.
+    #[cfg(test)]
+    pub(crate) const ALL: &'static [ErrorCode] = &[
         ErrorCode::SyncBudgetExhausted,
         ErrorCode::ProjectNotEnabled,
         ErrorCode::StaleRevision,
