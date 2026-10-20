@@ -11,6 +11,165 @@ commit, a path, or a command where possible.
 
 ---
 
+## 2026-10-19 — Wave 5 verification audit: 56 confirmed P0/P1, all fixed
+
+- **What:** 12 independent chunk auditors read **282 of 282 files (57,449
+  lines)** at `66536c0` (code at `4b765e1`; later commits are docs only), and
+  a verification pass reopened every cited line and enclosing function. The
+  65 author candidates (17 P0, 48 P1) collapsed to **56 confirmed P0/P1
+  (12 P0, 44 P1)**: 9 duplicate rows were merged into confirmed rows, **0 were
+  dropped** as false, misstated, or already covered, and **9 suspected misses**
+  were recorded separately but not counted. Scope: 49 production, 2 dev-gate,
+  5 test. **All 56 were fixed** in `66536c0..2a65a85` (the fix set plus the
+  integration fixes `730699f` and `2a65a85`). The durable records are
+  `.planning/archive/audit_2026-10-19_final_report.md` and
+  `.planning/archive/audit_2026-10-19_final_ledger.md`.
+- **Why:** wave 4 closed the strict-audit debt, but no fresh full audit had
+  re-read the tree since those fixes. Author counts are not quotable until a
+  separate pass reopens each cited line; keeping the suspected misses outside
+  the confirmed count avoids inflating it while still preserving the lead. The
+  confirmed ledger is what the fix wave targets, and every row it contains is
+  re-checkable against the copied ledger.
+- **Where:** `.planning/archive/audit_2026-10-19_final_report.md`;
+  `.planning/archive/audit_2026-10-19_final_ledger.md`; `.planning/PLAN.md`
+  *Phase 7*; commits `643b5fe`, `d31d063`, `9fc3684`, `144f56e`, `238ab9a`,
+  `db0183e`, `030907e`, `8763818`, `78a33e4`, `979b408`, `d4b204c`,
+  `8fa8234`, `65076ab`, `6d2a49e`, `84a552d`, `4f3760d`, `120ad7d`,
+  `730699f`, `2a65a85`.
+- **Reversible:** n/a — this records an audit result and its fix set, not a
+  design choice.
+
+## 2026-10-19 — Watch registration is non-recursive; the stat sweep covers the window
+
+- **What:** the initial project watch and every directory the scope walk
+  includes are registered with `RecursiveMode::NonRecursive`
+  (`src/watch/manager/scopes.rs`, `src/watch/scope_apply.rs`). The scope walk
+  already enumerates every indexable directory, so each is watched
+  individually and the number of kernel watches is bounded by
+  `max_watch_entries` instead of by notify's recursive per-directory walk over
+  the whole subtree. A directory created after the walk marks the scope dirty
+  and is registered on the next scope refresh; files created inside it before
+  that are caught by the per-call stat sweep. A changed watch set still forces
+  `NeedsVerification`, so the window is verified rather than assumed.
+- **Why:** notify 8.2.0's recursive `add_watch` adds one inotify watch per
+  directory in the subtree (inotify.rs:400-414), including gitignored trees
+  the scope excludes, so `max_watch_entries` did not bound kernel watches. A
+  large `node_modules`, `target`, or `.git` could exhaust
+  `fs.inotify.max_user_watches`; notify returned `MaxFilesWatch`, health
+  became `Unavailable`, and every call full-verified. The accepted trade is a
+  short unwatched window for a newly created nested directory; the stat sweep
+  is already the documented freshness guarantee, so the trade is confined to
+  latency, not correctness.
+- **Where:** `src/watch/manager/scopes.rs`; `src/watch/scope_apply.rs`;
+  `src/watch/manager/events.rs`; commit `120ad7d`; `.planning/PLAN.md`
+  *Phase 7* and *Accepted and held decisions*; `docs/TROUBLESHOOTING.md`
+  *Watcher health and full-publish loops*.
+- **Reversible:** yes in code, but returning to recursive registration needs a
+  separate kernel-watch bound; without one, the `max_watch_entries` guarantee
+  is lost again.
+
+## 2026-10-19 — Ignore rules are project-scoped (`parents(false)`)
+
+- **What:** `indexable_walker_with_max_depth` now sets `parents(false)`
+  (`src/ignore_rules.rs`). `.gitignore`, `.ignore`, and `.git/info/exclude`
+  files are read at or below the project root; ignore files in ancestor
+  directories above the root are **not** applied. Discovery, the watch-scope
+  walk, the sweep, reconcile, and `IgnoreRules::build` all share this rule set.
+- **Why:** `standard_filters(true)` had enabled `parents(true)`, so the walker
+  honored ancestor ignore files while `IgnoreRules::build` only received the
+  ignore files the scope walk found under the root. In a project nested inside
+  another repository, full publish could exclude a file that the watcher and
+  reconcile then indexed, and a later sweep deleted it — the full and
+  incremental paths disagreed about what the index contains. Project scope is
+  the module's documented rule set, so aligning the walker to it is the
+  smaller, verifiable fix.
+- **Where:** `src/ignore_rules.rs` (`parents(false)` and its comment); commit
+  `84a552d`; `docs/TROUBLESHOOTING.md` *Watcher health and full-publish
+  loops*; `.planning/PLAN.md` *Phase 7*.
+- **Reversible:** yes, but honoring ancestor ignore files again requires the
+  incremental matcher to read them too and the shared contract to say so.
+
+## 2026-10-19 — `ImportReport.skipped` is a count, not a list
+
+- **What:** `project_control` with `action: "on"` now returns an `import`
+  report with `added`, `modified`, `deleted`, `unchanged`, `skipped`, and
+  `revision_id`. `added` includes files the import then skipped (so
+  `added + modified + unchanged` is the current discovered file set);
+  `skipped` is a count, not an unbounded path list, and the per-reason
+  breakdown remains in `report.completeness`. The field docs are part of the
+  recorded MCP output schema.
+- **Why:** an unbounded list would be cut by the response byte budget, and a
+  row cap is not the unit this project uses — bytes are. A count is quotable
+  as-is, and the call that wants detail already has `report`. Reporting
+  `modified` and `deleted` closes the re-enable gap where an import that
+  changed or removed rows described only additions. No response silently
+  truncates.
+- **Where:** `src/tools/project_control.rs`;
+  `src/tools/project_control_types.rs`; commit `4f3760d`;
+  `.planning/archive/mcp_surface.json`; `.planning/PLAN.md` *Phase 7*.
+- **Reversible:** adding fields is compatible; replacing the count with a list
+  needs a byte-budget design and a new schema record.
+
+## 2026-10-19 — Wave 5 residual P2s and accepted connection guards
+
+- **What:** four P2 follow-ups are recorded rather than fixed:
+  1. `connect_cli::add_args` still uses `binary.display().to_string()`, so a
+     non-UTF-8 binary path is lossy in the argv for CLI-strategy clients. The
+     file-strategy config writer now refuses the same path with
+     `ConnectError::BinaryPath` before any write; making argv construction
+     fallible is the follow-up.
+  2. `connect::write_atomic` creates the temp owner-only (`0600`), writes
+     through a symlinked config to its target, and removes the temp on a
+     failed write/rename, but does not `fsync` before the rename.
+  3. The ignore-error mapping in `src/ignore_rules/build.rs` duplicates the
+     watch helper; deduplicating it keeps both log contracts from drifting.
+  4. Test-only R1/R2/R4/R10 P2s and dev-gate P2 notes were counted, not
+     enumerated, in the wave-5 chunk ledgers (for example a zero median
+     accepted by `check_performance`, an untested unreadable-CODEOWNERS arm in
+     `check_governance`, impossible dates accepted by `check_source_limits`,
+     and a stale canonical-set parenthetical in `check_docs_drift`).
+  Accepted, not follow-ups: the connection `Configure` arms for `busy_timeout`
+  and function registration remain unreachable without an invalid handle or
+  OOM, and the one-shot security rejections in `connection_guards.rs` keep raw
+  paths under the 2026-10-16 one-shot diagnostic carve-out. The 9 suspected
+  misses from the audit are recorded in the final ledger but not counted;
+  `ImportReport`'s deleted/skipped gap among them was closed by the
+  `ImportReport` change.
+- **Why:** none of these is a confirmed P0/P1 defect, but a finding held only
+  in a chunk ledger or a session is a finding lost. Recording the residue and
+  the acceptances prevents a later wave from rediscovering it or re-opening an
+  arm that was already decided.
+- **Where:** `.planning/archive/audit_2026-10-19_final_report.md` (*Accepted
+  decisions / residual P2s*);
+  `.planning/archive/audit_2026-10-19_final_ledger.md` (*Suspected misses*);
+  `src/connect_cli.rs` (`add_args`); `src/connect/config_file.rs`
+  (`write_atomic`); `src/ignore_rules/build.rs`;
+  `src/store/connection_guards.rs`; `.planning/PLAN.md` *Phase 7*.
+- **Reversible:** a follow-up that closes one of these updates the plan and
+  this record; the accepted guards need a new decision to change.
+
+## 2026-10-19 — Wave 5 final gate passed on `main` at `2a65a85`
+
+- **What:** the integrated wave-5 tree passed the full gate:
+  `cargo fmt --all -- --check`; `cargo clippy --all-targets --all-features
+  --locked -- -D warnings`; **1,246 tests passed, 0 failed, 1 ignored**;
+  `cargo deny check` (one unmatched license-exception warning);
+  `cargo machete`; **93.56%** line coverage (12,005 / 12,831; gate 83%);
+  `check_source_limits` (0 production files over 200 code lines;
+  `manager_orchestration.rs` at 197); `check_no_duplicates`;
+  `check_producer_coverage`; `check_governance`;
+  `check_version_consistency`; `check_docs_drift`; `check_mcp_surface`; and
+  `check_performance` at 0.99x–1.02x against the 20% threshold. `RUSTFLAGS='-W
+  missing_docs' cargo check --lib --bins` and `cargo doc --no-deps --lib`
+  report 0 warnings; `cargo crap --min 0 --path src` reports 0 production
+  functions with CC > 15.
+- **Why:** the wave-5 fixes touched sync, watch, tools, connect, update, and
+  the gates; the integrated gate is the acceptance evidence. A later reader
+  should not have to re-run the wave to learn the outcome.
+- **Where:** `.planning/archive/audit_2026-10-19_final_report.md` (*Post-fix
+  final validation*); `.planning/PLAN.md` *Phase 7*; commits `66536c0..2a65a85`.
+- **Reversible:** n/a — this records a gate result, not a design choice.
+
 ## 2026-10-19 — Mutation-testing scope: six files, revision_support added for the moved stale-finding invalidation
 
 - **What:** the `cargo-mutants` step now covers

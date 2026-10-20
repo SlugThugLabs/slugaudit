@@ -12,7 +12,7 @@ item with no state reads as "unknown" to the next reader, which is worse than
 "known bad". Checkable claims carry a commit hash, a path, a command, or a
 date.
 
-The six audit records this plan refers to are copied into the repository so
+The eight audit records this plan refers to are copied into the repository so
 they survive `/tmp` cleanup. They are new 2026-10-19 records; nothing is
 restored from the deleted 2026-10-18 planning paths:
 
@@ -32,26 +32,38 @@ restored from the deleted 2026-10-18 planning paths:
 - `.planning/archive/audit_2026-10-19_wave4_report.md` — the wave-4 R8
   public-contract report: `missing_docs` 241 → 0, the external-use decisions,
   the notices render, and the final gate at `4b765e1`.
+- `.planning/archive/audit_2026-10-19_final_report.md` — the wave-5
+  verification audit of `main` at `66536c0` (code at `4b765e1`): 282/282 files
+  (57,449 lines) read by 12 chunk auditors, 56 confirmed P0/P1, the fixes,
+  the accepted P2 residue, and the post-fix final gate.
+- `.planning/archive/audit_2026-10-19_final_ledger.md` — the verified wave-5
+  ledger: 56 confirmed P0/P1 rows (12 P0, 44 P1), the 9 duplicate rows merged
+  into them, the 9 suspected misses (recorded, not counted), and the per-rule
+  and per-scope counts.
 
 The durable copies are the source of record. A later claim that cites a
 `/tmp` path instead of one of these files is not durable.
 
 ## Current state (2026-10-19)
 
-- `main` at `4b765e1` after wave 4 (`3dc9e42..976dc2e`, plus the doc-link fix
-  `27ae582` and the surface re-record `cf1475e`). Wave 3 landed at `2dbd703`
-  (`0374d60..2dbd703`, module map `d669848`); wave 2 landed at `6728735`;
-  wave 1 at `fe923a7`; the base before wave 2 was `6241b43`.
+- `main` at `2a65a85` after wave 5 (`66536c0..2a65a85`, the 56-fix set plus
+  the integration fixes `730699f` and `2a65a85`). Wave 4 landed at `4b765e1`
+  (`3dc9e42..976dc2e`, plus the doc-link fix `27ae582` and the surface
+  re-record `cf1475e`); wave 3 at `2dbd703` (`0374d60..2dbd703`, module map
+  `d669848`); wave 2 at `6728735`; wave 1 at `fe923a7`; the base before
+  wave 2 was `6241b43`.
 - Crate `slugaudit-mcp-rust` `1.0.10`, edition 2024, `publish = false`,
   licensed by `LICENSE` (PolyForm Noncommercial 1.0.0 plus the SlugAudit
   Tool-Use Additional Permission).
-- Tests: **1,176 passed, 0 failed, 1 ignored** on the integrated wave-4 tree
-  (1,174 after wave 2; 1,156 after wave 1; 1,030 at the strict audit).
-- Line coverage: **93.27%** (11,661 / 12,503), gate 83% — the integrated
-  wave-3 and wave-4 measurement. Wave 2 measured 93.10%; wave 1 measured
-  92.85%; the strict audit measured 90.26%.
-- `check_docs_drift` and `check_mcp_surface` **pass** on `4b765e1`; the MCP
-  surface was re-recorded at `cf1475e` (8 tools, 8 resources).
+- Tests: **1,246 passed, 0 failed, 1 ignored** on the integrated wave-5 tree
+  (1,176 after wave 4; 1,174 after wave 2; 1,156 after wave 1; 1,030 at the
+  strict audit).
+- Line coverage: **93.56%** (12,005 / 12,831), gate 83% — the integrated
+  wave-5 measurement. Wave 4 measured 93.27%; wave 2 measured 93.10%;
+  wave 1 measured 92.85%; the strict audit measured 90.26%.
+- `check_docs_drift` and `check_mcp_surface` **pass** on `2a65a85`; the MCP
+  surface snapshot was updated with the wave-5 health and `project_control`
+  schema changes at `4f3760d` (8 tools, 8 resources).
 
 ## Phase 1 — 2026-10-18 audit and remediation
 
@@ -290,16 +302,128 @@ re-record `cf1475e`); the integrated full gate passed on `main` at `4b765e1`.
 The full wave-4 account is in
 `.planning/archive/audit_2026-10-19_wave4_report.md`.
 
-## Phase 7 — Wave 5 (in progress)
+## Phase 7 — Wave 5 (landed)
 
-State: **in progress** — a fresh audit of the wave-4 tree. No result is
-claimed here; this entry records only that the wave has started.
+State: **landed at `66536c0..2a65a85`** (the 56-fix set plus the integration
+fixes `730699f` and `2a65a85`). The wave-5 audit read the wave-4 tree at
+`66536c0` (code at `4b765e1`; later commits were docs only).
 
-## Remaining P1 debt (still open)
+### Audit result
 
-These are production entries from
-`.planning/archive/audit_2026-10-19_report.md` that wave 1 did not close. They
-are recorded here so a later wave does not rediscover them from scratch.
+- **12 independent chunk auditors read 282 of 282 files (57,449 lines)**, and
+  a verification pass reopened every cited line and enclosing function.
+- **56 confirmed P0/P1 (12 P0, 44 P1)** from 65 author candidates (17 P0, 48
+  P1): **9 duplicate rows merged** into confirmed rows, **0 dropped** as
+  false, misstated, or already covered, and **9 suspected misses** recorded
+  separately but not counted. Scope: 49 production, 2 dev-gate, 5 test.
+- **All 56 confirmed entries fixed** by the wave-5 commit set. The P0 set:
+  fail-closed sweep/discovery on unreadable trees and malformed ignore files;
+  duplicate top-level SQL column names refused; the notify-callback deadlock
+  removed; NFS-root detection; false disconnect success and 0600/symlink
+  client-config writes; cross-session finding purge moved to session start;
+  path redaction in ignore-rule, sweep, manager open/recovery, reconcile/drain,
+  and parser-load logs; the `finding_read` offset test. The P1 set: health and
+  structure error typing plus the unreadable-DB phase; report operation
+  context; `project_control` `ImportReport` fields
+  (modified/deleted/skipped); gitignore write durability and FIFO/symlink
+  handling; query-clip
+  continuation; sweep decomposition and discovery `entry.error()`; ignore
+  parent/hidden consistency; watch scope bound, dead state APIs, poison test,
+  lock labels, deterministic event tests; model/graph dead API removal and
+  Python relative imports; update `run_update` shipped-platform tests; docs
+  and source-limit gate parsing; test fixture leak, finding caps, redaction
+  control lines, connect I/O/stat assertions.
+- The per-row evidence, failure scenarios, existing-test gaps, and rule/scope
+  counts are in `.planning/archive/audit_2026-10-19_final_ledger.md`; the
+  report is `.planning/archive/audit_2026-10-19_final_report.md`.
+
+### Accepted design decisions
+
+- **Watch scope is non-recursive, with the sweep as the coverage guarantee.**
+  The initial project watch and every directory the scope walk includes are
+  registered with `RecursiveMode::NonRecursive`; the walk already enumerates
+  every indexable directory, so the number of kernel watches is bounded by
+  `max_watch_entries` instead of by the whole subtree (ignored trees
+  included). A directory created after the walk marks the scope dirty and is
+  registered on the next scope refresh; files created inside it before that
+  are caught by the per-call stat sweep. A changed watch set forces
+  `NeedsVerification`, so the window is verified, not assumed.
+- **Ignore rules are project-scoped.** The walker uses `parents(false)`:
+  `.gitignore`, `.ignore`, and `.git/info/exclude` files are read at or below
+  the project root, and ancestor ignore files above the root are not honored.
+  This is the rule set `IgnoreRules::build`, discovery, the watch-scope walk,
+  the sweep, and reconcile all share, so the full and incremental paths cannot
+  disagree about what is indexed.
+- **`ImportReport.skipped` is a count, not a list.** `project_control` now
+  reports `added`, `modified`, `deleted`, `unchanged`, `skipped`, and
+  `revision_id`; `added` includes files the import then skipped, and the
+  per-reason breakdown stays in `report.completeness`. An unbounded list would
+  be cut by the response byte budget; a count is quotable as-is.
+- **The connection guards stay accepted as documented.** The `Configure` arms
+  for `busy_timeout` and function registration remain accepted as unreachable
+  without an invalid handle or OOM; the one-shot security rejections in
+  `connection_guards.rs` keep raw paths under the 2026-10-16 one-shot
+  diagnostic carve-out.
+
+### Remaining P2 follow-ups
+
+None of these is a confirmed P0/P1 defect; they are recorded so a later wave
+does not rediscover them from scratch.
+
+- **`connect_cli` argv is still lossy.** `add_args` uses
+  `binary.display().to_string()` for CLI-strategy clients, so a non-UTF-8
+  binary path can still be substituted with U+FFFD in the argv. The
+  file-strategy config writer now refuses a non-UTF-8 path with
+  `ConnectError::BinaryPath` before any write; making the argv construction
+  fallible is the follow-up.
+- **`write_atomic` does not fsync before rename.** The temp is created 0600,
+  symlinked configs are written through to their target, and a failed
+  write/rename removes the temp, but a crash after rename can lose the file's
+  contents on a filesystem that defers commit. Add an fsync if client-config
+  crash durability is required.
+- **The ignore-error mapper is duplicated.** `src/ignore_rules/build.rs`
+  duplicates the watch helper's error-kind and redacted-path mapping;
+  deduplicating it keeps the two log contracts from drifting.
+- **Test-only and dev-gate P2 notes.** The wave-5 chunk ledgers counted
+  test-only R1/R2/R4/R10 P2s and dev-gate P2 notes without enumerating them in
+  the confirmed ledger. Examples: `check_performance` accepts a zero median,
+  `check_governance`'s unreadable-CODEOWNERS arm remains untested,
+  `check_source_limits` accepts impossible dates, and `canonical_docs.rs`'s
+  module doc omits `MODULE_MAP.md`. They are follow-ups, not defects.
+- **The 9 suspected misses stay recorded but uncounted.** They are listed in
+  the final ledger. The `ImportReport` deleted/skipped gap among them was
+  closed by this wave's `ImportReport` change; the rest (client-config FIFO
+  read, non-UTF-8 sidecar naming, progress completion on failure, line-index
+  amplification, and related doc/size notes) remain P2 items.
+
+### Final gate (2026-10-19, `main` at `2a65a85`)
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --all -- --check` | pass |
+| `cargo clippy --all-targets --all-features --locked -- -D warnings` | pass |
+| tests | **1,246 passed, 0 failed, 1 ignored** |
+| `cargo deny check` | pass (one unmatched license-exception warning) |
+| `cargo machete` | pass |
+| coverage | **93.56%** line coverage (12,005 / 12,831; gate 83%) |
+| `check_source_limits` | pass (0 production files over 200 code lines; `manager_orchestration.rs` at 197) |
+| `check_no_duplicates` | pass |
+| `check_producer_coverage` | pass |
+| `check_governance` | pass |
+| `check_version_consistency` | pass |
+| `check_docs_drift` | **pass** |
+| `check_mcp_surface` | **pass** |
+| `check_performance` | **pass** (0.99x–1.02x, threshold 20%) |
+| `missing_docs` / `cargo doc --no-deps --lib` | **0 warnings** |
+| `cargo crap --min 0 --path src` | 0 production functions with CC > 15 |
+
+## Remaining P1 debt (historical; superseded by wave 5)
+
+State: **superseded** — the wave-5 audit is a fresh, complete inventory
+(282/282 files) and its verified ledger is the current defect record. All 56
+confirmed P0/P1 entries it found were fixed; the dispositions below are kept
+as history so a later reader can see how the strict-audit debt closed. No item
+below is carried forward as a confirmed P0/P1 defect.
 
 - **R4 — functions/files over size targets: 109 entries, 40 production.**
   **Resolved for production at wave 3** (`0374d60..2dbd703`): all 40
@@ -316,9 +440,12 @@ are recorded here so a later wave does not rediscover them from scratch.
   external reference (dead public API), which are no longer public.
 - **R5 — non-boundary failure-path tests: 142 entries (110 production, 32
   dev-gate) at the strict audit.** Wave 1 targeted 107 in-scope entries; wave
-  2 closed the boundary/unreachable-arm subset (`ed58a4b`). The remaining
-  **non-boundary R5** entries and the two still-accepted finding arms under
-  *Accepted arms and discarded variants* are **still open**.
+  2 closed the boundary/unreachable-arm subset (`ed58a4b`). The wave-5
+  verification audit re-derived the inventory from the current tree and
+  confirmed 11 R5 entries (5 test-only), **all fixed** in wave 5. The older
+  142-entry list is historical; the final ledger is the current record. The
+  two accepted finding arms under *Accepted arms and discarded variants*
+  remain accepted, not open.
 
 ## Accepted arms and discarded variants
 
@@ -376,6 +503,20 @@ These are deliberate. Reversing one needs a new entry in
   carries `invalidate_stale_findings`, moved out of `revision.rs` by the
   wave-4 size fix (2026-10-19), so this is the same correctness core, not a
   wider one.
+- Watch registration is **non-recursive**: the scope walk enumerates every
+  indexable directory and each is watched individually, so kernel watches are
+  bounded by the scope caps. A directory created later is registered on the
+  next scope refresh; the per-call stat sweep covers the gap
+  (`src/watch/manager/scopes.rs`, `src/watch/scope_apply.rs`, 2026-10-19).
+- Ignore rules are **project-scoped** (`parents(false)`): ancestor ignore
+  files above the project root are not applied, so full publish, the watcher,
+  the sweep, and reconcile share one rule set (`src/ignore_rules.rs`).
+- `ImportReport.skipped` is a **count**, not an unbounded list; the
+  per-reason detail is `report.completeness` (`src/tools/project_control_types.rs`).
+- The connection `Configure` arms and the one-shot security rejections in
+  `connection_guards.rs` remain **accepted as documented** (unreachable
+  without an invalid handle/OOM; raw paths only under the 2026-10-16 one-shot
+  carve-out).
 - Tests are exempt from the production panic ban: a panic is the failure
   signal there.
 - The 2026-10-19 strict audit counts test/bench/fuzz R1/R2 entries, but the
@@ -384,9 +525,10 @@ These are deliberate. Reversing one needs a new entry in
 
 ## Documentation policy
 
-State: **landed (wave 2)** — authored at `7a782de`, with the AGENTS.md
-parser-pack path corrected at `326ec9a`; this record adds the four durable
-audit copies under `.planning/archive/`.
+State: **landed (wave 2; records extended through wave 5)** — authored at
+`7a782de`, with the AGENTS.md parser-pack path corrected at `326ec9a`; the
+durable audit evidence under `.planning/archive/` now spans eight
+`audit_2026-10-19_*` files, the last two added by wave 5.
 
 The canonical doc set is fixed by
 `src/bin/check_docs_drift/canonical_docs.rs`:
@@ -409,5 +551,5 @@ the integrated tree; it enforces existence, the module-map paths, and the
 `*_tests.rs` count claim. The release docs (`docs/RELEASING.md`,
 `docs/about.toml`, `docs/third-party-notices.hbs`) are consumed by
 `.github/workflows/release.yml` and are not part of the drift gate's checked
-set. The six `audit_2026-10-19_*` files in `.planning/archive/` are
+set. The eight `audit_2026-10-19_*` files in `.planning/archive/` are
 historical evidence copies, not canonical docs, and are not read by the gate.

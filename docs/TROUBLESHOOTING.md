@@ -60,6 +60,25 @@ using `curl`, downloads the binary and `SHA256SUMS`, compares the asset's
 SHA-256 digest against the manifest entry, and only then replaces the target
 with an atomic rename. On any failure the existing binary is untouched.
 
+Successful outcomes print one of:
+
+- `slugaudit is already up to date (vX.Y.Z).` — no download or replacement.
+- `A newer release (tag vX.Y.Z) is available; fetching...` — then the download
+  and verification run.
+- `This build's version (…) could not be compared with the published …;
+  fetching it as though it were newer.` — a dev build with no plain dotted
+  version; the fetch is deliberate, but the line does not claim a comparison
+  that never happened.
+- `Done. Restart any running AI sessions so they launch the new binary.` —
+  the verified binary was installed.
+
+These branches are exercised end to end on the shipped platform (Linux
+x86_64) by `tests/update_cli_tests.rs`, including a failed checksum leaving
+the old binary in place. The unsupported-platform refusal is a compile-gated
+unit test because it cannot run on the platform that has an asset.
+
+Failure outcomes:
+
 - `could not run curl (required to self-update)` — install `curl`, or download
   the release manually from GitHub.
 - `checksum verification failed` / `SHA256SUMS has no entry for …` — nothing
@@ -67,8 +86,6 @@ with an atomic rename. On any failure the existing binary is untouched.
   ([`RELEASING.md`](RELEASING.md)).
 - `slugaudit update only fetches the linux/x86_64 release` — the machine is a
   different platform; build from source instead.
-- `This build's version … could not be compared` — a dev build with no plain
-  dotted version; the release is fetched as though it were newer.
 
 After an update, restart any running agent session so it launches the new
 binary. To revert to the version an install or update displaced:
@@ -108,7 +125,18 @@ Common outcomes:
   the target config cannot be merged safely. Fix or remove the offending file
   and retry; SlugAudit never rewrites a config it could not parse.
 - `Nothing to disconnect.` — no file entry, client CLI, or home directory was
-  available to remove. Nothing was reported as removed.
+  available to remove. This includes an existing client config that has no
+  `slugaudit` entry: the file is left byte-for-byte untouched (not rewritten
+  or reformatted). `Done.` is printed only when a registration was actually
+  removed.
+
+Config-file registration is atomic and owner-only. The replacement temp file
+is created `0600` before any bytes are written, so a client config holding
+another server's API tokens never becomes group- or world-readable, even
+under a permissive umask. A config reached through a symlink (a dotfiles
+setup) is written through to its target, so the link survives; a dangling
+symlink is refused rather than replaced. A non-UTF-8 `slugaudit` binary path
+is refused before any config is written for file-strategy clients.
 
 For a client that is not in the registry, `slugaudit menu` option 4 prints a
 generic JSON MCP server snippet to paste into that client's configuration.
@@ -176,6 +204,16 @@ destructive tool action (`destructiveHint: true`). `on` creates
 `project_control {"action":"on", …}` rather than expecting a normal tool call
 to work.
 
+The initial import reports `added`, `modified`, `deleted`, `unchanged`,
+`skipped`, and `revision_id`. `added` includes files the import then skipped,
+so `added + modified + unchanged` is the discovered file set; `modified` and
+`deleted` describe rows that changed or disappeared relative to the previous
+revision. `skipped` is a **count** of discovered files with no stored content
+(oversize, unreadable, or a non-UTF-8 path), not a list; a non-zero value means
+the import is incomplete, and `report.completeness` carries the per-reason
+breakdown. Pass `revision_id` back as `expected_revision` when resuming a paged
+read.
+
 ### Open-time refusals
 
 These are deliberate guards, not corruption, and rebuilding does not fix
@@ -208,13 +246,31 @@ placeholder inside a group.
 | `unavailable` | The watcher could not be initialized. Every call full-publishes. | Check platform support and filesystem; the stat sweep still serves reads. |
 | `no_active_project` | No path was supplied and this server has no registered project, or a supplied path has no watcher and no published revision. | Call `project_control {"action":"on", …}` or pass the project path. |
 | `indexed_unwatched` | The project has a published revision, but this server has no registered watcher for it. Evidence is readable; no watcher health is implied. | Normal after a fresh server start; the next state-bearing call registers a watcher. |
-| `unknown` | No `path` was supplied and the watcher is `Healthy` or `Partial` with no unreconciled events. There is no project root in this answer, so no revision can be checked. | Supply `path` for the project's database state. |
+| `unknown` | Either no `path` was supplied and the watcher is `Healthy` or `Partial` with no unreconciled events (there is no project root in this answer, so no revision can be checked), or a supplied project's database exists but could not be read (`database_read_failed` is true) while the watcher is `Healthy`, `Partial`, or not registered. Neither case claims the first sync failed. | Supply `path` for a pathless answer. For an unreadable database, see *An unreadable database* below. |
 | `disabled` | The supplied path has no `.planning/slugaudit/` marker. This is a state, not an error. | The same `remedy` as `project_not_enabled`: enable the project. |
 
-`unknown` exists precisely so a pathless answer never claims the first sync
-failed (that would be `importing`) or that a revision exists (that would be
-`steady_state`). It is not an error and needs no action beyond passing a path
-if database state is wanted.
+`unknown` exists precisely so the answer never claims the first sync failed
+(that would be `importing`) or that a revision exists (that would be
+`steady_state`). A pathless answer is not an error and needs no action beyond
+passing a path if database state is wanted.
+
+### An unreadable database
+
+When the project database exists but could not be inspected, opened, or
+queried, `health` returns `database: null` with `database_read_failed: true`.
+The phase is `unknown` when the watcher is `Healthy`, `Partial`, or not
+registered; the watcher-only phases (`unavailable`, `restoring`) still
+describe the watcher and stay truthful. The failure may be permissions,
+corruption, a symlink or network filesystem refused at open, a lock/timeout,
+or schema drift; stderr logs the failed open/read beside a redacted database
+id. The phase deliberately does not say `importing` — "the first sync has
+never succeeded" is false when the revision exists but cannot be seen.
+
+`health` is read-only and never syncs or rebuilds. The next state-bearing call
+opens the database and applies the normal recovery path (corruption and schema
+mismatch are discarded and rebuilt; see *Automatic recovery*). If the
+condition persists, check the *Open-time refusals* above and restore local,
+owner-only, non-symlinked storage.
 
 `server` counters are instrumentation and drive no phase: total tool calls,
 errors, total milliseconds, last sync time/duration, and
@@ -230,13 +286,31 @@ errors, total milliseconds, last sync time/duration, and
 | `Unavailable` | Full publish on every call. |
 
 `server.consecutive_full_publishes` counting 1+ across repeated calls means the
-watcher is not being trusted. On Linux a common cause is inotify watch
-exhaustion (`fs.inotify.max_user_watches`), which makes `notify` fail and the
-manager mark the project `Desynced`; every call then full-publishes. Raise
-the kernel limit, or raise `SLUGAUDIT_MAX_WATCH_ENTRIES` / `_DEPTH` if the
-scope walk itself is the limit. A failed stat sweep also fails closed: it sets
-`Desynced` and the call errors rather than serving stale evidence for the
-unwalked remainder.
+watcher is not being trusted. On Linux, inotify watch exhaustion
+(`fs.inotify.max_user_watches`) still makes `notify` fail if the kernel limit
+is below the number of scoped directories; the manager then marks the project
+`Desynced` and every call full-publishes. Raise the kernel limit, or raise
+`SLUGAUDIT_MAX_WATCH_ENTRIES` / `_DEPTH` if the scope walk itself is the
+limit. A failed stat sweep also fails closed: it sets `Desynced` and the call
+errors rather than serving stale evidence for the unwalked remainder.
+
+Watch registration is **non-recursive**. The scope walk enumerates every
+indexable directory and each is registered individually, so the kernel watch
+count stays bounded by `max_watch_entries` instead of growing with the whole
+subtree (including `.git`, `target`, and other ignored trees). A directory
+created after the scope was computed marks the scope dirty and is registered
+on the next scope refresh (the next tool call); files created inside it before
+then are caught by the per-call stat sweep. A changed watch set also forces a
+full verification, so this is a latency window, not a freshness gap.
+
+Ignore rules are **project-scoped**. Discovery, the watch-scope walk, the
+sweep, and reconcile read `.gitignore`, `.ignore`, and `.git/info/exclude` at
+or below the project root; ignore files in ancestor directories above the
+root are not applied. A project nested inside another repository can
+therefore index a file that the outer repository's rules would exclude — add
+the rule to the project's own ignore files if you want it honored. One rule
+set is shared by the full and incremental paths, so they cannot disagree about
+what the index contains.
 
 The watcher is an optimization; the per-call stat sweep is the guarantee. A
 dropped watcher event is harmless because the next call re-verifies from disk.
