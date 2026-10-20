@@ -56,6 +56,13 @@ pub enum PublishError {
     /// the publish fails instead of omitting it.
     #[error("sampling result for {path} could not be delivered: {reason}")]
     SamplingResultLost { path: String, reason: String },
+    /// A sampling worker reported an index outside the discovered file set.
+    /// Workers only claim indices below the set's length, so reaching this
+    /// means an internal invariant was violated; the publish fails rather
+    /// than indexing a file that does not exist or silently dropping a
+    /// result.
+    #[error("sampling worker reported file index {index}, outside the {total}-file import set")]
+    SamplingIndexOutOfRange { index: usize, total: usize },
     #[error("invalid parser pack version {0:?}; expected a non-empty numeric dotted version")]
     InvalidParserPackVersion(String),
     /// `path` is a pre-formatted note naming the file being processed when
@@ -79,6 +86,61 @@ impl PublishError {
         match self {
             PublishError::TimeBudgetExceeded { elapsed_ms, .. } => Some(*elapsed_ms),
             PublishError::Discovery(error) => error.budget_elapsed_ms(),
+            _ => None,
+        }
+    }
+
+    /// Static category for a log line about this failure. Never the error's
+    /// `Display`: several variants embed a path or file content in it.
+    #[must_use]
+    pub(crate) const fn category(&self) -> &'static str {
+        match self {
+            PublishError::Discovery(_) => "discovery",
+            PublishError::Sample(_) => "sample",
+            PublishError::Revision(_) => "revision",
+            PublishError::Database(_) => "database",
+            PublishError::ImportTooLarge { .. } => "import_too_large",
+            PublishError::ChangedDuringSample { .. } => "changed_during_sample",
+            PublishError::SamplingResultLost { .. } => "sampling_result_lost",
+            PublishError::SamplingIndexOutOfRange { .. } => "sampling_index_out_of_range",
+            PublishError::InvalidParserPackVersion(_) => "invalid_parser_pack_version",
+            PublishError::TimeBudgetExceeded { .. } => "time_budget_exceeded",
+        }
+    }
+
+    /// Logs that this failure lost the parallel sampling pool's first-error
+    /// race. Only the static category and a redacted path id are emitted;
+    /// the raw `Display` of several variants embeds a path.
+    pub(super) fn warn_sampling_superseded(&self) {
+        tracing::warn!(
+            operation = "sample_batch",
+            category = self.category(),
+            path_id = ?self.redacted_path_id(),
+            "a later sampling failure was discarded after the first error was recorded",
+        );
+    }
+
+    /// A stable, non-reversible id for the path this failure carries, if it
+    /// carries one — the only form of it that may enter a log line.
+    /// [`PublishError::TimeBudgetExceeded::path`] is a pre-formatted note
+    /// (which can embed a relative path), not a path, so it is not exposed
+    /// here.
+    #[must_use]
+    pub(crate) fn redacted_path_id(&self) -> Option<String> {
+        match self {
+            PublishError::ChangedDuringSample { path }
+            | PublishError::SamplingResultLost { path, .. }
+            | PublishError::Revision(revision::RevisionError::InvalidParserRun { path, .. }) => {
+                Some(crate::util::redacted_log_id(path))
+            }
+            PublishError::Sample(
+                sample::SampleError::Read { path, .. } | sample::SampleError::TooLarge { path, .. },
+            )
+            | PublishError::Discovery(
+                discovery::DiscoveryError::Read { path, .. }
+                | discovery::DiscoveryError::NotRelative(path)
+                | discovery::DiscoveryError::NonUtf8Path(path),
+            ) => Some(crate::util::redacted_path(path)),
             _ => None,
         }
     }

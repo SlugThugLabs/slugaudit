@@ -226,15 +226,29 @@ impl Batch<'_> {
         idx: usize,
         outcome: Outcome,
     ) -> bool {
+        let Some(file) = self.discovered.get(idx) else {
+            self.abort(self.index_out_of_range(idx));
+            return false;
+        };
         match tx.send((idx, outcome)) {
             Ok(()) => true,
             Err(error) => {
                 self.abort(PublishError::SamplingResultLost {
-                    path: self.discovered[idx].relative_path.clone(),
+                    path: file.relative_path.clone(),
                     reason: error.to_string(),
                 });
                 false
             }
+        }
+    }
+
+    /// The typed failure for an index that is not a position in the
+    /// discovered set. Checked at every entry point into the batch state so
+    /// a bad index can never panic the process.
+    fn index_out_of_range(&self, index: usize) -> PublishError {
+        PublishError::SamplingIndexOutOfRange {
+            index,
+            total: self.discovered.len(),
         }
     }
 
@@ -262,12 +276,23 @@ impl Batch<'_> {
         let mut samples: Vec<Option<Sample>> = (0..self.total).map(|_| None).collect();
         let mut skipped: Vec<SkippedFile> = Vec::new();
         while let Ok((idx, result)) = rx.recv() {
+            // The index arrives over a channel from a worker, so treat it as
+            // unverified input: an out-of-range one is a contract violation
+            // that must fail the call, never be skipped or clamped.
+            let Some(slot) = samples.get_mut(idx) else {
+                return Err(self.index_out_of_range(idx));
+            };
             match result {
-                Ok(sample) => samples[idx] = Some(sample),
-                Err(reason) => skipped.push(SkippedFile {
-                    absolute_path: self.discovered[idx].absolute_path.clone(),
-                    reason,
-                }),
+                Ok(sample) => *slot = Some(sample),
+                Err(reason) => {
+                    let Some(file) = self.discovered.get(idx) else {
+                        return Err(self.index_out_of_range(idx));
+                    };
+                    skipped.push(SkippedFile {
+                        absolute_path: file.absolute_path.clone(),
+                        reason,
+                    });
+                }
             }
         }
         if let Some(err) = lock_or_recover(&self.error_slot).take() {
@@ -292,11 +317,19 @@ impl Batch<'_> {
 /// `Option::is_some()`. Locks through `lock_or_recover` (the project-
 /// wide helper) so a poisoned mutex is recovered with an `error!` log
 /// instead of silently unwrapped.
+///
+/// A later worker's distinct failure is still logged once at `warn` — with
+/// a static operation, the error's category, and only a redacted path id —
+/// so it is not silently discarded just because the first failure wins the
+/// return value. Its raw `Display` never enters the log: several variants
+/// embed a path.
 fn record_error(slot: &Mutex<Option<PublishError>>, error: PublishError) {
     let mut guard = lock_or_recover(slot);
     if guard.is_none() {
         *guard = Some(error);
+        return;
     }
+    error.warn_sampling_superseded();
 }
 
 #[cfg(test)]

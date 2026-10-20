@@ -495,3 +495,90 @@ fn a_walked_file_that_vanished_before_its_stat_is_skipped_so_its_row_is_deleted(
         "NotFound is the one stat error that means deleted"
     );
 }
+
+/// The sweep-driven apply's failure arm: the walk succeeded, but applying its
+/// findings exhausted the shared budget. The failure must be logged under the
+/// apply operation (never as a failed walk), carry the typed budget code, and
+/// mark the watcher `Desynced`.
+#[test]
+fn a_failed_sweep_apply_names_the_apply_operation_and_marks_the_watcher_desynced() {
+    use crate::progress::NoopProgressSink;
+    use crate::watch::{WatchState, WatcherHealth};
+    use std::collections::HashSet;
+
+    let (project, _db_dir, mut connection, _revision) = setup_project();
+    let limits = *process_limits();
+    let options = ReconcileOptions {
+        limits,
+        deadline: Deadline::after(Duration::ZERO),
+        rules: None,
+    };
+    let report = super::SweepReport {
+        candidates: ["a.rs".to_owned()].into_iter().collect(),
+        deleted: HashSet::new(),
+        on_disk: ["a.rs".to_owned()].into_iter().collect(),
+        unchanged: 0,
+    };
+    let state = WatchState::new();
+    let sink = NoopProgressSink;
+
+    let (result, logs) = crate::store::test_capture::capture_warns(|| {
+        tracing::warn!("control-line-sweep-apply-failure-probe");
+        crate::sync::sweep_reconcile::sweep_and_reconcile(
+            project.path(),
+            report,
+            &options,
+            &mut connection,
+            &state,
+            &sink,
+        )
+    });
+
+    let error = result.expect_err("a spent apply budget must fail the sweep");
+    assert!(
+        error.message.contains("reconciling sweep results"),
+        "the returned error must come from the apply: {error:?}"
+    );
+    assert_eq!(
+        error.data.as_ref().and_then(|data| data["code"].as_str()),
+        Some("sync_budget_exhausted"),
+        "the budget failure must keep its machine-readable code: {error:?}"
+    );
+    assert_eq!(
+        state.health(),
+        WatcherHealth::Desynced,
+        "a failed apply leaves freshness ambiguous"
+    );
+    assert!(
+        logs.contains("control-line-sweep-apply-failure-probe"),
+        "the capture must be live: {logs}"
+    );
+    let apply_lines: Vec<&str> = logs
+        .lines()
+        .filter(|line| line.contains("operation=\"sweep_reconcile_apply\""))
+        .collect();
+    assert_eq!(
+        apply_lines.len(),
+        1,
+        "the apply failure must be logged exactly once: {logs}"
+    );
+    assert!(
+        apply_lines[0].contains("sweep reconcile apply failed"),
+        "the log must name the failed operation: {}",
+        apply_lines[0]
+    );
+    assert!(
+        apply_lines[0].contains("error_code=\"sync_budget_exhausted\""),
+        "the log must carry the typed failure's machine code: {}",
+        apply_lines[0]
+    );
+    assert!(
+        !apply_lines[0].contains("a.rs"),
+        "the log must not carry a project-relative path: {}",
+        apply_lines[0]
+    );
+    assert!(
+        !logs.contains("stat sweep walk failed"),
+        "a walk that succeeded must not be reported as failed: {logs}"
+    );
+}

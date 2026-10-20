@@ -283,6 +283,7 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
         &upserts,
         &deletions,
         &skipped_records,
+        options.deadline,
     )?;
 
     Ok(ReconcileReport {
@@ -301,10 +302,25 @@ fn commit_reconcile_changes(
     upserts: &[FileRecord],
     deletions: &[String],
     skipped_records: &[SkippedRecord],
+    deadline: Deadline,
 ) -> Result<(), ReconcileError> {
-    let manifest_hash =
-        manifest::compute_manifest_hash(connection, upserts, deletions, skipped_records)?;
+    let manifest_hash = manifest::compute_manifest_hash(
+        connection,
+        upserts,
+        deletions,
+        skipped_records,
+        &deadline,
+    )?;
     let parser_pack_version = query_current_parser_pack_version(connection)?;
+    // The last cheap point to fail before the write transaction opens: a
+    // budget spent while the hash was computed must not be followed by a
+    // commit that runs for an unbounded time.
+    if let Some(elapsed) = deadline.exceeded() {
+        return Err(ReconcileError::TimeBudgetExceeded {
+            path: " before committing the reconciled revision".to_owned(),
+            elapsed_ms: elapsed.as_millis(),
+        });
+    }
 
     revision::publish_revision(
         connection,

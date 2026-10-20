@@ -4,10 +4,12 @@
 //! ([`compute_manifest_hash`]) that makes a no-op publish detectable
 //! without diffing every file.
 
+use crate::util::Deadline;
 use rusqlite::Connection;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use super::hash;
+use super::reconcile::ReconcileError;
 use super::revision;
 use super::revision_skipped::SkippedRecord;
 
@@ -83,6 +85,14 @@ pub(crate) fn paths_json_array<'a>(
     serde_json::to_string(&paths).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
 }
 
+/// How many stored rows [`compute_manifest_hash`] reads per query. The
+/// exclusion set (upserts + deletions + skipped) can be as large as the
+/// project's file count — `max_total_import_bytes` bounds bytes, not the
+/// number of (e.g. empty) files — so neither one JSON parameter for the
+/// whole set nor one unpaged read may allocate proportionally to it. Paging
+/// bounds each query, and the shared sync deadline is checked between pages.
+const STORED_ROW_BATCH: i64 = 4096;
+
 /// Computes the aggregate manifest hash from a post-update file set:
 /// existing DB state, updated with upserts and skipped records, minus
 /// deletions. The skipped records matter twice: their paths stay in the set
@@ -90,60 +100,93 @@ pub(crate) fn paths_json_array<'a>(
 /// a refreshed stat identity must replace the stored one or the hash would
 /// describe a row the transaction is about to overwrite.
 ///
-/// Avoids reading rows that will be replaced or removed: upserted paths are
-/// overwritten in-memory, and deleted paths are excluded at the SQL level so
-/// we don't pay to read rows we'll immediately discard.
+/// Stored rows are read in bounded pages and filtered in memory against the
+/// exclusion set; the deadline is checked before every page, so a spent sync
+/// budget fails here — before any write — rather than after one unbounded
+/// allocation. The caller's publish is the only writer, and it re-checks the
+/// CAS baseline inside its transaction, so this read never has to span one.
+///
+/// `ReconcileError` is the error type because this runs only inside the
+/// reconcile commit and its budget failure must keep the typed
+/// `TimeBudgetExceeded` variant the caller maps to `sync_budget_exhausted`.
 pub(crate) fn compute_manifest_hash(
     connection: &Connection,
     upserts: &[revision::FileRecord],
     deletions: &[String],
     skipped: &[SkippedRecord],
-) -> Result<String, rusqlite::Error> {
-    let current_refs: BTreeMap<String, String> = {
-        let exclude_count = upserts.len() + deletions.len() + skipped.len();
-        if exclude_count == 0 {
-            let rows: Vec<(String, String)> = connection
-                .prepare("SELECT path, content_hash FROM files")?
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            rows.into_iter().collect()
-        } else {
-            let excluded = paths_json_array(
-                upserts
-                    .iter()
-                    .map(|r| r.relative_path.as_str())
-                    .chain(deletions.iter().map(String::as_str))
-                    .chain(skipped.iter().map(|r| r.relative_path.as_str())),
-            )?;
-            let rows: Vec<(String, String)> = connection
-                .prepare(&format!(
-                    "SELECT path, content_hash FROM files \
-                     WHERE path NOT IN ({PATH_SET_SUBQUERY})"
-                ))?
-                .query_map([excluded], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            rows.into_iter().collect()
+    deadline: &Deadline,
+) -> Result<String, ReconcileError> {
+    hash_with_batch(
+        connection,
+        upserts,
+        deletions,
+        skipped,
+        deadline,
+        STORED_ROW_BATCH,
+    )
+}
+
+/// [`compute_manifest_hash`] with an injectable stored-row page size, so the
+/// multi-page path is testable without a `STORED_ROW_BATCH`-row fixture.
+///
+/// Chunked `NOT IN` would be wrong: a per-chunk `NOT IN` query returns rows
+/// belonging to other chunks, so the chunks would need quadratic
+/// re-querying or a temp table. Filtering the already-materialized upsert /
+/// deletion / skipped slices in memory is exact, and the read it replaces
+/// returned every kept row anyway. Keyset pagination (`id > last_id`) is
+/// `O(rows)` in total, unlike `LIMIT/OFFSET`, which rescans from the start
+/// for every page; the deadline is checked before each page.
+pub(super) fn hash_with_batch(
+    connection: &Connection,
+    upserts: &[revision::FileRecord],
+    deletions: &[String],
+    skipped: &[SkippedRecord],
+    deadline: &Deadline,
+    batch_size: i64,
+) -> Result<String, ReconcileError> {
+    let excluded: HashSet<&str> = upserts
+        .iter()
+        .map(|record| record.relative_path.as_str())
+        .chain(deletions.iter().map(String::as_str))
+        .chain(skipped.iter().map(|record| record.relative_path.as_str()))
+        .collect();
+    let mut current_refs = BTreeMap::new();
+    let mut statement = connection
+        .prepare("SELECT id, path, content_hash FROM files WHERE id > ?1 ORDER BY id LIMIT ?2")?;
+    let mut after_id = 0_i64;
+    loop {
+        if let Some(elapsed) = deadline.exceeded() {
+            return Err(ReconcileError::TimeBudgetExceeded {
+                path: " while computing the manifest hash".to_owned(),
+                elapsed_ms: elapsed.as_millis(),
+            });
         }
-    };
-
-    let mut current_refs = current_refs;
-    for record in upserts {
-        current_refs.insert(
-            record.relative_path.clone(),
-            record.identity.content_hash.clone(),
-        );
+        let page: Vec<(i64, String, String)> = statement
+            .query_map(rusqlite::params![after_id, batch_size], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<Result<_, _>>()?;
+        let Some(last) = page.last() else {
+            break;
+        };
+        after_id = last.0;
+        for (_, path, content_hash) in page {
+            if !excluded.contains(path.as_str()) {
+                current_refs.insert(path, content_hash);
+            }
+        }
     }
-    for record in skipped {
-        current_refs.insert(
-            record.relative_path.clone(),
-            record.identity.content_hash.clone(),
+    let overlays = upserts
+        .iter()
+        .map(|record| (&record.relative_path, &record.identity.content_hash))
+        .chain(
+            skipped
+                .iter()
+                .map(|record| (&record.relative_path, &record.identity.content_hash)),
         );
+    for (path, content_hash) in overlays {
+        current_refs.insert(path.clone(), content_hash.clone());
     }
-
     Ok(hash::aggregate_manifest_hash(
         current_refs.iter().map(|(k, v)| (k.as_str(), v.as_str())),
     ))

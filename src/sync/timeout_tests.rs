@@ -12,7 +12,7 @@ use crate::sync::SourceSyncManager;
 use crate::sync::discovery::{discover, discover_with_deadline};
 use crate::sync::publish::publish;
 use crate::sync::sample::sample_all_with_deadline;
-use crate::sync::test_support::{create_project, sync_project, write};
+use crate::sync::test_support::{create_project, setup_project, stored_paths, sync_project, write};
 use crate::util::Deadline;
 use crate::watch::WatchState;
 use std::collections::HashSet;
@@ -228,17 +228,138 @@ fn compute_manifest_hash_branches_are_both_reachable() {
     let empty: Vec<super::revision::FileRecord> = Vec::new();
     let no_skips: Vec<super::revision_skipped::SkippedRecord> = Vec::new();
     let leftover: Vec<String> = Vec::new();
-    let hash = super::manifest::compute_manifest_hash(&connection, &empty, &leftover, &no_skips)
-        .expect("seeded manifest hash");
+    let generous = Deadline::after(Duration::from_secs(60));
+    let hash = super::manifest::compute_manifest_hash(
+        &connection,
+        &empty,
+        &leftover,
+        &no_skips,
+        &generous,
+    )
+    .expect("seeded manifest hash");
     assert!(
         !hash.is_empty(),
         "manifest hash should be a non-empty hex digest"
     );
 
     let drop_a: Vec<String> = vec!["a.rs".to_owned()];
-    let drop_hash = super::manifest::compute_manifest_hash(&connection, &empty, &drop_a, &no_skips)
-        .expect("exclude-branch manifest hash");
+    let drop_hash =
+        super::manifest::compute_manifest_hash(&connection, &empty, &drop_a, &no_skips, &generous)
+            .expect("exclude-branch manifest hash");
     assert_ne!(drop_hash, hash, "deletions must change the aggregate hash");
+}
+
+/// The stored-row read is paged, so a row on the far side of a page boundary
+/// must still be hashed exactly once, and an excluded path must be dropped
+/// wherever it falls. Batch size 2 over five stored rows forces three pages.
+#[test]
+fn the_manifest_hash_reads_every_stored_page_across_the_batch_boundary() {
+    let (_project, _db_dir, connection, _revision) = setup_project();
+    let revision_db_id: i64 = connection
+        .query_row("SELECT id FROM revisions WHERE is_current = 1", [], |row| {
+            row.get(0)
+        })
+        .expect("current revision id");
+    for path in ["c1.rs", "c2.rs", "c3.rs"] {
+        connection
+            .execute(
+                "INSERT INTO files \
+                    (path, content_hash, hash_algorithm, parser_availability, \
+                     parse_outcome, extraction_completeness, last_revision_id) \
+                 VALUES (?1, ?2, 'blake3-v1', 'Available', 'Succeeded', 'Full', ?3)",
+                rusqlite::params![path, format!("hash:{path}"), revision_db_id],
+            )
+            .expect("insert stored row fixture");
+    }
+    let stored_hash = |path: &str| -> String {
+        connection
+            .query_row(
+                "SELECT content_hash FROM files WHERE path = ?1",
+                [path],
+                |row| row.get(0),
+            )
+            .expect("stored hash")
+    };
+    let deletions = vec!["c2.rs".to_owned()];
+
+    let hash = super::manifest::hash_with_batch(
+        &connection,
+        &[],
+        &deletions,
+        &[],
+        &Deadline::after(Duration::from_secs(60)),
+        2,
+    )
+    .expect("hash across page boundaries");
+
+    let expected_entries: Vec<(String, String)> = ["a.rs", "b.rs", "c1.rs", "c3.rs"]
+        .into_iter()
+        .map(|path| (path.to_owned(), stored_hash(path)))
+        .collect();
+    let expected = super::hash::aggregate_manifest_hash(
+        expected_entries
+            .iter()
+            .map(|(path, content_hash)| (path.as_str(), content_hash.as_str())),
+    );
+    assert_eq!(
+        hash, expected,
+        "every stored row outside the exclusion set must be hashed exactly once"
+    );
+}
+
+/// A budget spent while the manifest hash is being computed (here: before its
+/// first page, with a deletion set forcing the hash path) must fail with the
+/// typed reconcile budget error and publish nothing — no revision, no row
+/// change, no applied deletion.
+#[test]
+fn a_manifest_hash_budget_failure_publishes_nothing() {
+    let (project, _db_dir, mut connection, revision) = setup_project();
+    let limits = ResourceLimits::default();
+    let options = ReconcileOptions {
+        limits,
+        deadline: tiny_budget(),
+        rules: None,
+    };
+    let deleted: HashSet<String> = ["a.rs".to_owned()].into_iter().collect();
+    let paths_before = stored_paths(&connection);
+    let revisions_before: i64 = connection
+        .query_row("SELECT count(*) FROM revisions", [], |row| row.get(0))
+        .expect("count revisions");
+
+    let error = reconcile_dirty_paths_with_deadline(
+        &mut connection,
+        project.path(),
+        HashSet::new(),
+        deleted,
+        Some(revision.as_str()),
+        &options,
+        &HashSet::new(),
+    )
+    .expect_err("a spent budget must abort manifest hashing");
+
+    assert!(
+        matches!(
+            &error,
+            ReconcileError::TimeBudgetExceeded { path, .. } if path.contains("manifest hash")
+        ),
+        "expected the manifest-hash budget error, got {error:?}"
+    );
+    let revisions_after: i64 = connection
+        .query_row("SELECT count(*) FROM revisions", [], |row| row.get(0))
+        .expect("count revisions");
+    assert_eq!(
+        revisions_after, revisions_before,
+        "a failed manifest hash must not publish a revision"
+    );
+    assert_eq!(
+        stored_paths(&connection),
+        paths_before,
+        "a failed manifest hash must not change any row"
+    );
+    assert!(
+        paths_before.contains(&"a.rs".to_owned()),
+        "the deletion must not be applied"
+    );
 }
 
 /// `discover_with_deadline` aborts when the budget is exhausted on the

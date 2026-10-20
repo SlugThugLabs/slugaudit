@@ -42,6 +42,40 @@ pub(super) fn sweep_tree(
     })
 }
 
+/// Which step of the sweep-driven reconcile failed. The walk and the apply
+/// are distinct operations with distinct failure meanings — the walk could
+/// not verify the tree, the apply verified it but could not publish the
+/// result — so the failure log names the one that failed.
+#[derive(Clone, Copy)]
+enum SweepPhase {
+    Walk,
+    Apply,
+}
+
+impl SweepPhase {
+    /// The static operation name carried in the failure log.
+    const fn operation(self) -> &'static str {
+        match self {
+            SweepPhase::Walk => "stat_sweep_walk",
+            SweepPhase::Apply => "sweep_reconcile_apply",
+        }
+    }
+
+    /// The static failure message. Distinct per phase so a log reader can
+    /// tell a failed walk from a failed apply without parsing the error.
+    const fn message(self) -> &'static str {
+        match self {
+            SweepPhase::Walk => {
+                "stat sweep walk failed; marking watcher Desynced so the next call re-verifies"
+            }
+            SweepPhase::Apply => {
+                "sweep reconcile apply failed; marking watcher Desynced so the next call \
+                 re-verifies"
+            }
+        }
+    }
+}
+
 /// The failure contract for a failed walk or apply: freshness is ambiguous,
 /// so the watcher is marked [`WatcherHealth::Desynced`] and the progress
 /// lifecycle is closed before the error propagates — the next
@@ -53,10 +87,42 @@ pub(super) fn sweep_failed(
     sink: &dyn ProgressSink,
     error: ErrorData,
 ) -> ErrorData {
+    mark_sweep_failed(root, state, sink, SweepPhase::Walk, error)
+}
+
+/// [`sweep_failed`] for the apply step, whose failure is not a failed walk.
+fn sweep_apply_failed(
+    root: &Path,
+    state: &WatchState,
+    sink: &dyn ProgressSink,
+    error: ErrorData,
+) -> ErrorData {
+    mark_sweep_failed(root, state, sink, SweepPhase::Apply, error)
+}
+
+/// The shared failure contract. Logs once with the failing phase's static
+/// operation and message plus the error's closed-set machine code, then
+/// closes the progress lifecycle. The error's `Display` is never logged: a
+/// per-path budget note can embed a project-relative path. The typed error
+/// itself is returned unchanged to the caller.
+fn mark_sweep_failed(
+    root: &Path,
+    state: &WatchState,
+    sink: &dyn ProgressSink,
+    phase: SweepPhase,
+    error: ErrorData,
+) -> ErrorData {
+    let error_code = error
+        .data
+        .as_ref()
+        .and_then(|data| data["code"].as_str())
+        .unwrap_or("none");
     tracing::warn!(
         root_id = %redacted_path(root),
-        error = %error,
-        "stat sweep failed; marking watcher Desynced so the next call re-verifies",
+        operation = phase.operation(),
+        error_code,
+        "{}",
+        phase.message(),
     );
     state.set_health(WatcherHealth::Desynced);
     sink.emit(ProgressEvent::Completed {
@@ -135,7 +201,7 @@ pub(super) fn sweep_and_reconcile(
             log_sweep_findings(root, candidates, deleted, unchanged);
             Ok(())
         }
-        Err(error) => Err(sweep_failed(root, state, sink, error)),
+        Err(error) => Err(sweep_apply_failed(root, state, sink, error)),
     }
 }
 

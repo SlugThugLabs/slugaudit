@@ -3,7 +3,8 @@ use crate::progress::NoopProgressSink;
 use crate::store::open_read_write;
 use crate::sync::publish::publish;
 use crate::sync::test_support::write;
-use crate::util::now_unix;
+use crate::util::{Deadline, now_unix};
+use std::time::Duration;
 
 /// A cap-busting path count: SQLite's bound-variable limit is 32766.
 const OVER_VARIABLE_LIMIT: usize = 40_000;
@@ -80,13 +81,14 @@ fn the_manifest_hash_excludes_every_path_of_a_set_beyond_the_sqlite_variable_lim
     let mut deletions: Vec<String> = (0..OVER_VARIABLE_LIMIT)
         .map(|i| format!("filler/{i}.rs"))
         .collect();
+    let deadline = Deadline::after(Duration::from_secs(60));
     let without_deleting_a =
-        crate::sync::manifest::compute_manifest_hash(&connection, &[], &deletions, &[])
+        crate::sync::manifest::compute_manifest_hash(&connection, &[], &deletions, &[], &deadline)
             .expect("hash with 40k unrelated deletions");
     deletions.push("a.rs".to_owned());
 
     let with_a_deleted =
-        crate::sync::manifest::compute_manifest_hash(&connection, &[], &deletions, &[])
+        crate::sync::manifest::compute_manifest_hash(&connection, &[], &deletions, &[], &deadline)
             .expect("hash with 40k+1 deletions");
 
     assert_ne!(

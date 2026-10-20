@@ -15,9 +15,13 @@ pub enum HashError {
         source: std::io::Error,
     },
     /// The file holds more than the caller's byte cap. `observed` is the
-    /// bounded read's length — at least `limit + 1` — never a truncated
-    /// size, so the message reports what crossed the cap.
-    #[error("{path} is {observed} bytes, exceeding the {limit}-byte per-file hash ceiling")]
+    /// bounded read's length — how much was actually read before the cap
+    /// stopped it — so the message reports a lower bound on the file's
+    /// size, never the size itself.
+    #[error(
+        "{path} exceeds the {limit}-byte per-file hash ceiling; \
+         at least {observed} bytes were read before the cap stopped the read"
+    )]
     TooLarge {
         path: PathBuf,
         observed: u64,
@@ -253,6 +257,35 @@ mod tests {
             }
             other => panic!("expected TooLarge, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_too_large_message_reports_a_lower_bound_not_the_file_size() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("large.rs");
+        // The bounded read stops at cap + 1, so the message can only state
+        // how much was read — never the 64-byte file's real size.
+        std::fs::write(&path, vec![b'x'; 64]).expect("write fixture file");
+
+        let error = hash_file("large.rs", &path, 8).expect_err("over-cap file is refused");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("exceeds the 8-byte per-file hash ceiling"),
+            "the message must name the ceiling: {message}"
+        );
+        assert!(
+            message.contains("at least 9 bytes were read"),
+            "the message must report the bounded read length as a lower bound: {message}"
+        );
+        assert!(
+            !message.contains("is 9 bytes"),
+            "the bounded read length must not be presented as the file's size: {message}"
+        );
+        assert!(
+            !message.contains("64"),
+            "a value the read never observed must not appear: {message}"
+        );
     }
 
     #[test]
