@@ -680,3 +680,13 @@ fn an_uninspectable_database_path_fails_instead_of_skipping_the_symlink_guard() 
         Err(StoreError::Inspect(_))
     ));
 }
+
+/// R6: the remedy names what the code actually does — `/proc/self/mountinfo`
+/// on Linux and `/sbin/mount` on macOS — not commands it never runs.
+#[test]
+fn the_network_filesystem_check_error_names_the_real_inspection_path() {
+    let message = StoreError::NetworkFilesystemCheck(std::io::Error::other("x")).to_string();
+    assert!(message.contains("/proc/self/mountinfo"), "{message}");
+    assert!(message.contains("/sbin/mount"), "{message}");
+    assert!(!message.contains("fsutil"), "{message}");
+}

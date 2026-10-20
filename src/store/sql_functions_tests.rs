@@ -27,6 +27,13 @@ fn error_of(sql: &str) -> String {
         .to_string()
 }
 
+fn error_of_query(sql: &str, text: &str) -> String {
+    connection()
+        .query_row(sql, [text], |row| row.get::<_, Option<String>>(0))
+        .expect_err("the call must fail")
+        .to_string()
+}
+
 #[test]
 fn line_count_follows_the_one_based_terminator_model() {
     assert_eq!(count(""), 0);
@@ -121,6 +128,40 @@ fn invalid_arguments_fail_with_a_clear_message() {
         "{text_number}"
     );
     assert!(blob.contains("must be TEXT"), "{blob}");
+}
+
+/// R7: an input exactly at the function cap is still accepted, so the cap
+/// bounds work without rejecting the largest value a conservative query
+/// budget can return.
+#[test]
+fn a_line_function_input_at_the_byte_cap_is_accepted() {
+    let text = "a".repeat(MAX_LINE_FUNCTION_INPUT_BYTES);
+
+    assert_eq!(count(&text), 1);
+    assert_eq!(range(&text, 1, 1).len(), MAX_LINE_FUNCTION_INPUT_BYTES);
+}
+
+/// R7: a value one byte over the cap is refused with a static error before
+/// any scan or slice copy, and the error carries no part of the value.
+#[test]
+fn a_line_function_input_over_the_byte_cap_is_refused_with_a_static_error() {
+    let text = "a".repeat(MAX_LINE_FUNCTION_INPUT_BYTES + 1);
+
+    let count_error = error_of_query("SELECT line_count(?1)", &text);
+    let range_error = error_of_query("SELECT line_range(?1, 1, 1)", &text);
+
+    assert!(
+        count_error.contains("line_count: TEXT argument exceeds"),
+        "{count_error}"
+    );
+    assert!(
+        range_error.contains("line_range: TEXT argument exceeds"),
+        "{range_error}"
+    );
+    assert!(
+        !count_error.contains("aaaa"),
+        "the error must not echo the value: {count_error}"
+    );
 }
 
 #[test]

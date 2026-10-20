@@ -44,9 +44,9 @@ pub enum StoreError {
         "could not verify whether the database is on a network filesystem \
          (inspection failed: {0}); refusing to open rather than risk SQLite \
          corruption on a network mount — move the project to a local \
-         filesystem, or check that the platform's filesystem inspection \
-         command (stat/fsutil/mountinfo) is available; this is not a \
-         permissions problem an individual user can work around"
+         filesystem. On Linux the check reads /proc/self/mountinfo; on macOS \
+         it runs /sbin/mount. This is not a permissions problem an individual \
+         user can work around"
     )]
     NetworkFilesystemCheck(#[source] std::io::Error),
 }
@@ -109,8 +109,8 @@ fn reject_symlink(path: &Path) -> Result<(), StoreError> {
         Err(error) => {
             tracing::warn!(
                 target: "slugaudit::store",
-                path = %path.display(),
-                %error,
+                path_id = %crate::util::redacted_path(path),
+                error_kind = ?error.kind(),
                 "could not inspect the database path; refusing to open"
             );
             return Err(StoreError::Inspect(error));
@@ -150,8 +150,8 @@ fn resolve_parent_dir(path: &Path) -> std::path::PathBuf {
                 Err(error) => {
                     tracing::warn!(
                         target: "slugaudit::store",
-                        path = %path.display(),
-                        %error,
+                        path_id = %crate::util::redacted_path(path),
+                        error_kind = ?error.kind(),
                         "database parent directory could not be canonicalized; using the path as given"
                     );
                     path.to_path_buf()
@@ -346,6 +346,77 @@ fn configure(connection: &Connection) -> Result<(), StoreError> {
         .busy_timeout(BUSY_TIMEOUT)
         .map_err(StoreError::Configure)?;
     Ok(())
+}
+
+/// Failure-path tests for the open/discard contract. They sit inline because
+/// `connection_tests.rs` is at the 500-code-line test-file cap.
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+    use crate::store::test_capture::capture_warns;
+    use std::io::ErrorKind;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn an_uninspectable_database_path_warning_redacts_the_path() {
+        let path = Path::new("/tmp").join("a".repeat(300)).join("project.db");
+        let (result, logs) = capture_warns(|| {
+            tracing::warn!("lstat_control");
+            reject_symlink(&path)
+        });
+        assert!(matches!(result, Err(StoreError::Inspect(_))) && logs.contains("lstat_control"));
+        assert!(logs.contains("path_id="), "{logs}");
+        assert!(!logs.contains(path.to_string_lossy().as_ref()), "{logs}");
+    }
+
+    #[test]
+    fn a_canonicalize_fallback_warning_redacts_the_path() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("missing-parent").join("project.db");
+        let (result, logs) = capture_warns(|| {
+            tracing::warn!("canonicalize_control");
+            open_read_only(&path)
+        });
+        assert!(matches!(&result, Err(StoreError::Open(_))), "{result:?}");
+        assert!(logs.contains("canonicalize_control"), "{logs}");
+        assert!(logs.contains("path_id="), "{logs}");
+        assert!(!logs.contains(path.to_string_lossy().as_ref()), "{logs}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_at_the_database_path_fails_with_an_open_error() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("project.db");
+        std::fs::create_dir(&path).expect("directory fixture");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).expect("mode");
+        let result = open_read_write(&path);
+        assert!(matches!(&result, Err(StoreError::Open(_))), "{result:?}");
+    }
+
+    #[test]
+    fn a_directory_at_the_database_path_fails_the_corrupt_database_discard() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("project.db");
+        std::fs::create_dir(&path).expect("directory fixture");
+        let error = discard_corrupt_database(&path).expect_err("directory unlink must fail");
+        let kind = error.kind();
+        assert!(kind == ErrorKind::IsADirectory || kind == ErrorKind::PermissionDenied);
+        assert!(path.is_dir());
+    }
+
+    #[test]
+    fn a_read_only_connection_carries_the_busy_timeout() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("project.db");
+        open_read_write(&path).expect("create database");
+        let ro = open_read_only(&path).expect("open read-only");
+        let timeout: i64 = ro
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .expect("read");
+        assert_eq!(timeout, 5_000);
+    }
 }
 
 #[cfg(test)]

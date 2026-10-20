@@ -79,6 +79,29 @@ pub(super) struct ProjectWatchInfo {
     pub(super) scope_generation: u64,
 }
 
+/// The `notify::Error` variant as a static, path-free category.
+/// `notify::Error`'s `Display` appends `about [paths]` when the error carries
+/// paths (notify 8.2.0, `error.rs:120-124`), so the error itself is never
+/// formatted into a log line.
+fn notify_error_kind(error: &notify::Error) -> &'static str {
+    match error.kind {
+        notify::ErrorKind::Generic(_) => "generic",
+        notify::ErrorKind::Io(_) => "io",
+        notify::ErrorKind::PathNotFound => "path_not_found",
+        notify::ErrorKind::WatchNotFound => "watch_not_found",
+        notify::ErrorKind::InvalidConfig(_) => "invalid_config",
+        notify::ErrorKind::MaxFilesWatch => "max_files_watch",
+    }
+}
+
+/// Logs a failed watcher operation with the redacted identity of its subject
+/// (`root_id`/`dir_id`), the error category, and the number of paths the
+/// error carried. Shared by the manager and the scope so every watcher
+/// failure has one shape; `error` itself is never formatted.
+pub(super) fn log_notify_failure(op: &'static str, root_id: &str, error: &notify::Error) {
+    tracing::warn!(operation = %op, root_id = %root_id, error_kind = notify_error_kind(error), path_count = error.paths.len(), "filesystem watcher operation failed");
+}
+
 impl WatchManager {
     /// Creates a `WatchManager` with **no** `notify` watcher running — the
     /// default for tests; `with_watcher` opts in.
@@ -112,11 +135,9 @@ impl WatchManager {
                     Err(error) => {
                         // Watcher error (e.g., queue overflow, watch removed).
                         // Mark all projects as Desynced so the next ensure_current
-                        // does a full verification.
-                        tracing::warn!(
-                            error = %error,
-                            "filesystem watcher error; marking all projects for re-verification"
-                        );
+                        // does a full verification. The event loop covers every
+                        // project, so there is no single root to attribute it to.
+                        log_notify_failure("watcher_event_loop", "unscoped", &error);
                         let guard = lock_or_recover(&manager_clone.inner);
                         for info in guard.projects.values() {
                             info.state.set_health(WatcherHealth::Desynced);
@@ -131,13 +152,10 @@ impl WatchManager {
                 guard.watcher = Some(watcher);
             }
             Err(error) => {
-                // The cause is carried, not just the consequence: inotify
+                // The category is carried, not just the consequence: inotify
                 // exhaustion, a permissions problem and a missing kernel
                 // feature are indistinguishable without it.
-                tracing::warn!(
-                    error = %error,
-                    "filesystem watcher unavailable; SlugAudit will use full verification"
-                );
+                log_notify_failure("create_watcher", "unscoped", &error);
             }
         }
 
@@ -186,11 +204,7 @@ impl WatchManager {
                         tracing::info!(root_id = %redacted_path(&canonical), "watching project");
                     }
                     Err(error) => {
-                        tracing::warn!(
-                            root_id = %redacted_path(&canonical),
-                            error = %error,
-                            "failed to watch project root; using Unavailable health"
-                        );
+                        log_notify_failure("watch_project", &redacted_path(&canonical), &error);
                         state.set_health(WatcherHealth::Unavailable);
                     }
                 }
@@ -281,7 +295,7 @@ impl WatchManager {
         if let Some(ref mut watcher) = guard.watcher
             && let Err(error) = watcher.unwatch(&canonical)
         {
-            tracing::warn!(root_id = %redacted_path(&canonical), error = %error, "unwatch failed");
+            log_notify_failure("unwatch_project", &redacted_path(&canonical), &error);
         }
 
         guard.projects.remove(&canonical);
@@ -411,7 +425,9 @@ impl WatchManager {
                 return;
             }
             Err(TryLockError::Poisoned(poisoned)) => {
-                tracing::error!("mutex was poisoned; recovering inner value");
+                // The event covers every project, so no single root exists.
+                let root_id = "unscoped";
+                tracing::error!(operation = "handle_event_lock_recovery", mutex = "watch_manager_inner", root_id = %root_id, "watch manager mutex was poisoned; recovering the inner value");
                 poisoned.into_inner()
             }
         };

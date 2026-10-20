@@ -5,6 +5,7 @@
 //! directly removes the timing flakiness of end-to-end watcher tests.
 
 use super::*;
+use crate::store::test_capture::capture_warns;
 use notify::event::{AccessKind, CreateKind, ModifyKind, RemoveKind};
 
 /// Created under the canonical temp directory: `watch` keys a project by its
@@ -375,6 +376,153 @@ fn a_scope_that_is_no_longer_truncated_moves_partial_back_to_healthy() {
         state.health(),
         WatcherHealth::Healthy,
         "a complete scope restores Healthy when the watch set did not change"
+    );
+}
+
+/// R12: a failed project watch is logged with the redacted root id and a
+/// path-free error category. `notify::Error`'s `Display` appends
+/// `about [paths]`, so formatting it would put the absolute project path in
+/// the log despite the redacted id.
+#[test]
+fn a_failed_project_watch_logs_no_raw_path() {
+    let project = temp_project();
+    let missing = project.path().join("missing-root");
+    let raw_path = missing.to_string_lossy().to_string();
+    let manager = WatchManager::with_watcher();
+
+    let (state, logs) = capture_warns(|| {
+        tracing::warn!("capture liveness control for watch_project");
+        manager.watch(&missing)
+    });
+
+    assert_eq!(state.health(), WatcherHealth::Unavailable);
+    assert!(
+        logs.contains("capture liveness control for watch_project"),
+        "the capture must see this thread's events, captured: {logs}"
+    );
+    assert!(
+        logs.contains("operation=watch_project"),
+        "the failure must name the operation, captured: {logs}"
+    );
+    assert!(
+        logs.contains("error_kind=\"path_not_found\""),
+        "the failure must carry the notify error category, captured: {logs}"
+    );
+    assert!(
+        !logs.contains(&raw_path),
+        "the raw project path must not be logged, captured: {logs}"
+    );
+}
+
+/// R12: the shared watcher-failure log never formats `notify::Error`, which
+/// appends `about [paths]` in its `Display`; it records the category and how
+/// many paths the error carried instead.
+#[test]
+fn a_watcher_failure_log_line_carries_no_embedded_paths() {
+    let raw = Path::new("/home/private-project/src");
+    let error = notify::Error::new(notify::ErrorKind::WatchNotFound).add_path(raw.to_path_buf());
+
+    let ((), logs) = capture_warns(|| {
+        tracing::warn!("capture liveness control for the watcher failure log");
+        log_notify_failure("watcher_event_loop", "unscoped", &error);
+    });
+
+    assert!(
+        logs.contains("capture liveness control for the watcher failure log"),
+        "the capture must see this thread's events, captured: {logs}"
+    );
+    assert!(
+        logs.contains("operation=watcher_event_loop"),
+        "the failure must name the operation, captured: {logs}"
+    );
+    assert!(
+        logs.contains("error_kind=\"watch_not_found\""),
+        "the failure must carry the notify error category, captured: {logs}"
+    );
+    assert!(
+        logs.contains("path_count=1"),
+        "the failure must report how many paths the error carried, captured: {logs}"
+    );
+    assert!(
+        !logs.contains("/home/private-project/src"),
+        "a path embedded in the notify error must not reach the log, captured: {logs}"
+    );
+}
+
+/// R12: recovering a poisoned manager mutex logs structured context
+/// (operation, mutex, and the unscoped root marker) instead of a bare
+/// message.
+#[test]
+fn a_poisoned_manager_mutex_is_recovered_with_structured_context() {
+    let project = temp_project();
+    let manager = WatchManager::new();
+    manager.watch(project.path());
+
+    let poisoner = manager.clone();
+    let handle = std::thread::spawn(move || {
+        let _guard = poisoner.inner.lock().expect("hold the manager lock");
+        panic!("intentional panic to poison the watch manager mutex");
+    });
+    assert!(
+        handle.join().is_err(),
+        "the poisoning thread must panic while holding the lock"
+    );
+
+    let path = project.path().join("lib.rs");
+    let ((), logs) = capture_warns(|| {
+        tracing::warn!("capture liveness control for the poisoned mutex");
+        manager.handle_event(event_with(EventKind::Modify(ModifyKind::Any), &path));
+    });
+
+    assert!(
+        logs.contains("capture liveness control for the poisoned mutex"),
+        "the capture must see this thread's events, captured: {logs}"
+    );
+    assert!(
+        logs.contains("operation=\"handle_event_lock_recovery\""),
+        "the failure must name the operation, captured: {logs}"
+    );
+    assert!(
+        logs.contains("mutex=\"watch_manager_inner\""),
+        "the failure must name the mutex, captured: {logs}"
+    );
+    assert!(
+        logs.contains("root_id=unscoped"),
+        "the failure must carry a root_id marker, captured: {logs}"
+    );
+}
+
+/// R12: a failed unwatch is logged with the redacted root id and the
+/// path-free category; the inotify backend attaches the raw path to the
+/// error, which `Display` would have written into the log.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_failed_project_unwatch_logs_no_raw_path() {
+    let project = temp_project();
+    let missing = project.path().join("never-watched");
+    let raw_path = missing.to_string_lossy().to_string();
+    let manager = WatchManager::with_watcher();
+
+    let ((), logs) = capture_warns(|| {
+        tracing::warn!("capture liveness control for unwatch_project");
+        manager.unwatch(&missing);
+    });
+
+    assert!(
+        logs.contains("capture liveness control for unwatch_project"),
+        "the capture must see this thread's events, captured: {logs}"
+    );
+    assert!(
+        logs.contains("operation=unwatch_project"),
+        "the failure must name the operation, captured: {logs}"
+    );
+    assert!(
+        logs.contains("error_kind=\"watch_not_found\""),
+        "the failure must carry the notify error category, captured: {logs}"
+    );
+    assert!(
+        !logs.contains(&raw_path),
+        "the raw project path must not be logged, captured: {logs}"
     );
 }
 

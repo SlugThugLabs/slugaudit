@@ -83,16 +83,15 @@ impl ProjectConfig {
         match Self::load(project_root) {
             Ok(Some(cfg)) => cfg,
             Ok(None) => Self::default(),
-            Err(err) => {
-                let error_message = match &err {
-                    ConfigError::Io { source, .. } => source.to_string(),
-                    ConfigError::Parse { source, .. } => source.to_string(),
-                };
-                tracing::warn!(
-                    root_id = %crate::util::redacted_path(project_root),
-                    error = %error_message,
-                    "ignoring malformed project config; falling back to default"
-                );
+            // An I/O failure (unreadable file, a directory at the path, the
+            // size cap) is not a parse failure; reporting it as "malformed"
+            // would send the operator to the wrong fix.
+            Err(ConfigError::Io { source, .. }) => {
+                tracing::warn!(root_id = %crate::util::redacted_path(project_root), error_kind = "io", error = %source, "ignoring project config that could not be read; falling back to default");
+                Self::default()
+            }
+            Err(ConfigError::Parse { source, .. }) => {
+                tracing::warn!(root_id = %crate::util::redacted_path(project_root), error_kind = "parse", error = %source, "ignoring malformed project config; falling back to default");
                 Self::default()
             }
         }
@@ -128,6 +127,7 @@ impl ProjectConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::test_capture::capture_warns;
 
     #[test]
     fn loads_valid_config_and_applies_overrides() {
@@ -221,6 +221,20 @@ mod tests {
         let error = ProjectConfig::load(&root).expect_err("stat failure must surface");
 
         assert!(matches!(error, ConfigError::Io { .. }), "{error}");
+    }
+
+    /// R6: an I/O failure (here a directory at the config path) is not a
+    /// parse failure, and the log must send the operator to the right fix.
+    #[test]
+    fn an_unreadable_config_is_not_reported_as_malformed() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let config = directory.path().join(".planning/slugaudit/config.json");
+        std::fs::create_dir_all(config).expect("dir");
+        let (_, logs) = capture_warns(|| ProjectConfig::load_or_default(directory.path()));
+        assert!(
+            logs.contains("could not be read") && !logs.contains("malformed"),
+            "{logs}"
+        );
     }
 
     #[test]

@@ -3,6 +3,8 @@
 //! SlugAudit's own data dir, or gitignored trees.
 
 use super::*;
+use crate::store::test_capture::capture_warns;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 
 #[test]
@@ -115,6 +117,142 @@ fn a_depth_capped_scope_walk_stops_at_the_limit_and_flags_it() {
     assert!(
         !scope.watch_dirs.contains(&root.join("a/b/c")),
         "the walker must not descend past max_depth"
+    );
+}
+
+/// R12: an `ignore::Error` from the walker carries the directory path in its
+/// `Display` (`WithPath` renders `{path}: {err}`); the scope warning logs the
+/// redacted path id and the category instead.
+#[test]
+fn a_scope_walk_error_logs_no_raw_path() {
+    let project = tempfile::tempdir().expect("project dir");
+    let missing = project.path().join("missing-subtree");
+    let raw_path = missing.to_string_lossy().to_string();
+
+    let (scope, logs) = capture_warns(|| {
+        tracing::warn!("capture liveness control for watch_scope_walk");
+        WatchScope::compute_with_limits(&missing, 100, 8)
+    });
+
+    assert!(
+        scope.watch_dirs.contains(&missing),
+        "the root is always watched even when the walk fails"
+    );
+    assert!(
+        logs.contains("capture liveness control for watch_scope_walk"),
+        "the capture must see this thread's events, captured: {logs}"
+    );
+    assert!(
+        logs.contains("operation=\"watch_scope_walk\""),
+        "the failure must name the operation, captured: {logs}"
+    );
+    assert!(
+        logs.contains("error_kind=\"io\""),
+        "the failure must carry the walker error category, captured: {logs}"
+    );
+    assert!(
+        logs.contains("path_id="),
+        "the failure must carry a redacted path id, captured: {logs}"
+    );
+    assert!(
+        !logs.contains(&raw_path),
+        "the raw directory path must not be logged, captured: {logs}"
+    );
+}
+
+/// R12: a failed scope watch pairs the redacted directory id with a
+/// path-free category. The notify backend attaches the raw path to the
+/// error, which `Display` would have written into the log.
+#[test]
+fn a_failed_scope_watch_logs_no_raw_path() {
+    let project = tempfile::tempdir().expect("project dir");
+    let root = project.path().to_path_buf();
+    let missing = root.join("missing-directory");
+    let raw_path = missing.to_string_lossy().to_string();
+    let watcher = notify::RecommendedWatcher::new(
+        |_event: notify::Result<notify::Event>| {},
+        notify::Config::default(),
+    )
+    .expect("watcher");
+    let mut inner = WatchManagerInner {
+        projects: HashMap::from([(root.clone(), ProjectWatchInfo::default())]),
+        watcher: Some(watcher),
+    };
+    let mut scope = WatchScope::default();
+    scope.watch_dirs.insert(missing.clone());
+    let rules = Arc::new(IgnoreRules::build(&root, &[]));
+
+    let ((), logs) = capture_warns(|| {
+        tracing::warn!("capture liveness control for scope_watch");
+        apply_scope_locked(&mut inner, &root, scope, rules, 0);
+    });
+
+    assert!(
+        logs.contains("capture liveness control for scope_watch"),
+        "the capture must see this thread's events, captured: {logs}"
+    );
+    assert!(
+        logs.contains("operation=scope_watch"),
+        "the failure must name the operation, captured: {logs}"
+    );
+    assert!(
+        logs.contains("error_kind=\"path_not_found\""),
+        "the failure must carry the notify error category, captured: {logs}"
+    );
+    assert!(
+        !logs.contains(&raw_path),
+        "the raw directory path must not be logged, captured: {logs}"
+    );
+}
+
+/// R12: a failed scope unwatch is logged the same way. Linux-only because
+/// the inotify backend reports an unknown path as `WatchNotFound` while the
+/// FSEvents backend treats removing an unknown path as a no-op.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_failed_scope_unwatch_logs_no_raw_path() {
+    let project = tempfile::tempdir().expect("project dir");
+    let root = project.path().to_path_buf();
+    let never_watched = root.join("removed-directory");
+    let raw_path = never_watched.to_string_lossy().to_string();
+    let watcher = notify::RecommendedWatcher::new(
+        |_event: notify::Result<notify::Event>| {},
+        notify::Config::default(),
+    )
+    .expect("watcher");
+    let mut info = ProjectWatchInfo::default();
+    info.scope = Some(WatchScope {
+        watch_dirs: HashSet::from([root.clone(), never_watched.clone()]),
+        ..WatchScope::default()
+    });
+    let mut inner = WatchManagerInner {
+        projects: HashMap::from([(root.clone(), info)]),
+        watcher: Some(watcher),
+    };
+    let mut scope = WatchScope::default();
+    scope.watch_dirs.insert(root.clone());
+    let rules = Arc::new(IgnoreRules::build(&root, &[]));
+
+    let ((), logs) = capture_warns(|| {
+        tracing::warn!("capture liveness control for scope_unwatch");
+        apply_scope_locked(&mut inner, &root, scope, rules, 0);
+    });
+
+    assert!(
+        logs.contains("capture liveness control for scope_unwatch"),
+        "the capture must see this thread's events, captured: {logs}"
+    );
+    assert!(
+        logs.contains("operation=scope_unwatch"),
+        "the failure must name the operation, captured: {logs}"
+    );
+    assert!(
+        logs.contains("error_kind=\"watch_not_found\""),
+        "the failure must carry the notify error category, captured: {logs}"
+    );
+    assert!(
+        !logs.contains(&raw_path),
+        "the raw directory path must not be logged, captured: {logs}"
     );
 }
 

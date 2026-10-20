@@ -17,6 +17,15 @@ use rusqlite::functions::{Context, FunctionFlags};
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, Error, Result};
 
+/// Largest TEXT value the line functions accept. Aligned with the smallest
+/// per-profile `max_query_value_bytes` (32 MiB, the Lean profile): a value a
+/// `query` call could return whole under the most conservative profile is
+/// accepted here, while a value synthesized inside SQL (for example
+/// `hex(randomblob(..))`) cannot make the functions scan or copy an
+/// unbounded input. Over-cap input is refused before any scan or slice copy,
+/// with a static error that carries no part of the value.
+const MAX_LINE_FUNCTION_INPUT_BYTES: usize = 32 * 1024 * 1024;
+
 /// Registers both functions as deterministic, UTF-8 scalar functions.
 pub(super) fn register(connection: &Connection) -> Result<()> {
     let flags = FunctionFlags::SQLITE_UTF8
@@ -64,9 +73,19 @@ fn user_error(message: String) -> Error {
 fn text_arg<'a>(context: &'a Context<'_>, index: usize, function: &str) -> Result<Option<&'a str>> {
     match context.get_raw(index) {
         ValueRef::Null => Ok(None),
-        ValueRef::Text(bytes) => std::str::from_utf8(bytes)
-            .map(Some)
-            .map_err(|error| user_error(format!("{function}: text is not valid UTF-8: {error}"))),
+        ValueRef::Text(bytes) => {
+            // Checked on the raw bytes, before `from_utf8` and before either
+            // caller scans or copies the value.
+            if bytes.len() > MAX_LINE_FUNCTION_INPUT_BYTES {
+                return Err(user_error(format!(
+                    "{function}: TEXT argument exceeds the {MAX_LINE_FUNCTION_INPUT_BYTES}-byte \
+                     input cap; apply substr() to the value first"
+                )));
+            }
+            std::str::from_utf8(bytes).map(Some).map_err(|error| {
+                user_error(format!("{function}: text is not valid UTF-8: {error}"))
+            })
+        }
         other => Err(user_error(format!(
             "{function}: the first argument must be TEXT, got {}",
             other.data_type()

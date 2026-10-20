@@ -26,7 +26,7 @@
 //! blocking every tool call and the notify callback.
 
 use super::event_filter::watch_dir_changes;
-use super::manager::{ProjectWatchInfo, WatchManagerInner};
+use super::manager::{ProjectWatchInfo, WatchManagerInner, log_notify_failure};
 use super::types::WatcherHealth;
 use crate::ignore_rules::{
     IgnoreRules, indexable_walker_with_max_depth, is_excluded_dir, is_excluded_path,
@@ -111,11 +111,8 @@ impl WatchScope {
                     // all". A failing subtree under-registers watches, which
                     // means changes under it are not seen until a full
                     // verification — worth a line rather than silence.
-                    tracing::warn!(
-                        error = %error,
-                        "watch scope could not read a directory entry; that subtree is \
-                         unwatched until the next scope refresh",
-                    );
+                    let path_id = ignore_error_path(&error).map(crate::util::redacted_path);
+                    tracing::warn!(operation = "watch_scope_walk", error_kind = ignore_error_kind(&error), path_id = ?path_id, "watch scope could not read a directory entry; that subtree is unwatched until the next scope refresh");
                     continue;
                 }
             };
@@ -193,6 +190,35 @@ fn directory_has_entries(path: &Path) -> std::io::Result<bool> {
     Ok(entries.next().is_some())
 }
 
+/// The `ignore::Error` variant as a static, path-free category. `Display`
+/// for `WithPath` is `{path}: {err}` and `Loop` embeds both paths (ignore
+/// 0.4.33, `lib.rs:338-340`), so a walker error is never formatted into a
+/// log line.
+fn ignore_error_kind(error: &ignore::Error) -> &'static str {
+    match error {
+        ignore::Error::WithLineNumber { err, .. }
+        | ignore::Error::WithDepth { err, .. }
+        | ignore::Error::WithPath { err, .. } => ignore_error_kind(err),
+        ignore::Error::Partial(_) => "partial",
+        ignore::Error::Loop { .. } => "loop",
+        ignore::Error::Io(_) => "io",
+        ignore::Error::Glob { .. } => "glob",
+        ignore::Error::UnrecognizedFileType(_) => "unrecognized_file_type",
+        ignore::Error::InvalidDefinition => "invalid_definition",
+    }
+}
+
+/// The path an `ignore::Error` carries, if any, for redacted correlation.
+fn ignore_error_path(error: &ignore::Error) -> Option<&Path> {
+    match error {
+        ignore::Error::WithPath { path, .. } => Some(path),
+        ignore::Error::WithLineNumber { err, .. } | ignore::Error::WithDepth { err, .. } => {
+            ignore_error_path(err)
+        }
+        _ => None,
+    }
+}
+
 /// Applies a precomputed scope and ignore rules to `root` while the manager
 /// lock is held: diffs the watch set, runs the watcher's `unwatch`/`watch`
 /// calls (which must happen on a tool thread under this lock), records the
@@ -241,16 +267,14 @@ pub(super) fn apply_scope_locked(
         // the scope no longer includes.
         for dir in &removed_watches {
             if let Err(error) = watcher.unwatch(dir) {
-                tracing::warn!(
-                    dir_id = %crate::util::redacted_path(dir), error = %error, "unwatch failed"
-                );
+                log_notify_failure("scope_unwatch", &crate::util::redacted_path(dir), &error);
             }
         }
         // A failed watch means changes under that directory go unnoticed
         // until a full verification.
         for dir in &new_watches {
             if let Err(error) = watcher.watch(dir, RecursiveMode::Recursive) {
-                tracing::warn!(dir_id = %crate::util::redacted_path(dir), error = %error, "watch failed");
+                log_notify_failure("scope_watch", &crate::util::redacted_path(dir), &error);
             }
         }
     }
