@@ -1,5 +1,8 @@
 //! Registering or removing this binary as the `slugaudit` MCP server in an AI agent or editor.
 
+pub(crate) mod config_file;
+pub(crate) mod registry_types;
+
 use crate::cli;
 use crate::cli::ConnectError;
 use crate::connect_agents::{AgentDef, detected_agents, find_agent};
@@ -128,19 +131,7 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
     cli::out(format_args!(
         "Connect SlugAudit to an AI agent or editor:\n\n"
     ))?;
-    for (i, agent) in detected.iter().enumerate() {
-        let status = if agent.is_connected(home.as_deref()) {
-            " [Connected ✅]"
-        } else {
-            ""
-        };
-        cli::out(format_args!(
-            "  {}) {:<24}{}\n",
-            i + 1,
-            agent.display_name,
-            status
-        ))?;
-    }
+    print_detected_agents(&detected, home.as_deref())?;
     cli::out(format_args!("\n"))?;
     write_prompt(
         &mut std::io::stdout(),
@@ -153,21 +144,49 @@ pub fn run_connect_interactive() -> Result<(), ConnectError> {
         .get(index)
         .copied()
         .ok_or(ConnectError::InvalidChoice)?;
-    if agent.is_connected(home.as_deref()) {
-        write_prompt(
-            &mut std::io::stdout(),
-            format_args!(
-                "{} is already connected. Re-connect / update path? [y/N]: ",
-                agent.display_name
-            ),
-        )?;
-        let confirm = read_answer()?;
-        if !crate::prompt::is_yes(&confirm) {
-            cli::out(format_args!("Skipped.\n"))?;
-            return Ok(());
-        }
+    if !confirm_reconnect(agent, home.as_deref())? {
+        return Ok(());
     }
     connect_one(agent)
+}
+
+/// Asks whether to update an already-connected agent; returns `false` when the
+/// user declines, after printing the skip line.
+fn confirm_reconnect(agent: AgentDef, home: Option<&Path>) -> Result<bool, ConnectError> {
+    if !agent.is_connected(home) {
+        return Ok(true);
+    }
+    write_prompt(
+        &mut std::io::stdout(),
+        format_args!(
+            "{} is already connected. Re-connect / update path? [y/N]: ",
+            agent.display_name
+        ),
+    )?;
+    let confirm = read_answer()?;
+    if crate::prompt::is_yes(&confirm) {
+        return Ok(true);
+    }
+    cli::out(format_args!("Skipped.\n"))?;
+    Ok(false)
+}
+
+/// Prints the numbered list of detected agents with their connection status.
+fn print_detected_agents(detected: &[AgentDef], home: Option<&Path>) -> Result<(), ConnectError> {
+    for (i, agent) in detected.iter().enumerate() {
+        let status = if agent.is_connected(home) {
+            " [Connected ✅]"
+        } else {
+            ""
+        };
+        cli::out(format_args!(
+            "  {}) {:<24}{}\n",
+            i + 1,
+            agent.display_name,
+            status
+        ))?;
+    }
+    Ok(())
 }
 
 /// Runs the interactive terminal prompt to choose and disconnect an active agent connection.

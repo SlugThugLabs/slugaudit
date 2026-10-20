@@ -8,6 +8,7 @@ mod activation;
 mod activation_lock;
 mod config;
 mod database_path;
+mod gitignore;
 mod root;
 
 pub use activation::{
