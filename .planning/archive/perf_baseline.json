@@ -1,0 +1,54 @@
+{
+  "benches": {
+    "discovery/walk_and_hash_large": {
+      "budget_ns": null,
+      "median_ns": 3205550
+    },
+    "discovery/walk_and_hash_small": {
+      "budget_ns": null,
+      "median_ns": 975354
+    },
+    "discovery/walk_large": {
+      "budget_ns": null,
+      "median_ns": 1711466
+    },
+    "discovery/walk_small": {
+      "budget_ns": null,
+      "median_ns": 627916
+    },
+    "parsing/extract_javascript": {
+      "budget_ns": null,
+      "median_ns": 356391
+    },
+    "parsing/extract_python": {
+      "budget_ns": null,
+      "median_ns": 765270
+    },
+    "parsing/extract_rust": {
+      "budget_ns": null,
+      "median_ns": 1363680
+    },
+    "parsing/extract_typescript": {
+      "budget_ns": null,
+      "median_ns": 406337
+    },
+    "search/dependency_traversal_large": {
+      "budget_ns": null,
+      "median_ns": 17042
+    },
+    "search/substring_like_large": {
+      "budget_ns": null,
+      "median_ns": 39516
+    },
+    "search/substring_like_small": {
+      "budget_ns": null,
+      "median_ns": 12711
+    },
+    "search/symbol_lookup_large": {
+      "budget_ns": null,
+      "median_ns": 257015
+    }
+  },
+  "machine": "current run (re-recorded)",
+  "threshold_percent": 20.0
+}
