@@ -7,6 +7,7 @@ mod reference;
 mod resolve;
 mod resolve_rust;
 pub(crate) mod resolver;
+mod rust_paths;
 
 #[cfg(test)]
 pub(crate) mod test_support;

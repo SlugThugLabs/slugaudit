@@ -12,6 +12,7 @@
 //! wires this in as a sibling test module.
 
 use super::*;
+use crate::model::EvidenceKind;
 
 // --- C7 grammar-matrix validation ---
 //

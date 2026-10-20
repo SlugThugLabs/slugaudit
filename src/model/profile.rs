@@ -93,77 +93,90 @@ const AUDIT_MAX_WATCH_DEPTH: usize = 64;
 /// budget from detected host memory.
 pub fn limits_for_profile(profile: AuditProfile) -> ResourceLimits {
     match profile {
-        AuditProfile::Lean => ResourceLimits {
-            max_file_bytes: 32 * 1024 * 1024,
-            max_total_import_bytes: 2 * 1024 * 1024 * 1024,
-            max_query_response_bytes: 32 * 1024 * 1024,
-            default_page_bytes: DEFAULT_PAGE_BYTES,
-            max_query_sql_bytes: 50_000,
-            max_query_vm_steps: 5_000_000,
-            max_query_wall_clock: Duration::from_secs(10),
-            max_query_value_bytes: 32 * 1024 * 1024,
-            max_structure_query_bytes: 32_000,
-            max_structure_matches: 2_000,
-            max_structure_execution_time: Duration::from_secs(10),
-            max_sync_wall_clock: Duration::from_secs(120),
-            max_watch_entries: LEAN_MAX_WATCH_ENTRIES,
-            max_watch_depth: LEAN_MAX_WATCH_DEPTH,
-            evidence: EvidenceLimits {
-                max_items_per_file: 50_000,
-                max_payload_bytes_per_item: 128 * 1024,
-                max_payload_bytes_per_file: 32 * 1024 * 1024,
-            },
+        AuditProfile::Lean => lean_limits(),
+        AuditProfile::Audit => audit_limits(),
+        AuditProfile::Adaptive => adaptive_limits(),
+    }
+}
+
+/// Conservative laptop budgets: fast to satisfy, bounded in every dimension.
+fn lean_limits() -> ResourceLimits {
+    ResourceLimits {
+        max_file_bytes: 32 * 1024 * 1024,
+        max_total_import_bytes: 2 * 1024 * 1024 * 1024,
+        max_query_response_bytes: 32 * 1024 * 1024,
+        default_page_bytes: DEFAULT_PAGE_BYTES,
+        max_query_sql_bytes: 50_000,
+        max_query_vm_steps: 5_000_000,
+        max_query_wall_clock: Duration::from_secs(10),
+        max_query_value_bytes: 32 * 1024 * 1024,
+        max_structure_query_bytes: 32_000,
+        max_structure_matches: 2_000,
+        max_structure_execution_time: Duration::from_secs(10),
+        max_sync_wall_clock: Duration::from_secs(120),
+        max_watch_entries: LEAN_MAX_WATCH_ENTRIES,
+        max_watch_depth: LEAN_MAX_WATCH_DEPTH,
+        evidence: EvidenceLimits {
+            max_items_per_file: 50_000,
+            max_payload_bytes_per_item: 128 * 1024,
+            max_payload_bytes_per_file: 32 * 1024 * 1024,
         },
-        AuditProfile::Audit => ResourceLimits {
-            max_file_bytes: 256 * 1024 * 1024,
-            max_total_import_bytes: 32 * 1024 * 1024 * 1024,
-            max_query_response_bytes: 256 * 1024 * 1024,
-            default_page_bytes: DEFAULT_PAGE_BYTES,
-            max_query_sql_bytes: 200_000,
-            max_query_vm_steps: 50_000_000,
-            max_query_wall_clock: Duration::from_secs(60),
-            max_query_value_bytes: 256 * 1024 * 1024,
-            max_structure_query_bytes: 128_000,
-            max_structure_matches: 20_000,
-            max_structure_execution_time: Duration::from_secs(60),
-            max_sync_wall_clock: Duration::from_secs(1200),
-            max_watch_entries: AUDIT_MAX_WATCH_ENTRIES,
-            max_watch_depth: AUDIT_MAX_WATCH_DEPTH,
-            evidence: EvidenceLimits {
-                max_items_per_file: 200_000,
-                max_payload_bytes_per_item: 512 * 1024,
-                max_payload_bytes_per_file: 256 * 1024 * 1024,
-            },
+    }
+}
+
+/// Deep-audit budgets: large files, uncapped AST blocks, generous time.
+fn audit_limits() -> ResourceLimits {
+    ResourceLimits {
+        max_file_bytes: 256 * 1024 * 1024,
+        max_total_import_bytes: 32 * 1024 * 1024 * 1024,
+        max_query_response_bytes: 256 * 1024 * 1024,
+        default_page_bytes: DEFAULT_PAGE_BYTES,
+        max_query_sql_bytes: 200_000,
+        max_query_vm_steps: 50_000_000,
+        max_query_wall_clock: Duration::from_secs(60),
+        max_query_value_bytes: 256 * 1024 * 1024,
+        max_structure_query_bytes: 128_000,
+        max_structure_matches: 20_000,
+        max_structure_execution_time: Duration::from_secs(60),
+        max_sync_wall_clock: Duration::from_secs(1200),
+        max_watch_entries: AUDIT_MAX_WATCH_ENTRIES,
+        max_watch_depth: AUDIT_MAX_WATCH_DEPTH,
+        evidence: EvidenceLimits {
+            max_items_per_file: 200_000,
+            max_payload_bytes_per_item: 512 * 1024,
+            max_payload_bytes_per_file: 256 * 1024 * 1024,
         },
-        AuditProfile::Adaptive => {
-            let ram = detect_system_memory();
-            let import_budget = (ram.available_bytes / 2).max(4 * 1024 * 1024 * 1024);
-            // SQLite cannot store a value larger than `SQLITE_MAX_LENGTH`;
-            // clamping here keeps a per-file skip from becoming a failed
-            // publish at the insert.
-            let max_file = (ram.total_bytes / 10).clamp(256 * 1024 * 1024, SQLITE_MAX_VALUE_BYTES);
-            ResourceLimits {
-                max_file_bytes: max_file,
-                max_total_import_bytes: import_budget,
-                max_query_response_bytes: max_file as usize,
-                default_page_bytes: DEFAULT_PAGE_BYTES,
-                max_query_sql_bytes: 200_000,
-                max_query_vm_steps: 50_000_000,
-                max_query_wall_clock: Duration::from_secs(60),
-                max_query_value_bytes: max_file as usize,
-                max_structure_query_bytes: 128_000,
-                max_structure_matches: 20_000,
-                max_structure_execution_time: Duration::from_secs(60),
-                max_sync_wall_clock: Duration::from_secs(1200),
-                max_watch_entries: AUDIT_MAX_WATCH_ENTRIES,
-                max_watch_depth: AUDIT_MAX_WATCH_DEPTH,
-                evidence: EvidenceLimits {
-                    max_items_per_file: 200_000,
-                    max_payload_bytes_per_item: 512 * 1024,
-                    max_payload_bytes_per_file: max_file as usize,
-                },
-            }
-        }
+    }
+}
+
+/// Budgets scaled from detected host memory.
+fn adaptive_limits() -> ResourceLimits {
+    let ram = detect_system_memory();
+    let import_budget = (ram.available_bytes / 2).max(4 * 1024 * 1024 * 1024);
+    // SQLite cannot store a value larger than `SQLITE_MAX_LENGTH`;
+    // clamping here keeps a per-file skip from becoming a failed
+    // publish at the insert.
+    let max_file = (ram.total_bytes / 10).clamp(256 * 1024 * 1024, SQLITE_MAX_VALUE_BYTES);
+    ResourceLimits {
+        max_file_bytes: max_file,
+        max_total_import_bytes: import_budget,
+        max_query_response_bytes: max_file as usize,
+        default_page_bytes: DEFAULT_PAGE_BYTES,
+        max_query_sql_bytes: 200_000,
+        max_query_vm_steps: 50_000_000,
+        max_query_wall_clock: Duration::from_secs(60),
+        max_query_value_bytes: max_file as usize,
+        max_structure_query_bytes: 128_000,
+        max_structure_matches: 20_000,
+        max_structure_execution_time: Duration::from_secs(60),
+        max_sync_wall_clock: Duration::from_secs(1200),
+        max_watch_entries: AUDIT_MAX_WATCH_ENTRIES,
+        max_watch_depth: AUDIT_MAX_WATCH_DEPTH,
+        evidence: EvidenceLimits {
+            max_items_per_file: 200_000,
+            max_payload_bytes_per_item: 512 * 1024,
+            max_payload_bytes_per_file: max_file as usize,
+        },
     }
 }
 

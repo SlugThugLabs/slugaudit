@@ -1,5 +1,5 @@
 use super::*;
-use crate::model::EvidenceKind;
+use crate::model::{EvidenceKind, EvidenceOrigin};
 
 /// `extract` also reports whether a walker stopped at the depth cap. These
 /// tests are about the items, so they take the first half; the cap has its
