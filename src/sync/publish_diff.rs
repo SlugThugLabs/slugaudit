@@ -3,16 +3,18 @@
 //! writes. Kept separate from `publish` itself so that module stays focused
 //! on orchestrating the sample → diff → revalidate → write sequence rather
 //! than the mechanics of any one step.
+use super::discovery;
 use super::hash::aggregate_manifest_hash;
 use super::manifest::{self, ChangeStatus, FileChange};
 use super::publish::PublishError;
 use super::revision::FileRecord;
-use super::revision_skipped::SkippedRecord;
-use super::sample::{Sample, to_file_record};
+use super::revision_skipped::{SKIP_REASON_STAT_FAILED, SkippedRecord};
+use super::sample::{self, Sample, to_file_record};
 use crate::model::ResourceLimits;
 use crate::util::Deadline;
 use rusqlite::Connection;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 
 pub(super) struct Diff {
     pub(super) changes: Vec<FileChange>,
@@ -21,6 +23,49 @@ pub(super) struct Diff {
     pub(super) modified: usize,
     pub(super) deleted: usize,
     pub(super) unchanged: usize,
+}
+
+/// Folds one source of skipped files (discovery skips, then sampling skips)
+/// into the existence-row map and the discovered-path set, and warns once
+/// per file. Both are needed: the map becomes the `files` rows, the set
+/// feeds edge resolution. A file whose path has no UTF-8 representation is
+/// left out of both — it has no usable key, and it is exactly the gap the
+/// warn line exists to make visible.
+pub(super) fn collect_skipped(
+    root: &Path,
+    files: &[discovery::SkippedFile],
+    reason: &str,
+    discovered_paths: &mut HashSet<String>,
+    records: &mut BTreeMap<String, SkippedRecord>,
+) {
+    for file in files {
+        let Some(relative) = discovery::representable_relative_path(root, &file.absolute_path)
+        else {
+            warn_skipped(file, reason);
+            continue;
+        };
+        let record = sample::skipped_record(&relative, &file.absolute_path, reason);
+        // A failed stat is already warned about, with the path, the requested
+        // reason and the source error, inside `skipped_record`; a second line
+        // for the same file would break "every error is logged once".
+        if record.reason != SKIP_REASON_STAT_FAILED {
+            warn_skipped(file, reason);
+        }
+        discovered_paths.insert(relative.clone());
+        records.insert(relative, record);
+    }
+}
+
+fn warn_skipped(file: &discovery::SkippedFile, reason: &str) {
+    // `file.reason` is the skip message itself: for a sampling skip it is
+    // `SampleError::TooLarge`'s Display, which embeds the raw absolute path
+    // and would defeat the redacted `path_id`. The static class is enough to
+    // correlate the skip; the specific cause is carried by the report.
+    tracing::warn!(
+        path_id = %crate::util::redacted_path(&file.absolute_path),
+        reason_kind = reason,
+        "skipped file during {reason}"
+    );
 }
 
 /// Compares the current existence set — every sampled file *plus* every
@@ -38,24 +83,54 @@ pub(super) fn diff_against_stored(
     skipped: &[SkippedRecord],
     deadline: &Deadline,
 ) -> Result<Diff, PublishError> {
-    if let Some(elapsed) = deadline.exceeded() {
-        return Err(PublishError::TimeBudgetExceeded {
+    check_deadline(deadline)?;
+    let stored = stored_hashes(connection)?;
+    let stored_refs: Vec<(&str, &str)> = stored
+        .iter()
+        .map(|(path, hash)| (path.as_str(), hash.as_str()))
+        .collect();
+    let current_refs = current_hashes(samples, skipped);
+    let changes = manifest::compare(stored_refs, current_refs.clone());
+    let manifest_hash = aggregate_manifest_hash(current_refs);
+    let added = count_changes(&changes, ChangeStatus::Added);
+    let modified = count_changes(&changes, ChangeStatus::Modified);
+    Ok(Diff {
+        deleted: count_changes(&changes, ChangeStatus::Deleted),
+        unchanged: samples.len() + skipped.len() - (added + modified),
+        changes,
+        manifest_hash,
+        added,
+        modified,
+    })
+}
+
+/// Fails closed before the stored-row query when the shared budget is spent.
+fn check_deadline(deadline: &Deadline) -> Result<(), PublishError> {
+    match deadline.exceeded() {
+        Some(elapsed) => Err(PublishError::TimeBudgetExceeded {
             path: String::new(),
             elapsed_ms: elapsed.as_millis(),
-        });
+        }),
+        None => Ok(()),
     }
+}
+
+fn stored_hashes(connection: &Connection) -> Result<Vec<(String, String)>, rusqlite::Error> {
     let mut stored_statement = connection.prepare("SELECT path, content_hash FROM files")?;
     let stored_rows = stored_statement
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    drop(stored_statement);
+    Ok(stored_rows)
+}
 
-    let stored_refs: Vec<(&str, &str)> = stored_rows
-        .iter()
-        .map(|(path, hash)| (path.as_str(), hash.as_str()))
-        .collect();
+/// The sampled and skipped files as `(path, content_hash)` pairs, in the
+/// order `manifest::compare` and `aggregate_manifest_hash` consume.
+fn current_hashes<'a>(
+    samples: &'a [Sample],
+    skipped: &'a [SkippedRecord],
+) -> Vec<(&'a str, &'a str)> {
     let mut current_refs: Vec<(&str, &str)> = samples
         .iter()
         .map(|sample| {
@@ -71,31 +146,14 @@ pub(super) fn diff_against_stored(
             record.identity.content_hash.as_str(),
         )
     }));
-    let changes = manifest::compare(stored_refs, current_refs.clone());
-    let manifest_hash = aggregate_manifest_hash(current_refs);
+    current_refs
+}
 
-    let added = changes
+fn count_changes(changes: &[FileChange], status: ChangeStatus) -> usize {
+    changes
         .iter()
-        .filter(|c| c.status == ChangeStatus::Added)
-        .count();
-    let modified = changes
-        .iter()
-        .filter(|c| c.status == ChangeStatus::Modified)
-        .count();
-    let deleted = changes
-        .iter()
-        .filter(|c| c.status == ChangeStatus::Deleted)
-        .count();
-    let unchanged = samples.len() + skipped.len() - (added + modified);
-
-    Ok(Diff {
-        changes,
-        manifest_hash,
-        added,
-        modified,
-        deleted,
-        unchanged,
-    })
+        .filter(|change| change.status == status)
+        .count()
 }
 
 pub(super) fn build_upserts_and_deletions(

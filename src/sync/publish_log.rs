@@ -58,24 +58,9 @@ pub(super) fn log_outcome(
 /// project-relative one, all of which the path-logging rule redacts.
 pub(super) fn failure_fields(error: &PublishError) -> (&'static str, Option<&Path>) {
     match error {
-        PublishError::Discovery(error) => match error {
-            DiscoveryError::Walk(_) => ("discovery_walk", None),
-            DiscoveryError::Read { path, .. } => ("discovery_read", Some(path)),
-            DiscoveryError::NotRelative(path) => ("discovery_not_relative", Some(path)),
-            DiscoveryError::NonUtf8Path(path) => ("discovery_non_utf8_path", Some(path)),
-            DiscoveryError::TimeBudgetExceeded { .. } => ("discovery_time_budget_exceeded", None),
-        },
-        PublishError::Sample(SampleError::Read { path, .. }) => ("sample_read", Some(path)),
-        PublishError::Sample(SampleError::TooLarge { path, .. }) => {
-            ("sample_too_large", Some(path))
-        }
-        PublishError::Revision(RevisionError::Database(_)) => ("revision_database", None),
-        PublishError::Revision(RevisionError::InvalidParserRun { path, .. }) => {
-            ("revision_invalid_parser_run", Some(Path::new(path)))
-        }
-        PublishError::Revision(RevisionError::StaleBaseline { .. }) => {
-            ("revision_stale_baseline", None)
-        }
+        PublishError::Discovery(error) => discovery_failure_fields(error),
+        PublishError::Sample(error) => sample_failure_fields(error),
+        PublishError::Revision(error) => revision_failure_fields(error),
         PublishError::Database(_) => ("database", None),
         PublishError::ImportTooLarge { .. } => ("import_too_large", None),
         PublishError::ChangedDuringSample { path } => {
@@ -87,6 +72,33 @@ pub(super) fn failure_fields(error: &PublishError) -> (&'static str, Option<&Pat
         PublishError::SamplingIndexOutOfRange { .. } => ("sampling_index_out_of_range", None),
         PublishError::InvalidParserPackVersion(_) => ("invalid_parser_pack_version", None),
         PublishError::TimeBudgetExceeded { .. } => ("time_budget_exceeded", None),
+    }
+}
+
+fn discovery_failure_fields(error: &DiscoveryError) -> (&'static str, Option<&Path>) {
+    match error {
+        DiscoveryError::Walk(_) => ("discovery_walk", None),
+        DiscoveryError::Read { path, .. } => ("discovery_read", Some(path)),
+        DiscoveryError::NotRelative(path) => ("discovery_not_relative", Some(path)),
+        DiscoveryError::NonUtf8Path(path) => ("discovery_non_utf8_path", Some(path)),
+        DiscoveryError::TimeBudgetExceeded { .. } => ("discovery_time_budget_exceeded", None),
+    }
+}
+
+fn sample_failure_fields(error: &SampleError) -> (&'static str, Option<&Path>) {
+    match error {
+        SampleError::Read { path, .. } => ("sample_read", Some(path)),
+        SampleError::TooLarge { path, .. } => ("sample_too_large", Some(path)),
+    }
+}
+
+fn revision_failure_fields(error: &RevisionError) -> (&'static str, Option<&Path>) {
+    match error {
+        RevisionError::Database(_) => ("revision_database", None),
+        RevisionError::InvalidParserRun { path, .. } => {
+            ("revision_invalid_parser_run", Some(Path::new(path)))
+        }
+        RevisionError::StaleBaseline { .. } => ("revision_stale_baseline", None),
     }
 }
 

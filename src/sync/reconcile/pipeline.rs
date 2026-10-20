@@ -1,88 +1,22 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=the per-path dirty reconcile loop, bounded stored-hash lookup batching, and their deadline checks are one cohesive pipeline; the barrier loop and SQL already live in sibling modules
 //! The per-path reconciliation pipeline: for each dirty path, decide
 //! delete / ignore / unchanged / re-index, then atomically commit the
 //! resulting upserts and deletions under compare-and-swap. The barrier
-//! loop that drives this pipeline lives in [`super::barrier`]; the SQL
-//! it reads lives in [`super::queries`].
+//! loop that drives this pipeline lives in [`super::barrier`]; the SQL and
+//! commit step it reads and writes through live in [`super::queries`].
 
-use super::queries::{
-    MAX_PATH_LOOKUP_BATCH, query_current_parser_pack_version, query_existing_hashes,
-};
+use super::queries::{commit_reconcile_changes, load_existing_hashes, touch_unchanged};
 use super::{ReconcileError, ReconcileOptions, ReconcileReport};
+use crate::model::{ResourceLimits, SourceIdentity};
 use crate::sync::discovery::{self, DiscoveredFile, sniff_kind};
-use crate::sync::revision_skipped::{SKIP_REASON_OVERSIZE, SkippedRecord};
-use crate::sync::{FileRecord, hash, manifest, revision, sample};
-use crate::util::Deadline;
+use crate::sync::revision_skipped::SkippedRecord;
+use crate::sync::{FileRecord, hash, sample};
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-/// Builds the existence row for a dirty path over the import ceiling, and
-/// records it only when the stored row does not already carry the same stat
-/// identity — a watcher event on an unchanged oversize file must not churn a
-/// revision. Compared against the hashes already read for the dirty set
-/// rather than a fresh query.
-fn push_skipped_record(
-    records: &mut Vec<SkippedRecord>,
-    existing_hashes: &HashMap<String, String>,
-    path: &str,
-    absolute_path: &Path,
-) {
-    let record = sample::skipped_record(path, absolute_path, SKIP_REASON_OVERSIZE);
-    if existing_hashes.get(path) != Some(&record.identity.content_hash) {
-        records.push(record);
-    }
-}
-
-/// Reconciles dirty and deleted paths against the database.
-///
-/// For each dirty path, reads the file, computes its BLAKE3 hash, and
-/// queries the database for the previously stored hash. If the hash
-/// matches, the file is skipped (unchanged since last index). If the hash
-/// differs or the file is new, it is sampled, parsed, analyzed, and added
-/// to the upsert set. Deleted paths are added to the deletion set.
-///
-/// After processing all paths, the function calls `publish_revision` to
-/// atomically commit the upserts and deletions under compare-and-swap.
-///
-/// # Errors
-///
-/// Returns an error if any file read, hash, sample, analysis, or database
-/// operation fails.
 #[cfg(test)]
-pub(crate) fn reconcile_dirty_paths(
-    connection: &mut Connection,
-    root: &Path,
-    dirty: HashSet<String>,
-    deleted: HashSet<String>,
-    expected_revision: Option<&str>,
-) -> Result<ReconcileReport, ReconcileError> {
-    let options = ReconcileOptions::for_sync(root, None);
-    reconcile_dirty_paths_with_deadline(
-        connection,
-        root,
-        dirty,
-        deleted,
-        expected_revision,
-        &options,
-        // No walk in hand: fixtures index every file they write, so the
-        // indexed rows are the correct universe for these tests.
-        &HashSet::new(),
-    )
-}
+pub(crate) use super::barrier::reconcile_dirty_paths;
 
-/// [`reconcile_dirty_paths`] under explicit [`ReconcileOptions`], checked
-/// once per dirty path so a pathological set (a huge number of events, a
-/// hung filesystem) fails closed with
-/// [`ReconcileError::TimeBudgetExceeded`] instead of stalling the tool
-/// call forever. The deadline is created by the caller so the whole
-/// barrier-sync operation shares one budget across its iterations.
-///
-/// `discovered_paths` are the project-relative paths the caller's walk saw
-/// on disk (the stat sweep's `on_disk`). Edge resolution treats them as
-/// existing even when they were never indexed — an oversize-skipped file
-/// that exists must not turn its importers into `Unresolved` dead-code
-/// findings.
 enum DirtyOutcome {
     Deleted(String),
     Ignored,
@@ -105,22 +39,14 @@ fn reconcile_single_dirty_path(
     existing_hashes: &HashMap<String, String>,
     skipped_records: &mut Vec<SkippedRecord>,
 ) -> Result<DirtyOutcome, ReconcileError> {
-    let ReconcileOptions { limits, rules, .. } = options;
     let absolute_path = root.join(&path);
-
     let Some(metadata) = discovery::regular_file_metadata(&absolute_path)? else {
         // Gone, a directory (the watcher reports `mkdir` as a create), or a
         // symlink: nothing indexable lives here, so any row is stale.
-        return Ok(if existing_hashes.contains_key(&path) {
-            DirtyOutcome::Deleted(path)
-        } else {
-            DirtyOutcome::Ignored
-        });
+        return Ok(removed_or_ignored(&path, existing_hashes));
     };
 
-    if let Some(rules) = rules
-        && rules.should_ignore(&path)
-    {
+    if ignored_by_rules(options, &path) {
         return Ok(DirtyOutcome::Ignored);
     }
 
@@ -128,74 +54,105 @@ fn reconcile_single_dirty_path(
     // A size beyond `i64::MAX` cannot be stored in the SQLite integer
     // column, so it is skipped like an over-limit file (an existence row,
     // reported in `skipped`) instead of being saturated into a wrong size.
-    let size = metadata.len();
-    let byte_len = match i64::try_from(size) {
-        Ok(len) if size <= limits.max_file_bytes => len,
-        _ => {
-            push_skipped_record(skipped_records, existing_hashes, &path, &absolute_path);
-            return Ok(DirtyOutcome::Skipped);
-        }
+    let Some(byte_len) = storable_byte_len(metadata.len(), &options.limits) else {
+        sample::push_skipped_record(skipped_records, existing_hashes, &path, &absolute_path);
+        return Ok(DirtyOutcome::Skipped);
     };
 
-    let identity = match hash::hash_file(&path, &absolute_path, limits.max_file_bytes) {
-        Ok(identity) => identity,
-        Err(hash::HashError::TooLarge { .. }) => {
-            // The file grew between the stat above and the bounded hash
-            // read. Record it as an existence row exactly as the static
-            // oversize path does, rather than indexing content the ceiling
-            // says not to read.
-            push_skipped_record(skipped_records, existing_hashes, &path, &absolute_path);
-            return Ok(DirtyOutcome::Skipped);
-        }
-        Err(error) => return Err(error.into()),
+    let Some(identity) = hash_dirty_file(&path, &absolute_path, &options.limits)? else {
+        // The file grew between the stat above and the bounded hash read.
+        // Record it as an existence row exactly as the static oversize path
+        // does, rather than indexing content the ceiling says not to read.
+        sample::push_skipped_record(skipped_records, existing_hashes, &path, &absolute_path);
+        return Ok(DirtyOutcome::Skipped);
     };
 
-    if let Some(existing_hash) = existing_hashes.get(&path)
-        && existing_hash == &identity.content_hash
-    {
-        connection.execute(
-            "UPDATE files SET modified_unix_seconds = ?1, byte_len = ?2 WHERE path = ?3",
-            rusqlite::params![mtime, byte_len, path],
-        )?;
+    if existing_hash_matches(existing_hashes, &path, &identity.content_hash) {
+        touch_unchanged(connection, &path, mtime, byte_len)?;
         return Ok(DirtyOutcome::Unchanged);
     }
 
-    let kind = sniff_kind(&absolute_path)?;
+    match indexable_record(&path, &absolute_path, &options.limits)? {
+        Some(record) => Ok(DirtyOutcome::Upsert(Box::new(record))),
+        None => {
+            sample::push_skipped_record(skipped_records, existing_hashes, &path, &absolute_path);
+            Ok(DirtyOutcome::Skipped)
+        }
+    }
+}
+
+fn removed_or_ignored(path: &str, existing_hashes: &HashMap<String, String>) -> DirtyOutcome {
+    if existing_hashes.contains_key(path) {
+        DirtyOutcome::Deleted(path.to_owned())
+    } else {
+        DirtyOutcome::Ignored
+    }
+}
+
+fn ignored_by_rules(options: &ReconcileOptions, path: &str) -> bool {
+    options
+        .rules
+        .as_ref()
+        .is_some_and(|rules| rules.should_ignore(path))
+}
+
+fn storable_byte_len(size: u64, limits: &ResourceLimits) -> Option<i64> {
+    let byte_len = i64::try_from(size).ok()?;
+    (size <= limits.max_file_bytes).then_some(byte_len)
+}
+
+fn hash_dirty_file(
+    path: &str,
+    absolute_path: &Path,
+    limits: &ResourceLimits,
+) -> Result<Option<SourceIdentity>, ReconcileError> {
+    match hash::hash_file(path, absolute_path, limits.max_file_bytes) {
+        Ok(identity) => Ok(Some(identity)),
+        Err(hash::HashError::TooLarge { .. }) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn existing_hash_matches(
+    existing_hashes: &HashMap<String, String>,
+    path: &str,
+    content_hash: &str,
+) -> bool {
+    existing_hashes
+        .get(path)
+        .is_some_and(|existing| existing == content_hash)
+}
+
+fn indexable_record(
+    path: &str,
+    absolute_path: &Path,
+    limits: &ResourceLimits,
+) -> Result<Option<FileRecord>, ReconcileError> {
+    let kind = sniff_kind(absolute_path)?;
     let discovered = DiscoveredFile {
-        relative_path: path.clone(),
-        absolute_path: absolute_path.clone(),
+        relative_path: path.to_owned(),
+        absolute_path: absolute_path.to_path_buf(),
         kind,
     };
-    let sample = match sample::sample_file(&discovered, limits) {
-        Ok(sample) => sample,
-        Err(sample::SampleError::TooLarge { .. }) => {
-            push_skipped_record(skipped_records, existing_hashes, &path, &absolute_path);
-            return Ok(DirtyOutcome::Skipped);
-        }
-        Err(error) => return Err(error.into()),
-    };
-    let record = sample::to_file_record(sample, limits);
-    Ok(DirtyOutcome::Upsert(Box::new(record)))
-}
-
-/// Queries one bounded batch of stored path hashes, failing closed when the
-/// shared budget is spent. The deadline is checked before the query, so a
-/// bulk watcher event burst cannot serialize and execute one huge lookup
-/// before the budget gets a chance to trip.
-fn query_stored_hash_batch(
-    connection: &Connection,
-    batch: &mut Vec<&str>,
-    deadline: Deadline,
-) -> Result<HashMap<String, String>, ReconcileError> {
-    if let Some(elapsed) = deadline.exceeded() {
-        return Err(ReconcileError::TimeBudgetExceeded {
-            path: " while reading stored path hashes".to_owned(),
-            elapsed_ms: elapsed.as_millis(),
-        });
+    match sample::sample_file(&discovered, limits) {
+        Ok(sample) => Ok(Some(sample::to_file_record(sample, limits))),
+        Err(sample::SampleError::TooLarge { .. }) => Ok(None),
+        Err(error) => Err(error.into()),
     }
-    Ok(query_existing_hashes(connection, batch.drain(..))?)
 }
 
+/// [`reconcile_dirty_paths`] under explicit [`ReconcileOptions`], checked
+/// once per dirty path so a pathological set (a huge number of events, a
+/// hung filesystem) fails closed with
+/// [`ReconcileError::TimeBudgetExceeded`] instead of stalling the tool
+/// call forever. The deadline is created by the caller so the whole
+/// barrier-sync operation shares one budget across its iterations.
+///
+/// `discovered_paths` are the project-relative paths the caller's walk saw
+/// on disk (the stat sweep's `on_disk`). Edge resolution treats them as
+/// existing even when they were never indexed — an oversize-skipped file
+/// that exists must not turn its importers into `Unresolved` dead-code
+/// findings.
 pub(crate) fn reconcile_dirty_paths_with_deadline(
     connection: &mut Connection,
     root: &Path,
@@ -205,38 +162,9 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
     options: &ReconcileOptions,
     discovered_paths: &HashSet<String>,
 ) -> Result<ReconcileReport, ReconcileError> {
-    let mut upserts = Vec::new();
-    let mut deletions = Vec::new();
+    let existing_hashes = load_existing_hashes(connection, &dirty, options.deadline)?;
+    let mut tally = ReconcileTally::default();
     let mut skipped_records: Vec<SkippedRecord> = Vec::new();
-    let mut reconciled = 0usize;
-    let mut unchanged = 0usize;
-    let mut ignored = 0usize;
-    let mut skipped = 0usize;
-
-    // The dirty set can be the whole event burst from a bulk filesystem
-    // change. Look the stored hashes up in bounded batches, checking the
-    // budget before each query, instead of serializing the entire set into
-    // one JSON array before the first deadline check can run.
-    let mut existing_hashes = HashMap::new();
-    let mut batch: Vec<&str> = Vec::with_capacity(MAX_PATH_LOOKUP_BATCH.min(dirty.len()));
-    for path in &dirty {
-        batch.push(path.as_str());
-        if batch.len() == MAX_PATH_LOOKUP_BATCH {
-            existing_hashes.extend(query_stored_hash_batch(
-                connection,
-                &mut batch,
-                options.deadline,
-            )?);
-        }
-    }
-    if !batch.is_empty() {
-        existing_hashes.extend(query_stored_hash_batch(
-            connection,
-            &mut batch,
-            options.deadline,
-        )?);
-    }
-    drop(batch);
 
     for path in dirty {
         if let Some(elapsed) = options.deadline.exceeded() {
@@ -245,94 +173,69 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
                 elapsed_ms: elapsed.as_millis(),
             });
         }
-        match reconcile_single_dirty_path(
+        let outcome = reconcile_single_dirty_path(
             connection,
             root,
             path,
             options,
             &existing_hashes,
             &mut skipped_records,
-        )? {
-            DirtyOutcome::Deleted(deleted_path) => deletions.push(deleted_path),
-            DirtyOutcome::Ignored => ignored += 1,
-            DirtyOutcome::Skipped => skipped += 1,
-            DirtyOutcome::Unchanged => unchanged += 1,
-            DirtyOutcome::Upsert(record) => {
-                upserts.push(*record);
-                reconciled += 1;
-            }
-        }
+        )?;
+        tally.record(outcome);
     }
 
-    deletions.extend(deleted);
+    tally.deletions.extend(deleted);
 
-    if upserts.is_empty() && deletions.is_empty() && skipped_records.is_empty() {
-        return Ok(ReconcileReport {
-            reconciled,
-            unchanged,
-            deleted: 0,
-            ignored,
-            skipped,
-        });
+    if tally.upserts.is_empty() && tally.deletions.is_empty() && skipped_records.is_empty() {
+        return Ok(tally.report());
     }
 
     commit_reconcile_changes(
         connection,
         expected_revision,
         discovered_paths,
-        &upserts,
-        &deletions,
+        &tally.upserts,
+        &tally.deletions,
         &skipped_records,
         options.deadline,
     )?;
 
-    Ok(ReconcileReport {
-        reconciled,
-        unchanged,
-        deleted: deletions.len(),
-        ignored,
-        skipped,
-    })
+    Ok(tally.report())
 }
 
-fn commit_reconcile_changes(
-    connection: &mut Connection,
-    expected_revision: Option<&str>,
-    discovered_paths: &HashSet<String>,
-    upserts: &[FileRecord],
-    deletions: &[String],
-    skipped_records: &[SkippedRecord],
-    deadline: Deadline,
-) -> Result<(), ReconcileError> {
-    let manifest_hash = manifest::compute_manifest_hash(
-        connection,
-        upserts,
-        deletions,
-        skipped_records,
-        &deadline,
-    )?;
-    let parser_pack_version = query_current_parser_pack_version(connection)?;
-    // The last cheap point to fail before the write transaction opens: a
-    // budget spent while the hash was computed must not be followed by a
-    // commit that runs for an unbounded time.
-    if let Some(elapsed) = deadline.exceeded() {
-        return Err(ReconcileError::TimeBudgetExceeded {
-            path: " before committing the reconciled revision".to_owned(),
-            elapsed_ms: elapsed.as_millis(),
-        });
+/// The per-path outcomes accumulated for one reconcile pass, and their
+/// translation into the caller-visible [`ReconcileReport`].
+#[derive(Default)]
+struct ReconcileTally {
+    upserts: Vec<FileRecord>,
+    deletions: Vec<String>,
+    reconciled: usize,
+    unchanged: usize,
+    ignored: usize,
+    skipped: usize,
+}
+
+impl ReconcileTally {
+    fn record(&mut self, outcome: DirtyOutcome) {
+        match outcome {
+            DirtyOutcome::Deleted(path) => self.deletions.push(path),
+            DirtyOutcome::Ignored => self.ignored += 1,
+            DirtyOutcome::Skipped => self.skipped += 1,
+            DirtyOutcome::Unchanged => self.unchanged += 1,
+            DirtyOutcome::Upsert(record) => {
+                self.upserts.push(*record);
+                self.reconciled += 1;
+            }
+        }
     }
 
-    revision::publish_revision(
-        connection,
-        revision::RevisionInputs {
-            expected_current: expected_revision,
-            manifest_hash: &manifest_hash,
-            parser_pack_version: &parser_pack_version,
-            upserts,
-            deletions,
-            skipped: skipped_records,
-            discovered_paths,
-        },
-    )?;
-    Ok(())
+    fn report(&self) -> ReconcileReport {
+        ReconcileReport {
+            reconciled: self.reconciled,
+            unchanged: self.unchanged,
+            deleted: self.deletions.len(),
+            ignored: self.ignored,
+            skipped: self.skipped,
+        }
+    }
 }

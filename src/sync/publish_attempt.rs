@@ -1,7 +1,6 @@
 //! A single publish attempt: discover, sample, diff, revalidate, and commit
 //! one revision. The retry/CAS loop lives in `publish_cas` — this module is
 //! pure orchestration of one attempt, with no retry logic of its own.
-// slugaudit-line-exception: approved-by=slugthug; reason=one publish attempt end-to-end — skip collection and its warns, the sampling/diff half, the no-op short-circuit, and the CAS commit tail — reads as a single sequence; the Attempt struct and its two halves stay beside the ordering they exist to enforce
 
 use super::discovery;
 use super::publish::{PublishError, PublishReport};
@@ -9,9 +8,7 @@ use super::publish_diff::{self, build_upserts_and_deletions};
 use super::race_hook;
 use super::revalidate::revalidate_unchanged_since_sample;
 use super::revision;
-use super::revision_skipped::{
-    SKIP_REASON_OVERSIZE, SKIP_REASON_STAT_FAILED, SKIP_REASON_UNREADABLE, SkippedRecord,
-};
+use super::revision_skipped::{SKIP_REASON_OVERSIZE, SKIP_REASON_UNREADABLE, SkippedRecord};
 use super::sample::{self, sample_all_with_deadline};
 use crate::model::ResourceLimits;
 use crate::progress::ProgressSink;
@@ -19,49 +16,6 @@ use crate::util::Deadline;
 use rusqlite::Connection;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
-
-/// Folds one source of skipped files (discovery skips, then sampling skips)
-/// into the existence-row map and the discovered-path set, and warns once
-/// per file. Both are needed: the map becomes the `files` rows, the set
-/// feeds edge resolution. A file whose path has no UTF-8 representation is
-/// left out of both — it has no usable key, and it is exactly the gap the
-/// warn line exists to make visible.
-fn collect_skipped(
-    root: &Path,
-    files: &[discovery::SkippedFile],
-    reason: &str,
-    discovered_paths: &mut HashSet<String>,
-    records: &mut BTreeMap<String, SkippedRecord>,
-) {
-    for file in files {
-        let Some(relative) = discovery::representable_relative_path(root, &file.absolute_path)
-        else {
-            warn_skipped(file, reason);
-            continue;
-        };
-        let record = sample::skipped_record(&relative, &file.absolute_path, reason);
-        // A failed stat is already warned about, with the path, the requested
-        // reason and the source error, inside `skipped_record`; a second line
-        // for the same file would break "every error is logged once".
-        if record.reason != SKIP_REASON_STAT_FAILED {
-            warn_skipped(file, reason);
-        }
-        discovered_paths.insert(relative.clone());
-        records.insert(relative, record);
-    }
-}
-
-fn warn_skipped(file: &discovery::SkippedFile, reason: &str) {
-    // `file.reason` is the skip message itself: for a sampling skip it is
-    // `SampleError::TooLarge`'s Display, which embeds the raw absolute path
-    // and would defeat the redacted `path_id`. The static class is enough to
-    // correlate the skip; the specific cause is carried by the report.
-    tracing::warn!(
-        path_id = %crate::util::redacted_path(&file.absolute_path),
-        reason_kind = reason,
-        "skipped file during {reason}"
-    );
-}
 
 /// Everything one sampled-and-diffed attempt produces before the delta is
 /// written: the inputs `publish_revision` needs, plus the report fields.
@@ -101,7 +55,7 @@ fn sample_and_diff(
     // the root, has no usable key — it stays visible only in
     // `PublishReport::skipped` and the log.
     let mut skipped_records: BTreeMap<String, SkippedRecord> = BTreeMap::new();
-    collect_skipped(
+    publish_diff::collect_skipped(
         root,
         &discovery_skips,
         SKIP_REASON_UNREADABLE,
@@ -109,7 +63,7 @@ fn sample_and_diff(
         &mut skipped_records,
     );
     let (samples, sampling_skips) = sample_all_with_deadline(&discovered, limits, sink, deadline)?;
-    collect_skipped(
+    publish_diff::collect_skipped(
         root,
         &sampling_skips,
         SKIP_REASON_OVERSIZE,
@@ -269,70 +223,4 @@ fn commit_attempt(
         unchanged: diff.unchanged,
         skipped,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::store::test_capture::capture_warns;
-
-    fn skipped(path: std::path::PathBuf) -> discovery::SkippedFile {
-        discovery::SkippedFile {
-            absolute_path: path,
-            reason: "read failed".to_owned(),
-        }
-    }
-
-    #[test]
-    fn a_stat_failed_skip_logs_exactly_one_warn_line() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let files = [skipped(root.path().join("vanished.rs"))];
-        let mut paths = HashSet::new();
-        let mut records = BTreeMap::new();
-
-        let (_, logs) = capture_warns(|| {
-            collect_skipped(
-                root.path(),
-                &files,
-                "once-probe-stat-failed",
-                &mut paths,
-                &mut records,
-            );
-        });
-
-        let lines = logs
-            .lines()
-            .filter(|line| line.contains("once-probe-stat-failed"))
-            .count();
-        assert_eq!(lines, 1, "one warn per stat-failed skip: {logs}");
-        assert_eq!(records["vanished.rs"].reason, SKIP_REASON_STAT_FAILED);
-        assert_eq!(records["vanished.rs"].byte_len, None);
-    }
-
-    #[test]
-    fn a_skip_whose_stat_succeeds_keeps_the_publish_loop_warn() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let present = root.path().join("present.rs");
-        std::fs::write(&present, b"fn a() {}").expect("write file");
-        let files = [skipped(present)];
-        let mut paths = HashSet::new();
-        let mut records = BTreeMap::new();
-
-        let (_, logs) = capture_warns(|| {
-            collect_skipped(
-                root.path(),
-                &files,
-                "once-probe-stat-ok",
-                &mut paths,
-                &mut records,
-            );
-        });
-
-        let lines = logs
-            .lines()
-            .filter(|line| line.contains("once-probe-stat-ok"))
-            .count();
-        assert_eq!(lines, 1, "{logs}");
-        assert_eq!(records["present.rs"].reason, "once-probe-stat-ok");
-    }
 }

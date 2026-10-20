@@ -1,10 +1,16 @@
-//! The SQL the reconcile pipeline reads: stored content hashes for dirty
-//! paths (to skip unchanged files) and the current parser pack version
-//! (to pin the new revision against).
+//! The SQL and commit step the reconcile pipeline uses: stored content
+//! hashes for dirty paths (to skip unchanged files), the current parser
+//! pack version (to pin the new revision against), and the atomic revision
+//! write that closes one reconcile pass.
 
-use crate::sync::manifest::{PATH_SET_SUBQUERY, paths_json_array};
+use super::ReconcileError;
+use crate::sync::FileRecord;
+use crate::sync::manifest::{self, PATH_SET_SUBQUERY, paths_json_array};
+use crate::sync::revision;
+use crate::sync::revision_skipped::SkippedRecord;
+use crate::util::Deadline;
 use rusqlite::{Connection, OptionalExtension};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// How many paths one stored-hash lookup binds.
 ///
@@ -59,6 +65,106 @@ pub(super) fn query_current_parser_pack_version(
         )
         .optional()?;
     Ok(version.unwrap_or_else(|| crate::parse::PACK_VERSION.to_owned()))
+}
+
+/// The dirty set can be the whole event burst from a bulk filesystem
+/// change. Look the stored hashes up in bounded batches, checking the
+/// budget before each query, instead of serializing the entire set into
+/// one JSON array before the first deadline check can run.
+pub(super) fn load_existing_hashes(
+    connection: &Connection,
+    dirty: &HashSet<String>,
+    deadline: Deadline,
+) -> Result<HashMap<String, String>, ReconcileError> {
+    let mut existing_hashes = HashMap::new();
+    let mut batch: Vec<&str> = Vec::with_capacity(MAX_PATH_LOOKUP_BATCH.min(dirty.len()));
+    for path in dirty {
+        batch.push(path.as_str());
+        if batch.len() == MAX_PATH_LOOKUP_BATCH {
+            existing_hashes.extend(query_stored_hash_batch(connection, &mut batch, deadline)?);
+        }
+    }
+    if !batch.is_empty() {
+        existing_hashes.extend(query_stored_hash_batch(connection, &mut batch, deadline)?);
+    }
+    Ok(existing_hashes)
+}
+
+/// Refreshes the stored size and mtime for a dirty path whose content hash
+/// still matches, so a touch with unchanged bytes is not re-indexed.
+pub(super) fn touch_unchanged(
+    connection: &Connection,
+    path: &str,
+    mtime: Option<i64>,
+    byte_len: i64,
+) -> Result<(), ReconcileError> {
+    connection.execute(
+        "UPDATE files SET modified_unix_seconds = ?1, byte_len = ?2 WHERE path = ?3",
+        rusqlite::params![mtime, byte_len, path],
+    )?;
+    Ok(())
+}
+
+/// Queries one bounded batch of stored path hashes, failing closed when the
+/// shared budget is spent. The deadline is checked before the query, so a
+/// bulk watcher event burst cannot serialize and execute one huge lookup
+/// before the budget gets a chance to trip.
+pub(super) fn query_stored_hash_batch(
+    connection: &Connection,
+    batch: &mut Vec<&str>,
+    deadline: Deadline,
+) -> Result<HashMap<String, String>, ReconcileError> {
+    if let Some(elapsed) = deadline.exceeded() {
+        return Err(ReconcileError::TimeBudgetExceeded {
+            path: " while reading stored path hashes".to_owned(),
+            elapsed_ms: elapsed.as_millis(),
+        });
+    }
+    Ok(query_existing_hashes(connection, batch.drain(..))?)
+}
+
+/// Commits one reconcile pass's upserts, deletions, and skipped existence
+/// rows as a single compare-and-swap revision.
+pub(super) fn commit_reconcile_changes(
+    connection: &mut Connection,
+    expected_revision: Option<&str>,
+    discovered_paths: &HashSet<String>,
+    upserts: &[FileRecord],
+    deletions: &[String],
+    skipped_records: &[SkippedRecord],
+    deadline: Deadline,
+) -> Result<(), ReconcileError> {
+    let manifest_hash = manifest::compute_manifest_hash(
+        connection,
+        upserts,
+        deletions,
+        skipped_records,
+        &deadline,
+    )?;
+    let parser_pack_version = query_current_parser_pack_version(connection)?;
+    // The last cheap point to fail before the write transaction opens: a
+    // budget spent while the hash was computed must not be followed by a
+    // commit that runs for an unbounded time.
+    if let Some(elapsed) = deadline.exceeded() {
+        return Err(ReconcileError::TimeBudgetExceeded {
+            path: " before committing the reconciled revision".to_owned(),
+            elapsed_ms: elapsed.as_millis(),
+        });
+    }
+
+    revision::publish_revision(
+        connection,
+        revision::RevisionInputs {
+            expected_current: expected_revision,
+            manifest_hash: &manifest_hash,
+            parser_pack_version: &parser_pack_version,
+            upserts,
+            deletions,
+            skipped: skipped_records,
+            discovered_paths,
+        },
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]

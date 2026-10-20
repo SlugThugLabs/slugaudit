@@ -6,10 +6,16 @@
 
 use super::{MAX_BARRIER_LOOPS, ReconcileError};
 #[cfg(test)]
+use super::{ReconcileOptions, ReconcileReport};
+#[cfg(test)]
 use crate::model::process_limits;
 use crate::util::Deadline;
 use crate::watch::WatchState;
+#[cfg(test)]
+use rusqlite::Connection;
 use std::collections::HashSet;
+#[cfg(test)]
+use std::path::Path;
 
 /// Implements the barrier synchronization loop.
 ///
@@ -94,4 +100,42 @@ pub(crate) fn sync_with_barrier_with_deadline(
         // Otherwise, loop and reconcile the new events. The next
         // snapshot_dirty call will pick them up.
     }
+}
+
+/// Reconciles dirty and deleted paths against the database for tests that
+/// exercise the pipeline directly, without a watcher or a barrier loop.
+///
+/// For each dirty path, reads the file, computes its BLAKE3 hash, and
+/// queries the database for the previously stored hash. If the hash
+/// matches, the file is skipped (unchanged since last index). If the hash
+/// differs or the file is new, it is sampled, parsed, analyzed, and added
+/// to the upsert set. Deleted paths are added to the deletion set.
+///
+/// After processing all paths, the function calls `publish_revision` to
+/// atomically commit the upserts and deletions under compare-and-swap.
+///
+/// # Errors
+///
+/// Returns an error if any file read, hash, sample, analysis, or database
+/// operation fails.
+#[cfg(test)]
+pub(crate) fn reconcile_dirty_paths(
+    connection: &mut Connection,
+    root: &Path,
+    dirty: HashSet<String>,
+    deleted: HashSet<String>,
+    expected_revision: Option<&str>,
+) -> Result<ReconcileReport, ReconcileError> {
+    let options = ReconcileOptions::for_sync(root, None);
+    super::pipeline::reconcile_dirty_paths_with_deadline(
+        connection,
+        root,
+        dirty,
+        deleted,
+        expected_revision,
+        &options,
+        // No walk in hand: fixtures index every file they write, so the
+        // indexed rows are the correct universe for these tests.
+        &HashSet::new(),
+    )
 }

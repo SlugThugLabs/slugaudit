@@ -407,3 +407,73 @@ fn a_failed_publish_logs_the_redacted_path_and_category_not_the_error_display() 
         "the raw path must not be logged: {logs}"
     );
 }
+
+/// Skip collection now lives beside the diff that consumes it; these tests
+/// stay with the publish scenarios that own the "logged once" contract.
+mod publish_attempt_skip_logging {
+    use crate::store::test_capture::capture_warns;
+    use crate::sync::discovery;
+    use crate::sync::publish_diff::collect_skipped;
+    use crate::sync::revision_skipped::SKIP_REASON_STAT_FAILED;
+    use std::collections::{BTreeMap, HashSet};
+
+    fn skipped(path: std::path::PathBuf) -> discovery::SkippedFile {
+        discovery::SkippedFile {
+            absolute_path: path,
+            reason: "read failed".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_stat_failed_skip_logs_exactly_one_warn_line() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let files = [skipped(root.path().join("vanished.rs"))];
+        let mut paths = HashSet::new();
+        let mut records = BTreeMap::new();
+
+        let (_, logs) = capture_warns(|| {
+            collect_skipped(
+                root.path(),
+                &files,
+                "once-probe-stat-failed",
+                &mut paths,
+                &mut records,
+            );
+        });
+
+        let lines = logs
+            .lines()
+            .filter(|line| line.contains("once-probe-stat-failed"))
+            .count();
+        assert_eq!(lines, 1, "one warn per stat-failed skip: {logs}");
+        assert_eq!(records["vanished.rs"].reason, SKIP_REASON_STAT_FAILED);
+        assert_eq!(records["vanished.rs"].byte_len, None);
+    }
+
+    #[test]
+    fn a_skip_whose_stat_succeeds_keeps_the_publish_loop_warn() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let present = root.path().join("present.rs");
+        std::fs::write(&present, b"fn a() {}").expect("write file");
+        let files = [skipped(present)];
+        let mut paths = HashSet::new();
+        let mut records = BTreeMap::new();
+
+        let (_, logs) = capture_warns(|| {
+            collect_skipped(
+                root.path(),
+                &files,
+                "once-probe-stat-ok",
+                &mut paths,
+                &mut records,
+            );
+        });
+
+        let lines = logs
+            .lines()
+            .filter(|line| line.contains("once-probe-stat-ok"))
+            .count();
+        assert_eq!(lines, 1, "{logs}");
+        assert_eq!(records["present.rs"].reason, "once-probe-stat-ok");
+    }
+}

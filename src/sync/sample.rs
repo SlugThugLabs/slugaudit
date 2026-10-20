@@ -1,17 +1,22 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=single-file read/hash/classify, evidence caps, and to_file_record are one cohesive per-file pipeline; the parallel batch loop lives in sample_batch.rs next to the loop that feeds it
 use super::analyze::analyze;
 use super::discovery::{DiscoveredFile, FileKind};
 use super::hash;
 use super::revision::FileRecord;
-use super::revision_skipped::{SKIP_REASON_STAT_FAILED, SkippedRecord};
+use super::revision_skipped::{SKIP_REASON_OVERSIZE, SKIP_REASON_STAT_FAILED, SkippedRecord};
 use crate::model::{
     EvidenceItem, EvidenceKind, EvidenceOrigin, ExtractionCompleteness, ResourceLimits,
     SourceIdentity, SpanAvailability,
 };
 use crate::util;
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+
+// The evidence-capping loop lives beside the evidence writes in
+// `revision_files`; re-exported here so `to_file_record` and its tests keep
+// this module's path.
+pub(crate) use super::revision_files::apply_evidence_limits;
 
 // The parallel batch loop lives in `sample_batch` — it outgrew this
 // file's source-size budget once it gained per-file skip handling.
@@ -156,6 +161,23 @@ pub(super) fn skipped_record(
     }
 }
 
+/// Builds the existence row for a dirty path over the import ceiling, and
+/// records it only when the stored row does not already carry the same stat
+/// identity — a watcher event on an unchanged oversize file must not churn a
+/// revision. Compared against the hashes already read for the dirty set
+/// rather than a fresh query.
+pub(super) fn push_skipped_record(
+    records: &mut Vec<SkippedRecord>,
+    existing_hashes: &HashMap<String, String>,
+    path: &str,
+    absolute_path: &Path,
+) {
+    let record = skipped_record(path, absolute_path, SKIP_REASON_OVERSIZE);
+    if existing_hashes.get(path) != Some(&record.identity.content_hash) {
+        records.push(record);
+    }
+}
+
 fn utf8_lossy_evidence() -> EvidenceItem {
     EvidenceItem {
         key: "encoding:0".to_owned(),
@@ -203,87 +225,7 @@ pub(super) fn to_file_record(sample: Sample, limits: &ResourceLimits) -> FileRec
     }
 }
 
-/// Reserved out of `max_payload_bytes_per_file` so the truncation marker
-/// itself never pushes a file's evidence over the cap it is reporting on.
-const TRUNCATION_MARKER_RESERVE_BYTES: usize = 512;
-
-/// Enforces all three evidence caps in one pass: per-item count, per-item
-/// payload bytes, and — the one the old truncate-then-retain version never
-/// checked — cumulative payload bytes across every kept item. A file with
-/// many small-but-not-tiny items (each under the per-item cap) could still
-/// serialize to a multi-megabyte evidence blob; this is what actually
-/// caught the 5,326,990-byte failure. Whenever anything is discarded, an
-/// explicit `Diagnostic` evidence item records it — the AI sees a "this
-/// file's evidence was truncated" signal instead of silently incomplete data.
-///
-/// Returns `true` when anything was discarded, so `to_file_record` can
-/// downgrade a would-be `Full` run to `Partial` instead of storing a
-/// completeness claim that contradicts the marker sitting next to it.
-#[must_use]
-pub(crate) fn apply_evidence_limits(
-    items: &mut Vec<EvidenceItem>,
-    limits: &ResourceLimits,
-) -> bool {
-    let cap = limits.evidence;
-    let original_len = items.len();
-    let max_items = cap.max_items_per_file.saturating_sub(1);
-    let max_bytes = cap
-        .max_payload_bytes_per_file
-        .saturating_sub(TRUNCATION_MARKER_RESERVE_BYTES);
-
-    let mut kept = Vec::with_capacity(original_len.min(cap.max_items_per_file));
-    let mut cumulative_bytes = 0_usize;
-    let mut oversized_dropped = 0_usize;
-    let mut unmeasurable_dropped = 0_usize;
-    let mut limit_truncated = false;
-
-    for item in items.drain(..) {
-        if kept.len() >= max_items {
-            limit_truncated = true;
-            break;
-        }
-        let payload_bytes = match serde_json::to_vec(&item.payload) {
-            Ok(bytes) => bytes.len(),
-            Err(error) => {
-                // A `Value` serializes infallibly today; if that ever stops
-                // being true the item is dropped under its own count, never
-                // passed off as an over-the-cap item.
-                tracing::warn!(
-                    key = %item.key,
-                    error = %error,
-                    "evidence payload failed to serialize; item dropped",
-                );
-                unmeasurable_dropped += 1;
-                continue;
-            }
-        };
-        if payload_bytes > cap.max_payload_bytes_per_item {
-            oversized_dropped += 1;
-            continue;
-        }
-        if cumulative_bytes.saturating_add(payload_bytes) > max_bytes {
-            limit_truncated = true;
-            break;
-        }
-        cumulative_bytes += payload_bytes;
-        kept.push(item);
-    }
-
-    let kept_len = kept.len();
-    *items = kept;
-    let discarded = limit_truncated || oversized_dropped > 0 || unmeasurable_dropped > 0;
-    if discarded {
-        items.push(truncation_evidence(
-            original_len,
-            kept_len,
-            oversized_dropped,
-            unmeasurable_dropped,
-        ));
-    }
-    discarded
-}
-
-fn truncation_evidence(
+pub(super) fn truncation_evidence(
     original_count: usize,
     kept_count: usize,
     oversized_dropped: usize,
