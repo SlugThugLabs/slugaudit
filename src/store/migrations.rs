@@ -6,7 +6,7 @@ use thiserror::Error;
 /// makes an older database resolve as `UnsupportedVersion`, which the sync
 /// manager treats as corruption and rebuilds from project source — so a bump
 /// needs no migration code, only a matching `schema.sql` change.
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 7;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 8;
 const SCHEMA_DDL: &str = include_str!("schema.sql");
 
 #[derive(Debug, Error)]

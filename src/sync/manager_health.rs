@@ -153,6 +153,16 @@ impl SourceSyncManager {
         .map_err(|error| {
             super::super::sweep_reconcile::sweep_failed(root.as_path(), state, sink, error)
         })?;
+        // The incremental walk is the only place a non-UTF-8 add or remove
+        // can be seen between full publishes; persist it before the report
+        // can read the count.
+        let persisted = super::super::publish::replace_unrepresentable_paths(
+            connection,
+            &report.unrepresentable,
+        );
+        persisted.map_err(|error| {
+            ErrorData::internal_error(format!("recording unrepresentable paths: {error}"), None)
+        })?;
         if state.has_unreconciled_events() {
             self.drain_events(root, state, connection, &options, &report.on_disk, sink)?;
         }
@@ -249,6 +259,7 @@ impl SourceSyncManager {
         // an unverified tree must not be published against.
         let report = super::super::sweep::sweep(connection, root, &options.deadline)
             .map_err(sweep_error_to_sync)?;
+        super::super::publish::replace_unrepresentable_paths(connection, &report.unrepresentable)?;
         reconcile_events(root, state, connection, &options, &report.on_disk)
     }
 }

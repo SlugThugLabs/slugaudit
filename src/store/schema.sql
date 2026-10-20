@@ -33,6 +33,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_revisions_single_current
     ON revisions (is_current)
     WHERE is_current = 1;
 
+-- The discovered files that cannot have a `files` row at all: their
+-- project-relative path is not valid UTF-8, so no TEXT path can represent
+-- them. The path is stored as raw bytes (a BLOB) because no text encoding
+-- names it. This is derived, disposable state refreshed by every full
+-- discovery walk and every incremental stat sweep — never a source of
+-- truth; sync reads it only to skip rewriting an unchanged set. `report`
+-- reads COUNT(*) here instead of walking the filesystem, so
+-- `index_partial` stays truthful without putting a walk on a read path.
+CREATE TABLE IF NOT EXISTS unrepresentable_paths (
+    path BLOB PRIMARY KEY
+);
+
 -- One row per file the project contains — not per file that was indexed. A
 -- discovered file that could not be read (oversize, unreadable) gets an
 -- existence row with file_kind = 'skipped' and no content, so it is

@@ -23,6 +23,7 @@
 //! stored stat *and* produces no watcher event — is documented in
 //! ARCHITECTURE.md as accepted, and is covered whenever either layer fires.
 
+use super::discovery::unrepresentable_relative_bytes;
 use crate::ignore_rules::{indexable_walker, is_excluded_path};
 use crate::util::Deadline;
 use rusqlite::Connection;
@@ -63,6 +64,10 @@ pub(super) struct SweepReport {
     pub deleted: HashSet<String>,
     pub on_disk: HashSet<String>,
     pub unchanged: usize,
+    /// Raw project-relative bytes of the walked files whose path is not
+    /// valid UTF-8. They have no `files` row, so this is the exact set the
+    /// persisted unrepresentable-path table must hold after this walk.
+    pub unrepresentable: HashSet<Vec<u8>>,
 }
 
 /// Walks `root`, stats every indexable file, and classifies it against the
@@ -90,6 +95,7 @@ pub(super) fn sweep(
     // indexable walker (gitignored, excluded) all converge out uniformly.
     let mut on_disk: HashSet<String> = HashSet::new();
     let mut candidates: HashSet<String> = HashSet::new();
+    let mut unrepresentable: HashSet<Vec<u8>> = HashSet::new();
     let mut unchanged = 0_usize;
 
     for entry in indexable_walker(root) {
@@ -98,7 +104,7 @@ pub(super) fn sweep(
                 elapsed_ms: elapsed.as_millis(),
             });
         }
-        let (relative, metadata) = match walked_file(root, entry) {
+        let (relative, metadata) = match walked_file(root, entry, &mut unrepresentable) {
             Walked::Stat(relative, metadata) => (relative, metadata),
             Walked::Unverifiable(relative) => {
                 // The file exists but could not be stat'd: keep its stored
@@ -139,6 +145,7 @@ pub(super) fn sweep(
         deleted,
         on_disk,
         unchanged,
+        unrepresentable,
     })
 }
 
@@ -180,7 +187,11 @@ enum Walked {
 }
 
 /// One walked entry, reduced to what the comparison needs.
-fn walked_file(root: &Path, entry: Result<ignore::DirEntry, ignore::Error>) -> Walked {
+fn walked_file(
+    root: &Path,
+    entry: Result<ignore::DirEntry, ignore::Error>,
+    unrepresentable: &mut HashSet<Vec<u8>>,
+) -> Walked {
     let entry = match entry {
         Ok(entry) => entry,
         Err(error) => {
@@ -216,8 +227,11 @@ fn walked_file(root: &Path, entry: Result<ignore::DirEntry, ignore::Error>) -> W
         return Walked::Skipped;
     }
     // Non-UTF-8 paths are never in the database (discovery rejects
-    // them), so there is nothing to compare and nothing to delete.
+    // them), so there is nothing to compare and nothing to delete — but
+    // they must still reach the persisted set `report` counts, or the
+    // count would go stale between full publishes.
     let Some(relative) = relative.to_str().map(str::to_owned) else {
+        unrepresentable.extend(unrepresentable_relative_bytes(root, absolute_path));
         return Walked::Skipped;
     };
 

@@ -1,6 +1,7 @@
 use super::discovery;
 use super::revision;
 use super::sample;
+use std::collections::HashSet;
 use thiserror::Error;
 
 pub use super::publish_cas::publish;
@@ -166,6 +167,41 @@ pub struct PublishReport {
     /// `file_kind = 'skipped'`; a non-UTF-8 name cannot be stored and is
     /// only visible here and in the log.
     pub skipped: Vec<discovery::SkippedFile>,
+}
+
+/// Replaces the persisted set of discovered non-UTF-8 paths with the set a
+/// walk just produced. The table is disposable derived state: every full
+/// discovery and every incremental stat sweep walks the whole tree, so the
+/// replacement is exact, and an unchanged set writes nothing. A failed write
+/// fails the sync pass — `report` must never read a count its latest walk
+/// did not produce.
+pub(super) fn replace_unrepresentable_paths(
+    connection: &mut rusqlite::Connection,
+    paths: &HashSet<Vec<u8>>,
+) -> Result<(), rusqlite::Error> {
+    if stored_unrepresentable_paths(connection)? == *paths {
+        return Ok(());
+    }
+    let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute("DELETE FROM unrepresentable_paths", [])?;
+    {
+        let mut insert =
+            tx.prepare("INSERT OR IGNORE INTO unrepresentable_paths (path) VALUES (?1)")?;
+        for path in paths {
+            insert.execute([path])?;
+        }
+    }
+    tx.commit()
+}
+
+fn stored_unrepresentable_paths(
+    connection: &rusqlite::Connection,
+) -> Result<HashSet<Vec<u8>>, rusqlite::Error> {
+    let mut statement = connection.prepare("SELECT path FROM unrepresentable_paths")?;
+    let paths = statement
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))?
+        .collect::<Result<_, _>>()?;
+    Ok(paths)
 }
 
 #[cfg(test)]

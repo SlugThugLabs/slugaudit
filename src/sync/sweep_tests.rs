@@ -2,6 +2,7 @@
 //! test: a change no watcher event ever reported must still be reconciled
 //! by `ensure_current` before the tool call serves evidence.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -473,7 +474,7 @@ fn a_stat_failing_with_something_other_than_not_found_leaves_the_file_unverifiab
     std::fs::remove_dir_all(project.path().join("d")).expect("remove the directory");
     write(project.path(), "d", b"now a file");
 
-    let walked = super::walked_file(project.path(), Ok(entry));
+    let walked = super::walked_file(project.path(), Ok(entry), &mut HashSet::new());
 
     assert!(
         matches!(&walked, super::Walked::Unverifiable(path) if path == "d/a.rs"),
@@ -488,7 +489,7 @@ fn a_walked_file_that_vanished_before_its_stat_is_skipped_so_its_row_is_deleted(
     let entry = first_walked_file(project.path());
     std::fs::remove_file(project.path().join("a.rs")).expect("delete the file");
 
-    let walked = super::walked_file(project.path(), Ok(entry));
+    let walked = super::walked_file(project.path(), Ok(entry), &mut HashSet::new());
 
     assert!(
         matches!(walked, super::Walked::Skipped),
@@ -504,7 +505,6 @@ fn a_walked_file_that_vanished_before_its_stat_is_skipped_so_its_row_is_deleted(
 fn a_failed_sweep_apply_names_the_apply_operation_and_marks_the_watcher_desynced() {
     use crate::progress::NoopProgressSink;
     use crate::watch::{WatchState, WatcherHealth};
-    use std::collections::HashSet;
 
     let (project, _db_dir, mut connection, _revision) = setup_project();
     let limits = *process_limits();
@@ -518,6 +518,7 @@ fn a_failed_sweep_apply_names_the_apply_operation_and_marks_the_watcher_desynced
         deleted: HashSet::new(),
         on_disk: ["a.rs".to_owned()].into_iter().collect(),
         unchanged: 0,
+        unrepresentable: HashSet::new(),
     };
     let state = WatchState::new();
     let sink = NoopProgressSink;
@@ -581,4 +582,43 @@ fn a_failed_sweep_apply_names_the_apply_operation_and_marks_the_watcher_desynced
         !logs.contains("stat sweep walk failed"),
         "a walk that succeeded must not be reported as failed: {logs}"
     );
+}
+
+/// The incremental path never re-runs full discovery, so the stat sweep is
+/// the only walk that can see a non-UTF-8 file added or removed between
+/// full publishes. `ensure_current` must persist the sweep's set, or
+/// `report` would keep a stale count until the next full publish.
+#[cfg(unix)]
+#[test]
+fn the_healthy_sync_path_refreshes_the_persisted_non_utf8_set() {
+    use crate::sync::SourceSyncManager;
+    use std::os::unix::ffi::OsStringExt;
+
+    let manager = SourceSyncManager::with_watcher();
+    let project = create_project();
+    write(project.path(), "a.rs", b"fn a() {}\n");
+    sync_project(&manager, &project);
+    let database = project.path().join(".planning/slugaudit/project.db");
+    let stored_count = || {
+        let connection = open_read_only(&database).expect("open the published database");
+        connection
+            .query_row("SELECT count(*) FROM unrepresentable_paths", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("count the persisted set")
+    };
+    assert_eq!(stored_count(), 0);
+
+    let bad = project
+        .path()
+        .join(std::ffi::OsString::from_vec(b"bad\xff.rs".to_vec()));
+    std::fs::write(&bad, b"fn b() {}\n").expect("write non-utf8 file");
+    std::thread::sleep(Duration::from_millis(200));
+    sync_project(&manager, &project);
+    assert_eq!(stored_count(), 1, "the sweep sees the added file");
+
+    std::fs::remove_file(&bad).expect("remove non-utf8 file");
+    std::thread::sleep(Duration::from_millis(200));
+    sync_project(&manager, &project);
+    assert_eq!(stored_count(), 0, "the sweep sees the removal");
 }

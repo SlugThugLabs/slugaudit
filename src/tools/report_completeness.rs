@@ -86,15 +86,18 @@ pub struct CompletenessEnvelope {
     /// not parsed" (`ContentOnly`) is visible as itself instead of vanishing
     /// into a parser-failure count.
     pub extraction_completeness_counts: Vec<CompletenessCount>,
-    /// True when the index does not cover every file discovery found for
-    /// this report: an existence row is `skipped`, or a discovered file's
+    /// True when the index does not cover every file discovery found in the
+    /// current tree: an existence row is `skipped`, or a discovered file's
     /// path has no UTF-8 representation and therefore no `files` row at all.
     /// False means every discovered file is represented by a row here.
     pub index_partial: bool,
     /// Discovered files whose project-relative path is not valid UTF-8, so
     /// no `files` row can represent them and they cannot be stored, skipped
-    /// or named in this report. Counted by a discovery walk run for this
-    /// report — the index itself cannot hold the path — and included in
+    /// or named in this report. Sync persists this set during every full
+    /// discovery and refreshes it from every incremental stat sweep, so the
+    /// count is read from the index rather than from a walk run for this
+    /// report. It is project-level — describing the tree as of the sync that
+    /// produced this report, not a particular revision — and is included in
     /// `index_partial`.
     pub unrepresentable_path_count: i64,
     /// Files whose stored evidence was cut short by an evidence cap: each
@@ -113,9 +116,9 @@ pub struct CompletenessEnvelope {
 
 /// Builds the envelope from the current revision's `files` table.
 ///
-/// `unrepresentable_path_count` is discovery's count of files whose path
+/// `unrepresentable_path_count` is the persisted count of files whose path
 /// cannot be stored in `files` at all (a non-UTF-8 name); it is passed in
-/// because the index has no row that could carry it, and it makes
+/// because the index has no `files` row that could carry it, and it makes
 /// `index_partial` truthful when such a file exists.
 ///
 /// # Errors

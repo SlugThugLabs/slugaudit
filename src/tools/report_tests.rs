@@ -166,7 +166,7 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
         .expect("insert kotlin edge");
 
     let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned(), 0).expect("build report");
+    let response = build_report(&tx, "r1".to_owned()).expect("build report");
 
     assert_eq!(
         response.unsupported_language_unresolved_count, 1,
@@ -205,7 +205,7 @@ fn dependency_edge_totals_count_edges_and_files_in_both_directions() {
         .expect("insert one resolved and one targetless edge");
 
     let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned(), 0).expect("build report");
+    let response = build_report(&tx, "r1".to_owned()).expect("build report");
 
     let totals = response.dependency_edges;
     assert_eq!(totals.outbound_edge_count, 2, "both edges leave lib.rs");
@@ -240,7 +240,7 @@ fn the_completeness_envelope_groups_files_by_class() {
     }
 
     let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned(), 0).expect("build report");
+    let response = build_report(&tx, "r1".to_owned()).expect("build report");
 
     let class_count = |class: &str| {
         response
@@ -270,7 +270,7 @@ fn malformed_language_value_is_reported_instead_of_dropped() {
         .expect("insert revision and file");
 
     let tx = connection.transaction().expect("begin transaction");
-    let error = build_report(&tx, "r1".to_owned(), 0).expect_err("malformed language");
+    let error = build_report(&tx, "r1".to_owned()).expect_err("malformed language");
     let rusqlite::Error::InvalidColumnType(_, column, _) = &error else {
         panic!("the malformed language column is named, not dropped: {error:?}");
     };
@@ -360,38 +360,41 @@ fn report_maps_a_build_failure_to_an_internal_error() {
 }
 
 /// A discovered file whose name is not valid UTF-8 cannot have a `files`
-/// row. The report must say so: the file count covers representable rows,
-/// the completeness block counts the dropped path, and the index is marked
-/// partial rather than claiming every discovered file is represented.
+/// row. Sync persists the set during its discovery walk, so the report
+/// counts it from the index without walking, and adding or removing such a
+/// file updates the count on the next sync — including when the file set is
+/// otherwise unchanged and no new revision is published.
 #[cfg(unix)]
 #[test]
-fn a_discovered_non_utf8_path_is_counted_and_makes_the_index_partial() {
+fn non_utf8_paths_are_counted_from_sync_state_as_the_tree_changes() {
     use std::os::unix::ffi::OsStringExt;
 
     let project = tempfile::tempdir().expect("project dir");
     activate(project.path());
     fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
-    let bad_name = std::ffi::OsString::from_vec(b"bad\xff.rs".to_vec());
-    fs::write(project.path().join(bad_name), b"fn b() {}\n").expect("write non-utf8 file");
+    let report_state = || {
+        let response = report(
+            &Parameters(ReportRequest {
+                path: project.path().to_string_lossy().into_owned(),
+            }),
+            &crate::progress::NoopProgressSink,
+            &crate::sync::SourceSyncManager::default(),
+        )
+        .expect("report succeeds");
+        (
+            response.0.completeness.unrepresentable_path_count,
+            response.0.completeness.index_partial,
+        )
+    };
 
-    let response = report(
-        &Parameters(ReportRequest {
-            path: project.path().to_string_lossy().into_owned(),
-        }),
-        &crate::progress::NoopProgressSink,
-        &crate::sync::SourceSyncManager::default(),
-    )
-    .expect("report succeeds");
-
-    assert_eq!(response.0.file_count, 1, "only the UTF-8 path has a row");
-    assert_eq!(
-        response.0.completeness.unrepresentable_path_count, 1,
-        "the dropped discovered path is counted"
-    );
-    assert!(
-        response.0.completeness.index_partial,
-        "a discovered file with no row makes the index partial"
-    );
+    assert_eq!(report_state(), (0, false), "nothing is unrepresentable");
+    let bad = project
+        .path()
+        .join(std::ffi::OsString::from_vec(b"bad\xff.rs".to_vec()));
+    fs::write(&bad, b"fn b() {}\n").expect("write non-utf8 file");
+    assert_eq!(report_state(), (1, true), "the dropped path is counted");
+    fs::remove_file(&bad).expect("remove non-utf8 file");
+    assert_eq!(report_state(), (0, false), "removal updates the count");
 }
 
 /// A project DB with one revision and no files, ready for direct `files`
@@ -459,7 +462,7 @@ fn parser_failure_rows_distinguish_content_only_from_a_failed_parse() {
     );
 
     let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned(), 0).expect("build report");
+    let response = build_report(&tx, "r1".to_owned()).expect("build report");
 
     let notes = response
         .parser_failure_files
@@ -494,7 +497,7 @@ fn parser_failure_files_total_equals_the_list_when_under_the_cap() {
     }
 
     let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned(), 0).expect("build report");
+    let response = build_report(&tx, "r1".to_owned()).expect("build report");
 
     assert_eq!(response.parser_failure_files.len(), 3);
     assert_eq!(response.parser_failure_files_total, 3);
@@ -516,7 +519,7 @@ fn parser_failure_files_total_exceeds_the_capped_list_when_over_the_cap() {
     }
 
     let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned(), 0).expect("build report");
+    let response = build_report(&tx, "r1".to_owned()).expect("build report");
 
     assert_eq!(
         response.parser_failure_files.len(),
@@ -577,7 +580,7 @@ fn completeness_envelope_separates_kinds_reasons_and_completeness() {
         .expect("insert skipped row");
 
     let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned(), 0).expect("build report");
+    let response = build_report(&tx, "r1".to_owned()).expect("build report");
 
     let kind_count = |kind: &str| {
         response

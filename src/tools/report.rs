@@ -138,9 +138,8 @@ pub struct ReportResponse {
 
 /// # Errors
 ///
-/// Returns an error if `request.path` isn't inside an active project, if
-/// syncing or querying the project's database fails, or if the discovery
-/// walk that counts unrepresentable paths fails.
+/// Returns an error if `request.path` isn't inside an active project, or if
+/// syncing or querying the project's database fails.
 pub fn report(
     request: &Parameters<ReportRequest>,
     sink: &dyn ProgressSink,
@@ -149,46 +148,13 @@ pub fn report(
     if crate::util::exceeds_input_bytes(&request.0.path, MAX_PATH_BYTES) {
         return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
     }
-    let (root, _database_path) =
-        crate::project::resolve_project(std::path::Path::new(&request.0.path))
-            .map_err(crate::sync::map_activation_error)?;
     let synced = ensure_synced(&request.0.path, sink, manager)?;
-    // The index cannot hold a non-UTF-8 path, so the count that makes
-    // `index_partial` truthful can only come from the walk itself. It runs
-    // after the sync so the report describes the tree as it is now, and it
-    // is bounded by the sync wall-clock budget like any other discovery.
-    let unrepresentable_path_count = count_unrepresentable_paths(root.as_path())?;
     let revision_id = synced.revision_id.clone();
     let response = with_verified_read(&synced, |tx| {
-        build_report(tx, revision_id.clone(), unrepresentable_path_count)
+        build_report(tx, revision_id.clone())
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))
     })?;
     Ok(Json(response))
-}
-
-/// Counts the discovered files a `files` row cannot represent: their
-/// project-relative path is not valid UTF-8. Walk errors (whose recorded
-/// path is the project root itself) and paths outside the root are not
-/// counted — they are not files the index could have stored under any
-/// encoding.
-fn count_unrepresentable_paths(root: &std::path::Path) -> Result<i64, ErrorData> {
-    let (_discovered, skipped) = crate::sync::discover(root).map_err(|error| {
-        ErrorData::internal_error(
-            format!("discovering project files for the report: {error}"),
-            crate::error_codes::budget_payload(error.budget_elapsed_ms()),
-        )
-    })?;
-    let count = skipped
-        .iter()
-        .filter(|file| {
-            file.absolute_path.strip_prefix(root).is_ok_and(|relative| {
-                !relative.as_os_str().is_empty() && relative.to_str().is_none()
-            })
-        })
-        .count();
-    i64::try_from(count).map_err(|error| {
-        ErrorData::internal_error(format!("counting unrepresentable paths: {error}"), None)
-    })
 }
 
 /// Assembles the report from per-section queries. Each section is one
@@ -198,9 +164,14 @@ fn count_unrepresentable_paths(root: &std::path::Path) -> Result<i64, ErrorData>
 fn build_report(
     connection: &Transaction<'_>,
     revision_id: String,
-    unrepresentable_path_count: i64,
 ) -> Result<ReportResponse, rusqlite::Error> {
     let file_count = scalar_count(connection, "SELECT count(*) FROM files")?;
+    // The index cannot hold a non-UTF-8 path, so sync persists the set of
+    // them in `unrepresentable_paths` (refreshed by every full discovery
+    // and every incremental stat sweep); the count is a plain index read,
+    // never a filesystem walk on this read path.
+    let unrepresentable_path_count =
+        scalar_count(connection, "SELECT count(*) FROM unrepresentable_paths")?;
     let completeness = build_completeness(connection, unrepresentable_path_count)?;
     let languages = grouped_language_counts(connection)?;
     let evidence_counts = grouped_evidence_counts(connection)?;

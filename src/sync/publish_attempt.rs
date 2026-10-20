@@ -72,6 +72,9 @@ struct Attempt {
     diff: publish_diff::Diff,
     skipped: Vec<discovery::SkippedFile>,
     skipped_records: Vec<SkippedRecord>,
+    /// Paths with no UTF-8 representation, persisted so `report` can count
+    /// them without walking.
+    unrepresentable: HashSet<Vec<u8>>,
 }
 
 /// Discovery + sampling + skip accounting + diff: the read half of an
@@ -84,6 +87,7 @@ fn sample_and_diff(
     deadline: &Deadline,
 ) -> Result<Attempt, PublishError> {
     let (discovered, discovery_skips) = discovery::discover_with_deadline(root, deadline)?;
+    let unrepresentable = discovery::unrepresentable_paths(root, &discovery_skips);
     // Every path the walk saw on disk, including files sampling will skip
     // (oversize) — those exist, so an import targeting one must resolve
     // rather than be written as `Unresolved`.
@@ -124,6 +128,7 @@ fn sample_and_diff(
         diff,
         skipped,
         skipped_records,
+        unrepresentable,
     })
 }
 
@@ -179,20 +184,17 @@ pub(super) fn try_publish(
         .as_ref()
         .map(|revision| revision.revision_id.as_str());
 
-    let Attempt {
-        discovered,
-        discovered_paths,
-        samples,
-        diff,
-        skipped,
-        skipped_records,
-    } = sample_and_diff(connection, root, sink, limits, deadline)?;
+    let attempt = sample_and_diff(connection, root, sink, limits, deadline)?;
+    // Persist what the walk could not represent before deciding whether the
+    // revision itself changed: a non-UTF-8 add or remove with no
+    // representable file change is a no-op revision but not a no-op count.
+    super::publish::replace_unrepresentable_paths(connection, &attempt.unrepresentable)?;
 
     let parser_version_changed = baseline
         .as_ref()
         .is_none_or(|revision| revision.parser_pack_version != parser_pack_version);
 
-    if diff.changes.is_empty()
+    if attempt.diff.changes.is_empty()
         && !parser_version_changed
         && let Some(current) = baseline
     {
@@ -201,8 +203,8 @@ pub(super) fn try_publish(
             added: 0,
             modified: 0,
             deleted: 0,
-            unchanged: diff.unchanged,
-            skipped,
+            unchanged: attempt.diff.unchanged,
+            skipped: attempt.skipped,
         });
     }
 
@@ -210,14 +212,7 @@ pub(super) fn try_publish(
         connection,
         expected_current,
         parser_pack_version,
-        Attempt {
-            discovered,
-            discovered_paths,
-            samples,
-            diff,
-            skipped,
-            skipped_records,
-        },
+        attempt,
         parser_version_changed,
         limits,
         deadline,
@@ -242,6 +237,7 @@ fn commit_attempt(
         diff,
         skipped,
         skipped_records,
+        ..
     } = attempt;
     let (upserts, deletions) = build_upserts_and_deletions(
         samples,

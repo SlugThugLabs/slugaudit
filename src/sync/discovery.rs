@@ -1,6 +1,7 @@
 use crate::ignore_rules::{indexable_walker, is_excluded_path};
 use crate::model::process_limits;
 use crate::util::Deadline;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -92,6 +93,31 @@ pub(super) fn representable_relative_path(root: &Path, absolute_path: &Path) -> 
         return None;
     }
     Some(relative.replace('\\', "/"))
+}
+
+/// The project-relative raw bytes of a discovered path that cannot be
+/// represented as UTF-8 text, or `None` when the path is representable,
+/// outside the root, or the root itself (a walk error has no file behind
+/// it). These are exactly the files a `files.path` row cannot hold, so the
+/// persisted set this feeds is the only place the index can count them.
+#[must_use]
+pub(super) fn unrepresentable_relative_bytes(root: &Path, absolute_path: &Path) -> Option<Vec<u8>> {
+    let relative = absolute_path.strip_prefix(root).ok()?;
+    if relative.as_os_str().is_empty() || relative.to_str().is_some() {
+        return None;
+    }
+    Some(relative.as_os_str().as_encoded_bytes().to_vec())
+}
+
+/// The unrepresentable subset of a discovery walk's skipped files. Used by
+/// the full publish to persist the set; the incremental stat sweep calls
+/// [`unrepresentable_relative_bytes`] per walked entry instead.
+#[must_use]
+pub(super) fn unrepresentable_paths(root: &Path, skipped: &[SkippedFile]) -> HashSet<Vec<u8>> {
+    skipped
+        .iter()
+        .filter_map(|file| unrepresentable_relative_bytes(root, &file.absolute_path))
+        .collect()
 }
 
 /// Sniffs whether `path` is binary (a NUL byte in the first
