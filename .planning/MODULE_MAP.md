@@ -87,6 +87,7 @@ src/
 │   ├── mod.rs                public exports
 │   ├── manager.rs            SourceSyncManager: state, watcher ownership, observability
 │   ├── manager_orchestration.rs  ensure_current: resolve, open/recover, rebuild tail
+│   ├── manager_orchestration_support.rs  recovery log records + saturating sync duration
 │   ├── manager_health.rs     sync_by_health: the WatcherHealth dispatch
 │   ├── manager_health_support.rs  event barrier, post-sync revision read, sweep-error mapping
 │   ├── manager_meta.rs       metadata row, session purge, publish_from_scratch

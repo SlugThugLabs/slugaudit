@@ -159,7 +159,7 @@ fn parse_tree_entry(line: &str) -> Option<(usize, &str)> {
         return None;
     }
     let column = prefix.chars().count();
-    if column % 4 != 0 {
+    if !column.is_multiple_of(4) {
         return None;
     }
     // Skip the `├──` / `└──` marker (multi-byte in UTF-8, so trim by

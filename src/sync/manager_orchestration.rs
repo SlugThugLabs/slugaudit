@@ -8,6 +8,9 @@
 use super::super::manager_meta::{
     ProjectMetaError, ensure_project_row, publish_from_scratch, purge_prior_session_findings,
 };
+use super::super::manager_orchestration_support::{
+    DatabaseRecovery, elapsed_ms, log_database_recovery,
+};
 use super::{SourceSyncManager, SyncedProject};
 use crate::error_codes::{self, ErrorCode};
 use crate::progress::{ProgressEvent, ProgressSink};
@@ -71,11 +74,13 @@ impl SourceSyncManager {
         match store::open_read_write(database_path) {
             Ok(connection) => Ok(Ok(connection)),
             Err(error) if error.is_corruption() => {
-                tracing::warn!(
-                    operation = "open_project_database",
-                    database_id = %crate::util::redacted_path(database_path),
-                    error_kind = store_error_kind(&error),
-                    "database is corrupt or outdated; discarding and re-publishing from scratch",
+                log_database_recovery(
+                    database_path,
+                    DatabaseRecovery::OpenFailed {
+                        error: &error,
+                        message: "database is corrupt or outdated; \
+                                  discarding and re-publishing from scratch",
+                    },
                 );
                 store::discard_corrupt_database(database_path).map_err(|err| {
                     ErrorData::internal_error(
@@ -87,11 +92,12 @@ impl SourceSyncManager {
                     .map(Err)
             }
             Err(error) => {
-                tracing::warn!(
-                    operation = "open_project_database",
-                    database_id = %crate::util::redacted_path(database_path),
-                    error_kind = store_error_kind(&error),
-                    "failed to open project database for sync",
+                log_database_recovery(
+                    database_path,
+                    DatabaseRecovery::OpenFailed {
+                        error: &error,
+                        message: "failed to open project database for sync",
+                    },
                 );
                 sink.emit(ProgressEvent::Completed {
                     phase: "ensuring_current",
@@ -116,25 +122,23 @@ impl SourceSyncManager {
         if let Err(metadata_error) = ensure_project_row(&mut connection, root.as_path()) {
             match metadata_error {
                 ProjectMetaError::RootMismatch { stored_root } => {
-                    tracing::warn!(
-                        operation = "verify_project_database",
-                        database_id = %crate::util::redacted_path(database_path),
-                        error_kind = "root_mismatch",
-                        stored_root_id = %crate::util::redacted_path(Path::new(&stored_root)),
-                        "project database is stale; discarding and rebuilding from source",
+                    log_database_recovery(
+                        database_path,
+                        DatabaseRecovery::RootMismatch {
+                            stored_root: &stored_root,
+                        },
                     );
                 }
                 ProjectMetaError::IncompatibleVersion {
                     contract_version,
                     schema_version,
                 } => {
-                    tracing::warn!(
-                        operation = "verify_project_database",
-                        database_id = %crate::util::redacted_path(database_path),
-                        error_kind = "incompatible_version",
-                        contract_version,
-                        schema_version,
-                        "project database is stale; discarding and rebuilding from source",
+                    log_database_recovery(
+                        database_path,
+                        DatabaseRecovery::IncompatibleVersion {
+                            contract_version,
+                            schema_version,
+                        },
                     );
                 }
                 other @ ProjectMetaError::Other(_) => return Err(ErrorData::from(other)),
@@ -234,35 +238,6 @@ impl SourceSyncManager {
         });
         Ok(synced)
     }
-}
-
-/// The `StoreError` variant as a static, path-free category. `StoreError`
-/// wraps dependency errors whose `Display` is not a controlled diagnostic
-/// (rusqlite can embed the database path on non-Unix targets), so a database
-/// failure is never formatted into a log line.
-fn store_error_kind(error: &store::StoreError) -> &'static str {
-    match error {
-        store::StoreError::Open(_) => "open",
-        store::StoreError::Configure(_) => "configure",
-        store::StoreError::Migration(_) => "migration",
-        store::StoreError::Symlink => "symlink",
-        store::StoreError::Inspect(_) => "inspect",
-        store::StoreError::WalUnavailable { .. } => "wal_unavailable",
-        store::StoreError::Permissions(_) => "permissions",
-        store::StoreError::NetworkFilesystem => "network_filesystem",
-        store::StoreError::NetworkFilesystemCheck(_) => "network_filesystem_check",
-    }
-}
-
-/// Milliseconds since `start`, for the `last_sync_duration_ms` stamp. A
-/// `u128` count of milliseconds only exceeds `u64::MAX` after about 584
-/// million years, so the saturation is a documented impossibility; it is
-/// still logged with its cause rather than swallowed.
-fn elapsed_ms(start: std::time::Instant) -> u64 {
-    u64::try_from(start.elapsed().as_millis()).unwrap_or_else(|error| {
-        tracing::warn!(error = %error, "sync duration exceeds u64 milliseconds; stamp saturates");
-        u64::MAX
-    })
 }
 
 /// Every state-bearing tool funnels through `ensure_current`, so this is

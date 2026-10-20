@@ -11,6 +11,7 @@ mod hash_io;
 mod manager;
 mod manager_health_support;
 mod manager_meta;
+mod manager_orchestration_support;
 mod manifest;
 mod publish;
 mod publish_attempt;
