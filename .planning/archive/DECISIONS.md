@@ -1,0 +1,169 @@
+# Decisions
+
+Append-only decision log. Each entry records a choice that was made
+deliberately, so a later reader can see why instead of re-deriving it. **Add
+new entries at the top; never rewrite or delete an existing one.** If a
+decision is reversed, add a new entry that names the old one.
+
+Format: **what** / **why** / **where** / **reversible?** Dates are the date
+the decision was taken, not the date it was written down. Claims carry a
+commit, a path, or a command where possible.
+
+---
+
+## 2026-10-19 — Wave 2: fresh canonical docs, recorded surface, persisted report count, closed-pipe handling, failure arms, new baseline
+
+- **What:** the wave-2 packages close six production-state gaps:
+  1. the canonical docs are authored fresh from current behavior
+     (`.planning/PLAN.md`, this file, `docs/CLIENTS.md`,
+     `docs/TROUBLESHOOTING.md`, `docs/RELEASING.md`, `docs/about.toml`,
+     `docs/third-party-notices.hbs`), never restored from git;
+  2. `.planning/archive/mcp_surface.json` is re-recorded from the live
+     `tools/list` + `resources/list` surface;
+  3. `report` reads the non-UTF-8 path count persisted at sync instead of
+     walking the filesystem on every call;
+  4. CLI writes are fallible and treat `BrokenPipe` as a clean exit rather
+     than panicking;
+  5. the remaining unreachable failure arms are tested through a clean
+     refactor, explicitly accepted, or removed — with no production-only test
+     hooks and no lint suppressions;
+  6. a fresh performance baseline is recorded after the code changes.
+- **Why:** the wave-1 tree was honest about its missing inputs but could not
+  pass `check_docs_drift` or `check_mcp_surface`; and the wave report itself
+  named the report walk, the closed-pipe CLI panic, the untested arms, and a
+  stale baseline as residual production-state gaps.
+- **Where:** `.planning/PLAN.md` *Phase 4*; `/tmp/audit3/WAVE_REPORT.md`
+  *Residual notes*; `src/bin/check_docs_drift/canonical_docs.rs`;
+  `src/bin/check_mcp_surface/main.rs` (`SNAPSHOT_PATH`);
+  `src/tools/report.rs`; `.github/workflows/quality.yml` (baseline gate is
+  local-only).
+- **Reversible:** each item individually, but re-opening the deleted docs is
+  not a reversal — see the 2026-10-19 entry below.
+
+## 2026-10-19 — Delete the superseded planning record and author the canonical docs fresh
+
+- **What:** `6241b43` deleted the accumulated `.planning/**` and `docs/**`
+  planning record. The surviving set is the fixed canonical list in
+  `src/bin/check_docs_drift/canonical_docs.rs`, and every surviving or
+  replacement document is written from current behavior. No deleted document
+  is restored, copied, or recovered from git history.
+- **Why:** the old record had grown into many overlapping plans and audit
+  ledgers whose claims drifted from the code. A next reader could not tell
+  which file was current. The fix is one small, fixed set of documents whose
+  safety comes from a gate (existence, module map, test count), not from
+  volume. Restoring a deleted file would re-import the drift.
+- **Where:** `6241b43` (`docs: remove the superseded planning records`);
+  `src/bin/check_docs_drift/canonical_docs.rs`;
+  `.planning/PLAN.md` *Documentation policy*.
+- **Reversible:** no. Reversing means re-establishing the old record and
+  defeating the deletion's purpose. A historical fact that matters belongs in
+  a new decision entry or in `AGENTS.md`'s session-hygiene section, not in a
+  restored file.
+
+## 2026-10-19 — Wave 1: fix the 55 production findings, not the test-side counts
+
+- **What:** wave 1 fixed the 55 confirmed production findings from the
+  2026-10-19 strict audit (R1 3, R2 1, R6 22, R7 5, R10 3, R12 21), including
+  the top-10 CAS-baseline defect in `src/sync/manager_health.rs`. It added 126
+  tests (1,030 → 1,156), raised line coverage 90.26% → 92.85%, and reported
+  the three dead variants (`SyncError::Revision`, `SyncError::Read`,
+  `DiscoveryError::Walk`) rather than writing tests that cannot fail. The
+  test-side R1/R2 counts from the audit were not burned down.
+- **Why:** the crate's lint contract denies `unwrap`/`expect` outside
+  `cfg(test)` because a test panic *is* the failure signal. Rewriting 1,918
+  test panics to lower an audit count would make tests worse, not the
+  product better. Production correctness was the target; R4/R5/R8 were left
+  as tracked debt rather than declared fixed.
+- **Where:** `/tmp/audit3/WAVE_REPORT.md` (commit map and final gate);
+  `.planning/PLAN.md` *Phase 3* and *Remaining P1 debt*;
+  `AGENTS.md` *Lint contract*.
+- **Reversible:** the code is revertible; the disposition is not a reason to
+  redo the test-side counts.
+
+## 2026-10-19 — Revert the static grammar bundle; keep runtime grammar downloads
+
+- **What:** the hybrid static bundle — 21 evidence languages compiled into the
+  binary at `2ca94a8`, trimmed to 14 core grammars at `024ec1e`, merged at
+  `26ed140` — was reverted at `f9544ca` (`revert(parse): remove the static
+  grammar bundle and return to runtime downloads`). The product again takes
+  grammar availability from the exact-pinned
+  `tree-sitter-language-pack = "=1.18.0"`, whose runtime downloads were
+  already recorded as an accepted risk at `fe181df`. `parse::PACK_VERSION`
+  (`src/parse/mod.rs`) remains the version recorded with every revision.
+- **Why:** the static bundle was a second distribution path beside the pack:
+  a grammar's availability could disagree with the pack pin, and every pack
+  bump would need the bundle re-derived. One pinned source of grammar truth is
+  easier to verify than two. The accepted risk of runtime downloads was
+  already written down and is unchanged.
+- **Where:** `f9544ca`; `Cargo.toml` (`tree-sitter-language-pack = "=1.18.0"`);
+  `src/parse/mod.rs`; `src/bin/check_version_consistency`;
+  `AGENTS.md` *Runtime and tooling preferences*.
+- **Reversible:** only with a new decision and owner approval. Re-proposing
+  the bundle must name what pins it to the pack version and how a pack bump
+  updates it.
+
+## 2026-10-19 — `max_total_import_bytes` is a work budget, not a memory bound
+
+- **What:** `max_total_import_bytes` caps the sum of sampled file sizes in one
+  publish. It is explicitly a **work budget**: peak process memory also
+  includes in-flight samples, evidence payloads, and parse transients, so a
+  tree can fit the budget and still exceed available RAM. A separate
+  memory/in-flight bound is a pending architectural decision, not something
+  the existing limit pretends to provide. Per-file and query-value limits are
+  clamped to `SQLITE_MAX_VALUE_BYTES` (1,000,000,000, the bundled SQLite's
+  `SQLITE_MAX_LENGTH`), because a larger value cannot be inserted; an
+  over-limit file becomes a reported skipped row instead of a failed publish.
+- **Why:** honesty about what a cap bounds. Calling the import budget a memory
+  bound would make an OOM look like a broken limit. The SQLite clamp was
+  verified against `libsqlite3-sys` 0.35.0 on 2026-10-19.
+- **Where:** `src/model/limits.rs` (`ResourceLimits::max_total_import_bytes`
+  doc comment and `SQLITE_MAX_VALUE_BYTES`);
+  `src/model/profile.rs`; `ARCHITECTURE.md` *Store and schema lifecycle*;
+  `.planning/PLAN.md` *Phase 2*.
+- **Reversible:** the clamp is required by the storage engine; the work-budget
+  classification changes only if a real memory bound lands and covers the same
+  path.
+
+## 2026-10-19 — Audit triage: production findings first, counted evidence second
+
+- **What:** the 2026-10-19 strict audit read all 259 committed `.rs` files
+  (50,325 lines) against R1–R12 and re-checked every cited violation in a
+  separate pass: 2,550 confirmed, 27 dropped on re-check, 75 suspected misses
+  recorded in Appendix C but not counted. Triage split production entries from
+  test/bench/fuzz and dev-gate entries, and wave 1 fixed the production set.
+  R4 (109 entries, 40 production), R5 (142, 110 production) and R8 (258
+  production) were carried as debt rather than mass-edited.
+- **Why:** a count that mixes test panics (exempt by contract) with production
+  panic risks is not a priority list. The audit's per-rule scope column is what
+  makes its numbers quotable; treating the raw total as a defect count would
+  send a later wave after test code.
+- **Where:** `/tmp/audit2/AUDIT_REPORT.md` (rule table, §5 top 10, Appendix B,
+  Appendix C); `.planning/PLAN.md` *Remaining P1 debt*.
+- **Reversible:** n/a. Re-auditing is always allowed; changing the rule table's
+  scope definitions needs a new entry.
+
+## 2026-10-16 — Path-logging policy: redacted ids for correlation, raw paths only in one-shot diagnostics
+
+- **What:** a server log line that can be correlated across a session must not
+  carry a raw filesystem path. Paths can contain usernames, repository names,
+  and other private data, and stderr is always on under an agent session.
+  Correlation sites emit `util::redacted_path` — a stable BLAKE3 hex id — so
+  the same path is still recognizable across lines. Three kinds of site may
+  emit a raw path: a one-shot diagnostic whose whole purpose is to name the
+  file just operated on (the staged-binary cleanup in `install_place.rs`, the
+  permission repair in `project/activation.rs`, the leftover temp file in
+  `connect_exec.rs`). SQL text, finding titles/descriptions, indexed source
+  content, and environment values never enter logs at all; `ErrorData.data`
+  carries only static codes and remedies. The contract is pinned by
+  `src/tools/redaction_tests.rs`.
+- **Why:** the alternative — logging raw paths everywhere — leaks private data
+  into a stream the agent host often retains. The alternative — redacting
+  everything — makes a one-shot fix instruction unactionable. The policy
+  names the boundary instead of leaving it to each call site's taste.
+- **Where:** `src/util.rs` (`redacted_log_id`, `redacted_path`);
+  `src/tools/redaction_tests.rs`; `src/sync/publish_tests.rs` (redacted path
+  assertions); `src/error_codes.rs` (static remedy rule);
+  `ARCHITECTURE.md` *The tool-call log*.
+- **Reversible:** yes in code, but do not: the tests exist because this was
+  regressed before. A new one-shot exception must say why the raw path is
+  required and must not sit on a correlation path.

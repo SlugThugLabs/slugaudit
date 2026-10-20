@@ -1,0 +1,41 @@
+{{!--
+  cargo-about 0.9.2 Handlebars template for THIRD-PARTY-NOTICES.txt.
+
+  The release workflow renders this template's output to
+  "$RUNNER_TEMP/notices.body" and writes its own header (release, commit,
+  artifact, generator version, and the root crate's Required Notice line)
+  above it. This file therefore contains only the third-party body.
+
+  Template data (cargo_about::generate::LicenseList):
+    overview  - one entry per licence id, with count/name/id/text
+    licenses  - one entry per unique licence *text*; fields name, id,
+                first_of_kind, text, source_path, used_by
+    used_by   - entries with `crate` (a cargo_metadata Package) and `path`
+--}}
+THIRD-PARTY LICENCE SUMMARY
+===========================
+
+{{#each overview}}
+{{name}} ({{id}}): {{count}} crate(s)
+{{/each}}
+
+The full text of each licence follows. A licence text that is shared by more
+than one crate is printed once, with every crate it applies to listed beneath
+it. Crates are listed by the name and version recorded in Cargo.lock.
+{{#each licenses}}
+
+================================================================================
+{{name}} ({{id}})
+================================================================================
+
+Applies to:
+{{#each used_by}}
+  * {{crate.name}} {{crate.version}}{{#if crate.repository}} <{{{crate.repository}}}>{{/if}}
+{{/each}}
+{{#if source_path}}
+
+Licence text sourced from: {{{source_path}}}
+{{/if}}
+
+{{{text}}}
+{{/each}}

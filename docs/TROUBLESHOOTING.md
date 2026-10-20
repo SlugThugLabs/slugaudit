@@ -1,0 +1,416 @@
+# SlugAudit troubleshooting and operator runbook
+
+This is the operator-facing guide for installing, connecting, and diagnosing
+SlugAudit. It describes the shipped binary's behavior. Design and invariants
+are in [`.planning/ARCHITECTURE.md`](../.planning/ARCHITECTURE.md); client
+registration details are in [`CLIENTS.md`](CLIENTS.md); release verification
+is in [`RELEASING.md`](RELEASING.md).
+
+Start with the `health` tool. It is read-only, never triggers a sync, and
+answers even when every other call fails. Its arguments are:
+
+```json
+{"path": "/absolute/path/inside/the/project"}
+```
+
+Omit `path` for the watcher state of the project this server has registered.
+A path that is not an enabled project returns `phase: "disabled"` with a
+`remedy` instead of an error.
+
+## Install and update
+
+### Install
+
+```bash
+# Installer script: prebuilt Linux x86_64 release, SHA256-verified, with a
+# cargo-install fallback and a local-checkout build when run inside the repo.
+curl -fsSL https://raw.githubusercontent.com/SlugThugLabs/slugaudit/main/install.sh | bash
+
+# From a source checkout
+cargo install --path .
+
+# Stable local install of the running binary (offers to edit PATH; the offer
+# is skipped when stdin is not a terminal)
+slugaudit install
+
+# Interactive setup (install, connect, disconnect, generic MCP instructions,
+# or run the server)
+slugaudit menu
+```
+
+The installer and `slugaudit install` place the binary at
+`~/.slugthug/slugaudit/slugaudit`, the path `connect` registers when it is
+present. Both retain the binary being replaced as `slugaudit.prev` beside it.
+`SLUGTHUG_HOME` overrides `~/.slugthug`; `SLUGTHUG_CONFIG_HOME` overrides the
+home directory used to resolve client config paths (tests use it).
+
+If `install.sh` cannot download (non-Linux or non-x86_64), it falls back to
+`cargo install --git` when cargo is available; otherwise it exits 1 stating
+that a prebuilt binary exists only for Linux x86_64.
+
+### Update
+
+```bash
+slugaudit update
+```
+
+`update` refuses before any network call unless the platform is Linux x86_64
+(the only published asset). It fetches the latest GitHub release over HTTPS
+using `curl`, downloads the binary and `SHA256SUMS`, compares the asset's
+SHA-256 digest against the manifest entry, and only then replaces the target
+with an atomic rename. On any failure the existing binary is untouched.
+
+- `could not run curl (required to self-update)` — install `curl`, or download
+  the release manually from GitHub.
+- `checksum verification failed` / `SHA256SUMS has no entry for …` — nothing
+  was replaced. Retry the download or verify the release by hand
+  ([`RELEASING.md`](RELEASING.md)).
+- `slugaudit update only fetches the linux/x86_64 release` — the machine is a
+  different platform; build from source instead.
+- `This build's version … could not be compared` — a dev build with no plain
+  dotted version; the release is fetched as though it were newer.
+
+After an update, restart any running agent session so it launches the new
+binary. To revert to the version an install or update displaced:
+
+```bash
+cp ~/.slugthug/slugaudit/slugaudit.prev ~/.slugthug/slugaudit/slugaudit
+```
+
+The `.prev` copy is overwritten by the next install or update and nothing else
+reads it.
+
+## Connect and disconnect
+
+```bash
+slugaudit connect            # detect installed agents, then prompt
+slugaudit connect claude     # one target
+slugaudit disconnect claude  # alias: slugaudit remove claude
+```
+
+`connect` either runs the client's own `mcp add` command or merges the
+`slugaudit` entry into the client's user-level config file. Every target,
+command, path, and verification step is in [`CLIENTS.md`](CLIENTS.md).
+
+Common outcomes:
+
+- `{client} cannot be connected automatically` — the entry has no established
+  automated mechanism (`goose`, `crush`). The message carries a paste-ready
+  remedy, the `Reference:` it came from, and the vendor `Docs:` link. Follow
+  the block; nothing was changed.
+- `` `{cli}` was not found on PATH `` — install the client, or run the printed
+  command yourself. Entries with a file fallback (`opencode`, `bob`, `pi`)
+  write the config file instead and say which route was taken.
+- `slugaudit could not register with …` — the client ran and rejected the add.
+  The message shows the exact command, the failure, and what to do by hand.
+  It does **not** tell you to install a CLI that just ran.
+- `cannot connect: … is not an object` / `does not hold a JSON object` —
+  the target config cannot be merged safely. Fix or remove the offending file
+  and retry; SlugAudit never rewrites a config it could not parse.
+- `Nothing to disconnect.` — no file entry, client CLI, or home directory was
+  available to remove. Nothing was reported as removed.
+
+For a client that is not in the registry, `slugaudit menu` option 4 prints a
+generic JSON MCP server snippet to paste into that client's configuration.
+
+## Database: corruption, staleness, rebuild
+
+Runtime state is one disposable database per project:
+
+```text
+<project>/.planning/slugaudit/project.db   (+ -wal and -shm sidecars)
+```
+
+The surrounding `.planning/` directory belongs to the project and is indexed
+normally; only `.planning/slugaudit/` is excluded from discovery. Removing
+the database loses nothing that cannot be recomputed from source. Findings
+are session-scoped, so they are not preserved across a restart either.
+
+### Automatic recovery
+
+The next tool call after a damaged or incompatible database recovers without
+operator action:
+
+- **Corruption / not a database** — `open_or_rebuild` logs
+  `database is corrupt or outdated; discarding and re-publishing from
+  scratch` (the path is a redacted id) and rebuilds from source.
+- **Unsupported schema version** — a database whose `PRAGMA user_version` is
+  neither fresh (`0`) nor current (`CURRENT_SCHEMA_VERSION`, currently `7`) is
+  treated as corruption and discarded. There is no migration path; the schema
+  is discard-and-rebuild.
+- **Stale metadata** — a different project root, or an incompatible
+  contract/schema version, is logged as `project database is stale;
+  discarding and rebuilding from source` and rebuilt.
+- **Interrupted publish** — WAL recovery handles a process killed mid-write;
+  a database that cannot be recovered takes the corruption path.
+
+### Manual rebuild
+
+Keep the activation marker and delete only the database:
+
+```bash
+rm -f <project>/.planning/slugaudit/project.db \
+      <project>/.planning/slugaudit/project.db-wal \
+      <project>/.planning/slugaudit/project.db-shm
+```
+
+Then run any state-bearing tool call (`health` does not sync); the first call
+republishes the project.
+
+To disable and re-enable the project (which also purges findings):
+
+```text
+project_control {"action": "off", "path": "<project>"}
+project_control {"action": "on",  "path": "<project>"}
+```
+
+`off` removes the activation directory and purges the database; it is the one
+destructive tool action (`destructiveHint: true`). `on` creates
+`.planning/slugaudit/`, appends `.planning/slugaudit/` to the project's
+`.gitignore` when possible (reporting `added`, `already_ignored`, or
+`not_written` with the reason), optionally writes a profile to
+`config.json`, and runs the initial import. Removing the whole
+`.planning/slugaudit` directory manually leaves the project disabled, so call
+`project_control {"action":"on", …}` rather than expecting a normal tool call
+to work.
+
+### Open-time refusals
+
+These are deliberate guards, not corruption, and rebuilding does not fix
+them:
+
+| Message | Cause and fix |
+|---|---|
+| `refusing to open a database path that is a symlink` | The database path is, or became, a symlink. Move it to a real local file. The open uses `SQLITE_OPEN_NOFOLLOW` so this is enforced by SQLite, not by a race-prone pre-check. |
+| `refusing to open a database on a network filesystem (NFS/CIFS/SMB)` | SQLite WAL is unreliable on network mounts. Move the project to a local filesystem and re-enable it. Detected from `/proc/self/mountinfo` on Linux and the mount table on macOS. |
+| `could not verify whether the database is on a network filesystem` | The platform inspection failed. The open fails closed rather than risk corruption. |
+| `SQLite did not enable WAL journal mode` | The filesystem cannot support WAL; it is unsupported for this database. Use a local filesystem. |
+| `failed to set database file permissions` / a group- or other-readable database | A new database is created owner-only (`0600`); an existing one with broader access is rejected. Restore owner-only permissions or rebuild. |
+
+A busy database waits up to 5 seconds (`BUSY_TIMEOUT`) before failing;
+BUSY/LOCKED during activation is reported as a database-busy condition rather
+than as a lock-permission error.
+
+## Health phases
+
+`health` returns `phase`, `remedy`, and three groups (`watcher`, `database`,
+`server`). Each group is present or `null` as a unit; absence is never a
+placeholder inside a group.
+
+| Phase | Meaning | What to do |
+|---|---|---|
+| `steady_state` | Watcher `Healthy`, no unreconciled events, a current revision exists. | Nothing. |
+| `degraded` | Watcher `Partial` (the watch-scope walk hit `max_watch_entries` or `max_watch_depth`), no unreconciled events, a current revision exists. The project is served and the stat sweep keeps it fresh; part of the tree has no watcher. | Normal on a very large tree. Raise `SLUGAUDIT_MAX_WATCH_ENTRIES` / `_DEPTH` only if the sweep cost matters. |
+| `restoring` | Watcher `NeedsVerification` or `Desynced`, or a trusted watcher has unreconciled events. The next call full-publishes. | Usually self-healing. If it persists, see *Full-publish loops*. |
+| `importing` | No current revision: the first sync has never succeeded. | Let a call finish, or re-run `project_control on`. Check `max_sync_wall_clock`. |
+| `unavailable` | The watcher could not be initialized. Every call full-publishes. | Check platform support and filesystem; the stat sweep still serves reads. |
+| `no_active_project` | No path was supplied and this server has no registered project, or a supplied path has no watcher and no published revision. | Call `project_control {"action":"on", …}` or pass the project path. |
+| `indexed_unwatched` | The project has a published revision, but this server has no registered watcher for it. Evidence is readable; no watcher health is implied. | Normal after a fresh server start; the next state-bearing call registers a watcher. |
+| `unknown` | No `path` was supplied and the watcher is `Healthy` or `Partial` with no unreconciled events. There is no project root in this answer, so no revision can be checked. | Supply `path` for the project's database state. |
+| `disabled` | The supplied path has no `.planning/slugaudit/` marker. This is a state, not an error. | The same `remedy` as `project_not_enabled`: enable the project. |
+
+`unknown` exists precisely so a pathless answer never claims the first sync
+failed (that would be `importing`) or that a revision exists (that would be
+`steady_state`). It is not an error and needs no action beyond passing a path
+if database state is wanted.
+
+`server` counters are instrumentation and drive no phase: total tool calls,
+errors, total milliseconds, last sync time/duration, and
+`consecutive_full_publishes`.
+
+## Watcher health and full-publish loops
+
+| Watcher health | Behavior |
+|---|---|
+| `Healthy` | Stat sweep, then reconcile unreconciled events if any. |
+| `Partial` | Same, but the watch scope stopped at a documented cap. The stat sweep remains the freshness guarantee for unwatched subtrees. |
+| `NeedsVerification` / `Desynced` | Full publish, drain events that arrived during it, then `Healthy`/`Partial`. |
+| `Unavailable` | Full publish on every call. |
+
+`server.consecutive_full_publishes` counting 1+ across repeated calls means the
+watcher is not being trusted. On Linux a common cause is inotify watch
+exhaustion (`fs.inotify.max_user_watches`), which makes `notify` fail and the
+manager mark the project `Desynced`; every call then full-publishes. Raise
+the kernel limit, or raise `SLUGAUDIT_MAX_WATCH_ENTRIES` / `_DEPTH` if the
+scope walk itself is the limit. A failed stat sweep also fails closed: it sets
+`Desynced` and the call errors rather than serving stale evidence for the
+unwalked remainder.
+
+The watcher is an optimization; the per-call stat sweep is the guarantee. A
+dropped watcher event is harmless because the next call re-verifies from disk.
+The documented blind spot is a same-size in-place edit in the same wall-clock
+second with no watcher event.
+
+## Logs
+
+- Logs go to **stderr** only. stdout is the JSON-RPC transport in serve mode.
+- `RUST_LOG` sets the filter; the default is `info`. An invalid or non-UTF-8
+  value falls back to `info` and is reported as a warning, not silently
+  dropped.
+- `SLUGAUDIT_LOG_FORMAT=json` switches to one-line JSON events; anything else
+  (or unset) uses plain text with ANSI disabled.
+- Logging is initialized before command dispatch, so CLI warnings
+  (`probe`, `install`, `update`) reach the subscriber.
+
+Every tool call emits exactly one completion event, `tool call completed`, at
+INFO on success and WARN on failure, with `outcome`, `elapsed_ms`, and
+`ToolCounters` deltas. All lines for a call share a `tool_call` span carrying
+`tool`, `call_id`, and `session_id`. To recover one session's call sequence:
+
+```bash
+# JSON format
+grep -F '"session_id":"<uuid>"' audit.jsonl \
+  | jq -r 'select(.fields.message == "tool call completed")
+           | [.span.call_id, .span.tool, .fields.outcome, .fields.elapsed_ms] | @tsv'
+
+# Text format
+grep -F "session_id=<uuid>" audit.log | grep -F 'tool call completed'
+```
+
+Redaction: a correlation log line carries a BLAKE3-derived path id
+(`util::redacted_path`), never a raw path. SQL text, finding titles and
+descriptions, indexed source content, and environment values never enter logs.
+A few one-shot diagnostics whose purpose is to name the file just operated on
+(for example a leftover staged-binary path) may print a raw path. Error codes
+and remedies are static strings; agent-supplied input appears only in the
+human-readable message, never in `ErrorData.data`.
+
+## Machine-readable failure codes
+
+A failing tool call may carry `ErrorData.data` as
+`{"code": …, "remedy": …}`. The set is closed and defined in
+`src/error_codes.rs`:
+
+| Code | Condition | Remedy |
+|---|---|---|
+| `sync_budget_exhausted` | `max_sync_wall_clock` was spent during discovery, hashing, parsing, or publishing. On a tree too big for the budget this is permanent. | Raise `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS` (seconds), or run `SLUGAUDIT_PROFILE=audit` (1200 s) instead of `lean` (120 s). Retrying unchanged fails identically. |
+| `project_not_enabled` | No ancestor of the path has a `.planning/slugaudit` activation marker. | Call `project_control` with `{"action":"on","path":"<project directory>"}`. |
+| `stale_revision` | The revision this call pinned is no longer current (another publish won the CAS race, or a sampled file changed before the write). | Retry the call; the sync in front of it re-reads the index and pins the new revision. |
+| `stale_revision` (resumed page) | A paged `leads`/`query` read resumed at an offset after the revision changed. | Restart the sweep from offset 0. The same offset can skip or repeat rows because row order moved. |
+| `unknown_mechanic` | `leads` was asked for a mechanic id not in the catalogue. | Call `leads` with only `path` to list every valid id with its count, then retry with one of them. |
+| `sql_too_large` | SQL passed to `query` exceeded `max_query_sql_bytes`. | Shorten the SQL, or raise `SLUGAUDIT_MAX_QUERY_SQL_BYTES` (bytes). |
+| `file_not_indexed` | The named file has no indexed source content: never discovered, skipped as oversize/unreadable, or binary. | Check what is indexed with `SELECT path FROM files WHERE path LIKE …`. A skipped file has no content to read; `report.completeness` says why it was skipped. |
+
+`health` is the deliberate exception: a path that is not an enabled project
+answers `phase: "disabled"` plus the same `project_not_enabled` remedy rather
+than failing.
+
+## Sync budget, profiles, and limits
+
+`max_sync_wall_clock` bounds one sync operation from discovery through publish.
+The default profile is `adaptive`; `SLUGAUDIT_PROFILE=lean|audit|adaptive`
+selects a preset. The wall-clock budgets are:
+
+| Profile | `max_sync_wall_clock` | `max_file_bytes` | `max_total_import_bytes` |
+|---|---:|---:|---:|
+| `lean` | 120 s | 32 MiB | 2 GiB |
+| `audit` | 1200 s | 256 MiB | 32 GiB |
+| `adaptive` | 1200 s | host RAM / 10, at least 256 MiB and at most `SQLITE_MAX_LENGTH` | host available RAM / 2, minimum 4 GiB |
+
+Every field has a `SLUGAUDIT_<FIELD>` override, for example
+`SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS`, `SLUGAUDIT_MAX_FILE_BYTES`,
+`SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES`. The full list is the field documentation
+in `src/model/limits.rs`. Only explicitly set variables override a default;
+an unset or unparseable value leaves the default in place (a set-but-invalid
+override is reported in a warning).
+
+Two ordering rules matter:
+
+- Process limits are resolved once (`OnceLock`). Changing an environment
+  variable after the first tool call has no effect; restart the server.
+- A project's `.planning/slugaudit/config.json` `profile` **replaces** the
+  whole env-derived limit struct. The watch-scope caps are the exception: the
+  watcher is registered before the project config is loaded, so
+  `max_watch_entries` / `max_watch_depth` come from the process environment
+  only.
+
+`max_total_import_bytes` is a **work budget**, not a memory bound. Peak memory
+also includes in-flight samples, evidence payloads, and parse transients; a
+tree can fit the budget and still exhaust RAM. A separate memory bound is not
+implemented.
+
+One sync uses one deadline across all phases and CAS retries; a pathological
+repository cannot restart the clock. Reconcile loops at most 16 barrier
+iterations; exceeding that marks the watcher `Desynced` and returns
+`BarrierCapExceeded` rather than draining forever.
+
+## Query, structure, and paging limits
+
+| Symptom | Meaning and action |
+|---|---|
+| `sql_too_large` | The SQL exceeds `max_query_sql_bytes` (lean 50,000; audit/adaptive 200,000 by default). Shorten it or raise the override. |
+| `page` / `truncated` / `next_offset` | The response was cut at `max_query_response_bytes` (or the requested `page_bytes`, capped by it) on a row boundary. Continue with `next_offset`, or request a larger `page_bytes`. A single row larger than the page is returned whole. |
+| `stale_revision` on a resumed page | The index moved between pages. Restart from offset 0; do not reuse the offset. |
+| `unknown_mechanic` | `leads` only accepts ids from its catalogue. List them with a counts-only call. |
+| `file_not_indexed` | `structure` and `finding` need indexed source content. A skipped or binary file has none. |
+| Query wall-clock or VM-step failure | `query` enforces an SQLite VM-step budget and a wall-clock budget through the progress handler; `structure` enforces a wall-clock budget through Tree-sitter's progress callback. Raise the corresponding override only if the query is legitimately that large. |
+
+Per-value and per-file limits are clamped to the bundled SQLite's
+`SQLITE_MAX_LENGTH` (1,000,000,000 bytes). A file over the per-file ceiling is
+stored as a `skipped` row with `skip_reason = "oversize"` rather than failing
+the publish.
+
+## Supported platforms
+
+- **Runtime:** Linux and macOS. Any other target fails closed when opening the
+  database (`src/store/netfs.rs`) rather than silently accepting an unknown
+  mount or filesystem.
+- **Released binaries:** Linux x86_64 only. macOS and other platforms build
+  from source (`cargo install --path .` or the installer's cargo fallback).
+  `slugaudit update` refuses to fetch the Linux x86_64 asset on any other
+  platform.
+
+## Report completeness counts
+
+`report` returns counts that say whether the rest of the response is the whole
+truth. Quote `file_count` together with this block, not alone.
+
+| Field | Meaning |
+|---|---|
+| `file_count` | Rows in `files`: every discovered file whose project-relative path is valid UTF-8, whether or not it was read. It does **not** mean "files with evidence". |
+| `completeness.file_kind_counts` | Every `files` row by `file_kind`: `indexed`, `binary` (sampled, deliberately not parsed), `skipped` (discovered but never read). |
+| `completeness.file_class_counts` | Every row by path-derived `file_class`: `authored`, `generated`, `vendored`. A heuristic from the path, not a verdict. |
+| `completeness.skipped_file_count` | Rows with `file_kind = 'skipped'`: present in the project but not in the index. |
+| `completeness.skipped_by_reason` | Those rows grouped by `skip_reason`: `oversize`, `unreadable`, `stat_failed` (size unknown, `byte_len` NULL), or empty when no reason was recorded. |
+| `completeness.extraction_completeness_counts` | Every row by `Full`, `Partial`, `ContentOnly` (text indexed, no parser ran), `Unavailable` (no content retained). |
+| `completeness.index_partial` | True when an existence row is skipped or a discovered path has no UTF-8 representation, so the index does not cover every discovered file. |
+| `completeness.unrepresentable_path_count` | Discovered files whose path is not valid UTF-8, so no `files` row can represent them. Included in `index_partial`. |
+| `completeness.evidence_capped_file_count` | Files whose stored evidence was cut short by an evidence cap (`evidence:truncated`). Evidence counts for these are a floor, not a total. |
+| `completeness.indexed_files_without_evidence` | `indexed` rows with no evidence at all: content is readable but nothing structural was extracted (no parser, or parsed to nothing). Binary and skipped rows are excluded. |
+| `parser_failure_count` / `parser_failure_files_total` | Failure entries and their uncapped total. `parser_failure_files` lists at most 20; a total larger than the list length means the list was truncated. |
+| `credential_pattern_file_count` | Rows matching the credential-shaped path predicate (`.env`, `*.pem`, `*.key`, `id_rsa*`, …). A path count, not a content inspection. |
+
+If `index_partial` is true, any answer built from the index is missing at
+least one discovered file, and the reasons are in the same block.
+
+## MCP surface and snapshot
+
+The tool surface is the contract: eight tools (`report`, `leads`, `query`,
+`structure`, `finding`, `finding_read`, `project_control`, `health`), their
+titles, descriptions, input and output schemas, annotations, and the
+pull-based resources under `slugaudit://`. `check_mcp_surface` derives the
+live `tools/list` + `resources/list` from the server and compares it with
+`.planning/archive/mcp_surface.json`:
+
+```bash
+cargo run --quiet --bin check_mcp_surface --locked
+# deliberate surface change only:
+cargo run --bin check_mcp_surface -- --record
+```
+
+A failing check means the binary and the committed snapshot disagree. If the
+change is intentional, record it in the same commit as the surface change so
+the diff is reviewable. If it is not, do not re-record to make the gate green.
+The snapshot pins the surface; it is not a runtime file a client reads.
+
+## Exit codes and error reporting
+
+- CLI commands exit `0` on success; a reported CLI failure prints
+  `Error: <reason>` to stderr and exits `1`.
+- In serve mode there is no process-level error for a failed tool call: the
+  call returns an MCP error response, and the process exits when the host
+  closes stdin (end of the session).
+- Invalid arguments to a CLI command print the usage error and exit `1`;
+  unknown tool/request shapes are contract errors (`invalid_params`), while
+  operational failures are internal errors whose message says the failure is
+  often transient.
