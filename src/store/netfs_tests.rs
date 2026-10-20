@@ -48,6 +48,65 @@ fn mountinfo_parser_picks_the_most_specific_mount_point() {
     ));
 }
 
+/// A network filesystem mounted at `/` covers every path under it. The
+/// mount-point boundary check must treat `/` as matching every absolute
+/// path: `strip_prefix("/")` leaves a tail without its leading slash, so
+/// a prefix-tail check alone would classify an NFS-root host as local and
+/// let `open_read_write` enable WAL on NFS.
+#[cfg(target_os = "linux")]
+#[test]
+fn mountinfo_parser_detects_a_network_filesystem_mounted_at_root() {
+    let mountinfo = "\
+1 0 0:1 / / rw shared:1 - nfs4 server:/export rw
+2 1 259:1 / /home/user/local rw shared:2 - ext4 /dev/sda2 rw
+";
+    assert!(
+        is_mountpoint_network_filesystem(
+            mountinfo,
+            "/home/user/project/.planning/slugaudit/project.db"
+        ),
+        "a path under an NFS root must be classified as network"
+    );
+    // A more specific local mount still wins over the network root.
+    assert!(
+        !is_mountpoint_network_filesystem(mountinfo, "/home/user/local/project.db"),
+        "a local mount below a network root must cover its own descendants"
+    );
+}
+
+/// A local filesystem mounted at `/` must stay local, including for the
+/// database path that lives directly under it.
+#[cfg(target_os = "linux")]
+#[test]
+fn mountinfo_parser_keeps_a_local_root_local() {
+    let mountinfo = "1 0 0:1 / / rw shared:1 - ext4 /dev/sda1 rw\n";
+    assert!(!is_mountpoint_network_filesystem(
+        mountinfo,
+        "/home/user/project/.planning/slugaudit/project.db"
+    ));
+    assert!(!is_mountpoint_network_filesystem(mountinfo, "/"));
+}
+
+/// The root special case must not replace the path-boundary matching for
+/// non-root mounts: a network mount below a local root still matches its
+/// descendants and still rejects a sibling that only shares a prefix.
+#[cfg(target_os = "linux")]
+#[test]
+fn mountinfo_parser_still_matches_non_root_network_mounts_by_path_boundary() {
+    let mountinfo = "\
+1 0 0:1 / / rw shared:1 - ext4 /dev/sda1 rw
+100 1 0:100 / /mnt/nfs rw,relatime shared:50 - nfs server:/export rw
+";
+    assert!(is_mountpoint_network_filesystem(
+        mountinfo,
+        "/mnt/nfs/project/lib.rs"
+    ));
+    assert!(!is_mountpoint_network_filesystem(
+        mountinfo,
+        "/mnt/nfs2/project/lib.rs"
+    ));
+}
+
 /// The mountinfo parser must recognize all the common network
 /// filesystem type names, not just `nfs`.
 #[cfg(target_os = "linux")]

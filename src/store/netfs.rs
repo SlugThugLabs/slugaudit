@@ -172,9 +172,15 @@ fn is_mountpoint_network_filesystem(mountinfo: &str, path_str: &str) -> bool {
         // begins with a network mount point — and per this module's own
         // invariant, blocking a legitimate local open is strictly worse
         // than missing an NFS mount.
-        let under_mount = path_str
-            .strip_prefix(mount_point)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+        // A root mount (`/`) covers every path, but `strip_prefix("/")`
+        // drops the leading slash the boundary check below requires, so
+        // an NFS-root host would otherwise be classified local. Handle
+        // root explicitly rather than deriving its coverage from a
+        // prefix tail it cannot produce.
+        let under_mount = mount_point == "/"
+            || path_str
+                .strip_prefix(mount_point)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
         if under_mount && mount_point.len() > best_mount_len {
             best_mount_len = mount_point.len();
             best_fs_type = Some(fs_type);
