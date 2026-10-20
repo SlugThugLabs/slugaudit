@@ -58,9 +58,10 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    /// Every code, in documentation order. The `ARCHITECTURE.md` table is
-    /// checked against this list in both directions, so adding a code
-    /// means adding its row in the same change.
+    /// Every code, in documentation order — the public enumeration of the
+    /// closed wire contract that callers branch on. The `ARCHITECTURE.md`
+    /// table is checked against this list in both directions, so adding a
+    /// code means adding its row in the same change.
     pub const ALL: &'static [ErrorCode] = &[
         ErrorCode::SyncBudgetExhausted,
         ErrorCode::ProjectNotEnabled,
@@ -72,7 +73,7 @@ impl ErrorCode {
 
     /// The stable wire string: lowercase `snake_case`, never renamed.
     #[must_use]
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             ErrorCode::SyncBudgetExhausted => "sync_budget_exhausted",
             ErrorCode::ProjectNotEnabled => "project_not_enabled",

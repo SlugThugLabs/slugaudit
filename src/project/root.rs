@@ -4,8 +4,10 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 /// Why a path could not be resolved to an enabled project root.
 pub enum RootError {
+    /// The path could not be resolved to a canonical path.
     #[error("failed to resolve project root: {0}")]
     Unresolvable(#[source] std::io::Error),
+    /// The path resolved, but to something other than a directory.
     #[error("project root is not a directory")]
     NotADirectory,
 }

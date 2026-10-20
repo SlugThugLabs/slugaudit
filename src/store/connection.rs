@@ -17,23 +17,38 @@ use thiserror::Error;
 /// rebuild); guard rejections — symlink, network filesystem, group-readable
 /// mode — are deliberate refusals that name the offending path.
 pub enum StoreError {
+    /// Opening or creating the database file failed.
     #[error("failed to open database: {0}")]
     Open(#[source] rusqlite::Error),
+    /// Applying connection pragmas or registering the SQL helper functions
+    /// failed.
     #[error("failed to configure database connection: {0}")]
     Configure(#[source] rusqlite::Error),
+    /// Reading or initializing the schema failed; see
+    /// [`MigrationError`](super::migrations::MigrationError).
     #[error(transparent)]
     Migration(#[from] super::migrations::MigrationError),
+    /// The database path is a symlink; SlugAudit refuses to follow it.
     #[error("refusing to open a database path that is a symlink")]
     Symlink,
+    /// The database path could not be inspected with `lstat`.
     #[error("failed to inspect the database path (lstat): {0}")]
     Inspect(#[source] std::io::Error),
+    /// SQLite did not enable WAL journal mode, which every read-write
+    /// connection requires.
     #[error(
         "SQLite did not enable WAL journal mode (granted '{granted}'); \
          every read-write connection requires WAL, so the database filesystem is unsupported"
     )]
-    WalUnavailable { granted: String },
+    WalUnavailable {
+        /// The journal mode SQLite enabled instead of WAL.
+        granted: String,
+    },
+    /// Applying private file permissions to the database failed.
     #[error("failed to set database file permissions: {0}")]
     Permissions(#[source] std::io::Error),
+    /// The database path is on a network filesystem (NFS/CIFS/SMB), where
+    /// SQLite WAL mode is unreliable.
     #[error(
         "refusing to open a database on a network filesystem (NFS/CIFS/SMB): \
          SQLite WAL mode is unreliable on network mounts and can produce locking \
@@ -42,6 +57,9 @@ pub enum StoreError {
          SlugAudit after relocating it."
     )]
     NetworkFilesystem,
+    /// Whether the database is on a network filesystem could not be
+    /// determined, so opening fails closed rather than risk SQLite
+    /// corruption.
     #[error(
         "could not verify whether the database is on a network filesystem \
          (inspection failed: {0}); refusing to open rather than risk SQLite \

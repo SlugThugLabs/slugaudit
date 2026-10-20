@@ -38,7 +38,13 @@ pub enum GitignoreOutcome {
     /// A rule that already ignores the directory was present; file untouched.
     AlreadyIgnored(PathBuf),
     /// The file was left untouched, and the project is enabled regardless.
-    NotWritten { path: PathBuf, reason: String },
+    NotWritten {
+        /// The `.gitignore` path that was left untouched.
+        path: PathBuf,
+        /// Why the rule was not written, reported so the non-fatal failure is
+        /// visible to the caller.
+        reason: String,
+    },
 }
 
 /// Appends the activation directory to the project-root `.gitignore` unless a

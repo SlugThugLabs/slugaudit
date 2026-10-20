@@ -13,16 +13,25 @@ const SCHEMA_DDL: &str = include_str!("schema.sql");
 /// Schema setup failures: applying `schema.sql`/migrations or reading
 /// `user_version`.
 pub enum MigrationError {
+    /// Reading `PRAGMA user_version` failed.
     #[error("failed to read schema version: {0}")]
     ReadVersion(#[source] rusqlite::Error),
+    /// Applying `schema.sql` or recording the schema version failed.
     #[error("failed to apply schema: {0}")]
     Apply(#[source] rusqlite::Error),
     // The message names the mismatch only: the sync path discards and rebuilds
     // on `is_corruption()`, but other callers of `open_*` surface this as-is.
+    /// The database was written by a schema version this build cannot use,
+    /// so it is treated as corrupt and rebuilt from project source.
     #[error(
         "database schema version {found} is incompatible with this build (supported: {supported})"
     )]
-    UnsupportedVersion { found: i64, supported: i64 },
+    UnsupportedVersion {
+        /// The schema version recorded in the database.
+        found: i64,
+        /// The schema version this build writes.
+        supported: i64,
+    },
 }
 
 impl MigrationError {

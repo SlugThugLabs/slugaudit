@@ -42,18 +42,18 @@ use std::sync::Arc;
 /// A documented limit at which a scope walk stopped. Present on a
 /// [`WatchScope`] exactly when the walk is incomplete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WatchScopeLimit {
+pub(crate) struct WatchScopeLimit {
     /// The entry cap the walk was given.
-    pub max_entries: usize,
+    pub(crate) max_entries: usize,
     /// The depth cap the walk was given (the root is depth 0).
-    pub max_depth: usize,
+    pub(crate) max_depth: usize,
     /// Walker entries yielded before the walk stopped. Equal to
     /// `max_entries` exactly when the entry cap stopped it.
-    pub entries_seen: usize,
+    pub(crate) entries_seen: usize,
     /// True when a directory at `max_depth` had children the walker could
     /// not descend into. The depth cap can be hit with the entry count still
     /// below its cap.
-    pub depth_limited: bool,
+    pub(crate) depth_limited: bool,
 }
 
 /// The set of directories that should carry filesystem watches, plus the
@@ -70,7 +70,7 @@ pub struct WatchScope {
     /// Present when the walk stopped at `max_watch_entries` or
     /// `max_watch_depth`; `None` means the scope covers the whole
     /// indexable tree.
-    pub limit: Option<WatchScopeLimit>,
+    pub(crate) limit: Option<WatchScopeLimit>,
 }
 
 impl WatchScope {

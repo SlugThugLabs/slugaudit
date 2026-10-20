@@ -11,7 +11,8 @@
 //! something the surrounding transport can render. The MCP-aware
 //! implementation lives in `crate::server_runner` and translates each
 //! [`ProgressEvent`] into a `notify_progress` call; tests and the
-//! CLI path use [`NoopProgressSink`].//!
+//! CLI path use [`NoopProgressSink`].
+//!
 //! Each variant carries a `phase: &'static str` so a stateful sink
 //! can route events by stage without matching on payload shape.
 //! `phase` is `'static` because the values are site-local string
@@ -32,21 +33,33 @@ pub enum ProgressEvent {
     /// The work for `phase` has begun. Useful for sinks that show a
     /// spinner or progress bar from the moment `ensure_current`
     /// enters until it returns.
-    Started { phase: &'static str },
+    Started {
+        /// Lowercase name of the stage that started (for example
+        /// `ensuring_current`).
+        phase: &'static str,
+    },
     /// Per-file progress during sampling. `current` is 1-based; the
     /// very first sample for a project emits `Sampling { current: 1,
     /// ... }`. `total` is the discovery-time count of files eligible
     /// for sampling; consumers fall back to "indeterminate" if it's
     /// zero.
     Sampling {
+        /// Lowercase name of the stage being sampled (for example
+        /// `publishing`).
         phase: &'static str,
+        /// 1-based index of this sample within `total`.
         current: usize,
+        /// Number of files eligible for sampling; zero means the total is
+        /// unknown.
         total: usize,
     },
     /// The work for `phase` finished — emitted regardless of whether
     /// the underlying unit succeeded or failed, so a stateful sink
     /// can clear its UI on both outcomes.
-    Completed { phase: &'static str },
+    Completed {
+        /// Lowercase name of the stage that finished.
+        phase: &'static str,
+    },
 }
 
 /// Send + Sync sink for progress events emitted by the sync layer.
@@ -56,6 +69,7 @@ pub enum ProgressEvent {
 /// bar, or simply drop them. [`NoopProgressSink`] is the default
 /// implementation for tests and paths without a progress consumer.
 pub trait ProgressSink: Send + Sync {
+    /// Delivers one progress event to this sink.
     fn emit(&self, event: ProgressEvent);
 }
 

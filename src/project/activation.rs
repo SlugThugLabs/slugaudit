@@ -21,21 +21,31 @@ const ACTIVATION_DIR: &str = "slugaudit";
 /// Failures from enabling or disabling a project: the activation marker, its
 /// directory mode, and `.gitignore` maintenance.
 pub enum ActivationError {
+    /// Resolving the project root failed; see [`RootError`].
     #[error(transparent)]
     Root(#[from] RootError),
+    /// No ancestor of the requested path carries an activation marker.
     #[error("SlugAudit is not enabled for this project or any parent directory")]
     NotActive,
+    /// A `.planning` or `.planning/slugaudit` component is a symlink, so the
+    /// activation path is refused.
     #[error("refusing a symlinked SlugAudit activation path")]
     SymlinkedActivationPath,
+    /// Filesystem work on the activation directory failed.
     #[error("failed to update the activation directory: {0}")]
     Io(#[from] std::io::Error),
+    /// A database operation failed while disabling the project.
     #[error("database operation failed while disabling the project: {0}")]
     Database(#[source] crate::store::StoreError),
+    /// Another connection appears to be using the database, so disabling
+    /// could not safely acquire it.
     #[error(
         "could not safely disable: another connection appears to be using the \
          database ({0}). Wait for other SlugAudit tool calls to finish and retry."
     )]
     DatabaseBusy(#[source] rusqlite::Error),
+    /// Another connection still holds the database open, so its write-ahead
+    /// log could not be checkpointed.
     #[error(
         "could not safely disable: another connection still holds the database open, \
          so its write-ahead log could not be checkpointed. Wait for other SlugAudit \
