@@ -40,23 +40,44 @@ pub fn config_home() -> Option<PathBuf> {
 /// Failures reported by `slugaudit install`, each carrying the path or cause
 /// an operator needs.
 pub enum InstallError {
+    /// The running executable's path could not be resolved.
     #[error("could not locate the running binary: {0}")]
     CurrentExe(std::io::Error),
+    /// Neither `SLUGTHUG_HOME` nor `HOME` is set, so there is no install
+    /// directory.
     #[error("could not determine an install location: neither SLUGTHUG_HOME nor HOME is set")]
     NoHome,
+    /// The install directory could not be created.
     #[error("could not create {path}: {inner}")]
-    Mkdir { path: String, inner: std::io::Error },
+    Mkdir {
+        /// Directory that could not be created.
+        path: String,
+        /// Underlying filesystem error.
+        inner: std::io::Error,
+    },
+    /// The binary could not be copied to its staging path.
     #[error("could not copy the binary to {path}: {inner}")]
-    Copy { path: String, inner: std::io::Error },
+    Copy {
+        /// Staging path that could not be written.
+        path: String,
+        /// Underlying filesystem error.
+        inner: std::io::Error,
+    },
+    /// The system clock could not be read to name the staged binary.
     #[error("could not read the system clock to name the staged binary: {0}")]
     Clock(std::time::SystemTimeError),
+    /// `$SHELL` is set but not valid UTF-8, so no shell config can be chosen.
     #[error("$SHELL is not valid UTF-8, so the shell config to edit cannot be chosen")]
     ShellNotUnicode,
+    /// Publishing the staged binary (copy, permissions or atomic rename)
+    /// failed.
     #[error(transparent)]
     Place(#[from] crate::install_place::PlaceError),
     // Spelled out rather than `transparent`: transparent forwards `source()`
     // through the io::Error, which hides the error itself from
     // `cli::is_broken_pipe`'s chain walk.
+    /// A filesystem or stdout write failed. A closed pipe is treated as a
+    /// clean exit.
     #[error("{0}")]
     Io(#[from] std::io::Error),
 }

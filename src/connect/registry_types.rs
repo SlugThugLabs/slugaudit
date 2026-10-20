@@ -130,8 +130,12 @@ pub enum ConfigPath {
     Home(&'static str),
     /// Per-OS home-relative paths; `windows` may use the `%APPDATA%/` token.
     PerOs {
+        /// Home-relative path on macOS.
         macos: &'static str,
+        /// Home-relative path on Windows; `%APPDATA%/` expands to the
+        /// roaming app-data directory.
         windows: &'static str,
+        /// Home-relative path on Linux.
         linux: &'static str,
     },
     /// No verified path.

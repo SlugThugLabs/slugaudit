@@ -1,3 +1,17 @@
+//! SlugAudit: a stdio MCP server that indexes a project into a disposable
+//! SQLite database and answers evidence queries about it — parsed structure,
+//! symbols, imports, diagnostics and session findings.
+//!
+//! The shipped artifact is the `slugaudit` binary (`src/main.rs`), which either
+//! serves the MCP protocol on stdio or runs a CLI command (`install`, `update`,
+//! `connect`, `menu`). These library modules are that binary's implementation;
+//! the crate is `publish = false` and the single binary is the shipped
+//! artifact.
+//!
+//! Runtime data lives in `<project>/.planning/slugaudit/project.db` and is
+//! disposable: it is rebuilt from source when stale or corrupt. SlugAudit
+//! reports evidence only; every judgment about it belongs to the calling agent.
+
 #![forbid(unsafe_code)]
 // Stdout is the MCP JSON-RPC transport in serve mode. Any `println!` or
 // `print!` that reaches it mid-serve corrupts the stream and fails every

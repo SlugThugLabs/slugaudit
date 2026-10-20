@@ -16,9 +16,15 @@ pub enum Command {
     /// Start the MCP server over stdio.
     Serve,
     /// Connect SlugAudit to an AI agent or editor.
-    Connect { agent: Option<String> },
+    Connect {
+        /// Agent to connect directly; `None` offers the detected agents.
+        agent: Option<String>,
+    },
     /// Disconnect SlugAudit from an AI agent or editor.
-    Disconnect { agent: Option<String> },
+    Disconnect {
+        /// Agent to disconnect directly; `None` offers the connected agents.
+        agent: Option<String>,
+    },
     /// Install the binary to the standard local binary path.
     Install,
     /// Open the interactive setup menu.
@@ -56,7 +62,10 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
 }
 
 /// The raw usage and help text printed for `--help`.
-pub const USAGE: &str = "\
+///
+/// Crate-internal: [`usage`] is the public entry point, and nothing outside
+/// this module reads the unstyled text.
+pub(crate) const USAGE: &str = "\
 slugaudit — searchable, trustworthy codebase evidence over MCP
 
 USAGE:
@@ -186,51 +195,99 @@ pub fn is_broken_pipe(error: &(dyn std::error::Error + 'static)) -> bool {
 /// Errors encountered while connecting or disconnecting an agent client.
 #[derive(Debug, Error)]
 pub enum ConnectError {
+    /// The user picked an option outside the presented list.
     #[error("invalid agent choice; choose one of the listed options")]
     InvalidChoice,
+    /// Standard input closed before the prompt was answered.
     #[error("input ended before an answer was given")]
     EndOfInput,
+    /// The running binary's path could not be resolved.
     #[error("binary path unavailable: {0}")]
     BinaryPath(std::io::Error),
+    /// Neither a home directory nor a usable config parent was available.
     #[error("home directory is unavailable")]
     HomeUnavailable,
+    /// No registry entry matches the requested agent name.
     #[error("unknown agent {0:?}; run `slugaudit connect` to see detected agents")]
     UnknownAgent(String),
+    /// The client's executable could not be spawned or waited on.
     #[error("failed to run `{cli}`: {inner}")]
-    AgentCommand { cli: String, inner: std::io::Error },
+    AgentCommand {
+        /// Client executable that could not be run.
+        cli: String,
+        /// Underlying spawn or wait error.
+        inner: std::io::Error,
+    },
+    /// The client's `mcp remove` subcommand exited non-zero.
     #[error("`{cli} mcp remove` exited with {status}")]
-    RemoveFailed { cli: String, status: String },
+    RemoveFailed {
+        /// Client executable whose remove failed.
+        cli: String,
+        /// Exit status as printed by the OS.
+        status: String,
+    },
+    /// The client's `mcp add` subcommand exited non-zero after printing output.
     #[error("`{cli} mcp add` exited with {status} — see the output above")]
-    AddFailed { cli: String, status: String },
+    AddFailed {
+        /// Client executable whose add failed.
+        cli: String,
+        /// Exit status as printed by the OS.
+        status: String,
+    },
     /// The client rejected `mcp add` and printed nothing, so there is no
     /// "output above" to point the user at.
     #[error("`{cli} mcp add` exited with {status} and printed no output")]
-    AddFailedNoOutput { cli: String, status: String },
+    AddFailedNoOutput {
+        /// Client executable whose add failed.
+        cli: String,
+        /// Exit status as printed by the OS.
+        status: String,
+    },
+    /// The client has no automated registration path; carries the reason the
+    /// caller reports.
     #[error("{agent} cannot be connected automatically: {reason}")]
-    UnsupportedAgent { agent: String, reason: String },
+    UnsupportedAgent {
+        /// Human-readable client name.
+        agent: String,
+        /// Why the automated path is refused.
+        reason: String,
+    },
+    /// The config's expected section exists but is not a JSON object.
     #[error(
         "cannot connect: \"{section}\" in the configuration is not an object, so there is \
          nowhere to write the slugaudit entry. Fix or remove that key, then retry"
     )]
-    SectionNotAnObject { section: String },
+    SectionNotAnObject {
+        /// Top-level section key that is not an object.
+        section: String,
+    },
+    /// The config file's top-level JSON value is not an object.
     #[error(
         "cannot connect: {path} does not hold a JSON object at its top level, so there is \
          nowhere to write the slugaudit entry. Fix or remove the file, then retry"
     )]
-    RootNotAnObject { path: std::path::PathBuf },
+    RootNotAnObject {
+        /// Config file that could not be written.
+        path: std::path::PathBuf,
+    },
+    /// An existing config file could not be parsed as JSON.
     #[error(
         "cannot modify {path}: configuration file exists but contains invalid JSON: {source} (fix syntax/comments or remove the file to reset, then retry)"
     )]
     InvalidConfig {
+        /// Config file that failed to parse.
         path: std::path::PathBuf,
+        /// Parser error, including line and column.
         #[source]
         source: serde_json::Error,
     },
+    /// A JSON value could not be encoded or decoded.
     #[error("JSON config error: {0}")]
     Json(#[from] serde_json::Error),
     // Spelled out rather than `transparent`: transparent forwards `source()`
     // through the io::Error, which hides the error itself from
     // `is_broken_pipe`'s chain walk.
+    /// An I/O operation failed. A closed pipe is treated as a clean exit.
     #[error("{0}")]
     Io(#[from] std::io::Error),
 }

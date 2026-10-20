@@ -23,8 +23,11 @@ pub use crate::connect::registry_types::{ConfigPath, ConfigShape, Dialect, Evide
 /// A specification for an AI agent or editor client supported by `slugaudit connect`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentDef {
+    /// Stable registry identifier used on the command line (e.g. `claude`).
     pub id: &'static str,
+    /// Human-readable client name shown in prompts and lists.
     pub display_name: &'static str,
+    /// How slugaudit can register with this client.
     pub strategy: Strategy,
     /// The client's real executable: invocation and detection. Never a display
     /// name (warp's CLI is `oz`).
@@ -33,9 +36,13 @@ pub struct AgentDef {
     /// create it — cursor's `agent`. Used for detection and `is_connected`
     /// only; never for add/remove.
     pub verify_cli: Option<&'static str>,
+    /// Where the client's config file lives.
     pub config: ConfigPath,
+    /// On-disk shape of the `slugaudit` entry the client reads.
     pub shape: ConfigShape,
+    /// Argument grammar of the client's `mcp add` subcommand.
     pub dialect: Dialect,
+    /// How this entry's facts were established.
     pub evidence: Evidence,
     /// Write the config file when the CLI is absent or its `mcp add` fails.
     pub file_fallback: bool,

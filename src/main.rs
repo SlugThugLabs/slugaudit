@@ -1,3 +1,11 @@
+//! The `slugaudit` binary: dispatch one CLI command, or serve the MCP server
+//! over stdio when the command is `serve` (the default with no arguments).
+//!
+//! Arguments are parsed before logging is installed, so a parse error is
+//! reported directly and exits 1. Logs go to stderr only — stdout is the
+//! JSON-RPC transport — and `SLUGAUDIT_LOG_FORMAT=json` selects a JSON
+//! formatter.
+
 #![forbid(unsafe_code)]
 
 use rmcp::{ServiceExt, transport::stdio};

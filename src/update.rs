@@ -42,47 +42,67 @@ mod update_fetch;
 /// Self-update failures. Each names the real cause (spawn, network, checksum,
 /// filesystem) rather than a guessed one.
 pub enum UpdateError {
+    /// A helper tool required for self-update could not be run.
     #[error(
         "could not run {tool} (required to self-update): {source}; \
          if {tool} is genuinely missing, download the release manually from GitHub"
     )]
     ToolSpawn {
+        /// Helper executable that could not be spawned.
         tool: &'static str,
+        /// Underlying spawn error.
         #[source]
         source: std::io::Error,
     },
+    /// The binary that the update should replace could not be determined.
     #[error("could not determine the binary to update: {0}")]
     Target(std::io::Error),
+    /// The network request for release metadata or an asset failed.
     #[error("network request failed: {0}")]
     Network(String),
+    /// The GitHub release response could not be decoded as JSON.
     #[error("the latest release response was not JSON decodable: {0}")]
     Json(String),
+    /// The release response carried no tag name.
     #[error("the GitHub release response did not include a tag name")]
     NoTag,
+    /// The downloaded binary did not verify against the release checksums.
     #[error("checksum verification failed: {0}")]
     Checksum(String),
+    /// The machine's platform has no published release asset.
     #[error(
         "slugaudit update only fetches the {ASSET_OS}/{ASSET_ARCH} release, and this machine \
          is {os}/{arch}; replacing the binary with it would leave it unable to start. \
          Install a build for this platform instead"
     )]
     UnsupportedPlatform {
+        /// Operating system that has no asset.
         os: &'static str,
+        /// Architecture that has no asset.
         arch: &'static str,
     },
+    /// A filesystem operation failed.
     #[error("could not operate on the filesystem: {0}")]
     Io(#[from] std::io::Error),
+    /// Downloading a release asset failed.
     #[error("could not {action} {path}: {source}")]
     Download {
+        /// Action being attempted, for the error message.
         action: &'static str,
+        /// Destination path.
         path: PathBuf,
+        /// Underlying download failure.
         #[source]
         source: Box<UpdateError>,
     },
+    /// Staging or publishing the downloaded binary failed.
     #[error("could not {action} {path}: {source}")]
     Stage {
+        /// Action being attempted, for the error message.
         action: &'static str,
+        /// Path being operated on.
         path: PathBuf,
+        /// Underlying filesystem error.
         #[source]
         source: std::io::Error,
     },
