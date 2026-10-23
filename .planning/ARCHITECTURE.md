@@ -300,7 +300,7 @@ caller's walked set with the stored rows: the walked set is the transaction's
 authoritative statement of what exists, and the union costs one set operation.
 
 A successful `ensure_current` never guarantees that no concurrent publish will
-follow. `tools/context_transactions.rs::with_verified_read` and
+follow. `tools/context.rs::with_verified_read` and
 `with_verified_write` therefore open a fresh connection, begin a transaction,
 and re-verify the expected revision id inside it; a mismatch is retried by the
 caller. That is the completeness check between "the revision we synced to" and
