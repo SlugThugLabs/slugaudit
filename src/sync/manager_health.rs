@@ -52,8 +52,16 @@ impl SourceSyncManager {
                     root.as_path(),
                     sink,
                     "publish on Unavailable path failed",
-                )?;
+                )
+                .inspect_err(|_| {
+                    sink.emit(ProgressEvent::Completed {
+                        phase: "ensuring_current",
+                    });
+                })?;
                 self.record_full_publish();
+                sink.emit(ProgressEvent::Completed {
+                    phase: "ensuring_current",
+                });
                 Ok(report.revision_id)
             }
         }
@@ -83,7 +91,12 @@ impl SourceSyncManager {
             root.as_path(),
             sink,
             "full publish failed",
-        )?;
+        )
+        .inspect_err(|_| {
+            sink.emit(ProgressEvent::Completed {
+                phase: "ensuring_current",
+            });
+        })?;
         // Drain any events that arrived during the full verification.
         // `publish` walks the filesystem and parses files, which takes
         // time — events can arrive while it runs. If we don't drain
@@ -91,6 +104,9 @@ impl SourceSyncManager {
         // reconciled, leaving the database stale in the interim.
         self.reconcile(root.as_path(), state, connection)
             .map_err(|error| {
+                sink.emit(ProgressEvent::Completed {
+                    phase: "ensuring_current",
+                });
                 log_sync_failure(
                     "verify_drain",
                     root.as_path(),
@@ -115,6 +131,9 @@ impl SourceSyncManager {
         };
         state.set_health(health);
         self.record_full_publish();
+        sink.emit(ProgressEvent::Completed {
+            phase: "ensuring_current",
+        });
         Ok(report.revision_id)
     }
 

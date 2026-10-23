@@ -2,7 +2,7 @@
 //!
 //! The docs reset replaced the accumulated plan/report record with one
 //! small, fixed set of documents (`README.md`, `AGENTS.md`,
-//! `.planning/ARCHITECTURE.md`, `.planning/PLAN.md`,
+//! `.planning/ARCHITECTURE.md`, `.planning/MODULE_MAP.md`, `.planning/PLAN.md`,
 //! `.planning/archive/DECISIONS.md`, `docs/CLIENTS.md`,
 //! `docs/TROUBLESHOOTING.md`). This check holds the set fixed: every path
 //! in [`CANONICAL_DOCS`] must exist as a file.

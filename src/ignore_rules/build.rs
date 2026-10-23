@@ -5,6 +5,7 @@
 //! descend-and-prune semantics live in the parent module's docs.
 
 use crate::util::redacted_path;
+use crate::watch::errors::ignore_error_kind;
 use ignore::Error;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::collections::HashMap;
@@ -52,7 +53,9 @@ fn log_build_failure(source: Source, context: Option<&Path>, error: &Error) {
         Error::WithLineNumber { err, .. } | Error::WithDepth { err, .. } => {
             log_build_failure(source, context, err);
         }
-        Error::WithPath { path, err } => log_one_failure(source, Some(path), error_kind(err)),
+        Error::WithPath { path, err } => {
+            log_one_failure(source, Some(path), ignore_error_kind(err))
+        }
         Error::Loop { ancestor, child } => tracing::warn!(
             operation = "ignore_rules_build",
             source = source.as_str(),
@@ -61,7 +64,7 @@ fn log_build_failure(source: Source, context: Option<&Path>, error: &Error) {
             ancestor_id = %redacted_path(ancestor),
             "failed to build ignore rules; the affected rules are not applied",
         ),
-        other => log_one_failure(source, context, error_kind(other)),
+        other => log_one_failure(source, context, ignore_error_kind(other)),
     }
 }
 
@@ -74,23 +77,6 @@ fn log_one_failure(source: Source, path: Option<&Path>, error_kind: &'static str
         path_id = ?path_id,
         "failed to build ignore rules; the affected rules are not applied",
     );
-}
-
-/// The `ignore::Error` variant as a static, path-free category, unwrapping
-/// the decorating variants (`WithPath`, `WithLineNumber`, `WithDepth`) so the
-/// record names the underlying cause.
-fn error_kind(error: &Error) -> &'static str {
-    match error {
-        Error::WithLineNumber { err, .. }
-        | Error::WithDepth { err, .. }
-        | Error::WithPath { err, .. } => error_kind(err),
-        Error::Partial(_) => "partial",
-        Error::Loop { .. } => "loop",
-        Error::Io(_) => "io",
-        Error::Glob { .. } => "glob",
-        Error::UnrecognizedFileType(_) => "unrecognized_file_type",
-        Error::InvalidDefinition => "invalid_definition",
-    }
 }
 
 /// Compiles every per-directory matcher plus the global gitignore.

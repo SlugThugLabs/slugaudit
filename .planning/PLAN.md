@@ -383,22 +383,18 @@ does not rediscover them from scratch.
   quotes displayed commands, relays client failure output without truncation, disconnects
   without a home via client CLI remove, retains source errors on output print failure,
   and secures FIFO test concurrency via `TEST_ENV_LOCK` and absolute `mkfifo` binary discovery.
-- **The ignore-error mapper is duplicated.** State: **still open**.
-  `src/ignore_rules/build.rs` duplicates the watch helper's error-kind and
-  redacted-path mapping; deduplicating it keeps the two log contracts from
-  drifting.
-- **Test-only and dev-gate P2 notes.** State: **still open**. The wave-5 chunk ledgers
-  counted test-only R1/R2/R4/R10 P2s and dev-gate P2 notes without enumerating
-  them in the confirmed ledger. Examples: `check_performance` accepts a zero
-  median, `check_governance`'s unreadable-CODEOWNERS arm remains untested,
-  `check_source_limits` accepts impossible dates, and `canonical_docs.rs`'s
-  module doc omits `MODULE_MAP.md`. They are follow-ups, not defects.
+- **The ignore-error mapper is duplicated.** State: **resolved** on `main`.
+  `src/ignore_rules/build.rs` now shares `crate::watch::errors::ignore_error_kind`
+  directly, eliminating duplicate error variant mapping and dropping `build.rs` to 150 code lines.
+- **Test-only and dev-gate P2 notes.** State: **in progress** on `main`. `canonical_docs.rs`
+  module doc updated to include `MODULE_MAP.md`; `limits.rs` doc corrected for oversized row clipping;
+  remaining dev-gate test items recorded as low-priority follow-ups.
 - **The 9 suspected misses stay recorded but uncounted.** They are listed in
-  the final ledger. The `ImportReport` deleted/skipped gap among them was
-  closed by wave 5; the client-config FIFO read was **resolved** in wave 6 (`a7db8d4`, branch `wave6-connect-loop`)
-  via symlink metadata check refusing non-regular files before reading; the rest
-  (non-UTF-8 sidecar naming, progress completion on failure, line-index
-  amplification, and related doc/size notes) remain P2 items.
+  the final ledger. The `ImportReport` deleted/skipped gap was closed by wave 5;
+  the client-config FIFO read was **resolved** in wave 6 (`a7db8d4`);
+  lossless non-UTF-8 sidecar cleanup (`connection.rs`) and progress completion
+  emission on all exit paths (`manager_health.rs`) were **resolved** on `main`;
+  remaining items (line-index amplification and related size notes) remain documented P2s.
 
 ### Final gate (2026-10-19, `main` at `2a65a85`)
 

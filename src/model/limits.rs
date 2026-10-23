@@ -76,8 +76,8 @@ pub struct ResourceLimits {
     /// this size on a row boundary and resumed with `next_offset`; a request's
     /// `page_bytes` overrides it, and the effective page is always clamped to
     /// `max_query_response_bytes` (the hard ceiling), with the clamp reported
-    /// in the response. A single row larger than the page is still returned
-    /// whole. Env: `SLUGAUDIT_DEFAULT_PAGE_BYTES` (usize); project
+    /// in the response. An oversized row has its individual cells clipped and
+    /// reported in `clipped_cells`. Env: `SLUGAUDIT_DEFAULT_PAGE_BYTES` (usize); project
     /// `config.json` key `default_page_bytes`.
     pub default_page_bytes: usize,
     /// Maximum SQL text length accepted by `query` (UTF-8 bytes).

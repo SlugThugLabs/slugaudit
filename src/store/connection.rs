@@ -96,7 +96,9 @@ pub fn discard_corrupt_database(path: &Path) -> Result<(), std::io::Error> {
         let candidate = if suffix.is_empty() {
             path.to_path_buf()
         } else {
-            Path::new(&format!("{}{}", path.display(), suffix)).to_path_buf()
+            let mut name = path.as_os_str().to_os_string();
+            name.push(suffix);
+            std::path::PathBuf::from(name)
         };
         match std::fs::remove_file(candidate) {
             Ok(()) => {}
