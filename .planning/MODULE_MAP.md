@@ -52,13 +52,10 @@ src/
 ├── tools/                    MCP tool handlers — thin orchestration
 │   ├── mod.rs                shared credential predicate, module declarations, exports
 │   ├── tool_counters.rs      process-wide tool-call counters exposed by health
-│   ├── context.rs            ensure_synced + revision verification
-│   ├── context_transactions.rs  with_verified_read / with_verified_write
-│   ├── report.rs             automatic project snapshot: request/response schema
+│   ├── context.rs            ensure_synced, revision verification, with_verified_read/write
+│   ├── report.rs             automatic project snapshot: contract, completeness envelope, edge totals
 │   ├── report_sections.rs    per-section SQL + response assembly for report
 │   ├── report_completeness.rs  the report's index-completeness block
-│   ├── report_envelope.rs    completeness-block schema types (re-exported)
-│   ├── report_edges.rs       the report's inbound/outbound edge totals
 │   ├── query.rs              arbitrary read-only SQL with budgets
 │   ├── query_exec.rs         query execution: single-statement proof, budgets, byte-budgeted page, exact total
 │   ├── page_size.rs          effective page size (request or default, clamped to the ceiling)
@@ -77,22 +74,18 @@ src/
 │   ├── finding.rs            the single write tool: request/response contract and caps
 │   ├── finding_insert.rs     validation + session-scoped insert-or-refresh of a finding
 │   ├── finding_read.rs       session-gated finding query
-│   ├── project_control.rs    enable/disable a project
-│   ├── project_control_types.rs  its request/response schema types
-│   ├── health.rs             operational snapshot: response schema + process fields
-│   ├── health_phase.rs       health's per-project state derivation (no side effects)
-│   └── health_database.rs    health's read-only database read
+│   ├── project_control.rs    enable/disable a project: contract and handlers
+│   ├── health.rs             operational snapshot: schema, process counters, DB read
+│   └── health_phase.rs       health's per-project state derivation (no side effects)
 │
 ├── sync/                     detection and persistence of what changed on disk
 │   ├── mod.rs                public exports
 │   ├── manager.rs            SourceSyncManager: state, watcher ownership, observability
-│   ├── manager_orchestration.rs  ensure_current: resolve, open/recover, rebuild tail
-│   ├── manager_orchestration_support.rs  recovery log records + saturating sync duration
+│   ├── manager_orchestration.rs  ensure_current: resolve, open/recover, recovery logs, rebuild tail
 │   ├── manager_health.rs     sync_by_health: the WatcherHealth dispatch
 │   ├── manager_health_support.rs  event barrier, post-sync revision read, sweep-error mapping
 │   ├── manager_meta.rs       metadata row, session purge, publish_from_scratch
-│   ├── sweep.rs              the stat sweep — the freshness backstop
-│   ├── sweep_walks.rs        test-only per-root walk counters for the sweep
+│   ├── sweep.rs              the stat sweep — freshness backstop with walk counters
 │   ├── sweep_walk_tests.rs   fail-closed walk coverage for the stat sweep
 │   ├── sweep_reconcile.rs    apply the sweep's findings under compare-and-swap
 │   ├── reconcile/            dirty/deleted reconciliation
@@ -103,8 +96,7 @@ src/
 │   │   ├── pipeline.rs       per-path dirty-file loop
 │   │   ├── barrier.rs        event-barrier sync loop
 │   │   └── queries.rs        SQL the pipeline reads
-│   ├── discovery.rs          filesystem walk with extension/limit filters
-│   ├── discovery_collect.rs  walker entry routing; walk/ignore failures fail discovery
+│   ├── discovery.rs          filesystem walk with entry collection and filters
 │   ├── hash.rs               hash types + in-memory digests (re-exports hash_file/stat_identity)
 │   ├── hash_io.rs            bounded streaming hash_file + stat_identity
 │   ├── sample.rs             read-file-with-budgets

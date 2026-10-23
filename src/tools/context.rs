@@ -1,17 +1,61 @@
 use crate::error_codes::{self, ErrorCode};
 use crate::progress::ProgressSink;
+use crate::store;
 use crate::sync;
 use rmcp::ErrorData;
-
-#[path = "context_transactions.rs"]
-mod context_transactions;
-pub(crate) use context_transactions::{with_verified_read, with_verified_write};
+use rusqlite::{Transaction, TransactionBehavior};
 
 pub(crate) use sync::SyncedProject;
 
 #[cfg(test)]
 pub(crate) use crate::util::override_session_id_for_test;
 pub(crate) use crate::util::session_id;
+
+/// Runs `f` inside an immediate transaction on the project database,
+/// verifying that the database revision still matches `synced.revision_id`.
+pub(crate) fn with_verified_write<T>(
+    synced: &SyncedProject,
+    f: impl FnOnce(&Transaction<'_>) -> Result<T, ErrorData>,
+) -> Result<T, ErrorData> {
+    let mut connection = store::open_read_write(&synced.database_path)
+        .map_err(|error| internal_error("opening the project database for write", error))?;
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| internal_error("starting a write transaction", error))?;
+    verify_revision_matches(&tx, &synced.revision_id)?;
+    let result = f(&tx)?;
+    tx.commit()
+        .map_err(|error| internal_error("committing the write transaction", error))?;
+    Ok(result)
+}
+
+/// Runs `f` inside a deferred read-only transaction on the project database,
+/// verifying that the database revision still matches `synced.revision_id`.
+pub(crate) fn with_verified_read<T>(
+    synced: &SyncedProject,
+    f: impl FnOnce(&Transaction<'_>) -> Result<T, ErrorData>,
+) -> Result<T, ErrorData> {
+    let mut connection = store::open_read_only(&synced.database_path)
+        .map_err(|error| internal_error("opening the project database", error))?;
+    let tx = start_read_transaction(&mut connection)?;
+    verify_revision_matches(&tx, &synced.revision_id)?;
+    let result = f(&tx)?;
+    tx.commit()
+        .map_err(|error| internal_error("committing the read transaction", error))?;
+    Ok(result)
+}
+
+/// Starts the read transaction `with_verified_read` runs in. Split out so
+/// the start-failure mapping is testable with a connection that already
+/// has a transaction open — the one state in which SQLite refuses a second
+/// `BEGIN DEFERRED`.
+pub(super) fn start_read_transaction(
+    connection: &mut rusqlite::Connection,
+) -> Result<Transaction<'_>, ErrorData> {
+    connection
+        .transaction_with_behavior(TransactionBehavior::Deferred)
+        .map_err(|error| internal_error("starting a read transaction", error))
+}
 
 /// Wraps a low-level store/rusqlite error with which operation failed and
 /// a generic recovery hint, instead of surfacing the bare `Display` text

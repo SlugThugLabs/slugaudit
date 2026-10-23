@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=Recombined manager orchestration workflow and database recovery diagnostics into cohesive module.
 //! Project synchronization orchestration for [`super::SourceSyncManager`].
 //!
 //! This module owns the outer `ensure_current` workflow: resolving the
@@ -8,16 +9,80 @@
 use super::super::manager_meta::{
     ProjectMetaError, ensure_project_row, publish_from_scratch, purge_prior_session_findings,
 };
-use super::super::manager_orchestration_support::{
-    DatabaseRecovery, elapsed_ms, log_database_recovery,
-};
 use super::{SourceSyncManager, SyncedProject};
 use crate::error_codes::{self, ErrorCode};
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::project;
-use crate::store;
+use crate::store::{self, StoreError};
 use rmcp::ErrorData;
 use std::path::{Path, PathBuf};
+
+/// One database recovery event: a database that failed to open, or one whose
+/// metadata proves it belongs to another project root or another contract.
+enum DatabaseRecovery<'a> {
+    OpenFailed {
+        error: &'a StoreError,
+        message: &'static str,
+    },
+    RootMismatch {
+        stored_root: &'a str,
+    },
+    IncompatibleVersion {
+        contract_version: i64,
+        schema_version: i64,
+    },
+}
+
+fn log_database_recovery(database_path: &Path, recovery: DatabaseRecovery<'_>) {
+    match recovery {
+        DatabaseRecovery::OpenFailed { error, message } => tracing::warn!(
+            operation = "open_project_database",
+            database_id = %crate::util::redacted_path(database_path),
+            error_kind = store_error_kind(error),
+            "{}",
+            message,
+        ),
+        DatabaseRecovery::RootMismatch { stored_root } => tracing::warn!(
+            operation = "verify_project_database",
+            database_id = %crate::util::redacted_path(database_path),
+            error_kind = "root_mismatch",
+            stored_root_id = %crate::util::redacted_path(Path::new(stored_root)),
+            "project database is stale; discarding and rebuilding from source",
+        ),
+        DatabaseRecovery::IncompatibleVersion {
+            contract_version,
+            schema_version,
+        } => tracing::warn!(
+            operation = "verify_project_database",
+            database_id = %crate::util::redacted_path(database_path),
+            error_kind = "incompatible_version",
+            contract_version,
+            schema_version,
+            "project database is stale; discarding and rebuilding from source",
+        ),
+    }
+}
+
+fn store_error_kind(error: &StoreError) -> &'static str {
+    match error {
+        StoreError::Open(_) => "open",
+        StoreError::Configure(_) => "configure",
+        StoreError::Migration(_) => "migration",
+        StoreError::Symlink => "symlink",
+        StoreError::Inspect(_) => "inspect",
+        StoreError::WalUnavailable { .. } => "wal_unavailable",
+        StoreError::Permissions(_) => "permissions",
+        StoreError::NetworkFilesystem => "network_filesystem",
+        StoreError::NetworkFilesystemCheck(_) => "network_filesystem_check",
+    }
+}
+
+fn elapsed_ms(start: std::time::Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or_else(|error| {
+        tracing::warn!(error = %error, "sync duration exceeds u64 milliseconds; stamp saturates");
+        u64::MAX
+    })
+}
 
 impl SourceSyncManager {
     /// Ensures the project containing `path` is fully synchronized and

@@ -369,7 +369,7 @@ fn an_uninspectable_database_path_is_logged_not_read_as_never_synced() {
 
     assert_eq!(
         state,
-        crate::tools::health_database::DatabaseRead::Unreadable,
+        crate::tools::health::DatabaseRead::Unreadable,
         "an uninspectable path is not the same fact as a never-synced project"
     );
     assert!(
@@ -396,7 +396,7 @@ fn a_failed_database_query_is_logged_and_reported_as_absent() {
 
     assert_eq!(
         state,
-        crate::tools::health_database::DatabaseRead::Unreadable,
+        crate::tools::health::DatabaseRead::Unreadable,
         "an unreadable database is absent, never partial"
     );
     assert!(

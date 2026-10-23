@@ -7,8 +7,7 @@
 //! manager lock, so the report reflects what already happened instead of
 //! staying stale; it does not change health on its own.
 
-use super::health::{DatabaseState, HealthPhase, WatcherState};
-use super::health_database::{DatabaseRead, read_database};
+use super::health::{DatabaseRead, DatabaseState, HealthPhase, WatcherState, read_database};
 use crate::error_codes::ErrorCode;
 use crate::sync;
 use crate::watch;

@@ -13,7 +13,6 @@ mod finding;
 mod finding_insert;
 mod finding_read;
 mod health;
-mod health_database;
 mod health_phase;
 mod leads;
 mod leads_compact;
@@ -22,7 +21,6 @@ mod leads_page;
 mod leads_query;
 mod page_size;
 mod project_control;
-mod project_control_types;
 mod query;
 mod query_clip;
 mod query_exec;
@@ -30,8 +28,6 @@ mod query_value;
 
 mod report;
 mod report_completeness;
-mod report_edges;
-mod report_envelope;
 mod report_sections;
 mod structure;
 mod structure_exec;
@@ -54,16 +50,18 @@ pub use leads::{
     CompactLeadRow, FileCount, LeadMode, LeadRow, LeadRows, LeadsRequest, LeadsResponse,
     MechanicCount, MechanicCoverage, PageLimit, leads,
 };
-pub use project_control::project_control;
-pub use project_control_types::{ProjectControlRequest, ProjectControlResponse};
+pub use project_control::{
+    GitignoreReport, GitignoreStatus, ImportReport, ProjectControlAction, ProjectControlRequest,
+    ProjectControlResponse, project_control,
+};
 pub use query::{QueryRequest, QueryResponse, query};
 pub use query_clip::ClippedCell;
 pub use query_value::NonFiniteCell;
+pub use report::DependencyEdgeTotals;
 pub use report::{ReportRequest, ReportResponse, report};
 pub use report_completeness::{
     CompletenessCount, CompletenessEnvelope, FileClassCount, FileKindCount, SkipReasonCount,
 };
-pub use report_edges::DependencyEdgeTotals;
 pub use structure::{StructureRequest, StructureResponse, structure};
 pub use tool_counters::ToolCounters;
 

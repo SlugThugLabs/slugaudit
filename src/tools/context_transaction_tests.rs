@@ -184,7 +184,7 @@ fn verified_read_reports_a_failed_transaction_start_with_an_active_transaction()
         .execute_batch("BEGIN DEFERRED")
         .expect_err("SQLite refuses a second BEGIN");
 
-    let error = super::context_transactions::start_read_transaction(&mut connection)
+    let error = super::start_read_transaction(&mut connection)
         .expect_err("starting a nested read transaction must fail");
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);

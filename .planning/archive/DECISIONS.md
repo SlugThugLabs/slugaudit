@@ -11,6 +11,22 @@ commit, a path, or a command where possible.
 
 ---
 
+## 2026-10-23 — Recombine artificial seams into cohesive modules under the RIGHT standard
+
+- **What:** Recombined 8 splintered files created solely to avoid the 200-code-line gate back into their cohesive parent modules:
+  - `src/tools/context_transactions.rs` merged into `src/tools/context.rs` (114 lines, auto-pass).
+  - `src/tools/report_envelope.rs` and `src/tools/report_edges.rs` merged into `src/tools/report.rs` (143 lines, auto-pass).
+  - `src/tools/health_database.rs` merged into `src/tools/health.rs` (183 lines, auto-pass).
+  - `src/sync/sweep_walks.rs` merged into `src/sync/sweep.rs` (198 lines, auto-pass).
+  - `src/tools/project_control_types.rs` merged into `src/tools/project_control.rs` (205 lines, approved 200–300 band).
+  - `src/sync/discovery_collect.rs` merged into `src/sync/discovery.rs` (207 lines, approved 200–300 band).
+  - `src/sync/manager_orchestration_support.rs` merged into `src/sync/manager_orchestration.rs` (253 lines, approved 200–300 band).
+  All 8 splinter files were deleted, module boundaries and privacy tightened, and `.planning/MODULE_MAP.md` updated.
+- **Why:** The RIGHT standard (Required, Intact, Genuine, Hardened, Trim) prioritizes cohesion, genuine modularity, and encapsulation over mechanical line counts. Artificially splitting single features across 4–5 files weakened module privacy (forcing `pub(crate)`), created navigational jumping, and fractured cohesive logic. The line gate explicitly supports the 200–300 band with an approved exception; every recombined file remains strictly under 300 lines with zero regression in test coverage (line coverage rose to 93.70%).
+- **Where:** `src/tools/context.rs`, `src/tools/report.rs`, `src/tools/health.rs`, `src/sync/sweep.rs`, `src/tools/project_control.rs`, `src/sync/discovery.rs`, `src/sync/manager_orchestration.rs`, `.planning/MODULE_MAP.md`.
+- **Reversible:** Yes, though reverting would re-introduce artificial seams and `pub(crate)` leaks.
+
+
 ## 2026-10-19 — Wave 5 verification audit: 56 confirmed P0/P1, all fixed
 
 - **What:** 12 independent chunk auditors read **282 of 282 files (57,449

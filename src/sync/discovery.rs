@@ -1,4 +1,5 @@
-use crate::ignore_rules::indexable_walker;
+// slugaudit-line-exception: approved-by=slugthug; reason=Recombined filesystem discovery walk and entry collection into cohesive module.
+use crate::ignore_rules::{indexable_walker, is_excluded_path};
 use crate::model::process_limits;
 use crate::util::Deadline;
 use std::collections::HashSet;
@@ -105,9 +106,78 @@ impl DiscoveryError {
     }
 }
 
-pub(super) use super::discovery_collect::collect_walk_entry;
-#[cfg(test)]
-pub(super) use super::discovery_collect::strip_project_prefix;
+fn is_excluded(relative: &Path) -> bool {
+    is_excluded_path(&relative.to_string_lossy())
+}
+
+pub(super) fn strip_project_prefix<'a>(
+    root: &Path,
+    absolute_path: &'a Path,
+) -> Result<&'a Path, SkippedFile> {
+    absolute_path.strip_prefix(root).map_err(|_| SkippedFile {
+        reason: DiscoveryError::NotRelative(absolute_path.to_path_buf()).to_string(),
+        absolute_path: absolute_path.to_path_buf(),
+    })
+}
+
+pub(super) fn collect_walk_entry(
+    root: &Path,
+    entry: Result<ignore::DirEntry, ignore::Error>,
+    discovered: &mut Vec<DiscoveredFile>,
+    skipped: &mut Vec<SkippedFile>,
+) -> Result<(), DiscoveryError> {
+    let entry = entry.map_err(DiscoveryError::Walk)?;
+    if let Some(error) = entry.error() {
+        return Err(DiscoveryError::IgnoreRules {
+            kind: crate::watch::errors::ignore_error_kind(error),
+            path: crate::watch::errors::ignore_error_path(error).map(Path::to_path_buf),
+        });
+    }
+    if entry.file_type().is_some_and(|kind| kind.is_file()) {
+        collect_file_entry(root, entry.path(), discovered, skipped);
+    }
+    Ok(())
+}
+
+fn collect_file_entry(
+    root: &Path,
+    entry_path: &Path,
+    discovered: &mut Vec<DiscoveredFile>,
+    skipped: &mut Vec<SkippedFile>,
+) {
+    let absolute_path = entry_path.to_path_buf();
+    let relative_path = match strip_project_prefix(root, &absolute_path) {
+        Ok(relative_path) => relative_path,
+        Err(skipped_file) => {
+            skipped.push(skipped_file);
+            return;
+        }
+    };
+    if is_excluded(relative_path) {
+        return;
+    }
+    let kind = match sniff_kind(&absolute_path) {
+        Ok(kind) => kind,
+        Err(error) => {
+            skipped.push(SkippedFile {
+                reason: error.to_string(),
+                absolute_path,
+            });
+            return;
+        }
+    };
+    match relative_path.to_str() {
+        Some(relative_path) => discovered.push(DiscoveredFile {
+            relative_path: relative_path.replace('\\', "/"),
+            absolute_path,
+            kind,
+        }),
+        None => skipped.push(SkippedFile {
+            reason: DiscoveryError::NonUtf8Path(absolute_path.clone()).to_string(),
+            absolute_path,
+        }),
+    }
+}
 
 /// The project-relative path of a file the walk skipped, when that path can
 /// be stored as text. `None` for a non-UTF-8 name, a path outside the root,

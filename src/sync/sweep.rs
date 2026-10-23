@@ -267,11 +267,34 @@ fn walked_file(
     }
 }
 
-/// Test-only walk counters live in their own file so this one stays under
-/// the small-file budget. Release builds count nothing.
 #[cfg(test)]
-#[path = "sweep_walks.rs"]
-mod walks;
+mod walks {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    static WALK_COUNTERS: Mutex<Option<HashMap<PathBuf, Arc<AtomicUsize>>>> = Mutex::new(None);
+
+    pub(super) fn count_walks(root: &Path) -> Arc<AtomicUsize> {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut guard = crate::util::lock_or_recover(&WALK_COUNTERS, "walk_counters");
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert(crate::util::canonical_or_self(root), Arc::clone(&counter));
+        counter
+    }
+
+    pub(super) fn note_walk(root: &Path) {
+        let guard = crate::util::lock_or_recover(&WALK_COUNTERS, "walk_counters");
+        if let Some(counter) = guard
+            .as_ref()
+            .and_then(|counters| counters.get(&crate::util::canonical_or_self(root)))
+        {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
 #[cfg(test)]
 use walks::note_walk;
 /// Release builds count nothing.

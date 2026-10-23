@@ -236,7 +236,7 @@ fn health_with_an_unrelated_path_returns_the_resolution_error() {
 #[test]
 #[cfg(unix)]
 fn read_database_is_unreadable_when_the_database_cannot_be_opened() {
-    use crate::tools::health_database::DatabaseRead;
+    use crate::tools::health::DatabaseRead;
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().expect("temp dir");
     let db = directory.path().join("project.db");
@@ -258,7 +258,7 @@ fn read_database_is_unreadable_when_the_database_cannot_be_opened() {
 
 #[test]
 fn read_database_is_never_synced_when_no_database_exists_yet() {
-    use crate::tools::health_database::DatabaseRead;
+    use crate::tools::health::DatabaseRead;
     let directory = tempfile::tempdir().expect("temp dir");
     assert_eq!(
         crate::tools::health::read_database(&directory.path().join("never-synced.db")),

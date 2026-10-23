@@ -33,18 +33,18 @@
 //! `phase` and `remedy` summarize the first two groups. `system_memory` is
 //! host state, reported because it sizes the adaptive import budget.
 
+use crate::store;
 use crate::sync;
 use crate::watch;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
+use rusqlite::OptionalExtension;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 const MAX_PATH_BYTES: usize = 32 * 1024;
 
 use super::ToolCounters;
-#[cfg(test)]
-use super::health_database::{count_files, read_database, read_revision_fields};
 #[cfg(test)]
 use super::health_phase::derive_phase;
 use super::health_phase::{compute_global_only_state, compute_project_state};
@@ -147,6 +147,92 @@ pub struct WatcherState {
     pub sequence: u64,
     /// The sequence acknowledged by the most recent reconcile.
     pub last_verified_sequence: u64,
+}
+
+/// The outcome of one read-only database inspection.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DatabaseRead {
+    /// No database file: the project has never been synced.
+    NeverSynced,
+    /// The database exists but could not be inspected, opened, or queried.
+    Unreadable,
+    /// The database was opened and every field was read.
+    Read(DatabaseState),
+}
+
+/// Reads the database state read-only, degrading gracefully when the
+/// database doesn't exist yet (project enabled but never synced) or can't
+/// be read.
+pub(crate) fn read_database(database_path: &std::path::Path) -> DatabaseRead {
+    match database_path.try_exists() {
+        Ok(true) => {}
+        Ok(false) => return DatabaseRead::NeverSynced,
+        Err(error) => {
+            tracing::warn!(
+                database_id = %crate::util::redacted_path(database_path),
+                error = %error,
+                "health: failed to inspect the project database path; reporting empty database fields",
+            );
+            return DatabaseRead::Unreadable;
+        }
+    }
+    let mut connection = match store::open_read_only(database_path) {
+        Ok(connection) => connection,
+        Err(error) => {
+            tracing::warn!(
+                database_id = %crate::util::redacted_path(database_path),
+                error = %error,
+                "health: failed to open the project database read-only; reporting empty database fields",
+            );
+            return DatabaseRead::Unreadable;
+        }
+    };
+    match query_database_state(&mut connection) {
+        Ok(state) => DatabaseRead::Read(state),
+        Err(error) => {
+            tracing::warn!(
+                database_id = %crate::util::redacted_path(database_path),
+                error = %error,
+                "health: failed to read the project database; reporting empty database fields",
+            );
+            DatabaseRead::Unreadable
+        }
+    }
+}
+
+fn query_database_state(connection: &mut rusqlite::Connection) -> rusqlite::Result<DatabaseState> {
+    let (revision_id, parser_pack_version) = read_revision_fields(connection)?;
+    Ok(DatabaseState {
+        revision_id,
+        parser_pack_version,
+        file_count: count_files(connection)?,
+        skipped_file_count: count_skipped_files(connection)?,
+    })
+}
+
+pub(super) fn read_revision_fields(
+    connection: &mut rusqlite::Connection,
+) -> rusqlite::Result<(Option<String>, Option<String>)> {
+    Ok(connection
+        .query_row(
+            "SELECT revision_id, parser_pack_version FROM revisions WHERE is_current = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .unwrap_or((None, None)))
+}
+
+pub(super) fn count_files(connection: &mut rusqlite::Connection) -> rusqlite::Result<i64> {
+    connection.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
+}
+
+fn count_skipped_files(connection: &mut rusqlite::Connection) -> rusqlite::Result<i64> {
+    connection.query_row(
+        "SELECT count(*) FROM files WHERE file_kind = 'skipped'",
+        [],
+        |row| row.get(0),
+    )
 }
 
 /// Counters for this server process since it started.

@@ -15,7 +15,7 @@
 
 use rusqlite::Transaction;
 
-pub use super::report_envelope::{
+pub use super::report::{
     CompletenessCount, CompletenessEnvelope, FileClassCount, FileKindCount, SkipReasonCount,
 };
 

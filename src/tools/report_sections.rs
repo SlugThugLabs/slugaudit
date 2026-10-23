@@ -8,10 +8,10 @@
 
 use super::CREDENTIAL_PATH_PREDICATE;
 use super::report::{
-    EvidenceKindCount, ImportResolutionCount, LanguageCount, ParserFailureFile, ReportResponse,
+    DependencyEdgeTotals, EvidenceKindCount, ImportResolutionCount, LanguageCount,
+    ParserFailureFile, ReportResponse, build_dependency_edges as build_edge_totals,
 };
 use super::report_completeness::{CompletenessEnvelope, build as build_completeness};
-use super::report_edges::{DependencyEdgeTotals, build as build_edge_totals};
 use rusqlite::Transaction;
 
 /// Cap on how many parser-failure files to include in the report. Enough
