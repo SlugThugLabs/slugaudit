@@ -162,6 +162,18 @@ does not summarise it; duplicated summaries drift.
 
 ## Code conventions
 
+### The RIGHT standard (replaces naive KISS)
+
+Naive "Keep It Simple" often causes agents to strip out defensive error handling, validation, bounds checks, or telemetry to make code appear simpler. In SlugAudit, simplicity is never an excuse to discard rigor. We enforce **RIGHT**:
+
+| Principle | Means | Guardrail |
+|---|---|---|
+| **Required** | Build for real, current needs | No features or structure for imagined futures |
+| **Intact** | Don't rewrite working code without a real need | A real need is a bug, an owner requirement, or a rule it breaks. Removing unneeded code isn't a rewrite. |
+| **Genuine** | Real functionality in product code | No demos, mocks or stubs in product code; test doubles stay in tests |
+| **Hardened** | Keep the rigour the problem needs | Never strip error handling, validation, logging or maintainability to look simpler |
+| **Trim** | Only necessary complexity | Cut extra abstraction, generality and tooling, never needed capability |
+
 ### Lint contract (`Cargo.toml` + `src/lib.rs`, applies to all targets)
 
 - `unsafe_code = "forbid"`;
