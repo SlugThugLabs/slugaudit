@@ -125,14 +125,14 @@ fn run_installed_cli(
                 Ok(()) => Ok(()),
                 Err(file_err) => {
                     let why = format!("{cli_err}; the file fallback failed too: {file_err}");
-                    return Err(report_failure(
+                    Err(report_failure(
                         agent,
                         binary,
                         &write_action(agent, home),
                         Some(&attempted),
                         Some(why),
                         cli_err,
-                    ));
+                    ))
                 }
             }
         }

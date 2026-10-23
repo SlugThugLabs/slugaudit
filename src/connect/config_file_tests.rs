@@ -53,9 +53,8 @@ fn temp_leftovers(directory: &Path) -> usize {
     std::fs::read_dir(directory)
         .expect("list the directory")
         .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .file_name()
+        .filter(|e| {
+            e.file_name()
                 .to_string_lossy()
                 .starts_with(".slugaudit-tmp")
         })
@@ -66,7 +65,11 @@ fn temp_leftovers(directory: &Path) -> usize {
 /// constructor and `unsafe` is forbidden; it exists on both supported targets.
 #[cfg(unix)]
 fn create_fifo(path: &Path) {
-    let status = std::process::Command::new("mkfifo")
+    let mkfifo = ["/usr/bin/mkfifo", "/bin/mkfifo"]
+        .into_iter()
+        .find(|c| Path::new(c).exists())
+        .unwrap_or("mkfifo");
+    let status = std::process::Command::new(mkfifo)
         .arg(path)
         .status()
         .expect("run mkfifo");
@@ -473,6 +476,7 @@ fn a_directory_sync_failure_after_the_rename_is_logged_and_kept() {
 #[test]
 fn a_fifo_config_is_refused_by_a_connect_without_blocking() {
     use std::os::unix::fs::FileTypeExt as _;
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("temp dir");
     let home = temp.path().join("home");
     std::fs::create_dir_all(home.join(".cursor")).expect("cursor dir");
@@ -584,18 +588,9 @@ fn a_config_write_whose_temp_path_exceeds_the_limit_fails_without_a_stray_temp()
         std::io::ErrorKind::InvalidFilename,
         "the staging failure's cause must reach the caller: {error}"
     );
-    let leftovers: Vec<_> = std::fs::read_dir(config.parent().expect("parent"))
-        .expect("list the config directory")
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".slugaudit-tmp")
-        })
-        .collect();
-    assert!(
-        leftovers.is_empty(),
-        "a failed write must not leave a temp behind: {leftovers:?}"
+    assert_eq!(
+        temp_leftovers(config.parent().expect("parent")),
+        0,
+        "a failed write must not leave a temp behind"
     );
 }

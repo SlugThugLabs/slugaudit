@@ -370,30 +370,34 @@ fixes `730699f` and `2a65a85`). The wave-5 audit read the wave-4 tree at
 None of these is a confirmed P0/P1 defect; they are recorded so a later wave
 does not rediscover them from scratch.
 
-- **`connect_cli` argv is still lossy.** `add_args` uses
-  `binary.display().to_string()` for CLI-strategy clients, so a non-UTF-8
-  binary path can still be substituted with U+FFFD in the argv. The
-  file-strategy config writer now refuses a non-UTF-8 path with
-  `ConnectError::BinaryPath` before any write; making the argv construction
-  fallible is the follow-up.
-- **`write_atomic` does not fsync before rename.** The temp is created 0600,
-  symlinked configs are written through to their target, and a failed
-  write/rename removes the temp, but a crash after rename can lose the file's
-  contents on a filesystem that defers commit. Add an fsync if client-config
-  crash durability is required.
-- **The ignore-error mapper is duplicated.** `src/ignore_rules/build.rs`
-  duplicates the watch helper's error-kind and redacted-path mapping;
-  deduplicating it keeps the two log contracts from drifting.
-- **Test-only and dev-gate P2 notes.** The wave-5 chunk ledgers counted
-  test-only R1/R2/R4/R10 P2s and dev-gate P2 notes without enumerating them in
-  the confirmed ledger. Examples: `check_performance` accepts a zero median,
-  `check_governance`'s unreadable-CODEOWNERS arm remains untested,
+- **`connect_cli` argv is still lossy.** State: **resolved** in wave 6 (`8467cfd`, branch `wave6-connect-loop`).
+  `add_args` validates `binary.to_str()` and returns `ConnectError::BinaryPath`
+  on non-UTF-8 paths before running CLI clients, refusing the path before the
+  client can be executed and preventing U+FFFD substitution.
+- **`write_atomic` does not fsync before rename.** State: **resolved** in wave 6 (`1c40a1d`, branch `wave6-connect-loop`).
+  `write_atomic_with` performs `file.sync_all()` before rename and a directory
+  sync after rename, warning if directory sync fails.
+- **Connect hardening (FIFO safety, command quoting, relaying client output, error retention).** State: **resolved** in wave 6
+  (`3625c83`, `a7db8d4`, `2760c01`, and follow-up fixes on branch `wave6-connect-loop`).
+  Refuses non-regular/FIFO configs via symlink metadata check before opening or reading,
+  quotes displayed commands, relays client failure output without truncation, disconnects
+  without a home via client CLI remove, retains source errors on output print failure,
+  and secures FIFO test concurrency via `TEST_ENV_LOCK` and absolute `mkfifo` binary discovery.
+- **The ignore-error mapper is duplicated.** State: **still open**.
+  `src/ignore_rules/build.rs` duplicates the watch helper's error-kind and
+  redacted-path mapping; deduplicating it keeps the two log contracts from
+  drifting.
+- **Test-only and dev-gate P2 notes.** State: **still open**. The wave-5 chunk ledgers
+  counted test-only R1/R2/R4/R10 P2s and dev-gate P2 notes without enumerating
+  them in the confirmed ledger. Examples: `check_performance` accepts a zero
+  median, `check_governance`'s unreadable-CODEOWNERS arm remains untested,
   `check_source_limits` accepts impossible dates, and `canonical_docs.rs`'s
   module doc omits `MODULE_MAP.md`. They are follow-ups, not defects.
 - **The 9 suspected misses stay recorded but uncounted.** They are listed in
   the final ledger. The `ImportReport` deleted/skipped gap among them was
-  closed by this wave's `ImportReport` change; the rest (client-config FIFO
-  read, non-UTF-8 sidecar naming, progress completion on failure, line-index
+  closed by wave 5; the client-config FIFO read was **resolved** in wave 6 (`a7db8d4`, branch `wave6-connect-loop`)
+  via symlink metadata check refusing non-regular files before reading; the rest
+  (non-UTF-8 sidecar naming, progress completion on failure, line-index
   amplification, and related doc/size notes) remain P2 items.
 
 ### Final gate (2026-10-19, `main` at `2a65a85`)
