@@ -235,6 +235,13 @@ fn validate_request(request: &StructureRequest, limits: &ResourceLimits) -> Resu
             ));
         }
     }
+    if request
+        .language
+        .as_deref()
+        .is_some_and(crate::parse::is_prose_language_name)
+    {
+        return Err(super::structure_source::prose_not_parsed_error());
+    }
     if request.query.trim().is_empty() {
         return Err(ErrorData::invalid_params(
             "structure query must not be empty",

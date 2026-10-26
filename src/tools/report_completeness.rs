@@ -40,6 +40,11 @@ pub(super) fn build(
         .find(|entry| entry.kind == "skipped")
         .map_or(0, |entry| entry.count);
     let (evidence_capped_file_count, indexed_files_without_evidence) = read_gap_counts(connection)?;
+    let prose_files_not_parsed: i64 = connection.query_row(
+        "SELECT count(*) FROM files WHERE file_kind = 'indexed' AND language = ?1",
+        [crate::parse::PROSE_LANGUAGE],
+        |row| row.get(0),
+    )?;
 
     Ok(CompletenessEnvelope {
         file_kind_counts: grouped.file_kind_counts,
@@ -51,6 +56,7 @@ pub(super) fn build(
         unrepresentable_path_count,
         evidence_capped_file_count,
         indexed_files_without_evidence,
+        prose_files_not_parsed,
     })
 }
 

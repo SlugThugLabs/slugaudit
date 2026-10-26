@@ -1,12 +1,24 @@
 use super::context::{SyncedProject, internal_error, with_verified_read};
 use super::structure::StructureRequest;
 use crate::error_codes::{self, ErrorCode};
+use crate::parse::PROSE_LANGUAGE;
 use rmcp::ErrorData;
 use rusqlite::OptionalExtension;
 
 pub(super) const MAX_TEXT_BYTES: usize = 1_000_000;
 pub(super) const MAX_SNIPPET_BYTES: usize = 120;
 pub(super) const MAX_MULTI_FILE_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+
+/// `structure` cannot run on prose: it is stored for `query` but never parsed.
+/// No grammar name is passed to the pack, so the pack's download wording
+/// cannot leak into this message.
+pub(super) fn prose_not_parsed_error() -> ErrorData {
+    ErrorData::invalid_params(
+        "prose files (Markdown, reStructuredText, AsciiDoc, Org, plain text) are stored and \
+         searchable via `query` but are not parsed, so `structure` cannot run on them",
+        None,
+    )
+}
 
 /// The indexed file's `(content, language)`.
 ///
@@ -33,6 +45,9 @@ pub(super) fn fetch_source(
             error_codes::payload(ErrorCode::FileNotIndexed),
         ));
     };
+    if language.as_deref() == Some(PROSE_LANGUAGE) {
+        return Err(prose_not_parsed_error());
+    }
     let content = content.ok_or_else(|| {
         ErrorData::invalid_params(
             format!("{file} has no indexed source content"),

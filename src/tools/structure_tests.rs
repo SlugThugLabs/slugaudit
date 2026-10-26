@@ -506,3 +506,49 @@ fn a_multi_file_request_without_file_or_language_is_refused() {
         "structure request without 'file' must specify 'language'"
     );
 }
+
+fn assert_prose_refusal(error: &ErrorData) {
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    let message = error.message.to_lowercase();
+    assert!(message.contains("not parsed"), "{}", error.message);
+    assert!(!message.contains("download"), "{}", error.message);
+    assert!(!message.contains("manifest"), "{}", error.message);
+}
+
+fn ask_language(
+    project: &tempfile::TempDir,
+    language: &str,
+) -> Result<StructureResponse, ErrorData> {
+    structure(
+        &Parameters(StructureRequest {
+            path: project.path().to_string_lossy().into_owned(),
+            language: Some(language.to_owned()),
+            query: "(document) @d".to_owned(),
+            ..Default::default()
+        }),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .map(|Json(response)| response)
+}
+
+#[test]
+fn structure_on_the_prose_language_is_refused_as_not_parsed() {
+    let project = activated_project("a.md", b"# title\n");
+    let error = ask_language(&project, "prose").expect_err("prose is not parsed");
+    assert_prose_refusal(&error);
+}
+
+#[test]
+fn structure_on_a_language_shadowed_by_prose_is_refused_as_not_parsed() {
+    let project = activated_project("a.md", b"# title\n");
+    let error = ask_language(&project, "markdown").expect_err("markdown is stored as prose");
+    assert_prose_refusal(&error);
+}
+
+#[test]
+fn structure_on_a_prose_file_is_refused_as_not_parsed() {
+    let project = activated_project("a.md", b"# title\n");
+    let error = ask(&project, "a.md", "(document) @d").expect_err("a.md is stored as prose");
+    assert_prose_refusal(&error);
+}

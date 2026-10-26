@@ -6,12 +6,12 @@
 //! not at all. The counts are evidence only — no score, no ranking, and no
 //! claim about what any number means.
 
-use super::CREDENTIAL_PATH_PREDICATE;
 use super::report::{
     DependencyEdgeTotals, EvidenceKindCount, ImportResolutionCount, LanguageCount,
     ParserFailureFile, ReportResponse, build_dependency_edges as build_edge_totals,
 };
 use super::report_completeness::{CompletenessEnvelope, build as build_completeness};
+use super::{CREDENTIAL_PATH_PREDICATE, PARSER_FAILURE_PREDICATE};
 use rusqlite::Transaction;
 
 /// Cap on how many parser-failure files to include in the report. Enough
@@ -205,19 +205,15 @@ fn parser_failures(
 ) -> Result<(i64, Vec<ParserFailureFile>), rusqlite::Error> {
     let total = scalar_count(
         connection,
-        "SELECT count(*) FROM files WHERE file_kind = 'indexed' AND (\
-            parser_availability != 'Available' OR parse_outcome = 'Failed'\
-         )",
+        &format!("SELECT count(*) FROM files WHERE {PARSER_FAILURE_PREDICATE}"),
     )?;
-    let mut failure_stmt = connection.prepare(
+    let mut failure_stmt = connection.prepare(&format!(
         "SELECT path, parse_outcome, parse_error_reason, extraction_completeness, \
                 parser_availability \
-         FROM files \
-         WHERE file_kind = 'indexed' \
-           AND (parser_availability != 'Available' OR parse_outcome = 'Failed') \
+         FROM files WHERE {PARSER_FAILURE_PREDICATE} \
          ORDER BY path \
-         LIMIT ?1",
-    )?;
+         LIMIT ?1"
+    ))?;
     let files = failure_stmt
         .query_map([MAX_PARSER_FAILURE_FILES], |row| {
             Ok(ParserFailureFile {

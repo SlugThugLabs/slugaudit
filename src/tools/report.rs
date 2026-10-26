@@ -109,6 +109,14 @@ pub struct CompletenessEnvelope {
     /// Binary and skipped rows are excluded: no evidence is their expected
     /// state, not a gap.
     pub indexed_files_without_evidence: i64,
+    /// `indexed` files stored as `language = 'prose'` (Markdown,
+    /// reStructuredText, AsciiDoc, Org, plain text): content is stored and
+    /// searchable, but no grammar is run on them by design, so they are
+    /// `ContentOnly`, have no evidence, and are counted in
+    /// `indexed_files_without_evidence`, yet they are not parser failures and
+    /// never appear in `parser_failure_*`. Subtract this from those counts to
+    /// see the files that lack evidence for another reason.
+    pub prose_files_not_parsed: i64,
 }
 
 /// Edge totals in both directions, over the whole revision.
@@ -315,3 +323,7 @@ pub fn report(
 #[cfg(test)]
 #[path = "report_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "report_prose_tests.rs"]
+mod prose_tests;

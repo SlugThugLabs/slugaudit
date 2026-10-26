@@ -14,6 +14,19 @@ const PROSE_EXTENSIONS: [&str; 9] = [
 ];
 
 #[must_use]
+/// True when `name` is the stored prose language or a pack grammar name that
+/// the prose table shadows (the pack names `.md` `markdown`, `.txt`
+/// `vimdoc`, ...). Derived from [`PROSE_EXTENSIONS`], so there is no second
+/// list: a request for such a language can never match an indexed file
+/// because [`detect_language`] stores those files as [`PROSE_LANGUAGE`].
+pub fn is_prose_language_name(name: &str) -> bool {
+    name == PROSE_LANGUAGE
+        || PROSE_EXTENSIONS.iter().any(|extension| {
+            detect_language_from_path(&format!("x.{extension}")).is_some_and(|pack| pack == name)
+        })
+}
+
+#[must_use]
 /// Maps a file path to the language its extension indicates, or `None` when
 /// the pack does not name it. Prose files map to [`PROSE_LANGUAGE`], whatever
 /// grammar the pack would assign (it maps `.txt` to `vimdoc`). Extensionless
@@ -66,6 +79,16 @@ mod tests {
         ];
         for (path, expected) in table {
             assert_eq!(detect_language(path).as_deref(), Some(expected), "{path}");
+        }
+    }
+
+    #[test]
+    fn prose_language_names_include_the_shadowed_pack_grammars() {
+        for name in ["prose", "markdown", "rst", "org", "vimdoc"] {
+            assert!(is_prose_language_name(name), "{name}");
+        }
+        for name in ["rust", "json", "yaml", "toml", "python"] {
+            assert!(!is_prose_language_name(name), "{name}");
         }
     }
 

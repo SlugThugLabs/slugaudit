@@ -112,6 +112,17 @@ pub(crate) const CREDENTIAL_PATH_PREDICATE: &str = "lower(path) LIKE '%.env' \
         OR lower(path) LIKE '%id\\_ed25519%' ESCAPE '\\') \
         AND lower(path) NOT LIKE '%.pub')";
 
+/// The `files` predicate for a parser-failure row, shared by every `report`
+/// count and list so they cannot disagree: an indexed file whose parser was
+/// unavailable or whose parse failed. Prose (`language = 'prose'`, see
+/// `parse::PROSE_LANGUAGE`) is excluded: it is deliberately never
+/// parsed, so it is not a failure. A file with no detected language
+/// (`language IS NULL`) still counts. The literal is checked against the
+/// constant by a unit test.
+pub(crate) const PARSER_FAILURE_PREDICATE: &str = "file_kind = 'indexed' \
+    AND language IS NOT 'prose' \
+    AND (parser_availability != 'Available' OR parse_outcome = 'Failed')";
+
 /// The process and project resource limits for `path`, resolved before the
 /// index is touched. Shared by `query`, `leads` and `structure`.
 ///

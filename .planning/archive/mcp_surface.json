@@ -1416,6 +1416,11 @@
                 "format": "int64",
                 "type": "integer"
               },
+              "prose_files_not_parsed": {
+                "description": "`indexed` files stored as `language = 'prose'` (Markdown,\nreStructuredText, AsciiDoc, Org, plain text): content is stored and\nsearchable, but no grammar is run on them by design, so they are\n`ContentOnly`, have no evidence, and are counted in\n`indexed_files_without_evidence`, yet they are not parser failures and\nnever appear in `parser_failure_*`. Subtract this from those counts to\nsee the files that lack evidence for another reason.",
+                "format": "int64",
+                "type": "integer"
+              },
               "skipped_by_reason": {
                 "description": "Those skipped rows grouped by `skip_reason`. This is the \"why\" paired\nwith `index_partial`. A file with no representable `files.path` (a\nnon-UTF-8 name) cannot appear here; it is counted by\n`unrepresentable_path_count` instead.",
                 "items": {
@@ -1443,7 +1448,8 @@
               "index_partial",
               "unrepresentable_path_count",
               "evidence_capped_file_count",
-              "indexed_files_without_evidence"
+              "indexed_files_without_evidence",
+              "prose_files_not_parsed"
             ],
             "type": "object"
           },
