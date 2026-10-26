@@ -30,7 +30,12 @@ pub(super) const MAX_LANGUAGE_BYTES: usize = 64;
 /// canonical name the pack's extension table returns (`bash`), so a mechanic
 /// written against an alias would count zero forever. Refused with the
 /// canonical name instead.
-const PACK_ALIASES: &[(&str, &str)] = &[
+///
+/// Hand copy of a private table: on every pack upgrade re-check
+/// `src/registry.rs` `LANGUAGE_ALIASES` in the pack's source. The test
+/// `pack_alias_table_matches_the_language_pack` catches an alias that
+/// drifted or vanished, but not one the pack added (no public enumeration).
+pub(super) const PACK_ALIASES: &[(&str, &str)] = &[
     ("bazel", "starlark"),
     ("gradle", "groovy"),
     ("ignorefile", "gitignore"),

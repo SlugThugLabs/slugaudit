@@ -319,3 +319,31 @@ fn a_first_count_with_no_match_has_zero_files_total_and_a_match_counts_its_files
     let hit = session_hit.first_count.expect("first count");
     assert_eq!((hit.total, hit.files_total), (4, 2));
 }
+
+#[test]
+fn pack_alias_table_matches_the_language_pack() {
+    use tree_sitter_language_pack::has_language;
+    let resync = "mechanic_catalog::PACK_ALIASES must be re-synced with the language pack's \
+                  LANGUAGE_ALIASES (registry.rs)";
+    assert!(
+        !has_language("no_such_language"),
+        "the pack must still refuse an unknown name, or this test proves nothing"
+    );
+    for (alias, canonical) in mechanic_catalog::PACK_ALIASES {
+        assert!(
+            has_language(alias),
+            "alias `{alias}` is no longer resolved by the pack: {resync}"
+        );
+        assert!(
+            has_language(canonical),
+            "canonical `{canonical}` for alias `{alias}` is unknown to the pack: {resync}"
+        );
+        assert!(
+            !mechanic_catalog::PACK_ALIASES
+                .iter()
+                .any(|(other, _)| other == canonical),
+            "canonical `{canonical}` for alias `{alias}` is itself an alias, so it does not \
+             resolve to itself: {resync}"
+        );
+    }
+}

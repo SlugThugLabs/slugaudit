@@ -512,3 +512,9 @@ Newest first. Format: **what** / **why** / **where** / **reversible?**
 - **What:** a rewrite of `config.json` emits keys in `serde_json::Map`'s sorted order (no `preserve_order` feature); values and keys are kept, order and formatting are not. Accepted per the brief; Cargo features unchanged.
 - **Where:** `src/project/config_store.rs`.
 - **Reversible:** yes (enable `preserve_order`).
+
+## B2b: pack alias drift is checked in one direction only
+- **What:** `pack_alias_table_matches_the_language_pack` asserts every `PACK_ALIASES` entry is resolved by the pack (`has_language`), its canonical name is known, and no canonical name is itself an alias. The reverse (an alias the pack added that we lack) cannot be checked: the pack exposes no public alias enumeration (`LANGUAGE_ALIASES` and `resolve_alias` are private/`pub(crate)`; `available_languages` mixes aliases with canonical names and depends on the build's features). The comment at `PACK_ALIASES` names `registry.rs` `LANGUAGE_ALIASES` for re-check on every pack upgrade.
+- **Why:** reading the pack's private table from source text was ruled out; `has_language` is the only network-free public resolver (`get_language` may download).
+- **Where:** `src/tools/mechanic_catalog.rs` (`PACK_ALIASES` now `pub(super)`), `src/tools/mechanic_persist_tests.rs`.
+- **Reversible:** yes.
