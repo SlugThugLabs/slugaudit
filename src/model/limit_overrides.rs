@@ -10,30 +10,42 @@
 //! again.
 
 use super::ResourceLimits;
+#[cfg(not(test))]
 use crate::util::lock_or_recover;
 use std::collections::BTreeSet;
+#[cfg(not(test))]
 use std::sync::Mutex;
 
 /// The (setting, configured value) pairs already warned about.
+#[cfg(not(test))]
 static REPORTED: Mutex<BTreeSet<(&'static str, u64)>> = Mutex::new(BTreeSet::new());
 
-/// Serialises the tests that count ledger-backed warnings. Each takes it through
-/// [`fresh_ledger`], so none sees a warning another test already spent.
+// In tests the ledger is per thread. A process-wide ledger let any unrelated
+// test that builds limits while another test's environment held a zero spend
+// that test's one warning outside its capture (the mechanic persist test did
+// exactly that), and the zero tests then saw no warning at all.
 #[cfg(test)]
-static LEDGER_TEST_LOCK: Mutex<()> = Mutex::new(());
+thread_local! {
+    static REPORTED: std::cell::RefCell<BTreeSet<(&'static str, u64)>> =
+        const { std::cell::RefCell::new(BTreeSet::new()) };
+}
 
-/// Takes [`LEDGER_TEST_LOCK`] and empties the ledger, so the holder starts from
-/// a known state and the others wait for it. Hold the guard for the whole test.
+/// Empties this thread's ledger so the calling test starts from a known state.
 #[cfg(test)]
-pub(super) fn fresh_ledger() -> std::sync::MutexGuard<'static, ()> {
-    let guard = lock_or_recover(&LEDGER_TEST_LOCK, "limit_override_test_lock");
-    lock_or_recover(&REPORTED, "limit_override_warnings").clear();
-    guard
+pub(super) fn fresh_ledger() {
+    REPORTED.with_borrow_mut(BTreeSet::clear);
 }
 
 /// `true` the first time this process sees `(setting, value)`.
+#[cfg(not(test))]
 fn first_report(setting: &'static str, value: u64) -> bool {
     lock_or_recover(&REPORTED, "limit_override_warnings").insert((setting, value))
+}
+
+/// `true` the first time this thread sees `(setting, value)`.
+#[cfg(test)]
+fn first_report(setting: &'static str, value: u64) -> bool {
+    REPORTED.with_borrow_mut(|reported| reported.insert((setting, value)))
 }
 
 /// Passes `value` through unless it is zero. Zero is meaningless for the
