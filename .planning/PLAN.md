@@ -522,13 +522,13 @@ as mechanics it registers for the session or persists to the project config.
 
 ### Wave C — surface and release (after Wave B)
 
-- **C1 — one paging contract (D8).** State: **not started**. A shared page
+- **C1 — one paging contract (D8).** State: **landed** — `3390516` + `c27212a` (fuzz target/docs) + `0f6bd1c` (Luna review fixes); quinn PASS (one `$defs/Page` in five schemas; stale resume refused on query and finding_read). Builder opus (before the 2026-10-26 routing correction). A shared page
   struct (`returned`, `total`, `complete`, `next_offset`, `page_bytes`,
   `bytes_used`, `limited_by`, `revision_id`) used by `leads`, `query`,
   `structure`, `finding_read`; per-tool synonyms removed; `structure`'s
   second cursor documented beside it. DoD: the four output schemas share the
   struct; `check_mcp_surface --record`.
-- **C2 — instructions and errors (D8).** State: **not started**. Cut
+- **C2 — instructions and errors (D8).** State: **in progress** (opus builder dispatched before the routing correction; Luna reviews INSTRUCTIONS and the surface diff before it is marked landed). Cut
   INSTRUCTIONS to about half: paging text once, judgment disclaimer once, no
   motivational framing; list all eight evidence kinds in the `query`
   description; shrink `health`'s schema to what a model acts on or mark it
@@ -539,11 +539,15 @@ as mechanics it registers for the session or persists to the project config.
   (sync once inside `on`, or let the following call adopt the new revision).
   DoD: `check_mcp_surface --record`; the deep-dive stdio script
   (`on` → `report`) succeeds first time.
-- **C3 — release readiness.** State: **not started**. `CHANGELOG.md` entries
+- **C3 — release readiness.** State: **not started** (brief ready: `/root/.claude/briefs/slugaudit-phase8/C3_release_readiness.md`; Sonnet builder; Luna checks the changelog; breaking-change input in `C1_breaking_changes.md` beside it). `CHANGELOG.md` entries
   for everything since 1.0.10; version `1.1.0`; README install paths agree
   with the binary's `--help`; `[profile.release]` with `strip = true`;
   `check_version_consistency` passes. Tagging and pushing are the owner's
   call and are not part of this phase.
+
+- **C4 — concurrent fresh open (architect 2026-10-26).** State: **landed** — `ef3b98c` (cherry-pick of `fb5a88b`): busy_timeout before `journal_mode=WAL`, a bounded WAL retry, IMMEDIATE schema init re-checking `user_version`, and a locked re-check before discarding on the open-failure path; paired trials 8/20 failing -> 0/20 and 0/40; 4 processes 0/10. **Still open:** the stale-row discard (`sync/manager_orchestration.rs` `verify_metadata_or_rebuild`) and `project_control`'s recovery still unlink without the lock (narrow two-session window after an upgrade). Builder sonnet.
+- **C5 — mechanic scan cache.** State: **landed** — `e13e0cf` + `5dee1ae` (one retention budget per pass; cache tests moved out; key tests for pattern/project/edited entry). 2,000-file Python project: cached `leads` 0.065 s vs 0.156 s. Builder sonnet.
+- **C6 — sweep.** State: **landed** — `d6795df`: stale `config.json.*.tmp` removed on load (only when `config.lock` is free), every overridable limit refuses 0 with one warning, one shared `parse::budget::parse_within`, DEVIATIONS header now says oldest-first, B0 warn-once test race fixed. Edit list drafted by sonnet, sections 1–2 applied by a haiku junior (3.4 h, stopped correctly on the race), finished by sonnet.
 
 ### Recorded, not scheduled (D9)
 
