@@ -91,7 +91,9 @@ pub(super) fn diff_against_stored(
         .collect();
     let current_refs = current_hashes(samples, skipped);
     let mut changes = manifest::compare(stored_refs, current_refs.clone());
-    add_load_failed_retries(&mut changes, &current_refs, &load_failed_paths(connection)?);
+    if crate::parse::fetch_gate::load_failed_retry_due() {
+        add_load_failed_retries(&mut changes, &current_refs, &load_failed_paths(connection)?);
+    }
     let manifest_hash = aggregate_manifest_hash(current_refs);
     let added = count_changes(&changes, ChangeStatus::Added);
     let modified = count_changes(&changes, ChangeStatus::Modified);

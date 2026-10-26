@@ -1,4 +1,5 @@
 // slugaudit-line-exception: approved-by=slugthug; reason=one cohesive analysis boundary: language gate, pack-error classification and the three ParseResult builders share one error taxonomy
+use super::analyze_seam::run_extraction;
 use crate::model::{
     EvidenceItem, EvidenceKind, ExtractionCompleteness, ParseOutcome, ParserAvailability, ParserRun,
 };
@@ -55,68 +56,30 @@ impl ParseResult {
 /// writers on a cache lock (`CacheLock`) and reads or writes the cache
 /// (`Io`). An offline host fails there, so those variants are load failures
 /// too; the sweep, reconcile and publish treat a stored `LoadFailed` row as
-/// stale and retry it on the next sync, a `Failed` parse is not retried.
+/// stale and retry it once the fetch gate is open (see
+/// `parse::fetch_gate`), a `Failed` parse is not retried.
 fn is_load_failure(error: &PackError) -> bool {
+    is_fetch_failure(error)
+        || matches!(
+            error,
+            PackError::LanguageNotFound(_)
+                | PackError::DynamicLoad(_)
+                | PackError::NullLanguagePointer(_)
+                | PackError::ParserSetup(_)
+        )
+}
+
+/// The failures of the grammar fetch itself (network, checksum, cache lock,
+/// cache I/O). These are not specific to one language, so they close the
+/// process-wide fetch gate; a grammar that fetched but would not load does not.
+fn is_fetch_failure(error: &PackError) -> bool {
     matches!(
         error,
-        PackError::LanguageNotFound(_)
-            | PackError::DynamicLoad(_)
-            | PackError::NullLanguagePointer(_)
-            | PackError::ParserSetup(_)
-            | PackError::Download(_)
+        PackError::Download(_)
             | PackError::ChecksumMismatch { .. }
             | PackError::CacheLock(_)
             | PackError::Io(_)
     )
-}
-
-/// Pack extraction for one file. Production calls the pack directly; unit
-/// tests can force a pack error through [`forced_failure`] so the
-/// download-failure path is exercised with no network and without touching
-/// the user's grammar cache.
-#[cfg(not(test))]
-fn run_extraction(language: &str, content: &str) -> Result<(Vec<EvidenceItem>, bool), PackError> {
-    crate::evidence::extract(language, content)
-}
-
-#[cfg(test)]
-fn run_extraction(language: &str, content: &str) -> Result<(Vec<EvidenceItem>, bool), PackError> {
-    if let Some(make_error) = forced_failure::current() {
-        return Err(make_error());
-    }
-    crate::evidence::extract(language, content)
-}
-
-/// Test-only injection of a pack error into [`run_extraction`], scoped to
-/// the calling thread so parallel tests cannot observe each other's.
-#[cfg(test)]
-pub(super) mod forced_failure {
-    use super::PackError;
-    use std::cell::Cell;
-
-    thread_local! {
-        static FORCED: Cell<Option<fn() -> PackError>> = const { Cell::new(None) };
-    }
-
-    pub(super) fn current() -> Option<fn() -> PackError> {
-        FORCED.with(Cell::get)
-    }
-
-    /// Restores "no forced failure" when dropped.
-    pub(crate) struct Guard;
-
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            FORCED.with(|forced| forced.set(None));
-        }
-    }
-
-    /// Makes every extraction on this thread fail with `make_error()` until
-    /// the returned guard drops.
-    pub(crate) fn force(make_error: fn() -> PackError) -> Guard {
-        FORCED.with(|forced| forced.set(Some(make_error)));
-        Guard
-    }
 }
 
 /// The pack error as a static, path-free category.
@@ -173,12 +136,46 @@ pub(super) fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult
         );
         return ParseResult::content_only(Some(language), true);
     }
+    if crate::parse::fetch_gate::blocks_fetch(&language) {
+        return cooldown_result(relative_path, language);
+    }
     match run_extraction(&language, content) {
         Ok((items, depth_capped)) => succeeded_result(relative_path, language, items, depth_capped),
         Err(error) if is_load_failure(&error) => {
+            if is_fetch_failure(&error) {
+                crate::parse::fetch_gate::record_fetch_failure();
+            }
             load_failed_result(relative_path, language, &error)
         }
         Err(error) => parse_failed_result(relative_path, language, &error),
+    }
+}
+
+/// The reason stored for a file whose grammar fetch was not attempted
+/// because an earlier fetch failed. Static: the original failure was logged
+/// once, when it happened.
+const COOLDOWN_REASON: &str = "grammar fetch skipped: an earlier fetch failed and is in cool-down; it is retried after the cool-down or on the next server start";
+
+/// A file whose grammar is not on this host while the fetch gate is closed:
+/// the pack is not called, so an offline host does not pay the fetch timeout
+/// again. Recorded `LoadFailed` like the failure that closed the gate.
+fn cooldown_result(relative_path: &str, language: String) -> ParseResult {
+    tracing::debug!(
+        path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
+        language = %language,
+        "grammar fetch in cool-down; recording LoadFailed without calling the pack",
+    );
+    ParseResult {
+        language: Some(language),
+        language_detected: true,
+        run: ParserRun {
+            availability: ParserAvailability::LoadFailed {
+                reason: COOLDOWN_REASON.to_owned(),
+            },
+            outcome: ParseOutcome::NotAttempted,
+            completeness: ExtractionCompleteness::ContentOnly,
+        },
+        evidence: Vec::new(),
     }
 }
 

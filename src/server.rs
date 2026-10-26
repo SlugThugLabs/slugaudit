@@ -108,8 +108,9 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     GRAMMARS: Tree-sitter grammars are not bundled; the first time a language is parsed, its grammar is fetched \
     from the language pack's GitHub release (sha256-verified, cached under \
     `~/.cache/tree-sitter-language-pack/`). Offline, files in that language are still stored and searchable by \
-    `content`, but have no parsed evidence: their `files.parser_availability` is `LoadFailed`, and a later sync \
-    retries them.\n\n\
+    `content`, but have no parsed evidence: their `files.parser_availability` is `LoadFailed`, and they are \
+    retried after a 10-minute cool-down or on the next server start. The first failed fetch can block one call \
+    for up to about 60 s.\n\n\
     STRUCTURE: `structure` runs a Tree-sitter S-expression query (required, and it must name at least one \
     capture) against indexed content — in one `file`, or project-wide with `language` and an optional `pattern` \
     path filter (e.g. `src/**/*.rs`). Rust `(function_item name: (identifier) @name)`, \

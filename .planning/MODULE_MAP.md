@@ -115,6 +115,7 @@ src/
 │   ├── revision_skipped.rs   existence rows for discovered-but-skipped files
 │   ├── revision_support.rs   stale-finding invalidation inside a publish transaction
 │   ├── analyze.rs            tree-sitter parse + evidence extraction for one file
+│   ├── analyze_seam.rs       pack-extraction boundary + test-only failure/call-count seam
 │   ├── classify.rs           path-derived authored/generated/vendored file class
 │   └── race_hook.rs          test-only race-injection hook
 │
@@ -182,6 +183,7 @@ src/
 │
 ├── parse/                    tree-sitter language-pack boundary
 │   ├── mod.rs                PACK_VERSION + re-exports
+│   ├── fetch_gate.rs         process-wide cool-down after a failed grammar fetch
 │   └── language.rs           language detection + parser availability
 │
 ├── model/                    contracts shared by parsing, storage, and tools

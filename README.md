@@ -67,8 +67,11 @@ release manifest, and caches it at `~/.cache/tree-sitter-language-pack/v1.18.0/l
 (the platform cache directory; `TREE_SITTER_LANGUAGE_PACK_CACHE_DIR` overrides its
 base). Later runs load from that cache without touching the network. If the fetch fails
 (for example, offline on a first run), the file's content is still stored and
-searchable, its `files.parser_availability` is `LoadFailed`, and it is retried on a
-later sync instead of being left unparsed. The grammar fetch and `slugaudit update` are
+searchable, its `files.parser_availability` is `LoadFailed`, and it is retried after a
+10-minute cool-down (or on the next server start) instead of being left unparsed. The
+first failed fetch can block one call for up to about 60 seconds (the pack's HTTP
+timeout, which it does not let us change); during the cool-down no further fetch is
+attempted and no new revision is published for those files. The grammar fetch and `slugaudit update` are
 the only outbound network use; the server itself runs no network listener.
 
 Every release ships the material to check what you downloaded: `SHA256SUMS` for

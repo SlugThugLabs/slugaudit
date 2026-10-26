@@ -1,5 +1,7 @@
 use super::*;
 use crate::model::{ExtractionCompleteness, ParseOutcome, ParserAvailability};
+use crate::parse::fetch_gate::test_controls;
+use crate::sync::analyze_seam::forced_failure;
 
 #[test]
 fn sampled_content_with_no_detectable_language_is_content_only() {
@@ -225,6 +227,8 @@ fn project_with_failed_download() -> (
         stored_run(&connection, "a.rs"),
         ("LoadFailed".to_owned(), "NotAttempted".to_owned())
     );
+    // The failed fetch closed the gate; these callers test the retry itself.
+    test_controls::elapse_cooldown();
     (project, db_dir, connection, revision)
 }
 
@@ -297,4 +301,133 @@ fn a_succeeded_file_with_unchanged_content_is_still_skipped_by_reconcile() {
     .expect("reconcile");
 
     assert_eq!((report.reconciled, report.unchanged), (0, 1));
+}
+
+fn stored_reason(connection: &rusqlite::Connection, path: &str) -> String {
+    connection
+        .query_row(
+            "SELECT parse_error_reason FROM files WHERE path = ?1",
+            [path],
+            |row| row.get(0),
+        )
+        .expect("stored reason")
+}
+
+/// A project with two Rust files, synced through the manager while every
+/// grammar fetch fails. Returns the manager, the project and the synced state.
+fn synced_with_failing_fetch() -> (
+    crate::sync::SourceSyncManager,
+    tempfile::TempDir,
+    crate::sync::SyncedProject,
+) {
+    use crate::sync::test_support::{create_project, sync_project, write_file};
+
+    let manager = crate::sync::SourceSyncManager::new();
+    let project = create_project();
+    write_file(&project, "a.rs", b"fn a() {}");
+    write_file(&project, "b.rs", b"fn b() {}");
+    let synced = {
+        let _forced = forced_failure::force(|| PackError::Download("offline".into()));
+        sync_project(&manager, &project)
+    };
+    (manager, project, synced)
+}
+
+#[test]
+fn a_second_file_in_the_same_sync_does_not_reach_the_loader_after_a_fetch_failure() {
+    let (_manager, _project, synced) = synced_with_failing_fetch();
+
+    assert_eq!(forced_failure::calls(), 1, "one failed fetch, then none");
+    let connection = crate::store::open_read_write(&synced.database_path).expect("open db");
+    for path in ["a.rs", "b.rs"] {
+        assert_eq!(
+            stored_run(&connection, path),
+            ("LoadFailed".to_owned(), "NotAttempted".to_owned()),
+            "{path}"
+        );
+    }
+    let reasons = [
+        stored_reason(&connection, "a.rs"),
+        stored_reason(&connection, "b.rs"),
+    ];
+    assert_eq!(
+        reasons.iter().filter(|r| **r == COOLDOWN_REASON).count(),
+        1,
+        "exactly the file after the failure carries the cool-down reason: {reasons:?}"
+    );
+}
+
+#[test]
+fn an_unchanged_load_failed_file_publishes_no_revision_during_the_cooldown() {
+    use crate::sync::test_support::sync_project;
+    let (manager, project, first) = synced_with_failing_fetch();
+    let calls_after_first_sync = forced_failure::calls();
+
+    let second = sync_project(&manager, &project);
+
+    assert_eq!(second.revision_id, first.revision_id, "no new revision");
+    assert_eq!(
+        forced_failure::calls(),
+        calls_after_first_sync,
+        "no loader call"
+    );
+}
+
+#[test]
+fn a_load_failed_file_is_retried_and_parses_once_the_cooldown_has_elapsed() {
+    use crate::sync::test_support::sync_project;
+    let (manager, project, first) = synced_with_failing_fetch();
+    test_controls::elapse_cooldown();
+
+    let second = sync_project(&manager, &project);
+
+    assert_ne!(second.revision_id, first.revision_id, "the retry publishes");
+    let connection = crate::store::open_read_write(&second.database_path).expect("open db");
+    for path in ["a.rs", "b.rs"] {
+        assert_eq!(
+            stored_run(&connection, path),
+            ("Available".to_owned(), "Succeeded".to_owned()),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn a_failed_retry_after_the_cooldown_starts_a_new_cooldown() {
+    let _forced = forced_failure::force(|| PackError::Download("offline".into()));
+    analyze("a.rs", Some("fn a() {}"));
+    test_controls::elapse_cooldown();
+    assert!(crate::parse::fetch_gate::load_failed_retry_due());
+
+    analyze("a.rs", Some("fn a() {}"));
+
+    assert!(!crate::parse::fetch_gate::load_failed_retry_due());
+    assert_eq!(forced_failure::calls(), 2);
+}
+
+#[test]
+fn a_grammar_already_on_the_host_still_parses_during_the_cooldown() {
+    {
+        let _forced = forced_failure::force(|| PackError::Download("offline".into()));
+        analyze("a.rs", Some("fn a() {}"));
+    }
+    test_controls::set_grammar_cached(true);
+
+    let result = analyze("b.rs", Some("fn b() {}"));
+
+    assert_eq!(result.run.availability, ParserAvailability::Available);
+    assert_eq!(result.run.outcome, ParseOutcome::Succeeded);
+}
+
+#[test]
+fn a_load_failure_that_is_not_a_fetch_failure_does_not_close_the_gate() {
+    let _forced = forced_failure::force(|| PackError::DynamicLoad("bad library".into()));
+
+    let result = analyze("a.rs", Some("fn a() {}"));
+
+    assert!(matches!(
+        result.run.availability,
+        ParserAvailability::LoadFailed { .. }
+    ));
+    assert!(crate::parse::fetch_gate::load_failed_retry_due());
 }

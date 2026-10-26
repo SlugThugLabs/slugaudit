@@ -28,8 +28,8 @@ pub(super) const MAX_PATH_LOOKUP_BATCH: usize = 4096;
 pub(super) struct StoredState {
     /// Stored content hash per path.
     pub(super) hashes: HashMap<String, String>,
-    /// Paths whose stored parse is `LoadFailed`: the grammar could not be
-    /// fetched or loaded, so an unchanged hash must not skip them.
+    /// Paths whose stored parse is `LoadFailed` while a retry is due (the
+    /// grammar fetch is not in cool-down): an unchanged hash must not skip them.
     pub(super) retry: HashSet<String>,
 }
 
@@ -49,6 +49,7 @@ pub(super) fn query_existing_hashes<'a>(
 ) -> Result<StoredState, rusqlite::Error> {
     let paths: Vec<&str> = paths.into_iter().collect();
     let mut state = StoredState::default();
+    let retry_due = crate::parse::fetch_gate::load_failed_retry_due();
     if paths.is_empty() {
         return Ok(state);
     }
@@ -66,7 +67,7 @@ pub(super) fn query_existing_hashes<'a>(
     })?;
     for row in rows {
         let (path, hash, load_failed) = row?;
-        if load_failed {
+        if load_failed && retry_due {
             state.retry.insert(path.clone());
         }
         state.hashes.insert(path, hash);

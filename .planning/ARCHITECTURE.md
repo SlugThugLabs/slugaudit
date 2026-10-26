@@ -478,7 +478,10 @@ multiplexing. (Outbound network use exists but accepts no requests: the language
 pack fetches a grammar bundle from its GitHub release on first use of a language,
 sha256-verified and cached under `~/.cache/tree-sitter-language-pack/`, and
 `slugaudit update` downloads a release. A failed grammar fetch records the file
-`LoadFailed`, which the next sync retries.) An attacker who wants to send a malicious MCP request must
+`LoadFailed` and closes a process-wide gate (`parse::fetch_gate`) for 10 minutes: no
+further fetch is attempted and `LoadFailed` rows are not retry candidates until the
+cool-down elapses or the server restarts; the pack's own 60 s HTTP timeout is not
+configurable, so the first failure can block one call that long.) An attacker who wants to send a malicious MCP request must
 already have code execution on the same machine and a handle to the same
 process — at which point they can read any file the user can, including
 `project.db` directly.

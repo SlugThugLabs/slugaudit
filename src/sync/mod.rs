@@ -3,6 +3,7 @@
 //! does not decide how tools query the result.
 
 mod analyze;
+mod analyze_seam;
 mod classify;
 mod discovery;
 mod hash;
