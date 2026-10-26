@@ -35,7 +35,7 @@ a tone-of-voice choice:
 - `leads` returns unranked counts and rows derived at read time
   (`src/tools/leads.rs`).
 
-The server exposes eight tools (`src/server.rs`):
+The server exposes nine tools (`src/server.rs`):
 
 - **`report`** — automatic snapshot of the current revision: file/language
   counts, parser failures, evidence-kind counts, import-resolution buckets,
@@ -63,6 +63,9 @@ The server exposes eight tools (`src/server.rs`):
 - **`finding`** — the single write tool. Persists agent-authored conclusions
   bound to a file's current `content_hash`.
 - **`finding_read`** — returns findings scoped to the calling agent session.
+- **`mechanic`** — the auditor registers (`add`), removes and lists its own
+  mechanics: a Tree-sitter query with exactly one capture over one language.
+  See *Mechanics* below.
 - **`project_control`** — enable or disable a project (create or remove the
   activation directory and run the initial import).
 - **`health`** — what state is this in and what should the caller do next.
@@ -74,10 +77,38 @@ The server exposes eight tools (`src/server.rs`):
   first two; `system_memory` reports host state because it sizes the
   adaptive import budget.
 
-Only `finding` and `project_control` mutate state. Every state-bearing tool
+Only `finding`, `mechanic` and `project_control` mutate state. Every state-bearing tool
 first brings the project current (see *Data flow*); if the watcher reports
 untrusted state, that sync is a full publish rather than a trust of the
 dirty-set.
+
+### Mechanics
+
+The built-in `leads` mechanics are counting primitives, not a checklist; what
+counts as a signal in a codebase is the auditor's decision, recorded with
+`mechanic add {id, language, query, note}` (`src/tools/mechanic*.rs`). The
+query is compiled against the real grammar on `add` and must name exactly one
+capture; each distinct captured node is one row. `leads` scans the parsed
+files of the entry's language (the same file set the built-in evidence
+mechanics read) under `max_structure_execution_time`; a spent budget fails
+the call instead of returning a partial count. Two lifetimes:
+
+- **session** — held in memory by the server's `SourceSyncManager`
+  (`project::SessionMechanics`), never written, gone when the process exits;
+  at most 64 per server.
+- **project_config** — `persist: true` writes the entry into the versioned
+  `mechanics` section of `.planning/slugaudit/config.json`
+  (`{"version": 1, "entries": [...]}`, at most 64) by a read-modify-write that
+  keeps every other key and goes through the symlink-refusing
+  `ProjectConfig::write_raw`; it is re-read on every call.
+
+`leads` and `report` list entries session first, then project_config, then
+builtin, each with its `source` and the author's `note`. An entry that fails
+to load (bad JSON shape, an unknown `version`, a compile error, an id
+collision) is listed in `report.mechanics.invalid` with its error and counted
+in `mechanics_invalid`, never dropped; its valid siblings still load. The
+first `report` of each server carries `mechanics.note` explaining this, and
+no later one does. Invariant 14 states the never-override rule.
 
 The same server exposes read-only MCP resources (`src/resources.rs`): the
 canonical schema (`slugaudit://schema.sql`), the query recipes under
@@ -88,7 +119,7 @@ session's `INSTRUCTIONS`. They are embedded at compile time via `include_str!`
 and are pull-based — nothing is pushed into a connecting agent's context.
 
 Every tool also carries a `title`, MCP `annotations` (`readOnlyHint` false for
-`finding`/`project_control`, `destructiveHint` true only for
+`finding`/`mechanic`/`project_control`, `destructiveHint` true only for
 `project_control`, whose `off` action purges the database), and an
 `outputSchema` derived from its response type. `check_mcp_surface` snapshots
 `tools/list` + `resources/list` into `.planning/archive/mcp_surface.json` and
@@ -625,7 +656,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 87 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 90 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only
@@ -802,6 +833,13 @@ something else loudly.
     the sync-budget remedy names the knob rather than advising a retry that
     fails identically, and a path that is not an enabled project produces one
     `project_not_enabled` instruction instead of one opaque failure per tool.
+14. **A registered mechanic can never remove, rename or override a built-in.**
+    Ids are `[a-z0-9_]{1,64}` and unique across the built-ins, the session
+    entries and the persisted entries: `mechanic add` refuses a collision,
+    `mechanic remove` refuses a built-in id, and a persisted entry that
+    collides on load is reported invalid rather than shadowing anything. The
+    built-in table (`leads_mechanics::MECHANICS`) is compiled in and nothing
+    at runtime edits it.
 
 ### Machine-readable failure codes
 
@@ -828,7 +866,7 @@ surface).
 | `sync_budget_exhausted` | the sync wall-clock budget (`max_sync_wall_clock`) was spent while discovering, hashing, parsing, or publishing; permanent on a tree too big for the budget, so the remedy names the knob | every sync map site: `manager_meta::map_publish_error`, `sweep_reconcile::sweep_tree` and `sweep_reconcile::apply_sweep_report`, both `manager_health` map sites |
 | `project_not_enabled` | no ancestor of the requested path has an activation marker, so no tool can serve it | `manager_orchestration::map_activation_error` — the single funnel behind every tool |
 | `stale_revision` | the revision this call was pinned to is no longer current, or a sampled file changed before the write — the compare-and-swap race, where retrying is right | `tools::context::verify_revision_matches`, `manager_meta::map_publish_error`; also `tools::context::guard_expected_revision`, where the caller pinned a resumed page (`leads`/`query` `expected_revision`) and the remedy restarts the sweep from offset 0 instead of retrying the offset |
-| `unknown_mechanic` | `leads` was asked for a mechanic id that is not in the catalogue | `tools::leads_mechanics::resolve_mechanic` |
+| `unknown_mechanic` | `leads` was asked for a mechanic id that is not in the catalogue, or `mechanic remove` for an id no session or persisted entry has | `tools::leads_mechanics::resolve_mechanic`, `tools::mechanic_register::remove` |
 | `sql_too_large` | the SQL passed to `query` exceeded `max_query_sql_bytes` | `tools::query::query_with_limits` |
 | `file_not_indexed` | the named file has no indexed source content (never discovered, skipped as oversize/unreadable, or binary) | `tools::structure_source::fetch_source`, `tools::finding::fetch_file` |
 <!-- error-codes:end -->

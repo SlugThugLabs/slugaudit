@@ -71,6 +71,37 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        title = "Register auditor mechanics",
+        annotations(read_only_hint = false, destructive_hint = false),
+        description = "Register, remove, or list your own mechanics. The built-in `leads` \
+         mechanics are counting primitives, not a checklist: what counts as a signal in this \
+         codebase is your decision, and this is where you record it. `action: add` takes `id` \
+         (a-z, 0-9, _; never a built-in's or an existing entry's id), `language`, `query` (a \
+         Tree-sitter S-expression with exactly one capture; each distinct captured node is one \
+         row) and `note` (what it counts, in your words); a query that does not compile is \
+         refused with the compiler's message. It returns `first_count`: the `leads` response \
+         for that id (counts with `covers`, the first page of rows, `total`, `files_total`, \
+         `files_covered`, `files_not_parsed`). Session entries live until this server exits; \
+         `persist: true` writes the entry to `.planning/slugaudit/config.json` (other keys \
+         kept) so later sessions read it. `leads` and `report` list every entry with `source` \
+         (`session`, `project_config`, `builtin`) and its note, session first. `action: remove` \
+         deletes a session or persisted entry; built-ins can never be removed or overridden. \
+         `action: list` returns every mechanic plus `invalid`: persisted entries that failed to \
+         load, each with its error."
+    )]
+    async fn mechanic(
+        &self,
+        meta: RequestMetaObject,
+        peer: Peer<RoleServer>,
+        request: Parameters<tools::MechanicRequest>,
+    ) -> Result<Json<tools::MechanicResponse>, ErrorData> {
+        self.dispatch(meta, peer, "mechanic", move |sink, manager| {
+            tools::mechanic(&request, sink.as_ref(), &manager)
+        })
+        .await
+    }
+
+    #[tool(
         title = "Read-only SQL query",
         annotations(read_only_hint = true, destructive_hint = false),
         description = "Query the indexed codebase with read-only SQL. Key tables: \

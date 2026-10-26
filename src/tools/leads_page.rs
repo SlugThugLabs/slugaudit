@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=one leads envelope: the counts pass, the page dispatch and the completeness fields every page shape shares
 //! Assembling one `leads` response from the counts and the page a request
 //! asked for — the counts-only reply, the full row page, or the compact
 //! whole-surface (or single-mechanic) enumeration.
@@ -9,11 +10,15 @@
 
 use super::leads::{FileCount, LeadMode, LeadRows, LeadsResponse, MechanicCount, PageLimit};
 use super::leads_compact;
-use super::leads_mechanics::Mechanic;
-use super::leads_query::{self, count_all, page_file_counts};
+use super::leads_covers::languages_read;
+use super::leads_custom;
+use super::leads_mechanics::{Mechanic, Selected};
+use super::leads_query::{self, compile_pattern, count_all, page_file_counts};
+use super::mechanic_catalog::Catalog;
+use super::mechanic_scan;
 use rmcp::ErrorData;
-use rmcp::handler::server::wrapper::Json;
 use rusqlite::Transaction;
+use std::time::Instant;
 
 /// The paging window one call asks for: the caller's `limit`, the rows to
 /// skip, and the response byte budget.
@@ -26,45 +31,87 @@ pub(super) struct Paging {
     pub(super) clamped_from: Option<usize>,
 }
 
+/// Everything one call asks of the page builder.
+pub(super) struct Scope<'a> {
+    /// The registered entries (and failures) this call sees.
+    pub(super) catalog: &'a Catalog,
+    pub(super) selected: Option<Selected>,
+    pub(super) mode: LeadMode,
+    pub(super) pattern: Option<&'a str>,
+    pub(super) paging: Paging,
+    /// When the registered mechanics' scan must stop
+    /// (`max_structure_execution_time`); `None` means no deadline.
+    pub(super) deadline: Option<Instant>,
+}
+
 /// Everything one page contributes to the envelope; `complete` and
 /// `next_offset` are derived from `returned` and `total` in [`envelope`].
-struct Prepared {
-    rows: LeadRows,
-    returned: usize,
-    total: i64,
-    files_total: i64,
-    files_covered: i64,
-    page_file_counts: Vec<FileCount>,
-    limited_by: PageLimit,
-    rows_bytes: usize,
+pub(super) struct Prepared {
+    pub(super) rows: LeadRows,
+    pub(super) returned: usize,
+    pub(super) total: i64,
+    pub(super) files_total: i64,
+    pub(super) files_covered: i64,
+    pub(super) page_file_counts: Vec<FileCount>,
+    pub(super) limited_by: PageLimit,
+    pub(super) rows_bytes: usize,
+}
+
+/// The complete counts pass, independent of paging.
+struct Counts {
+    mechanic_counts: Vec<MechanicCount>,
+    files_not_parsed: i64,
+    mechanics_invalid: usize,
 }
 
 /// Counts plus the page the request asked for.
 ///
 /// # Errors
 ///
-/// Propagates any failure of the counts, row, or coverage reads; see
-/// [`leads_query`] and [`leads_compact`].
+/// Propagates any failure of the counts, row, or coverage reads, and of the
+/// registered mechanics' scan; see [`leads_query`], [`leads_compact`] and
+/// [`mechanic_scan`].
 pub(super) fn build(
     tx: &Transaction<'_>,
     revision_id: &str,
-    selected: Option<&Mechanic>,
-    mode: LeadMode,
-    pattern: Option<&str>,
-    paging: Paging,
-) -> Result<Json<LeadsResponse>, ErrorData> {
-    let mechanic_counts = count_all(tx, pattern)?;
-    let files_not_parsed = leads_query::files_not_parsed(tx, pattern)?;
-    let prepared = match (mode, selected) {
-        (LeadMode::Full, None) => {
-            let response = counts_only(revision_id, mechanic_counts, files_not_parsed, paging);
-            return Ok(Json(response));
-        }
-        (LeadMode::Full, Some(mechanic)) => full(tx, mechanic, pattern, paging, &mechanic_counts)?,
-        (LeadMode::Compact, selected) => compact(tx, selected, pattern, paging, &mechanic_counts)?,
+    scope: &Scope<'_>,
+) -> Result<LeadsResponse, ErrorData> {
+    let glob = compile_pattern(scope.pattern);
+    let read = languages_read(tx, glob.as_deref())?;
+    let whole_surface = scope.mode == LeadMode::Compact && scope.selected.is_none();
+    let tallies = mechanic_scan::tally(
+        tx,
+        &scope.catalog.custom,
+        glob.as_deref(),
+        scope.deadline,
+        whole_surface,
+    )?;
+    let mut mechanic_counts = leads_custom::counts(scope.catalog, &tallies, &read);
+    mechanic_counts.extend(count_all(tx, scope.pattern, &read)?);
+    let counts = Counts {
+        mechanic_counts,
+        files_not_parsed: leads_query::files_not_parsed(tx, scope.pattern)?,
+        mechanics_invalid: scope.catalog.invalid.len(),
     };
-    let counts = (mechanic_counts, files_not_parsed);
-    Ok(Json(envelope(revision_id, counts, prepared, paging)?))
+    let (pattern, paging) = (scope.pattern, scope.paging);
+    let listed = &counts.mechanic_counts;
+    let prepared = match (scope.mode, scope.selected) {
+        (LeadMode::Full, None) => return Ok(counts_only(revision_id, counts, paging)),
+        (LeadMode::Full, Some(Selected::Builtin(mechanic))) => {
+            full(tx, mechanic, pattern, paging, listed)?
+        }
+        (LeadMode::Compact, Some(Selected::Builtin(mechanic))) => {
+            compact(tx, Some(mechanic), pattern, paging, listed)?
+        }
+        (LeadMode::Compact, None) if scope.catalog.custom.is_empty() => {
+            compact(tx, None, pattern, paging, listed)?
+        }
+        (LeadMode::Compact, None) => leads_custom::whole_surface(tx, scope, &tallies, listed)?,
+        (mode, Some(Selected::Registered(index))) => {
+            leads_custom::single(tx, scope, index, mode, listed)?
+        }
+    };
+    envelope(revision_id, counts, prepared, paging)
 }
 
 /// One page of a single mechanic's full rows.
@@ -153,16 +200,12 @@ fn compact(
 
 /// The counts-only reply: no mechanic requested in full mode, so there is no
 /// scope to page and every completeness field is trivially empty.
-fn counts_only(
-    revision_id: &str,
-    mechanic_counts: Vec<MechanicCount>,
-    files_not_parsed: i64,
-    paging: Paging,
-) -> LeadsResponse {
+fn counts_only(revision_id: &str, counts: Counts, paging: Paging) -> LeadsResponse {
     LeadsResponse {
         revision_id: revision_id.to_owned(),
-        mechanic_counts,
-        files_not_parsed,
+        mechanic_counts: counts.mechanic_counts,
+        mechanics_invalid: counts.mechanics_invalid,
+        files_not_parsed: counts.files_not_parsed,
         rows: LeadRows::Full(Vec::new()),
         returned: 0,
         total: 0,
@@ -181,11 +224,9 @@ fn counts_only(
 
 /// Wraps a prepared page in the envelope, deriving `complete` and
 /// `next_offset` from what the page actually returned.
-/// The second argument is the complete counts pass: every mechanic's counts
-/// and `files_not_parsed`, both independent of paging.
 fn envelope(
     revision_id: &str,
-    (mechanic_counts, files_not_parsed): (Vec<MechanicCount>, i64),
+    counts: Counts,
     prepared: Prepared,
     paging: Paging,
 ) -> Result<LeadsResponse, ErrorData> {
@@ -193,8 +234,9 @@ fn envelope(
     let complete = seen(through)? >= prepared.total;
     Ok(LeadsResponse {
         revision_id: revision_id.to_owned(),
-        mechanic_counts,
-        files_not_parsed,
+        mechanic_counts: counts.mechanic_counts,
+        mechanics_invalid: counts.mechanics_invalid,
+        files_not_parsed: counts.files_not_parsed,
         rows: prepared.rows,
         returned: prepared.returned,
         total: prepared.total,
@@ -237,7 +279,7 @@ pub(super) fn files_of(counts: &[MechanicCount], id: &str) -> Result<i64, ErrorD
 }
 
 /// `usize` rows as an `i64`; a count SQLite cannot hold fails the call.
-fn seen(rows: usize) -> Result<i64, ErrorData> {
+pub(super) fn seen(rows: usize) -> Result<i64, ErrorData> {
     i64::try_from(rows)
         .map_err(|error| super::context::internal_error("counting leads rows seen", error))
 }

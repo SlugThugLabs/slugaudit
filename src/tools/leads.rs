@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=the leads tool contract: request/response schema types (the MCP outputSchema) plus the one entry point and its registered-mechanic seam
 //! `leads` — unranked mechanical observations about an indexed project.
 //!
 //! This tool surfaces facts the index already holds — call sites by callee
@@ -23,8 +24,10 @@
 //! stopped the page.
 
 use super::context::{ensure_synced, guard_expected_revision, with_verified_read};
-use super::leads_mechanics::resolve_mechanic;
+use super::leads_mechanics::resolve_selected;
 use super::leads_page::{self, Paging};
+use super::mechanic::MechanicSource;
+use super::mechanic_catalog::{self, Catalog};
 use crate::model::ResourceLimits;
 use crate::progress::ProgressSink;
 use crate::sync;
@@ -120,6 +123,12 @@ pub enum LeadMode {
 pub struct MechanicCount {
     /// Stable id — pass it back as `mechanic` to get this mechanic's rows.
     pub mechanic: String,
+    /// Where the mechanic comes from: `session` (registered with `mechanic
+    /// add` on this server), `project_config` (persisted in the project's
+    /// `config.json`), or `builtin`.
+    pub source: MechanicSource,
+    /// The author's note for a registered mechanic; `null` for a built-in.
+    pub note: Option<String>,
     /// How many observations this mechanic has in the current revision
     /// under the same `pattern`. Complete, never paged.
     pub count: i64,
@@ -132,7 +141,8 @@ pub struct MechanicCount {
     /// read the files whose grammar ran in a language with call extraction
     /// (rust, python, javascript, typescript, tsx, go, java, c); diagnostics
     /// and comment markers read every file whose grammar ran; path mechanics
-    /// read every file. A language of this project missing here was not
+    /// read every file; a registered mechanic reads the parsed files of its
+    /// one language. A language of this project missing here was not
     /// checked by this mechanic, so its zero there means unchecked, not absent.
     pub covers: Vec<String>,
 }
@@ -221,8 +231,15 @@ pub struct LeadsResponse {
     /// Every mechanic this revision can answer under the request's
     /// `pattern`, with its row and distinct-file counts and what it covers.
     /// Counts are complete regardless of `limit`/`offset`, and carry no
-    /// ordering by importance — the order is the fixed declaration order.
+    /// ordering by importance: session entries first (oldest first), then
+    /// project_config entries (file order), then the built-ins in their fixed
+    /// declaration order.
     pub mechanic_counts: Vec<MechanicCount>,
+    /// Registered mechanics that failed to load (a bad persisted entry, an
+    /// id collision, a query that no longer compiles) and are therefore not
+    /// in `mechanic_counts`. `report`'s `mechanics.invalid` and `mechanic`
+    /// action `list` name each one with its error.
+    pub mechanics_invalid: usize,
     /// Indexed files under the request's `pattern` with a detected language
     /// whose grammar did not run or did not finish, so the mechanics that
     /// read evidence saw them partly or not at all: content over
@@ -256,7 +273,7 @@ pub struct LeadsResponse {
     /// Distinct files represented in rows `0..offset + returned` of the
     /// scope. Cumulative for a sweep at one revision: rows are read in a
     /// fixed order — within a single mechanic, by path then line; for a
-    /// compact call with no mechanic, by mechanic declaration order then
+    /// compact call with no mechanic, by the `mechanic_counts` order then
     /// path then line — so a file's rows for one mechanic are contiguous,
     /// but a file with rows under several mechanics appears in several
     /// groups and can span several compact pages. It is still counted once.
@@ -297,9 +314,11 @@ pub struct LeadsResponse {
 ///
 /// Returns an error if `request.path` is not inside an active project, if
 /// syncing or reading the database fails, if the requested `mechanic` id is
-/// not one this tool defines, if `expected_revision` no longer matches the
-/// current revision (a resumed page — `stale_revision`), or if a read races
-/// a concurrent publish (the caller retries).
+/// not one this tool defines or the auditor registered, if
+/// `expected_revision` no longer matches the current revision (a resumed
+/// page — `stale_revision`), if the registered mechanics spend their
+/// execution budget, or if a read races a concurrent publish (the caller
+/// retries).
 pub fn leads(
     request: &Parameters<LeadsRequest>,
     sink: &dyn ProgressSink,
@@ -324,32 +343,56 @@ fn leads_with_limits(
         request.0.pattern.as_deref(),
         request.0.expected_revision.as_deref(),
     )?;
-    let page = super::page_size::resolve(request.0.page_bytes, limits)?;
-    let synced = ensure_synced(&request.0.path, sink, manager)?;
-    guard_expected_revision(&synced.revision_id, request.0.expected_revision.as_deref())?;
-    let selected = resolve_mechanic(request.0.mechanic.as_deref())?;
+    let root = super::project_root(&request.0.path)?;
+    let catalog = mechanic_catalog::load(&root, manager.session_mechanics(), limits);
+    leads_with_catalog(&request.0, limits, &catalog, sink, manager).map(Json)
+}
+
+/// One `leads` call over an explicit catalogue — the seam `mechanic add`
+/// uses to count a candidate entry exactly as `leads` will once it is
+/// registered.
+pub(super) fn leads_with_catalog(
+    request: &LeadsRequest,
+    limits: &ResourceLimits,
+    catalog: &Catalog,
+    sink: &dyn ProgressSink,
+    manager: &sync::SourceSyncManager,
+) -> Result<LeadsResponse, ErrorData> {
+    validate_leads_request(
+        &request.path,
+        request.mechanic.as_deref(),
+        request.pattern.as_deref(),
+        request.expected_revision.as_deref(),
+    )?;
+    let page = super::page_size::resolve(request.page_bytes, limits)?;
+    let synced = ensure_synced(&request.path, sink, manager)?;
+    guard_expected_revision(&synced.revision_id, request.expected_revision.as_deref())?;
+    let selected = resolve_selected(request.mechanic.as_deref(), catalog)?;
     let paging = Paging {
-        limit: request.0.limit.map(|rows| rows.max(1)),
-        offset: request.0.offset.unwrap_or(0),
+        limit: request.limit.map(|rows| rows.max(1)),
+        offset: request.offset.unwrap_or(0),
         budget_bytes: page.bytes,
         clamped_from: page.clamped_from,
     };
+    let scope = leads_page::Scope {
+        catalog,
+        selected,
+        mode: request.mode,
+        pattern: request.pattern.as_deref(),
+        paging,
+        deadline: super::query_exec::deadline_after(limits.max_structure_execution_time),
+    };
     let response = with_verified_read(&synced, |tx| {
-        leads_page::build(
-            tx,
-            &synced.revision_id,
-            selected,
-            request.0.mode,
-            request.0.pattern.as_deref(),
-            paging,
-        )
+        leads_page::build(tx, &synced.revision_id, &scope)
     })?;
 
     tracing::info!(
-        revision_id = response.0.revision_id,
-        row_count = response.0.returned,
-        total = response.0.total,
-        complete = response.0.complete,
+        revision_id = response.revision_id,
+        row_count = response.returned,
+        total = response.total,
+        complete = response.complete,
+        registered = catalog.custom.len(),
+        mechanics_invalid = response.mechanics_invalid,
         "leads built"
     );
     Ok(response)

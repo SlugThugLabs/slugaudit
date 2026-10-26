@@ -54,7 +54,7 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     OTHER TOOLS). grep and reading a file you already know remain the right tools for a literal lookup.\n\n\
     LEADS: `leads` with only `path` returns every mechanic id with its row count, its distinct-file count \
     (`files`), and `covers` — the sorted languages of the files under `pattern` that mechanic read, the \
-    machine-readable form of \"a zero here means unchecked, not absent\" — in declaration order: call sites by callee (`unwrap`, `expect`, \
+    machine-readable form of \"a zero here means unchecked, not absent\" — your registered mechanics first (see MECHANICS), then the built-ins in declaration order: call sites by callee (`unwrap`, `expect`, \
     `panic`/`unreachable`, `todo`/`unimplemented`, `assert`/`assert_eq`/`assert_ne`/`debug_assert*`), \
     diagnostics, TODO/FIXME/HACK/XXX comment markers, and credential-shaped file paths. Counts are complete \
     regardless of `limit`/`offset` and carry no ordering by importance. Call again with one `mechanic` id for \
@@ -81,6 +81,15 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     grammar did not run or finish (content over \
     `max_parse_bytes`, 2 MiB by default; a grammar that failed to load; a failed or timed-out parse); while it \
     is above 0 every count is a floor, and `report` lists those files with the reason.\n\n\
+    MECHANICS: the built-ins are counting primitives, not a checklist; what counts as a signal in this codebase is \
+    your decision. `mechanic` with `action: add` registers `id`, `language`, `query` (a Tree-sitter S-expression \
+    with exactly one capture; each distinct captured node is one row; one that does not compile is refused with \
+    the compiler's message) and `note`, and returns `first_count`: the `leads` response for that id. `leads` then \
+    counts and pages it like a built-in, and `leads` and `report` list every entry with `source` (`session`, \
+    `project_config`, `builtin`) and its note, session first. Session entries last until this server exits; \
+    `persist: true` writes the entry to `.planning/slugaudit/config.json` for later sessions. A built-in can never \
+    be removed or overridden. `report.mechanics.invalid` lists persisted entries that failed to load, with the \
+    error.\n\n\
     QUERY SCHEMA: `files` (id, path, language, byte_len, content — full text of every indexed file, including \
     non-code files), `evidence` (id, file_id, kind, start_line, end_line [1-based, inclusive; every line number in this server is 1-based], payload — JSON; kinds Structure, \
     Import, Export, Comment, Docstring, Symbol, Diagnostic, Call), `dependency_edges` \
@@ -132,7 +141,8 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     reports that as `gitignore.status` (`added` / `already_ignored` / `not_written`); `off` never edits that \
     file. A moved or re-extracted project's stale \
     database is discarded and rebuilt from source automatically. `health` reports watcher and database state.\n\n\
-    FLOW: report → leads → drill with query/structure → read source only where evidence points → finding.\n\n\
+    FLOW: report → leads → mechanic add for the shapes you decide matter → drill with query/structure → read \
+    source only where evidence points → finding.\n\n\
     FAILURES: an error's `ErrorData.data` carries `code` — a stable lowercase identifier (e.g. \
     `sync_budget_exhausted`, `project_not_enabled`) — plus `remedy`, the next action to take; branch \
     on `code` instead of parsing the message, and when `remedy` names a knob or a call, do that \

@@ -1,4 +1,6 @@
 use super::context::{ensure_synced, internal_error, with_verified_read};
+use super::mechanic::{InvalidMechanic, MechanicListing};
+use super::mechanic_catalog;
 #[cfg(test)]
 use super::report_sections::MAX_PARSER_FAILURE_FILES;
 use super::report_sections::build_report;
@@ -313,6 +315,35 @@ pub struct ReportResponse {
     /// so this count makes the AI aware it is handling credential-*looking*
     /// paths even when it cannot read them.
     pub credential_pattern_file_count: i64,
+    /// Every mechanic `leads` counts — session entries, then project_config
+    /// entries, then the built-ins — with its source and the author's note,
+    /// plus the registered entries that failed to load. On the first
+    /// `report` of this server only, `note` also explains how mechanics
+    /// work.
+    pub mechanics: ReportMechanics,
+    /// `mechanics.invalid.len()`: registered entries that failed to load and
+    /// are not counted by `leads` until fixed or removed.
+    pub mechanics_invalid: usize,
+}
+
+/// The one-time note the first `report` of a server carries.
+const MECHANICS_NOTE: &str = "The built-in mechanics are counting primitives, not a checklist. \
+    What counts as a signal in this codebase is your decision. Register one with `mechanic` \
+    action `add` (`id`, `language`, `query` with exactly one capture, `note`); `leads` then \
+    counts and pages it beside the built-ins. Session entries last until this server exits; \
+    `persist: true` writes the entry to .planning/slugaudit/config.json for later sessions.";
+
+/// The mechanics section of a report.
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct ReportMechanics {
+    /// Present on the first `report` of this server only; `null` after.
+    pub note: Option<String>,
+    /// Every loaded mechanic: session, then project_config, then builtin.
+    pub entries: Vec<MechanicListing>,
+    /// Registered entries that failed to load, each with its error. Never
+    /// dropped: a persisted entry with a bad shape, an unknown section
+    /// `version`, a compile error or an id collision stays listed here.
+    pub invalid: Vec<InvalidMechanic>,
 }
 
 /// # Errors
@@ -329,10 +360,24 @@ pub fn report(
     }
     let synced = ensure_synced(&request.0.path, sink, manager)?;
     let revision_id = synced.revision_id.clone();
-    let response = with_verified_read(&synced, |tx| {
+    let mut response = with_verified_read(&synced, |tx| {
         build_report(tx, revision_id.clone())
             .map_err(|error| internal_error("building the report", error))
     })?;
+    let root = super::project_root(&request.0.path)?;
+    let session = manager.session_mechanics();
+    let catalog = mechanic_catalog::load(&root, session, &super::limits_for_root(&root));
+    response.mechanics_invalid = catalog.invalid.len();
+    response.mechanics = ReportMechanics {
+        note: None,
+        entries: catalog.listings(),
+        invalid: catalog.invalid,
+    };
+    // Claimed last, once nothing else can fail, so a failed first report
+    // does not use up the note.
+    if session.claim_report_note() {
+        response.mechanics.note = Some(MECHANICS_NOTE.to_owned());
+    }
     Ok(Json(response))
 }
 

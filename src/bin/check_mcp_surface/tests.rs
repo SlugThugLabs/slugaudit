@@ -63,7 +63,7 @@ fn schema_arrays_are_compared_by_position() {
 fn every_live_tool_carries_a_title_a_description_and_both_schemas() {
     let tools = slugaudit_mcp_rust::server::tool_surface();
 
-    assert_eq!(tools.len(), 8, "the surface is the eight advertised tools");
+    assert_eq!(tools.len(), 9, "the surface is the nine advertised tools");
     for tool in &tools {
         assert!(tool.title.is_some(), "{} has no title", tool.name);
         assert!(
@@ -95,6 +95,7 @@ fn every_live_tool_matches_the_documented_annotation_table() {
         ("finding_read", true, false),
         ("health", true, false),
         ("leads", true, false),
+        ("mechanic", false, false),
         ("project_control", false, true),
         ("query", true, false),
         ("report", true, false),

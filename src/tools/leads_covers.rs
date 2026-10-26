@@ -13,7 +13,7 @@ use rusqlite::{Transaction, params_from_iter};
 
 /// Files whose grammar ran to a tree, so every evidence walker read them.
 /// Excludes what `files_not_parsed` counts, prose, binary and skipped files.
-const PARSED_FILES: &str = "file_kind = 'indexed' AND language IS NOT NULL \
+pub(super) const PARSED_FILES: &str = "file_kind = 'indexed' AND language IS NOT NULL \
     AND parse_outcome IN ('Succeeded', 'SyntaxErrors')";
 
 /// Every file with a detected language: a path mechanic reads them all.
@@ -41,6 +41,16 @@ impl LanguagesRead {
             Reads::ParsedFiles => self.parsed.clone(),
             Reads::Paths => self.paths.clone(),
         }
+    }
+
+    /// The `covers` list for a registered mechanic: its one language, when
+    /// a parsed file of it is under the pattern.
+    pub(super) fn covers_language(&self, language: &str) -> Vec<String> {
+        self.parsed
+            .iter()
+            .filter(|parsed| parsed.as_str() == language)
+            .cloned()
+            .collect()
     }
 }
 

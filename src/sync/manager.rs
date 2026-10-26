@@ -106,6 +106,12 @@ pub struct SourceSyncManager {
     /// valued by session so a (test-only) session change re-arms it.
     /// Clones share the state.
     session_findings_purged: Arc<Mutex<HashMap<PathBuf, Uuid>>>,
+    /// The mechanics the auditor registered for this server's session (the
+    /// `mechanic` tool), and whether the one-time `report` mechanics note
+    /// was delivered. Held here because the manager is the per-server state
+    /// every tool already receives; clones share it, and it dies with the
+    /// process.
+    session_mechanics: crate::project::SessionMechanics,
 }
 
 impl SourceSyncManager {
@@ -126,7 +132,13 @@ impl SourceSyncManager {
             last_sync_duration_ms: std::sync::Arc::new(AtomicU64::new(0)),
             consecutive_full_publishes: std::sync::Arc::new(AtomicU64::new(0)),
             session_findings_purged: Arc::new(Mutex::new(HashMap::new())),
+            session_mechanics: crate::project::SessionMechanics::default(),
         }
+    }
+
+    /// The mechanics registered for this server's session; see the field.
+    pub(crate) fn session_mechanics(&self) -> &crate::project::SessionMechanics {
+        &self.session_mechanics
     }
 
     /// Returns the unix-epoch seconds of the most recent successful

@@ -17,9 +17,14 @@ mod health_phase;
 mod leads;
 mod leads_compact;
 mod leads_covers;
+mod leads_custom;
 mod leads_mechanics;
 mod leads_page;
 mod leads_query;
+mod mechanic;
+mod mechanic_catalog;
+mod mechanic_register;
+mod mechanic_scan;
 mod page_size;
 mod project_control;
 mod query;
@@ -51,6 +56,10 @@ pub use leads::{
     CompactLeadRow, FileCount, LeadMode, LeadRow, LeadRows, LeadsRequest, LeadsResponse,
     MechanicCount, PageLimit, leads,
 };
+pub use mechanic::{
+    InvalidMechanic, MechanicAction, MechanicListing, MechanicRequest, MechanicResponse,
+    MechanicSource, mechanic,
+};
 pub use project_control::{
     GitignoreReport, GitignoreStatus, ImportReport, ProjectControlAction, ProjectControlRequest,
     ProjectControlResponse, project_control,
@@ -59,7 +68,7 @@ pub use query::{QueryRequest, QueryResponse, query};
 pub use query_clip::ClippedCell;
 pub use query_value::NonFiniteCell;
 pub use report::DependencyEdgeTotals;
-pub use report::{ReportRequest, ReportResponse, report};
+pub use report::{ReportMechanics, ReportRequest, ReportResponse, report};
 pub use report_completeness::{
     CompletenessCount, CompletenessEnvelope, FileClassCount, FileKindCount, SkipReasonCount,
 };
@@ -137,12 +146,20 @@ pub(crate) const PARSER_FAILURE_PREDICATE: &str = "file_kind = 'indexed' \
 /// project config is a documented, logged recovery inside
 /// `ProjectConfig::load_or_default`.
 pub(super) fn resolve_limits(path: &str) -> Result<ResourceLimits, ErrorData> {
-    let root = crate::project::find_project_root(std::path::Path::new(path))
-        .map_err(crate::sync::map_activation_error)?;
-    Ok(
-        crate::project::ProjectConfig::load_or_default(root.as_path())
-            .apply_to_limits(*process_limits()),
-    )
+    Ok(limits_for_root(&project_root(path)?))
+}
+
+/// The active project root `path` lies in, with the same error
+/// `ensure_synced` returns for a path outside every enabled project.
+pub(super) fn project_root(path: &str) -> Result<std::path::PathBuf, ErrorData> {
+    crate::project::find_project_root(std::path::Path::new(path))
+        .map(|root| root.as_path().to_path_buf())
+        .map_err(crate::sync::map_activation_error)
+}
+
+/// The process limits with `root`'s project config applied.
+pub(super) fn limits_for_root(root: &std::path::Path) -> ResourceLimits {
+    crate::project::ProjectConfig::load_or_default(root).apply_to_limits(*process_limits())
 }
 
 #[cfg(test)]

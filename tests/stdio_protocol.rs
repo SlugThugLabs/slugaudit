@@ -441,3 +441,59 @@ fn progress_notifications_flow_over_stdio() {
         "final progress notification must report completion at 1.0: {last}"
     );
 }
+
+/// The auditor-owned mechanics flow over real stdio, in one live server:
+/// the first `report` carries the mechanics note, `mechanic add` returns the
+/// new entry's first count, `leads` lists it first as a session entry, and a
+/// second `report` no longer carries the note.
+#[test]
+fn real_stdio_mechanic_add_is_counted_and_listed_first_by_leads() {
+    let project = tempfile::tempdir().expect("project dir");
+    std::fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
+        .expect("activate project");
+    std::fs::write(
+        project.path().join("app.py"),
+        b"def run(code):\n    eval(code)  # eval(comment)\n    return \"eval(text)\"\n",
+    )
+    .expect("write fixture file");
+    let project_path = project.path().to_string_lossy().replace('\\', "/");
+    let mut server = ServerProcess::spawn();
+    server.handshake();
+
+    let first_report = server.tool_json(2, "report", json!({ "path": project_path }));
+    let added = server.tool_json(
+        3,
+        "mechanic",
+        json!({
+            "path": project_path,
+            "action": "add",
+            "id": "py_eval",
+            "language": "python",
+            "query": "(call function: (identifier) @callee (#eq? @callee \"eval\"))",
+            "note": "dynamic code execution",
+        }),
+    );
+    let leads = server.tool_json(4, "leads", json!({ "path": project_path }));
+    let second_report = server.tool_json(5, "report", json!({ "path": project_path }));
+
+    assert!(
+        first_report["mechanics"]["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("not a checklist")),
+        "the first report carries the note: {first_report}"
+    );
+    assert_eq!(added["source"], "session");
+    assert_eq!(added["first_count"]["total"], 1, "{added}");
+    assert_eq!(added["first_count"]["rows"][0]["line"], 2, "{added}");
+    assert_eq!(
+        leads["mechanic_counts"][0]["mechanic"], "py_eval",
+        "{leads}"
+    );
+    assert_eq!(leads["mechanic_counts"][0]["source"], "session", "{leads}");
+    assert_eq!(leads["mechanic_counts"][0]["count"], 1, "{leads}");
+    assert_eq!(leads["mechanic_counts"][0]["covers"], json!(["python"]));
+    assert!(
+        second_report["mechanics"]["note"].is_null(),
+        "only the first report carries the note: {second_report}"
+    );
+}

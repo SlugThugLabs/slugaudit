@@ -761,7 +761,7 @@
                 "type": "integer"
               },
               "covers": {
-                "description": "The languages this count was measured over: every language of the\nfiles under `pattern` this mechanic read, sorted. Call-site mechanics\nread the files whose grammar ran in a language with call extraction\n(rust, python, javascript, typescript, tsx, go, java, c); diagnostics\nand comment markers read every file whose grammar ran; path mechanics\nread every file. A language of this project missing here was not\nchecked by this mechanic, so its zero there means unchecked, not absent.",
+                "description": "The languages this count was measured over: every language of the\nfiles under `pattern` this mechanic read, sorted. Call-site mechanics\nread the files whose grammar ran in a language with call extraction\n(rust, python, javascript, typescript, tsx, go, java, c); diagnostics\nand comment markers read every file whose grammar ran; path mechanics\nread every file; a registered mechanic reads the parsed files of its\none language. A language of this project missing here was not\nchecked by this mechanic, so its zero there means unchecked, not absent.",
                 "items": {
                   "type": "string"
                 },
@@ -775,15 +775,47 @@
               "mechanic": {
                 "description": "Stable id — pass it back as `mechanic` to get this mechanic's rows.",
                 "type": "string"
+              },
+              "note": {
+                "description": "The author's note for a registered mechanic; `null` for a built-in.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "$ref": "#/$defs/MechanicSource",
+                "description": "Where the mechanic comes from: `session` (registered with `mechanic\nadd` on this server), `project_config` (persisted in the project's\n`config.json`), or `builtin`."
               }
             },
             "required": [
               "mechanic",
+              "source",
               "count",
               "files",
               "covers"
             ],
             "type": "object"
+          },
+          "MechanicSource": {
+            "description": "Where a mechanic comes from. Listings are ordered session, then\nproject_config, then builtin.",
+            "oneOf": [
+              {
+                "const": "session",
+                "description": "Registered with `mechanic add` on this server; ends when it exits.",
+                "type": "string"
+              },
+              {
+                "const": "project_config",
+                "description": "Persisted in the project's `.planning/slugaudit/config.json`.",
+                "type": "string"
+              },
+              {
+                "const": "builtin",
+                "description": "Shipped with SlugAudit; can never be removed or overridden.",
+                "type": "string"
+              }
+            ]
           },
           "PageLimit": {
             "description": "What stopped a page. Reports the cap that acted; never a judgment about\nwhether the page was the right size.",
@@ -813,7 +845,7 @@
             "type": "boolean"
           },
           "files_covered": {
-            "description": "Distinct files represented in rows `0..offset + returned` of the\nscope. Cumulative for a sweep at one revision: rows are read in a\nfixed order — within a single mechanic, by path then line; for a\ncompact call with no mechanic, by mechanic declaration order then\npath then line — so a file's rows for one mechanic are contiguous,\nbut a file with rows under several mechanics appears in several\ngroups and can span several compact pages. It is still counted once.\n`files_total - files_covered` is what is left.",
+            "description": "Distinct files represented in rows `0..offset + returned` of the\nscope. Cumulative for a sweep at one revision: rows are read in a\nfixed order — within a single mechanic, by path then line; for a\ncompact call with no mechanic, by the `mechanic_counts` order then\npath then line — so a file's rows for one mechanic are contiguous,\nbut a file with rows under several mechanics appears in several\ngroups and can span several compact pages. It is still counted once.\n`files_total - files_covered` is what is left.",
             "format": "int64",
             "type": "integer"
           },
@@ -832,11 +864,17 @@
             "description": "What stopped the page: the scope ended, the caller's `limit`, or the\nbyte budget."
           },
           "mechanic_counts": {
-            "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit`/`offset`, and carry no\nordering by importance — the order is the fixed declaration order.",
+            "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit`/`offset`, and carry no\nordering by importance: session entries first (oldest first), then\nproject_config entries (file order), then the built-ins in their fixed\ndeclaration order.",
             "items": {
               "$ref": "#/$defs/MechanicCount"
             },
             "type": "array"
+          },
+          "mechanics_invalid": {
+            "description": "Registered mechanics that failed to load (a bad persisted entry, an\nid collision, a query that no longer compiles) and are therefore not\nin `mechanic_counts`. `report`'s `mechanics.invalid` and `mechanic`\naction `list` name each one with its error.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
           },
           "next_offset": {
             "description": "Pass as `offset` on the next call while `complete` is false, with\n`expected_revision` set to this response's `revision_id`.",
@@ -902,6 +940,7 @@
         "required": [
           "revision_id",
           "mechanic_counts",
+          "mechanics_invalid",
           "files_not_parsed",
           "rows",
           "returned",
@@ -918,6 +957,567 @@
         "type": "object"
       },
       "title": "Mechanical leads"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Register, remove, or list your own mechanics. The built-in `leads` mechanics are counting primitives, not a checklist: what counts as a signal in this codebase is your decision, and this is where you record it. `action: add` takes `id` (a-z, 0-9, _; never a built-in's or an existing entry's id), `language`, `query` (a Tree-sitter S-expression with exactly one capture; each distinct captured node is one row) and `note` (what it counts, in your words); a query that does not compile is refused with the compiler's message. It returns `first_count`: the `leads` response for that id (counts with `covers`, the first page of rows, `total`, `files_total`, `files_covered`, `files_not_parsed`). Session entries live until this server exits; `persist: true` writes the entry to `.planning/slugaudit/config.json` (other keys kept) so later sessions read it. `leads` and `report` list every entry with `source` (`session`, `project_config`, `builtin`) and its note, session first. `action: remove` deletes a session or persisted entry; built-ins can never be removed or overridden. `action: list` returns every mechanic plus `invalid`: persisted entries that failed to load, each with its error.",
+      "inputSchema": {
+        "$defs": {
+          "MechanicAction": {
+            "description": "What a `mechanic` call does.",
+            "oneOf": [
+              {
+                "const": "add",
+                "description": "Register `{id, language, query, note}` and return its first count.",
+                "type": "string"
+              },
+              {
+                "const": "remove",
+                "description": "Remove the session or persisted entry `id`.",
+                "type": "string"
+              },
+              {
+                "const": "list",
+                "description": "List every mechanic and every entry that failed to load.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "action": {
+            "$ref": "#/$defs/MechanicAction",
+            "description": "`add`, `remove`, or `list`."
+          },
+          "id": {
+            "default": null,
+            "description": "`add`/`remove`: the entry id, 1-64 characters of `a-z`, `0-9`, `_`.\nIt can never be a built-in's id or one already registered.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "language": {
+            "default": null,
+            "description": "`add`: the grammar the query compiles against and the indexed files\nit reads (e.g. `python`, `rust`). Prose is refused.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": null,
+            "description": "`add`: maximum rows in the first page, as `leads`' `limit`.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "note": {
+            "default": null,
+            "description": "`add`: what this entry counts, in your words (1-1024 bytes). It is\nlisted beside the entry in `leads`, `report` and `list`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "page_bytes": {
+            "default": null,
+            "description": "`add`: first page size in serialized JSON bytes, as `leads`'\n`page_bytes`.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "path": {
+            "description": "Any path inside the active project.",
+            "type": "string"
+          },
+          "persist": {
+            "default": false,
+            "description": "`add`: `true` writes the entry to the project's\n`.planning/slugaudit/config.json` (every other key kept) so later\nsessions see it; `false` (default) keeps it in this server's memory\nuntil the server exits.",
+            "type": "boolean"
+          },
+          "query": {
+            "default": null,
+            "description": "`add`: a Tree-sitter S-expression with exactly one capture, e.g.\n`(call function: (identifier) @callee (#eq? @callee \"eval\"))`. Each\ndistinct captured node is one row. At most `max_structure_query_bytes`\nbytes (16384 by default). A query that does not compile is refused\nwith the compiler's message.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "mechanic",
+      "outputSchema": {
+        "$defs": {
+          "CompactLeadRow": {
+            "description": "One row of a compact page: which mechanic observed what, at a path and\nline. No text is carried — read the file, or ask for `mode: full` — which\nis what makes a whole-surface sweep affordable.",
+            "properties": {
+              "file": {
+                "description": "Project-relative path of the file the observation is in.",
+                "type": "string"
+              },
+              "line": {
+                "description": "One-based start line, or `0` when the evidence carries no span.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "mechanic": {
+                "description": "The mechanic this row belongs to — an id from `mechanic_counts`, and\nthe id to pass as `mechanic` for that mechanic's `detail` text.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "mechanic",
+              "file",
+              "line"
+            ],
+            "type": "object"
+          },
+          "FileCount": {
+            "description": "One file's share of a page, in first-appearance order.",
+            "properties": {
+              "count": {
+                "description": "Rows of this mechanic in *this page* that belong to this file — not\nthe file's total, which is what `files_total` / `files_covered`\ntrack across pages.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "file": {
+                "description": "Project-relative path.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "file",
+              "count"
+            ],
+            "type": "object"
+          },
+          "InvalidMechanic": {
+            "description": "A registered entry that could not be loaded, with the reason. It is not\ncounted by `leads` until it is fixed or removed, and it is never dropped\nfrom this list.",
+            "properties": {
+              "error": {
+                "description": "Why it was not loaded: a bad JSON shape, an unknown `version`, a\ncompile error, a broken field rule, or an id collision.",
+                "type": "string"
+              },
+              "id": {
+                "description": "The entry's id, when it has one.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "index": {
+                "description": "Position in `mechanics.entries` (or in the session list); `null` when\nthe whole section or file failed.",
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "source": {
+                "$ref": "#/$defs/MechanicSource",
+                "description": "`project_config` for a persisted entry (or the whole section);\n`session` for a session entry whose grammar no longer loads."
+              }
+            },
+            "required": [
+              "source",
+              "error"
+            ],
+            "type": "object"
+          },
+          "LeadRow": {
+            "description": "One lead observation: file, line (0 when the evidence carries no span),\nand the mechanic's own clipped detail text.",
+            "properties": {
+              "detail": {
+                "description": "The mechanic's own text: callee text, diagnostic message, or comment\ntext. Empty for path-shaped mechanics. Clipped to `MAX_DETAIL_CHARS`\ncharacters when longer — check `detail_clipped`.",
+                "type": "string"
+              },
+              "detail_clipped": {
+                "description": "True when `detail` was clipped to `MAX_DETAIL_CHARS`; the text is then\na prefix of the stored evidence and the remainder exists only in the\nfile itself. False means the whole stored text is present.",
+                "type": "boolean"
+              },
+              "file": {
+                "description": "Project-relative path of the file the observation is in.",
+                "type": "string"
+              },
+              "line": {
+                "description": "One-based start line, or `0` when the evidence carries no span.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "file",
+              "line",
+              "detail",
+              "detail_clipped"
+            ],
+            "type": "object"
+          },
+          "LeadRows": {
+            "anyOf": [
+              {
+                "description": "Each row is a [`LeadRow`] carrying the mechanic's clipped `detail`\ntext.",
+                "items": {
+                  "$ref": "#/$defs/LeadRow"
+                },
+                "type": "array"
+              },
+              {
+                "description": "Each row is a [`CompactLeadRow`] carrying no per-row text.",
+                "items": {
+                  "$ref": "#/$defs/CompactLeadRow"
+                },
+                "type": "array"
+              }
+            ],
+            "description": "The rows of a page, shaped by the request's `mode`; one response carries\none variant, never a mix. `full` (the default) is [`LeadRow`] with its\n`detail` text; `compact` is [`CompactLeadRow`] with no per-row text. All\nthe envelope's completeness fields mean the same thing either way."
+          },
+          "LeadsResponse": {
+            "description": "One leads call: complete counts, the page's rows, and the paging/budget\ntruth that makes them quotable as-is.",
+            "properties": {
+              "complete": {
+                "description": "True when this page reaches the end of the scope\n(`offset + returned >= total`), and when a `full` call requested no\nmechanic. False means rows remain and `next_offset` is present.",
+                "type": "boolean"
+              },
+              "files_covered": {
+                "description": "Distinct files represented in rows `0..offset + returned` of the\nscope. Cumulative for a sweep at one revision: rows are read in a\nfixed order — within a single mechanic, by path then line; for a\ncompact call with no mechanic, by the `mechanic_counts` order then\npath then line — so a file's rows for one mechanic are contiguous,\nbut a file with rows under several mechanics appears in several\ngroups and can span several compact pages. It is still counted once.\n`files_total - files_covered` is what is left.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "files_not_parsed": {
+                "description": "Indexed files under the request's `pattern` with a detected language\nwhose grammar did not run or did not finish, so the mechanics that\nread evidence saw them partly or not at all: content over\n`max_parse_bytes` (`oversize_for_parse`), a parse cut at the sync\ndeadline (`parse_timeout`), a grammar that failed to load, a detected\nlanguage the pack has no grammar for, or a failed parse. Every count\nin `mechanic_counts` is a floor while this is above 0. Not counted:\nprose, and files with no detected language (`.gitignore`, `LICENSE`):\nno mechanic reads either. `report`'s parser failures list all of\nthese files with reasons.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "files_total": {
+                "description": "Distinct files holding at least one observation of any mechanic in\nscope — the denominator a sweep can exhaust. `0` when a `full` call\nrequested no mechanic. For a single mechanic it equals that\n`mechanic_counts` entry's `files`.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "limited_by": {
+                "$ref": "#/$defs/PageLimit",
+                "description": "What stopped the page: the scope ended, the caller's `limit`, or the\nbyte budget."
+              },
+              "mechanic_counts": {
+                "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit`/`offset`, and carry no\nordering by importance: session entries first (oldest first), then\nproject_config entries (file order), then the built-ins in their fixed\ndeclaration order.",
+                "items": {
+                  "$ref": "#/$defs/MechanicCount"
+                },
+                "type": "array"
+              },
+              "mechanics_invalid": {
+                "description": "Registered mechanics that failed to load (a bad persisted entry, an\nid collision, a query that no longer compiles) and are therefore not\nin `mechanic_counts`. `report`'s `mechanics.invalid` and `mechanic`\naction `list` name each one with its error.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "next_offset": {
+                "description": "Pass as `offset` on the next call while `complete` is false, with\n`expected_revision` set to this response's `revision_id`.",
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "oversized_row": {
+                "description": "True when `rows_bytes` exceeds `row_budget_bytes` because the first\nrow alone is larger than the page. It is returned whole so paging\nmakes progress and nothing is lost.",
+                "type": "boolean"
+              },
+              "page_bytes_clamped_from": {
+                "description": "Non-null when the requested (or configured default) page size exceeded\n`max_query_response_bytes` and was clamped: the size that was asked\nfor. `row_budget_bytes` is then the ceiling.",
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "page_file_counts": {
+                "description": "Rows grouped per file for this page only.",
+                "items": {
+                  "$ref": "#/$defs/FileCount"
+                },
+                "type": "array"
+              },
+              "returned": {
+                "description": "Rows in this page.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "revision_id": {
+                "description": "Revision the counts and rows were read from. Pass it as\n`expected_revision` on the next page to have a changed index refused\nrather than mis-paged.",
+                "type": "string"
+              },
+              "row_budget_bytes": {
+                "description": "Serialized-JSON byte budget applied to `rows` this call: the\nrequest's `page_bytes` or the server default\n(`SLUGAUDIT_DEFAULT_PAGE_BYTES`), clamped to the ceiling\n`max_query_response_bytes`, the same page size `query` spends. One row\nis always returned even if it alone exceeds it (see `oversized_row`).",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "rows": {
+                "$ref": "#/$defs/LeadRows",
+                "description": "The page's rows, shaped by the request's `mode`. Empty when a `full`\ncall supplied no `mechanic`; a `compact` call with no `mechanic`\nenumerates every mechanic instead, one triple per row."
+              },
+              "rows_bytes": {
+                "description": "Serialized-JSON bytes of the returned `rows`, measured per row\nexactly as `query` measures its values. The rest of this envelope\n(`mechanic_counts` — at most one entry per mechanic — and\n`page_file_counts`) is additional and small relative to the rows.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total": {
+                "description": "Total rows in the enumerated scope — the requested mechanic, or (in\n`compact` mode with no `mechanic`) every mechanic — under the same\n`pattern`; `0` when a `full` call requested no mechanic.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "revision_id",
+              "mechanic_counts",
+              "mechanics_invalid",
+              "files_not_parsed",
+              "rows",
+              "returned",
+              "total",
+              "complete",
+              "files_total",
+              "files_covered",
+              "page_file_counts",
+              "limited_by",
+              "row_budget_bytes",
+              "oversized_row",
+              "rows_bytes"
+            ],
+            "type": "object"
+          },
+          "MechanicAction": {
+            "description": "What a `mechanic` call does.",
+            "oneOf": [
+              {
+                "const": "add",
+                "description": "Register `{id, language, query, note}` and return its first count.",
+                "type": "string"
+              },
+              {
+                "const": "remove",
+                "description": "Remove the session or persisted entry `id`.",
+                "type": "string"
+              },
+              {
+                "const": "list",
+                "description": "List every mechanic and every entry that failed to load.",
+                "type": "string"
+              }
+            ]
+          },
+          "MechanicCount": {
+            "description": "One mechanic's complete counts under the request's pattern — complete\nregardless of paging, with no ordering by importance.",
+            "properties": {
+              "count": {
+                "description": "How many observations this mechanic has in the current revision\nunder the same `pattern`. Complete, never paged.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "covers": {
+                "description": "The languages this count was measured over: every language of the\nfiles under `pattern` this mechanic read, sorted. Call-site mechanics\nread the files whose grammar ran in a language with call extraction\n(rust, python, javascript, typescript, tsx, go, java, c); diagnostics\nand comment markers read every file whose grammar ran; path mechanics\nread every file; a registered mechanic reads the parsed files of its\none language. A language of this project missing here was not\nchecked by this mechanic, so its zero there means unchecked, not absent.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "files": {
+                "description": "Distinct files containing at least one observation. This is the\ndenominator to enumerate: a 50,000-row mechanic is usually far fewer\nfiles, and a file is the unit a sweep can finish.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "mechanic": {
+                "description": "Stable id — pass it back as `mechanic` to get this mechanic's rows.",
+                "type": "string"
+              },
+              "note": {
+                "description": "The author's note for a registered mechanic; `null` for a built-in.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "$ref": "#/$defs/MechanicSource",
+                "description": "Where the mechanic comes from: `session` (registered with `mechanic\nadd` on this server), `project_config` (persisted in the project's\n`config.json`), or `builtin`."
+              }
+            },
+            "required": [
+              "mechanic",
+              "source",
+              "count",
+              "files",
+              "covers"
+            ],
+            "type": "object"
+          },
+          "MechanicListing": {
+            "description": "One mechanic in the catalogue.",
+            "properties": {
+              "id": {
+                "description": "The id `leads` takes as `mechanic`.",
+                "type": "string"
+              },
+              "language": {
+                "description": "The grammar a registered entry runs on; `null` for a built-in.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "note": {
+                "description": "The author's note; `null` for a built-in.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "query": {
+                "description": "A registered entry's Tree-sitter query; `null` for a built-in.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "$ref": "#/$defs/MechanicSource",
+                "description": "Where the entry comes from."
+              }
+            },
+            "required": [
+              "id",
+              "source"
+            ],
+            "type": "object"
+          },
+          "MechanicSource": {
+            "description": "Where a mechanic comes from. Listings are ordered session, then\nproject_config, then builtin.",
+            "oneOf": [
+              {
+                "const": "session",
+                "description": "Registered with `mechanic add` on this server; ends when it exits.",
+                "type": "string"
+              },
+              {
+                "const": "project_config",
+                "description": "Persisted in the project's `.planning/slugaudit/config.json`.",
+                "type": "string"
+              },
+              {
+                "const": "builtin",
+                "description": "Shipped with SlugAudit; can never be removed or overridden.",
+                "type": "string"
+              }
+            ]
+          },
+          "PageLimit": {
+            "description": "What stopped a page. Reports the cap that acted; never a judgment about\nwhether the page was the right size.",
+            "oneOf": [
+              {
+                "const": "none",
+                "description": "The mechanic was exhausted: `complete` is true.",
+                "type": "string"
+              },
+              {
+                "const": "limit",
+                "description": "The caller's `limit` was reached; more rows exist.",
+                "type": "string"
+              },
+              {
+                "const": "bytes",
+                "description": "The response byte budget was reached; more rows exist. A\nbyte-limited page is by construction at or below any `limit` that\nwas set, so raising `limit` returns nothing more: raise `page_bytes`\nto enlarge the page (up to the server ceiling), or page on.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "action": {
+            "$ref": "#/$defs/MechanicAction",
+            "description": "The action that ran."
+          },
+          "first_count": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/LeadsResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`add` only: the response `leads` returns for `mechanic` = `id` at the\ncurrent revision — complete counts (`mechanic_counts`, where the new\nentry carries `count`, `files` and `covers`), the first page of\n`rows`, `total`, `files_total`, `files_covered` and\n`files_not_parsed`. Page on with `leads`."
+          },
+          "id": {
+            "description": "`add`/`remove`: the id the action applied to.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "invalid": {
+            "description": "Registered entries that failed to load, with the reason.",
+            "items": {
+              "$ref": "#/$defs/InvalidMechanic"
+            },
+            "type": "array"
+          },
+          "mechanics": {
+            "description": "Every mechanic after the call: session entries (oldest first), then\nproject_config entries (file order), then the built-ins.",
+            "items": {
+              "$ref": "#/$defs/MechanicListing"
+            },
+            "type": "array"
+          },
+          "mechanics_invalid": {
+            "description": "`invalid.len()`.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/MechanicSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`add`/`remove`: where that entry lives (or lived)."
+          }
+        },
+        "required": [
+          "action",
+          "mechanics",
+          "invalid",
+          "mechanics_invalid"
+        ],
+        "type": "object"
+      },
+      "title": "Register auditor mechanics"
     },
     {
       "annotations": {
@@ -1564,6 +2164,40 @@
             ],
             "type": "object"
           },
+          "InvalidMechanic": {
+            "description": "A registered entry that could not be loaded, with the reason. It is not\ncounted by `leads` until it is fixed or removed, and it is never dropped\nfrom this list.",
+            "properties": {
+              "error": {
+                "description": "Why it was not loaded: a bad JSON shape, an unknown `version`, a\ncompile error, a broken field rule, or an id collision.",
+                "type": "string"
+              },
+              "id": {
+                "description": "The entry's id, when it has one.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "index": {
+                "description": "Position in `mechanics.entries` (or in the session list); `null` when\nthe whole section or file failed.",
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "source": {
+                "$ref": "#/$defs/MechanicSource",
+                "description": "`project_config` for a persisted entry (or the whole section);\n`session` for a session entry whose grammar no longer loads."
+              }
+            },
+            "required": [
+              "source",
+              "error"
+            ],
+            "type": "object"
+          },
           "LanguageCount": {
             "description": "How many discovered files the last revision attributed to one detected\nlanguage.",
             "properties": {
@@ -1580,6 +2214,65 @@
               "file_count"
             ],
             "type": "object"
+          },
+          "MechanicListing": {
+            "description": "One mechanic in the catalogue.",
+            "properties": {
+              "id": {
+                "description": "The id `leads` takes as `mechanic`.",
+                "type": "string"
+              },
+              "language": {
+                "description": "The grammar a registered entry runs on; `null` for a built-in.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "note": {
+                "description": "The author's note; `null` for a built-in.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "query": {
+                "description": "A registered entry's Tree-sitter query; `null` for a built-in.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "$ref": "#/$defs/MechanicSource",
+                "description": "Where the entry comes from."
+              }
+            },
+            "required": [
+              "id",
+              "source"
+            ],
+            "type": "object"
+          },
+          "MechanicSource": {
+            "description": "Where a mechanic comes from. Listings are ordered session, then\nproject_config, then builtin.",
+            "oneOf": [
+              {
+                "const": "session",
+                "description": "Registered with `mechanic add` on this server; ends when it exits.",
+                "type": "string"
+              },
+              {
+                "const": "project_config",
+                "description": "Persisted in the project's `.planning/slugaudit/config.json`.",
+                "type": "string"
+              },
+              {
+                "const": "builtin",
+                "description": "Shipped with SlugAudit; can never be removed or overridden.",
+                "type": "string"
+              }
+            ]
           },
           "ParserFailureFile": {
             "description": "A file whose parse failed or was not attempted, with enough detail for\nan AI to decide whether the failure is worth investigating or just\nnoise (e.g. a `.claude_output.txt` scratch file that should have been\nexcluded, vs. a real source file with a genuine syntax error).",
@@ -1611,6 +2304,37 @@
               "parse_outcome",
               "extraction_completeness",
               "parser_availability"
+            ],
+            "type": "object"
+          },
+          "ReportMechanics": {
+            "description": "The mechanics section of a report.",
+            "properties": {
+              "entries": {
+                "description": "Every loaded mechanic: session, then project_config, then builtin.",
+                "items": {
+                  "$ref": "#/$defs/MechanicListing"
+                },
+                "type": "array"
+              },
+              "invalid": {
+                "description": "Registered entries that failed to load, each with its error. Never\ndropped: a persisted entry with a bad shape, an unknown section\n`version`, a compile error or an id collision stays listed here.",
+                "items": {
+                  "$ref": "#/$defs/InvalidMechanic"
+                },
+                "type": "array"
+              },
+              "note": {
+                "description": "Present on the first `report` of this server only; `null` after.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "entries",
+              "invalid"
             ],
             "type": "object"
           },
@@ -1680,6 +2404,16 @@
             },
             "type": "array"
           },
+          "mechanics": {
+            "$ref": "#/$defs/ReportMechanics",
+            "description": "Every mechanic `leads` counts — session entries, then project_config\nentries, then the built-ins — with its source and the author's note,\nplus the registered entries that failed to load. On the first\n`report` of this server only, `note` also explains how mechanics\nwork."
+          },
+          "mechanics_invalid": {
+            "description": "`mechanics.invalid.len()`: registered entries that failed to load and\nare not counted by `leads` until fixed or removed.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
           "open_finding_count": {
             "description": "Rows in `findings` with `status = 'current'`: findings whose file\ncontent hash still matches the hash they were written against.\nFindings invalidated by a later content change are `stale` and are not\ncounted.",
             "format": "int64",
@@ -1726,7 +2460,9 @@
           "dependency_edges",
           "diagnostic_count",
           "unsupported_language_unresolved_count",
-          "credential_pattern_file_count"
+          "credential_pattern_file_count",
+          "mechanics",
+          "mechanics_invalid"
         ],
         "type": "object"
       },

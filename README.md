@@ -116,6 +116,7 @@ The server exposes 8 MCP tools, registered in `src/server.rs`:
 | :--- | :--- |
 | `report` | Project snapshot: file and language counts, parser failures, evidence-kind counts, open findings, inbound/outbound dependency-edge totals. |
 | `leads` | Unranked mechanical facts: call sites by callee (`unwrap`, `expect`, `panic`, `todo`, `unimplemented`, `assert`), diagnostics, `TODO`/`FIXME`/`HACK` markers, credential-shaped files. Counts by default; paged file/line rows for one `mechanic` on request. Callee-based mechanics read Rust, Python, JavaScript, TypeScript, TSX, Go, Java and C calls; each count's `covers` lists the languages it read. |
+| `mechanic` | Registers (`add`), removes or lists the auditor's own mechanics: a Tree-sitter query with one capture over one language, counted by `leads` beside the built-ins. Session entries end with the server; `persist: true` writes them to `.planning/slugaudit/config.json`. Built-ins can never be removed or overridden. |
 | `query` | Read-only SQL over the index (`files`, `evidence`, `dependency_edges`), including full file text via `files.content`. |
 | `structure` | Tree-sitter AST queries in one file or across a language, returning matched nodes with line spans and snippets. |
 | `finding` | Persists a conclusion the agent has reviewed, bound to the file's current content hash — it goes stale when that file changes. The judgment is the agent's; SlugAudit never generates it. |

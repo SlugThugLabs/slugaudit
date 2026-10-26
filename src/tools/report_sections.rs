@@ -8,7 +8,8 @@
 
 use super::report::{
     DependencyEdgeTotals, EvidenceKindCount, ImportResolutionCount, LanguageCount,
-    ParserFailureFile, ReportResponse, build_dependency_edges as build_edge_totals,
+    ParserFailureFile, ReportMechanics, ReportResponse,
+    build_dependency_edges as build_edge_totals,
 };
 use super::report_completeness::{CompletenessEnvelope, build as build_completeness};
 use super::{CREDENTIAL_PATH_PREDICATE, PARSER_FAILURE_PREDICATE};
@@ -75,6 +76,10 @@ pub(super) fn build_report(
         diagnostic_count: graph.diagnostic_count,
         unsupported_language_unresolved_count: graph.unsupported_language_unresolved_count,
         credential_pattern_file_count: graph.credential_pattern_file_count,
+        // Filled by `report::report`, which owns the server's session state
+        // and the project config; this function reads the index only.
+        mechanics: ReportMechanics::default(),
+        mechanics_invalid: 0,
     })
 }
 

@@ -7,6 +7,7 @@
 //! shape to look for, which SQL expressions name it, which string to return,
 //! and what it was measured over, never whether the shape matters.
 
+use super::mechanic_catalog::Catalog;
 use crate::error_codes::{self, ErrorCode};
 use rmcp::ErrorData;
 
@@ -158,7 +159,41 @@ pub(super) const MECHANICS: &[Mechanic] = &[
     },
 ];
 
-/// Resolves the requested mechanic id, or reports every valid id.
+/// The mechanic a request names: a built-in, or a registered entry by its
+/// position in the catalogue's `custom` list.
+#[derive(Clone, Copy)]
+pub(super) enum Selected {
+    Builtin(&'static Mechanic),
+    Registered(usize),
+}
+
+/// Resolves the requested mechanic id against the registered entries, then
+/// the built-ins (their ids never collide). An unknown id's error lists the
+/// built-in ids and, when there are any, the registered ones.
+pub(super) fn resolve_selected(
+    requested: Option<&str>,
+    catalog: &Catalog,
+) -> Result<Option<Selected>, ErrorData> {
+    if let Some(index) = requested.and_then(|id| catalog.position(id)) {
+        return Ok(Some(Selected::Registered(index)));
+    }
+    resolve_mechanic(requested)
+        .map(|found| found.map(Selected::Builtin))
+        .map_err(|mut error| {
+            if !catalog.custom.is_empty() {
+                let registered = catalog
+                    .custom
+                    .iter()
+                    .map(|registered| registered.entry.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                error.message = format!("{}; registered ids: {registered}", error.message).into();
+            }
+            error
+        })
+}
+
+/// Resolves the requested built-in mechanic id, or reports every valid id.
 pub(super) fn resolve_mechanic(
     requested: Option<&str>,
 ) -> Result<Option<&'static Mechanic>, ErrorData> {

@@ -81,6 +81,11 @@ pub struct ProjectConfig {
     /// `page_bytes` still overrides it, and the ceiling still clamps it.
     #[serde(default)]
     pub default_page_bytes: Option<usize>,
+    /// The versioned section of auditor-persisted mechanics. Kept raw here
+    /// so a malformed section never invalidates the limits above; it is read
+    /// and reported entry by entry by `mechanics_config::load_persisted`.
+    #[serde(default)]
+    pub mechanics: Option<serde_json::Value>,
 }
 
 impl ProjectConfig {

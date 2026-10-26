@@ -407,3 +407,39 @@ Newest first. Format: **what** / **why** / **where** / **reversible?**
 - **Why:** unchanged files in an existing database are not re-analysed, so they would keep no Call rows while `covers` lists their language — a "checked, zero" claim for code that was never read. The bump forces the disposable database to rebuild.
 - **Where:** `src/store/migrations.rs`; stated version in `.planning/ARCHITECTURE.md` and `docs/TROUBLESHOOTING.md`.
 - **Reversible:** yes.
+
+## B2: session mechanics live on the per-server `SourceSyncManager`
+- **What:** `project::SessionMechanics` (the session entries plus the one-time report-note flag) is a field of `SourceSyncManager`, shared by its clones, created empty per manager; no static.
+- **Why:** the manager is the per-server state every tool handler already receives, so `leads` and `report` keep their public signatures; threading a new argument would have meant editing call sites in test files outside B2 (`redaction_tests.rs`, `finding_session_tests.rs`). One manager per server instance means a new server starts with no session entries and a fresh note.
+- **Where:** `src/sync/manager.rs`, `src/project/session_mechanics.rs`.
+- **Reversible:** yes.
+
+## B2: caps on registered mechanics
+- **What:** at most 64 session entries per server and 64 persisted entries per project (entries past 64 in `config.json` are reported invalid); id `[a-z0-9_]{1,64}`; note 1-1024 bytes, not blank; language 1-64 bytes; query at most `max_structure_query_bytes` (16 KiB default), the `structure` rule; every free-form field refused above 64 KiB before any rule runs; a persist whose resulting `config.json` would exceed the 1 MiB read cap is refused (it would otherwise be unreadable on the next call).
+- **Why:** the brief asks for bounded sizes and counts; 64 each keeps the per-call scan (every registered entry is counted on every `leads` call) bounded, and 64 x 16 KiB queries already approaches the read cap.
+- **Where:** `src/tools/mechanic_catalog.rs`, `src/tools/mechanic.rs`, `src/project/mechanics_config.rs`, `src/project/session_mechanics.rs`.
+- **Reversible:** yes.
+
+## B2: registered mechanics count by a read-time Tree-sitter scan, fail closed on the budget
+- **What:** a registered entry is not stored as evidence; each `leads` call (and `mechanic add`) parses the stored content of the files of its language that the built-in evidence mechanics read (indexed, grammar ran: `leads_covers::PARSED_FILES`), one file at a time in path order, once per language for all entries of that language, and counts each distinct captured node (de-duplicated by node id per file). Rows are cut by the same streaming rules as `fill_page`. One `max_structure_execution_time` deadline covers the scan per call; a spent deadline fails the call with `invalid_params` naming the knob instead of returning a partial count. `covers` is `[language]` when a parsed file of it is under the pattern, else `[]`; unparsed files are already in `files_not_parsed`.
+- **Why:** session entries cannot be written into the shared index (another session would see them) and the read-only connection cannot hold temp tables; counts must stay complete regardless of paging. Cost to know: every `leads` call re-parses the registered languages' files, so a large repo with many entries can hit the budget; the error tells the caller to narrow `pattern`, remove an entry or raise the budget. The parse-with-deadline helper is a copy of `structure_exec::parse_within` (private there, file not owned by B2).
+- **Where:** `src/tools/mechanic_scan.rs`, `src/tools/leads_custom.rs`, `src/tools/leads_page.rs`.
+- **Reversible:** yes.
+
+## B2: `mechanic add` counts the candidate before registering it
+- **What:** `add` validates and compiles the entry, refuses collisions, counts it through `leads` with the candidate inserted where it will be listed, then registers it (session push or `config.json` write) re-checking collisions and caps under the session lock. The response's `first_count` is the full `LeadsResponse` for `mechanic` = id (the shared count/paging shape); `mechanics` is the whole catalogue after the call.
+- **Why:** a count that fails (sync error, budget) must not leave an entry registered behind an error response; the lock re-check makes a racing `add` of the same id lose cleanly. Another process editing `config.json` between the check and the write is not guarded (same accepted race as A3's `write_raw`).
+- **Where:** `src/tools/mechanic_register.rs`.
+- **Reversible:** yes.
+
+## B2: `ProjectConfig` accepts a raw `mechanics` key; a broken section never costs the limits
+- **What:** `ProjectConfig` (which has `deny_unknown_fields`) gains `mechanics: Option<serde_json::Value>`; the section is parsed separately, entry by entry. A missing or future `version`, an unknown key in the section, or an unreadable/malformed `config.json` becomes one invalid record with `index: null`; `persist`/`remove` refuse to rewrite such a file or section, so nothing a newer server wrote is lost.
+- **Why:** without the key, persisting one mechanic would have made the whole config a parse error and silently dropped the project's profile and limits.
+- **Where:** `src/project/config.rs`, `src/project/mechanics_config.rs`.
+- **Reversible:** yes.
+
+## B2: `mechanics_invalid` on `leads` and `mechanic` too; session entries can be invalid
+- **What:** besides `report.mechanics_invalid`, every `leads` response and every `mechanic` response carry `mechanics_invalid` (and `mechanic` the `invalid` list). A session entry whose grammar no longer loads is reported invalid with `source: session` instead of failing every call. In a compact whole-surface page, registered entries' rows come first (catalogue order), then the built-ins'.
+- **Why:** an invalid persisted entry is absent from `mechanic_counts`; without the count on `leads` that absence would be silent there. The compact order follows the listing order the brief fixes.
+- **Where:** `src/tools/leads.rs`, `src/tools/leads_custom.rs`, `src/tools/mechanic.rs`, `src/tools/mechanic_catalog.rs`.
+- **Reversible:** yes.

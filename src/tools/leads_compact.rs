@@ -165,3 +165,75 @@ pub(super) fn files_total(
     )
     .map_err(|error| super::context::internal_error("counting compact files", error))
 }
+
+/// Distinct paths of the scope's rows — every row, or only the first
+/// `through` in `rows_sql` order — so a page that also holds registered
+/// mechanics' rows can union its file denominators with theirs.
+pub(super) fn distinct_paths(
+    tx: &Transaction<'_>,
+    scope: &[&Mechanic],
+    pattern: Option<&str>,
+    through: Option<usize>,
+) -> Result<Vec<String>, ErrorData> {
+    let glob = compile_pattern(pattern);
+    let mut binds = pattern_binds(glob.as_deref(), scope.len());
+    let sql = match through {
+        Some(through) => {
+            binds.push(Value::Integer(int_bind(Some(through))?));
+            format!(
+                "SELECT DISTINCT path FROM (SELECT ord, path, line FROM ({}) \
+                 ORDER BY ord, path, line LIMIT ?)",
+                branches(scope, glob.is_some())
+            )
+        }
+        None => format!(
+            "SELECT DISTINCT path FROM ({})",
+            branches(scope, glob.is_some())
+        ),
+    };
+    let mut statement = tx
+        .prepare(&sql)
+        .map_err(|error| super::context::internal_error("preparing compact paths", error))?;
+    statement
+        .query_map(params_from_iter(binds), |row| row.get(0))
+        .map_err(|error| super::context::internal_error("reading compact paths", error))?
+        .collect::<rusqlite::Result<Vec<String>>>()
+        .map_err(|error| super::context::internal_error("reading compact paths", error))
+}
+
+/// Streams the scope's rows from `offset`, at most `fetch` of them, in
+/// `rows_sql` order, until `on_row` breaks — the built-in tail of a compact
+/// page that registered mechanics' rows began.
+pub(super) fn stream(
+    tx: &Transaction<'_>,
+    scope: &[&Mechanic],
+    pattern: Option<&str>,
+    offset: usize,
+    fetch: Option<usize>,
+    on_row: &mut dyn FnMut(CompactLeadRow) -> super::mechanic_scan::Flow,
+) -> Result<(), ErrorData> {
+    let glob = compile_pattern(pattern);
+    let mut binds = pattern_binds(glob.as_deref(), scope.len());
+    binds.push(Value::Integer(int_bind(fetch)?));
+    binds.push(Value::Integer(int_bind(Some(offset))?));
+    let mut statement = tx
+        .prepare(&rows_sql(scope, glob.is_some()))
+        .map_err(|error| super::context::internal_error("preparing compact leads rows", error))?;
+    let mapped = statement
+        .query_map(params_from_iter(binds), |row| {
+            Ok(CompactLeadRow {
+                mechanic: row.get(0)?,
+                file: row.get(1)?,
+                line: row.get(2)?,
+            })
+        })
+        .map_err(|error| super::context::internal_error("reading compact leads rows", error))?;
+    for row in mapped {
+        let row = row
+            .map_err(|error| super::context::internal_error("reading compact leads rows", error))?;
+        if on_row(row)?.is_break() {
+            break;
+        }
+    }
+    Ok(())
+}

@@ -13,7 +13,9 @@
 
 use super::PARSER_FAILURE_PREDICATE;
 use super::leads::{FileCount, LeadRow, MechanicCount, PageLimit};
+use super::leads_covers::LanguagesRead;
 use super::leads_mechanics::{MECHANICS, Mechanic};
+use super::mechanic::MechanicSource;
 use crate::util::serialized_len;
 use rmcp::ErrorData;
 use rusqlite::types::Value;
@@ -105,13 +107,14 @@ pub(super) fn int_bind(value: Option<usize>) -> Result<i64, ErrorData> {
     })
 }
 
-/// Counts for every mechanic, in `MECHANICS` order, under `pattern`.
+/// Counts for every built-in mechanic, in `MECHANICS` order, under
+/// `pattern`; `read` is the language sets under the same pattern.
 pub(super) fn count_all(
     tx: &Transaction<'_>,
     pattern: Option<&str>,
+    read: &LanguagesRead,
 ) -> Result<Vec<MechanicCount>, ErrorData> {
     let glob = compile_pattern(pattern);
-    let read = super::leads_covers::languages_read(tx, glob.as_deref())?;
     MECHANICS
         .iter()
         .map(|mechanic| {
@@ -126,6 +129,8 @@ pub(super) fn count_all(
             .map_err(|error| super::context::internal_error("counting leads", error))?;
             Ok(MechanicCount {
                 mechanic: mechanic.id.to_owned(),
+                source: MechanicSource::Builtin,
+                note: None,
                 count,
                 files,
                 covers: read.covers(mechanic.reads),
