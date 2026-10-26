@@ -77,7 +77,7 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     credential paths cover every indexed language. (2) Each row's `detail` is clipped to 200 characters, and \
     `detail_clipped` is true when characters were dropped; the remainder lives only in the file.\n\n\
     QUERY SCHEMA: `files` (id, path, language, byte_len, content — full text of every indexed file, including \
-    non-code files), `evidence` (id, file_id, kind, start_line, end_line, payload — JSON; kinds Structure, \
+    non-code files), `evidence` (id, file_id, kind, start_line, end_line [1-based, inclusive; every line number in this server is 1-based], payload — JSON; kinds Structure, \
     Import, Export, Comment, Docstring, Symbol, Diagnostic, Call), `dependency_edges` \
     (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled). One read-only \
     SQL statement per call, with no row cap, cut only by the page byte size: 64 KiB by default, `page_bytes` \

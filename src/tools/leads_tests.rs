@@ -622,3 +622,6 @@ fn leads_refuses_inputs_over_their_byte_caps() {
 
 #[path = "leads_page_tests.rs"]
 mod leads_page_tests;
+
+#[path = "leads_line_tests.rs"]
+mod leads_line_tests;

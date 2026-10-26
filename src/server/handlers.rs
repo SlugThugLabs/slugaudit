@@ -75,7 +75,7 @@ impl SlugAuditServer {
         annotations(read_only_hint = true, destructive_hint = false),
         description = "Query the indexed codebase with read-only SQL. Key tables: \
          files (id, path, language, byte_len, content — full text of every indexed file including non-code files), \
-         evidence (id, file_id, kind, start_line, end_line, payload — Symbol, Import, Comment, Structure), \
+         evidence (id, file_id, kind, start_line, end_line [1-based, inclusive], payload — Symbol, Import, Comment, Structure), \
          dependency_edges (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled). \
          To inspect code or file content directly from the DB without filesystem reads, query `files.content` (e.g. `SELECT content FROM files WHERE path = 'src/main.rs'`); `line_count(text)` and `line_range(text, start, end)` read a file by 1-based lines, and an oversized first row is clipped with a `substr` continuation in `clipped_cells`. \
          To link evidence to file paths, always JOIN: `SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND json_extract(e.payload, '$.name') = 'configure'`. \
@@ -98,7 +98,7 @@ impl SlugAuditServer {
         annotations(read_only_hint = true, destructive_hint = false),
         description = "Inspect and extract code AST structures from a file or across the project using Tree-sitter. \
          Specify `file` to search a single file, or omit `file` and specify `language` (with optional `pattern`) \
-         to search across matching project files. Returns matched AST nodes with `file`, `start_line`, `end_line`, \
+         to search across matching project files. Returns matched AST nodes with `file`, `start_line`, `end_line` (1-based, inclusive), \
          and `text` snippet. The `query` must name at least one capture with `@name`. \
          Examples: Rust `(function_item name: (identifier) @name body: (block) @body)`, \
          Python `(function_definition name: (identifier) @name body: (block) @body)`, \

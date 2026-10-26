@@ -91,14 +91,21 @@ pub(super) fn node_to_match(
         node_kind: node.kind().to_owned(),
         start_byte: node.start_byte() as u64,
         end_byte: node.end_byte() as u64,
-        start_line: saturating_u32(node.start_position().row),
+        start_line: one_based_row(node.start_position().row),
         start_column: lines.column(node.start_byte()),
-        end_line: saturating_u32(node.end_position().row),
+        end_line: one_based_row(node.end_position().row),
         end_column: lines.column(node.end_byte()),
         text,
         text_truncated,
         extraction_failed: text_extraction_failed || capture_name.is_none(),
     }
+}
+
+/// The single zero-based to one-based line conversion for structure matches
+/// (tree-sitter rows are zero-based; the response is one-based, inclusive).
+/// An overflowing row is clamped and logged by `saturating_u32`.
+fn one_based_row(zero_based: usize) -> u32 {
+    saturating_u32(zero_based.saturating_add(1))
 }
 
 /// The capture at `index`, or the internal error for an index the match does

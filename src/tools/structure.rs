@@ -80,8 +80,10 @@ pub struct StructureMatch {
     pub node_kind: String,
     pub start_byte: u64,
     pub end_byte: u64,
+    /// One-based, inclusive line where the match starts.
     pub start_line: u32,
     pub start_column: u32,
+    /// One-based, inclusive line where the match ends.
     pub end_line: u32,
     pub end_column: u32,
     pub text: String,

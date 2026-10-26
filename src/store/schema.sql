@@ -148,9 +148,9 @@ CREATE TABLE IF NOT EXISTS evidence (
     span_availability TEXT NOT NULL,
     start_byte INTEGER,
     end_byte INTEGER,
-    start_line INTEGER,
+    start_line INTEGER, -- 1-based, inclusive; NULL without a span
     start_column INTEGER,
-    end_line INTEGER,
+    end_line INTEGER, -- 1-based, inclusive; NULL without a span
     end_column INTEGER,
     payload TEXT NOT NULL,
     UNIQUE (file_id, key)

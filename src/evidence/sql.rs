@@ -38,19 +38,24 @@ pub fn to_row(item: &EvidenceItem) -> EvidenceRow {
     let mut span_availability = span_availability_text(&item.span);
     let (start_byte, end_byte, start_line, start_column, end_line, end_column) = match &item.span {
         SpanAvailability::Present(span) => {
-            match (i64::try_from(span.start_byte), i64::try_from(span.end_byte)) {
-                (Ok(start_byte), Ok(end_byte)) => (
+            match (
+                i64::try_from(span.start_byte),
+                i64::try_from(span.end_byte),
+                one_based_line(span.start.line),
+                one_based_line(span.end.line),
+            ) {
+                (Ok(start_byte), Ok(end_byte), Some(start_line), Some(end_line)) => (
                     Some(start_byte),
                     Some(end_byte),
-                    Some(i64::from(span.start.line)),
+                    Some(start_line),
                     Some(i64::from(span.start.column)),
-                    Some(i64::from(span.end.line)),
+                    Some(end_line),
                     Some(i64::from(span.end.column)),
                 ),
                 _ => {
                     tracing::warn!(
                         key = %item.key,
-                        "evidence span byte offset exceeds i64::MAX; stored as unavailable"
+                        "evidence span coordinate exceeds the storable range; stored as unavailable"
                     );
                     span_availability = "NormalizerUnavailable";
                     (None, None, None, None, None, None)
@@ -72,6 +77,13 @@ pub fn to_row(item: &EvidenceItem) -> EvidenceRow {
         end_column,
         payload: item.payload.to_string(),
     }
+}
+
+/// The single zero-based to one-based line conversion on the write path:
+/// `model::span` lines are zero-based, the `evidence` table stores them
+/// one-based and inclusive. `None` when the increment would overflow.
+fn one_based_line(zero_based: u32) -> Option<i64> {
+    i64::from(zero_based).checked_add(1)
 }
 
 fn kind_text(kind: &EvidenceKind) -> &'static str {

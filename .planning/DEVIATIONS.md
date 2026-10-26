@@ -284,3 +284,9 @@ Newest first. Format: **what** / **why** / **where** / **reversible?**
   `read_only_non_select_statements_are_refused_by_the_wrapper` was updated to the new text.
 - **Where:** `src/tools/query.rs` (`refuse_wrapped`, `describe_error`), `src/tools/query_exec.rs`.
 - **Reversible:** yes.
+
+## Evidence lines converted at the SQL write boundary, not in normalize.rs
+- **What:** The zero-based to one-based line conversion happens once in `evidence::sql::to_row` (`one_based_line`, checked add; overflow stores the span as unavailable) and once in `tools::structure_page` (`one_based_row`). `model::span` and `normalize.rs` stay zero-based.
+- **Why:** `to_row` is the single function that turns a span into the stored row, so every evidence kind is converted exactly once and no producer can bypass it.
+- **Where:** `src/evidence/sql.rs`, `src/tools/structure_page.rs`, `CURRENT_SCHEMA_VERSION` 8 to 9.
+- **Reversible:** Yes; revert the two helpers and the schema version.

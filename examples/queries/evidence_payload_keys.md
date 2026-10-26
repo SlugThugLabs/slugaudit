@@ -4,8 +4,11 @@
 (`src/model/evidence.rs::EvidenceKind`). This is the key/type reference for
 every kind, so the shape does not have to be rediscovered by trial.
 
-Two rules:
+Three rules:
 
+- **Line numbers are 1-based, inclusive.** `evidence.start_line` and
+  `evidence.end_line` match what `cat -n` shows; they are `NULL` when the
+  evidence has no span.
 - **Read keys with `json_extract`** (`json_extract(e.payload, '$.name')`),
   never with `LIKE` on the payload text.
 - **Every key listed for a kind is always present.** A value the extractor
