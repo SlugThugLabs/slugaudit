@@ -238,7 +238,7 @@ A release with no attestation is not a release this workflow produces; if
 
 ## Release checklist
 
-1. Bump `Cargo.toml`'s version (currently `1.0.10`) and update
+1. Bump `Cargo.toml`'s version (currently `1.1.0`) and update
    `CHANGELOG.md` / `lhm.plugin.json` as required by
    `check_version_consistency`.
 2. Confirm `src/parse/mod.rs`'s `PACK_VERSION` matches the exact

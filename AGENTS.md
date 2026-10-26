@@ -114,7 +114,7 @@ diagnostics, session findings.
 - SlugAudit **does not audit**: no risk detection, no severity, no conclusions,
   no recommendations. Every judgment belongs to the calling agent. Never
   describe SlugAudit as having identified, rated, or recommended anything.
-- Crate `slugaudit-mcp-rust`, version `1.0.10`, edition 2024, `publish = false`,
+- Crate `slugaudit-mcp-rust`, version `1.1.0`, edition 2024, `publish = false`,
   `license-file = LICENSE` (non-SPDX PolyForm Noncommercial 1.0.0 plus the
   tool-use additional permission). `Cargo.toml`.
 - Runtime data lives in `<project>/.planning/slugaudit/project.db` (+ sidecars):
