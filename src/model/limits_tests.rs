@@ -258,3 +258,12 @@ fn an_unparseable_max_parse_wall_clock_ms_keeps_the_default_and_says_so() {
         );
     });
 }
+
+#[test]
+fn the_max_structure_query_bytes_env_var_overrides_the_16_kib_default() {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    assert_eq!(ResourceLimits::default().max_structure_query_bytes, 16_384);
+    temp_env::with_var("SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES", Some("300"), || {
+        assert_eq!(ResourceLimits::from_env().max_structure_query_bytes, 300);
+    });
+}

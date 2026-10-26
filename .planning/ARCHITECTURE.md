@@ -489,6 +489,13 @@ file's stored size (`octet_length`) before loading it: a file over
 before this ceiling: a 50 MB Rust file took 185 s and 7.5 GB RSS to parse.
 `max_parse_wall_clock_ms` (above) bounds the time of a file under the ceiling.
 
+**Structure query text.** `Query::new` has no deadline hook, so `structure`
+bounds the query text instead: `max_structure_query_bytes` (default 16 KiB in
+every profile; env `SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES`, project
+`config.json` `max_structure_query_bytes`). A longer query is refused with
+`invalid_params`, stating its size and the limit but never the text, before
+the sync and before compilation.
+
 **Schema versioning is discard-and-rebuild.** `store/migrations.rs` writes
 `CURRENT_SCHEMA_VERSION` (currently `7`) to `PRAGMA user_version`. A database
 whose version is neither fresh (`0`) nor current resolves as
@@ -606,7 +613,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 83 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 84 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only

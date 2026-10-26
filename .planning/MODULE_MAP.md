@@ -171,7 +171,8 @@ src/
 │   ├── gitignore_tests.rs    guard write-failure and file-type refusal tests
 │   ├── activation_lock.rs    exclusive database lock held while disable removes it
 │   ├── database_path.rs      where this project's project.db lives
-│   └── config.rs             in-repo config (.planning/slugaudit/config.json)
+│   ├── config.rs             in-repo config (.planning/slugaudit/config.json)
+│   └── config_tests.rs       config load, write guard and limit-mapping tests
 │
 ├── store/                    SQLite connection boundary
 │   ├── mod.rs                open_read_write / open_read_only / discard_corrupt_database

@@ -170,3 +170,16 @@ fn every_profile_gives_one_file_5_seconds_of_parse_time_below_the_sync_budget() 
         );
     }
 }
+
+#[test]
+fn every_profile_caps_a_structure_query_at_16_kib() {
+    for profile in [
+        AuditProfile::Lean,
+        AuditProfile::Audit,
+        AuditProfile::Adaptive,
+    ] {
+        let limits = limits_for_profile(profile);
+
+        assert_eq!(limits.max_structure_query_bytes, 16 * 1024, "{profile:?}");
+    }
+}

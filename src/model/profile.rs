@@ -87,6 +87,12 @@ pub(crate) const DEFAULT_MAX_PARSE_BYTES: u64 = 2 * 1024 * 1024;
 /// the sync budget, so one pathological file costs seconds, not the sync.
 pub(crate) const DEFAULT_MAX_PARSE_WALL_CLOCK_MS: u64 = 5_000;
 
+/// Longest tree-sitter query text `structure` compiles, in every profile (see
+/// `ResourceLimits::max_structure_query_bytes`). Query compilation cost grows
+/// with the text and has no deadline of its own, so the text is bounded
+/// instead; 16 KiB is far above any query a model writes by hand.
+pub(crate) const DEFAULT_MAX_STRUCTURE_QUERY_BYTES: usize = 16 * 1024;
+
 /// Watch-scope walk caps. The walk enumerates the directories that carry a
 /// `notify` watch, so its size is bounded in both entries (one potential
 /// kernel watch descriptor and one entry in the scope's path set each) and
@@ -124,7 +130,7 @@ fn lean_limits() -> ResourceLimits {
         max_query_vm_steps: 5_000_000,
         max_query_wall_clock: Duration::from_secs(10),
         max_query_value_bytes: 32 * 1024 * 1024,
-        max_structure_query_bytes: 32_000,
+        max_structure_query_bytes: DEFAULT_MAX_STRUCTURE_QUERY_BYTES,
         max_structure_matches: 2_000,
         max_structure_execution_time: Duration::from_secs(10),
         max_sync_wall_clock: Duration::from_secs(120),
@@ -151,7 +157,7 @@ fn audit_limits() -> ResourceLimits {
         max_query_vm_steps: 50_000_000,
         max_query_wall_clock: Duration::from_secs(60),
         max_query_value_bytes: 256 * 1024 * 1024,
-        max_structure_query_bytes: 128_000,
+        max_structure_query_bytes: DEFAULT_MAX_STRUCTURE_QUERY_BYTES,
         max_structure_matches: 20_000,
         max_structure_execution_time: Duration::from_secs(60),
         max_sync_wall_clock: Duration::from_secs(1200),
@@ -184,7 +190,7 @@ fn adaptive_limits() -> ResourceLimits {
         max_query_vm_steps: 50_000_000,
         max_query_wall_clock: Duration::from_secs(60),
         max_query_value_bytes: max_file as usize,
-        max_structure_query_bytes: 128_000,
+        max_structure_query_bytes: DEFAULT_MAX_STRUCTURE_QUERY_BYTES,
         max_structure_matches: 20_000,
         max_structure_execution_time: Duration::from_secs(60),
         max_sync_wall_clock: Duration::from_secs(1200),

@@ -358,3 +358,9 @@ Newest first. Format: **what** / **why** / **where** / **reversible?**
 - **Where:** `src/evidence/normalize.rs`, test in `src/evidence/normalize_tests.rs`.
 - **Reversible:** Yes, but only once the pack resets after a cancelled parse (upstream fix) or exposes a way to clear its cache.
 
+## B0: `structure` query text is bounded instead of giving `Query::new` a deadline
+- **What:** The existing `max_structure_query_bytes` limit (its env var and its refusal before `Query::new` already existed) now defaults to 16 KiB in every profile (was 32,000 lean and 128,000 audit/adaptive), gains the `config.json` key, and its refusal message states the size and the limit: `structure query is N bytes; the limit is M (max_structure_query_bytes)` (was `structure query exceeds M bytes`). The `query` field's doc comment (the schema description) documents it. `src/project/config.rs` tests moved to `src/project/config_tests.rs` to keep the file under the 300-line gate (the stale size exception was dropped; the file is 142 code lines).
+- **Why:** tree-sitter's `Query::new` takes no progress callback in this version, so a deadline cannot be applied; bounding the input is the only available bound on compile cost. 16 KiB is far above a hand-written query.
+- **Where:** `src/model/profile.rs`, `src/model/limits.rs`, `src/project/config.rs`, `src/project/config_tests.rs`, `src/tools/structure.rs`, `src/tools/structure_limit_tests.rs`.
+- **Reversible:** Yes. Cost to know: a client that sent a 16-128 KB query now needs to raise the limit.
+

@@ -498,3 +498,85 @@ fn text_that_is_not_valid_utf8_keeps_its_cause_in_the_log() {
     assert!(logs.contains("not valid UTF-8"), "logs: {logs}");
     assert!(logs.contains("utf-8"), "source error kept: {logs}");
 }
+
+fn query_limit(bytes: usize) -> ResourceLimits {
+    ResourceLimits {
+        max_structure_query_bytes: bytes,
+        ..ResourceLimits::default()
+    }
+}
+
+#[test]
+fn a_query_one_byte_over_the_limit_is_refused_by_size_before_anything_else_runs() {
+    let request = Parameters(StructureRequest {
+        // Not a project: a size refusal happens before the sync, so the path
+        // is never opened.
+        path: "/no/such/project".to_owned(),
+        file: Some("lib.rs".to_owned()),
+        query: "x".repeat(33),
+        ..Default::default()
+    });
+
+    let error = structure_with_limits(
+        &request,
+        &query_limit(32),
+        MAX_MULTI_FILE_TOTAL_BYTES,
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .map(|Json(response)| response)
+    .expect_err("33 bytes is over a 32-byte limit");
+
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(
+        error.message,
+        "structure query is 33 bytes; the limit is 32 (max_structure_query_bytes)"
+    );
+}
+
+#[test]
+fn a_query_of_exactly_the_limit_is_not_refused_for_size() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let query = format!("(identifier) @name{}", " ".repeat(14));
+    assert_eq!(query.len(), 32);
+
+    let response = structure_with_limits(
+        &Parameters(StructureRequest {
+            path: project.path().to_string_lossy().into_owned(),
+            file: Some("lib.rs".to_owned()),
+            query,
+            ..Default::default()
+        }),
+        &query_limit(32),
+        MAX_MULTI_FILE_TOTAL_BYTES,
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .map(|Json(response)| response)
+    .expect("a query at the limit compiles and runs");
+
+    assert_eq!(response.matches.len(), 1);
+}
+
+#[test]
+fn a_project_config_query_limit_is_honoured_by_the_tool() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let config_dir = project.path().join(".planning").join("slugaudit");
+    std::fs::write(
+        config_dir.join("config.json"),
+        r#"{"max_structure_query_bytes": 20}"#,
+    )
+    .expect("write config");
+
+    let error = ask(
+        &project,
+        "lib.rs",
+        "(function_item name: (identifier) @name)",
+    )
+    .expect_err("the 40-byte query is over the configured 20");
+
+    assert_eq!(
+        error.message,
+        "structure query is 40 bytes; the limit is 20 (max_structure_query_bytes)"
+    );
+}

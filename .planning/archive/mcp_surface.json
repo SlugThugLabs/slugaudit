@@ -1815,7 +1815,7 @@
             ]
           },
           "query": {
-            "description": "A tree-sitter S-expression query, e.g. `(function_item name: (identifier) @name)`.\nFor patterns normalized evidence and `query` can't easily express.",
+            "description": "A tree-sitter S-expression query, e.g. `(function_item name: (identifier) @name)`.\nFor patterns normalized evidence and `query` can't easily express.\nAt most `max_structure_query_bytes` UTF-8 bytes (16384 by default;\n`SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES`, or `max_structure_query_bytes`\nin the project's `config.json`); a longer query is refused with\n`invalid_params` before it is compiled.",
             "type": "string"
           },
           "start_after_file": {

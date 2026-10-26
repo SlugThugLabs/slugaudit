@@ -124,7 +124,11 @@ pub struct ResourceLimits {
     /// Env: `SLUGAUDIT_MAX_QUERY_VALUE_BYTES` (usize).
     pub max_query_value_bytes: usize,
     /// Maximum tree-sitter query text length for `structure` (UTF-8 bytes).
-    /// Env: `SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES` (usize).
+    /// `Query::new` has no deadline of its own, so a longer query is refused
+    /// with `invalid_params` (stating its size and this limit, never its
+    /// text) before it is compiled. 16 KiB in every profile.
+    /// Env: `SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES` (usize); project
+    /// `config.json` key `max_structure_query_bytes`.
     pub max_structure_query_bytes: usize,
     /// Maximum capture matches returned by one `structure` call.
     /// Env: `SLUGAUDIT_MAX_STRUCTURE_MATCHES` (usize).
