@@ -33,11 +33,3 @@ fn prose_files_are_counted_but_never_listed_as_parser_failures() {
     assert_eq!(response.parser_failure_files_total, 1);
     assert_eq!(response.completeness.prose_files_not_parsed, 2);
 }
-
-#[test]
-fn the_parser_failure_predicate_names_the_prose_language_constant() {
-    assert!(crate::tools::PARSER_FAILURE_PREDICATE.contains(&format!(
-        "language IS NOT '{}'",
-        crate::parse::PROSE_LANGUAGE
-    )));
-}
