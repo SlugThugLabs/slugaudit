@@ -333,12 +333,29 @@ pub(super) fn describe_error(error: &rusqlite::Error, abort_reason: &Arc<AtomicU
             None,
         );
     }
-    let message = match abort_reason.load(Ordering::Relaxed) {
-        ABORT_STEP_BUDGET => format!("query exceeded its virtual-machine step budget: {error}"),
-        ABORT_WALL_CLOCK => format!("query exceeded its wall-clock time budget: {error}"),
-        _ => error.to_string(),
-    };
-    ErrorData::invalid_params(message, None)
+    match abort_reason.load(Ordering::Relaxed) {
+        ABORT_STEP_BUDGET => ErrorData::invalid_params(
+            format!("query exceeded its virtual-machine step budget: {error}"),
+            None,
+        ),
+        ABORT_WALL_CLOCK => ErrorData::invalid_params(
+            format!("query exceeded its wall-clock time budget: {error}"),
+            None,
+        ),
+        _ => ErrorData::invalid_params(error.to_string(), sqlite_error_payload(error)),
+    }
+}
+
+/// `sql_error` when SQLite itself failed to compile or run the statement;
+/// `None` for a failure raised on this side of the boundary (an oversized
+/// value, a type conversion), whose message already names its own fix.
+fn sqlite_error_payload(error: &rusqlite::Error) -> Option<serde_json::Value> {
+    match error {
+        rusqlite::Error::SqliteFailure(..) | rusqlite::Error::SqlInputError { .. } => {
+            error_codes::payload(ErrorCode::SqlError)
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -348,3 +365,7 @@ mod tests;
 #[cfg(test)]
 #[path = "query_safety_tests.rs"]
 mod safety_tests;
+
+#[cfg(test)]
+#[path = "query_error_tests.rs"]
+mod error_tests;

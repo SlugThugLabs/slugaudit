@@ -10,10 +10,13 @@ Start with the `health` tool. It is read-only, never triggers a sync, and
 answers even when every other call fails. Its arguments are:
 
 ```json
-{"path": "/absolute/path/inside/the/project"}
+{"path": "/absolute/path/inside/the/project", "verbose": true}
 ```
 
 Omit `path` for the watcher state of the project this server has registered.
+`verbose` (default `false`) adds the operator detail this runbook refers to
+under `detail`; without it the answer is only `phase`, `remedy`,
+`watcher.health` and `database.revision_id`/`file_count`.
 A path that is not an enabled project returns `phase: "disabled"` with a
 `remedy` instead of an error.
 
@@ -233,9 +236,11 @@ than as a lock-permission error.
 
 ## Health phases
 
-`health` returns `phase`, `remedy`, and three groups (`watcher`, `database`,
-`server`). Each group is present or `null` as a unit; absence is never a
-placeholder inside a group.
+`health` returns `phase`, `remedy`, and two groups (`watcher` with its
+`health`, `database` with `revision_id` and `file_count`); `verbose: true`
+adds `detail` with the rest of both groups, `database_read_failed`, the
+`server` counters, `system_memory` and `mechanic_cache`. Each group is present
+or `null` as a unit; absence is never a placeholder inside a group.
 
 | Phase | Meaning | What to do |
 |---|---|---|
@@ -246,8 +251,20 @@ placeholder inside a group.
 | `unavailable` | The watcher could not be initialized. Every call full-publishes. | Check platform support and filesystem; the stat sweep still serves reads. |
 | `no_active_project` | No path was supplied and this server has no registered project, or a supplied path has no watcher and no published revision. | Call `project_control {"action":"on", …}` or pass the project path. |
 | `indexed_unwatched` | The project has a published revision, but this server has no registered watcher for it. Evidence is readable; no watcher health is implied. | Normal after a fresh server start; the next state-bearing call registers a watcher. |
-| `unknown` | Either no `path` was supplied and the watcher is `Healthy` or `Partial` with no unreconciled events (there is no project root in this answer, so no revision can be checked), or a supplied project's database exists but could not be read (`database_read_failed` is true) while the watcher is `Healthy`, `Partial`, or not registered. Neither case claims the first sync failed. | Supply `path` for a pathless answer. For an unreadable database, see *An unreadable database* below. |
+| `unknown` | Either no `path` was supplied and the watcher is `Healthy` or `Partial` with no unreconciled events (there is no project root in this answer, so no revision can be checked), or a supplied project's database exists but could not be read (`detail.database_read_failed` is true) while the watcher is `Healthy`, `Partial`, or not registered. Neither case claims the first sync failed. | Supply `path` for a pathless answer. For an unreadable database, see *An unreadable database* below. |
 | `disabled` | The supplied path has no `.planning/slugaudit/` marker. This is a state, not an error. | The same `remedy` as `project_not_enabled`: enable the project. |
+
+With `verbose: true` the answer adds `detail`, typed in the code
+(`src/tools/health.rs`) rather than in the tool's output schema:
+
+| `detail` field | Meaning |
+| :--- | :--- |
+| `watcher` | `pending_dirty`, `pending_deleted` (unreconciled paths), `sequence`, `last_verified_sequence`; `null` exactly when `watcher` is. |
+| `database` | `parser_pack_version`, `skipped_file_count` (rows discovered but never read); `null` exactly when `database` is. |
+| `database_read_failed` | The database exists but could not be read; see *An unreadable database*. |
+| `server` | `tool_call_count`, `tool_call_error_count`, `tool_call_total_ms`, `last_sync_unix_seconds`, `last_sync_duration_ms`, `consecutive_full_publishes`. |
+| `system_memory` | `total_bytes`, `available_bytes`: what sized the adaptive import budget. |
+| `mechanic_cache` | `entries`, `bytes`, `budget`, `evictions`, `skipped_too_large`, `hits`, `misses` of the registered-mechanic scan cache. |
 
 `unknown` exists precisely so the answer never claims the first sync failed
 (that would be `importing`) or that a revision exists (that would be
@@ -257,7 +274,8 @@ passing a path if database state is wanted.
 ### An unreadable database
 
 When the project database exists but could not be inspected, opened, or
-queried, `health` returns `database: null` with `database_read_failed: true`.
+queried, `health` returns `database: null` with `detail.database_read_failed:
+true` (ask with `verbose: true`).
 The phase is `unknown` when the watcher is `Healthy`, `Partial`, or not
 registered; the watcher-only phases (`unavailable`, `restoring`) still
 describe the watcher and stay truthful. The failure may be permissions,
@@ -272,7 +290,7 @@ mismatch are discarded and rebuilt; see *Automatic recovery*). If the
 condition persists, check the *Open-time refusals* above and restore local,
 owner-only, non-symlinked storage.
 
-`server` counters are instrumentation and drive no phase: total tool calls,
+`detail.server` counters are instrumentation and drive no phase: total tool calls,
 errors, total milliseconds, last sync time/duration, and
 `consecutive_full_publishes`.
 
@@ -285,7 +303,7 @@ errors, total milliseconds, last sync time/duration, and
 | `NeedsVerification` / `Desynced` | Full publish, drain events that arrived during it, then `Healthy`/`Partial`. |
 | `Unavailable` | Full publish on every call. |
 
-`server.consecutive_full_publishes` counting 1+ across repeated calls means the
+`detail.server.consecutive_full_publishes` counting 1+ across repeated calls means the
 watcher is not being trusted. On Linux, inotify watch exhaustion
 (`fs.inotify.max_user_watches`) still makes `notify` fail if the kernel limit
 is below the number of scoped directories; the manager then marks the project

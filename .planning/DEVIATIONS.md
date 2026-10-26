@@ -560,3 +560,33 @@ Oldest first: append each new entry at the end of the file. Format: **what** / *
 - **Why:** a `page` on an unpaged list would have to invent a `page_bytes` no budget applied, which is a false field.
 - **Where:** `src/tools/mechanic.rs`.
 - **Reversible:** yes, if `list` ever gains paging.
+
+## C2: `health` operator detail is one opaque `detail` object behind `verbose`
+- **What:** `health` takes `verbose` (default false). The default answer is `phase`, `remedy`, `watcher` = `{health}` and `database` = `{revision_id, file_count}`, nothing else. `verbose: true` adds `detail` with the rest of both groups (`watcher`: pending counts and sequences; `database`: `parser_pack_version`, `skipped_file_count`), `database_read_failed`, `server`, `system_memory` and `mechanic_cache`; no field appears in both places. In the output schema `detail` is an untyped object whose description lists its keys; the fields are typed in `src/tools/health.rs` and tabled in `docs/TROUBLESHOOTING.md`. The health output schema went from 12,409 to 5,976 characters; what remains is mostly the `HealthPhase` and `WatcherHealth` enum docs, which the default answer needs.
+- **Why:** the directive asks for the five actionable fields by default and a schema that stays small; typing `detail` in the schema kept the schema at 11,910 characters, so most of the D8 cost would have stayed in every `tools/list`. `database_read_failed` moved behind `verbose` because `phase` is `unknown` in exactly that case, so a model already gets the actionable signal.
+- **Where:** `src/tools/health.rs`, `src/server/handlers.rs`, `docs/TROUBLESHOOTING.md`, `.planning/ARCHITECTURE.md`, `README.md`.
+- **Reversible:** yes (type `detail` in the schema by dropping the `schemars(with)` attribute).
+
+## C2: which `query` failures carry `sql_error`
+- **What:** `sql_error` is attached when SQLite itself failed to compile or run the statement (`rusqlite::Error::SqliteFailure` or `SqlInputError` reaching `describe_error` with no budget recorded): syntax errors, unknown tables or columns, function and type errors. Refusals of the statement's kind (PRAGMA/ATTACH/DETACH, a non-SELECT wrapped as a subquery, more than one statement, comments only), spent VM-step or wall-clock budgets, duplicate column names and an over-cap value keep their messages and carry no code, as they did.
+- **Why:** the brief says refusals keep their current codes (none); a budget or cap message already names its own fix, and labelling it an SQL error would send the caller to the schema instead.
+- **Where:** `src/tools/query.rs`, `src/error_codes.rs`.
+- **Reversible:** yes.
+
+## C2: `unknown_language` is checked against the index, for any language the project lacks
+- **What:** a project-wide `structure` call first checks that some indexed, non-prose file with content has the requested language (the scan's own filter). If none does, it is refused with `unknown_language`; the message lists the languages the index holds (`SELECT DISTINCT language` over the same filter) and does not echo the requested name; the remedy is static. This covers a name the pack does not know (`klingon`, previously the pack's "not in the download manifest" text), a real grammar the project does not contain (`python` on a Rust-only project, previously an "Invalid node type" query error or an empty result after a possible grammar download), and a wrong case (`Rust`). Single-file calls take the language from the index and are unchanged; prose keeps A5's refusal.
+- **Why:** the brief asks for the detected languages from the index; checking before the pack also avoids a grammar fetch for a language the project cannot match.
+- **Where:** `src/tools/structure_source.rs`, `src/error_codes.rs`; the old `an_unsupported_language_is_refused_with_the_pack_error` test pinned the replaced behaviour and is superseded by `structure_language_tests.rs`.
+- **Reversible:** yes.
+
+## C2: `blast_radius.sql` split by what each statement answers
+- **What:** the three statements became `blast_radius_outbound.sql` (per-file outbound counts by `resolution_kind`), `blast_radius_inbound.sql` (per-file inbound counts plus distinct importing files) and `blast_radius_closure.sql` (the transitive closure of one file in both directions in one statement, a `direction` column of `imports`/`imported_by`). The old first statement mixed both count directions with a UNION ALL; it is now two recipes, and the old two closure statements are now one. `auth_attack_surface.sql` and `syntax_diagnostics.sql` read payload keys with `json_extract` instead of `LIKE` over payload text, which contradicted INSTRUCTIONS the same way the cookbook README example did.
+- **Why:** the three file names the directive gives map to inbound counts, outbound counts and closure; each recipe must run unedited as one `query` call, which a new test checks for every `examples/queries/*.sql`.
+- **Where:** `examples/queries/`, `src/resources.rs`, `README.md`, `examples/queries/README.md`.
+- **Reversible:** yes.
+
+## C2: first `report` after `project_control on` — mechanism found, fix outside C2's files
+- **What:** the deep-dive failure ("revision changed concurrently (expected rev-N, now rev-N+1); retry the call") comes from `SourceSyncManager::verify_and_drain` (`src/sync/manager_health.rs`). The first state-bearing call after a server starts finds the watcher `NeedsVerification`, runs a full publish, then drains (sweep plus event reconcile) whatever changed meanwhile; when the drain publishes, the function still returns the full publish's revision id, so the same call's `with_verified_read` refuses its own sync with `stale_revision`. A write landing in the project during the first call's publish reproduces it every time (a test sink that writes a file on the publish's `Completed` event); on a quiet project the drain publishes nothing, which is why the Wave A spot-check and the C2 stdio run did not reproduce it. It was not fixed between c3fc7f8 and 0f6bd1c (no commit touches that return; the c3fc7f8 binary also passes the quiet sequence). C2 adds the quiet on -> report test; the one-line fix (return `revision_after_sync` after the drain, as the healthy path does) and its regression test are outside C2's files and were handed to the Lead as a patch.
+- **Why:** `src/sync/` is not in C2's owned files.
+- **Where:** `src/sync/manager_health.rs` (not changed), `src/tools/report_first_call_tests.rs`.
+- **Reversible:** n/a.

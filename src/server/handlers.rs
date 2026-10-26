@@ -107,11 +107,12 @@ impl SlugAuditServer {
         annotations(read_only_hint = true, destructive_hint = false),
         description = "Query the indexed codebase with read-only SQL. Key tables: \
          files (id, path, language, byte_len, content — full text of every indexed file including non-code files), \
-         evidence (id, file_id, kind, start_line, end_line [1-based, inclusive], payload — Symbol, Import, Comment, Structure), \
+         evidence (id, file_id, kind, start_line, end_line [1-based, inclusive], payload; kind is one of Structure, Import, Export, Comment, Docstring, Symbol, Diagnostic, Call), \
          dependency_edges (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled). \
          To inspect code or file content directly from the DB without filesystem reads, query `files.content` (e.g. `SELECT content FROM files WHERE path = 'src/main.rs'`); `line_count(text)` and `line_range(text, start, end)` read a file by 1-based lines, and an oversized first row is clipped with a `substr` continuation in `clipped_cells`. \
          To link evidence to file paths, always JOIN: `SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND json_extract(e.payload, '$.name') = 'configure'`. \
-         Schema discovery: `SELECT name FROM sqlite_master WHERE type='table'`."
+         Schema discovery: `SELECT name FROM sqlite_master WHERE type='table'`. \
+         A statement SQLite cannot compile or run fails with code `sql_error`."
     )]
     async fn query(
         &self,
@@ -130,7 +131,8 @@ impl SlugAuditServer {
         annotations(read_only_hint = true, destructive_hint = false),
         description = "Inspect and extract code AST structures from a file or across the project using Tree-sitter. \
          Specify `file` to search a single file, or omit `file` and specify `language` (with optional `pattern`) \
-         to search across matching project files. Returns matched AST nodes with `file`, `start_line`, `end_line` (1-based, inclusive), \
+         to search across matching project files (a `language` no indexed file has fails with \
+         `unknown_language`, listing the languages indexed here). Returns matched AST nodes with `file`, `start_line`, `end_line` (1-based, inclusive), \
          and `text` snippet. The `query` must name at least one capture with `@name`. \
          Examples: Rust `(function_item name: (identifier) @name body: (block) @body)`, \
          Python `(function_definition name: (identifier) @name body: (block) @body)`, \
@@ -225,14 +227,14 @@ impl SlugAuditServer {
     #[tool(
         title = "Operational health",
         annotations(read_only_hint = true, destructive_hint = false),
-        description = "Operational snapshot: watcher health, unreconciled event counts, last \
-         verified sequence, current revision id and file count, parser pack version, and \
-         process-wide tool-call counters. Intended for operators/health checks; safe to call \
-         repeatedly and never mutates state. Call `project_control` with `\"on\"` on a path first \
-         to surface per-project database state; calling without a path returns global counters \
-         and the watcher health of a project registered with this server. Exactly one project is \
-         registered in the current single-project model; if several are registered, one of them \
-         is reported and which one is unspecified."
+        description = "What state the server is in and what to do next: `phase`, `remedy` (the \
+         call to make when no project is served), `watcher.health`, and `database.revision_id` / \
+         `database.file_count`. Read-only: never syncs, never mutates, and answers a path that \
+         is not an enabled project with `phase: disabled` instead of an error. Pass `path` for \
+         a project's database state; without it only the registered project's watcher is \
+         reported. `verbose: true` adds `detail`, the operator view (unreconciled watcher \
+         counts, parser pack version, skipped files, process counters, host memory, the \
+         mechanic scan cache)."
     )]
     async fn health(
         &self,

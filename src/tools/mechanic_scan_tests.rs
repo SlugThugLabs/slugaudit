@@ -120,7 +120,10 @@ fn cache_stats(manager: &sync::SourceSyncManager) -> crate::project::CacheStats 
 }
 
 fn health_cache(manager: &sync::SourceSyncManager) -> serde_json::Value {
-    let request = crate::tools::HealthRequest { path: None };
+    let request = crate::tools::HealthRequest {
+        path: None,
+        verbose: true,
+    };
     let response = crate::tools::health(
         &rmcp::handler::server::wrapper::Parameters(request),
         &NoopProgressSink,
@@ -128,7 +131,7 @@ fn health_cache(manager: &sync::SourceSyncManager) -> serde_json::Value {
     )
     .expect("health succeeds")
     .0;
-    serde_json::to_value(&response).expect("health serialises")["mechanic_cache"].clone()
+    serde_json::to_value(&response).expect("health serialises")["detail"]["mechanic_cache"].clone()
 }
 
 #[test]

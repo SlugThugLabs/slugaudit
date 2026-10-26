@@ -291,8 +291,9 @@ pub struct ReportResponse {
     /// The same graph counted in both directions: how many edges leave a
     /// file, how many land on one, and how many files are on each end.
     /// Pure arithmetic over `dependency_edges` — no ranking, no severity,
-    /// and no claim about which file matters. Per-file traversal is the
-    /// `slugaudit://queries/blast_radius.sql` recipe.
+    /// and no claim about which file matters. Per-file counts and traversal
+    /// are the `blast_radius_outbound.sql`, `blast_radius_inbound.sql` and
+    /// `blast_radius_closure.sql` recipes under `slugaudit://queries/`.
     pub dependency_edges: DependencyEdgeTotals,
     /// Total number of Diagnostic evidence items (e.g. linter or compiler
     /// diagnostics extracted from source files).
@@ -388,3 +389,7 @@ mod tests;
 #[cfg(test)]
 #[path = "report_prose_tests.rs"]
 mod prose_tests;
+
+#[cfg(test)]
+#[path = "report_first_call_tests.rs"]
+mod first_call_tests;

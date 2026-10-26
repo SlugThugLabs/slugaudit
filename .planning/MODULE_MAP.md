@@ -56,6 +56,7 @@ src/
 │   ├── report.rs             automatic project snapshot: contract, completeness envelope, edge totals
 │   ├── report_sections.rs    per-section SQL + response assembly for report
 │   ├── report_completeness.rs  the report's index-completeness block
+│   ├── report_first_call_tests.rs the first report after project_control on, with a real watcher
 │   ├── query.rs              arbitrary read-only SQL with budgets
 │   ├── query_exec.rs         query execution: single-statement proof, budgets, byte-budgeted page, exact total
 │   ├── page.rs               the one paging contract (`Page`, `PageLimit`) every paged tool embeds
@@ -63,11 +64,13 @@ src/
 │   ├── query_value.rs        SQLite row/value → JSON with a per-value cap
 │   ├── query_clip.rs         clipping an oversized first row's TEXT/BLOB cells, with substr continuations
 │   ├── query_clip_tests.rs   clipping walks (5 MB text, blob, units) and line functions through query
+│   ├── query_error_tests.rs  sql_error on SQLite failures; refusals and value caps carry no code
 │   ├── structure.rs          tree-sitter pattern match: contract, validation, targets
 │   ├── structure_exec.rs     query execution under match cap + time budget
 │   ├── structure_page.rs     byte paging of matches and the multi-file memory-window cursor
 │   ├── structure_source.rs   source loading + multi-file and snippet helpers
 │   ├── structure_parse_bounds_tests.rs max_parse_bytes skip, window-before-load and parse-timeout partials
+│   ├── structure_language_tests.rs unknown_language naming the indexed languages
 │   ├── leads.rs              unranked mechanical observations
 │   ├── leads_mechanics.rs    the leads mechanic catalogue
 │   ├── leads_covers.rs       each count's `covers`: the languages the mechanic read

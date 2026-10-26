@@ -37,7 +37,7 @@ impl SourceSyncManager {
         let health = state.health();
         match health {
             WatcherHealth::NeedsVerification | WatcherHealth::Desynced => {
-                self.verify_and_drain(root, state, connection, sink)
+                self.verify_and_drain(root, state, connection, database_path, sink)
             }
             WatcherHealth::Healthy | WatcherHealth::Partial => {
                 self.healthy_path(root, state, connection, database_path, sink)
@@ -74,6 +74,7 @@ impl SourceSyncManager {
         root: &project::ProjectRoot,
         state: &WatchState,
         connection: &mut Connection,
+        database_path: &Path,
         sink: &dyn ProgressSink,
     ) -> Result<String, ErrorData> {
         tracing::info!(
@@ -86,7 +87,7 @@ impl SourceSyncManager {
         // the project's ignore rules instead of a transient `None`. A no-op
         // when the scope is already current.
         self.watch_manager.refresh_scope(root.as_path());
-        let report = super::super::manager_meta::publish_full(
+        super::super::manager_meta::publish_full(
             connection,
             root.as_path(),
             sink,
@@ -134,7 +135,12 @@ impl SourceSyncManager {
         sink.emit(ProgressEvent::Completed {
             phase: "ensuring_current",
         });
-        Ok(report.revision_id)
+        // The drain above publishes again when it finds a change that landed
+        // during the full publish, so the publish's own revision can already
+        // be superseded: pin the call to the revision the database holds now,
+        // as the healthy path does, or the caller's verified read refuses its
+        // own sync with `stale_revision`.
+        revision_after_sync(connection, database_path)
     }
 
     /// Healthy path: walk exactly once, reconcile the watcher's events

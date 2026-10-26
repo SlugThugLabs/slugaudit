@@ -5,8 +5,8 @@ fn lists_every_served_resource_with_a_distinct_uri() {
     let resources = list();
     assert_eq!(
         resources.len(),
-        8,
-        "catalog is the cookbook, the payload-key reference, five recipes, and the schema"
+        10,
+        "catalog is the cookbook, the payload-key reference, seven recipes, and the schema"
     );
 
     let mut uris: Vec<&str> = resources
@@ -15,7 +15,9 @@ fn lists_every_served_resource_with_a_distinct_uri() {
         .collect();
     assert!(uris.contains(&"slugaudit://queries/README.md"));
     assert!(uris.contains(&"slugaudit://queries/evidence_payload_keys.md"));
-    assert!(uris.contains(&"slugaudit://queries/blast_radius.sql"));
+    assert!(uris.contains(&"slugaudit://queries/blast_radius_inbound.sql"));
+    assert!(uris.contains(&"slugaudit://queries/blast_radius_outbound.sql"));
+    assert!(uris.contains(&"slugaudit://queries/blast_radius_closure.sql"));
     assert!(uris.contains(&"slugaudit://schema.sql"));
 
     uris.sort_unstable();
@@ -218,4 +220,72 @@ fn the_unhandled_panics_recipe_matches_the_callee_not_the_caller() {
         vec![1, 2, 3],
         "the recipe must match the three callee rows and not the caller-only `handle_expect` row"
     );
+}
+
+/// Every `examples/queries/*.sql` recipe is served and runs as-is through the
+/// `query` tool — one statement, unedited — on a real indexed project. The
+/// tool runs one statement per call, so a recipe that holds two fails here
+/// the way it would fail for an agent.
+#[test]
+fn every_sql_recipe_runs_unedited_through_the_query_tool() {
+    let project = crate::tools::test_support::activated_project(
+        "Cargo.toml",
+        b"[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    std::fs::create_dir_all(project.path().join("src")).expect("create src");
+    std::fs::write(
+        project.path().join("src/main.rs"),
+        b"mod auth;\nuse crate::auth::session_token;\nfn main() {\n    let token: Option<u8> = session_token();\n    token.unwrap();\n}\n",
+    )
+    .expect("write main.rs");
+    std::fs::write(
+        project.path().join("src/auth.rs"),
+        b"pub fn session_token() -> Option<u8> {\n    None\n}\n",
+    )
+    .expect("write auth.rs");
+    let manager = crate::sync::SourceSyncManager::default();
+    let served: Vec<String> = list().into_iter().map(|resource| resource.uri).collect();
+    let recipes_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/queries");
+    let mut recipes: Vec<std::path::PathBuf> = std::fs::read_dir(&recipes_dir)
+        .expect("read examples/queries")
+        .map(|entry| entry.expect("a directory entry").path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
+        .collect();
+    recipes.sort();
+
+    let mut rows_by_recipe = Vec::new();
+    for recipe in &recipes {
+        let name = recipe
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("a UTF-8 recipe name");
+        let sql = std::fs::read_to_string(recipe).expect("read the recipe");
+        let response = crate::tools::query(
+            &rmcp::handler::server::wrapper::Parameters(crate::tools::QueryRequest {
+                path: project.path().to_string_lossy().into_owned(),
+                sql,
+                offset: 0,
+                expected_revision: None,
+                page_bytes: None,
+            }),
+            &crate::progress::NoopProgressSink,
+            &manager,
+        )
+        .unwrap_or_else(|error| panic!("{name} fails through query: {error:?}"));
+        assert!(
+            served.contains(&format!("slugaudit://queries/{name}")),
+            "{name} is a recipe but is not served as a resource"
+        );
+        rows_by_recipe.push((name.to_owned(), response.0.rows.len()));
+    }
+
+    assert_eq!(recipes.len(), 6, "the six SQL recipes: {rows_by_recipe:?}");
+    // The fixture has an unwrap call, auth/session/token names and one
+    // resolved import from src/main.rs, so every recipe but the diagnostics
+    // one (the fixture parses cleanly) has something to return.
+    for (name, rows) in &rows_by_recipe {
+        if name != "syntax_diagnostics.sql" {
+            assert!(*rows > 0, "{name} matched nothing: {rows_by_recipe:?}");
+        }
+    }
 }

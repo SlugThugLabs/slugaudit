@@ -2,7 +2,7 @@
 
 Pre-built SQL and Tree-sitter query recipes for AI coding agents and human engineers.
 
-SlugAudit indexes repository symbols, imports, calls, AST shapes, and file metadata into an ephemeral SQLite index (`.planning/slugaudit/project.db`). These queries demonstrate how AI agents can extract codebase facts in sub-milliseconds without reading files from disk.
+SlugAudit indexes repository symbols, imports, calls, AST shapes, and file metadata into an ephemeral SQLite index (`.planning/slugaudit/project.db`). These queries show how an agent reads codebase facts from the index instead of reading files from disk.
 
 ---
 
@@ -10,16 +10,20 @@ SlugAudit indexes repository symbols, imports, calls, AST shapes, and file metad
 
 | Recipe | Target Tool | Purpose |
 | :--- | :---: | :--- |
-| **[`auth_attack_surface.sql`](auth_attack_surface.sql)** | `query` | Map every function, method, and call touching authentication, tokens, or sessions. |
-| **[`find_unhandled_panics.sql`](find_unhandled_panics.sql)** | `query` | Find crash-prone `unwrap()`, `expect()`, and `panic!()` invocations across all files. |
-| **[`syntax_diagnostics.sql`](syntax_diagnostics.sql)** | `query` | Pull syntax errors and parser diagnostics discovered during tree-sitter indexing. |
+| **[`auth_attack_surface.sql`](auth_attack_surface.sql)** | `query` | Functions, methods and calls whose name mentions authentication, tokens, sessions, secrets or passwords (names read with `json_extract`). |
+| **[`find_unhandled_panics.sql`](find_unhandled_panics.sql)** | `query` | Call sites whose callee is `unwrap`, `expect` or `panic`, matched on `callee_name`. |
+| **[`syntax_diagnostics.sql`](syntax_diagnostics.sql)** | `query` | Syntax errors and parser diagnostics per file, with their `severity` and `message`. |
 | **[`rust_functions.scm`](rust_functions.scm)** | `structure` | Match exact Rust function declarations, parameters, return types, and bodies. |
-| **[`blast_radius.sql`](blast_radius.sql)** | `query` | Per-file inbound/outbound `dependency_edges` counts, plus the transitive closure in either direction. Counts only — no ranking. |
+| **[`blast_radius_outbound.sql`](blast_radius_outbound.sql)** | `query` | Per-file outbound `dependency_edges` counts by `resolution_kind`. Counts only — no ranking. |
+| **[`blast_radius_inbound.sql`](blast_radius_inbound.sql)** | `query` | Per-file inbound `dependency_edges` counts and distinct importing files. Counts only — no ranking. |
+| **[`blast_radius_closure.sql`](blast_radius_closure.sql)** | `query` | The transitive import closure of one file in both directions (`imports`, `imported_by`) over resolved edges. |
 | **[`evidence_payload_keys.md`](evidence_payload_keys.md)** | reference | Every `evidence.payload` key, its JSON type, and the `evidence.kind` it belongs to. Read this instead of probing payload shapes by trial. |
 
-Each `.sql` file holds one or more statements; the `query` tool runs **one
-statement per call**, so paste them one at a time (the comments name the
-statement boundaries).
+Each `.sql` file is **one statement**: the `query` tool runs one statement per
+call, so a recipe runs as-is (edit only the path a recipe names). Read
+`evidence.payload` with `json_extract` on the key you want (see
+`evidence_payload_keys.md`), never with `LIKE` over the payload text: that also
+matches docs, annotations and caller names.
 
 ---
 
@@ -57,7 +61,7 @@ When asking your AI agent (Claude Code, Cursor, Hermes, Codex, etc.) to audit a 
 {
   "name": "query",
   "arguments": {
-    "sql": "SELECT f.path, e.start_line, e.payload FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND LOWER(e.payload) LIKE '%login%';"
+    "sql": "SELECT f.path, e.start_line, json_extract(e.payload, '$.name') AS name FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND lower(json_extract(e.payload, '$.name')) LIKE '%login%'"
   }
 }
 ```

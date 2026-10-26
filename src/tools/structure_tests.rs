@@ -363,31 +363,6 @@ fn a_stale_expected_revision_refuses_a_structure_page() {
 }
 
 #[test]
-fn an_unsupported_language_is_refused_with_the_pack_error() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let pack_error = tree_sitter_language_pack::get_language("not-a-real-language")
-        .expect_err("the pack must reject an unknown language")
-        .to_string();
-
-    let result = structure(
-        &Parameters(StructureRequest {
-            path: project.path().to_string_lossy().into_owned(),
-            language: Some("not-a-real-language".to_owned()),
-            query: "(identifier) @name".to_owned(),
-            ..Default::default()
-        }),
-        &crate::progress::NoopProgressSink,
-        &crate::sync::SourceSyncManager::default(),
-    );
-
-    let error = result
-        .err()
-        .expect("an unsupported language must be a typed refusal");
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert_eq!(error.message.as_ref(), pack_error);
-}
-
-#[test]
 fn a_file_with_no_detected_language_is_refused_by_name() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let synced = ensure_synced(

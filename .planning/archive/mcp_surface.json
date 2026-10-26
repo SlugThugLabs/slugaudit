@@ -19,7 +19,7 @@
       "uri": "slugaudit://queries/find_unhandled_panics.sql"
     },
     {
-      "description": "Map functions, methods, and calls touching auth, tokens, or sessions.",
+      "description": "Functions, methods and calls whose name mentions auth, tokens, sessions or secrets.",
       "mimeType": "application/sql",
       "name": "auth-attack-surface",
       "uri": "slugaudit://queries/auth_attack_surface.sql"
@@ -37,10 +37,22 @@
       "uri": "slugaudit://queries/rust_functions.scm"
     },
     {
-      "description": "Per-file inbound/outbound dependency_edges counts and the transitive closure.",
+      "description": "Per-file outbound dependency_edges counts by resolution_kind.",
       "mimeType": "application/sql",
-      "name": "blast-radius",
-      "uri": "slugaudit://queries/blast_radius.sql"
+      "name": "blast-radius-outbound",
+      "uri": "slugaudit://queries/blast_radius_outbound.sql"
+    },
+    {
+      "description": "Per-file inbound dependency_edges counts and distinct importing files.",
+      "mimeType": "application/sql",
+      "name": "blast-radius-inbound",
+      "uri": "slugaudit://queries/blast_radius_inbound.sql"
+    },
+    {
+      "description": "Transitive import closure of one file, in both directions, over resolved edges.",
+      "mimeType": "application/sql",
+      "name": "blast-radius-closure",
+      "uri": "slugaudit://queries/blast_radius_closure.sql"
     },
     {
       "description": "Canonical SQLite schema of the project index: tables, columns, and constraints.",
@@ -383,7 +395,7 @@
         "destructiveHint": false,
         "readOnlyHint": true
       },
-      "description": "Operational snapshot: watcher health, unreconciled event counts, last verified sequence, current revision id and file count, parser pack version, and process-wide tool-call counters. Intended for operators/health checks; safe to call repeatedly and never mutates state. Call `project_control` with `\"on\"` on a path first to surface per-project database state; calling without a path returns global counters and the watcher health of a project registered with this server. Exactly one project is registered in the current single-project model; if several are registered, one of them is reported and which one is unspecified.",
+      "description": "What state the server is in and what to do next: `phase`, `remedy` (the call to make when no project is served), `watcher.health`, and `database.revision_id` / `database.file_count`. Read-only: never syncs, never mutates, and answers a path that is not an enabled project with `phase: disabled` instead of an error. Pass `path` for a project's database state; without it only the registered project's watcher is reported. `verbose: true` adds `detail`, the operator view (unreconciled watcher counts, parser pack version, skipped files, process counters, host memory, the mechanic scan cache).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -394,6 +406,11 @@
               "string",
               "null"
             ]
+          },
+          "verbose": {
+            "default": false,
+            "description": "Also return `detail`: the operator view (unreconciled watcher\ncounts and sequences, parser pack version, skipped files, whether the\ndatabase read failed, process counters, host memory, the mechanic\nscan cache). Defaults to false.",
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -401,37 +418,24 @@
       "name": "health",
       "outputSchema": {
         "$defs": {
-          "DatabaseState": {
-            "description": "What the project database holds.\n\nRead as one unit: one failed query leaves the whole object absent rather\nthan producing a revision alongside a count that didn't come back, so a\ncaller never has to detect a half-read answer — there isn't one to\ndetect. That is also why no field here is a sentinel: absence is the\n`None` on [`HealthResponse::database`], not a magic number inside it.",
+          "DatabaseSummary": {
+            "description": "The current revision and file count, as the default answer carries them.",
             "properties": {
               "file_count": {
-                "description": "Files in the database — every discovered file, including rows with\n`file_kind = 'skipped'`; `skipped_file_count` breaks those out.",
+                "description": "Files in the database, including discovered files that were skipped\n(oversize or unreadable) and hold no content.",
                 "format": "int64",
                 "type": "integer"
-              },
-              "parser_pack_version": {
-                "description": "Parser pack version stored on the current revision. `None` if no\nrevision has been published yet.",
-                "type": [
-                  "string",
-                  "null"
-                ]
               },
               "revision_id": {
-                "description": "`revision_id` of the current revision. `None` if nothing has been\npublished yet.",
+                "description": "`revision_id` of the current revision; null if nothing has been\npublished yet.",
                 "type": [
                   "string",
                   "null"
                 ]
-              },
-              "skipped_file_count": {
-                "description": "Of `file_count`, how many rows were discovered but never read\n(`file_kind = 'skipped'`: oversize or unreadable), so they hold no\ncontent. `file_count - skipped_file_count` is the number of files\nthat were actually read.",
-                "format": "int64",
-                "type": "integer"
               }
             },
             "required": [
-              "file_count",
-              "skipped_file_count"
+              "file_count"
             ],
             "type": "object"
           },
@@ -449,134 +453,6 @@
               "disabled"
             ],
             "type": "string"
-          },
-          "MechanicCacheState": {
-            "description": "The registered-mechanic scan cache, as `health` reports it. Sizes are\nestimates (path and detail bytes plus a fixed overhead per row), not\nmeasured heap use.",
-            "properties": {
-              "budget": {
-                "description": "The byte budget; the oldest entries are evicted past it.",
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "bytes": {
-                "description": "Estimated bytes they hold.",
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "entries": {
-                "description": "Cached scan results held now.",
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "evictions": {
-                "description": "Entries evicted to make room since the server started.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "hits": {
-                "description": "Lookups answered from the cache since the server started.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "misses": {
-                "description": "Lookups that had to scan since the server started.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "skipped_too_large": {
-                "description": "Scans not cached because their rows alone outgrew the budget.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "entries",
-              "bytes",
-              "budget",
-              "evictions",
-              "skipped_too_large",
-              "hits",
-              "misses"
-            ],
-            "type": "object"
-          },
-          "ServerCounters": {
-            "description": "Counters for this server process since it started.\n\nOperational instrumentation: these exist so the tool's own behaviour can\nbe measured over time. Nothing here is something a caller acts on, which\nis why they share one object and drive no `phase` or `remedy`.",
-            "properties": {
-              "consecutive_full_publishes": {
-                "description": "How many consecutive full publishes (untrusted-watcher or\nUnavailable-path verifications) have run since the last successful\nincremental reconcile. A value that persists at 1+ across calls\nmeans the watcher is not being trusted — e.g. Linux inotify\n`fs.inotify.max_user_watches` overflow forcing `Desynced` — so\nevery tool call full-publishes. See the full-publish runbook\nin `docs/TROUBLESHOOTING.md`.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "last_sync_duration_ms": {
-                "description": "Duration of the most recent successful `ensure_current`, in\nmilliseconds. Zero before the first sync.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "last_sync_unix_seconds": {
-                "description": "Unix-epoch seconds of the most recent successful `ensure_current`\nacross the entire server's lifetime. Zero before the first sync.",
-                "format": "int64",
-                "type": "integer"
-              },
-              "tool_call_count": {
-                "description": "Total tool calls served since process start.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "tool_call_error_count": {
-                "description": "Total tool calls that returned any `ErrorData` since process start.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "tool_call_total_ms": {
-                "description": "Sum of every tool call's work duration, in milliseconds.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "tool_call_count",
-              "tool_call_error_count",
-              "tool_call_total_ms",
-              "last_sync_unix_seconds",
-              "last_sync_duration_ms",
-              "consecutive_full_publishes"
-            ],
-            "type": "object"
-          },
-          "SystemMemoryInfo": {
-            "description": "Host memory as measured at startup (or the conservative fallback,\nreported by `detect_system_memory` when it could not be measured).\nSurfaced in the `health` response because it sizes the Adaptive\nprofile's import budget.",
-            "properties": {
-              "available_bytes": {
-                "description": "Memory available to this process for import budgets, in bytes.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "total_bytes": {
-                "description": "Total physical memory in bytes.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "total_bytes",
-              "available_bytes"
-            ],
-            "type": "object"
           },
           "WatcherHealth": {
             "description": "Health of a project's filesystem watcher. Never silently assume healthy —\nthe caller must check before trusting the dirty set.\n\nDerived `Serialize` so the `health` MCP tool can return this enum as\npart of its `Json<HealthResponse>` response. Derived `JsonSchema` so\nthe same schema is surfaced through MCP to consumers.",
@@ -608,44 +484,16 @@
               }
             ]
           },
-          "WatcherState": {
-            "description": "The watcher's view of the supervised project.",
+          "WatcherSummary": {
+            "description": "The watcher's health, as the default answer carries it.",
             "properties": {
               "health": {
                 "$ref": "#/$defs/WatcherHealth",
                 "description": "Current watcher health."
-              },
-              "last_verified_sequence": {
-                "description": "The sequence acknowledged by the most recent reconcile.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "pending_deleted": {
-                "description": "Unreconciled deleted paths.",
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "pending_dirty": {
-                "description": "Unreconciled dirty paths — modified or created since the last\nsuccessful reconcile.",
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "sequence": {
-                "description": "The watcher's monotonic event sequence.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
               }
             },
             "required": [
-              "health",
-              "pending_dirty",
-              "pending_deleted",
-              "sequence",
-              "last_verified_sequence"
+              "health"
             ],
             "type": "object"
           }
@@ -655,59 +503,47 @@
           "database": {
             "anyOf": [
               {
-                "$ref": "#/$defs/DatabaseState"
+                "$ref": "#/$defs/DatabaseSummary"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "What the project database holds. `None` if the project has never\nbeen synced, or if the database could not be read. Either every\nfield inside is present or the whole object is absent: a partial\nread is not representable, so no number here is ever a placeholder.\n`database_read_failed` distinguishes the two cases."
+            "description": "What the project database holds; null when the project has never\nbeen synced or its database could not be read\n(`detail.database_read_failed` says which)."
           },
-          "database_read_failed": {
-            "description": "True when the project database exists but could not be read — an\nunopenable file (permissions, symlink, network filesystem),\ncorruption, a lock or timeout, or schema drift. `database` is then\n`null` and `phase` is `unknown`: the index may still hold a current\nrevision, but this answer cannot see it, and the phase never claims\nthe first sync failed. False when the database was read or does not\nexist yet (never synced); `database: null` with this false means\nexactly \"never synced\".",
-            "type": "boolean"
-          },
-          "mechanic_cache": {
-            "$ref": "#/$defs/MechanicCacheState",
-            "description": "The cache of registered mechanics' scan results this server keeps\nper revision (`leads` selecting a registered mechanic is answered\nfrom it while the revision is unchanged)."
+          "detail": {
+            "additionalProperties": true,
+            "description": "Operator detail, present only with `verbose: true`: `watcher`\n(`pending_dirty`, `pending_deleted`, `sequence`,\n`last_verified_sequence`), `database` (`parser_pack_version`,\n`skipped_file_count`), `database_read_failed`, `server` (tool-call\ncounters, last sync time and duration, `consecutive_full_publishes`),\n`system_memory` and `mechanic_cache`. Its fields are documented in\ndocs/TROUBLESHOOTING.md rather than typed here, so the schema of the\ndefault answer stays small.",
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "phase": {
             "$ref": "#/$defs/HealthPhase",
             "description": "Coarse classification of what the server is doing right now.\nDerivation rule documented on `HealthPhase`."
           },
           "remedy": {
-            "description": "The next action to take when no project is being served by this\nanswer: the same static sentence the `project_not_enabled` error\ncarries in `ErrorData.data.remedy`, so a caller can treat \"health\nsays `disabled`\" and \"every tool fails with `project_not_enabled`\"\nas one instruction. `Some` exactly when `phase` is `disabled`, or\nwhen no `path` was supplied and this server has no project at all;\n`None` whenever a project is actually being served.",
+            "description": "The next action when no project is being served by this answer: the\nsame sentence the `project_not_enabled` error carries as its remedy.\nPresent exactly when `phase` is `disabled`, or when no `path` was\nsupplied and this server has no project; null whenever a project is\nserved.",
             "type": [
               "string",
               "null"
             ]
           },
-          "server": {
-            "$ref": "#/$defs/ServerCounters",
-            "description": "What this server process has done since it started."
-          },
-          "system_memory": {
-            "$ref": "#/$defs/SystemMemoryInfo",
-            "description": "Host physical and available memory. Reported because it sets the\nadaptive profile's import budget (`src/model/profile.rs`), so a\ncaller that trips `max_total_import_bytes` can see what sized it."
-          },
           "watcher": {
             "anyOf": [
               {
-                "$ref": "#/$defs/WatcherState"
+                "$ref": "#/$defs/WatcherSummary"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "What the filesystem watcher knows about the supervised project.\n`None` only if no project is currently registered with the server.\nThe fields are one object because they become unknowable together —\nthere is no state in which half of them exist."
+            "description": "The watcher's health for the supervised project; null when no project\nis registered with this server."
           }
         },
         "required": [
-          "phase",
-          "database_read_failed",
-          "server",
-          "system_memory",
-          "mechanic_cache"
+          "phase"
         ],
         "type": "object"
       },
@@ -1927,7 +1763,7 @@
         "destructiveHint": false,
         "readOnlyHint": true
       },
-      "description": "Query the indexed codebase with read-only SQL. Key tables: files (id, path, language, byte_len, content — full text of every indexed file including non-code files), evidence (id, file_id, kind, start_line, end_line [1-based, inclusive], payload — Symbol, Import, Comment, Structure), dependency_edges (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled). To inspect code or file content directly from the DB without filesystem reads, query `files.content` (e.g. `SELECT content FROM files WHERE path = 'src/main.rs'`); `line_count(text)` and `line_range(text, start, end)` read a file by 1-based lines, and an oversized first row is clipped with a `substr` continuation in `clipped_cells`. To link evidence to file paths, always JOIN: `SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND json_extract(e.payload, '$.name') = 'configure'`. Schema discovery: `SELECT name FROM sqlite_master WHERE type='table'`.",
+      "description": "Query the indexed codebase with read-only SQL. Key tables: files (id, path, language, byte_len, content — full text of every indexed file including non-code files), evidence (id, file_id, kind, start_line, end_line [1-based, inclusive], payload; kind is one of Structure, Import, Export, Comment, Docstring, Symbol, Diagnostic, Call), dependency_edges (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled). To inspect code or file content directly from the DB without filesystem reads, query `files.content` (e.g. `SELECT content FROM files WHERE path = 'src/main.rs'`); `line_count(text)` and `line_range(text, start, end)` read a file by 1-based lines, and an oversized first row is clipped with a `substr` continuation in `clipped_cells`. To link evidence to file paths, always JOIN: `SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND json_extract(e.payload, '$.name') = 'configure'`. Schema discovery: `SELECT name FROM sqlite_master WHERE type='table'`. A statement SQLite cannot compile or run fails with code `sql_error`.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -2641,7 +2477,7 @@
           },
           "dependency_edges": {
             "$ref": "#/$defs/DependencyEdgeTotals",
-            "description": "The same graph counted in both directions: how many edges leave a\nfile, how many land on one, and how many files are on each end.\nPure arithmetic over `dependency_edges` — no ranking, no severity,\nand no claim about which file matters. Per-file traversal is the\n`slugaudit://queries/blast_radius.sql` recipe."
+            "description": "The same graph counted in both directions: how many edges leave a\nfile, how many land on one, and how many files are on each end.\nPure arithmetic over `dependency_edges` — no ranking, no severity,\nand no claim about which file matters. Per-file counts and traversal\nare the `blast_radius_outbound.sql`, `blast_radius_inbound.sql` and\n`blast_radius_closure.sql` recipes under `slugaudit://queries/`."
           },
           "diagnostic_count": {
             "description": "Total number of Diagnostic evidence items (e.g. linter or compiler\ndiagnostics extracted from source files).",
@@ -2743,7 +2579,7 @@
         "destructiveHint": false,
         "readOnlyHint": true
       },
-      "description": "Inspect and extract code AST structures from a file or across the project using Tree-sitter. Specify `file` to search a single file, or omit `file` and specify `language` (with optional `pattern`) to search across matching project files. Returns matched AST nodes with `file`, `start_line`, `end_line` (1-based, inclusive), and `text` snippet. The `query` must name at least one capture with `@name`. Examples: Rust `(function_item name: (identifier) @name body: (block) @body)`, Python `(function_definition name: (identifier) @name body: (block) @body)`, TypeScript/JS `(function_declaration name: (identifier) @name)`, or whole-node `(class_definition) @cls`.",
+      "description": "Inspect and extract code AST structures from a file or across the project using Tree-sitter. Specify `file` to search a single file, or omit `file` and specify `language` (with optional `pattern`) to search across matching project files (a `language` no indexed file has fails with `unknown_language`, listing the languages indexed here). Returns matched AST nodes with `file`, `start_line`, `end_line` (1-based, inclusive), and `text` snippet. The `query` must name at least one capture with `@name`. Examples: Rust `(function_item name: (identifier) @name body: (block) @body)`, Python `(function_definition name: (identifier) @name body: (block) @body)`, TypeScript/JS `(function_declaration name: (identifier) @name)`, or whole-node `(class_definition) @cls`.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {

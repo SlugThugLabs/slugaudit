@@ -124,7 +124,7 @@ The server exposes 8 MCP tools, registered in `src/server.rs`:
 | `finding` | Persists a conclusion the agent has reviewed, bound to the file's current content hash — it goes stale when that file changes. The judgment is the agent's; SlugAudit never generates it. |
 | `finding_read` | Findings written by the current session only, never another session's conclusions. |
 | `project_control` | Enable (`on`) or disable (`off`) a project, optionally setting its profile; `off` purges the database. |
-| `health` | Operational snapshot: watcher health, unreconciled event counts, current revision and file count, parser-pack version, tool-call counters. |
+| `health` | Phase and next action (`remedy`), watcher health, current revision and file count. `verbose: true` adds the operator detail: unreconciled event counts, parser-pack version, skipped files, tool-call counters, host memory, the mechanic scan cache. |
 
 Every tool advertises a `title`, MCP `annotations` (`readOnlyHint` for the read-only
 tools; `destructiveHint` only on `project_control`, whose `off` action purges the
@@ -143,10 +143,12 @@ files:
 - `slugaudit://queries/README.md` — SQL and Tree-sitter recipes ([`examples/queries/README.md`](examples/queries/README.md))
 - `slugaudit://queries/evidence_payload_keys.md` — every `evidence.payload` key, its JSON type, and the kind it belongs to
 - `slugaudit://queries/find_unhandled_panics.sql` — `unwrap` / `expect` / `panic` call sites
-- `slugaudit://queries/auth_attack_surface.sql` — functions, methods, and calls touching auth, tokens, or sessions
+- `slugaudit://queries/auth_attack_surface.sql` — functions, methods, and calls whose name mentions auth, tokens, or sessions
 - `slugaudit://queries/syntax_diagnostics.sql` — syntax-error and parser diagnostics per file
 - `slugaudit://queries/rust_functions.scm` — Tree-sitter pattern for Rust functions
-- `slugaudit://queries/blast_radius.sql` — per-file inbound/outbound `dependency_edges` counts and the transitive closure
+- `slugaudit://queries/blast_radius_outbound.sql` — per-file outbound `dependency_edges` counts by `resolution_kind`
+- `slugaudit://queries/blast_radius_inbound.sql` — per-file inbound `dependency_edges` counts and importing files
+- `slugaudit://queries/blast_radius_closure.sql` — the transitive import closure of one file, both directions
 - `slugaudit://schema.sql` — the index schema (from `src/store/schema.sql`)
 
 The `tools/list` and `resources/list` contract — names, titles, descriptions, input and

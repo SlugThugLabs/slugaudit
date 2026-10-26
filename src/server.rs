@@ -34,129 +34,70 @@ use tokio::sync::Semaphore;
 /// which carry their own caps.
 const MAX_RESOURCE_URI_BYTES: usize = 8 * 1024;
 
-const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an index of this project's code — parsed \
-    structure, symbols, imports, exports, call sites, comments, diagnostics — that you query instead of reading \
-    files. It answers structural and aggregate questions that reading and grep cannot answer cheaply: what a \
-    symbol is and where it is defined, every call site of a given callee, which project files import which, \
-    per-file counts, parser diagnostics, and repo-wide denominators (\"14 call sites of `unwrap` in this file; \
-    the repo median is 1\"). A question that costs tens of thousands of tokens in file reads usually costs a \
-    few hundred as a query, and the tokens you don't burn re-reading files are tokens you spend finding what \
-    matters. Evidence is re-synchronized on every call, so you are never reasoning about a stale copy of the \
-    tree — it mirrors the files on disk, not unsaved editor buffers.\n\n\
-    FIRST-WIN RULE: about to open more than ~3 files to answer one structural question — where is X defined, \
-    who calls Y, what does Z import? — query instead. A cheap start on an enabled project: `report` for the \
-    snapshot, then `leads` with only `path` for every mechanic and its count — two calls, no source reads. After \
-    that, use whichever instrument answers each question best.\n\n\
-    USE IT INSTEAD OF: grep for a symbol, callee, diagnostic, or comment marker → `query` (SQL over the index) \
-    or `leads` (the same mechanics without writing SQL); cat to read a file → SELECT content FROM files WHERE \
-    path = '…', or `structure` when you want AST nodes rather than text; tracing imports by hand → \
-    `dependency_edges` joined in a recursive CTE (see IMPORTS); notes you want back later → `finding` (see \
-    OTHER TOOLS). grep and reading a file you already know remain the right tools for a literal lookup.\n\n\
-    PAGING: `leads`, `query`, `structure` and `finding_read` return one `page` object: `returned`, `total` \
-    (null when the tool cannot count), `complete`, `next_offset` (null when nothing remains), `page_bytes` (the byte \
-    budget after the clamp to the server ceiling), `bytes_used`, `limited_by` (`none`, `limit`, `page_bytes`, \
-    `ceiling` — a larger `page_bytes` returns nothing more —, `match_cap` (`max_structure_matches`; a larger `page_bytes` does not lift it), `scan_window`, `time_budget`) and \
-    `revision_id`. Pages are cut by bytes; the only count bounds are your own `limit` (`leads`) and \
-    `structure`'s per-page match cap. To page, pass `offset` = `page.next_offset` and \
-    `expected_revision` = `page.revision_id`: if the index changed mid-sweep the call is refused with \
-    `stale_revision` and a remedy restarting from offset 0, instead of silently skipping or repeating rows. \
-    `structure` alone has a second cursor beside `page`: when `complete` is false and `next_offset` is null, \
-    repeat with `start_after_file` = `next_start_after_file` and `offset` 0.\n\n\
-    LEADS: `leads` with only `path` returns every mechanic id with its row count, its distinct-file count \
-    (`files`), and `covers` — the sorted languages of the files under `pattern` that mechanic read, the \
-    machine-readable form of \"a zero here means unchecked, not absent\" — your registered mechanics first (see MECHANICS), then the built-ins in declaration order: call sites by callee (`unwrap`, `expect`, \
-    `panic`/`unreachable`, `todo`/`unimplemented`, `assert`/`assert_eq`/`assert_ne`/`debug_assert*`), \
-    diagnostics, TODO/FIXME/HACK/XXX comment markers, and credential-shaped file paths. Counts are complete \
-    regardless of `limit`/`offset` and carry no ordering by importance. Call again with one `mechanic` id for \
-    file/line rows, optionally narrowed with `pattern` (a path GLOB like `src/auth/*`; without `*` or `?` it is \
-    a substring match) — it filters the counts and the rows alike. Pass `mode: compact` to drop each row's \
-    `detail` and get `mechanic`/`file`/`line` triples instead; with no `mechanic` that enumerates the whole \
-    surface in one response, under the same paging fields. Every response carries `page` (see PAGING), \
-    plus the file denominators `files_total`/`files_covered`: at scale the \
-    number you can actually exhaust is the files containing the mechanic, not the rows. There is no row cap — a \
-    page is cut only by your `limit` (omit it for everything that fits) and by the page byte size \
-    (64 KiB by default; pass `page_bytes` for more, up to the server ceiling); `mechanic_counts` and \
-    `page.total` are the complete size up front, and a first row bigger than the page is still returned and \
-    flagged `oversized_row`. Three limits to know. (1) The callee-based mechanics \
-    read Call evidence, extracted for rust, python, javascript, typescript, tsx, go, java, and c only; their \
-    callee lists are Rust names, so in another language they count only the calls that share those names. A \
-    language absent from `covers` was not checked: its zero means nothing was read, not that nothing is there \
-    — diagnostics and comment markers read every parsed file, credential paths every file. (2) Each row's `detail` is clipped to 200 characters, and \
-    `detail_clipped` is true when characters were dropped; the remainder lives only in the file. (3) Every \
-    response carries `files_not_parsed`: indexed files under your `pattern` with a detected language whose \
-    grammar did not run or finish (content over \
-    `max_parse_bytes`, 2 MiB by default; a grammar that failed to load; a failed or timed-out parse); while it \
-    is above 0 every count is a floor, and `report` lists those files with the reason.\n\n\
-    MECHANICS: the built-ins are counting primitives, not a checklist; what counts as a signal in this codebase is \
-    your decision. `mechanic` with `action: add` registers `id`, `language`, `query` (a Tree-sitter S-expression \
-    with exactly one capture; each distinct captured node is one row; one that does not compile is refused with \
-    the compiler's message) and `note`, and returns `first_count`: the `leads` response for that id. `leads` then \
-    counts and pages it like a built-in, and `leads` and `report` list every entry with `source` (`session`, \
-    `project_config`, `builtin`) and its note, session first. Session entries last until this server exits; \
-    `persist: true` writes the entry to `.planning/slugaudit/config.json` for later sessions. A built-in can never \
-    be removed or overridden. `report.mechanics.invalid` lists persisted entries that failed to load, with the \
-    error and `index`; `mechanic remove` with that `index` deletes one no `id` can name.\n\n\
-    QUERY SCHEMA: `files` (id, path, language, byte_len, content — full text of every indexed file, including \
-    non-code files), `evidence` (id, file_id, kind, start_line, end_line [1-based, inclusive; every line number in this server is 1-based], payload — JSON; kinds Structure, \
-    Import, Export, Comment, Docstring, Symbol, Diagnostic, Call), `dependency_edges` \
-    (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled). One read-only \
-    SQL statement per call, with no row cap, cut only by the page byte size: 64 KiB by default, `page_bytes` \
-    overrides it up to the server ceiling (see PAGING). `page.total` is the exact size of the whole result, so \
-    you see how large it is before you read it (if counting ran out of budget it is null and `total_unavailable` \
-    says why). Add `LIMIT` to exploratory queries, page with `page.next_offset`, or narrow the query: some MCP clients pass a large tool \
-    result to the model unbounded, which fails the turn. A first row bigger than the page (one huge \
-    `files.content`, a `group_concat`) is not returned whole: its TEXT/BLOB cells are clipped to fit and each cut is \
-    listed in `clipped_cells` with `row`, `column`, `returned` and `total` (characters for text, bytes for a blob: \
-    `substr`'s own units) and `continue_with`, a ready `substr(\"<column>\", start, len)` for the rest; nothing is lost, \
-    and a larger `page_bytes` avoids the cut. JSON has no infinity, so an infinite REAL is `null` in `rows` and \
-    listed in `non_finite_cells` (`row`, `column`, `value`). To read a file by lines, `line_count(text)` and \
-    `line_range(text, start, end)` (1-based, inclusive, source line endings kept, NULL in gives NULL): SELECT \
-    line_count(content), line_range(content, 400, 600) FROM files WHERE path = 'src/big.rs'. Always JOIN evidence \
-    to files: SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = \
-    'Symbol' AND json_extract(e.payload, '$.name') = 'configure'. Discover the rest with SELECT name FROM \
-    sqlite_master WHERE type='table', and read `slugaudit://schema.sql`.\n\n\
-    PAYLOAD KEYS: read `slugaudit://queries/evidence_payload_keys.md` for every `evidence.payload` \
-    key, its JSON type, and the `evidence.kind` it belongs to (always json_extract the payload, \
-    never LIKE on its text).\n\n\
-    IMPORTS: `dependency_edges.resolution_kind` is Resolved, Unresolved, or External; `syntax_unmodeled` = 1 \
-    marks an Unresolved edge whose import syntax the resolver could not parse at all (e.g. Go's `import \"fmt\"`), \
-    as opposed to one that parsed but matched no project file. `report` gives the split as `import_resolution` \
-    plus `unsupported_language_unresolved_count` — a graph that is mostly External/Unresolved makes dependency \
-    walking a dead end, not a finding.\n\n\
-    GRAMMARS: Tree-sitter grammars are not bundled; the first time a language is parsed, its grammar is fetched \
-    from the language pack's GitHub release (sha256-verified, cached under \
-    `~/.cache/tree-sitter-language-pack/`). Offline, files in that language are still stored and searchable by \
-    `content`, but have no parsed evidence: their `files.parser_availability` is `LoadFailed`, and they are \
-    retried after a 10-minute cool-down or on the next server start. The first failed fetch can block one call \
-    for up to about 60 s. Markdown, reStructuredText, AsciiDoc, Org and plain-text files, and the ignore lists `.gitignore`, `.ignore` and `.dockerignore`, are stored as \
-    `language = 'prose'` and never parsed (no grammar, no evidence; `structure` refuses them).\n\n\
-    STRUCTURE: `structure` runs a Tree-sitter S-expression query (required, and it must name at least one \
-    capture) against indexed content — in one `file`, or project-wide with `language` and an optional `pattern` \
-    path filter (e.g. `src/**/*.rs`). Rust `(function_item name: (identifier) @name)`, \
-    Python `(function_definition name: (identifier) @name)`. Results page at 64 KiB under `page` (see PAGING; `page_bytes` overrides); `files_not_scanned` > 0 means the project-wide scan hit its memory window, and the second cursor `next_start_after_file` (with `offset` 0) resumes it once `page.next_offset` is exhausted; `unparsed_files` lists files that yielded no tree. Ready-made recipes are resources: \
-    `slugaudit://queries/README.md` is the index of every one of them, beside the payload-key \
-    reference and `slugaudit://schema.sql`.\n\n\
-    OTHER TOOLS: `report` is the project snapshot — files, languages, evidence kinds, parser failures, import \
-    resolution, credential-shaped file count. `finding` persists a conclusion you have personally reviewed, \
-    bound to the file's current content hash: it stales the moment that file changes, and it is visible only to \
-    this session, so treat it as your notebook rather than a shared database. `finding_read` returns this \
-    session's findings. `project_control` enables or disables a project — `on` also appends the runtime \
-    directory `.planning/slugaudit/` to the project's root `.gitignore` when no equivalent rule is there, and \
-    reports that as `gitignore.status` (`added` / `already_ignored` / `not_written`); `off` never edits that \
-    file. A moved or re-extracted project's stale \
-    database is discarded and rebuilt from source automatically. `health` reports watcher and database state.\n\n\
-    FLOW: report → leads → mechanic add for the shapes you decide matter → drill with query/structure → read \
-    source only where evidence points → finding.\n\n\
-    FAILURES: an error's `ErrorData.data` carries `code` — a stable lowercase identifier (e.g. \
-    `sync_budget_exhausted`, `project_not_enabled`) — plus `remedy`, the next action to take; branch \
-    on `code` instead of parsing the message, and when `remedy` names a knob or a call, do that \
-    rather than retrying unchanged.\n\n\
-    JUDGMENT IS YOURS: SlugAudit is not an auditor and never will be — it performs no risk detection, assigns \
-    no severity, ranks nothing, and draws no conclusions. Every judgment in your response — what is buggy, how \
-    severe, what to fix — is entirely yours; the index hands you mechanics, and deciding which of them is a lead \
-    is your call. It records only the severity, category, and description you supply — it never generates \
-    them. Never claim SlugAudit identified, rated, or recommended anything — it cannot; evidence is \
-    not judgment.";
+const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — symbols, imports, exports, call sites, comments, \
+    parser diagnostics, file text — that you query instead of reading files: where a symbol is \
+    defined, every call site of a callee, which files import which, per-file counts and repo-wide \
+    denominators. Each call re-syncs from disk (not editor buffers) first.\n\n\
+    FIRST-WIN RULE: about to open more than ~3 files to answer one structural question (where is X \
+    defined, who calls Y, what does Z import)? Query instead. On an enabled project start with \
+    `report`, then `leads` with only `path`: two calls, no source reads.\n\n\
+    USE IT INSTEAD OF: grep for a symbol, callee, diagnostic or comment marker → `query` or `leads`; \
+    cat → SELECT content FROM files WHERE path = '…', or `structure` for AST nodes; tracing imports \
+    by hand → `dependency_edges` in a recursive CTE; notes for later → `finding`. grep and reading a \
+    file you already know stay right for a literal lookup.\n\n\
+    LINE NUMBERS: 1-based and inclusive everywhere.\n\n\
+    PAGING: `leads`, `query`, `structure` and `finding_read` return one `page`: `returned`, `total` \
+    (null when uncountable), `complete`, `next_offset` (null when done), `page_bytes` (64 KiB \
+    default; pass more, up to the server ceiling), `bytes_used`, `limited_by` (`none`, `limit`, \
+    `page_bytes`, `ceiling`, `match_cap`, `scan_window`, `time_budget`; more `page_bytes` lifts \
+    neither `ceiling` nor `match_cap`) and `revision_id`. Pages are cut by bytes, never a row cap. \
+    Resume with `offset` = `page.next_offset` and `expected_revision` = `page.revision_id`; a \
+    changed index is refused with `stale_revision` (restart from offset 0) instead of skipping or \
+    repeating rows. `structure` has a second cursor: when `complete` is false and `next_offset` is \
+    null, repeat with `start_after_file` = `next_start_after_file` and `offset` 0.\n\n\
+    LEADS: with only `path`, every mechanic with its row count, `files`, and `covers` (the languages \
+    it read; a missing language was not checked, so its zero means nothing). Your registered \
+    mechanics come first, then built-ins: calls to unwrap, expect, panic/unreachable, \
+    todo/unimplemented, assert*; diagnostics; TODO/FIXME/HACK/XXX markers; credential-shaped paths. \
+    Pass one `mechanic` for rows, `pattern` (path GLOB, or a substring without `*`/`?`) to narrow, \
+    `mode: compact` for file/line triples. Counts are complete and unordered; \
+    `files_total`/`files_covered` are the file denominators. Callee mechanics read rust, python, \
+    javascript, typescript, tsx, go, java and c calls by Rust callee names. `detail` is clipped at \
+    200 chars (`detail_clipped`). While `files_not_parsed` > 0 every count is a floor; `report` \
+    lists those files.\n\n\
+    MECHANICS: the built-ins are counting primitives, not a checklist; what counts as a signal is \
+    your decision. `mechanic` `action: add` registers `id`, `language`, `query` (Tree-sitter, \
+    exactly one capture) and `note`, and returns `first_count`; `leads` then counts it like a \
+    built-in. Entries last for this session; `persist: true` saves them to \
+    `.planning/slugaudit/config.json`. A built-in is never removed or overridden.\n\n\
+    QUERY: one read-only SELECT/WITH per call over `files` (id, path, language, byte_len, content), \
+    `evidence` (id, file_id, kind, start_line, end_line, payload JSON; kinds Structure, Import, \
+    Export, Comment, Docstring, Symbol, Diagnostic, Call) and `dependency_edges` (from_file_id, \
+    to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled). JOIN evidence to \
+    files on file_id; read payload with json_extract, never LIKE (keys: \
+    `slugaudit://queries/evidence_payload_keys.md`). Add LIMIT when exploring; some clients fail on \
+    huge results. An oversized first row is clipped, with `substr` continuations in `clipped_cells`. \
+    `line_count(text)` and `line_range(text, start, end)` read files by line. PRAGMA statements are \
+    refused; pragma_table_info and the other introspection functions work. `resolution_kind` is \
+    Resolved, Unresolved or External (`syntax_unmodeled` = 1: import syntax not parsed); \
+    `report.import_resolution` gives the split. Recipes and schema: `slugaudit://queries/README.md`, \
+    `slugaudit://schema.sql`.\n\n\
+    GRAMMARS: grammars are fetched on first use into `~/.cache/tree-sitter-language-pack/`. Offline, \
+    those files stay searchable by `content` but have no evidence until a retry (after 10 minutes or \
+    a restart); the first failed fetch can block a call for about 60 s. Markdown, reStructuredText, \
+    AsciiDoc, Org, plain-text and ignore-list files are `language = 'prose'`: stored, never parsed.\n\n\
+    OTHER TOOLS: `report` is the project snapshot. `structure` runs a Tree-sitter query (at least \
+    one capture) on one `file` or a whole `language`. `finding` records a conclusion you reviewed, \
+    bound to the file's content hash (stale once it changes), visible only to this session; \
+    `finding_read` reads them. `project_control` `on` enables and indexes a project, `off` disables \
+    it. `health` reports phase and next action; `verbose: true` adds operator detail.\n\n\
+    FLOW: report → leads → mechanic add for shapes you decide matter → query/structure → read source \
+    only where evidence points → finding.\n\n\
+    FAILURES: errors carry `data.code` (e.g. `project_not_enabled`) and `remedy`, the next action. \
+    Branch on `code`; do what `remedy` says instead of retrying unchanged.\n\n\
+    JUDGMENT IS YOURS: SlugAudit reports evidence and never judges, rates or ranks it; the severity \
+    and category on a finding are the ones you supply. Never claim SlugAudit identified, rated or \
+    recommended anything.";
 
 #[derive(Clone)]
 /// The MCP server: generated tool router, blocking-pool semaphore, and the
@@ -305,6 +246,52 @@ fn read_resource_contents(uri: &str) -> Result<ReadResourceResult, ErrorData> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every session pays for INSTRUCTIONS in context, so it stays short;
+    /// detail belongs in the tool descriptions, schemas and resources.
+    #[test]
+    fn the_initialize_instructions_stay_under_their_size_budget() {
+        let characters = INSTRUCTIONS.chars().count();
+
+        assert!(
+            characters < 5_500,
+            "INSTRUCTIONS is {characters} characters; the budget is 5500"
+        );
+    }
+
+    /// The `query` description is where a model learns what `evidence.kind`
+    /// can hold, so it names every kind the schema's CHECK list allows.
+    #[test]
+    fn the_query_tool_description_names_every_evidence_kind_the_schema_allows() {
+        let schema = include_str!("store/schema.sql");
+        let check = schema
+            .split("CHECK (kind IN (")
+            .nth(1)
+            .and_then(|rest| rest.split("))").next())
+            .expect("the evidence kind CHECK list");
+        let kinds: Vec<&str> = check
+            .split(',')
+            .map(|kind| kind.trim().trim_matches('\''))
+            .collect();
+        let surface = tool_surface();
+        let query = surface
+            .iter()
+            .find(|tool| tool.name == "query")
+            .expect("the query tool is listed");
+
+        let description = query
+            .description
+            .as_deref()
+            .expect("query has a description");
+
+        assert_eq!(kinds.len(), 8, "{kinds:?}");
+        for kind in kinds {
+            assert!(
+                description.contains(kind),
+                "`{kind}` missing: {description}"
+            );
+        }
+    }
 
     #[test]
     fn read_resource_reports_an_unknown_uri_as_resource_not_found() {

@@ -59,6 +59,15 @@ pub enum ErrorCode {
     /// `max_structure_execution_time` before every file was read, so no
     /// count is returned. Permanent for the same scan, like the sync budget.
     MechanicBudgetExhausted,
+    /// SQLite could not compile or run the statement passed to `query` — a
+    /// syntax error, an unknown table or column, a function or type error.
+    /// Not a refusal of the statement's kind (those carry no code) and not a
+    /// spent query budget.
+    SqlError,
+    /// A project-wide `structure` call named a language no indexed file in
+    /// this project has. The message lists the languages the index holds;
+    /// the remedy stays static.
+    UnknownLanguage,
 }
 
 impl ErrorCode {
@@ -76,6 +85,8 @@ impl ErrorCode {
         ErrorCode::SqlTooLarge,
         ErrorCode::FileNotIndexed,
         ErrorCode::MechanicBudgetExhausted,
+        ErrorCode::SqlError,
+        ErrorCode::UnknownLanguage,
     ];
 
     /// The stable wire string: lowercase `snake_case`, never renamed.
@@ -89,6 +100,8 @@ impl ErrorCode {
             ErrorCode::SqlTooLarge => "sql_too_large",
             ErrorCode::FileNotIndexed => "file_not_indexed",
             ErrorCode::MechanicBudgetExhausted => "mechanic_budget_exhausted",
+            ErrorCode::SqlError => "sql_error",
+            ErrorCode::UnknownLanguage => "unknown_language",
         }
     }
 
@@ -125,6 +138,15 @@ impl ErrorCode {
                 "a permanent limit for this scan, not a transient failure — retrying unchanged \
                  fails identically; remove the named entry with mechanic action remove, narrow \
                  leads `pattern`, or raise SLUGAUDIT_MAX_STRUCTURE_EXECUTION_TIME_SECS (seconds)"
+            }
+            ErrorCode::SqlError => {
+                "fix the statement from SQLite's message; list tables with SELECT name FROM \
+                 sqlite_master WHERE type='table', columns with SELECT name FROM \
+                 pragma_table_info('<table>'), or read slugaudit://schema.sql"
+            }
+            ErrorCode::UnknownLanguage => {
+                "retry with one of the languages the message lists as indexed in this project, \
+                 spelled exactly as stored (report lists them under languages)"
             }
         }
     }

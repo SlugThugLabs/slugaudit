@@ -480,8 +480,8 @@ fn a_failed_tool_call_logs_the_static_error_class_but_never_the_message() {
     );
     assert_eq!(
         logged_field(line, "code"),
-        "none",
-        "this failure carries no machine code: {line}"
+        "sql_error",
+        "the SQL error class `sql_error` is logged: {line}"
     );
     assert!(
         !logs.contains(SECRET),

@@ -242,7 +242,10 @@ fn health_with_an_active_project_path_reports_db_fields() {
     crate::tools::context::ensure_synced_no_progress(&path, &manager)
         .expect("ensure_current succeeds via the test manager");
 
-    let request = crate::tools::HealthRequest { path: Some(path) };
+    let request = crate::tools::HealthRequest {
+        path: Some(path),
+        verbose: true,
+    };
     let response = crate::tools::health::health(
         &rmcp::handler::server::wrapper::Parameters(request),
         &crate::progress::NoopProgressSink,
@@ -253,10 +256,15 @@ fn health_with_an_active_project_path_reports_db_fields() {
     let inner = response.0;
     let database = inner.database.as_ref().expect("database group");
     assert!(database.revision_id.is_some());
-    assert!(database.parser_pack_version.is_some());
     assert_eq!(database.file_count, 1);
+    let detail = inner
+        .detail
+        .as_ref()
+        .expect("a verbose answer carries detail");
+    let database_detail = detail.database.as_ref().expect("database detail group");
+    assert!(database_detail.parser_pack_version.is_some());
     assert!(
-        inner.server.last_sync_unix_seconds > 0,
+        detail.server.last_sync_unix_seconds > 0,
         "ensure_current must stamp the last-sync timestamp"
     );
     let _ = project;
@@ -274,7 +282,10 @@ fn health_with_a_path_outside_any_enabled_project_reports_disabled() {
     let path = project.path().to_string_lossy().into_owned();
 
     let response = super::health(
-        &Parameters(super::HealthRequest { path: Some(path) }),
+        &Parameters(super::HealthRequest {
+            path: Some(path),
+            verbose: false,
+        }),
         &crate::progress::NoopProgressSink,
         &SourceSyncManager::new(),
     )
@@ -298,7 +309,10 @@ fn health_with_a_path_outside_any_enabled_project_reports_disabled() {
 #[test]
 fn health_without_a_path_still_names_the_way_to_enable_a_project() {
     let response = super::health(
-        &Parameters(super::HealthRequest { path: None }),
+        &Parameters(super::HealthRequest {
+            path: None,
+            verbose: false,
+        }),
         &crate::progress::NoopProgressSink,
         &SourceSyncManager::new(),
     )
@@ -316,7 +330,10 @@ fn health_reports_no_remedy_for_an_active_project() {
     let manager = synced_manager(&project, &path);
 
     let response = super::health(
-        &Parameters(super::HealthRequest { path: Some(path) }),
+        &Parameters(super::HealthRequest {
+            path: Some(path),
+            verbose: false,
+        }),
         &crate::progress::NoopProgressSink,
         &manager,
     )
@@ -424,7 +441,10 @@ fn an_unreadable_database_after_a_successful_sync_reports_unknown_not_importing(
     fs::write(&database, b"this is not a sqlite database").expect("corrupt the database");
 
     let response = crate::tools::health::health(
-        &Parameters(super::HealthRequest { path: Some(path) }),
+        &Parameters(super::HealthRequest {
+            path: Some(path),
+            verbose: true,
+        }),
         &crate::progress::NoopProgressSink,
         &manager,
     )
@@ -436,7 +456,12 @@ fn an_unreadable_database_after_a_successful_sync_reports_unknown_not_importing(
         "an unreadable database must not claim the first sync never succeeded"
     );
     assert!(
-        response.0.database_read_failed,
+        response
+            .0
+            .detail
+            .as_ref()
+            .expect("a verbose answer carries detail")
+            .database_read_failed,
         "the response must carry that the database read failed"
     );
     assert_eq!(response.0.database, None);
@@ -445,4 +470,89 @@ fn an_unreadable_database_after_a_successful_sync_reports_unknown_not_importing(
         Some(WatcherHealth::Healthy),
         "the watcher's own health is still reported"
     );
+}
+
+/// Sorted object keys of one JSON value, for asserting a response's shape.
+fn keys(value: &serde_json::Value) -> Vec<&str> {
+    let mut keys: Vec<&str> = value
+        .as_object()
+        .expect("a JSON object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    keys
+}
+
+fn health_json(manager: &SourceSyncManager, path: &str, verbose: bool) -> serde_json::Value {
+    let response = super::health(
+        &Parameters(super::HealthRequest {
+            path: Some(path.to_owned()),
+            verbose,
+        }),
+        &crate::progress::NoopProgressSink,
+        manager,
+    )
+    .expect("health succeeds for an active project");
+    serde_json::to_value(&response.0).expect("health serialises")
+}
+
+/// The default answer is what a model acts on and nothing else: the phase,
+/// the remedy, the watcher's health, and the revision with its file count.
+#[test]
+fn health_without_verbose_carries_only_the_fields_a_caller_acts_on() {
+    let (project, path) = activated_temp_project();
+    let manager = synced_manager(&project, &path);
+
+    let answer = health_json(&manager, &path, false);
+
+    assert_eq!(keys(&answer), ["database", "phase", "remedy", "watcher"]);
+    assert_eq!(keys(&answer["watcher"]), ["health"]);
+    assert_eq!(keys(&answer["database"]), ["file_count", "revision_id"]);
+    assert_eq!(answer["database"]["file_count"], 1);
+    assert!(answer["database"]["revision_id"].is_string(), "{answer}");
+}
+
+/// `verbose: true` adds the operator view under `detail` and leaves the
+/// default fields exactly as they were.
+#[test]
+fn health_with_verbose_adds_the_operator_detail_beside_the_default_fields() {
+    let (project, path) = activated_temp_project();
+    let manager = synced_manager(&project, &path);
+    let plain = health_json(&manager, &path, false);
+
+    let answer = health_json(&manager, &path, true);
+
+    let detail = &answer["detail"];
+    assert_eq!(
+        keys(detail),
+        [
+            "database",
+            "database_read_failed",
+            "mechanic_cache",
+            "server",
+            "system_memory",
+            "watcher"
+        ]
+    );
+    assert_eq!(
+        keys(&detail["watcher"]),
+        [
+            "last_verified_sequence",
+            "pending_deleted",
+            "pending_dirty",
+            "sequence"
+        ]
+    );
+    assert_eq!(
+        keys(&detail["database"]),
+        ["parser_pack_version", "skipped_file_count"]
+    );
+    assert_eq!(detail["database_read_failed"], false);
+    for field in ["phase", "remedy", "watcher", "database"] {
+        assert_eq!(
+            answer[field], plain[field],
+            "`{field}` changed with verbose"
+        );
+    }
 }

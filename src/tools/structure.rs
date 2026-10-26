@@ -294,3 +294,7 @@ mod limit_tests;
 #[cfg(test)]
 #[path = "structure_parse_bounds_tests.rs"]
 mod parse_bounds_tests;
+
+#[cfg(test)]
+#[path = "structure_language_tests.rs"]
+mod language_tests;

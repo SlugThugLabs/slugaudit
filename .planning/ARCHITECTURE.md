@@ -80,13 +80,15 @@ The server exposes nine tools (`src/server.rs`):
 - **`project_control`** — enable or disable a project (create or remove the
   activation directory and run the initial import).
 - **`health`** — what state is this in and what should the caller do next.
-  Answers with three groups, each present or `null` as a unit so absence
-  reads as absence: `watcher` (health, unreconciled counts, sequences),
-  `database` (revision id, parser pack version, file and skipped-file
-  counts), and `server` (tool-call counters, last-sync timestamp and
-  duration, consecutive full publishes). `phase` and `remedy` summarize the
-  first two; `system_memory` reports host state because it sizes the
-  adaptive import budget.
+  The default answer carries only what a caller acts on: `phase`, `remedy`,
+  `watcher.health`, and `database.revision_id`/`file_count`, each group
+  present or `null` as a unit so absence reads as absence. `verbose: true`
+  adds `detail`, the operator view: the rest of the `watcher` group
+  (unreconciled counts, sequences) and of the `database` group (parser pack
+  version, skipped-file count), `database_read_failed`, `server` (tool-call
+  counters, last-sync timestamp and duration, consecutive full publishes),
+  `system_memory` (it sizes the adaptive import budget) and
+  `mechanic_cache`. `phase` and `remedy` summarize the two groups.
 
 Only `finding`, `mechanic` and `project_control` mutate state. Every state-bearing tool
 first brings the project current (see *Data flow*); if the watcher reports
@@ -117,7 +119,7 @@ in `config.json` changes identity and misses. A scan cut by the time budget is
 never cached. The cache holds at most 32 MiB by estimate (path plus detail
 bytes plus a fixed per-row and per-entry overhead), evicts oldest-first, and
 does not cache a result larger than the whole budget (that entry pages from the
-database as before); `health.mechanic_cache` reports entries, bytes, budget,
+database as before); `health` with `verbose: true` reports, under `detail.mechanic_cache`, entries, bytes, budget,
 evictions, skipped_too_large, hits and misses.
 `language` must be the exact lowercase name the index stores (`python`, not
 `Python`; `bash`, not the pack alias `shell`). Two lifetimes:
@@ -712,7 +714,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 95 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 98 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only
@@ -793,8 +795,9 @@ the architecture so the next reviewer does not re-litigate it from scratch.
   is re-created on every agent session.
 - **No graceful shutdown** (see *Process lifecycle*).
 - **No HTTP health endpoint or metrics endpoint.** stdio is the only
-  transport; the `health` MCP tool returns watcher health, unreconciled
-  counts, tool-call counters, and sync timing over that same transport. An
+  transport; the `health` MCP tool returns watcher health and, with
+  `verbose: true`, unreconciled counts, tool-call counters, and sync timing
+  over that same transport. An
   HTTP surface belongs with a network transport, not with stdio.
 - **Findings are session-scoped.** A finding is a conclusion from one
   reasoning session, not a durable fact. A different agent must not silently
@@ -926,6 +929,8 @@ surface).
 | `sql_too_large` | the SQL passed to `query` exceeded `max_query_sql_bytes` | `tools::query::query_with_limits` |
 | `file_not_indexed` | the named file has no indexed source content (never discovered, skipped as oversize/unreadable, or binary) | `tools::structure_source::fetch_source`, `tools::finding::fetch_file` |
 | `mechanic_budget_exhausted` | an auditor-registered mechanic's scan spent `max_structure_execution_time` before every file was read, so no count is returned; the message names the entries that were running, and the remedy names `mechanic remove`, a narrower `pattern` and the knob instead of a retry | `tools::mechanic_scan::budget_error` |
+| `sql_error` | SQLite could not compile or run the statement passed to `query` (a syntax error, an unknown table or column, a function or type error); refusals of the statement's kind (PRAGMA, ATTACH, a write, more than one statement) and spent query budgets carry no code; the remedy names schema discovery | `tools::query::describe_error` |
+| `unknown_language` | a project-wide `structure` call named a language no indexed file in this project has; the message lists the indexed languages (from the index, never the pack's list) and the remedy is static | `tools::structure_source::ensure_indexed_language` |
 <!-- error-codes:end -->
 
 `health` is the deliberate exception: it answers normally in the not-enabled

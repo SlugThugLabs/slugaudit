@@ -259,6 +259,7 @@ pub(super) fn load_targets(
         )
     })?;
     let window = with_verified_read(synced, |tx| {
+        ensure_indexed_language(tx, language)?;
         fetch_sources_for_language(
             tx,
             language,
@@ -268,6 +269,52 @@ pub(super) fn load_targets(
         )
     })?;
     Ok((language.to_owned(), window))
+}
+
+/// Refuses a project-wide scan of a language no scannable file in the index
+/// has, naming the languages that do exist, before the pack is asked for the
+/// grammar. Without it a misspelt or absent language reached the pack, whose
+/// error (or, for a real grammar, a query compiled against it) said nothing
+/// about what this project holds. The list comes from the index with the
+/// same filter the scan uses, so every name in it is one a retry can scan;
+/// it is bounded by the number of distinct languages, never by file count.
+fn ensure_indexed_language(
+    connection: &rusqlite::Connection,
+    language: &str,
+) -> Result<(), ErrorData> {
+    let scannable = "file_kind = 'indexed' AND content IS NOT NULL AND language IS NOT NULL \
+                     AND language <> ?1";
+    let present: bool = connection
+        .query_row(
+            &format!("SELECT EXISTS (SELECT 1 FROM files WHERE language = ?2 AND {scannable})"),
+            [PROSE_LANGUAGE, language],
+            |row| row.get(0),
+        )
+        .map_err(|error| internal("checking the requested language is indexed", error))?;
+    if present {
+        return Ok(());
+    }
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT DISTINCT language FROM files WHERE {scannable} ORDER BY language"
+        ))
+        .map_err(|error| internal("preparing the indexed-language list", error))?;
+    let indexed = statement
+        .query_map([PROSE_LANGUAGE], |row| row.get::<_, String>(0))
+        .and_then(Iterator::collect::<rusqlite::Result<Vec<String>>>)
+        .map_err(|error| internal("listing the indexed languages", error))?;
+    let listed = if indexed.is_empty() {
+        "none (no parsed source files are indexed)".to_owned()
+    } else {
+        indexed.join(", ")
+    };
+    Err(ErrorData::invalid_params(
+        format!(
+            "unknown language: no indexed file in this project has the requested language; \
+             languages indexed here: {listed}"
+        ),
+        error_codes::payload(ErrorCode::UnknownLanguage),
+    ))
 }
 
 pub(super) fn truncate_text(text: &str) -> (String, bool) {

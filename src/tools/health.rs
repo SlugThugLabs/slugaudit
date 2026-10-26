@@ -12,27 +12,29 @@
 //! project — is one of those: the answer is `phase: "disabled"` plus a
 //! `remedy` naming the call that enables it, never an error.
 //!
-//! The response is grouped by where each fact comes from, so that absence
-//! reads as absence. A group is either wholly present or `null` — there is
-//! no state in which half of one is knowable:
+//! The default answer carries only what a caller acts on: `phase`,
+//! `remedy`, `watcher.health`, and `database.revision_id`/`file_count`.
+//! Everything else is operator detail, returned under `detail` only when the
+//! request sets `verbose: true`. Each group is either wholly present or
+//! `null` — there is no state in which half of one is knowable:
 //!
 //! 1. **`watcher`** — what the filesystem watcher knows about the
-//!    supervised project: health enum, unreconciled dirty and deleted
-//!    counts, watcher sequence, last verified sequence. `null` when no
-//!    project is registered with this server.
-//! 2. **`database`** — what the project database holds: current revision
-//!    id, parser pack version, file count, skipped-file count. `null` when
+//!    supervised project (`detail.watcher` adds the unreconciled dirty and
+//!    deleted counts and the sequences). `null` when no project is
+//!    registered with this server.
+//! 2. **`database`** — what the project database holds (`detail.database`
+//!    adds the parser pack version and the skipped-file count). `null` when
 //!    the project has never been synced or the database could not be read;
-//!    `database_read_failed` says which, because the two states have
-//!    different meanings.
-//! 3. **`server`** — what this process has done since it started: tool
-//!    call counts and total milliseconds, last sync time and duration, and
-//!    the consecutive-full-publish counter that signals an untrusted
-//!    watcher. Instrumentation, present so the tool can be measured over
-//!    time; nothing here drives `phase` or `remedy`.
+//!    `detail.database_read_failed` says which.
+//! 3. **`detail.server`** — what this process has done since it started:
+//!    tool call counts and total milliseconds, last sync time and duration,
+//!    and the consecutive-full-publish counter that signals an untrusted
+//!    watcher. Instrumentation; nothing here drives `phase` or `remedy`.
 //!
-//! `phase` and `remedy` summarize the first two groups. `system_memory` is
-//! host state, reported because it sizes the adaptive import budget.
+//! `phase` and `remedy` summarize the first two groups.
+//! `detail.system_memory` is host state, reported because it sizes the
+//! adaptive import budget, and `detail.mechanic_cache` the registered-mechanic
+//! scan cache.
 
 use crate::store;
 use crate::sync;
@@ -65,6 +67,12 @@ pub struct HealthRequest {
     /// is reporting on.
     #[schemars(default)]
     pub path: Option<String>,
+    /// Also return `detail`: the operator view (unreconciled watcher
+    /// counts and sequences, parser pack version, skipped files, whether the
+    /// database read failed, process counters, host memory, the mechanic
+    /// scan cache). Defaults to false.
+    #[serde(default)]
+    pub verbose: bool,
 }
 
 /// Response from the `health` tool.
@@ -73,50 +81,99 @@ pub struct HealthResponse {
     /// Coarse classification of what the server is doing right now.
     /// Derivation rule documented on `HealthPhase`.
     pub phase: HealthPhase,
-    /// The next action to take when no project is being served by this
-    /// answer: the same static sentence the `project_not_enabled` error
-    /// carries in `ErrorData.data.remedy`, so a caller can treat "health
-    /// says `disabled`" and "every tool fails with `project_not_enabled`"
-    /// as one instruction. `Some` exactly when `phase` is `disabled`, or
-    /// when no `path` was supplied and this server has no project at all;
-    /// `None` whenever a project is actually being served.
+    /// The next action when no project is being served by this answer: the
+    /// same sentence the `project_not_enabled` error carries as its remedy.
+    /// Present exactly when `phase` is `disabled`, or when no `path` was
+    /// supplied and this server has no project; null whenever a project is
+    /// served.
     pub remedy: Option<String>,
-    /// What the filesystem watcher knows about the supervised project.
-    /// `None` only if no project is currently registered with the server.
-    /// The fields are one object because they become unknowable together —
-    /// there is no state in which half of them exist.
-    pub watcher: Option<WatcherState>,
-    /// What the project database holds. `None` if the project has never
-    /// been synced, or if the database could not be read. Either every
-    /// field inside is present or the whole object is absent: a partial
-    /// read is not representable, so no number here is ever a placeholder.
-    /// `database_read_failed` distinguishes the two cases.
-    pub database: Option<DatabaseState>,
-    /// True when the project database exists but could not be read — an
-    /// unopenable file (permissions, symlink, network filesystem),
-    /// corruption, a lock or timeout, or schema drift. `database` is then
-    /// `null` and `phase` is `unknown`: the index may still hold a current
-    /// revision, but this answer cannot see it, and the phase never claims
-    /// the first sync failed. False when the database was read or does not
-    /// exist yet (never synced); `database: null` with this false means
-    /// exactly "never synced".
+    /// The watcher's health for the supervised project; null when no project
+    /// is registered with this server.
+    pub watcher: Option<WatcherSummary>,
+    /// What the project database holds; null when the project has never
+    /// been synced or its database could not be read
+    /// (`detail.database_read_failed` says which).
+    pub database: Option<DatabaseSummary>,
+    /// Operator detail, present only with `verbose: true`: `watcher`
+    /// (`pending_dirty`, `pending_deleted`, `sequence`,
+    /// `last_verified_sequence`), `database` (`parser_pack_version`,
+    /// `skipped_file_count`), `database_read_failed`, `server` (tool-call
+    /// counters, last sync time and duration, `consecutive_full_publishes`),
+    /// `system_memory` and `mechanic_cache`. Its fields are documented in
+    /// docs/TROUBLESHOOTING.md rather than typed here, so the schema of the
+    /// default answer stays small.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<serde_json::Map<String, serde_json::Value>>")]
+    pub detail: Option<HealthDetail>,
+}
+
+/// The watcher's health, as the default answer carries it.
+#[derive(Debug, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct WatcherSummary {
+    /// Current watcher health.
+    pub health: watch::WatcherHealth,
+}
+
+/// The current revision and file count, as the default answer carries them.
+#[derive(Debug, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct DatabaseSummary {
+    /// `revision_id` of the current revision; null if nothing has been
+    /// published yet.
+    pub revision_id: Option<String>,
+    /// Files in the database, including discovered files that were skipped
+    /// (oversize or unreadable) and hold no content.
+    pub file_count: i64,
+}
+
+/// The operator view, present only with `verbose: true`.
+#[derive(Debug, Serialize)]
+pub struct HealthDetail {
+    /// The rest of the watcher group; null exactly when `watcher` is.
+    pub watcher: Option<WatcherDetail>,
+    /// The rest of the database group; null exactly when `database` is.
+    pub database: Option<DatabaseDetail>,
+    /// True when the project database exists but could not be read (an
+    /// unopenable file, corruption, a lock or timeout, schema drift):
+    /// `database` is then null and `phase` is `unknown`, never `importing`.
+    /// False when the database was read or does not exist yet.
     pub database_read_failed: bool,
     /// What this server process has done since it started.
     pub server: ServerCounters,
-    /// Host physical and available memory. Reported because it sets the
-    /// adaptive profile's import budget (`src/model/profile.rs`), so a
-    /// caller that trips `max_total_import_bytes` can see what sized it.
+    /// Host physical and available memory; it sizes the adaptive profile's
+    /// import budget (`max_total_import_bytes`).
     pub system_memory: crate::model::SystemMemoryInfo,
-    /// The cache of registered mechanics' scan results this server keeps
-    /// per revision (`leads` selecting a registered mechanic is answered
-    /// from it while the revision is unchanged).
+    /// The per-revision cache of registered mechanics' scan results.
     pub mechanic_cache: MechanicCacheState,
+}
+
+/// Unreconciled watcher counts and sequences.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct WatcherDetail {
+    /// Paths modified or created since the last successful reconcile.
+    pub pending_dirty: usize,
+    /// Paths deleted since the last successful reconcile.
+    pub pending_deleted: usize,
+    /// The watcher's monotonic event sequence.
+    pub sequence: u64,
+    /// The sequence acknowledged by the most recent reconcile.
+    pub last_verified_sequence: u64,
+}
+
+/// The parser pack and skipped-file count of the current revision.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct DatabaseDetail {
+    /// Parser pack version stored on the current revision; null if nothing
+    /// has been published yet.
+    pub parser_pack_version: Option<String>,
+    /// Of `database.file_count`, the rows discovered but never read
+    /// (`file_kind = 'skipped'`), which hold no content.
+    pub skipped_file_count: i64,
 }
 
 /// The registered-mechanic scan cache, as `health` reports it. Sizes are
 /// estimates (path and detail bytes plus a fixed overhead per row), not
 /// measured heap use.
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Serialize)]
 pub struct MechanicCacheState {
     /// Cached scan results held now.
     pub entries: usize,
@@ -149,45 +206,47 @@ impl MechanicCacheState {
     }
 }
 
-/// What the project database holds.
+/// What the project database holds, split on the wire into
+/// [`DatabaseSummary`] and [`DatabaseDetail`].
 ///
 /// Read as one unit: one failed query leaves the whole object absent rather
 /// than producing a revision alongside a count that didn't come back, so a
 /// caller never has to detect a half-read answer — there isn't one to
 /// detect. That is also why no field here is a sentinel: absence is the
 /// `None` on [`HealthResponse::database`], not a magic number inside it.
-#[derive(Debug, Serialize, JsonSchema, PartialEq, Eq)]
-pub struct DatabaseState {
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct DatabaseState {
     /// `revision_id` of the current revision. `None` if nothing has been
     /// published yet.
-    pub revision_id: Option<String>,
+    pub(crate) revision_id: Option<String>,
     /// Parser pack version stored on the current revision. `None` if no
     /// revision has been published yet.
-    pub parser_pack_version: Option<String>,
+    pub(crate) parser_pack_version: Option<String>,
     /// Files in the database — every discovered file, including rows with
     /// `file_kind = 'skipped'`; `skipped_file_count` breaks those out.
-    pub file_count: i64,
+    pub(crate) file_count: i64,
     /// Of `file_count`, how many rows were discovered but never read
     /// (`file_kind = 'skipped'`: oversize or unreadable), so they hold no
     /// content. `file_count - skipped_file_count` is the number of files
     /// that were actually read.
-    pub skipped_file_count: i64,
+    pub(crate) skipped_file_count: i64,
 }
 
-/// The watcher's view of the supervised project.
-#[derive(Debug, Serialize, JsonSchema, PartialEq, Eq)]
-pub struct WatcherState {
+/// The watcher's view of the supervised project, split on the wire into
+/// [`WatcherSummary`] and [`WatcherDetail`].
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct WatcherState {
     /// Current watcher health.
-    pub health: watch::WatcherHealth,
+    pub(crate) health: watch::WatcherHealth,
     /// Unreconciled dirty paths — modified or created since the last
     /// successful reconcile.
-    pub pending_dirty: usize,
+    pub(crate) pending_dirty: usize,
     /// Unreconciled deleted paths.
-    pub pending_deleted: usize,
+    pub(crate) pending_deleted: usize,
     /// The watcher's monotonic event sequence.
-    pub sequence: u64,
+    pub(crate) sequence: u64,
     /// The sequence acknowledged by the most recent reconcile.
-    pub last_verified_sequence: u64,
+    pub(crate) last_verified_sequence: u64,
 }
 
 /// The outcome of one read-only database inspection.
@@ -281,7 +340,7 @@ fn count_skipped_files(connection: &mut rusqlite::Connection) -> rusqlite::Resul
 /// Operational instrumentation: these exist so the tool's own behaviour can
 /// be measured over time. Nothing here is something a caller acts on, which
 /// is why they share one object and drive no `phase` or `remedy`.
-#[derive(Debug, Serialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct ServerCounters {
     /// Total tool calls served since process start.
     pub tool_call_count: u64,
@@ -367,7 +426,7 @@ pub fn health(
     _sink: &dyn crate::progress::ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<HealthResponse>, ErrorData> {
-    let HealthRequest { path } = &request.0;
+    let HealthRequest { path, verbose } = &request.0;
     if path
         .as_deref()
         .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_PATH_BYTES))
@@ -378,32 +437,52 @@ pub fn health(
         ));
     }
 
-    let counters = ToolCounters::snapshot();
-    let last_sync = manager.last_sync_unix_seconds();
-    let last_sync_duration_ms = manager.last_sync_duration_ms();
-
     let fields = match path.as_deref() {
         Some(p) => compute_project_state(p, manager)?,
         None => compute_global_only_state(manager),
     };
+    let detail = verbose.then(|| HealthDetail {
+        watcher: fields.watcher.as_ref().map(|watcher| WatcherDetail {
+            pending_dirty: watcher.pending_dirty,
+            pending_deleted: watcher.pending_deleted,
+            sequence: watcher.sequence,
+            last_verified_sequence: watcher.last_verified_sequence,
+        }),
+        database: fields.database.as_ref().map(|database| DatabaseDetail {
+            parser_pack_version: database.parser_pack_version.clone(),
+            skipped_file_count: database.skipped_file_count,
+        }),
+        database_read_failed: fields.database_read_failed,
+        server: server_counters(manager),
+        system_memory: crate::model::detect_system_memory(),
+        mechanic_cache: MechanicCacheState::snapshot(manager),
+    });
 
     Ok(Json(HealthResponse {
         phase: fields.phase,
         remedy: fields.remedy,
-        watcher: fields.watcher,
-        database: fields.database,
-        database_read_failed: fields.database_read_failed,
-        server: ServerCounters {
-            tool_call_count: counters.call_count,
-            tool_call_error_count: counters.error_count,
-            tool_call_total_ms: counters.total_ms,
-            last_sync_unix_seconds: last_sync,
-            last_sync_duration_ms,
-            consecutive_full_publishes: manager.consecutive_full_publishes(),
-        },
-        system_memory: crate::model::detect_system_memory(),
-        mechanic_cache: MechanicCacheState::snapshot(manager),
+        watcher: fields.watcher.map(|watcher| WatcherSummary {
+            health: watcher.health,
+        }),
+        database: fields.database.map(|database| DatabaseSummary {
+            revision_id: database.revision_id,
+            file_count: database.file_count,
+        }),
+        detail,
     }))
+}
+
+/// This process's counters, read once for a verbose answer.
+fn server_counters(manager: &sync::SourceSyncManager) -> ServerCounters {
+    let counters = ToolCounters::snapshot();
+    ServerCounters {
+        tool_call_count: counters.call_count,
+        tool_call_error_count: counters.error_count,
+        tool_call_total_ms: counters.total_ms,
+        last_sync_unix_seconds: manager.last_sync_unix_seconds(),
+        last_sync_duration_ms: manager.last_sync_duration_ms(),
+        consecutive_full_publishes: manager.consecutive_full_publishes(),
+    }
 }
 
 #[cfg(test)]
