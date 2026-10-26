@@ -415,7 +415,7 @@ iterations; exceeding that marks the watcher `Desynced` and returns
 | Symptom | Meaning and action |
 |---|---|
 | `sql_too_large` | The SQL exceeds `max_query_sql_bytes` (lean 50,000; audit/adaptive 200,000 by default). Shorten it or raise the override. |
-| `page` / `truncated` / `next_offset` | The response was cut at `max_query_response_bytes` (or the requested `page_bytes`, capped by it) on a row boundary. Continue with `next_offset`, or request a larger `page_bytes`. A single row larger than the page is returned whole. |
+| `page.complete` / `page.next_offset` / `page.limited_by` | The response was cut at `max_query_response_bytes` (or the requested `page_bytes`, capped by it) on a row boundary; `page.complete` is false and `page.limited_by` names the cap. Continue with `page.next_offset`, or request a larger `page_bytes`. A single row larger than the page is returned whole. |
 | `stale_revision` on a resumed page | The index moved between pages. Restart from offset 0; do not reuse the offset. |
 | `unknown_mechanic` | `leads` only accepts ids from its catalogue. List them with a counts-only call. |
 | `file_not_indexed` | `structure` and `finding` need indexed source content. A skipped or binary file has none. |
