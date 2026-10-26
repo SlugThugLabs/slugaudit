@@ -56,8 +56,7 @@ pub enum GitignoreOutcome {
 /// the rule, a final line without a newline gets one first, and a file
 /// written with CRLF keeps that convention instead of acquiring a mixed one.
 /// The write is atomic — the complete contents go to a temp file in the same
-/// directory (or beside a symlink's target, so a linked `.gitignore` stays a
-/// link) which is then renamed over the path. A failed write therefore
+/// directory which is then renamed over the path. A failed write therefore
 /// leaves the file byte-identical, which is what
 /// [`GitignoreOutcome::NotWritten`] promises; the trade-off is that a
 /// concurrent writer's change made between the read and the rename is not
@@ -68,9 +67,9 @@ pub enum GitignoreOutcome {
 /// files. An over-cap file is reported as [`GitignoreOutcome::NotWritten`]
 /// rather than read, and any other read failure is reported the same way:
 /// this guard is non-fatal by design and never undoes the enable. A path
-/// that is not a regular file (following a symlink to its target) is refused
-/// before the read, because opening a FIFO would block forever, and a
-/// dangling symlink is reported rather than replaced. Only a path with no
+/// that is a symlink (to anywhere, so a write can never leave the project)
+/// or not a regular file is refused before the read, because opening a FIFO
+/// would block forever. Only a path with no
 /// directory entry counts as missing; the atomic write creates it.
 ///
 /// Failure is reported through [`GitignoreOutcome::NotWritten`], never
@@ -118,10 +117,8 @@ pub fn ensure_gitignore(root: &ProjectRoot) -> GitignoreOutcome {
 ///
 /// `read_file_capped_bytes` bounds the read, not the open: `File::open` on a
 /// FIFO blocks until a writer appears, so the path is classified first with
-/// `symlink_metadata` and, for a link, its target's metadata. A symlink to a
-/// regular file keeps working; a FIFO, directory, device, or a symlink to one
-/// is refused, and a symlink whose target does not exist is reported rather
-/// than replaced by a rename. A path with no directory entry is not a
+/// `symlink_metadata`. Any symlink (even to a regular file, even inside the
+/// project) and any FIFO, directory, or device is refused. A path with no directory entry is not a
 /// failure: the atomic write creates it.
 fn read_existing_gitignore(path: &Path) -> Result<Vec<u8>, CappedReadError> {
     let entry = match std::fs::symlink_metadata(path) {
@@ -129,21 +126,13 @@ fn read_existing_gitignore(path: &Path) -> Result<Vec<u8>, CappedReadError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(CappedReadError::Io(error)),
     };
-    let target = if entry.file_type().is_symlink() {
-        match std::fs::metadata(path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(CappedReadError::Io(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "the .gitignore path is a symbolic link whose target does not exist",
-                )));
-            }
-            Err(error) => return Err(CappedReadError::Io(error)),
-        }
-    } else {
-        entry
-    };
-    if !target.is_file() {
+    if entry.file_type().is_symlink() {
+        return Err(CappedReadError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the .gitignore path is a symbolic link; replace it with a regular file or remove it",
+        )));
+    }
+    if !entry.is_file() {
         return Err(CappedReadError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "the .gitignore path is not a regular file",
@@ -158,8 +147,9 @@ static GITIGNORE_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic
 /// Writes the existing bytes plus `addition` to a temp file beside the real
 /// `.gitignore` and renames it into place.
 ///
-/// The destination is the symlink target when `.gitignore` is a symlink, so
-/// the user's link survives; a missing file is created at the original path.
+/// The destination is `path` itself, never a resolved link target: callers
+/// refuse symlinks first, and the rename replaces the directory entry. A
+/// missing file is created at `path`.
 /// Nothing is renamed until the whole file has been written and synced, so a
 /// failure before the rename — including a deferred write or commit error
 /// surfaced by `sync_all` — leaves the original untouched. The temp file is
@@ -170,11 +160,9 @@ fn write_gitignore_atomically(
     existing: &[u8],
     addition: &[u8],
 ) -> std::io::Result<()> {
-    let destination = match std::fs::canonicalize(path) {
-        Ok(resolved) => resolved,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => path.to_path_buf(),
-        Err(error) => return Err(error),
-    };
+    // No canonicalisation: the rename replaces the path itself, never a
+    // link target (symlinks were refused before the read).
+    let destination = path;
     let directory = destination.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -196,7 +184,7 @@ fn write_gitignore_atomically(
     let written = file
         .write_all(existing)
         .and_then(|()| file.write_all(addition))
-        .and_then(|()| match std::fs::metadata(&destination) {
+        .and_then(|()| match std::fs::metadata(destination) {
             Ok(metadata) => file.set_permissions(metadata.permissions()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error),
@@ -207,7 +195,7 @@ fn write_gitignore_atomically(
         // error while the rename can still be skipped.
         .and_then(|()| file.sync_all());
     drop(file);
-    let result = written.and_then(|()| std::fs::rename(&temp, &destination));
+    let result = written.and_then(|()| std::fs::rename(&temp, destination));
     if let Err(error) = result {
         remove_abandoned_temp(&temp);
         return Err(error);

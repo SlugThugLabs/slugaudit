@@ -15,6 +15,6 @@ pub use activation::{
     ActivationError, GitignoreOutcome, activation_dir, disable, enable, ensure_gitignore,
     find_project_root, resolve_project,
 };
-pub use config::ProjectConfig;
+pub use config::{ConfigWriteError, ProjectConfig};
 pub use database_path::database_path;
 pub use root::{ProjectRoot, RootError};

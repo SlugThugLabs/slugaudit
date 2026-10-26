@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=Project config load, write guard and limit mapping form one cohesive module.
 //! In-repo project configuration (`.planning/slugaudit/config.json`).
 
 use crate::model::{AuditProfile, ResourceLimits, SQLITE_MAX_VALUE_BYTES, limits_for_profile};
@@ -23,6 +24,28 @@ pub enum ConfigError {
         path: PathBuf,
         /// Underlying JSON parse error.
         source: serde_json::Error,
+    },
+}
+
+/// Errors encountered while writing `.planning/slugaudit/config.json`.
+#[derive(Debug, Error)]
+pub enum ConfigWriteError {
+    /// The path is a symlink or not a regular file, so writing would follow a
+    /// link out of the project or clobber a non-file. Nothing was written.
+    #[error(
+        "refusing to write config file at '{path}': it is a symlink or not a regular file; replace it with a regular file or remove it"
+    )]
+    NotRegularFile {
+        /// Path to the configuration file.
+        path: PathBuf,
+    },
+    /// Inspecting or writing the config file failed.
+    #[error("failed to write config file at '{path}': {source}")]
+    Io {
+        /// Path to the configuration file.
+        path: PathBuf,
+        /// Underlying I/O error.
+        source: std::io::Error,
     },
 }
 
@@ -75,6 +98,36 @@ impl ProjectConfig {
             source,
         })?;
         Ok(Some(cfg))
+    }
+
+    /// Writes `contents` to `.planning/slugaudit/config.json` under
+    /// `project_root`.
+    ///
+    /// The exact path is inspected with `symlink_metadata` first: a symlink
+    /// (to anywhere) or any non-regular file is refused, so the write can
+    /// never land on a link target outside the project. A missing file is
+    /// created. The check and the write are not atomic; that narrow race is
+    /// accepted (`libc` is not a direct dependency, so `O_NOFOLLOW` is not
+    /// used).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigWriteError::NotRegularFile`] for a symlink or
+    /// non-regular file, and [`ConfigWriteError::Io`] for any other failure.
+    pub fn write_raw(project_root: &Path, contents: &str) -> Result<(), ConfigWriteError> {
+        let path = project_root
+            .join(".planning")
+            .join("slugaudit")
+            .join("config.json");
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if !metadata.file_type().is_file() => {
+                return Err(ConfigWriteError::NotRegularFile { path });
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => return Err(ConfigWriteError::Io { path, source }),
+        }
+        std::fs::write(&path, contents).map_err(|source| ConfigWriteError::Io { path, source })
     }
 
     /// Loads project config if present and valid; falls back to default on error or absence.
@@ -251,5 +304,21 @@ mod tests {
             crate::model::SQLITE_MAX_VALUE_BYTES,
             "SQLite cannot store a larger content value; the project limit is clamped"
         );
+    }
+
+    #[test]
+    fn write_raw_refuses_a_directory_at_config_json() {
+        let project = tempfile::tempdir().expect("temp dir");
+        let config_path = project.path().join(".planning/slugaudit/config.json");
+        std::fs::create_dir_all(&config_path).expect("directory in the file's place");
+
+        let error = ProjectConfig::write_raw(project.path(), "{}")
+            .expect_err("a directory must be refused");
+
+        assert!(
+            matches!(&error, ConfigWriteError::NotRegularFile { path } if *path == config_path),
+            "{error:?}"
+        );
+        assert!(config_path.is_dir(), "the directory is left in place");
     }
 }

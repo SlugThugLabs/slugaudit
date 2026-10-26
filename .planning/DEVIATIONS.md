@@ -290,3 +290,10 @@ Newest first. Format: **what** / **why** / **where** / **reversible?**
 - **Why:** `to_row` is the single function that turns a span into the stored row, so every evidence kind is converted exactly once and no producer can bypass it.
 - **Where:** `src/evidence/sql.rs`, `src/tools/structure_page.rs`, `CURRENT_SCHEMA_VERSION` 8 to 9.
 - **Reversible:** Yes; revert the two helpers and the schema version.
+
+## Symlinked `.gitignore` and `config.json` are now refused, not followed
+
+- **What:** `ensure_gitignore` and the `project_control on` profile write refuse any symlink (even to an in-project regular file) and any non-regular file at `.gitignore` / `.planning/slugaudit/config.json`. `.gitignore` is no longer canonicalised; the atomic replace renames over the path itself. A refused `config.json` returns `invalid_params`; a refused `.gitignore` is reported as `NotWritten`. `O_NOFOLLOW` is not used because `libc` is not a direct dependency, so the check/write TOCTOU window remains.
+- **Why:** Phase 8 A3 (defect D3): writing through a link could overwrite or re-inode a file outside the project. This reverses the previously pinned behaviour of writing through an in-project `.gitignore` symlink.
+- **Where:** `src/project/gitignore.rs`, `src/project/config.rs` (`ProjectConfig::write_raw`), `src/tools/project_control.rs`.
+- **Reversible:** yes, but re-allowing links reopens the escape.

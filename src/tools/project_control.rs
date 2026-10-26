@@ -227,19 +227,23 @@ fn enable(
     // the initial import below fails, and it never fails this call.
     let gitignore = gitignore_report(project::ensure_gitignore(root));
     if let Some(profile) = profile_override {
-        let conf_path = root
-            .as_path()
-            .join(".planning")
-            .join("slugaudit")
-            .join("config.json");
         let cfg = serde_json::json!({ "profile": profile });
         // `{:#}` renders a `Value` through `Display` with the same pretty
         // formatter `to_string_pretty` uses, but without a fallible call:
         // serializing a `Value` cannot fail, so there is no error arm to
         // leave untested.
         let encoded = format!("{cfg:#}");
-        std::fs::write(&conf_path, encoded)
-            .map_err(|e| err(format!("write profile config {}: {e}", conf_path.display())))?;
+        project::ProjectConfig::write_raw(root.as_path(), &encoded).map_err(
+            |error| match error {
+                // A project-state problem the caller must fix, not a server fault.
+                project::ConfigWriteError::NotRegularFile { .. } => {
+                    ErrorData::invalid_params(format!("write profile config: {error}"), None)
+                }
+                project::ConfigWriteError::Io { .. } => {
+                    err(format!("write profile config: {error}"))
+                }
+            },
+        )?;
     }
     let db_path = project::database_path(root);
     let mut connection = match store::open_read_write(&db_path) {
