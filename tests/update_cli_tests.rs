@@ -182,7 +182,7 @@ fn run_update_reports_the_exact_up_to_date_message_without_fetching() {
 #[test]
 fn run_update_replaces_the_target_with_the_newer_release_asset() {
     let sandbox = UpdateSandbox::new();
-    sandbox.plant_curl("v1.1.0", MATCHING_DIGEST);
+    sandbox.plant_curl("v1.2.0", MATCHING_DIGEST);
     sandbox.plant_sha256sum(MATCHING_DIGEST);
 
     let output = sandbox.run();
@@ -195,8 +195,8 @@ fn run_update_replaces_the_target_with_the_newer_release_asset() {
     assert_eq!(
         text(&output.stdout),
         format!(
-            "A newer release (tag v1.1.0) is available; fetching...\n\
-             Updating slugaudit v{CURRENT_VERSION} -> 1.1.0 at {}...\n\
+            "A newer release (tag v1.2.0) is available; fetching...\n\
+             Updating slugaudit v{CURRENT_VERSION} -> 1.2.0 at {}...\n\
              Done. Restart any running AI sessions so they launch the new binary.\n",
             sandbox.target.display()
         )
@@ -213,8 +213,8 @@ fn run_update_replaces_the_target_with_the_newer_release_asset() {
     );
     let curl = fs::read_to_string(&sandbox.curl_log).expect("the fake curl ran");
     let asset_url =
-        format!("https://github.com/SlugThugLabs/slugaudit/releases/download/v1.1.0/{ASSET}");
-    let sums_url = "https://github.com/SlugThugLabs/slugaudit/releases/download/v1.1.0/SHA256SUMS";
+        format!("https://github.com/SlugThugLabs/slugaudit/releases/download/v1.2.0/{ASSET}");
+    let sums_url = "https://github.com/SlugThugLabs/slugaudit/releases/download/v1.2.0/SHA256SUMS";
     assert!(curl.contains(API_URL), "metadata fetch: {curl}");
     assert!(curl.contains(&asset_url), "asset download: {curl}");
     assert!(curl.contains(sums_url), "checksum download: {curl}");
@@ -228,7 +228,7 @@ fn run_update_replaces_the_target_with_the_newer_release_asset() {
 #[test]
 fn run_update_reports_the_exact_incomparable_message_without_replacing() {
     let sandbox = UpdateSandbox::new();
-    sandbox.plant_curl("v1.1.0-rc1", MATCHING_DIGEST);
+    sandbox.plant_curl("v1.2.0-rc1", MATCHING_DIGEST);
     sandbox.plant_sha256sum(MISMATCHING_DIGEST);
 
     let output = sandbox.run();
@@ -243,8 +243,8 @@ fn run_update_reports_the_exact_incomparable_message_without_replacing() {
         text(&output.stdout),
         format!(
             "This build's version ({CURRENT_VERSION}) could not be compared with the \
-             published v1.1.0-rc1; fetching it as though it were newer.\n\
-             Updating slugaudit v{CURRENT_VERSION} -> 1.1.0-rc1 at {}...\n",
+             published v1.2.0-rc1; fetching it as though it were newer.\n\
+             Updating slugaudit v{CURRENT_VERSION} -> 1.2.0-rc1 at {}...\n",
             sandbox.target.display()
         ),
         "the incomparable message must not claim a comparison happened"
@@ -269,7 +269,7 @@ fn run_update_reports_the_exact_incomparable_message_without_replacing() {
     let curl = fs::read_to_string(&sandbox.curl_log).expect("the fake curl ran");
     assert!(
         curl.contains(&format!(
-            "https://github.com/SlugThugLabs/slugaudit/releases/download/v1.1.0-rc1/{ASSET}"
+            "https://github.com/SlugThugLabs/slugaudit/releases/download/v1.2.0-rc1/{ASSET}"
         )),
         "the incomparable branch must still fetch the release: {curl}"
     );

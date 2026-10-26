@@ -596,3 +596,15 @@ Oldest first: append each new entry at the end of the file. Format: **what** / *
 - **Why:** C2's goal is a small schema holding only what a model acts on. `check_mcp_surface` still sees a key rename or removal; inner fields are operator-facing and documented in docs/TROUBLESHOOTING.md.
 - **Where:** `src/tools/health.rs`, `.planning/archive/mcp_surface.json`.
 - **Reversible:** yes.
+
+## C3 changelog is stated against 1.0.10, not against intermediate commits
+- **What:** The 1.1.0 changelog lists "Breaking:" changes only where the shape 1.0.10 shipped changed (for example `query`'s `truncated`/`next_offset`/`revision_id` now under `page`, flat `health` now grouped). Fields, resources and tools that were added and renamed between 1.0.10 and HEAD (`leads`, `mechanic`, the resources, `structure`/`finding_read` paging, the `covers` list, `blast_radius.sql`) are described as Added; the C1/C2 removal lists in the briefs were not copied verbatim because most of those fields never shipped.
+- **Why:** A user upgrading from 1.0.10 cannot be broken by a field that was never released; listing it would be false.
+- **Where:** `CHANGELOG.md` `## [1.1.0]`.
+- **Reversible:** yes, a documentation edit.
+
+## C3 version bump touched three files outside the brief's list
+- **What:** `AGENTS.md` and `docs/RELEASING.md` each named the crate version in prose ("version `1.0.10`", "currently `1.0.10`") and were updated; `tests/update_cli_tests.rs` used `v1.1.0` as the fake "newer release", so with the crate at 1.1.0 it reported "already up to date"; the fixture release is now `v1.2.0`.
+- **Why:** leaving them would ship a stale statement and a failing test; the RELEASING.md artifact names are unchanged.
+- **Where:** `AGENTS.md`, `docs/RELEASING.md`, `tests/update_cli_tests.rs`.
+- **Reversible:** yes.

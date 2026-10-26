@@ -89,6 +89,11 @@ proptest = "1"
 temp-env = "0.3.6"
 tempfile = "3"
 
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+
 [lints.rust]
 unsafe_code = "forbid"
 unreachable_pub = "deny"
