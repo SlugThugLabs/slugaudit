@@ -18,6 +18,7 @@ use super::leads_page::{Paging, Prepared, Scope, count_of, files_of, seen};
 use super::leads_query::{MAX_DETAIL_CHARS, clip_detail, compile_pattern, page_file_counts};
 use super::mechanic_catalog::Catalog;
 use super::mechanic_scan::{self, Flow, Hit, Tally};
+use super::mechanic_scan_cached::Scanned;
 use crate::util::serialized_len;
 use rmcp::ErrorData;
 use rusqlite::Transaction;
@@ -112,14 +113,30 @@ impl<R: serde::Serialize> Collector<R> {
 }
 
 /// Feeds one registered entry's hits, in path then position order, into
-/// `collector` until the page is cut.
+/// `collector` until the page is cut: from the cached rows when the scan
+/// pass kept them, else by scanning again (an entry too large to cache).
 fn collect<R: serde::Serialize>(
     tx: &Transaction<'_>,
     scope: &Scope<'_>,
     index: usize,
+    scanned: &Scanned,
     collector: &mut Collector<R>,
     make: impl Fn(&Hit<'_>) -> R,
 ) -> Result<(), ErrorData> {
+    if let Some(Some(cached)) = scanned.rows.get(index) {
+        for row in cached.iter() {
+            let hit = Hit {
+                entry: index,
+                file: &row.file,
+                line: row.line,
+                text: &row.text,
+            };
+            if collector.offer(&row.file, || make(&hit))?.is_break() {
+                break;
+            }
+        }
+        return Ok(());
+    }
     let glob = compile_pattern(scope.pattern);
     let custom = &scope.catalog.custom;
     mechanic_scan::scan(
@@ -150,6 +167,7 @@ pub(super) fn single(
     scope: &Scope<'_>,
     index: usize,
     mode: LeadMode,
+    scanned: &Scanned,
     counts: &[MechanicCount],
 ) -> Result<Prepared, ErrorData> {
     let registered = scope.catalog.custom.get(index).ok_or_else(|| {
@@ -159,7 +177,7 @@ pub(super) fn single(
     let (rows, consumed, limited_by, rows_bytes) = match mode {
         LeadMode::Full => {
             let mut collector = Collector::new(scope.paging);
-            collect(tx, scope, index, &mut collector, full_row)?;
+            collect(tx, scope, index, scanned, &mut collector, full_row)?;
             let rows = LeadRows::Full(collector.rows);
             (
                 rows,
@@ -170,10 +188,12 @@ pub(super) fn single(
         }
         LeadMode::Compact => {
             let mut collector = Collector::new(scope.paging);
-            collect(tx, scope, index, &mut collector, |hit| CompactLeadRow {
-                mechanic: id.to_owned(),
-                file: hit.file.to_owned(),
-                line: hit.line,
+            collect(tx, scope, index, scanned, &mut collector, |hit| {
+                CompactLeadRow {
+                    mechanic: id.to_owned(),
+                    file: hit.file.to_owned(),
+                    line: hit.line,
+                }
             })?;
             let rows = LeadRows::Compact(collector.rows);
             (
@@ -210,14 +230,20 @@ pub(super) fn single(
 pub(super) fn whole_surface(
     tx: &Transaction<'_>,
     scope: &Scope<'_>,
-    tallies: &[Tally],
+    scanned: &Scanned,
     counts: &[MechanicCount],
 ) -> Result<Prepared, ErrorData> {
     let mut collector: Collector<CompactLeadRow> = Collector::new(scope.paging);
     let mut covered = BTreeSet::new();
     let mut all_files = BTreeSet::new();
     let mut registered_rows = 0_usize;
-    for (index, (registered, tally)) in scope.catalog.custom.iter().zip(tallies).enumerate() {
+    for (index, (registered, tally)) in scope
+        .catalog
+        .custom
+        .iter()
+        .zip(&scanned.tallies)
+        .enumerate()
+    {
         all_files.extend(tally.file_list.iter().cloned());
         let count = usize::try_from(tally.count)
             .map_err(|error| super::context::internal_error("counting registered rows", error))?;
@@ -232,10 +258,12 @@ pub(super) fn whole_surface(
         }
         collector.consumed_files.clear();
         let id = registered.entry.id.as_str();
-        collect(tx, scope, index, &mut collector, |hit| CompactLeadRow {
-            mechanic: id.to_owned(),
-            file: hit.file.to_owned(),
-            line: hit.line,
+        collect(tx, scope, index, scanned, &mut collector, |hit| {
+            CompactLeadRow {
+                mechanic: id.to_owned(),
+                file: hit.file.to_owned(),
+                line: hit.line,
+            }
         })?;
         covered.extend(collector.consumed_files.drain(..));
     }

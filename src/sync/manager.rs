@@ -112,6 +112,10 @@ pub struct SourceSyncManager {
     /// every tool already receives; clones share it, and it dies with the
     /// process.
     session_mechanics: crate::project::SessionMechanics,
+    /// Complete scan results of the registered mechanics, per revision; see
+    /// `project::MechanicScanCache`. Held beside the session mechanics for
+    /// the same reason: per-server state every tool already receives.
+    mechanic_scan_cache: crate::project::MechanicScanCache,
 }
 
 impl SourceSyncManager {
@@ -133,12 +137,27 @@ impl SourceSyncManager {
             consecutive_full_publishes: std::sync::Arc::new(AtomicU64::new(0)),
             session_findings_purged: Arc::new(Mutex::new(HashMap::new())),
             session_mechanics: crate::project::SessionMechanics::default(),
+            mechanic_scan_cache: crate::project::MechanicScanCache::default(),
         }
     }
 
     /// The mechanics registered for this server's session; see the field.
     pub(crate) fn session_mechanics(&self) -> &crate::project::SessionMechanics {
         &self.session_mechanics
+    }
+
+    /// The registered mechanics' scan cache; see the field.
+    pub(crate) fn mechanic_scan_cache(&self) -> &crate::project::MechanicScanCache {
+        &self.mechanic_scan_cache
+    }
+
+    /// A manager whose mechanic scan cache holds at most `budget` bytes.
+    #[cfg(test)]
+    pub(crate) fn with_mechanic_cache_budget(budget: usize) -> Self {
+        Self {
+            mechanic_scan_cache: crate::project::MechanicScanCache::with_budget(budget),
+            ..Self::default()
+        }
     }
 
     /// Returns the unix-epoch seconds of the most recent successful

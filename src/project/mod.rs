@@ -11,6 +11,7 @@ mod config_cleanup;
 mod config_store;
 mod database_path;
 mod gitignore;
+mod mechanic_scan_cache;
 mod mechanics_config;
 mod root;
 mod session_mechanics;
@@ -22,6 +23,10 @@ pub use activation::{
 pub use config::{ConfigError, ProjectConfig};
 pub use config_store::ConfigWriteError;
 pub use database_path::database_path;
+pub use mechanic_scan_cache::{
+    CacheStats, CachedRow, DEFAULT_MECHANIC_CACHE_BYTES, ENTRY_OVERHEAD_BYTES, MechanicScanCache,
+    ROW_OVERHEAD_BYTES, ScanKey,
+};
 pub use mechanics_config::{
     InvalidPersistedEntry, MAX_PERSISTED_MECHANICS, MECHANICS_SECTION_VERSION, MechanicEntry,
     MechanicsWriteError, PersistedMechanics, load_persisted, persist_entry, remove_persisted,

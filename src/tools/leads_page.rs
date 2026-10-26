@@ -15,7 +15,7 @@ use super::leads_custom;
 use super::leads_mechanics::{Mechanic, Selected};
 use super::leads_query::{self, compile_pattern, count_all, page_file_counts};
 use super::mechanic_catalog::Catalog;
-use super::mechanic_scan;
+use super::mechanic_scan_cached::{self, CacheScope};
 use rmcp::ErrorData;
 use rusqlite::Transaction;
 use std::time::Instant;
@@ -42,6 +42,8 @@ pub(super) struct Scope<'a> {
     /// When the registered mechanics' scan must stop
     /// (`max_structure_execution_time`); `None` means no deadline.
     pub(super) deadline: Option<Instant>,
+    /// Where this call's registered-mechanic scans are cached.
+    pub(super) cache: CacheScope<'a>,
 }
 
 /// Everything one page contributes to the envelope; `complete` and
@@ -70,7 +72,7 @@ struct Counts {
 ///
 /// Propagates any failure of the counts, row, or coverage reads, and of the
 /// registered mechanics' scan; see [`leads_query`], [`leads_compact`] and
-/// [`mechanic_scan`].
+/// [`mechanic_scan_cached`].
 pub(super) fn build(
     tx: &Transaction<'_>,
     revision_id: &str,
@@ -80,15 +82,16 @@ pub(super) fn build(
     let read = languages_read(tx, glob.as_deref())?;
     let whole_surface = scope.mode == LeadMode::Compact && scope.selected.is_none();
     let scanned = scanned_entries(scope);
-    let tallies = mechanic_scan::tally(
+    let found = mechanic_scan_cached::tally_cached(
         tx,
         &scope.catalog.custom,
         &scanned,
         glob.as_deref(),
         scope.deadline,
         whole_surface,
+        &scope.cache,
     )?;
-    let mut mechanic_counts = leads_custom::counts(scope.catalog, &scanned, &tallies, &read);
+    let mut mechanic_counts = leads_custom::counts(scope.catalog, &scanned, &found.tallies, &read);
     mechanic_counts.extend(count_all(tx, scope.pattern, &read)?);
     let counts = Counts {
         mechanic_counts,
@@ -108,9 +111,9 @@ pub(super) fn build(
         (LeadMode::Compact, None) if scope.catalog.custom.is_empty() => {
             compact(tx, None, pattern, paging, listed)?
         }
-        (LeadMode::Compact, None) => leads_custom::whole_surface(tx, scope, &tallies, listed)?,
+        (LeadMode::Compact, None) => leads_custom::whole_surface(tx, scope, &found, listed)?,
         (mode, Some(Selected::Registered(index))) => {
-            leads_custom::single(tx, scope, index, mode, listed)?
+            leads_custom::single(tx, scope, index, mode, &found, listed)?
         }
     };
     envelope(revision_id, counts, prepared, paging)

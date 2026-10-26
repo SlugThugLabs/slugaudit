@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=the health contract: its request and response shapes and the project-state derivation share one read-only snapshot
 //! `health` MCP tool — what state is this in, and what should the caller
 //! do next.
 //!
@@ -106,6 +107,46 @@ pub struct HealthResponse {
     /// adaptive profile's import budget (`src/model/profile.rs`), so a
     /// caller that trips `max_total_import_bytes` can see what sized it.
     pub system_memory: crate::model::SystemMemoryInfo,
+    /// The cache of registered mechanics' scan results this server keeps
+    /// per revision (`leads` selecting a registered mechanic is answered
+    /// from it while the revision is unchanged).
+    pub mechanic_cache: MechanicCacheState,
+}
+
+/// The registered-mechanic scan cache, as `health` reports it. Sizes are
+/// estimates (path and detail bytes plus a fixed overhead per row), not
+/// measured heap use.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct MechanicCacheState {
+    /// Cached scan results held now.
+    pub entries: usize,
+    /// Estimated bytes they hold.
+    pub bytes: usize,
+    /// The byte budget; the oldest entries are evicted past it.
+    pub budget: usize,
+    /// Entries evicted to make room since the server started.
+    pub evictions: u64,
+    /// Scans not cached because their rows alone outgrew the budget.
+    pub skipped_too_large: u64,
+    /// Lookups answered from the cache since the server started.
+    pub hits: u64,
+    /// Lookups that had to scan since the server started.
+    pub misses: u64,
+}
+
+impl MechanicCacheState {
+    fn snapshot(manager: &sync::SourceSyncManager) -> Self {
+        let stats = manager.mechanic_scan_cache().stats();
+        Self {
+            entries: stats.entries,
+            bytes: stats.bytes,
+            budget: stats.budget,
+            evictions: stats.evictions,
+            skipped_too_large: stats.skipped_too_large,
+            hits: stats.hits,
+            misses: stats.misses,
+        }
+    }
 }
 
 /// What the project database holds.
@@ -361,6 +402,7 @@ pub fn health(
             consecutive_full_publishes: manager.consecutive_full_publishes(),
         },
         system_memory: crate::model::detect_system_memory(),
+        mechanic_cache: MechanicCacheState::snapshot(manager),
     }))
 }
 

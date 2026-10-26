@@ -25,6 +25,7 @@ mod mechanic;
 mod mechanic_catalog;
 mod mechanic_register;
 mod mechanic_scan;
+mod mechanic_scan_cached;
 mod page_size;
 mod project_control;
 mod query;

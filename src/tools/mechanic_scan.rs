@@ -53,6 +53,20 @@ pub(super) struct Tally {
     last_file: Option<String>,
 }
 
+impl Tally {
+    /// Counts one hit in `file`; hits arrive file-contiguous, in path order.
+    pub(super) fn record(&mut self, file: &str, keep_files: bool) {
+        self.count = self.count.saturating_add(1);
+        if self.last_file.as_deref() != Some(file) {
+            self.files = self.files.saturating_add(1);
+            self.last_file = Some(file.to_owned());
+            if keep_files {
+                self.file_list.push(file.to_owned());
+            }
+        }
+    }
+}
+
 /// What a hit callback tells the scan: keep going, or stop every scan now.
 pub(super) type Flow = Result<ControlFlow<()>, ErrorData>;
 
@@ -72,40 +86,6 @@ fn budget_error(ids: &[&str]) -> ErrorData {
     )
 }
 
-/// Counts the entries of `custom` listed in `selected` under `glob`, in one
-/// pass per language. The result is indexed like `custom`; an entry not in
-/// `selected` keeps an empty tally and must not be reported as counted.
-///
-/// # Errors
-///
-/// Fails on a database read error, a grammar that no longer loads, or a
-/// spent budget.
-pub(super) fn tally(
-    tx: &Transaction<'_>,
-    custom: &[Registered],
-    selected: &[usize],
-    glob: Option<&str>,
-    deadline: Option<Instant>,
-    keep_files: bool,
-) -> Result<Vec<Tally>, ErrorData> {
-    let mut tallies = vec![Tally::default(); custom.len()];
-    scan(tx, custom, selected, glob, deadline, &mut |hit| {
-        let tally = tallies.get_mut(hit.entry).ok_or_else(|| {
-            super::context::internal_error("counting mechanics", "a hit named no entry")
-        })?;
-        tally.count = tally.count.saturating_add(1);
-        if tally.last_file.as_deref() != Some(hit.file) {
-            tally.files = tally.files.saturating_add(1);
-            tally.last_file = Some(hit.file.to_owned());
-            if keep_files {
-                tally.file_list.push(hit.file.to_owned());
-            }
-        }
-        Ok(ControlFlow::Continue(()))
-    })?;
-    Ok(tallies)
-}
-
 /// Runs the entries of `custom` listed in `selected` over their languages'
 /// files under `glob`, calling `on_hit` per distinct captured
 /// node: for one entry, in path then position order. `on_hit` returning
@@ -113,7 +93,8 @@ pub(super) fn tally(
 ///
 /// # Errors
 ///
-/// See [`tally`]; an error from `on_hit` is returned as is.
+/// Fails on a database read error, a grammar that no longer loads, or a
+/// spent budget; an error from `on_hit` is returned as is.
 pub(super) fn scan(
     tx: &Transaction<'_>,
     custom: &[Registered],

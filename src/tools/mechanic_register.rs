@@ -191,6 +191,7 @@ pub(super) fn remove(
             Err(error) => Err(write_error(error)),
         }
     })?;
+    manager.mechanic_scan_cache().remove_id(&id);
     Ok((Some(id), source))
 }
 

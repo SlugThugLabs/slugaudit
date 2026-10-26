@@ -363,6 +363,63 @@
             ],
             "type": "string"
           },
+          "MechanicCacheState": {
+            "description": "The registered-mechanic scan cache, as `health` reports it. Sizes are\nestimates (path and detail bytes plus a fixed overhead per row), not\nmeasured heap use.",
+            "properties": {
+              "budget": {
+                "description": "The byte budget; the oldest entries are evicted past it.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "bytes": {
+                "description": "Estimated bytes they hold.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "entries": {
+                "description": "Cached scan results held now.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "evictions": {
+                "description": "Entries evicted to make room since the server started.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "hits": {
+                "description": "Lookups answered from the cache since the server started.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "misses": {
+                "description": "Lookups that had to scan since the server started.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "skipped_too_large": {
+                "description": "Scans not cached because their rows alone outgrew the budget.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "entries",
+              "bytes",
+              "budget",
+              "evictions",
+              "skipped_too_large",
+              "hits",
+              "misses"
+            ],
+            "type": "object"
+          },
           "ServerCounters": {
             "description": "Counters for this server process since it started.\n\nOperational instrumentation: these exist so the tool's own behaviour can\nbe measured over time. Nothing here is something a caller acts on, which\nis why they share one object and drive no `phase` or `remedy`.",
             "properties": {
@@ -523,6 +580,10 @@
             "description": "True when the project database exists but could not be read — an\nunopenable file (permissions, symlink, network filesystem),\ncorruption, a lock or timeout, or schema drift. `database` is then\n`null` and `phase` is `unknown`: the index may still hold a current\nrevision, but this answer cannot see it, and the phase never claims\nthe first sync failed. False when the database was read or does not\nexist yet (never synced); `database: null` with this false means\nexactly \"never synced\".",
             "type": "boolean"
           },
+          "mechanic_cache": {
+            "$ref": "#/$defs/MechanicCacheState",
+            "description": "The cache of registered mechanics' scan results this server keeps\nper revision (`leads` selecting a registered mechanic is answered\nfrom it while the revision is unchanged)."
+          },
           "phase": {
             "$ref": "#/$defs/HealthPhase",
             "description": "Coarse classification of what the server is doing right now.\nDerivation rule documented on `HealthPhase`."
@@ -558,7 +619,8 @@
           "phase",
           "database_read_failed",
           "server",
-          "system_memory"
+          "system_memory",
+          "mechanic_cache"
         ],
         "type": "object"
       },

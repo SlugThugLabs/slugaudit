@@ -28,6 +28,7 @@ use super::leads_mechanics::resolve_selected;
 use super::leads_page::{self, Paging};
 use super::mechanic::MechanicSource;
 use super::mechanic_catalog::{self, Catalog};
+use super::mechanic_scan_cached::CacheScope;
 use crate::model::ResourceLimits;
 use crate::progress::ProgressSink;
 use crate::sync;
@@ -376,6 +377,7 @@ pub(super) fn leads_with_catalog(
         budget_bytes: page.bytes,
         clamped_from: page.clamped_from,
     };
+    let project = synced.database_path.display().to_string();
     let scope = leads_page::Scope {
         catalog,
         selected,
@@ -383,6 +385,11 @@ pub(super) fn leads_with_catalog(
         pattern: request.pattern.as_deref(),
         paging,
         deadline: super::query_exec::deadline_after(limits.max_structure_execution_time),
+        cache: CacheScope {
+            cache: manager.mechanic_scan_cache(),
+            project: &project,
+            revision: &synced.revision_id,
+        },
     };
     let response = with_verified_read(&synced, |tx| {
         leads_page::build(tx, &synced.revision_id, &scope)

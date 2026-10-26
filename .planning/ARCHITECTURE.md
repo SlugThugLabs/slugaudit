@@ -96,6 +96,18 @@ running, instead of returning a partial count. Only the registered entries a
 call needs are scanned: all of them for counts only or a compact whole-surface
 page, the one selected entry for its page, none when a built-in is selected
 (its `mechanic_counts` then lists only the built-ins and the selected entry).
+A complete scan is cached per (project, revision, `pattern`, entry identity:
+id, language, query, source) in the server's `SourceSyncManager`
+(`project::MechanicScanCache`, `src/tools/mechanic_scan_cached.rs`), so a
+second call at the same revision parses nothing and pages cut from the cached
+rows exactly as from a fresh scan. A different revision is a miss and drops
+that project's older entries; `mechanic remove` drops the id's; an entry edited
+in `config.json` changes identity and misses. A scan cut by the time budget is
+never cached. The cache holds at most 32 MiB by estimate (path plus detail
+bytes plus a fixed per-row and per-entry overhead), evicts oldest-first, and
+does not cache a result larger than the whole budget (that entry pages from the
+database as before); `health.mechanic_cache` reports entries, bytes, budget,
+evictions, skipped_too_large, hits and misses.
 `language` must be the exact lowercase name the index stores (`python`, not
 `Python`; `bash`, not the pack alias `shell`). Two lifetimes:
 
