@@ -44,7 +44,13 @@ restored from the deleted 2026-10-18 planning paths:
 The durable copies are the source of record. A later claim that cites a
 `/tmp` path instead of one of these files is not durable.
 
-## Current state (2026-10-19)
+## Current state (2026-10-26)
+
+- Branch `fix/deep-dive-2026-10-25` (not merged, not pushed, not tagged) carries Phase 8 Waves A, B and C on top of `8e3a0b6`: crate `slugaudit-mcp-rust` **1.1.0** (`CHANGELOG.md` `[1.1.0]`), 9 tools (adds `mechanic`), one shared `page` contract, 1-based lines, schema version 11, `[profile.release]` strip + thin LTO + codegen-units 1 (release binary 18.7 MB -> 12.4 MB).
+- Gate at `f43dc9b`: 12/12 README *Development* gates, 1,507 tests passed, 0 failed, coverage 93.28%; release-binary stdio end-to-end 12/12. `f973bc6` (test-only flake fix) follows; the final gate re-run on the plan commit is recorded in the Phase 8 header.
+- Branch `wave-c-c4` and worktree `/home/slugaudit-wt/c4` (C4, integrated as `ef3b98c`) and branch `wave-a-lane-y` are kept for the owner to delete.
+
+### Previous state (2026-10-19)
 
 - `main` at `2a65a85` after wave 5 (`66536c0..2a65a85`, the 56-fix set plus
   the integration fixes `730699f` and `2a65a85`). Wave 4 landed at `4b765e1`
@@ -419,7 +425,7 @@ does not rediscover them from scratch.
 
 ## Phase 8 — 2026-10-25 deep-dive remediation and auditor-owned mechanics
 
-State: **Wave A landed** (2026-10-25, `7dc6410..35aabea`, gate green at `35aabea` (12/12 README *Development* gates, 1317 tests, 93.96% coverage); Wave B landed 2026-10-26, gate green at `345618f` (12/12 README *Development* gates, all test blocks 0 failed, 93.35% coverage; release-binary stdio end-to-end 8/8); Wave C **not started**). Authored 2026-10-25 by the architect from the deep dive;
+State: **Wave A landed** (2026-10-25, `7dc6410..35aabea`, gate green at `35aabea` (12/12 README *Development* gates, 1317 tests, 93.96% coverage); Wave B and Wave C landed 2026-10-26 (Wave C: C1-C6, see below), gate green at `345618f` (12/12 README *Development* gates, all test blocks 0 failed, 93.35% coverage; release-binary stdio end-to-end 8/8)). Authored 2026-10-25 by the architect from the deep dive;
 Lead executes on branch `fix/deep-dive-2026-10-25`, one commit per item, no
 push). Evidence: `.planning/archive/audit_2026-10-25_deep_dive.md` (defects
 D1–D9, `path:line` at `c3fc7f8`). Each item lists its Definition of Done; an
@@ -539,7 +545,7 @@ as mechanics it registers for the session or persists to the project config.
   (sync once inside `on`, or let the following call adopt the new revision).
   DoD: `check_mcp_surface --record`; the deep-dive stdio script
   (`on` → `report`) succeeds first time.
-- **C3 — release readiness.** State: **not started** (brief ready: `/root/.claude/briefs/slugaudit-phase8/C3_release_readiness.md`; Sonnet builder; Luna checks the changelog; breaking-change input in `C1_breaking_changes.md` beside it). `CHANGELOG.md` entries
+- **C3 — release readiness.** State: **landed** — `47a4924` (changelog + 1.1.0) + `152508b` (release profile; 18,693,064 -> 12,380,424 bytes; `check_performance` PASS) + `f43dc9b` (Luna: changelog corrected against what 1.0.10 actually shipped, Removed and Known-issues sections). `--version` prints `slugaudit 1.1.0`. Tagging and pushing remain the owner's call. Builder sonnet. `CHANGELOG.md` entries
   for everything since 1.0.10; version `1.1.0`; README install paths agree
   with the binary's `--help`; `[profile.release]` with `strip = true`;
   `check_version_consistency` passes. Tagging and pushing are the owner's
@@ -552,6 +558,7 @@ as mechanics it registers for the session or persists to the project config.
 ### Recorded, not scheduled (D9)
 
 - **Stored-content cap review.** State: **not scheduled** (architect 2026-10-25: a Wave C profile decision). `query`'s `SQLITE_LIMIT_LENGTH` is max(`max_query_value_bytes`, 3 x `max_file_bytes`), so the zeroblob/hex/replace amplifier is bounded but can reach ~1.5 GB (estimated) on the audit profile; the real fix is a lower default for stored content.
+- **Wave C residue.** State: **still open**, small: the stale-row discard (`verify_metadata_or_rebuild`) and `project_control` recovery still unlink without C4's lock; a `user_version` 0 database corrupt past page 1 is now reopened rather than discarded (reasoned, untested); the warn-once ledger is thread-local under `cfg(test)` (`f973bc6`) because `tools::mechanic::persist_tests` builds limits from env without `TEST_ENV_LOCK` — that test should take the lock; the language-pack alias table can drift in one direction.
 - **Wave B residue.** State: **still open**, small: two servers opening a fresh project database at once can fail one with `database is locked` at connection configure (2 of 7 trials; fits the per-project sync lock above); the parse-under-deadline loop exists three times (`structure_exec::parse_within`, `evidence/calls/query_calls.rs`, the pack-timeout path); `config.json.<pid>.<n>.tmp` files left by a crash are never swept; a custom mechanic re-parses its language's files on every `leads` call that selects it; the alias table can still drift in the pack-adds-an-alias direction.
 
 - Watcher removal in favour of the sweep plus a re-hash of files whose stored
