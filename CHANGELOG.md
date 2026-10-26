@@ -11,7 +11,7 @@ The newest entry MUST match the version in `Cargo.toml`.
 
 ## [1.1.0] - 2026-10-26
 
-Covers the 305 commits between `v1.0.10` and this release. `Cargo.toml` records
+Covers the changes since `v1.0.10`. `Cargo.toml` records
 `version = "1.1.0"`. The MCP wire surface changed more than in any earlier
 release: read the *Breaking* entries under Changed before upgrading a client or
 a saved prompt. The on-disk index schema moved from version 3 to 11; an
@@ -102,8 +102,12 @@ migration step.
   reflects the clamp. `limited_by` is one of `none`, `limit`, `page_bytes`,
   `ceiling`, `match_cap`, `scan_window` or `time_budget`. `query`'s exact-total
   fallback field is `total_unavailable`. Tool-specific extras (`clipped_cells`,
-  `oversized_row`, `files_total`, `files_covered`, `files_not_parsed`,
-  `files_not_scanned`, `next_start_after_file`) sit beside `page`.
+  `non_finite_cells`, `oversized_row`, `files_total`, `files_covered`,
+  `files_not_parsed`, `files_not_scanned`, `bytes_not_scanned`,
+  `next_start_after_file`) sit beside `page`. `query`'s `non_finite_cells`
+  lists each REAL cell that is `null` only because JSON cannot carry an
+  infinity or NaN (`row`, `column`, `value`); a `null` not listed is SQL NULL.
+  `structure.bytes_not_scanned` is the content size of the files not scanned.
 - **Breaking:** line numbers are 1-based and inclusive on every surface
   (`leads`, `query` evidence rows, `structure`, `finding`, `line_range`). The
   stored `evidence.start_line`/`end_line` change meaning, so existing indexes
@@ -112,22 +116,22 @@ migration step.
   `remedy`, `watcher.health`, `database.revision_id` and `database.file_count`
   unless called with `verbose: true` (new input). Against 1.0.10 the flat
   `watcher_health`, `revision_id` and `file_count` are now `watcher.health`,
-  `database.revision_id` and `database.file_count`. Everything else moved under
+  `database.revision_id` and `database.file_count`. These 1.0.10 fields moved under
   `detail`, present only with `verbose: true`: `pending_dirty`,
   `pending_deleted`, `watcher_sequence` (now `sequence`) and
-  `last_verified_sequence` under `detail.watcher`; `parser_pack_version` and
-  `skipped_file_count` under `detail.database`; the tool-call counters,
-  `last_sync_unix_seconds`, `last_sync_duration_ms` and
-  `consecutive_full_publishes` under `detail.server`; and `system_memory`,
+  `last_verified_sequence` under `detail.watcher`; `parser_pack_version` under
+  `detail.database`; the tool-call counters, `last_sync_unix_seconds`,
+  `last_sync_duration_ms` and `consecutive_full_publishes` under
+  `detail.server`; and `system_memory` under `detail`. New, also behind
+  `verbose`: `skipped_file_count` under `detail.database`, and
   `database_read_failed` and `mechanic_cache` under `detail`. The database
-  fields are all present or `database` is null; the `-1` sentinel values are
-  gone.
+  fields are all present or `database` is null.
 - **Breaking:** `structure` over a whole project for a language no indexed file
   has now fails with `unknown_language` (the message lists the indexed
   languages) instead of returning an empty result or the grammar pack's
   "Invalid node type". `structure` refuses prose files.
-- `query` no longer caps a page at 500 rows; a page is cut by `page_bytes` and
-  the response-size ceiling, and a caller who wants fewer rows writes `LIMIT`. A
+- `query` pages are cut by `page_bytes` and the response-size ceiling, and a
+  caller who wants fewer rows writes `LIMIT`. A
   statement list is rejected by SQLite's own statement count rather than a
   hand-written scanner, so `SELECT 1; -- done` is accepted. Duplicate result
   column names are rejected.
@@ -140,14 +144,18 @@ migration step.
   unparsed. Grammars are downloaded lazily on first use; see the README.
 - `extraction_completeness` is `ContentOnly` for indexed-but-unparsed files
   instead of `Unavailable`, and `report` parser-failure rows carry
-  `extraction_completeness` and `parser_availability`.
+  `extraction_completeness` and `parser_availability`. The reasons
+  `oversize_for_parse` (a file above `SLUGAUDIT_MAX_PARSE_BYTES`) and
+  `parse_timeout` (a parse cut at its deadline) are recorded on those files.
+- The first `report` of a server carries a `mechanics.note` explaining how
+  mechanics work; later reports omit it.
 - The server instructions were rewritten and cut from 12,561 to 5,474
   characters: paging is described once, with a `MECHANICS` paragraph and a
   line-numbers statement. The `query` description lists all eight evidence kinds.
 - `slugaudit connect` rebuilt its client registry from probed binaries: config
   paths resolve against the user's home, CLI-registered clients are probed at
   call time, and every failure ends with a paste-ready remedy. The registry is
-  now 23 clients (`pearai`, `trae` and `1mcp` were removed); a non-object
+  now 23 clients; a non-object
   config section, an unrepresentable binary path and a failed `mcp remove` are
   refused with a typed, truthful message instead of reporting success.
 - `health` reports an indexed project without a registered watcher as its own
@@ -155,6 +163,18 @@ migration step.
   disabled state with one actionable instruction.
 - Dependency updates: `rmcp` 3.5, `tree-sitter-language-pack` 1.18.0, `tokio`
   1.53.3, `criterion` 0.8, `thiserror` 2.0.21, `uuid` 1.28, `which` 8.0.6.
+- `unwrap` and `expect` are denied outside tests (`clippy::unwrap_used`,
+  `clippy::expect_used`).
+
+### Removed
+
+- The 500-row cap on `query` pages.
+- The `pearai`, `trae` and `1mcp` clients from the `slugaudit connect`
+  registry.
+- From `query`, the top-level `truncated`, `next_offset` and `revision_id`; from
+  `structure`, `truncated` and `revision_id`; from `finding_read`,
+  `revision_id`. They are on `page`.
+- The `-1` sentinel values in `health`.
 
 ### Fixed
 
@@ -169,8 +189,7 @@ migration step.
 - Two servers opening a fresh project database at the same time no longer fail
   one of them with `database is locked`.
 - Import resolution: imports of discovered-but-skipped files are no longer
-  reported as unresolved dead code; JavaScript and TypeScript `import ... from`
-  is no longer claimed by the Python branch; relative and root-escaping imports
+  reported as unresolved dead code; relative and root-escaping imports
   resolve or stay unresolved correctly.
 - Rust turbofish calls (`f::<T>()`) are named correctly, and calls inside macro
   token trees are no longer dropped.
@@ -196,8 +215,9 @@ migration step.
   read-only tool call; it is now denied by the authorizer (the
   `pragma_table_info` family of table-valued reads still works), and the refusal
   message no longer says "only comments". SQLite's length limit is set on the
-  read-only connection, so a `zeroblob`/`hex`/`replace` amplifier fails with a
-  bounded error instead of allocating without limit.
+  read-only connection, so the length of a value is bounded (by the larger of
+  `max_query_value_bytes` and 3 x `max_file_bytes`) and a
+  `zeroblob`/`hex`/`replace` amplifier past it fails with an error.
 - `project_control` and the `config.json`/`.gitignore` writers refuse to write
   through a symlink or a non-regular file, so a link planted in a project can no
   longer redirect a write outside it.
@@ -205,11 +225,15 @@ migration step.
   that preserves unrelated keys, so concurrent writers cannot corrupt or lose
   each other's changes. A crash-orphaned `config.json.*.tmp` is removed on the
   next load.
-- `rustls-webpki` and `webpki-roots` were updated for RUSTSEC-2026-0382, and the
-  fuzz lockfile for RUSTSEC-2026-0349. `unsafe` code is forbidden crate-wide and
-  `unwrap`/`expect` are denied outside tests.
+- `rustls-webpki` and `webpki-roots` were updated for RUSTSEC-2026-0382.
 - Tool inputs are bounded and operational logs are redacted; `slugaudit update`
-  verifies the SHA-256 checksum and fetches over HTTPS only.
+  fetches over HTTPS only.
+
+### Known issues
+
+- The `zeroblob`/`hex`/`replace` amplifier can still reach about 1.5 GB
+  (estimated) on the `audit` profile; a lower stored-content default is under
+  review.
 
 ## [1.0.10] - 2026-09-06
 
