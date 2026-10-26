@@ -474,7 +474,11 @@ The server speaks MCP over **stdio only** (`rmcp::transport::stdio`); stdout
 is the JSON-RPC transport and logs go to stderr. It is spawned as a child
 process by the agent, so only that parent can send it requests: there is no
 network listener, no HTTP/SSE transport, no socket, and no multi-client
-multiplexing. An attacker who wants to send a malicious MCP request must
+multiplexing. (Outbound network use exists but accepts no requests: the language
+pack fetches a grammar bundle from its GitHub release on first use of a language,
+sha256-verified and cached under `~/.cache/tree-sitter-language-pack/`, and
+`slugaudit update` downloads a release. A failed grammar fetch records the file
+`LoadFailed`, which the next sync retries.) An attacker who wants to send a malicious MCP request must
 already have code execution on the same machine and a handle to the same
 process — at which point they can read any file the user can, including
 `project.db` directly.

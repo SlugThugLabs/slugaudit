@@ -105,6 +105,11 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     as opposed to one that parsed but matched no project file. `report` gives the split as `import_resolution` \
     plus `unsupported_language_unresolved_count` — a graph that is mostly External/Unresolved makes dependency \
     walking a dead end, not a finding.\n\n\
+    GRAMMARS: Tree-sitter grammars are not bundled; the first time a language is parsed, its grammar is fetched \
+    from the language pack's GitHub release (sha256-verified, cached under \
+    `~/.cache/tree-sitter-language-pack/`). Offline, files in that language are still stored and searchable by \
+    `content`, but have no parsed evidence: their `files.parser_availability` is `LoadFailed`, and a later sync \
+    retries them.\n\n\
     STRUCTURE: `structure` runs a Tree-sitter S-expression query (required, and it must name at least one \
     capture) against indexed content — in one `file`, or project-wide with `language` and an optional `pattern` \
     path filter (e.g. `src/**/*.rs`). Rust `(function_item name: (identifier) @name)`, \

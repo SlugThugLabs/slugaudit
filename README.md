@@ -59,6 +59,18 @@ The installer script and `slugaudit install` both place the binary at
 what `slugaudit connect` registers with your agent. `slugaudit update` downloads a
 newer release and atomically replaces that binary.
 
+**Grammars are fetched on first use.** SlugAudit does not bundle Tree-sitter grammars.
+The first time a language is parsed, the pinned `tree-sitter-language-pack` downloads a
+compressed bundle of grammars (about 22 MB) from its GitHub release
+(`github.com/xberg-io/tree-sitter-language-pack`), verifies it against the sha256 in the
+release manifest, and caches it at `~/.cache/tree-sitter-language-pack/v1.18.0/libs`
+(the platform cache directory; `TREE_SITTER_LANGUAGE_PACK_CACHE_DIR` overrides its
+base). Later runs load from that cache without touching the network. If the fetch fails
+(for example, offline on a first run), the file's content is still stored and
+searchable, its `files.parser_availability` is `LoadFailed`, and it is retried on a
+later sync instead of being left unparsed. The grammar fetch and `slugaudit update` are
+the only outbound network use; the server itself runs no network listener.
+
 Every release ships the material to check what you downloaded: `SHA256SUMS` for
 the binary, `LICENSE`, a CycloneDX SBOM, a third-party notices file, and a signed
 build-provenance attestation. [docs/RELEASING.md](docs/RELEASING.md) has the

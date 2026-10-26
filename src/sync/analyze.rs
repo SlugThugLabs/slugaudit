@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=one cohesive analysis boundary: language gate, pack-error classification and the three ParseResult builders share one error taxonomy
 use crate::model::{
     EvidenceItem, EvidenceKind, ExtractionCompleteness, ParseOutcome, ParserAvailability, ParserRun,
 };
@@ -48,6 +49,13 @@ impl ParseResult {
 /// and then failed to parse — `ParserRun::validate` requires `LoadFailed`
 /// to pair with `NotAttempted`, so these can't be conflated into one
 /// `LoadFailed` bucket the way an untyped string representation could.
+///
+/// The grammar fetch is part of loading: the pack downloads a grammar bundle
+/// on first use (`Download`), verifies it (`ChecksumMismatch`), serialises
+/// writers on a cache lock (`CacheLock`) and reads or writes the cache
+/// (`Io`). An offline host fails there, so those variants are load failures
+/// too; the sweep, reconcile and publish treat a stored `LoadFailed` row as
+/// stale and retry it on the next sync, a `Failed` parse is not retried.
 fn is_load_failure(error: &PackError) -> bool {
     matches!(
         error,
@@ -55,7 +63,60 @@ fn is_load_failure(error: &PackError) -> bool {
             | PackError::DynamicLoad(_)
             | PackError::NullLanguagePointer(_)
             | PackError::ParserSetup(_)
+            | PackError::Download(_)
+            | PackError::ChecksumMismatch { .. }
+            | PackError::CacheLock(_)
+            | PackError::Io(_)
     )
+}
+
+/// Pack extraction for one file. Production calls the pack directly; unit
+/// tests can force a pack error through [`forced_failure`] so the
+/// download-failure path is exercised with no network and without touching
+/// the user's grammar cache.
+#[cfg(not(test))]
+fn run_extraction(language: &str, content: &str) -> Result<(Vec<EvidenceItem>, bool), PackError> {
+    crate::evidence::extract(language, content)
+}
+
+#[cfg(test)]
+fn run_extraction(language: &str, content: &str) -> Result<(Vec<EvidenceItem>, bool), PackError> {
+    if let Some(make_error) = forced_failure::current() {
+        return Err(make_error());
+    }
+    crate::evidence::extract(language, content)
+}
+
+/// Test-only injection of a pack error into [`run_extraction`], scoped to
+/// the calling thread so parallel tests cannot observe each other's.
+#[cfg(test)]
+pub(super) mod forced_failure {
+    use super::PackError;
+    use std::cell::Cell;
+
+    thread_local! {
+        static FORCED: Cell<Option<fn() -> PackError>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn current() -> Option<fn() -> PackError> {
+        FORCED.with(Cell::get)
+    }
+
+    /// Restores "no forced failure" when dropped.
+    pub(crate) struct Guard;
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            FORCED.with(|forced| forced.set(None));
+        }
+    }
+
+    /// Makes every extraction on this thread fail with `make_error()` until
+    /// the returned guard drops.
+    pub(crate) fn force(make_error: fn() -> PackError) -> Guard {
+        FORCED.with(|forced| forced.set(Some(make_error)));
+        Guard
+    }
 }
 
 /// The pack error as a static, path-free category.
@@ -108,11 +169,11 @@ pub(super) fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult
         tracing::debug!(
             path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
             language = %language,
-            "detected language has no parser loaded in the pack; recording ContentOnly",
+            "detected language is not known to the pack; recording ContentOnly",
         );
         return ParseResult::content_only(Some(language), true);
     }
-    match crate::evidence::extract(&language, content) {
+    match run_extraction(&language, content) {
         Ok((items, depth_capped)) => succeeded_result(relative_path, language, items, depth_capped),
         Err(error) if is_load_failure(&error) => {
             load_failed_result(relative_path, language, &error)

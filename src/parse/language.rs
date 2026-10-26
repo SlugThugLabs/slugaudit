@@ -8,8 +8,15 @@ pub fn detect_language(path: &str) -> Option<String> {
 }
 
 #[must_use]
-/// True when the language pack can supply a parser for `language` on this
-/// host right now.
+/// True when the language pack knows `language` (`has_language`), whether or
+/// not its grammar is on this host yet.
+///
+/// This is deliberately not `has_parser`, which is true only for a grammar
+/// already downloaded and loadable: the pack fetches a grammar lazily from
+/// its GitHub release the first time extraction needs it, so gating
+/// extraction on `has_parser` would mean a grammar is never fetched. A
+/// failed fetch surfaces from extraction as a typed pack error, which sync
+/// records as `LoadFailed`.
 pub fn language_available(language: &str) -> bool {
     has_language(language)
 }
