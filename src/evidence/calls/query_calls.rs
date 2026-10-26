@@ -12,11 +12,12 @@ use super::call_queries::{CALL_QUERIES, CallQuery, MAX_CALLEE_DEPTH};
 use super::site::{CallSite, call_item};
 use crate::evidence::{Extraction, NoTree, TextRangeError, node_text};
 use crate::model::{EvidenceOrigin, LineIndex};
+use crate::parse::budget::{Parsed, parse_within};
 use crate::util::Deadline;
 use std::ops::ControlFlow;
 use tree_sitter::{
-    Language, Node, ParseOptions, ParseState, Parser, Query, QueryCursor, QueryCursorOptions,
-    QueryCursorState, StreamingIterator, Tree,
+    Language, Node, Parser, Query, QueryCursor, QueryCursorOptions, QueryCursorState,
+    StreamingIterator, Tree,
 };
 
 /// Extracts call evidence for `language` when it has an embedded call query
@@ -44,7 +45,7 @@ pub(super) fn extract(
         // evidence is reported partial.
         Err(_logged_at_compile) => return Extraction::without_tree(NoTree::Failed),
     };
-    let tree = match parse_within(&grammar, source, deadline) {
+    let tree = match parse_call_tree(&grammar, source, deadline) {
         Ok(tree) => tree,
         Err(why) => return Extraction::without_tree(why),
     };
@@ -58,9 +59,11 @@ fn spent(deadline: Option<&Deadline>) -> bool {
 }
 
 /// Parses `source` with a parser of its own (dropped after, so a cancelled
-/// parse leaves no state behind), cancelled through tree-sitter's progress
-/// callback once `deadline` is spent.
-fn parse_within(
+/// parse leaves no state behind), cancelled once `deadline` is spent. This
+/// only builds the parser and maps the outcome onto [`NoTree`]; the
+/// progress-callback loop is the one in `parse::budget`, shared with
+/// `structure` and the mechanic scans.
+fn parse_call_tree(
     grammar: &Language,
     source: &str,
     deadline: Option<&Deadline>,
@@ -73,22 +76,10 @@ fn parse_within(
         tracing::warn!(%error, "call query parser could not take its grammar; extraction is partial");
         return Err(NoTree::Failed);
     }
-    let bytes = source.as_bytes();
-    let mut read = |offset: usize, _| bytes.get(offset..).unwrap_or_default();
-    let mut cancelled = false;
-    let mut progress = |_state: &ParseState| -> ControlFlow<()> {
-        if spent(deadline) {
-            cancelled = true;
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
-        }
-    };
-    let options = ParseOptions::new().progress_callback(&mut progress);
-    match parser.parse_with_options(&mut read, None, Some(options)) {
-        Some(tree) => Ok(tree),
-        None if cancelled => Err(NoTree::TimedOut),
-        None => {
+    match parse_within(&mut parser, source, || spent(deadline)) {
+        Parsed::Tree(tree) => Ok(tree),
+        Parsed::Cancelled => Err(NoTree::TimedOut),
+        Parsed::NoTree => {
             tracing::warn!("call query parse produced no tree; extraction is partial");
             Err(NoTree::Failed)
         }

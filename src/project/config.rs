@@ -34,7 +34,8 @@ pub struct ProjectConfig {
     /// Desired audit resource profile (`default`, `audit`, or `lean`).
     #[serde(default)]
     pub profile: Option<AuditProfile>,
-    /// Maximum individual file size in bytes to index.
+    /// Maximum individual file size in bytes to index. `0` is refused with a
+    /// warning.
     #[serde(default)]
     pub max_file_bytes: Option<u64>,
     /// Largest file content in bytes a grammar is run on; larger files are
@@ -52,11 +53,13 @@ pub struct ProjectConfig {
     /// before it is compiled. `0` is refused with a warning.
     #[serde(default)]
     pub max_structure_query_bytes: Option<usize>,
-    /// Maximum cumulative size in bytes across all imported files.
+    /// Maximum cumulative size in bytes across all imported files. `0` is
+    /// refused with a warning.
     #[serde(default)]
     pub max_total_import_bytes: Option<u64>,
     /// Default `query`/`leads` page size in serialized JSON bytes; a request's
-    /// `page_bytes` still overrides it, and the ceiling still clamps it.
+    /// `page_bytes` still overrides it, and the ceiling still clamps it. `0` is
+    /// refused with a warning.
     #[serde(default)]
     pub default_page_bytes: Option<usize>,
     /// The versioned section of auditor-persisted mechanics. Kept raw here
@@ -98,8 +101,11 @@ impl ProjectConfig {
     }
 
     /// Loads project config if present and valid; falls back to default on error or absence.
+    /// First removes the temp files an interrupted update left beside it
+    /// (`config_cleanup.rs`); that cleanup never fails the load.
     #[must_use]
     pub fn load_or_default(project_root: &Path) -> Self {
+        super::config_cleanup::remove_stale_temps(project_root);
         match Self::load(project_root) {
             Ok(Some(cfg)) => cfg,
             Ok(None) => Self::default(),
@@ -123,7 +129,9 @@ impl ProjectConfig {
         if let Some(profile) = self.profile {
             limits = limits_for_profile(profile);
         }
-        if let Some(file_bytes) = self.max_file_bytes {
+        if let Some(file_bytes) =
+            ResourceLimits::config_nonzero("config max_file_bytes", self.max_file_bytes)
+        {
             let capped = file_bytes.min(SQLITE_MAX_VALUE_BYTES);
             if capped != file_bytes {
                 tracing::warn!(
@@ -151,10 +159,15 @@ impl ProjectConfig {
         ) {
             limits.max_structure_query_bytes = query_bytes;
         }
-        if let Some(import_bytes) = self.max_total_import_bytes {
+        if let Some(import_bytes) = ResourceLimits::config_nonzero(
+            "config max_total_import_bytes",
+            self.max_total_import_bytes,
+        ) {
             limits.max_total_import_bytes = import_bytes;
         }
-        if let Some(page_bytes) = self.default_page_bytes {
+        if let Some(page_bytes) =
+            ResourceLimits::config_nonzero("config default_page_bytes", self.default_page_bytes)
+        {
             limits.default_page_bytes = page_bytes;
         }
         limits.clamp_parse_to_file_bytes();

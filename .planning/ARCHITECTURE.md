@@ -114,7 +114,12 @@ page, the one selected entry for its page, none when a built-in is selected
   replaced atomically (temp file in the same directory, `sync_all`, re-check
   that `config.json` is not a symlink or non-regular file, `rename`, directory
   `fsync`). `config.json` and `config.lock` are refused when either is a
-  symlink or not a regular file. It is re-read on every call. `mechanic remove`
+  symlink or not a regular file. It is re-read on every call, and each load first
+  removes the `config.json.<pid>.<n>.tmp` files a crashed update left behind
+  (one warning naming each; only while `config.lock` can be taken without
+  waiting, so never a write in progress; a symlink with that name is not
+  followed; a failure is logged once and never fails the load;
+  `project/config_cleanup.rs`). `mechanic remove`
   takes `id`, or `index` for a persisted entry reported invalid (no string id,
   or a built-in's id), decided under the same lock.
 
@@ -541,9 +546,10 @@ file's stored size (`octet_length`) before loading it: a file over
 `files_over_parse_limit`, so no single file can exceed the window. Measured
 before this ceiling: a 50 MB Rust file took 185 s and 7.5 GB RSS to parse.
 `max_parse_wall_clock_ms` (above) bounds the time of a file under the ceiling.
-A `0` for `max_parse_bytes`, `max_parse_wall_clock_ms` or
-`max_structure_query_bytes`, in the environment or `config.json`, is refused
-with a warning naming the setting and the value already in place stays. A
+A `0` for any limit (every `SLUGAUDIT_<FIELD>` variable, and the `config.json`
+keys `max_file_bytes`, `max_parse_bytes`, `max_parse_wall_clock_ms`,
+`max_structure_query_bytes`, `max_total_import_bytes`, `default_page_bytes`) is
+refused with a warning naming the setting and the value already in place stays. A
 warning about one cause (a zero, or the `max_parse_bytes` clamp to
 `max_file_bytes`) is logged once per process per (setting, configured value),
 because the limits are rebuilt on every call (`model/limit_overrides.rs`).
@@ -672,7 +678,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 92 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 93 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only

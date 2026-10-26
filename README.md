@@ -176,7 +176,7 @@ and its variable are documented in `src/model/limits.rs`. `query` and `leads` re
 searchable but not parsed; `leads` reports them in `files_not_parsed` and `report` in its completeness
 block. A file whose parse takes longer than `SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS` (5000 by default, or
 `max_parse_wall_clock_ms` in `config.json`) is stored without structure and counted the same way; the
-sync goes on, and the file is parsed again only when it changes. An unset or unparseable override is ignored, leaving the default in place.
+sync goes on, and the file is parsed again only when it changes. An unset or unparseable override is ignored, leaving the default in place; a `0` is refused the same way, with a warning.
 
 Logging goes to `stderr`; `stdout` carries JSON-RPC only. Set
 `SLUGAUDIT_LOG_FORMAT=json` for one-line JSON log events.

@@ -188,6 +188,8 @@ src/
 │   ├── activation_lock.rs    exclusive database lock held while disable removes it
 │   ├── database_path.rs      where this project's project.db lives
 │   ├── config.rs             in-repo config (.planning/slugaudit/config.json)
+│   ├── config_cleanup.rs     stale config.json.<pid>.<n>.tmp removal on load, under a non-blocking try of config.lock
+│   ├── config_cleanup_tests.rs stale temp removed once, live writer's kept, symlink not followed
 │   ├── config_store.rs       the one write path of config.json: config.lock, read-modify-write, atomic replace
 │   ├── config_store_tests.rs keys kept, unreadable refused, crash before rename, symlink re-check, lock wait, no lost update
 │   ├── mechanics_config.rs   the versioned `mechanics` section of config.json: read, report, read-modify-write
@@ -209,6 +211,7 @@ src/
 │
 ├── parse/                    tree-sitter language-pack boundary
 │   ├── mod.rs                PACK_VERSION + re-exports
+│   ├── budget.rs             one tree-sitter parse that stops at a deadline (shared by structure, mechanic scans, call queries)
 │   ├── fetch_gate.rs         process-wide cool-down after a failed grammar fetch
 │   └── language.rs           language detection + parser availability
 │

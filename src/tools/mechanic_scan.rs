@@ -18,8 +18,8 @@
 
 use super::leads_covers::PARSED_FILES;
 use super::mechanic_catalog::Registered;
-use super::structure_exec::{Parsed, parse_within};
 use crate::error_codes::{self, ErrorCode};
+use crate::parse::budget::{Parsed, parse_within};
 use rmcp::ErrorData;
 use rusqlite::{Transaction, params_from_iter};
 use std::collections::HashSet;
@@ -220,7 +220,7 @@ impl LanguageScan<'_> {
         if self.past_deadline() {
             return Err(budget_error(&self.ids()));
         }
-        match parse_within(parser, content, self.deadline) {
+        match parse_within(parser, content, || self.past_deadline()) {
             Parsed::Tree(tree) => Ok(tree),
             Parsed::Cancelled => Err(budget_error(&self.ids())),
             Parsed::NoTree => Err(super::context::internal_error(

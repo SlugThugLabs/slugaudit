@@ -5,7 +5,7 @@ reversed. Standing instruction from the owner (2026-09-30): work autonomously th
 commit often, and write down every call that was mine to make — especially anything that changed
 the plan, because the point is that nothing is discovered later as a surprise.
 
-Newest first. Format: **what** / **why** / **where** / **reversible?**
+Oldest first: append each new entry at the end of the file. Format: **what** / **why** / **where** / **reversible?**
 
 ---
 
@@ -518,3 +518,9 @@ Newest first. Format: **what** / **why** / **where** / **reversible?**
 - **Why:** reading the pack's private table from source text was ruled out; `has_language` is the only network-free public resolver (`get_language` may download).
 - **Where:** `src/tools/mechanic_catalog.rs` (`PACK_ALIASES` now `pub(super)`), `src/tools/mechanic_persist_tests.rs`.
 - **Reversible:** yes.
+
+## C6: sweep decisions (zero limits, stale temp files, one parse loop)
+- **What:** (1) Every env limit and the `config.json` keys `max_file_bytes`, `max_total_import_bytes`, `default_page_bytes` now refuse `0` through the B0 mechanism (one warning per setting per process, value in place stays). The two watch limits are included: no document says `0` disables them. (2) `ProjectConfig::load_or_default` removes `config.json.<pid>.<n>.tmp` left by a crashed update, one warning naming each; stale is decided by a non-blocking try of `config.lock` (a live writer holds it while its temp file exists), not by file age. A failure to scan, lock or delete is logged once and never fails the load. (3) `parse_within` and `Parsed` moved to `src/parse/budget.rs` and take a `spent` predicate, so `query_calls` uses the same loop as `structure` and the mechanic scans. `evidence::parse_tree` (the pack's `set_parse_timeout_ms`) and the three query-cursor progress loops are different mechanisms and were left.
+- **Why:** a zero limit silently turned a feature off or made every call fail; a crashed update left litter nobody reads or removes; the copied loop had to be kept in step with the original by hand. An age rule for temp files cannot promise a write is not in progress.
+- **Where:** `src/model/limits.rs`, `src/project/config.rs`, `src/project/config_cleanup.rs`, `src/parse/budget.rs`, `src/tools/structure_exec.rs`, `src/tools/mechanic_scan.rs`, `src/evidence/calls/query_calls.rs`.
+- **Reversible:** yes. The watch zero refusal is two lines in `apply_sync_and_watch_overrides` (back to `parse_override`).

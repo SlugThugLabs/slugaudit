@@ -1,5 +1,6 @@
 //! Tree-sitter language-pack boundary.
 
+pub(crate) mod budget;
 pub(crate) mod fetch_gate;
 mod language;
 

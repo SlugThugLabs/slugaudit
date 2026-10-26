@@ -17,6 +17,20 @@ use std::sync::Mutex;
 /// The (setting, configured value) pairs already warned about.
 static REPORTED: Mutex<BTreeSet<(&'static str, u64)>> = Mutex::new(BTreeSet::new());
 
+/// Serialises the tests that count ledger-backed warnings. Each takes it through
+/// [`fresh_ledger`], so none sees a warning another test already spent.
+#[cfg(test)]
+static LEDGER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Takes [`LEDGER_TEST_LOCK`] and empties the ledger, so the holder starts from
+/// a known state and the others wait for it. Hold the guard for the whole test.
+#[cfg(test)]
+pub(super) fn fresh_ledger() -> std::sync::MutexGuard<'static, ()> {
+    let guard = lock_or_recover(&LEDGER_TEST_LOCK, "limit_override_test_lock");
+    lock_or_recover(&REPORTED, "limit_override_warnings").clear();
+    guard
+}
+
 /// `true` the first time this process sees `(setting, value)`.
 fn first_report(setting: &'static str, value: u64) -> bool {
     lock_or_recover(&REPORTED, "limit_override_warnings").insert((setting, value))

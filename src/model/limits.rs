@@ -49,7 +49,9 @@ pub(crate) const SQLITE_MAX_VALUE_BYTES: u64 = 1_000_000_000;
 /// variable that is set but cannot be read or parsed logs a warning naming
 /// the variable, and the default applies. Single-value overrides are
 /// clamped to `SQLITE_MAX_VALUE_BYTES` with a warning, because SQLite
-/// cannot store a larger value.
+/// cannot store a larger value. A `0` for any of these variables is refused
+/// with a warning naming the variable (once per process) and the value
+/// already in place stays: no limit here means "off" at zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceLimits {
     /// Largest single file that will be fully read into memory for hashing
@@ -221,7 +223,7 @@ fn base_limits() -> ResourceLimits {
 
 /// Applies the file and publish work-budget overrides.
 fn apply_import_overrides(limits: &mut ResourceLimits) {
-    if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_FILE_BYTES") {
+    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_FILE_BYTES") {
         limits.max_file_bytes = clamp_sqlite_value("SLUGAUDIT_MAX_FILE_BYTES", val);
     }
     if let Some(val) = nonzero_override("SLUGAUDIT_MAX_PARSE_BYTES") {
@@ -230,29 +232,29 @@ fn apply_import_overrides(limits: &mut ResourceLimits) {
     if let Some(val) = nonzero_override("SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS") {
         limits.max_parse_wall_clock_ms = val;
     }
-    if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES") {
+    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES") {
         limits.max_total_import_bytes = val;
     }
 }
 
 /// Applies the page, SQL, VM-step, wall-clock, and value-cap overrides.
 fn apply_query_overrides(limits: &mut ResourceLimits) {
-    if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES") {
+    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES") {
         limits.max_query_response_bytes = val;
     }
-    if let Some(val) = parse_override::<usize>("SLUGAUDIT_DEFAULT_PAGE_BYTES") {
+    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_DEFAULT_PAGE_BYTES") {
         limits.default_page_bytes = val;
     }
-    if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_QUERY_SQL_BYTES") {
+    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_QUERY_SQL_BYTES") {
         limits.max_query_sql_bytes = val;
     }
-    if let Some(val) = parse_override::<u32>("SLUGAUDIT_MAX_QUERY_VM_STEPS") {
+    if let Some(val) = nonzero_override::<u32>("SLUGAUDIT_MAX_QUERY_VM_STEPS") {
         limits.max_query_vm_steps = val;
     }
-    if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_QUERY_WALL_CLOCK_SECS") {
+    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_QUERY_WALL_CLOCK_SECS") {
         limits.max_query_wall_clock = Duration::from_secs(val);
     }
-    if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_QUERY_VALUE_BYTES") {
+    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_QUERY_VALUE_BYTES") {
         limits.max_query_value_bytes =
             clamp_sqlite_value("SLUGAUDIT_MAX_QUERY_VALUE_BYTES", val as u64) as usize;
     }
@@ -263,23 +265,23 @@ fn apply_structure_overrides(limits: &mut ResourceLimits) {
     if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES") {
         limits.max_structure_query_bytes = val;
     }
-    if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_STRUCTURE_MATCHES") {
+    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_STRUCTURE_MATCHES") {
         limits.max_structure_matches = val;
     }
-    if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_STRUCTURE_EXECUTION_TIME_SECS") {
+    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_STRUCTURE_EXECUTION_TIME_SECS") {
         limits.max_structure_execution_time = Duration::from_secs(val);
     }
 }
 
 /// Applies the sync budget and watch-scope walk overrides.
 fn apply_sync_and_watch_overrides(limits: &mut ResourceLimits) {
-    if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS") {
+    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS") {
         limits.max_sync_wall_clock = Duration::from_secs(val);
     }
-    if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_WATCH_ENTRIES") {
+    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_WATCH_ENTRIES") {
         limits.max_watch_entries = val;
     }
-    if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_WATCH_DEPTH") {
+    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_WATCH_DEPTH") {
         limits.max_watch_depth = val;
     }
 }

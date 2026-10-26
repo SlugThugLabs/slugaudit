@@ -10,12 +10,12 @@ use super::structure_page::{
     OutputMode, Paging, RunOutput, capture_at, capture_to_match, require_captures,
 };
 use crate::model::{LineIndex, ResourceLimits};
+use crate::parse::budget::{Parsed, parse_within};
 use rmcp::ErrorData;
 use std::ops::ControlFlow;
 use std::time::Instant;
 use tree_sitter::{
-    ParseOptions, ParseState, Parser, Query, QueryCursor, QueryCursorOptions, QueryCursorState,
-    StreamingIterator, Tree,
+    Parser, Query, QueryCursor, QueryCursorOptions, QueryCursorState, StreamingIterator, Tree,
 };
 
 /// Runs `query` over `files`, returning one page of matches. `truncated` is
@@ -64,49 +64,6 @@ pub(super) fn run_query(
     })
 }
 
-/// What one budgeted parse produced.
-pub(super) enum Parsed {
-    Tree(Tree),
-    /// The progress callback stopped the parse because the deadline passed.
-    Cancelled,
-    /// The parser returned no tree for another reason.
-    NoTree,
-}
-
-/// Parses `content` under `deadline` through tree-sitter 0.26's
-/// `Parser::parse_with_options` + `ParseOptions::progress_callback` (the
-/// callback runs periodically during the parse; `ControlFlow::Break` halts
-/// it and the call returns `None`). A halted parser keeps its partial state
-/// to resume, so it is reset before it is used again. Verified against
-/// tree-sitter 0.26.13 (`binding_rust/lib.rs`), 2026-10-25.
-pub(super) fn parse_within(
-    parser: &mut Parser,
-    content: &str,
-    deadline: Option<Instant>,
-) -> Parsed {
-    let bytes = content.as_bytes();
-    let mut read = |offset: usize, _| bytes.get(offset..).unwrap_or_default();
-    let mut cancelled = false;
-    let mut check_deadline = |_state: &ParseState| -> ControlFlow<()> {
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            cancelled = true;
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
-        }
-    };
-    let options = ParseOptions::new().progress_callback(&mut check_deadline);
-    let tree = parser.parse_with_options(&mut read, None, Some(options));
-    match tree {
-        Some(tree) => Parsed::Tree(tree),
-        None if cancelled => {
-            parser.reset();
-            Parsed::Cancelled
-        }
-        None => Parsed::NoTree,
-    }
-}
-
 /// One query execution's budget and accumulated output.
 struct Run<'q> {
     query: &'q Query,
@@ -137,11 +94,13 @@ impl Run<'_> {
         parser: &mut Parser,
         files: &[(String, String)],
     ) -> Result<bool, ErrorData> {
+        let deadline = self.deadline;
         for (file_path, content) in files {
             if self.out_of_budget() {
                 return Ok(true);
             }
-            let tree = match parse_within(parser, content, self.deadline) {
+            let spent = || deadline.is_some_and(|deadline| Instant::now() >= deadline);
+            let tree = match parse_within(parser, content, spent) {
                 Parsed::Tree(tree) => tree,
                 Parsed::Cancelled if self.mode.single_file => {
                     self.timed_out = true;

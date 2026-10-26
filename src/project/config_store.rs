@@ -197,7 +197,7 @@ fn update_with<E: From<ConfigWriteError>>(
     Ok(())
 }
 
-fn lock_path(target: &Path) -> Result<PathBuf, ConfigWriteError> {
+pub(super) fn lock_path(target: &Path) -> Result<PathBuf, ConfigWriteError> {
     let directory = target.parent().ok_or_else(|| ConfigWriteError::Io {
         path: target.to_path_buf(),
         source: std::io::Error::new(
@@ -279,7 +279,7 @@ fn same_file(opened: &std::fs::Metadata, entry: &std::fs::Metadata) -> bool {
 
 /// Takes the exclusive lock on `config.lock`, polling for at most `wait`.
 /// The lock is released when the returned file is dropped.
-fn acquire_lock(path: &Path, wait: Duration) -> Result<File, ConfigWriteError> {
+pub(super) fn acquire_lock(path: &Path, wait: Duration) -> Result<File, ConfigWriteError> {
     let file = open_lock_file(path)?;
     let started = Instant::now();
     loop {
