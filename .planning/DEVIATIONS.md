@@ -590,3 +590,9 @@ Oldest first: append each new entry at the end of the file. Format: **what** / *
 - **Why:** `src/sync/` is not in C2's owned files.
 - **Where:** `src/sync/manager_health.rs` (not changed), `src/tools/report_first_call_tests.rs`.
 - **Reversible:** n/a.
+
+## C2: health `detail` typed one level deep on purpose
+- **What:** the `health` output schema names `detail`'s six top-level keys (`watcher`, `database`, `database_read_failed`, `server`, `system_memory`, `mechanic_cache`) but leaves each object's inner fields free-form (`#[schemars(with = "Map<String, Value>")]`); the wire output is unchanged. Commit 9ed41f3 had typed every inner struct, which doubled the schema from 5,851 to 11,685 characters.
+- **Why:** C2's goal is a small schema holding only what a model acts on. `check_mcp_surface` still sees a key rename or removal; inner fields are operator-facing and documented in docs/TROUBLESHOOTING.md.
+- **Where:** `src/tools/health.rs`, `.planning/archive/mcp_surface.json`.
+- **Reversible:** yes.

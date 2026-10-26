@@ -95,9 +95,9 @@ pub struct HealthResponse {
     /// (`detail.database_read_failed` says which).
     pub database: Option<DatabaseSummary>,
     /// Operator detail, present only with `verbose: true`; absent otherwise.
-    /// Beyond the summaries above it adds `watcher` counts and sequences,
-    /// `database` pack version and skipped files, `database_read_failed`,
-    /// `server` counters, `system_memory` and `mechanic_cache`.
+    /// Keys: `watcher`, `database`, `database_read_failed`, `server`,
+    /// `system_memory`, `mechanic_cache`. Their inner fields are
+    /// operator-facing and listed in docs/TROUBLESHOOTING.md.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "HealthDetail", default)]
     pub detail: Option<HealthDetail>,
@@ -122,28 +122,32 @@ pub struct DatabaseSummary {
 }
 
 /// The operator view, present only with `verbose: true`.
+// Typed one level deep on purpose: the schema names the keys, the inner
+// fields stay free-form (see DEVIATIONS.md).
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct HealthDetail {
     /// The rest of the watcher group; null exactly when `watcher` is.
+    #[schemars(with = "Option<serde_json::Map<String, serde_json::Value>>")]
     pub watcher: Option<WatcherDetail>,
     /// The rest of the database group; null exactly when `database` is.
+    #[schemars(with = "Option<serde_json::Map<String, serde_json::Value>>")]
     pub database: Option<DatabaseDetail>,
-    /// True when the project database exists but could not be read (an
-    /// unopenable file, corruption, a lock or timeout, schema drift):
-    /// `database` is then null and `phase` is `unknown`, never `importing`.
-    /// False when the database was read or does not exist yet.
+    /// True when the database exists but could not be read; `database` is
+    /// then null and `phase` is `unknown`.
     pub database_read_failed: bool,
-    /// What this server process has done since it started.
+    /// Server process counters since start.
+    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub server: ServerCounters,
-    /// Host physical and available memory; it sizes the adaptive profile's
-    /// import budget (`max_total_import_bytes`).
+    /// Host physical and available memory.
+    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub system_memory: crate::model::SystemMemoryInfo,
-    /// The per-revision cache of registered mechanics' scan results.
+    /// Mechanic scan cache counters.
+    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub mechanic_cache: MechanicCacheState,
 }
 
 /// Unreconciled watcher counts and sequences.
-#[derive(Debug, Serialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct WatcherDetail {
     /// Paths modified or created since the last successful reconcile.
     pub pending_dirty: usize,
@@ -156,7 +160,7 @@ pub struct WatcherDetail {
 }
 
 /// The parser pack and skipped-file count of the current revision.
-#[derive(Debug, Serialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct DatabaseDetail {
     /// Parser pack version stored on the current revision; null if nothing
     /// has been published yet.
@@ -169,7 +173,7 @@ pub struct DatabaseDetail {
 /// The registered-mechanic scan cache, as `health` reports it. Sizes are
 /// estimates (path and detail bytes plus a fixed overhead per row), not
 /// measured heap use.
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Serialize)]
 pub struct MechanicCacheState {
     /// Cached scan results held now.
     pub entries: usize,
@@ -336,7 +340,7 @@ fn count_skipped_files(connection: &mut rusqlite::Connection) -> rusqlite::Resul
 /// Operational instrumentation: these exist so the tool's own behaviour can
 /// be measured over time. Nothing here is something a caller acts on, which
 /// is why they share one object and drive no `phase` or `remedy`.
-#[derive(Debug, Serialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct ServerCounters {
     /// Total tool calls served since process start.
     pub tool_call_count: u64,
