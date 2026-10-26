@@ -12,10 +12,11 @@
 //! [`compile_pattern`] and bound as a SQL parameter, never interpolated.
 
 use super::PARSER_FAILURE_PREDICATE;
-use super::leads::{FileCount, LeadRow, MechanicCount, PageLimit};
+use super::leads::{FileCount, LeadRow, MechanicCount};
 use super::leads_covers::LanguagesRead;
 use super::leads_mechanics::{MECHANICS, Mechanic};
 use super::mechanic::MechanicSource;
+use super::page::PageLimit;
 use crate::util::serialized_len;
 use rmcp::ErrorData;
 use rusqlite::types::Value;
@@ -167,7 +168,7 @@ pub(super) fn files_not_parsed(
 /// One page of rows: the rows, their serialized JSON size, and what stopped
 /// the page. Generic over the row shape so the full reader and the compact
 /// reader charge the same budget the same way.
-pub(super) struct Page<R> {
+pub(super) struct RowPage<R> {
     pub(super) rows: Vec<R>,
     /// Sum of each returned row's serialized JSON length — the same measure
     /// `query` applies, so the two tools' byte budgets are comparable.
@@ -186,8 +187,8 @@ pub(super) fn fill_page<R: serde::Serialize>(
     limit: Option<usize>,
     max_bytes: usize,
     context: &'static str,
-) -> Result<Page<R>, ErrorData> {
-    let mut page = Page {
+) -> Result<RowPage<R>, ErrorData> {
+    let mut page = RowPage {
         rows: Vec::new(),
         bytes: 0,
         limited_by: PageLimit::None,
@@ -201,7 +202,7 @@ pub(super) fn fill_page<R: serde::Serialize>(
         let row_bytes =
             serialized_len(&row).map_err(|error| super::context::internal_error(context, error))?;
         if !page.rows.is_empty() && page.bytes.saturating_add(row_bytes) > max_bytes {
-            page.limited_by = PageLimit::Bytes;
+            page.limited_by = PageLimit::PageBytes;
             break;
         }
         page.bytes = page.bytes.saturating_add(row_bytes);
@@ -221,7 +222,7 @@ pub(super) fn rows_for(
     limit: Option<usize>,
     offset: usize,
     max_bytes: usize,
-) -> Result<Page<LeadRow>, ErrorData> {
+) -> Result<RowPage<LeadRow>, ErrorData> {
     let glob = compile_pattern(pattern);
     // One row past the caller's limit is fetched only to learn whether more
     // exist (so `limited_by` can say `limit` rather than nothing); it is

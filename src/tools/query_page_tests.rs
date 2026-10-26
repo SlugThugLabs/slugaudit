@@ -33,13 +33,18 @@ fn the_default_page_cuts_at_64_kib_and_resumes_at_next_offset() {
 
     let first = ask_page(&project, FAT_ROWS, 0, None, &limits).expect("first page");
 
-    assert_eq!(first.page_bytes, 65_536);
-    assert!(first.truncated);
-    assert!(first.rows_bytes <= 65_536, "{}", first.rows_bytes);
+    assert_eq!(first.page.page_bytes, 65_536);
+    assert!(!first.page.complete);
+    assert!(first.page.bytes_used <= 65_536, "{}", first.page.bytes_used);
     assert!(first.rows.len() > 1 && first.rows.len() < 500);
-    assert_eq!(first.next_offset, Some(first.rows.len()));
+    assert_eq!(first.page.next_offset, Some(first.rows.len()));
     assert!(first.clipped_cells.is_empty());
-    assert_eq!(first.page_bytes_clamped_from, None);
+    assert_eq!(first.page.limited_by, PageLimit::PageBytes);
+    assert_eq!(
+        first.page.total,
+        Some(500),
+        "the exact total travels with the page"
+    );
 }
 
 #[test]
@@ -50,9 +55,9 @@ fn a_page_bytes_override_returns_a_larger_page_than_the_default() {
 
     let larger = ask_page(&project, FAT_ROWS, 0, Some(262_144), &limits).expect("larger page");
 
-    assert_eq!(larger.page_bytes, 262_144);
+    assert_eq!(larger.page.page_bytes, 262_144);
     assert!(larger.rows.len() > default_page.rows.len());
-    assert!(larger.rows_bytes <= 262_144);
+    assert!(larger.page.bytes_used <= 262_144);
 }
 
 #[test]
@@ -65,10 +70,10 @@ fn a_page_bytes_above_the_ceiling_is_clamped_and_the_response_says_so() {
 
     let response = ask_page(&project, FAT_ROWS, 0, Some(1_000_000), &limits).expect("clamped");
 
-    assert_eq!(response.page_bytes, 5_000);
-    assert_eq!(response.page_bytes_clamped_from, Some(1_000_000));
-    assert!(response.truncated);
-    assert!(response.rows_bytes <= 5_000);
+    assert_eq!(response.page.page_bytes, 5_000);
+    assert_eq!(response.page.limited_by, PageLimit::Ceiling);
+    assert!(!response.page.complete);
+    assert!(response.page.bytes_used <= 5_000);
 }
 
 #[test]
@@ -120,11 +125,11 @@ fn a_join_with_aliased_ids_returns_both_columns() {
         assert!(row["file_id"].is_number(), "missing files.id: {row}");
         assert!(row["evidence_id"].is_number(), "missing evidence.id: {row}");
     }
-    assert!(!response.truncated);
+    assert!(response.page.complete);
 }
 
 #[test]
-fn total_rows_is_exact_on_every_page_and_matches_the_rows_actually_paged() {
+fn the_page_total_is_exact_on_every_page_and_matches_the_rows_actually_paged() {
     let project = activated_project(&[]);
     let limits = ResourceLimits::default();
     let mut paged = 0usize;
@@ -133,11 +138,11 @@ fn total_rows_is_exact_on_every_page_and_matches_the_rows_actually_paged() {
 
     loop {
         let page = ask_page(&project, FAT_ROWS, offset, Some(20_000), &limits).expect("page");
-        assert_eq!(page.total_rows, Some(500), "page {pages}");
-        assert_eq!(page.total_rows_unavailable, None);
+        assert_eq!(page.page.total, Some(500), "page {pages}");
+        assert_eq!(page.total_unavailable, None);
         paged += page.rows.len();
         pages += 1;
-        match page.next_offset {
+        match page.page.next_offset {
             Some(next) => offset = next,
             None => break,
         }
@@ -148,7 +153,7 @@ fn total_rows_is_exact_on_every_page_and_matches_the_rows_actually_paged() {
 }
 
 #[test]
-fn total_rows_for_a_result_that_fits_one_page_is_its_row_count() {
+fn the_page_total_for_a_result_that_fits_one_page_is_its_row_count() {
     let project = activated_project(&[]);
 
     let response = ask_page(
@@ -160,24 +165,24 @@ fn total_rows_for_a_result_that_fits_one_page_is_its_row_count() {
     )
     .expect("small result");
 
-    assert_eq!(response.total_rows, Some(3));
-    assert!(!response.truncated);
+    assert_eq!(response.page.total, Some(3));
+    assert!(response.page.complete);
 }
 
 #[test]
-fn total_rows_stays_exact_for_an_offset_inside_and_past_the_result() {
+fn the_page_total_stays_exact_for_an_offset_inside_and_past_the_result() {
     let project = activated_project(&[]);
     let limits = ResourceLimits::default();
 
     let inside = ask_page(&project, FAT_ROWS, 490, None, &limits).expect("tail page");
     let past = ask_page(&project, FAT_ROWS, 900, None, &limits).expect("past the end");
 
-    assert_eq!((inside.rows.len(), inside.total_rows), (10, Some(500)));
-    assert_eq!((past.rows.len(), past.total_rows), (0, Some(500)));
+    assert_eq!((inside.rows.len(), inside.page.total), (10, Some(500)));
+    assert_eq!((past.rows.len(), past.page.total), (0, Some(500)));
 }
 
 #[test]
-fn an_exhausted_count_budget_omits_total_rows_and_says_why() {
+fn an_exhausted_count_budget_nulls_the_page_total_and_says_why() {
     let project = activated_project(&[]);
     // The page query stops after a handful of rows; counting must walk all
     // 200,000 and overruns the step budget the page query stayed inside.
@@ -191,18 +196,18 @@ fn an_exhausted_count_budget_omits_total_rows_and_says_why() {
     let response = ask_page(&project, sql, 0, Some(40), &limits).expect("the page itself succeeds");
 
     assert!(
-        response.truncated,
+        !response.page.complete,
         "the page must be cut for a count to run"
     );
-    assert_eq!(response.total_rows, None);
+    assert_eq!(response.page.total, None);
     let reason = response
-        .total_rows_unavailable
+        .total_unavailable
         .expect("the omission carries a reason");
     assert!(reason.contains("max_query_vm_steps"), "{reason}");
 }
 
 #[test]
-fn an_exhausted_count_wall_clock_budget_omits_total_rows_and_says_why() {
+fn an_exhausted_count_wall_clock_budget_nulls_the_page_total_and_says_why() {
     let project = activated_project(&[]);
     // The page stops after two cheap rows, below the progress handler's
     // 1,000-VM-step interval, so the page query never observes the expired
@@ -218,12 +223,12 @@ fn an_exhausted_count_wall_clock_budget_omits_total_rows_and_says_why() {
         .expect("the page query stays under its own budget");
 
     assert!(
-        response.truncated,
+        !response.page.complete,
         "the page must be cut for a count to run"
     );
-    assert_eq!(response.total_rows, None);
+    assert_eq!(response.page.total, None);
     assert_eq!(
-        response.total_rows_unavailable.as_deref(),
+        response.total_unavailable.as_deref(),
         Some("counting the whole result exceeded the wall-clock budget (max_query_wall_clock)")
     );
 }
@@ -236,15 +241,15 @@ fn a_first_row_larger_than_the_page_is_clipped_and_the_cut_is_reported() {
     let page = ask_page(&project, FAT_ROWS, 0, Some(100), &limits).expect("oversized first row");
 
     assert_eq!(page.rows.len(), 1, "one row per page minimum");
-    assert!(page.rows_bytes <= 100, "{}", page.rows_bytes);
+    assert!(page.page.bytes_used <= 100, "{}", page.page.bytes_used);
     assert_eq!(page.clipped_cells.len(), 1);
     let cell = &page.clipped_cells[0];
     assert_eq!(
         (cell.row, cell.column.as_str(), cell.total),
         (0, "pad", 1000)
     );
-    assert_eq!(page.next_offset, Some(1));
-    assert_eq!(page.total_rows, Some(500));
+    assert_eq!(page.page.next_offset, Some(1));
+    assert_eq!(page.page.total, Some(500));
 }
 
 #[test]
@@ -259,7 +264,7 @@ fn an_unrepresentable_wall_clock_budget_means_no_deadline_not_a_panic() {
         .expect("a budget too large for an Instant must not panic the query");
 
     assert_eq!(page.rows.len(), 1);
-    assert_eq!(page.total_rows, Some(1));
+    assert_eq!(page.page.total, Some(1));
 }
 
 #[test]
@@ -315,7 +320,7 @@ fn a_first_row_oversized_blob_is_clipped_with_the_continuation_metadata() {
     .expect("oversized blob row");
 
     assert_eq!(page.rows.len(), 1, "one row per page minimum");
-    assert_eq!(page.rows_bytes, 100);
+    assert_eq!(page.page.bytes_used, 100);
     let cell = &page.clipped_cells[0];
     assert_eq!(
         (cell.row, cell.column.as_str(), cell.kind, cell.unit),
@@ -348,7 +353,7 @@ fn a_first_row_oversized_text_is_clipped_on_a_character_boundary() {
     let cell = &page.clipped_cells[0];
     assert_eq!((cell.kind, cell.unit), ("text", "characters"));
     assert_eq!((cell.returned, cell.total, cell.next_start), (4, 300, 5));
-    assert_eq!(page.rows_bytes, 20);
+    assert_eq!(page.page.bytes_used, 20);
     assert_eq!(page.rows[0]["t"], "日本語日");
 }
 
@@ -367,11 +372,11 @@ fn an_oversized_row_after_a_small_first_row_still_ends_the_page() {
 
     assert_eq!(page.rows.len(), 1, "the small first row stays intact");
     assert_eq!(page.rows[0]["t"], "a");
-    assert_eq!(page.rows_bytes, 9);
+    assert_eq!(page.page.bytes_used, 9);
     assert!(page.clipped_cells.is_empty());
-    assert!(page.truncated);
-    assert_eq!(page.next_offset, Some(1));
-    assert_eq!(page.total_rows, Some(2));
+    assert!(!page.page.complete);
+    assert_eq!(page.page.next_offset, Some(1));
+    assert_eq!(page.page.total, Some(2));
 }
 
 #[test]
@@ -393,7 +398,7 @@ fn an_escaped_text_row_is_measured_exactly_not_by_the_raw_lower_bound() {
     let cell = &page.clipped_cells[0];
     assert_eq!((cell.kind, cell.unit), ("text", "characters"));
     assert_eq!((cell.returned, cell.total), (146, 200));
-    assert_eq!(page.rows_bytes, 300);
+    assert_eq!(page.page.bytes_used, 300);
     let returned = page.rows[0]["t"].as_str().expect("text cell");
     assert_eq!(returned.chars().count(), cell.returned);
     assert!(returned.chars().all(|character| character == '"'));

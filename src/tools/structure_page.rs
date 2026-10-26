@@ -1,6 +1,7 @@
 //! The inputs and outputs of one structure run: how matches are rendered,
 //! which slice of the ordered match stream is returned, and what came back.
 
+use super::page::{Page, PageLimit};
 use super::page_size::PageSize;
 use super::structure::{StructureMatch, StructureResponse};
 use super::structure_source::{MAX_SNIPPET_BYTES, SourceWindow, truncate_snippet, truncate_text};
@@ -29,10 +30,11 @@ pub(super) struct Paging {
 /// What one run produced.
 pub(super) struct RunOutput {
     pub(super) matches: Vec<StructureMatch>,
-    /// More matches exist past this page (page bytes or match cap).
-    pub(super) truncated: bool,
+    /// What cut this page with more matches remaining in the window
+    /// (`page_bytes` or `match_cap`); `none` when the window's matches ended.
+    pub(super) cut: PageLimit,
     /// Serialized JSON bytes of `matches`.
-    pub(super) matches_bytes: usize,
+    pub(super) bytes_used: usize,
     /// Multi-file only: files the parser produced no tree for.
     pub(super) unparsed_files: Vec<String>,
     /// Multi-file only: the file whose parse the deadline cancelled.
@@ -150,6 +152,18 @@ pub(super) fn capture_to_match(
     Ok((found, found_bytes))
 }
 
+/// What cut a structure page, in precedence order: a cut inside the window
+/// (`next_offset` continues), then a cancelled parse, then the end of the
+/// scan window (`next_start_after_file` continues either way).
+fn limited_by(run: &RunOutput, window: &SourceWindow, page: PageSize) -> PageLimit {
+    match run.cut {
+        PageLimit::PageBytes => page.byte_cut(),
+        PageLimit::None if run.parse_timed_out_file.is_some() => PageLimit::TimeBudget,
+        PageLimit::None if window.files_not_scanned > 0 => PageLimit::ScanWindow,
+        other => other,
+    }
+}
+
 /// Logs the run's facts and assembles the response, including the paging
 /// continuation for a cut page.
 pub(super) fn structure_response(
@@ -160,30 +174,33 @@ pub(super) fn structure_response(
     page: PageSize,
     offset: usize,
 ) -> Json<StructureResponse> {
-    let next_offset = run
-        .truncated
-        .then_some(offset.saturating_add(run.matches.len()));
+    let limited_by = limited_by(&run, &window, page);
+    let next_offset =
+        (run.cut != PageLimit::None).then_some(offset.saturating_add(run.matches.len()));
     tracing::info!(
         match_count = run.matches.len(),
-        truncated = run.truncated,
+        limited_by = ?limited_by,
         files_not_scanned = window.files_not_scanned,
         unparsed = run.unparsed_files.len(),
         over_parse_limit = window.files_over_parse_limit,
         parse_timed_out = run.parse_timed_out_file.is_some(),
         page_bytes = page.bytes,
-        clamped = page.clamped_from.is_some(),
         "structure executed"
     );
 
     Json(StructureResponse {
-        revision_id,
+        page: Page {
+            returned: run.matches.len(),
+            total: None,
+            complete: limited_by == PageLimit::None,
+            next_offset,
+            page_bytes: page.bytes,
+            bytes_used: run.bytes_used,
+            limited_by,
+            revision_id,
+        },
         language,
         matches: run.matches,
-        truncated: run.truncated,
-        next_offset,
-        page_bytes: page.bytes,
-        page_bytes_clamped_from: page.clamped_from,
-        matches_bytes: run.matches_bytes,
         files_not_scanned: window.files_not_scanned,
         bytes_not_scanned: window.bytes_not_scanned,
         next_start_after_file: run

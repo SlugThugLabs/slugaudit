@@ -147,7 +147,7 @@ fn a_second_leads_call_on_an_unchanged_revision_runs_no_scan() {
     let stats = cache_stats(&manager);
     assert_eq!(stats.misses, scans_after_add, "no further scan ran");
     assert_eq!(stats.hits, 1, "the call was answered from the cache");
-    assert_eq!(response.total, 4);
+    assert_eq!(response.page.total, Some(4));
     let (limits, catalog) = spent_budget(&manager, &path);
     let request = leads_request(&path, Some("py_eval"), LeadMode::Full);
     let served = crate::tools::leads::leads_with_catalog(
@@ -158,7 +158,7 @@ fn a_second_leads_call_on_an_unchanged_revision_runs_no_scan() {
         &manager,
     )
     .expect("a cached result needs no time budget, a scan would exhaust it");
-    assert_eq!(served.total, 4);
+    assert_eq!(served.page.total, Some(4));
 }
 
 #[test]
@@ -177,7 +177,8 @@ fn a_changed_file_invalidates_the_cache_and_the_next_call_returns_the_new_count(
     );
 
     assert_eq!(
-        response.total, 6,
+        response.page.total,
+        Some(6),
         "the new revision's count, not the cached 4"
     );
     let stats = cache_stats(&manager);
@@ -209,7 +210,11 @@ fn removing_and_re_adding_an_id_with_another_query_does_not_hit_the_old_entry() 
         &manager,
         leads_request(&path, Some("py_eval"), LeadMode::Full),
     );
-    assert_eq!(response.total, 0, "the new query's count, not the old 4");
+    assert_eq!(
+        response.page.total,
+        Some(0),
+        "the new query's count, not the old 4"
+    );
 }
 
 #[test]
@@ -244,7 +249,11 @@ fn an_entry_larger_than_the_whole_budget_is_skipped_counted_and_still_answered()
         &manager,
         leads_request(&path, Some("py_eval"), LeadMode::Full),
     );
-    assert_eq!(response.total, 4, "an uncached entry still answers in full");
+    assert_eq!(
+        response.page.total,
+        Some(4),
+        "an uncached entry still answers in full"
+    );
     let health = health_cache(&manager);
     assert_eq!(health["entries"], 0, "{health}");
     assert_eq!(health["skipped_too_large"], 2, "{health}");
@@ -275,7 +284,7 @@ fn paging_from_the_cache_equals_paging_from_a_fresh_scan() {
                 serde_json::to_value(&from_scan).expect("serialises"),
                 "the page at offset {offset:?} in {mode:?}"
             );
-            offset = from_cache.next_offset;
+            offset = from_cache.page.next_offset;
             if offset.is_none() {
                 break;
             }
@@ -335,7 +344,11 @@ fn a_different_pattern_glob_on_the_same_revision_is_a_miss_with_its_own_count() 
 
     let response = run_leads(&manager, narrowed);
 
-    assert_eq!(response.total, 1, "only lib/util.py is under the pattern");
+    assert_eq!(
+        response.page.total,
+        Some(1),
+        "only lib/util.py is under the pattern"
+    );
     assert_eq!(cache_stats(&manager).misses, misses + 1, "it scanned again");
 }
 
@@ -354,7 +367,11 @@ fn a_second_project_on_one_manager_does_not_hit_the_first_projects_entry() {
         leads_request(&second_path, Some("py_eval"), LeadMode::Full),
     );
 
-    assert_eq!(response.total, 5, "the second project's own count");
+    assert_eq!(
+        response.page.total,
+        Some(5),
+        "the second project's own count"
+    );
     assert_eq!(
         cache_stats(&manager).misses,
         misses + 1,
@@ -382,7 +399,11 @@ fn a_persisted_entry_edited_in_config_json_misses_and_counts_with_the_new_query(
         leads_request(&path, Some("py_eval"), LeadMode::Full),
     );
 
-    assert_eq!(response.total, 0, "the edited query matches no exec call");
+    assert_eq!(
+        response.page.total,
+        Some(0),
+        "the edited query matches no exec call"
+    );
     assert_eq!(cache_stats(&manager).misses, misses + 1, "it scanned again");
 }
 

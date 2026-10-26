@@ -26,6 +26,7 @@ mod mechanic_catalog;
 mod mechanic_register;
 mod mechanic_scan;
 mod mechanic_scan_cached;
+mod page;
 mod page_size;
 mod project_control;
 mod query;
@@ -55,12 +56,13 @@ pub use finding_read::{FindingReadEntry, FindingReadRequest, FindingReadResponse
 pub use health::{HealthRequest, HealthResponse, health};
 pub use leads::{
     CompactLeadRow, FileCount, LeadMode, LeadRow, LeadRows, LeadsRequest, LeadsResponse,
-    MechanicCount, PageLimit, leads,
+    MechanicCount, leads,
 };
 pub use mechanic::{
     InvalidMechanic, MechanicAction, MechanicListing, MechanicRequest, MechanicResponse,
     MechanicSource, mechanic,
 };
+pub use page::{Page, PageLimit};
 pub use project_control::{
     GitignoreReport, GitignoreStatus, ImportReport, ProjectControlAction, ProjectControlRequest,
     ProjectControlResponse, project_control,

@@ -25,10 +25,10 @@ pub(super) enum RowTotal {
 /// One page of a result plus the facts that make it quotable.
 pub(super) struct Collected {
     pub(super) rows: Vec<serde_json::Value>,
-    /// True when more rows remain past this page.
-    pub(super) truncated: bool,
+    /// True when the byte budget cut the page with more rows remaining.
+    pub(super) more: bool,
     /// Serialized JSON bytes of `rows`, measured per row.
-    pub(super) rows_bytes: usize,
+    pub(super) bytes_used: usize,
     pub(super) total: RowTotal,
     /// The cells cut from the first row because it alone exceeded the page.
     pub(super) clipped: Vec<ClippedCell>,

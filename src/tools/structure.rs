@@ -3,6 +3,7 @@
 //! `structure_exec`.
 
 use super::context::{ensure_synced, guard_expected_revision};
+use super::page::Page;
 use super::page_size;
 use super::structure_exec::run_query;
 use super::structure_page::{OutputMode, Paging, structure_response};
@@ -51,15 +52,17 @@ pub struct StructureRequest {
     #[serde(default)]
     pub full_text: Option<bool>,
     /// Number of matches to skip when paging through a result; use the
-    /// previous response's `next_offset`. Valid only while `revision_id` is
-    /// unchanged, and only together with the same `start_after_file`.
+    /// previous response's `page.next_offset`. Valid only while
+    /// `page.revision_id` is unchanged, and only together with the same
+    /// `start_after_file`.
     #[serde(default)]
     pub offset: usize,
     /// Page size in serialized JSON bytes of `matches`. Omit it for the server
     /// default (64 KiB unless configured otherwise; the response's
-    /// `page_bytes` says what applied). A value above the hard ceiling
-    /// `max_query_response_bytes` is clamped and reported as
-    /// `page_bytes_clamped_from`. Pages are cut on a match boundary; the first
+    /// `page.page_bytes` says what applied). A value above the hard ceiling
+    /// `max_query_response_bytes` is clamped, and a page the ceiling cut
+    /// reports `page.limited_by` = `ceiling`. Pages are cut on a match
+    /// boundary; the first
     /// match is always returned, so a single match larger than the page
     /// arrives whole (its own `text_truncated` flag covers the 1 MB text cap).
     #[serde(default)]
@@ -99,42 +102,35 @@ pub struct StructureMatch {
 /// The matches for one structure call, the revision they were read from,
 /// and every cut that bounded them, each with the way past it.
 pub struct StructureResponse {
-    /// Revision id the matches were read from; pass it back as
-    /// `expected_revision` when paging.
-    pub revision_id: String,
+    /// The shared paging contract for `matches`. `structure` has two
+    /// cursors: `page.next_offset` continues inside the current scan window,
+    /// and `next_start_after_file` (beside this struct) starts the next
+    /// window. `page.complete` is true only when neither remains.
+    /// `page.total` is always null: counting the matches means running the
+    /// whole scan.
+    pub page: Page,
     /// The grammar this query ran against.
     pub language: String,
     /// This page's matches in scan order. The first match is always returned,
     /// so paging always advances.
     pub matches: Vec<StructureMatch>,
-    /// True when more matches exist past this page (page bytes or the match
-    /// cap); `next_offset` continues. False means this scan window is done.
-    pub truncated: bool,
-    /// Pass as the next request's `offset` (with the same other fields) when
-    /// present.
-    pub next_offset: Option<usize>,
-    /// The page size that applied, in serialized JSON bytes of `matches`.
-    pub page_bytes: usize,
-    /// Non-null when the requested (or configured default) page size exceeded
-    /// `max_query_response_bytes`: the size asked for; `page_bytes` is then
-    /// the ceiling.
-    pub page_bytes_clamped_from: Option<usize>,
-    /// Serialized JSON bytes of the returned `matches`.
-    pub matches_bytes: usize,
     /// Multi-file only: matching files past the memory window that were not
     /// loaded into this call's scan window, so certainly not scanned. Zero
     /// means every matching file after `start_after_file` was loaded into the
     /// window — it does not mean every loaded file was scanned, because a page
-    /// cut (`truncated` true) can stop inside the window and leave later
-    /// loaded files contributing nothing to this page. When above 0 the result
-    /// is incomplete even if `truncated` is false: finish `next_offset` paging,
-    /// then repeat with `start_after_file` = `next_start_after_file` and offset
-    /// 0.
+    /// cut (`page.next_offset` present) can stop inside the window and leave
+    /// later loaded files contributing nothing to this page. When above 0
+    /// `page.complete` is false: finish `page.next_offset` paging, then repeat
+    /// with `start_after_file` = `next_start_after_file` and offset 0.
     pub files_not_scanned: usize,
     /// Content bytes of those unscanned files.
     pub bytes_not_scanned: u64,
-    /// Present when `files_not_scanned` > 0, or when `parse_timed_out_file`
-    /// is set (then it is that file, so the next window skips it).
+    /// The second cursor: the `start_after_file` that starts the next scan
+    /// window, with `offset` 0. Present when `files_not_scanned` > 0
+    /// (`page.limited_by` = `scan_window` once `page.next_offset` is
+    /// exhausted), or when `parse_timed_out_file` is set (then it is that
+    /// file, so the next window skips it; `page.limited_by` =
+    /// `time_budget`).
     pub next_start_after_file: Option<String>,
     /// Multi-file only: files the parser produced no syntax tree for, so they
     /// contributed no matches. Empty when none.

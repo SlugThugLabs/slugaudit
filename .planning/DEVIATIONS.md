@@ -542,3 +542,21 @@ Oldest first: append each new entry at the end of the file. Format: **what** / *
 - **Why:** per-entry budgets let a call selecting N uncached entries (64 session + 64 persisted) hold N x 32 MiB at once.
 - **Where:** `src/tools/mechanic_scan_cached.rs` (`Pass`).
 - **Reversible:** yes; give each entry its own counter again.
+
+## C1: one nested `page` object rather than flattened fields
+- **What:** The shared struct `tools::page::Page` is embedded as a nested field named `page` on `LeadsResponse`, `QueryResponse`, `StructureResponse` and `FindingReadResponse` (and so on `MechanicResponse.first_count`), not `#[serde(flatten)]`ed. Each response's top-level `revision_id` moved into `page.revision_id`.
+- **Why:** nesting makes the shared contract one `$defs/Page` entry that every output schema references, so the recorded surface proves the five schemas share it and a description cannot drift per tool; flattening inlines eight properties per tool, which is exactly the per-tool dialect D8 recorded.
+- **Where:** `src/tools/page.rs`, the four response types, `.planning/archive/mcp_surface.json`.
+- **Reversible:** yes, with another wire break: add `#[serde(flatten)]` on each `page` field.
+
+## C1: `total`, `limited_by` and the clamp
+- **What:** (1) `page.total` is `Option<i64>`: exact for `leads` and `finding_read` (a `count(*)` over the same session/file filter in the same transaction), exact or null for `query` (null only when the count spends its budget; the reason moved from `total_rows_unavailable` to `total_unavailable`), and always null for `structure`, which cannot count matches without running every page. (2) `limited_by` is one enum for all tools: `none`, `limit` (leads), `page_bytes`, `ceiling`, `match_cap` (structure's existing `max_structure_matches`), `scan_window` and `time_budget` (structure's memory window and cancelled parse). (3) `page_bytes_clamped_from` became `limited_by: ceiling` on a page the byte budget cut while that budget was the ceiling; `ceiling` is also reported when the request equals the ceiling exactly, since a larger request could not enlarge the page either. On a page the clamp did not cut, the requested size is no longer echoed. (4) `structure`'s `page.complete` is false while either cursor remains (`next_offset` or `next_start_after_file`), so `complete` means the same thing on every tool.
+- **Why:** the brief asks for one meaning per field and "do not fake" a total; the clamp only matters to a caller when it cut the page.
+- **Where:** `src/tools/page.rs`, `src/tools/page_size.rs`, `src/tools/query.rs`, `src/tools/structure_page.rs`, `src/tools/structure_exec.rs`, `src/tools/finding_read.rs`, `src/tools/leads_page.rs`.
+- **Reversible:** yes.
+
+## C1: `mechanic list` carries no page
+- **What:** `mechanic`'s output schema embeds `Page` through `first_count` (a `leads` response, the add count). The `list` result (`mechanics`, `invalid`) gets no `page`, because it is not paged: it has no `offset` input and returns the whole catalogue in one response, as it did before C1 (64 session and 64 persisted entries at most, plus any persisted entries that failed to load).
+- **Why:** a `page` on an unpaged list would have to invent a `page_bytes` no budget applied, which is a false field.
+- **Where:** `src/tools/mechanic.rs`.
+- **Reversible:** yes, if `list` ever gains paging.

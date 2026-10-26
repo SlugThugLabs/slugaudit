@@ -150,8 +150,8 @@ fn adding_a_session_mechanic_returns_its_first_count_and_remove_drops_it() {
     assert_eq!(entry.covers, ["python"]);
     assert_eq!(entry.note.as_deref(), Some("dynamic code execution"));
     assert_eq!(
-        (first.total, first.files_total, first.files_covered),
-        (4, 2, 2)
+        (first.page.total, first.files_total, first.files_covered),
+        (Some(4), 2, 2)
     );
     assert_eq!(first.files_not_parsed, 0);
     let LeadRows::Full(rows) = &first.rows else {
@@ -210,15 +210,18 @@ fn a_registered_mechanic_pages_by_limit_and_offset_with_cumulative_files() {
 
     let first = run_leads(&manager, request);
 
-    assert_eq!((first.returned, first.total, first.complete), (3, 4, false));
-    assert_eq!(first.limited_by, crate::tools::PageLimit::Limit);
+    assert_eq!(
+        (first.page.returned, first.page.total, first.page.complete),
+        (3, Some(4), false)
+    );
+    assert_eq!(first.page.limited_by, crate::tools::PageLimit::Limit);
     assert_eq!((first.files_total, first.files_covered), (2, 1));
-    assert_eq!(first.next_offset, Some(3));
+    assert_eq!(first.page.next_offset, Some(3));
     let mut next = leads_request(&path, Some("py_eval"), LeadMode::Compact);
-    next.offset = first.next_offset;
-    next.expected_revision = Some(first.revision_id.clone());
+    next.offset = first.page.next_offset;
+    next.expected_revision = Some(first.page.revision_id.clone());
     let second = run_leads(&manager, next);
-    assert_eq!((second.returned, second.complete), (1, true));
+    assert_eq!((second.page.returned, second.page.complete), (1, true));
     assert_eq!(second.files_covered, 2);
     let LeadRows::Compact(rows) = &second.rows else {
         panic!("a compact page");
@@ -245,10 +248,10 @@ fn a_compact_whole_surface_page_lists_registered_rows_before_builtin_rows() {
 
     let first = run_leads(&manager, request);
 
-    assert_eq!((first.returned, first.total), (4, 5));
+    assert_eq!((first.page.returned, first.page.total), (4, Some(5)));
     assert_eq!((first.files_total, first.files_covered), (3, 2));
     let mut next = leads_request(&path, None, LeadMode::Compact);
-    next.offset = first.next_offset;
+    next.offset = first.page.next_offset;
     let second = run_leads(&manager, next);
     let LeadRows::Compact(rows) = &second.rows else {
         panic!("a compact page");
@@ -258,7 +261,7 @@ fn a_compact_whole_surface_page_lists_registered_rows_before_builtin_rows() {
         .map(|row| (row.mechanic.as_str(), row.file.as_str()))
         .collect();
     assert_eq!(tail, [("comment_markers", "todo.py")]);
-    assert_eq!((second.complete, second.files_covered), (true, 3));
+    assert_eq!((second.page.complete, second.files_covered), (true, 3));
 }
 
 #[test]

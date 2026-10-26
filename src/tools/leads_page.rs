@@ -8,7 +8,7 @@
 //! envelope — which completeness field means what — lives in exactly one
 //! place, shared by both `mode`s. Nothing here ranks or interprets a row.
 
-use super::leads::{FileCount, LeadMode, LeadRows, LeadsResponse, MechanicCount, PageLimit};
+use super::leads::{FileCount, LeadMode, LeadRows, LeadsResponse, MechanicCount};
 use super::leads_compact;
 use super::leads_covers::languages_read;
 use super::leads_custom;
@@ -16,6 +16,8 @@ use super::leads_mechanics::{Mechanic, Selected};
 use super::leads_query::{self, compile_pattern, count_all, page_file_counts};
 use super::mechanic_catalog::Catalog;
 use super::mechanic_scan_cached::{self, CacheScope};
+use super::page::{Page, PageLimit};
+use super::page_size::PageSize;
 use rmcp::ErrorData;
 use rusqlite::Transaction;
 use std::time::Instant;
@@ -26,9 +28,8 @@ use std::time::Instant;
 pub(super) struct Paging {
     pub(super) limit: Option<usize>,
     pub(super) offset: usize,
-    pub(super) budget_bytes: usize,
-    /// The larger page size that the ceiling clamped, when it did.
-    pub(super) clamped_from: Option<usize>,
+    /// The byte budget, and whether it is the ceiling.
+    pub(super) size: PageSize,
 }
 
 /// Everything one call asks of the page builder.
@@ -56,7 +57,7 @@ pub(super) struct Prepared {
     pub(super) files_covered: i64,
     pub(super) page_file_counts: Vec<FileCount>,
     pub(super) limited_by: PageLimit,
-    pub(super) rows_bytes: usize,
+    pub(super) bytes_used: usize,
 }
 
 /// The complete counts pass, independent of paging.
@@ -145,7 +146,7 @@ fn full(
         pattern,
         paging.limit,
         paging.offset,
-        paging.budget_bytes,
+        paging.size.bytes,
     )?;
     let returned = page.rows.len();
     let total = count_of(counts, mechanic.id)?;
@@ -168,7 +169,7 @@ fn full(
         files_covered,
         page_file_counts: file_counts,
         limited_by: page.limited_by,
-        rows_bytes: page.bytes,
+        bytes_used: page.bytes,
     })
 }
 
@@ -188,7 +189,7 @@ fn compact(
         pattern,
         paging.limit,
         paging.offset,
-        paging.budget_bytes,
+        paging.size.bytes,
     )?;
     let returned = page.rows.len();
     let total = scope.iter().try_fold(0_i64, |sum, mechanic| {
@@ -211,7 +212,7 @@ fn compact(
         files_covered,
         page_file_counts: file_counts,
         limited_by: page.limited_by,
-        rows_bytes: page.bytes,
+        bytes_used: page.bytes,
     })
 }
 
@@ -219,28 +220,30 @@ fn compact(
 /// scope to page and every completeness field is trivially empty.
 fn counts_only(revision_id: &str, counts: Counts, paging: Paging) -> LeadsResponse {
     LeadsResponse {
-        revision_id: revision_id.to_owned(),
+        page: Page {
+            returned: 0,
+            total: Some(0),
+            complete: true,
+            next_offset: None,
+            page_bytes: paging.size.bytes,
+            bytes_used: 0,
+            limited_by: PageLimit::None,
+            revision_id: revision_id.to_owned(),
+        },
         mechanic_counts: counts.mechanic_counts,
         mechanics_invalid: counts.mechanics_invalid,
         files_not_parsed: counts.files_not_parsed,
         rows: LeadRows::Full(Vec::new()),
-        returned: 0,
-        total: 0,
-        complete: true,
         files_total: 0,
         files_covered: 0,
         page_file_counts: Vec::new(),
-        limited_by: PageLimit::None,
-        row_budget_bytes: paging.budget_bytes,
-        page_bytes_clamped_from: paging.clamped_from,
         oversized_row: false,
-        rows_bytes: 0,
-        next_offset: None,
     }
 }
 
 /// Wraps a prepared page in the envelope, deriving `complete` and
-/// `next_offset` from what the page actually returned.
+/// `next_offset` from what the page actually returned, and reporting a byte
+/// cut as the ceiling when the budget is the ceiling.
 fn envelope(
     revision_id: &str,
     counts: Counts,
@@ -249,24 +252,29 @@ fn envelope(
 ) -> Result<LeadsResponse, ErrorData> {
     let through = paging.offset.saturating_add(prepared.returned);
     let complete = seen(through)? >= prepared.total;
+    let limited_by = match prepared.limited_by {
+        PageLimit::PageBytes => paging.size.byte_cut(),
+        other => other,
+    };
     Ok(LeadsResponse {
-        revision_id: revision_id.to_owned(),
+        page: Page {
+            returned: prepared.returned,
+            total: Some(prepared.total),
+            complete,
+            next_offset: (!complete).then_some(through),
+            page_bytes: paging.size.bytes,
+            bytes_used: prepared.bytes_used,
+            limited_by,
+            revision_id: revision_id.to_owned(),
+        },
         mechanic_counts: counts.mechanic_counts,
         mechanics_invalid: counts.mechanics_invalid,
         files_not_parsed: counts.files_not_parsed,
         rows: prepared.rows,
-        returned: prepared.returned,
-        total: prepared.total,
-        complete,
         files_total: prepared.files_total,
         files_covered: prepared.files_covered,
         page_file_counts: prepared.page_file_counts,
-        limited_by: prepared.limited_by,
-        row_budget_bytes: paging.budget_bytes,
-        page_bytes_clamped_from: paging.clamped_from,
-        oversized_row: prepared.rows_bytes > paging.budget_bytes,
-        rows_bytes: prepared.rows_bytes,
-        next_offset: (!complete).then_some(through),
+        oversized_row: prepared.bytes_used > paging.size.bytes,
     })
 }
 

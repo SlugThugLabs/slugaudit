@@ -67,7 +67,7 @@ fn an_oversize_file_indexes_fast_and_every_leads_response_counts_it_not_parsed()
     assert_eq!(counts.files_not_parsed, 1, "counts mode");
     assert_eq!(rows.files_not_parsed, 1, "rows mode");
     assert_eq!(compact.files_not_parsed, 1, "compact mode");
-    assert_eq!(rows.total, 1, "only small.rs was parsed");
+    assert_eq!(rows.page.total, Some(1), "only small.rs was parsed");
     let LeadRows::Full(rows) = &rows.rows else {
         panic!("full mode returns full rows");
     };
@@ -175,10 +175,10 @@ fn a_file_that_outlives_its_parse_allowance_is_counted_and_the_sync_goes_on() {
     assert_eq!(counts.files_not_parsed, 1, "counts mode");
     assert_eq!(rows.files_not_parsed, 1, "rows mode");
     assert_eq!(
-        second_report.revision_id, counts.revision_id,
+        second_report.revision_id, counts.page.revision_id,
         "the unchanged timed-out file is not re-parsed into a new revision"
     );
-    assert_eq!(rows.total, 2, "the two small files were parsed");
+    assert_eq!(rows.page.total, Some(2), "the two small files were parsed");
     for report in [&first_report, &second_report] {
         assert_eq!(report.completeness.parse_timeout_file_count, 1);
         assert_eq!(report.completeness.oversize_for_parse_file_count, 0);

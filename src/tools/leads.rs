@@ -17,11 +17,11 @@
 //! request's `page_bytes` or `ResourceLimits::default_page_bytes`, clamped to
 //! `max_query_response_bytes`, the same page size `query` spends), never by a
 //! row ceiling: the only row cap was a copy of `query`'s and it made the tool that exists for accuracy the one that truncated
-//! silently. Every rows response therefore carries `returned` / `total` /
-//! `complete`, the file denominators (`files_total` / `files_covered` — at
-//! scale the number an agent can actually exhaust is *files containing at
-//! least one observation*, not rows), and `limited_by`, which names what
-//! stopped the page.
+//! silently. Every response therefore carries the shared [`Page`] (`returned`
+//! / `total` / `complete` / `next_offset` / `limited_by`, which names what
+//! stopped the page) and the file denominators (`files_total` /
+//! `files_covered` — at scale the number an agent can actually exhaust is
+//! *files containing at least one observation*, not rows).
 
 use super::context::{ensure_synced, guard_expected_revision, with_verified_read};
 use super::leads_mechanics::resolve_selected;
@@ -29,6 +29,7 @@ use super::leads_page::{self, Paging};
 use super::mechanic::MechanicSource;
 use super::mechanic_catalog::{self, Catalog};
 use super::mechanic_scan_cached::CacheScope;
+use super::page::Page;
 use crate::model::ResourceLimits;
 use crate::progress::ProgressSink;
 use crate::sync;
@@ -95,11 +96,11 @@ pub struct LeadsRequest {
     pub mode: LeadMode,
     /// Page size in serialized JSON bytes for `rows`. Omit it for the server
     /// default (64 KiB unless configured otherwise; the response's
-    /// `row_budget_bytes` says what applied). A larger value returns a larger
+    /// `page.page_bytes` says what applied). A larger value returns a larger
     /// page, up to the hard ceiling `max_query_response_bytes`: a value above
-    /// the ceiling is clamped and the response reports
-    /// `page_bytes_clamped_from`. A single row larger than the page is still
-    /// returned and flagged with `oversized_row`.
+    /// the ceiling is clamped, and a page the ceiling cut reports
+    /// `page.limited_by` = `ceiling`. A single row larger than the page is
+    /// still returned and flagged with `oversized_row`.
     #[schemars(
         description = "Page size in bytes of serialized rows; omit for the server default, clamped to the ceiling (reported)"
     )]
@@ -205,30 +206,19 @@ pub struct FileCount {
     pub count: i64,
 }
 
-/// What stopped a page. Reports the cap that acted; never a judgment about
-/// whether the page was the right size.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum PageLimit {
-    /// The mechanic was exhausted: `complete` is true.
-    None,
-    /// The caller's `limit` was reached; more rows exist.
-    Limit,
-    /// The response byte budget was reached; more rows exist. A
-    /// byte-limited page is by construction at or below any `limit` that
-    /// was set, so raising `limit` returns nothing more: raise `page_bytes`
-    /// to enlarge the page (up to the server ceiling), or page on.
-    Bytes,
-}
-
 #[derive(Debug, Serialize, JsonSchema)]
 /// One leads call: complete counts, the page's rows, and the paging/budget
 /// truth that makes them quotable as-is.
 pub struct LeadsResponse {
-    /// Revision the counts and rows were read from. Pass it as
-    /// `expected_revision` on the next page to have a changed index refused
-    /// rather than mis-paged.
-    pub revision_id: String,
+    /// The shared paging contract for `rows`: `page.revision_id` is the
+    /// revision the counts and rows were read from; `page.total` is the rows
+    /// in the enumerated scope — the requested mechanic, or (in `compact`
+    /// mode with no `mechanic`) every mechanic — under the same `pattern`,
+    /// and `0` with `complete` true when a `full` call requested no
+    /// mechanic. A page is cut by `limit` or by bytes, never by a row cap;
+    /// a byte-cut page is at or below any `limit`, so raising `limit`
+    /// returns nothing more.
+    pub page: Page,
     /// Every mechanic this revision can answer under the request's
     /// `pattern`, with its row and distinct-file counts and what it covers.
     /// Counts are complete regardless of `limit`/`offset`, and carry no
@@ -258,22 +248,12 @@ pub struct LeadsResponse {
     /// call supplied no `mechanic`; a `compact` call with no `mechanic`
     /// enumerates every mechanic instead, one triple per row.
     pub rows: LeadRows,
-    /// Rows in this page.
-    pub returned: usize,
-    /// Total rows in the enumerated scope — the requested mechanic, or (in
-    /// `compact` mode with no `mechanic`) every mechanic — under the same
-    /// `pattern`; `0` when a `full` call requested no mechanic.
-    pub total: i64,
-    /// True when this page reaches the end of the scope
-    /// (`offset + returned >= total`), and when a `full` call requested no
-    /// mechanic. False means rows remain and `next_offset` is present.
-    pub complete: bool,
     /// Distinct files holding at least one observation of any mechanic in
     /// scope — the denominator a sweep can exhaust. `0` when a `full` call
     /// requested no mechanic. For a single mechanic it equals that
     /// `mechanic_counts` entry's `files`.
     pub files_total: i64,
-    /// Distinct files represented in rows `0..offset + returned` of the
+    /// Distinct files represented in rows `0..offset + page.returned` of the
     /// scope. Cumulative for a sweep at one revision: rows are read in a
     /// fixed order — within a single mechanic, by path then line; for a
     /// compact call with no mechanic, by the `mechanic_counts` order then
@@ -284,31 +264,10 @@ pub struct LeadsResponse {
     pub files_covered: i64,
     /// Rows grouped per file for this page only.
     pub page_file_counts: Vec<FileCount>,
-    /// What stopped the page: the scope ended, the caller's `limit`, or the
-    /// byte budget.
-    pub limited_by: PageLimit,
-    /// Serialized-JSON byte budget applied to `rows` this call: the
-    /// request's `page_bytes` or the server default
-    /// (`SLUGAUDIT_DEFAULT_PAGE_BYTES`), clamped to the ceiling
-    /// `max_query_response_bytes`, the same page size `query` spends. One row
-    /// is always returned even if it alone exceeds it (see `oversized_row`).
-    pub row_budget_bytes: usize,
-    /// Non-null when the requested (or configured default) page size exceeded
-    /// `max_query_response_bytes` and was clamped: the size that was asked
-    /// for. `row_budget_bytes` is then the ceiling.
-    pub page_bytes_clamped_from: Option<usize>,
-    /// True when `rows_bytes` exceeds `row_budget_bytes` because the first
-    /// row alone is larger than the page. It is returned whole so paging
-    /// makes progress and nothing is lost.
+    /// True when `page.bytes_used` exceeds `page.page_bytes` because the
+    /// first row alone is larger than the page. It is returned whole so
+    /// paging makes progress and nothing is lost.
     pub oversized_row: bool,
-    /// Serialized-JSON bytes of the returned `rows`, measured per row
-    /// exactly as `query` measures its values. The rest of this envelope
-    /// (`mechanic_counts` — at most one entry per mechanic — and
-    /// `page_file_counts`) is additional and small relative to the rows.
-    pub rows_bytes: usize,
-    /// Pass as `offset` on the next call while `complete` is false, with
-    /// `expected_revision` set to this response's `revision_id`.
-    pub next_offset: Option<usize>,
 }
 
 /// Unranked mechanical observations from the project's current revision.
@@ -374,8 +333,7 @@ pub(super) fn leads_with_catalog(
     let paging = Paging {
         limit: request.limit.map(|rows| rows.max(1)),
         offset: request.offset.unwrap_or(0),
-        budget_bytes: page.bytes,
-        clamped_from: page.clamped_from,
+        size: page,
     };
     let project = synced.database_path.display().to_string();
     let scope = leads_page::Scope {
@@ -396,10 +354,10 @@ pub(super) fn leads_with_catalog(
     })?;
 
     tracing::info!(
-        revision_id = response.revision_id,
-        row_count = response.returned,
-        total = response.total,
-        complete = response.complete,
+        revision_id = response.page.revision_id,
+        row_count = response.page.returned,
+        total = response.page.total,
+        complete = response.page.complete,
         registered = catalog.custom.len(),
         mechanics_invalid = response.mechanics_invalid,
         "leads built"

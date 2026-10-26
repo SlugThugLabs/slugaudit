@@ -23,6 +23,31 @@ statement boundaries).
 
 ---
 
+## Paging
+
+`query`, `leads`, `structure` and `finding_read` return the same `page` object
+beside their rows:
+
+| Field | Meaning |
+| :--- | :--- |
+| `returned` | Items in this page. |
+| `total` | Items the whole request selects (exact; `null` when the tool cannot count it: `structure` always, `query` when counting ran out of budget). |
+| `complete` | `true` when nothing remains to page. |
+| `next_offset` | Present only while more remain: pass it as `offset` on the next call. |
+| `page_bytes` | The byte budget that applied, after the clamp to the server ceiling. |
+| `bytes_used` | Serialized JSON bytes of this page's items. |
+| `limited_by` | What cut the page: `none`, `limit`, `page_bytes`, `ceiling`, `match_cap`, `scan_window` or `time_budget`. |
+| `revision_id` | The index revision the page was read from. |
+
+Pages are cut by bytes, not by a row count; a recipe that may return many
+rows pages by passing `offset` = `page.next_offset` and `expected_revision` =
+`page.revision_id`, so a changed index is refused (`stale_revision`) instead of
+skipping or repeating rows. `structure` alone has a second cursor beside
+`page`: when `complete` is `false` and there is no `next_offset`, repeat with
+`start_after_file` = `next_start_after_file` and `offset` 0.
+
+---
+
 ## 🛠️ How AI Agents Use These Recipes
 
 When asking your AI agent (Claude Code, Cursor, Hermes, Codex, etc.) to audit a codebase, it can execute these queries directly over MCP:

@@ -2,6 +2,7 @@
 //! file is loaded, and by its execution budget during the parse itself (A4).
 
 use super::*;
+use crate::tools::PageLimit;
 use crate::tools::test_support::activated_project;
 use rmcp::handler::server::wrapper::Parameters;
 use std::time::Duration;
@@ -140,7 +141,9 @@ fn a_parse_cancelled_at_the_deadline_returns_earlier_matches_flagged_as_partial(
     assert_eq!(names, ["alpha"]);
     assert_eq!(response.parse_timed_out_file.as_deref(), Some("big.rs"));
     assert_eq!(response.next_start_after_file.as_deref(), Some("big.rs"));
-    assert!(!response.truncated);
+    assert_eq!(response.page.next_offset, None);
+    assert_eq!(response.page.limited_by, PageLimit::TimeBudget);
+    assert!(!response.page.complete, "the timed-out file remains");
 }
 
 #[test]

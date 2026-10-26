@@ -11,7 +11,7 @@
 //! looked at to report `limited_by`, and `files_covered` counts the distinct
 //! files of rows `0..offset + returned`.
 
-use super::leads::{CompactLeadRow, LeadMode, LeadRow, LeadRows, MechanicCount, PageLimit};
+use super::leads::{CompactLeadRow, LeadMode, LeadRow, LeadRows, MechanicCount};
 use super::leads_compact;
 use super::leads_covers::LanguagesRead;
 use super::leads_page::{Paging, Prepared, Scope, count_of, files_of, seen};
@@ -19,6 +19,7 @@ use super::leads_query::{MAX_DETAIL_CHARS, clip_detail, compile_pattern, page_fi
 use super::mechanic_catalog::Catalog;
 use super::mechanic_scan::{self, Flow, Hit, Tally};
 use super::mechanic_scan_cached::Scanned;
+use super::page::PageLimit;
 use crate::util::serialized_len;
 use rmcp::ErrorData;
 use rusqlite::Transaction;
@@ -67,7 +68,7 @@ impl<R: serde::Serialize> Collector<R> {
         Self {
             skip: paging.offset,
             limit: paging.limit,
-            budget: paging.budget_bytes,
+            budget: paging.size.bytes,
             rows: Vec::new(),
             bytes: 0,
             limited_by: PageLimit::None,
@@ -95,7 +96,7 @@ impl<R: serde::Serialize> Collector<R> {
         let row_bytes = serialized_len(&row)
             .map_err(|error| super::context::internal_error("measuring a leads row", error))?;
         if !self.rows.is_empty() && self.bytes.saturating_add(row_bytes) > self.budget {
-            self.limited_by = PageLimit::Bytes;
+            self.limited_by = PageLimit::PageBytes;
             self.done = true;
             return Ok(ControlFlow::Break(()));
         }
@@ -174,7 +175,7 @@ pub(super) fn single(
         super::context::internal_error("paging a registered mechanic", "no such entry")
     })?;
     let id = registered.entry.id.as_str();
-    let (rows, consumed, limited_by, rows_bytes) = match mode {
+    let (rows, consumed, limited_by, bytes_used) = match mode {
         LeadMode::Full => {
             let mut collector = Collector::new(scope.paging);
             collect(tx, scope, index, scanned, &mut collector, full_row)?;
@@ -221,7 +222,7 @@ pub(super) fn single(
         files_total,
         files_covered,
         limited_by,
-        rows_bytes,
+        bytes_used,
     })
 }
 
@@ -314,7 +315,7 @@ pub(super) fn whole_surface(
         files_total,
         files_covered,
         limited_by: collector.limited_by,
-        rows_bytes: collector.bytes,
+        bytes_used: collector.bytes,
     })
 }
 

@@ -4,6 +4,7 @@
 //! captured nodes back to source coordinates. The parse runs under the same
 //! budget as the cursor, through tree-sitter's parse progress callback.
 
+use super::page::PageLimit;
 use super::query_exec::deadline_after;
 use super::structure::StructureMatch;
 use super::structure_page::{
@@ -18,9 +19,10 @@ use tree_sitter::{
     Parser, Query, QueryCursor, QueryCursorOptions, QueryCursorState, StreamingIterator, Tree,
 };
 
-/// Runs `query` over `files`, returning one page of matches. `truncated` is
-/// true only when a further match was actually seen past the page. A spent
-/// execution budget is an error, never a silently partial result.
+/// Runs `query` over `files`, returning one page of matches. Its `cut` names
+/// the bound that stopped the page only when a further match was actually
+/// seen past it. A spent execution budget is an error, never a silently
+/// partial result.
 pub(super) fn run_query(
     query: &Query,
     language: &tree_sitter::Language,
@@ -44,11 +46,12 @@ pub(super) fn run_query(
         matches: Vec::new(),
         skip: paging.offset,
         page_bytes: paging.page_bytes,
-        matches_bytes: 0,
+        bytes_used: 0,
+        cut: PageLimit::None,
         unparsed_files: Vec::new(),
         parse_timed_out_file: None,
     };
-    let truncated = run.scan_files(&mut parser, files)?;
+    let more = run.scan_files(&mut parser, files)?;
     if run.timed_out {
         return Err(ErrorData::invalid_params(
             "structure query exceeded its execution time budget",
@@ -57,8 +60,8 @@ pub(super) fn run_query(
     }
     Ok(RunOutput {
         matches: run.matches,
-        truncated,
-        matches_bytes: run.matches_bytes,
+        cut: if more { run.cut } else { PageLimit::None },
+        bytes_used: run.bytes_used,
         unparsed_files: run.unparsed_files,
         parse_timed_out_file: run.parse_timed_out_file,
     })
@@ -77,7 +80,10 @@ struct Run<'q> {
     matches: Vec<StructureMatch>,
     skip: usize,
     page_bytes: usize,
-    matches_bytes: usize,
+    bytes_used: usize,
+    /// What stopped the page when a further match was seen: the match cap
+    /// or the page bytes.
+    cut: PageLimit,
     unparsed_files: Vec<String>,
     /// Multi-file: the file whose parse the deadline cancelled.
     parse_timed_out_file: Option<String>,
@@ -184,6 +190,7 @@ impl Run<'_> {
             }
             if self.matches.len() >= self.max_matches {
                 more_remain = true;
+                self.cut = PageLimit::MatchCap;
                 break;
             }
             let capture = capture_at(query_match, *capture_index)?;
@@ -196,12 +203,13 @@ impl Run<'_> {
                 self.mode.full_text,
             )?;
             if !self.matches.is_empty()
-                && self.matches_bytes.saturating_add(found_bytes) > self.page_bytes
+                && self.bytes_used.saturating_add(found_bytes) > self.page_bytes
             {
                 more_remain = true;
+                self.cut = PageLimit::PageBytes;
                 break;
             }
-            self.matches_bytes = self.matches_bytes.saturating_add(found_bytes);
+            self.bytes_used = self.bytes_used.saturating_add(found_bytes);
             self.matches.push(found);
         }
         drop(captures);

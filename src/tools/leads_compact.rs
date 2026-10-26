@@ -22,7 +22,7 @@
 
 use super::leads::CompactLeadRow;
 use super::leads_mechanics::{MECHANICS, Mechanic};
-use super::leads_query::{Page, compile_pattern, fill_page, int_bind};
+use super::leads_query::{RowPage, compile_pattern, fill_page, int_bind};
 use rmcp::ErrorData;
 use rusqlite::types::Value;
 use rusqlite::{Transaction, params_from_iter};
@@ -107,7 +107,7 @@ pub(super) fn rows_for(
     limit: Option<usize>,
     offset: usize,
     max_bytes: usize,
-) -> Result<Page<CompactLeadRow>, ErrorData> {
+) -> Result<RowPage<CompactLeadRow>, ErrorData> {
     let glob = compile_pattern(pattern);
     let fetch = limit.map(|rows| rows.saturating_add(1));
     let mut binds = pattern_binds(glob.as_deref(), scope.len());

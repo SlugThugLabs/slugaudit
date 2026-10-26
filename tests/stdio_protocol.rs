@@ -483,7 +483,7 @@ fn real_stdio_mechanic_add_is_counted_and_listed_first_by_leads() {
         "the first report carries the note: {first_report}"
     );
     assert_eq!(added["source"], "session");
-    assert_eq!(added["first_count"]["total"], 1, "{added}");
+    assert_eq!(added["first_count"]["page"]["total"], 1, "{added}");
     assert_eq!(added["first_count"]["rows"][0]["line"], 2, "{added}");
     assert_eq!(
         leads["mechanic_counts"][0]["mechanic"], "py_eval",

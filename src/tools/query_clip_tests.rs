@@ -73,7 +73,11 @@ fn a_5mb_file_is_walked_with_substr_hints_and_reassembles_byte_for_byte() {
     assert_eq!((cell.row, cell.column.as_str()), (0, "content"));
     assert_eq!((cell.kind, cell.unit), ("text", "characters"));
     assert_eq!(cell.total, original.chars().count());
-    assert!(first.rows_bytes <= first.page_bytes, "{}", first.rows_bytes);
+    assert!(
+        first.page.bytes_used <= first.page.page_bytes,
+        "{}",
+        first.page.bytes_used
+    );
     assert_eq!(cell.next_start, cell.returned + 1);
     assert_eq!(
         cell.continue_with,
@@ -147,7 +151,7 @@ fn raising_page_bytes_returns_the_whole_file_unclipped() {
 
     assert!(page.clipped_cells.is_empty());
     assert_eq!(first_string(&page, "content"), original);
-    assert!(page.rows_bytes <= 20_000_000);
+    assert!(page.page.bytes_used <= 20_000_000);
 }
 
 #[test]
@@ -170,7 +174,7 @@ fn a_blob_is_clipped_in_bytes_walked_and_reassembled_exactly() {
         ("blob", "bytes", head.len())
     );
     assert_eq!(first_string(&first, "b").len(), cell.returned * 2);
-    assert!(first.rows_bytes <= first.page_bytes);
+    assert!(first.page.bytes_used <= first.page.page_bytes);
     let mut rebuilt = unhex(&first_string(&first, "b"));
     while rebuilt.len() < head.len() {
         let page = ask_at(&project, &manager, &blob(rebuilt.len() + 1), 0, None).expect("walk");
@@ -222,7 +226,7 @@ fn clip_units_match_sqlite_length_and_substr_for_multibyte_text_and_blobs() {
         check.rows[0]["h"].as_str().expect("hex").to_lowercase(),
         first_string(&page, "b")
     );
-    assert!(page.rows_bytes <= 400, "{}", page.rows_bytes);
+    assert!(page.page.bytes_used <= 400, "{}", page.page.bytes_used);
 }
 
 #[test]
@@ -242,14 +246,14 @@ fn small_cells_stay_whole_and_the_room_is_shared_by_the_large_ones() {
     assert_eq!(columns, ["big", "quoted"]);
     assert_eq!(first_string(&page, "small").len(), 4000);
     assert!(
-        page.rows_bytes <= 20_000,
+        page.page.bytes_used <= 20_000,
         "escapes counted: {}",
-        page.rows_bytes
+        page.page.bytes_used
     );
     assert!(
-        page.rows_bytes > 19_000,
+        page.page.bytes_used > 19_000,
         "room is used: {}",
-        page.rows_bytes
+        page.page.bytes_used
     );
 }
 
@@ -283,8 +287,8 @@ fn the_clipped_row_index_is_absolute_and_later_rows_are_not_clipped() {
 
     assert_eq!(resumed.clipped_cells[0].row, 2);
     assert!(big_after_small.clipped_cells.is_empty());
-    assert!(big_after_small.truncated);
-    assert_eq!(big_after_small.next_offset, Some(1));
+    assert!(!big_after_small.page.complete);
+    assert_eq!(big_after_small.page.next_offset, Some(1));
 }
 
 #[test]

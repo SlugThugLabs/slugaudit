@@ -306,8 +306,8 @@ fn a_first_count_with_no_match_has_zero_files_total_and_a_match_counts_its_files
 
     let zero = persisted_zero.first_count.expect("first count");
     assert_eq!(
-        (zero.total, zero.files_total, zero.files_covered),
-        (0, 0, 0),
+        (zero.page.total, zero.files_total, zero.files_covered),
+        (Some(0), 0, 0),
         "files_total counts files holding a row, not files read"
     );
     let entry = zero
@@ -317,7 +317,7 @@ fn a_first_count_with_no_match_has_zero_files_total_and_a_match_counts_its_files
         .expect("listed");
     assert_eq!(entry.covers, ["python"], "the python files were read");
     let hit = session_hit.first_count.expect("first count");
-    assert_eq!((hit.total, hit.files_total), (4, 2));
+    assert_eq!((hit.page.total, hit.files_total), (Some(4), 2));
 }
 
 #[test]

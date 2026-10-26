@@ -153,7 +153,7 @@ pub(super) fn run_query(
         .map_err(|error| internal_error("counting the page's rows", error))?;
     let offset_rows = i64::try_from(offset)
         .map_err(|error| ErrorData::invalid_params(format!("offset {offset}: {error}"), None))?;
-    collected.total = if !collected.truncated && (offset == 0 || rows_len > 0) {
+    collected.total = if !collected.more && (offset == 0 || rows_len > 0) {
         RowTotal::Exact(offset_rows.saturating_add(rows_len))
     } else {
         let count_budget = install_budget(tx, limits);
@@ -179,13 +179,13 @@ fn count_rows(
         Ok(total) => Ok(RowTotal::Exact(total)),
         Err(error) => match abort_reason.load(Ordering::Relaxed) {
             ABORT_STEP_BUDGET => {
-                tracing::warn!(error = %error, "query total_rows count exceeded its step budget");
+                tracing::warn!(error = %error, "query total count exceeded its step budget");
                 Ok(RowTotal::Unavailable(
                     "counting the whole result exceeded the VM-step budget (max_query_vm_steps)",
                 ))
             }
             ABORT_WALL_CLOCK => {
-                tracing::warn!(error = %error, "query total_rows count exceeded its time budget");
+                tracing::warn!(error = %error, "query total count exceeded its time budget");
                 Ok(RowTotal::Unavailable(
                     "counting the whole result exceeded the wall-clock budget (max_query_wall_clock)",
                 ))
@@ -242,7 +242,7 @@ fn collect_page(
     let mut clipped = Vec::new();
     let mut non_finite = Vec::new();
     let mut total_bytes = 0usize;
-    let mut size_truncated = false;
+    let mut size_cut = false;
     for row in mapped {
         let values = row.map_err(|error| describe_error(&error, abort_reason))?;
         let row_index = offset.saturating_add(rows.len());
@@ -251,7 +251,7 @@ fn collect_page(
             // must cross the page. Converting it would clone its TEXT and
             // hex-expand its BLOB only to drop the result, so skip that work.
             if !rows.is_empty() {
-                size_truncated = true;
+                size_cut = true;
                 break;
             }
             // The first row is always kept so paging makes progress; it needs
@@ -274,7 +274,7 @@ fn collect_page(
             row_bytes = bytes;
             clipped = cells;
         } else if !rows.is_empty() && total_bytes.saturating_add(row_bytes) > page_bytes {
-            size_truncated = true;
+            size_cut = true;
             break;
         }
         total_bytes = total_bytes.saturating_add(row_bytes);
@@ -283,8 +283,8 @@ fn collect_page(
     }
     Ok(Collected {
         rows,
-        truncated: size_truncated,
-        rows_bytes: total_bytes,
+        more: size_cut,
+        bytes_used: total_bytes,
         total: RowTotal::Exact(0),
         clipped,
         non_finite,

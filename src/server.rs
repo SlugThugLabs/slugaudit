@@ -52,6 +52,16 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     path = '…', or `structure` when you want AST nodes rather than text; tracing imports by hand → \
     `dependency_edges` joined in a recursive CTE (see IMPORTS); notes you want back later → `finding` (see \
     OTHER TOOLS). grep and reading a file you already know remain the right tools for a literal lookup.\n\n\
+    PAGING: `leads`, `query`, `structure` and `finding_read` return one `page` object: `returned`, `total` \
+    (null when not counted), `complete`, `next_offset` (present only while more remain), `page_bytes` (the byte \
+    budget after the clamp to the server ceiling), `bytes_used`, `limited_by` (`none`, `limit`, `page_bytes`, \
+    `ceiling` — a larger `page_bytes` returns nothing more —, `match_cap`, `scan_window`, `time_budget`) and \
+    `revision_id`. Pages are cut by bytes; the only count bounds are your own `limit` (`leads`) and \
+    `structure`'s per-page match cap. To page, pass `offset` = `page.next_offset` and \
+    `expected_revision` = `page.revision_id`: if the index changed mid-sweep the call is refused with \
+    `stale_revision` and a remedy restarting from offset 0, instead of silently skipping or repeating rows. \
+    `structure` alone has a second cursor beside `page`: when `complete` is false and `next_offset` is absent, \
+    repeat with `start_after_file` = `next_start_after_file` and `offset` 0.\n\n\
     LEADS: `leads` with only `path` returns every mechanic id with its row count, its distinct-file count \
     (`files`), and `covers` — the sorted languages of the files under `pattern` that mechanic read, the \
     machine-readable form of \"a zero here means unchecked, not absent\" — your registered mechanics first (see MECHANICS), then the built-ins in declaration order: call sites by callee (`unwrap`, `expect`, \
@@ -61,17 +71,13 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     file/line rows, optionally narrowed with `pattern` (a path GLOB like `src/auth/*`; without `*` or `?` it is \
     a substring match) — it filters the counts and the rows alike. Pass `mode: compact` to drop each row's \
     `detail` and get `mechanic`/`file`/`line` triples instead; with no `mechanic` that enumerates the whole \
-    surface in one response, under the same paging fields. A rows response always carries \
-    `returned`/`total` and `complete`, plus the file denominators `files_total`/`files_covered`: at scale the \
+    surface in one response, under the same paging fields. Every response carries `page` (see PAGING), \
+    plus the file denominators `files_total`/`files_covered`: at scale the \
     number you can actually exhaust is the files containing the mechanic, not the rows. There is no row cap — a \
     page is cut only by your `limit` (omit it for everything that fits) and by the page byte size \
-    (64 KiB by default; pass `page_bytes` for more, up to the server ceiling — a larger request is clamped and \
-    reported as `page_bytes_clamped_from`), reported as `row_budget_bytes`/`rows_bytes` with `limited_by` naming \
-    what stopped it; `mechanic_counts` and `total` are the complete size up front, and a first row bigger than \
-    the page is still returned and flagged `oversized_row`. When `complete` is \
-    false, page with `offset` = `next_offset` and pass `expected_revision` = the first page's `revision_id`: if \
-    the index changed mid-sweep the call is refused with `stale_revision` and a remedy restarting the sweep from \
-    offset 0, instead of silently skipping or repeating rows. Three limits to know. (1) The callee-based mechanics \
+    (64 KiB by default; pass `page_bytes` for more, up to the server ceiling); `mechanic_counts` and \
+    `page.total` are the complete size up front, and a first row bigger than the page is still returned and \
+    flagged `oversized_row`. Three limits to know. (1) The callee-based mechanics \
     read Call evidence, extracted for rust, python, javascript, typescript, tsx, go, java, and c only; their \
     callee lists are Rust names, so in another language they count only the calls that share those names. A \
     language absent from `covers` was not checked: its zero means nothing was read, not that nothing is there \
@@ -95,10 +101,9 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     Import, Export, Comment, Docstring, Symbol, Diagnostic, Call), `dependency_edges` \
     (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled). One read-only \
     SQL statement per call, with no row cap, cut only by the page byte size: 64 KiB by default, `page_bytes` \
-    overrides it up to the server ceiling (a larger request is clamped and reported as `page_bytes_clamped_from`). \
-    Every response carries `total_rows`, the exact size of the whole result, so you see how large it is before \
-    you read it (if counting ran out of budget it is absent and `total_rows_unavailable` says why). Add `LIMIT` \
-    to exploratory queries, page with `next_offset`, or narrow the query: some MCP clients pass a large tool \
+    overrides it up to the server ceiling (see PAGING). `page.total` is the exact size of the whole result, so \
+    you see how large it is before you read it (if counting ran out of budget it is null and `total_unavailable` \
+    says why). Add `LIMIT` to exploratory queries, page with `page.next_offset`, or narrow the query: some MCP clients pass a large tool \
     result to the model unbounded, which fails the turn. A first row bigger than the page (one huge \
     `files.content`, a `group_concat`) is not returned whole: its TEXT/BLOB cells are clipped to fit and each cut is \
     listed in `clipped_cells` with `row`, `column`, `returned` and `total` (characters for text, bytes for a blob: \
@@ -106,8 +111,7 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     and a larger `page_bytes` avoids the cut. JSON has no infinity, so an infinite REAL is `null` in `rows` and \
     listed in `non_finite_cells` (`row`, `column`, `value`). To read a file by lines, `line_count(text)` and \
     `line_range(text, start, end)` (1-based, inclusive, source line endings kept, NULL in gives NULL): SELECT \
-    line_count(content), line_range(content, 400, 600) FROM files WHERE path = 'src/big.rs'. When resuming an `offset`, pass the previous page's `revision_id` as `expected_revision` and a changed index \
-    is refused with `stale_revision` instead of returning rows from a different ordering. Always JOIN evidence \
+    line_count(content), line_range(content, 400, 600) FROM files WHERE path = 'src/big.rs'. Always JOIN evidence \
     to files: SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = \
     'Symbol' AND json_extract(e.payload, '$.name') = 'configure'. Discover the rest with SELECT name FROM \
     sqlite_master WHERE type='table', and read `slugaudit://schema.sql`.\n\n\
@@ -129,7 +133,7 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     STRUCTURE: `structure` runs a Tree-sitter S-expression query (required, and it must name at least one \
     capture) against indexed content — in one `file`, or project-wide with `language` and an optional `pattern` \
     path filter (e.g. `src/**/*.rs`). Rust `(function_item name: (identifier) @name)`, \
-    Python `(function_definition name: (identifier) @name)`. Results page at 64 KiB: `truncated` + `next_offset` continue it (`page_bytes` overrides, clamped and reported); `files_not_scanned` > 0 means the project-wide scan hit its memory window and `next_start_after_file` resumes it; `unparsed_files` lists files that yielded no tree. Ready-made recipes are resources: \
+    Python `(function_definition name: (identifier) @name)`. Results page at 64 KiB under `page` (see PAGING; `page_bytes` overrides); `files_not_scanned` > 0 means the project-wide scan hit its memory window, and the second cursor `next_start_after_file` (with `offset` 0) resumes it once `page.next_offset` is exhausted; `unparsed_files` lists files that yielded no tree. Ready-made recipes are resources: \
     `slugaudit://queries/README.md` is the index of every one of them, beside the payload-key \
     reference and `slugaudit://schema.sql`.\n\n\
     OTHER TOOLS: `report` is the project snapshot — files, languages, evidence kinds, parser failures, import \

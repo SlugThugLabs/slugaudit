@@ -47,12 +47,13 @@ impl SlugAuditServer {
          with its row count, its distinct-file count (`files`) and `covers` (the languages that \
          count read; a language missing there is unchecked, not absent), then call again with one `mechanic` id to get \
          file/line rows, optionally narrowed with `pattern` (a path GLOB, e.g. `src/auth/*`; \
-         without `*`/`?` it is a substring match). A rows response always reports `returned`/`total` \
-         and `complete` plus the file denominators `files_total`/`files_covered`; there is no row \
+         without `*`/`?` it is a substring match). Every response carries the shared `page` \
+         (`returned`, `total`, `complete`, `next_offset`, `page_bytes`, `bytes_used`, `limited_by`, \
+         `revision_id`) plus the file denominators `files_total`/`files_covered`; there is no row \
          cap, so a page is cut only by your `limit` (omit it for everything that fits) and by the \
-         page byte size (64 KiB by default; `page_bytes` raises it up to the server ceiling, \
-         reported as `row_budget_bytes`/`rows_bytes`, with `limited_by` naming what stopped it). To page, pass `offset` = `next_offset` together with `expected_revision` = \
-         the previous page's `revision_id`: a changed index is then refused with `stale_revision` \
+         page byte size (64 KiB by default; `page_bytes` raises it up to the server ceiling). To \
+         page, pass `offset` = `page.next_offset` together with `expected_revision` = \
+         `page.revision_id`: a changed index is then refused with `stale_revision` \
          instead of silently skipping or repeating rows. For `mechanic`/`file`/`line` triples \
          with no per-row text, pass `mode: compact`; with only `path` it then enumerates every \
          mechanic in one response under the same completeness fields — the cheap way to see the \
@@ -80,7 +81,7 @@ impl SlugAuditServer {
          Tree-sitter S-expression with exactly one capture; each distinct captured node is one \
          row) and `note` (what it counts, in your words); a query that does not compile is \
          refused with the compiler's message. It returns `first_count`: the `leads` response \
-         for that id (counts with `covers`, the first page of rows, `total`, `files_total`, \
+         for that id (counts with `covers`, the first page of rows, `page`, `files_total`, \
          `files_covered`, `files_not_parsed`). Session entries live until this server exits; \
          `persist: true` writes the entry to `.planning/slugaudit/config.json` (other keys \
          kept) so later sessions read it. `leads` and `report` list every entry with `source` \
@@ -178,7 +179,9 @@ impl SlugAuditServer {
          findings written by this session, never another session's conclusions. Safer than \
          querying the findings table directly through `query`, which returns every session's \
          rows. Supply `path` (any path in the active project) to select the database, and \
-         optionally `file` to filter to a specific file."
+         optionally `file` to filter to a specific file. Results are byte-cut pages under the \
+         shared `page`; resume with `offset` = `page.next_offset` and `expected_revision` = \
+         `page.revision_id`."
     )]
     async fn finding_read(
         &self,

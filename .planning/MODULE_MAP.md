@@ -58,6 +58,7 @@ src/
 │   ├── report_completeness.rs  the report's index-completeness block
 │   ├── query.rs              arbitrary read-only SQL with budgets
 │   ├── query_exec.rs         query execution: single-statement proof, budgets, byte-budgeted page, exact total
+│   ├── page.rs               the one paging contract (`Page`, `PageLimit`) every paged tool embeds
 │   ├── page_size.rs          effective page size (request or default, clamped to the ceiling)
 │   ├── query_value.rs        SQLite row/value → JSON with a per-value cap
 │   ├── query_clip.rs         clipping an oversized first row's TEXT/BLOB cells, with substr continuations

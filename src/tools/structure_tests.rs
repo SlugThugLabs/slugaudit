@@ -1,4 +1,5 @@
 use super::*;
+use crate::tools::PageLimit;
 use rmcp::handler::server::wrapper::Parameters;
 use std::fs;
 
@@ -49,7 +50,7 @@ fn matches_a_real_structural_pattern() {
     let names: Vec<&str> = response.matches.iter().map(|m| m.text.as_str()).collect();
     assert_eq!(names, vec!["greet", "farewell"]);
     assert!(response.matches.iter().all(|m| m.capture_name == "name"));
-    assert!(!response.truncated);
+    assert!(response.page.complete);
 }
 
 /// Regression: a bare node pattern with no `@capture` compiles and matches in
@@ -205,7 +206,8 @@ fn matches_are_capped_and_truncation_is_reported() {
     .map(|Json(response)| response)
     .expect("query succeeds even though it must truncate");
     assert_eq!(response.matches.len(), 2);
-    assert!(response.truncated);
+    assert_eq!(response.page.limited_by, PageLimit::MatchCap);
+    assert!(!response.page.complete);
 }
 
 #[test]
@@ -337,7 +339,7 @@ fn a_stale_expected_revision_refuses_a_structure_page() {
             path: project.path().to_string_lossy().into_owned(),
             file: Some("lib.rs".to_owned()),
             query: query.to_owned(),
-            expected_revision: Some(first.revision_id.clone()),
+            expected_revision: Some(first.page.revision_id.clone()),
             ..Default::default()
         }),
         &crate::progress::NoopProgressSink,
@@ -353,7 +355,7 @@ fn a_stale_expected_revision_refuses_a_structure_page() {
     assert!(
         error.message.contains(&format!(
             "expected_revision `{}` is not the current revision",
-            first.revision_id
+            first.page.revision_id
         )),
         "got: {}",
         error.message

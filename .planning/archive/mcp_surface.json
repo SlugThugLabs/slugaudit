@@ -145,10 +145,18 @@
         "destructiveHint": false,
         "readOnlyHint": true
       },
-      "description": "Retrieve findings scoped to the current agent session — only returns findings written by this session, never another session's conclusions. Safer than querying the findings table directly through `query`, which returns every session's rows. Supply `path` (any path in the active project) to select the database, and optionally `file` to filter to a specific file.",
+      "description": "Retrieve findings scoped to the current agent session — only returns findings written by this session, never another session's conclusions. Safer than querying the findings table directly through `query`, which returns every session's rows. Supply `path` (any path in the active project) to select the database, and optionally `file` to filter to a specific file. Results are byte-cut pages under the shared `page`; resume with `offset` = `page.next_offset` and `expected_revision` = `page.revision_id`.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "expected_revision": {
+            "default": null,
+            "description": "Pin the revision a resumed page expects; a mismatch is refused",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "file": {
             "default": null,
             "description": "Optional project-relative file path. When supplied, only findings\nfor that file are returned. Omit to return all current-session\nfindings for the project.",
@@ -159,7 +167,7 @@
           },
           "offset": {
             "default": 0,
-            "description": "Findings to skip when paging; use the response's next_offset",
+            "description": "Findings to skip when paging; use the response's page.next_offset",
             "format": "uint",
             "minimum": 0,
             "type": "integer"
@@ -244,6 +252,107 @@
               "source_hash"
             ],
             "type": "object"
+          },
+          "Page": {
+            "description": "One page of a paged result: how much came back, how much there is, how\nthe page was cut, and how to get the next one. Every paged tool carries\nexactly these fields under `page`, with the same meaning.\n\nTo page: while `complete` is false and `next_offset` is present, repeat\nthe call with `offset` = `next_offset` and `expected_revision` =\n`revision_id`; a changed index is then refused with `stale_revision`\ninstead of silently skipping or repeating items. `structure` alone has a\nsecond cursor beside this struct: when `complete` is false and\n`next_offset` is absent, repeat with `start_after_file` = the response's\n`next_start_after_file` and `offset` 0.",
+            "properties": {
+              "bytes_used": {
+                "description": "Serialized JSON bytes of this page's items, measured per item. The\nfirst item is always returned so paging advances, so this exceeds\n`page_bytes` only when that first item alone is larger (see the tool's\n`oversized_row` or `clipped_cells`). The rest of the response envelope\nis additional.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "complete": {
+                "description": "True when nothing remains to page: the result ends on this page. For\n`structure` it also means no scan window remains (no\n`next_start_after_file`). False means more remain: follow\n`next_offset`, or for `structure` without one, its\n`next_start_after_file`.",
+                "type": "boolean"
+              },
+              "limited_by": {
+                "$ref": "#/$defs/PageLimit",
+                "description": "What cut this page; `none` exactly when the result ended."
+              },
+              "next_offset": {
+                "description": "Present only when more items remain in this result: pass it as\n`offset` on the next call (same other arguments) together with\n`expected_revision` = `revision_id`.",
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "page_bytes": {
+                "description": "The byte budget that applied to this page's items, in serialized JSON\nbytes: the request's `page_bytes` or the server default\n(`default_page_bytes`, 64 KiB unless configured), after the clamp to\nthe ceiling `max_query_response_bytes`. `limited_by` = `ceiling` says\nthe clamp acted on a cut page.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "returned": {
+                "description": "Items in this page: rows (`leads`, `query`), matches (`structure`),\nor findings (`finding_read`).",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "revision_id": {
+                "description": "The index revision every part of this response was read from. Pass it\nas `expected_revision` when resuming.",
+                "type": "string"
+              },
+              "total": {
+                "description": "Items the whole request selects, ignoring `offset` and the page cut;\nnever an estimate. `leads`: the rows of the requested mechanic (or of\nevery mechanic in a compact whole-surface call; `0` for a counts-only\ncall). `query`: the exact row count SQLite computed over the same\nstatement, null only when counting ran out of its budget (the\nresponse's `total_unavailable` says why). `finding_read`: this\nsession's findings under the `file` filter. `structure`: always null,\nbecause counting the matches means running the whole scan.",
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "returned",
+              "complete",
+              "page_bytes",
+              "bytes_used",
+              "limited_by",
+              "revision_id"
+            ],
+            "type": "object"
+          },
+          "PageLimit": {
+            "description": "What cut a page. It reports the bound that acted, never a judgment about\nwhether the page was the right size.",
+            "oneOf": [
+              {
+                "const": "none",
+                "description": "Nothing: the result ended on this page and `complete` is true.",
+                "type": "string"
+              },
+              {
+                "const": "limit",
+                "description": "`leads` only: the caller's `limit` was reached; more rows exist.",
+                "type": "string"
+              },
+              {
+                "const": "page_bytes",
+                "description": "The byte budget `page_bytes` was reached; more items exist. A larger\n`page_bytes` (up to the server ceiling) returns a larger page.",
+                "type": "string"
+              },
+              {
+                "const": "ceiling",
+                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `next_offset`.",
+                "type": "string"
+              },
+              {
+                "const": "match_cap",
+                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `next_offset` continues.",
+                "type": "string"
+              },
+              {
+                "const": "scan_window",
+                "description": "`structure` only: the multi-file scan window ended before the\nmatching files did (`files_not_scanned` > 0). There is no\n`next_offset`; continue with `start_after_file` =\n`next_start_after_file` and `offset` 0.",
+                "type": "string"
+              },
+              {
+                "const": "time_budget",
+                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. There is no `next_offset`; continue with\n`start_after_file` = `next_start_after_file` (that file) and `offset`\n0.",
+                "type": "string"
+              }
+            ]
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -255,37 +364,14 @@
             },
             "type": "array"
           },
-          "findings_bytes": {
-            "description": "Serialized-JSON bytes of `findings`, measured per row exactly as\n`query` measures its rows.",
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "next_offset": {
-            "description": "Pass as `offset` on the next call, with the same `file` filter, while\nthis is present. Absent when this page reaches the end of the scope.",
-            "format": "uint",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "page_bytes": {
-            "description": "The byte budget applied to `findings` this call: the configured\n`default_page_bytes` (64 KiB unless configured otherwise), clamped to\nthe hard ceiling `max_query_response_bytes`. A single row larger than\nthe budget is still returned, with its description clipped and\n`detail_clipped` set (or whole when even an empty description cannot\nfit), so paging always advances.",
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "revision_id": {
-            "description": "Revision id the page was read from; compare it across pages to detect\na change that invalidates paging.",
-            "type": "string"
+          "page": {
+            "$ref": "#/$defs/Page",
+            "description": "The shared paging contract for `findings`. `page_bytes` is the\nconfigured `default_page_bytes` (64 KiB unless configured otherwise),\nclamped to the hard ceiling `max_query_response_bytes`; there is no\nrequest override. A single row larger than the budget is still\nreturned, with its description clipped and `detail_clipped` set (or\nwhole when even an empty description cannot fit), so paging always\nadvances. Page on with the same `file` filter."
           }
         },
         "required": [
-          "revision_id",
-          "findings",
-          "findings_bytes",
-          "page_bytes"
+          "page",
+          "findings"
         ],
         "type": "object"
       },
@@ -631,7 +717,7 @@
         "destructiveHint": false,
         "readOnlyHint": true
       },
-      "description": "Want somewhere to start? Mechanical facts extracted from the index — call sites by callee name (unwrap, expect, panic, todo, unimplemented, assert), diagnostics, TODO/FIXME/HACK comment markers, and credential-shaped files. Nothing here is judged, ranked, scored, or ordered by importance: every item is a fact, and deciding which of them matter is entirely your call. Call with only `path` to get every mechanic with its row count, its distinct-file count (`files`) and `covers` (the languages that count read; a language missing there is unchecked, not absent), then call again with one `mechanic` id to get file/line rows, optionally narrowed with `pattern` (a path GLOB, e.g. `src/auth/*`; without `*`/`?` it is a substring match). A rows response always reports `returned`/`total` and `complete` plus the file denominators `files_total`/`files_covered`; there is no row cap, so a page is cut only by your `limit` (omit it for everything that fits) and by the page byte size (64 KiB by default; `page_bytes` raises it up to the server ceiling, reported as `row_budget_bytes`/`rows_bytes`, with `limited_by` naming what stopped it). To page, pass `offset` = `next_offset` together with `expected_revision` = the previous page's `revision_id`: a changed index is then refused with `stale_revision` instead of silently skipping or repeating rows. For `mechanic`/`file`/`line` triples with no per-row text, pass `mode: compact`; with only `path` it then enumerates every mechanic in one response under the same completeness fields — the cheap way to see the whole surface.",
+      "description": "Want somewhere to start? Mechanical facts extracted from the index — call sites by callee name (unwrap, expect, panic, todo, unimplemented, assert), diagnostics, TODO/FIXME/HACK comment markers, and credential-shaped files. Nothing here is judged, ranked, scored, or ordered by importance: every item is a fact, and deciding which of them matter is entirely your call. Call with only `path` to get every mechanic with its row count, its distinct-file count (`files`) and `covers` (the languages that count read; a language missing there is unchecked, not absent), then call again with one `mechanic` id to get file/line rows, optionally narrowed with `pattern` (a path GLOB, e.g. `src/auth/*`; without `*`/`?` it is a substring match). Every response carries the shared `page` (`returned`, `total`, `complete`, `next_offset`, `page_bytes`, `bytes_used`, `limited_by`, `revision_id`) plus the file denominators `files_total`/`files_covered`; there is no row cap, so a page is cut only by your `limit` (omit it for everything that fits) and by the page byte size (64 KiB by default; `page_bytes` raises it up to the server ceiling). To page, pass `offset` = `page.next_offset` together with `expected_revision` = `page.revision_id`: a changed index is then refused with `stale_revision` instead of silently skipping or repeating rows. For `mechanic`/`file`/`line` triples with no per-row text, pass `mode: compact`; with only `path` it then enumerates every mechanic in one response under the same completeness fields — the cheap way to see the whole surface.",
       "inputSchema": {
         "$defs": {
           "LeadMode": {
@@ -879,22 +965,103 @@
               }
             ]
           },
+          "Page": {
+            "description": "One page of a paged result: how much came back, how much there is, how\nthe page was cut, and how to get the next one. Every paged tool carries\nexactly these fields under `page`, with the same meaning.\n\nTo page: while `complete` is false and `next_offset` is present, repeat\nthe call with `offset` = `next_offset` and `expected_revision` =\n`revision_id`; a changed index is then refused with `stale_revision`\ninstead of silently skipping or repeating items. `structure` alone has a\nsecond cursor beside this struct: when `complete` is false and\n`next_offset` is absent, repeat with `start_after_file` = the response's\n`next_start_after_file` and `offset` 0.",
+            "properties": {
+              "bytes_used": {
+                "description": "Serialized JSON bytes of this page's items, measured per item. The\nfirst item is always returned so paging advances, so this exceeds\n`page_bytes` only when that first item alone is larger (see the tool's\n`oversized_row` or `clipped_cells`). The rest of the response envelope\nis additional.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "complete": {
+                "description": "True when nothing remains to page: the result ends on this page. For\n`structure` it also means no scan window remains (no\n`next_start_after_file`). False means more remain: follow\n`next_offset`, or for `structure` without one, its\n`next_start_after_file`.",
+                "type": "boolean"
+              },
+              "limited_by": {
+                "$ref": "#/$defs/PageLimit",
+                "description": "What cut this page; `none` exactly when the result ended."
+              },
+              "next_offset": {
+                "description": "Present only when more items remain in this result: pass it as\n`offset` on the next call (same other arguments) together with\n`expected_revision` = `revision_id`.",
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "page_bytes": {
+                "description": "The byte budget that applied to this page's items, in serialized JSON\nbytes: the request's `page_bytes` or the server default\n(`default_page_bytes`, 64 KiB unless configured), after the clamp to\nthe ceiling `max_query_response_bytes`. `limited_by` = `ceiling` says\nthe clamp acted on a cut page.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "returned": {
+                "description": "Items in this page: rows (`leads`, `query`), matches (`structure`),\nor findings (`finding_read`).",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "revision_id": {
+                "description": "The index revision every part of this response was read from. Pass it\nas `expected_revision` when resuming.",
+                "type": "string"
+              },
+              "total": {
+                "description": "Items the whole request selects, ignoring `offset` and the page cut;\nnever an estimate. `leads`: the rows of the requested mechanic (or of\nevery mechanic in a compact whole-surface call; `0` for a counts-only\ncall). `query`: the exact row count SQLite computed over the same\nstatement, null only when counting ran out of its budget (the\nresponse's `total_unavailable` says why). `finding_read`: this\nsession's findings under the `file` filter. `structure`: always null,\nbecause counting the matches means running the whole scan.",
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "returned",
+              "complete",
+              "page_bytes",
+              "bytes_used",
+              "limited_by",
+              "revision_id"
+            ],
+            "type": "object"
+          },
           "PageLimit": {
-            "description": "What stopped a page. Reports the cap that acted; never a judgment about\nwhether the page was the right size.",
+            "description": "What cut a page. It reports the bound that acted, never a judgment about\nwhether the page was the right size.",
             "oneOf": [
               {
                 "const": "none",
-                "description": "The mechanic was exhausted: `complete` is true.",
+                "description": "Nothing: the result ended on this page and `complete` is true.",
                 "type": "string"
               },
               {
                 "const": "limit",
-                "description": "The caller's `limit` was reached; more rows exist.",
+                "description": "`leads` only: the caller's `limit` was reached; more rows exist.",
                 "type": "string"
               },
               {
-                "const": "bytes",
-                "description": "The response byte budget was reached; more rows exist. A\nbyte-limited page is by construction at or below any `limit` that\nwas set, so raising `limit` returns nothing more: raise `page_bytes`\nto enlarge the page (up to the server ceiling), or page on.",
+                "const": "page_bytes",
+                "description": "The byte budget `page_bytes` was reached; more items exist. A larger\n`page_bytes` (up to the server ceiling) returns a larger page.",
+                "type": "string"
+              },
+              {
+                "const": "ceiling",
+                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `next_offset`.",
+                "type": "string"
+              },
+              {
+                "const": "match_cap",
+                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `next_offset` continues.",
+                "type": "string"
+              },
+              {
+                "const": "scan_window",
+                "description": "`structure` only: the multi-file scan window ended before the\nmatching files did (`files_not_scanned` > 0). There is no\n`next_offset`; continue with `start_after_file` =\n`next_start_after_file` and `offset` 0.",
+                "type": "string"
+              },
+              {
+                "const": "time_budget",
+                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. There is no `next_offset`; continue with\n`start_after_file` = `next_start_after_file` (that file) and `offset`\n0.",
                 "type": "string"
               }
             ]
@@ -902,12 +1069,8 @@
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
-          "complete": {
-            "description": "True when this page reaches the end of the scope\n(`offset + returned >= total`), and when a `full` call requested no\nmechanic. False means rows remain and `next_offset` is present.",
-            "type": "boolean"
-          },
           "files_covered": {
-            "description": "Distinct files represented in rows `0..offset + returned` of the\nscope. Cumulative for a sweep at one revision: rows are read in a\nfixed order — within a single mechanic, by path then line; for a\ncompact call with no mechanic, by the `mechanic_counts` order then\npath then line — so a file's rows for one mechanic are contiguous,\nbut a file with rows under several mechanics appears in several\ngroups and can span several compact pages. It is still counted once.\n`files_total - files_covered` is what is left.",
+            "description": "Distinct files represented in rows `0..offset + page.returned` of the\nscope. Cumulative for a sweep at one revision: rows are read in a\nfixed order — within a single mechanic, by path then line; for a\ncompact call with no mechanic, by the `mechanic_counts` order then\npath then line — so a file's rows for one mechanic are contiguous,\nbut a file with rows under several mechanics appears in several\ngroups and can span several compact pages. It is still counted once.\n`files_total - files_covered` is what is left.",
             "format": "int64",
             "type": "integer"
           },
@@ -920,10 +1083,6 @@
             "description": "Distinct files holding at least one observation of any mechanic in\nscope — the denominator a sweep can exhaust. `0` when a `full` call\nrequested no mechanic. For a single mechanic it equals that\n`mechanic_counts` entry's `files`.",
             "format": "int64",
             "type": "integer"
-          },
-          "limited_by": {
-            "$ref": "#/$defs/PageLimit",
-            "description": "What stopped the page: the scope ended, the caller's `limit`, or the\nbyte budget."
           },
           "mechanic_counts": {
             "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit`/`offset`, and carry no\nordering by importance: session entries first (oldest first), then\nproject_config entries (file order), then the built-ins in their fixed\ndeclaration order. A call naming one `mechanic` scans only that\nregistered entry (none for a built-in), so the other registered\nentries are not listed then; call with no `mechanic` to count them all.",
@@ -938,27 +1097,13 @@
             "minimum": 0,
             "type": "integer"
           },
-          "next_offset": {
-            "description": "Pass as `offset` on the next call while `complete` is false, with\n`expected_revision` set to this response's `revision_id`.",
-            "format": "uint",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
           "oversized_row": {
-            "description": "True when `rows_bytes` exceeds `row_budget_bytes` because the first\nrow alone is larger than the page. It is returned whole so paging\nmakes progress and nothing is lost.",
+            "description": "True when `page.bytes_used` exceeds `page.page_bytes` because the\nfirst row alone is larger than the page. It is returned whole so\npaging makes progress and nothing is lost.",
             "type": "boolean"
           },
-          "page_bytes_clamped_from": {
-            "description": "Non-null when the requested (or configured default) page size exceeded\n`max_query_response_bytes` and was clamped: the size that was asked\nfor. `row_budget_bytes` is then the ceiling.",
-            "format": "uint",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
+          "page": {
+            "$ref": "#/$defs/Page",
+            "description": "The shared paging contract for `rows`: `page.revision_id` is the\nrevision the counts and rows were read from; `page.total` is the rows\nin the enumerated scope — the requested mechanic, or (in `compact`\nmode with no `mechanic`) every mechanic — under the same `pattern`,\nand `0` with `complete` true when a `full` call requested no\nmechanic. A page is cut by `limit` or by bytes, never by a row cap;\na byte-cut page is at or below any `limit`, so raising `limit`\nreturns nothing more."
           },
           "page_file_counts": {
             "description": "Rows grouped per file for this page only.",
@@ -967,54 +1112,21 @@
             },
             "type": "array"
           },
-          "returned": {
-            "description": "Rows in this page.",
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "revision_id": {
-            "description": "Revision the counts and rows were read from. Pass it as\n`expected_revision` on the next page to have a changed index refused\nrather than mis-paged.",
-            "type": "string"
-          },
-          "row_budget_bytes": {
-            "description": "Serialized-JSON byte budget applied to `rows` this call: the\nrequest's `page_bytes` or the server default\n(`SLUGAUDIT_DEFAULT_PAGE_BYTES`), clamped to the ceiling\n`max_query_response_bytes`, the same page size `query` spends. One row\nis always returned even if it alone exceeds it (see `oversized_row`).",
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          },
           "rows": {
             "$ref": "#/$defs/LeadRows",
             "description": "The page's rows, shaped by the request's `mode`. Empty when a `full`\ncall supplied no `mechanic`; a `compact` call with no `mechanic`\nenumerates every mechanic instead, one triple per row."
-          },
-          "rows_bytes": {
-            "description": "Serialized-JSON bytes of the returned `rows`, measured per row\nexactly as `query` measures its values. The rest of this envelope\n(`mechanic_counts` — at most one entry per mechanic — and\n`page_file_counts`) is additional and small relative to the rows.",
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "total": {
-            "description": "Total rows in the enumerated scope — the requested mechanic, or (in\n`compact` mode with no `mechanic`) every mechanic — under the same\n`pattern`; `0` when a `full` call requested no mechanic.",
-            "format": "int64",
-            "type": "integer"
           }
         },
         "required": [
-          "revision_id",
+          "page",
           "mechanic_counts",
           "mechanics_invalid",
           "files_not_parsed",
           "rows",
-          "returned",
-          "total",
-          "complete",
           "files_total",
           "files_covered",
           "page_file_counts",
-          "limited_by",
-          "row_budget_bytes",
-          "oversized_row",
-          "rows_bytes"
+          "oversized_row"
         ],
         "type": "object"
       },
@@ -1025,7 +1137,7 @@
         "destructiveHint": false,
         "readOnlyHint": false
       },
-      "description": "Register, remove, or list your own mechanics. The built-in `leads` mechanics are counting primitives, not a checklist: what counts as a signal in this codebase is your decision, and this is where you record it. `action: add` takes `id` (a-z, 0-9, _; never a built-in's or an existing entry's id), `language`, `query` (a Tree-sitter S-expression with exactly one capture; each distinct captured node is one row) and `note` (what it counts, in your words); a query that does not compile is refused with the compiler's message. It returns `first_count`: the `leads` response for that id (counts with `covers`, the first page of rows, `total`, `files_total`, `files_covered`, `files_not_parsed`). Session entries live until this server exits; `persist: true` writes the entry to `.planning/slugaudit/config.json` (other keys kept) so later sessions read it. `leads` and `report` list every entry with `source` (`session`, `project_config`, `builtin`) and its note, session first. `action: remove` deletes a session or persisted entry; built-ins can never be removed or overridden. `action: list` returns every mechanic plus `invalid`: persisted entries that failed to load, each with its error.",
+      "description": "Register, remove, or list your own mechanics. The built-in `leads` mechanics are counting primitives, not a checklist: what counts as a signal in this codebase is your decision, and this is where you record it. `action: add` takes `id` (a-z, 0-9, _; never a built-in's or an existing entry's id), `language`, `query` (a Tree-sitter S-expression with exactly one capture; each distinct captured node is one row) and `note` (what it counts, in your words); a query that does not compile is refused with the compiler's message. It returns `first_count`: the `leads` response for that id (counts with `covers`, the first page of rows, `page`, `files_total`, `files_covered`, `files_not_parsed`). Session entries live until this server exits; `persist: true` writes the entry to `.planning/slugaudit/config.json` (other keys kept) so later sessions read it. `leads` and `report` list every entry with `source` (`session`, `project_config`, `builtin`) and its note, session first. `action: remove` deletes a session or persisted entry; built-ins can never be removed or overridden. `action: list` returns every mechanic plus `invalid`: persisted entries that failed to load, each with its error.",
       "inputSchema": {
         "$defs": {
           "MechanicAction": {
@@ -1264,12 +1376,8 @@
           "LeadsResponse": {
             "description": "One leads call: complete counts, the page's rows, and the paging/budget\ntruth that makes them quotable as-is.",
             "properties": {
-              "complete": {
-                "description": "True when this page reaches the end of the scope\n(`offset + returned >= total`), and when a `full` call requested no\nmechanic. False means rows remain and `next_offset` is present.",
-                "type": "boolean"
-              },
               "files_covered": {
-                "description": "Distinct files represented in rows `0..offset + returned` of the\nscope. Cumulative for a sweep at one revision: rows are read in a\nfixed order — within a single mechanic, by path then line; for a\ncompact call with no mechanic, by the `mechanic_counts` order then\npath then line — so a file's rows for one mechanic are contiguous,\nbut a file with rows under several mechanics appears in several\ngroups and can span several compact pages. It is still counted once.\n`files_total - files_covered` is what is left.",
+                "description": "Distinct files represented in rows `0..offset + page.returned` of the\nscope. Cumulative for a sweep at one revision: rows are read in a\nfixed order — within a single mechanic, by path then line; for a\ncompact call with no mechanic, by the `mechanic_counts` order then\npath then line — so a file's rows for one mechanic are contiguous,\nbut a file with rows under several mechanics appears in several\ngroups and can span several compact pages. It is still counted once.\n`files_total - files_covered` is what is left.",
                 "format": "int64",
                 "type": "integer"
               },
@@ -1282,10 +1390,6 @@
                 "description": "Distinct files holding at least one observation of any mechanic in\nscope — the denominator a sweep can exhaust. `0` when a `full` call\nrequested no mechanic. For a single mechanic it equals that\n`mechanic_counts` entry's `files`.",
                 "format": "int64",
                 "type": "integer"
-              },
-              "limited_by": {
-                "$ref": "#/$defs/PageLimit",
-                "description": "What stopped the page: the scope ended, the caller's `limit`, or the\nbyte budget."
               },
               "mechanic_counts": {
                 "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit`/`offset`, and carry no\nordering by importance: session entries first (oldest first), then\nproject_config entries (file order), then the built-ins in their fixed\ndeclaration order. A call naming one `mechanic` scans only that\nregistered entry (none for a built-in), so the other registered\nentries are not listed then; call with no `mechanic` to count them all.",
@@ -1300,27 +1404,13 @@
                 "minimum": 0,
                 "type": "integer"
               },
-              "next_offset": {
-                "description": "Pass as `offset` on the next call while `complete` is false, with\n`expected_revision` set to this response's `revision_id`.",
-                "format": "uint",
-                "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
               "oversized_row": {
-                "description": "True when `rows_bytes` exceeds `row_budget_bytes` because the first\nrow alone is larger than the page. It is returned whole so paging\nmakes progress and nothing is lost.",
+                "description": "True when `page.bytes_used` exceeds `page.page_bytes` because the\nfirst row alone is larger than the page. It is returned whole so\npaging makes progress and nothing is lost.",
                 "type": "boolean"
               },
-              "page_bytes_clamped_from": {
-                "description": "Non-null when the requested (or configured default) page size exceeded\n`max_query_response_bytes` and was clamped: the size that was asked\nfor. `row_budget_bytes` is then the ceiling.",
-                "format": "uint",
-                "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
+              "page": {
+                "$ref": "#/$defs/Page",
+                "description": "The shared paging contract for `rows`: `page.revision_id` is the\nrevision the counts and rows were read from; `page.total` is the rows\nin the enumerated scope — the requested mechanic, or (in `compact`\nmode with no `mechanic`) every mechanic — under the same `pattern`,\nand `0` with `complete` true when a `full` call requested no\nmechanic. A page is cut by `limit` or by bytes, never by a row cap;\na byte-cut page is at or below any `limit`, so raising `limit`\nreturns nothing more."
               },
               "page_file_counts": {
                 "description": "Rows grouped per file for this page only.",
@@ -1329,54 +1419,21 @@
                 },
                 "type": "array"
               },
-              "returned": {
-                "description": "Rows in this page.",
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "revision_id": {
-                "description": "Revision the counts and rows were read from. Pass it as\n`expected_revision` on the next page to have a changed index refused\nrather than mis-paged.",
-                "type": "string"
-              },
-              "row_budget_bytes": {
-                "description": "Serialized-JSON byte budget applied to `rows` this call: the\nrequest's `page_bytes` or the server default\n(`SLUGAUDIT_DEFAULT_PAGE_BYTES`), clamped to the ceiling\n`max_query_response_bytes`, the same page size `query` spends. One row\nis always returned even if it alone exceeds it (see `oversized_row`).",
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
-              },
               "rows": {
                 "$ref": "#/$defs/LeadRows",
                 "description": "The page's rows, shaped by the request's `mode`. Empty when a `full`\ncall supplied no `mechanic`; a `compact` call with no `mechanic`\nenumerates every mechanic instead, one triple per row."
-              },
-              "rows_bytes": {
-                "description": "Serialized-JSON bytes of the returned `rows`, measured per row\nexactly as `query` measures its values. The rest of this envelope\n(`mechanic_counts` — at most one entry per mechanic — and\n`page_file_counts`) is additional and small relative to the rows.",
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "total": {
-                "description": "Total rows in the enumerated scope — the requested mechanic, or (in\n`compact` mode with no `mechanic`) every mechanic — under the same\n`pattern`; `0` when a `full` call requested no mechanic.",
-                "format": "int64",
-                "type": "integer"
               }
             },
             "required": [
-              "revision_id",
+              "page",
               "mechanic_counts",
               "mechanics_invalid",
               "files_not_parsed",
               "rows",
-              "returned",
-              "total",
-              "complete",
               "files_total",
               "files_covered",
               "page_file_counts",
-              "limited_by",
-              "row_budget_bytes",
-              "oversized_row",
-              "rows_bytes"
+              "oversized_row"
             ],
             "type": "object"
           },
@@ -1504,22 +1561,103 @@
               }
             ]
           },
+          "Page": {
+            "description": "One page of a paged result: how much came back, how much there is, how\nthe page was cut, and how to get the next one. Every paged tool carries\nexactly these fields under `page`, with the same meaning.\n\nTo page: while `complete` is false and `next_offset` is present, repeat\nthe call with `offset` = `next_offset` and `expected_revision` =\n`revision_id`; a changed index is then refused with `stale_revision`\ninstead of silently skipping or repeating items. `structure` alone has a\nsecond cursor beside this struct: when `complete` is false and\n`next_offset` is absent, repeat with `start_after_file` = the response's\n`next_start_after_file` and `offset` 0.",
+            "properties": {
+              "bytes_used": {
+                "description": "Serialized JSON bytes of this page's items, measured per item. The\nfirst item is always returned so paging advances, so this exceeds\n`page_bytes` only when that first item alone is larger (see the tool's\n`oversized_row` or `clipped_cells`). The rest of the response envelope\nis additional.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "complete": {
+                "description": "True when nothing remains to page: the result ends on this page. For\n`structure` it also means no scan window remains (no\n`next_start_after_file`). False means more remain: follow\n`next_offset`, or for `structure` without one, its\n`next_start_after_file`.",
+                "type": "boolean"
+              },
+              "limited_by": {
+                "$ref": "#/$defs/PageLimit",
+                "description": "What cut this page; `none` exactly when the result ended."
+              },
+              "next_offset": {
+                "description": "Present only when more items remain in this result: pass it as\n`offset` on the next call (same other arguments) together with\n`expected_revision` = `revision_id`.",
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "page_bytes": {
+                "description": "The byte budget that applied to this page's items, in serialized JSON\nbytes: the request's `page_bytes` or the server default\n(`default_page_bytes`, 64 KiB unless configured), after the clamp to\nthe ceiling `max_query_response_bytes`. `limited_by` = `ceiling` says\nthe clamp acted on a cut page.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "returned": {
+                "description": "Items in this page: rows (`leads`, `query`), matches (`structure`),\nor findings (`finding_read`).",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "revision_id": {
+                "description": "The index revision every part of this response was read from. Pass it\nas `expected_revision` when resuming.",
+                "type": "string"
+              },
+              "total": {
+                "description": "Items the whole request selects, ignoring `offset` and the page cut;\nnever an estimate. `leads`: the rows of the requested mechanic (or of\nevery mechanic in a compact whole-surface call; `0` for a counts-only\ncall). `query`: the exact row count SQLite computed over the same\nstatement, null only when counting ran out of its budget (the\nresponse's `total_unavailable` says why). `finding_read`: this\nsession's findings under the `file` filter. `structure`: always null,\nbecause counting the matches means running the whole scan.",
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "returned",
+              "complete",
+              "page_bytes",
+              "bytes_used",
+              "limited_by",
+              "revision_id"
+            ],
+            "type": "object"
+          },
           "PageLimit": {
-            "description": "What stopped a page. Reports the cap that acted; never a judgment about\nwhether the page was the right size.",
+            "description": "What cut a page. It reports the bound that acted, never a judgment about\nwhether the page was the right size.",
             "oneOf": [
               {
                 "const": "none",
-                "description": "The mechanic was exhausted: `complete` is true.",
+                "description": "Nothing: the result ended on this page and `complete` is true.",
                 "type": "string"
               },
               {
                 "const": "limit",
-                "description": "The caller's `limit` was reached; more rows exist.",
+                "description": "`leads` only: the caller's `limit` was reached; more rows exist.",
                 "type": "string"
               },
               {
-                "const": "bytes",
-                "description": "The response byte budget was reached; more rows exist. A\nbyte-limited page is by construction at or below any `limit` that\nwas set, so raising `limit` returns nothing more: raise `page_bytes`\nto enlarge the page (up to the server ceiling), or page on.",
+                "const": "page_bytes",
+                "description": "The byte budget `page_bytes` was reached; more items exist. A larger\n`page_bytes` (up to the server ceiling) returns a larger page.",
+                "type": "string"
+              },
+              {
+                "const": "ceiling",
+                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `next_offset`.",
+                "type": "string"
+              },
+              {
+                "const": "match_cap",
+                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `next_offset` continues.",
+                "type": "string"
+              },
+              {
+                "const": "scan_window",
+                "description": "`structure` only: the multi-file scan window ended before the\nmatching files did (`files_not_scanned` > 0). There is no\n`next_offset`; continue with `start_after_file` =\n`next_start_after_file` and `offset` 0.",
+                "type": "string"
+              },
+              {
+                "const": "time_budget",
+                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. There is no `next_offset`; continue with\n`start_after_file` = `next_start_after_file` (that file) and `offset`\n0.",
                 "type": "string"
               }
             ]
@@ -1540,7 +1678,7 @@
                 "type": "null"
               }
             ],
-            "description": "`add` only: the response `leads` returns for `mechanic` = `id` at the\ncurrent revision — complete counts (`mechanic_counts`: the built-ins\nand the new entry with its `count`, `files` and `covers`), the first\npage of `rows`, `total`, `files_total`, `files_covered` and\n`files_not_parsed`. As in `leads`, `files_total` is the number of\nfiles holding at least one row, not the files read (those are\n`covers` and the index): a query with no match has `total`,\n`files_total` and `files_covered` all `0`. Page on with `leads`."
+            "description": "`add` only: the response `leads` returns for `mechanic` = `id` at the\ncurrent revision — complete counts (`mechanic_counts`: the built-ins\nand the new entry with its `count`, `files` and `covers`), the first\npage of `rows` under the shared `page` contract (`page.total`,\n`page.next_offset`, `page.revision_id`), `files_total`,\n`files_covered` and `files_not_parsed`. As in `leads`, `files_total`\nis the number of files holding at least one row, not the files read\n(those are `covers` and the index): a query with no match has\n`page.total`, `files_total` and `files_covered` all `0`. Page on with\n`leads`, passing `page.next_offset` and `page.revision_id`."
           },
           "id": {
             "description": "`add`/`remove`: the id the action applied to; `null` for a `remove`\nby `index` whose entry had no string id.",
@@ -1800,14 +1938,14 @@
           },
           "offset": {
             "default": 0,
-            "description": "Number of matching rows to skip when paging through a result.\nCombined with the response's `next_offset`, and valid only while\nthe revision id stays the same across pages (see [`QueryResponse`]).",
+            "description": "Number of matching rows to skip when paging through a result.\nCombined with the response's `page.next_offset`, and valid only while\nthe revision id stays the same across pages (see [`QueryResponse`]).",
             "format": "uint",
             "minimum": 0,
             "type": "integer"
           },
           "page_bytes": {
             "default": null,
-            "description": "Page size in serialized JSON bytes. Omit it for the server default\n(64 KiB unless configured otherwise; the response's `page_bytes` says\nwhat applied). A larger value returns a larger page, up to the hard\nceiling `max_query_response_bytes`: a value above the ceiling is\nclamped and the response reports `page_bytes_clamped_from`. Pages are\ncut on a row boundary; when the first row alone is larger than the page,\nits TEXT/BLOB cells are clipped to fit and listed in `clipped_cells`\nwith the `substr` expression that continues each one. Raise\n`page_bytes` to avoid clipping.",
+            "description": "Page size in serialized JSON bytes. Omit it for the server default\n(64 KiB unless configured otherwise; the response's `page.page_bytes`\nsays what applied). A larger value returns a larger page, up to the\nhard ceiling `max_query_response_bytes`: a value above the ceiling is\nclamped, and a page the ceiling cut reports `page.limited_by` =\n`ceiling`. Pages are\ncut on a row boundary; when the first row alone is larger than the page,\nits TEXT/BLOB cells are clipped to fit and listed in `clipped_cells`\nwith the `substr` expression that continues each one. Raise\n`page_bytes` to avoid clipping.",
             "format": "uint",
             "minimum": 0,
             "type": [
@@ -1913,25 +2051,117 @@
               "value"
             ],
             "type": "object"
+          },
+          "Page": {
+            "description": "One page of a paged result: how much came back, how much there is, how\nthe page was cut, and how to get the next one. Every paged tool carries\nexactly these fields under `page`, with the same meaning.\n\nTo page: while `complete` is false and `next_offset` is present, repeat\nthe call with `offset` = `next_offset` and `expected_revision` =\n`revision_id`; a changed index is then refused with `stale_revision`\ninstead of silently skipping or repeating items. `structure` alone has a\nsecond cursor beside this struct: when `complete` is false and\n`next_offset` is absent, repeat with `start_after_file` = the response's\n`next_start_after_file` and `offset` 0.",
+            "properties": {
+              "bytes_used": {
+                "description": "Serialized JSON bytes of this page's items, measured per item. The\nfirst item is always returned so paging advances, so this exceeds\n`page_bytes` only when that first item alone is larger (see the tool's\n`oversized_row` or `clipped_cells`). The rest of the response envelope\nis additional.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "complete": {
+                "description": "True when nothing remains to page: the result ends on this page. For\n`structure` it also means no scan window remains (no\n`next_start_after_file`). False means more remain: follow\n`next_offset`, or for `structure` without one, its\n`next_start_after_file`.",
+                "type": "boolean"
+              },
+              "limited_by": {
+                "$ref": "#/$defs/PageLimit",
+                "description": "What cut this page; `none` exactly when the result ended."
+              },
+              "next_offset": {
+                "description": "Present only when more items remain in this result: pass it as\n`offset` on the next call (same other arguments) together with\n`expected_revision` = `revision_id`.",
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "page_bytes": {
+                "description": "The byte budget that applied to this page's items, in serialized JSON\nbytes: the request's `page_bytes` or the server default\n(`default_page_bytes`, 64 KiB unless configured), after the clamp to\nthe ceiling `max_query_response_bytes`. `limited_by` = `ceiling` says\nthe clamp acted on a cut page.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "returned": {
+                "description": "Items in this page: rows (`leads`, `query`), matches (`structure`),\nor findings (`finding_read`).",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "revision_id": {
+                "description": "The index revision every part of this response was read from. Pass it\nas `expected_revision` when resuming.",
+                "type": "string"
+              },
+              "total": {
+                "description": "Items the whole request selects, ignoring `offset` and the page cut;\nnever an estimate. `leads`: the rows of the requested mechanic (or of\nevery mechanic in a compact whole-surface call; `0` for a counts-only\ncall). `query`: the exact row count SQLite computed over the same\nstatement, null only when counting ran out of its budget (the\nresponse's `total_unavailable` says why). `finding_read`: this\nsession's findings under the `file` filter. `structure`: always null,\nbecause counting the matches means running the whole scan.",
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "returned",
+              "complete",
+              "page_bytes",
+              "bytes_used",
+              "limited_by",
+              "revision_id"
+            ],
+            "type": "object"
+          },
+          "PageLimit": {
+            "description": "What cut a page. It reports the bound that acted, never a judgment about\nwhether the page was the right size.",
+            "oneOf": [
+              {
+                "const": "none",
+                "description": "Nothing: the result ended on this page and `complete` is true.",
+                "type": "string"
+              },
+              {
+                "const": "limit",
+                "description": "`leads` only: the caller's `limit` was reached; more rows exist.",
+                "type": "string"
+              },
+              {
+                "const": "page_bytes",
+                "description": "The byte budget `page_bytes` was reached; more items exist. A larger\n`page_bytes` (up to the server ceiling) returns a larger page.",
+                "type": "string"
+              },
+              {
+                "const": "ceiling",
+                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `next_offset`.",
+                "type": "string"
+              },
+              {
+                "const": "match_cap",
+                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `next_offset` continues.",
+                "type": "string"
+              },
+              {
+                "const": "scan_window",
+                "description": "`structure` only: the multi-file scan window ended before the\nmatching files did (`files_not_scanned` > 0). There is no\n`next_offset`; continue with `start_after_file` =\n`next_start_after_file` and `offset` 0.",
+                "type": "string"
+              },
+              {
+                "const": "time_budget",
+                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. There is no `next_offset`; continue with\n`start_after_file` = `next_start_after_file` (that file) and `offset`\n0.",
+                "type": "string"
+              }
+            ]
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
           "clipped_cells": {
-            "description": "The TEXT/BLOB cells cut from the first row because the row alone was\nlarger than `page_bytes`; empty when nothing was cut. Each entry gives\nthe absolute `row` index, `column`, `returned` and `total` length in\n`substr` units (characters for text, bytes for a blob), `next_start`\n(1-based) and a ready `continue_with` expression. No data is lost: the\nrest of every clipped cell is one `substr` away. If this is empty,\nevery cell is complete. Only a row whose non-text cells alone exceed\nthe page (or a page smaller than one character per cell) can leave\n`rows_bytes` above `page_bytes`.",
+            "description": "The TEXT/BLOB cells cut from the first row because the row alone was\nlarger than `page_bytes`; empty when nothing was cut. Each entry gives\nthe absolute `row` index, `column`, `returned` and `total` length in\n`substr` units (characters for text, bytes for a blob), `next_start`\n(1-based) and a ready `continue_with` expression. No data is lost: the\nrest of every clipped cell is one `substr` away. If this is empty,\nevery cell is complete. Only a row whose non-text cells alone exceed\nthe page (or a page smaller than one character per cell) can leave\n`page.bytes_used` above `page.page_bytes`.",
             "items": {
               "$ref": "#/$defs/ClippedCell"
             },
             "type": "array"
-          },
-          "next_offset": {
-            "description": "Use this as the next request's `offset` when present. Only valid\nwhile `revision_id` is unchanged (see the paging contract above).",
-            "format": "uint",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
           },
           "non_finite_cells": {
             "description": "REAL cells that are `null` in `rows` only because JSON cannot carry an\ninfinity: each entry gives the absolute `row`, the `column` and the real\n`value` (`\"Infinity\"`, `\"-Infinity\"` or `\"NaN\"`). A `null` that is not\nlisted here is SQL NULL. Empty when every REAL is finite.",
@@ -1940,62 +2170,26 @@
             },
             "type": "array"
           },
-          "page_bytes": {
-            "description": "The page size that applied to this call, in serialized JSON bytes: the\nrequest's `page_bytes` or the server default, clamped to the ceiling.",
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "page_bytes_clamped_from": {
-            "description": "Non-null when the requested (or configured default) page size exceeded\n`max_query_response_bytes` and was clamped: the size that was asked\nfor. `page_bytes` is then the ceiling.",
-            "format": "uint",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "revision_id": {
-            "description": "Revision id the page was read from. Compare across pages to detect\na revision change that invalidates `next_offset` paging, or pass it\nback as `expected_revision` to have the change refused.",
-            "type": "string"
+          "page": {
+            "$ref": "#/$defs/Page",
+            "description": "The shared paging contract for `rows`. A page is cut only by bytes,\non a row boundary (`limited_by` is `page_bytes`, `ceiling` or\n`none`); `total` is the exact row count of the whole result, computed\nby SQLite over the same statement, null only when counting exhausted\nits budget (`total_unavailable` then says why)."
           },
           "rows": {
             "description": "This page's rows, one JSON object per row with column names as keys,\nin the query's own row order.",
             "items": true,
             "type": "array"
           },
-          "rows_bytes": {
-            "description": "Serialized JSON bytes of the returned `rows`, measured per row.",
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "total_rows": {
-            "description": "Exact row count of the whole result, ignoring `offset` and the page\ncut, computed by SQLite over the same statement. Null only when\ncounting exhausted its budget; `total_rows_unavailable` then says why.\nNever an estimate.",
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "total_rows_unavailable": {
-            "description": "Why `total_rows` is null (the budget that stopped the count); null\nwhenever `total_rows` is present.",
+          "total_unavailable": {
+            "description": "Why `page.total` is null (the budget that stopped the count); null\nwhenever `page.total` is present.",
             "type": [
               "string",
               "null"
             ]
-          },
-          "truncated": {
-            "description": "True when the page byte budget stopped the result before it ended;\n`next_offset` then continues from the next row.",
-            "type": "boolean"
           }
         },
         "required": [
-          "revision_id",
+          "page",
           "rows",
-          "truncated",
-          "page_bytes",
-          "rows_bytes",
           "clipped_cells",
           "non_finite_cells"
         ],
@@ -2583,14 +2777,14 @@
           },
           "offset": {
             "default": 0,
-            "description": "Number of matches to skip when paging through a result; use the\nprevious response's `next_offset`. Valid only while `revision_id` is\nunchanged, and only together with the same `start_after_file`.",
+            "description": "Number of matches to skip when paging through a result; use the\nprevious response's `page.next_offset`. Valid only while\n`page.revision_id` is unchanged, and only together with the same\n`start_after_file`.",
             "format": "uint",
             "minimum": 0,
             "type": "integer"
           },
           "page_bytes": {
             "default": null,
-            "description": "Page size in serialized JSON bytes of `matches`. Omit it for the server\ndefault (64 KiB unless configured otherwise; the response's\n`page_bytes` says what applied). A value above the hard ceiling\n`max_query_response_bytes` is clamped and reported as\n`page_bytes_clamped_from`. Pages are cut on a match boundary; the first\nmatch is always returned, so a single match larger than the page\narrives whole (its own `text_truncated` flag covers the 1 MB text cap).",
+            "description": "Page size in serialized JSON bytes of `matches`. Omit it for the server\ndefault (64 KiB unless configured otherwise; the response's\n`page.page_bytes` says what applied). A value above the hard ceiling\n`max_query_response_bytes` is clamped, and a page the ceiling cut\nreports `page.limited_by` = `ceiling`. Pages are cut on a match\nboundary; the first\nmatch is always returned, so a single match larger than the page\narrives whole (its own `text_truncated` flag covers the 1 MB text cap).",
             "format": "uint",
             "minimum": 0,
             "type": [
@@ -2632,6 +2826,107 @@
       "name": "structure",
       "outputSchema": {
         "$defs": {
+          "Page": {
+            "description": "One page of a paged result: how much came back, how much there is, how\nthe page was cut, and how to get the next one. Every paged tool carries\nexactly these fields under `page`, with the same meaning.\n\nTo page: while `complete` is false and `next_offset` is present, repeat\nthe call with `offset` = `next_offset` and `expected_revision` =\n`revision_id`; a changed index is then refused with `stale_revision`\ninstead of silently skipping or repeating items. `structure` alone has a\nsecond cursor beside this struct: when `complete` is false and\n`next_offset` is absent, repeat with `start_after_file` = the response's\n`next_start_after_file` and `offset` 0.",
+            "properties": {
+              "bytes_used": {
+                "description": "Serialized JSON bytes of this page's items, measured per item. The\nfirst item is always returned so paging advances, so this exceeds\n`page_bytes` only when that first item alone is larger (see the tool's\n`oversized_row` or `clipped_cells`). The rest of the response envelope\nis additional.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "complete": {
+                "description": "True when nothing remains to page: the result ends on this page. For\n`structure` it also means no scan window remains (no\n`next_start_after_file`). False means more remain: follow\n`next_offset`, or for `structure` without one, its\n`next_start_after_file`.",
+                "type": "boolean"
+              },
+              "limited_by": {
+                "$ref": "#/$defs/PageLimit",
+                "description": "What cut this page; `none` exactly when the result ended."
+              },
+              "next_offset": {
+                "description": "Present only when more items remain in this result: pass it as\n`offset` on the next call (same other arguments) together with\n`expected_revision` = `revision_id`.",
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "page_bytes": {
+                "description": "The byte budget that applied to this page's items, in serialized JSON\nbytes: the request's `page_bytes` or the server default\n(`default_page_bytes`, 64 KiB unless configured), after the clamp to\nthe ceiling `max_query_response_bytes`. `limited_by` = `ceiling` says\nthe clamp acted on a cut page.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "returned": {
+                "description": "Items in this page: rows (`leads`, `query`), matches (`structure`),\nor findings (`finding_read`).",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "revision_id": {
+                "description": "The index revision every part of this response was read from. Pass it\nas `expected_revision` when resuming.",
+                "type": "string"
+              },
+              "total": {
+                "description": "Items the whole request selects, ignoring `offset` and the page cut;\nnever an estimate. `leads`: the rows of the requested mechanic (or of\nevery mechanic in a compact whole-surface call; `0` for a counts-only\ncall). `query`: the exact row count SQLite computed over the same\nstatement, null only when counting ran out of its budget (the\nresponse's `total_unavailable` says why). `finding_read`: this\nsession's findings under the `file` filter. `structure`: always null,\nbecause counting the matches means running the whole scan.",
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "returned",
+              "complete",
+              "page_bytes",
+              "bytes_used",
+              "limited_by",
+              "revision_id"
+            ],
+            "type": "object"
+          },
+          "PageLimit": {
+            "description": "What cut a page. It reports the bound that acted, never a judgment about\nwhether the page was the right size.",
+            "oneOf": [
+              {
+                "const": "none",
+                "description": "Nothing: the result ended on this page and `complete` is true.",
+                "type": "string"
+              },
+              {
+                "const": "limit",
+                "description": "`leads` only: the caller's `limit` was reached; more rows exist.",
+                "type": "string"
+              },
+              {
+                "const": "page_bytes",
+                "description": "The byte budget `page_bytes` was reached; more items exist. A larger\n`page_bytes` (up to the server ceiling) returns a larger page.",
+                "type": "string"
+              },
+              {
+                "const": "ceiling",
+                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `next_offset`.",
+                "type": "string"
+              },
+              {
+                "const": "match_cap",
+                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `next_offset` continues.",
+                "type": "string"
+              },
+              {
+                "const": "scan_window",
+                "description": "`structure` only: the multi-file scan window ended before the\nmatching files did (`files_not_scanned` > 0). There is no\n`next_offset`; continue with `start_after_file` =\n`next_start_after_file` and `offset` 0.",
+                "type": "string"
+              },
+              {
+                "const": "time_budget",
+                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. There is no `next_offset`; continue with\n`start_after_file` = `next_start_after_file` (that file) and `offset`\n0.",
+                "type": "string"
+              }
+            ]
+          },
           "StructureMatch": {
             "description": "One capture match mapped back to source coordinates, with the\nclipping/extraction flags that bound its `text`.",
             "properties": {
@@ -2712,7 +3007,7 @@
             "type": "integer"
           },
           "files_not_scanned": {
-            "description": "Multi-file only: matching files past the memory window that were not\nloaded into this call's scan window, so certainly not scanned. Zero\nmeans every matching file after `start_after_file` was loaded into the\nwindow — it does not mean every loaded file was scanned, because a page\ncut (`truncated` true) can stop inside the window and leave later\nloaded files contributing nothing to this page. When above 0 the result\nis incomplete even if `truncated` is false: finish `next_offset` paging,\nthen repeat with `start_after_file` = `next_start_after_file` and offset\n0.",
+            "description": "Multi-file only: matching files past the memory window that were not\nloaded into this call's scan window, so certainly not scanned. Zero\nmeans every matching file after `start_after_file` was loaded into the\nwindow — it does not mean every loaded file was scanned, because a page\ncut (`page.next_offset` present) can stop inside the window and leave\nlater loaded files contributing nothing to this page. When above 0\n`page.complete` is false: finish `page.next_offset` paging, then repeat\nwith `start_after_file` = `next_start_after_file` and offset 0.",
             "format": "uint",
             "minimum": 0,
             "type": "integer"
@@ -2734,42 +3029,16 @@
             },
             "type": "array"
           },
-          "matches_bytes": {
-            "description": "Serialized JSON bytes of the returned `matches`.",
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "next_offset": {
-            "description": "Pass as the next request's `offset` (with the same other fields) when\npresent.",
-            "format": "uint",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
           "next_start_after_file": {
-            "description": "Present when `files_not_scanned` > 0, or when `parse_timed_out_file`\nis set (then it is that file, so the next window skips it).",
+            "description": "The second cursor: the `start_after_file` that starts the next scan\nwindow, with `offset` 0. Present when `files_not_scanned` > 0\n(`page.limited_by` = `scan_window` once `page.next_offset` is\nexhausted), or when `parse_timed_out_file` is set (then it is that\nfile, so the next window skips it; `page.limited_by` =\n`time_budget`).",
             "type": [
               "string",
               "null"
             ]
           },
-          "page_bytes": {
-            "description": "The page size that applied, in serialized JSON bytes of `matches`.",
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "page_bytes_clamped_from": {
-            "description": "Non-null when the requested (or configured default) page size exceeded\n`max_query_response_bytes`: the size asked for; `page_bytes` is then\nthe ceiling.",
-            "format": "uint",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
+          "page": {
+            "$ref": "#/$defs/Page",
+            "description": "The shared paging contract for `matches`. `structure` has two\ncursors: `page.next_offset` continues inside the current scan window,\nand `next_start_after_file` (beside this struct) starts the next\nwindow. `page.complete` is true only when neither remains.\n`page.total` is always null: counting the matches means running the\nwhole scan."
           },
           "parse_timed_out_file": {
             "description": "Multi-file only: set when the execution time budget ran out while this\nfile was being parsed. The parse was cancelled, the scan stopped, and\n`matches` holds only what earlier files produced: the result is\nincomplete. Resume with `start_after_file` = `next_start_after_file`\n(this file) to continue past it. A single-file query whose parse runs\nout of time is refused with the execution-budget error instead.",
@@ -2777,14 +3046,6 @@
               "string",
               "null"
             ]
-          },
-          "revision_id": {
-            "description": "Revision id the matches were read from; pass it back as\n`expected_revision` when paging.",
-            "type": "string"
-          },
-          "truncated": {
-            "description": "True when more matches exist past this page (page bytes or the match\ncap); `next_offset` continues. False means this scan window is done.",
-            "type": "boolean"
           },
           "unparsed_files": {
             "description": "Multi-file only: files the parser produced no syntax tree for, so they\ncontributed no matches. Empty when none.",
@@ -2795,12 +3056,9 @@
           }
         },
         "required": [
-          "revision_id",
+          "page",
           "language",
           "matches",
-          "truncated",
-          "page_bytes",
-          "matches_bytes",
           "files_not_scanned",
           "bytes_not_scanned",
           "unparsed_files",

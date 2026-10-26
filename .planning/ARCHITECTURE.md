@@ -46,10 +46,21 @@ The server exposes nine tools (`src/server.rs`):
   `covers` (the sorted languages of the files it read under the
   pattern); file/line rows for one mechanic on
   request, optionally narrowed by a `pattern` path filter. Rows are cut by a
-  response byte budget rather than a row cap, and every rows response reports
-  `returned` / `total` / `complete` with `files_total` / `files_covered`. A
+  response byte budget rather than a row cap, and every response carries the
+  shared `page` (below) with `files_total` / `files_covered` beside it. A
   resumed page may pin `expected_revision` and is refused (`stale_revision`)
-  when the index moved on. Call evidence comes from the Rust call walker
+  when the index moved on.
+- **One paging contract** (`tools/page.rs`). `leads` (and the `mechanic add`
+  first count, which is a `leads` response), `query`, `structure` and
+  `finding_read` embed one nested `page` object: `returned`, `total` (null
+  only where the tool cannot count: `structure` always, `query` when the
+  count spends its budget), `complete`, `next_offset`, `page_bytes` (the
+  budget after the clamp to `max_query_response_bytes`), `bytes_used`,
+  `limited_by` (`none` / `limit` / `page_bytes` / `ceiling` / `match_cap` /
+  `scan_window` / `time_budget`) and `revision_id`. Every one of them takes
+  `expected_revision` on resume. Tool-specific extras stay beside `page`;
+  `structure`'s second cursor `next_start_after_file` resumes the next scan
+  window when `complete` is false and `next_offset` is absent. Call evidence comes from the Rust call walker
   (with its macro re-parse) and from one embedded tree-sitter call query per
   language (`examples/calls/<language>.scm`: python, javascript,
   typescript, tsx, go, java, c), all feeding one row builder
@@ -910,7 +921,7 @@ surface).
 | --- | --- | --- |
 | `sync_budget_exhausted` | the sync wall-clock budget (`max_sync_wall_clock`) was spent while discovering, hashing, parsing, or publishing; permanent on a tree too big for the budget, so the remedy names the knob | every sync map site: `manager_meta::map_publish_error`, `sweep_reconcile::sweep_tree` and `sweep_reconcile::apply_sweep_report`, both `manager_health` map sites |
 | `project_not_enabled` | no ancestor of the requested path has an activation marker, so no tool can serve it | `manager_orchestration::map_activation_error` — the single funnel behind every tool |
-| `stale_revision` | the revision this call was pinned to is no longer current, or a sampled file changed before the write — the compare-and-swap race, where retrying is right | `tools::context::verify_revision_matches`, `manager_meta::map_publish_error`; also `tools::context::guard_expected_revision`, where the caller pinned a resumed page (`leads`/`query` `expected_revision`) and the remedy restarts the sweep from offset 0 instead of retrying the offset |
+| `stale_revision` | the revision this call was pinned to is no longer current, or a sampled file changed before the write — the compare-and-swap race, where retrying is right | `tools::context::verify_revision_matches`, `manager_meta::map_publish_error`; also `tools::context::guard_expected_revision`, where the caller pinned a resumed page (`expected_revision` on `leads`/`query`/`structure`/`finding_read`) and the remedy restarts the sweep from offset 0 instead of retrying the offset |
 | `unknown_mechanic` | `leads` was asked for a mechanic id that is not in the catalogue, or `mechanic remove` for an id no session or persisted entry has | `tools::leads_mechanics::resolve_mechanic`, `tools::mechanic_register::remove` |
 | `sql_too_large` | the SQL passed to `query` exceeded `max_query_sql_bytes` | `tools::query::query_with_limits` |
 | `file_not_indexed` | the named file has no indexed source content (never discovered, skipped as oversize/unreadable, or binary) | `tools::structure_source::fetch_source`, `tools::finding::fetch_file` |

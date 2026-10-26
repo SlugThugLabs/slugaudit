@@ -1,5 +1,6 @@
 // slugaudit-line-exception: approved-by=slugthug; reason=The query tool contract in one place: request/response shapes, validation order, statement validation and every refusal message, including the PRAGMA/authorizer refusals.
 use super::context::{ensure_synced, guard_expected_revision, with_verified_read};
+use super::page::{Page, PageLimit};
 use super::page_size;
 use super::query_clip::ClippedCell;
 use super::query_exec::run_query;
@@ -42,7 +43,7 @@ pub struct QueryRequest {
     /// `pragma_index_info`, `pragma_index_xinfo`, `pragma_foreign_key_list`).
     pub sql: String,
     /// Number of matching rows to skip when paging through a result.
-    /// Combined with the response's `next_offset`, and valid only while
+    /// Combined with the response's `page.next_offset`, and valid only while
     /// the revision id stays the same across pages (see [`QueryResponse`]).
     #[serde(default)]
     pub offset: usize,
@@ -54,10 +55,11 @@ pub struct QueryRequest {
     #[serde(default)]
     pub expected_revision: Option<String>,
     /// Page size in serialized JSON bytes. Omit it for the server default
-    /// (64 KiB unless configured otherwise; the response's `page_bytes` says
-    /// what applied). A larger value returns a larger page, up to the hard
-    /// ceiling `max_query_response_bytes`: a value above the ceiling is
-    /// clamped and the response reports `page_bytes_clamped_from`. Pages are
+    /// (64 KiB unless configured otherwise; the response's `page.page_bytes`
+    /// says what applied). A larger value returns a larger page, up to the
+    /// hard ceiling `max_query_response_bytes`: a value above the ceiling is
+    /// clamped, and a page the ceiling cut reports `page.limited_by` =
+    /// `ceiling`. Pages are
     /// cut on a row boundary; when the first row alone is larger than the page,
     /// its TEXT/BLOB cells are clipped to fit and listed in `clipped_cells`
     /// with the `substr` expression that continues each one. Raise
@@ -75,44 +77,26 @@ pub struct QueryRequest {
 /// no `ORDER BY` is added, so pagination is stable only while the
 /// underlying revision does not change. When a concurrent publish lands
 /// between pages, row order can shift and `next_offset` paging may skip
-/// or duplicate rows; the AI detects that boundary by comparing the
-/// `revision_id` on each page and should restart paging (or accept the
+/// or duplicate rows; the AI detects that boundary by comparing
+/// `page.revision_id` on each page and should restart paging (or accept the
 /// new revision's ordering) when it changes. Passing the previous page's
 /// `revision_id` as `expected_revision` makes the server enforce that: the
 /// resumed page is refused with the `stale_revision` code instead of
 /// returning rows from a different ordering.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct QueryResponse {
-    /// Revision id the page was read from. Compare across pages to detect
-    /// a revision change that invalidates `next_offset` paging, or pass it
-    /// back as `expected_revision` to have the change refused.
-    pub revision_id: String,
+    /// The shared paging contract for `rows`. A page is cut only by bytes,
+    /// on a row boundary (`limited_by` is `page_bytes`, `ceiling` or
+    /// `none`); `total` is the exact row count of the whole result, computed
+    /// by SQLite over the same statement, null only when counting exhausted
+    /// its budget (`total_unavailable` then says why).
+    pub page: Page,
     /// This page's rows, one JSON object per row with column names as keys,
     /// in the query's own row order.
     pub rows: Vec<serde_json::Value>,
-    /// True when the page byte budget stopped the result before it ended;
-    /// `next_offset` then continues from the next row.
-    pub truncated: bool,
-    /// Use this as the next request's `offset` when present. Only valid
-    /// while `revision_id` is unchanged (see the paging contract above).
-    pub next_offset: Option<usize>,
-    /// Exact row count of the whole result, ignoring `offset` and the page
-    /// cut, computed by SQLite over the same statement. Null only when
-    /// counting exhausted its budget; `total_rows_unavailable` then says why.
-    /// Never an estimate.
-    pub total_rows: Option<i64>,
-    /// Why `total_rows` is null (the budget that stopped the count); null
-    /// whenever `total_rows` is present.
-    pub total_rows_unavailable: Option<String>,
-    /// The page size that applied to this call, in serialized JSON bytes: the
-    /// request's `page_bytes` or the server default, clamped to the ceiling.
-    pub page_bytes: usize,
-    /// Non-null when the requested (or configured default) page size exceeded
-    /// `max_query_response_bytes` and was clamped: the size that was asked
-    /// for. `page_bytes` is then the ceiling.
-    pub page_bytes_clamped_from: Option<usize>,
-    /// Serialized JSON bytes of the returned `rows`, measured per row.
-    pub rows_bytes: usize,
+    /// Why `page.total` is null (the budget that stopped the count); null
+    /// whenever `page.total` is present.
+    pub total_unavailable: Option<String>,
     /// The TEXT/BLOB cells cut from the first row because the row alone was
     /// larger than `page_bytes`; empty when nothing was cut. Each entry gives
     /// the absolute `row` index, `column`, `returned` and `total` length in
@@ -121,7 +105,7 @@ pub struct QueryResponse {
     /// rest of every clipped cell is one `substr` away. If this is empty,
     /// every cell is complete. Only a row whose non-text cells alone exceed
     /// the page (or a page smaller than one character per cell) can leave
-    /// `rows_bytes` above `page_bytes`.
+    /// `page.bytes_used` above `page.page_bytes`.
     pub clipped_cells: Vec<ClippedCell>,
     /// REAL cells that are `null` in `rows` only because JSON cannot carry an
     /// infinity: each entry gives the absolute `row`, the `column` and the real
@@ -177,35 +161,42 @@ fn query_with_limits(
         run_query(tx, trimmed, *offset, page.bytes, limits)
     })?;
     let rows = collected.rows;
-    let truncated = collected.truncated;
-    let next_offset = truncated.then_some(offset.saturating_add(rows.len()));
-    let (total_rows, total_rows_unavailable) = match collected.total {
+    let next_offset = collected.more.then_some(offset.saturating_add(rows.len()));
+    let limited_by = if collected.more {
+        page.byte_cut()
+    } else {
+        PageLimit::None
+    };
+    let (total, total_unavailable) = match collected.total {
         RowTotal::Exact(total) => (Some(total), None),
         RowTotal::Unavailable(reason) => (None, Some(reason.to_owned())),
     };
 
-    // Row count and truncation, never the SQL text or the rows themselves.
+    // Row count and the page cut, never the SQL text or the rows themselves.
     tracing::info!(
         revision_id,
         row_count = rows.len(),
-        truncated,
-        total_rows,
+        complete = !collected.more,
+        total,
+        limited_by = ?limited_by,
         clipped_cells = collected.clipped.len(),
         non_finite_cells = collected.non_finite.len(),
         page_bytes = page.bytes,
-        clamped = page.clamped_from.is_some(),
         "query executed"
     );
     Ok(Json(QueryResponse {
-        revision_id,
+        page: Page {
+            returned: rows.len(),
+            total,
+            complete: !collected.more,
+            next_offset,
+            page_bytes: page.bytes,
+            bytes_used: collected.bytes_used,
+            limited_by,
+            revision_id,
+        },
         rows,
-        truncated,
-        next_offset,
-        total_rows,
-        total_rows_unavailable,
-        page_bytes: page.bytes,
-        page_bytes_clamped_from: page.clamped_from,
-        rows_bytes: collected.rows_bytes,
+        total_unavailable,
         clipped_cells: collected.clipped,
         non_finite_cells: collected.non_finite,
     }))
