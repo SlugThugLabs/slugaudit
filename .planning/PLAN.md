@@ -417,6 +417,147 @@ does not rediscover them from scratch.
 | `missing_docs` / `cargo doc --no-deps --lib` | **0 warnings** |
 | `cargo crap --min 0 --path src` | 0 production functions with CC > 15 |
 
+## Phase 8 — 2026-10-25 deep-dive remediation and auditor-owned mechanics
+
+State: **not started** (authored 2026-10-25 by the architect from the deep dive;
+Lead executes on branch `fix/deep-dive-2026-10-25`, one commit per item, no
+push). Evidence: `.planning/archive/audit_2026-10-25_deep_dive.md` (defects
+D1–D9, `path:line` at `c3fc7f8`). Each item lists its Definition of Done; an
+item is **landed** only when its DoD check passes and the full gate list in
+*Development* (README) is green on the integrated tree.
+
+Product intent recorded this session (owner, 2026-10-25): the tool is for an
+LLM in a harness (Claude Code and peers) with cwd = the project; the database
+is throwaway and session-scoped so one model's view never clouds another's;
+the tool ships counting primitives, never a checklist, because a shipped
+checklist makes a model think "ran tool, audit done". What counts as a signal
+in a codebase is the auditor's decision, recorded by the auditor (the model)
+as mechanics it registers for the session or persists to the project config.
+
+### Wave A — safety and correctness (parallel; one owner per file set)
+
+- **A1 — PRAGMA at prepare time and engine limits (D1).** State: **not started**.
+  Deny `AuthAction::Pragma` in the read-only connection's authorizer
+  (`src/store/connection_guards.rs`), keeping `pragma_table_info`/`pragma_*`
+  table-valued reads working or documenting their loss in INSTRUCTIONS; set
+  `SQLITE_LIMIT_LENGTH` (and `SQLITE_LIMIT_SQL_LENGTH`) on the read-only
+  connection from `max_query_value_bytes`; replace the misleading
+  "only comments" message for a refused non-SELECT. DoD: a test that runs
+  `PRAGMA hard_heap_limit=1` through `query`, asserts the refusal, then opens a
+  second connection and reads `PRAGMA hard_heap_limit` = 0 and a `report`
+  succeeds; a test that the `zeroblob/hex/replace` amplifier fails with a
+  bounded error instead of allocating.
+- **A2 — 1-based line numbers on every surface (D2).** State: **not started**.
+  Keep `model::span` zero-based internally; convert once at the evidence
+  write boundary (`src/evidence/normalize.rs`) so `evidence.start_line/end_line`
+  are 1-based, and at the `structure` response builder; bump the schema
+  version so existing databases rebuild; document "all line numbers are
+  1-based, inclusive" in INSTRUCTIONS, `schema.sql` column comments and
+  `evidence_payload_keys.md`. DoD: an end-to-end test over a fixture file
+  asserts `leads`, `query` evidence rows, `structure`, `finding` echo and
+  `line_range()` all agree with `cat -n`; `check_mcp_surface --record` if a
+  description changed.
+- **A3 — symlink-safe writes (D3).** State: **not started**. Before writing
+  `config.json` or editing `.gitignore`, refuse when `symlink_metadata` of
+  the target is a symlink or a non-regular file, with a typed error and remedy;
+  no canonicalise-then-write. DoD: tests for `config.json -> outside` and
+  `.gitignore -> outside` assert the target is untouched and the error names
+  the path.
+- **A4 — parse bounded by size and time (D4).** State: **not started**. Add
+  `max_parse_bytes` to `Limits`/profiles (default 2 MiB; env
+  `SLUGAUDIT_MAX_PARSE_BYTES`; config override) distinct from
+  `max_file_bytes`; a file above it is stored (subject to `max_file_bytes`)
+  with `extraction_completeness = ContentOnly` and a reason
+  `oversize_for_parse`, counted in `report.completeness`; every `leads` rows
+  and counts response carries `files_not_parsed`; the sampler's and
+  `structure`'s `parser.parse` run under tree-sitter's progress callback
+  bound to the call deadline; `structure` checks the window before pushing a
+  file. DoD: a 3 MiB generated Rust file indexes in < 2 s with
+  `files_not_parsed = 1` visible in `leads` and `report`; the 50 MB case from
+  the deep dive completes under 10 s with no SIGKILL.
+- **A5 — prose is stored, not parsed (D5).** State: **not started**. Classify
+  Markdown, reStructuredText, plain text and similar prose as `prose`: content
+  stored, no grammar run, no `Diagnostic` rows; override the pack's `.txt`
+  → `vimdoc` mapping in `src/parse/language.rs`; structured config
+  (JSON/YAML/TOML) stays parsed. DoD: indexing a project with a Markdown file
+  containing an unterminated code fence yields 0 diagnostics; a YAML with a
+  tab-indent error yields 1.
+- **A6 — grammar download: honest and retried (D6).** State: **not started**.
+  Use `has_parser` where availability is meant; map the pack's download error
+  to `LoadFailed` so the file is re-attempted on the next sync even when its
+  hash is unchanged; document in README *Install* and in INSTRUCTIONS that
+  grammars are fetched lazily from the language pack's GitHub release on
+  first use, where they are cached, and what happens offline. DoD: a test
+  with the download forced to fail records `LoadFailed`, and a second sync
+  with it allowed parses the file; docs drift gate passes.
+
+### Wave B — value (after Wave A is integrated and green)
+
+- **B1 — call evidence for Python, JavaScript, TypeScript, TSX, Go, Java, C
+  (D7).** State: **not started**. Replace the Rust-only node matching with a
+  per-language table or embedded `.scm` call queries (one `@callee` capture),
+  keeping the shared span/confidence/detail logic and the Rust macro re-parse;
+  `covers` becomes the explicit set of languages a mechanic reads; fix the
+  Rust turbofish fall-through. DoD: one fixture per language with a known
+  call count, including decoys in comments and strings; `leads` on the Python
+  fixture returns the expected non-zero count with `covers` listing python.
+- **B2 — auditor-owned mechanics.** State: **not started**. New tool
+  `mechanic` with `add` / `remove` / `list`: an entry is `{id, language,
+  query, note}`; `query` is compiled on `add` and a bad one is refused with
+  the compile error; `add` returns the first count immediately (same fields
+  as a `leads` count). Session entries live in server memory and die with the
+  process; `persist: true` writes the entry to a versioned `mechanics`
+  section of `.planning/slugaudit/config.json`, re-read per call. `leads` and
+  `report` carry every entry with `source: builtin | project_config | session`
+  and the author's `note`, session entries listed first. Rules: an entry can
+  never remove, rename or override a built-in; ids must not collide; an
+  invalid persisted entry is listed in `report` with its error and counted
+  as `mechanics_invalid`, never dropped. The first `report` of a session
+  carries a short `mechanics` note stating the built-ins are counting
+  primitives, how to register, and the lifetime. DoD: tests for add/count/
+  remove, persist/reload, collision, invalid query, invalid persisted entry;
+  `check_mcp_surface --record`; INSTRUCTIONS and README updated.
+
+### Wave C — surface and release (after Wave B)
+
+- **C1 — one paging contract (D8).** State: **not started**. A shared page
+  struct (`returned`, `total`, `complete`, `next_offset`, `page_bytes`,
+  `bytes_used`, `limited_by`, `revision_id`) used by `leads`, `query`,
+  `structure`, `finding_read`; per-tool synonyms removed; `structure`'s
+  second cursor documented beside it. DoD: the four output schemas share the
+  struct; `check_mcp_surface --record`.
+- **C2 — instructions and errors (D8).** State: **not started**. Cut
+  INSTRUCTIONS to about half: paging text once, judgment disclaimer once, no
+  motivational framing; list all eight evidence kinds in the `query`
+  description; shrink `health`'s schema to what a model acts on or mark it
+  operator-only; SQL errors carry `data.code` and `remedy`; an unknown
+  `structure` language says so; fix `examples/queries/README.md` `LIKE` on
+  payload and split `blast_radius.sql` into single-statement recipes; make the
+  first `report` after `project_control on` not fail with `stale_revision`
+  (sync once inside `on`, or let the following call adopt the new revision).
+  DoD: `check_mcp_surface --record`; the deep-dive stdio script
+  (`on` → `report`) succeeds first time.
+- **C3 — release readiness.** State: **not started**. `CHANGELOG.md` entries
+  for everything since 1.0.10; version `1.1.0`; README install paths agree
+  with the binary's `--help`; `[profile.release]` with `strip = true`;
+  `check_version_consistency` passes. Tagging and pushing are the owner's
+  call and are not part of this phase.
+
+### Recorded, not scheduled (D9)
+
+- Watcher removal in favour of the sweep plus a re-hash of files whose stored
+  mtime is within 2 s of now, behind a per-project in-process sync lock.
+  State: **not scheduled** — design agreed in principle 2026-10-25; a large
+  refactor that waits for Waves A–C.
+- `touch_unchanged` writes outside `publish_revision`; `sync` returning
+  `rmcp::ErrorData`; `ignore_rules/build.rs` `.ok()` fail-open; `netfs.rs`
+  `unwrap_or("")`; "dropped" vs deferred events doc drift; FIFO swap race in
+  `capped_read.rs`. State: **still open**, small, suitable for a junior sweep
+  after Wave C.
+- Instrumenting the founding metric (call chains per session) is not in the
+  code; the server log already carries `session_id`/`call_id` per call, so a
+  log-derived measure is possible without a code change. State: **not scheduled**.
+
 ## Remaining P1 debt (historical; superseded by wave 5)
 
 State: **superseded** — the wave-5 audit is a fresh, complete inventory
