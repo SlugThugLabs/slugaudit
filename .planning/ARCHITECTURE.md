@@ -569,6 +569,17 @@ layer discards the file and rebuilds it from project source. There is no
 migration code path, and a version bump needs only a matching `schema.sql`
 change — a bump is free because there is no primary data to preserve.
 
+**Two processes may open one fresh database at once.** Two harness sessions in
+one project is normal, so the open path is race-safe. `configure` installs the
+busy timeout before any other statement; the first `journal_mode=WAL`
+conversion needs an exclusive lock and SQLite reports `SQLITE_BUSY` for it
+without consulting the busy handler, so it is retried for a bounded 5 s and
+then fails with `StoreError::Busy`. Schema creation runs in an IMMEDIATE
+transaction that reads `user_version` again under the lock, so the second
+process accepts the first one's schema. The corrupt/outdated discard
+(`discard_if_still_unusable`) takes the same write lock and looks again, and
+leaves a database another process already repaired.
+
 The database holds only current state: `files`, `evidence`, and
 `dependency_edges` are replaced in place, never duplicated per revision, and
 `revisions` is an append-only log of publish events used as freshness metadata
@@ -678,7 +689,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 93 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 94 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only

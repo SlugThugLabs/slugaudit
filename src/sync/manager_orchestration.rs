@@ -67,6 +67,7 @@ fn store_error_kind(error: &StoreError) -> &'static str {
     match error {
         StoreError::Open(_) => "open",
         StoreError::Configure(_) => "configure",
+        StoreError::Busy(_) => "busy",
         StoreError::Migration(_) => "migration",
         StoreError::Symlink => "symlink",
         StoreError::Inspect(_) => "inspect",
@@ -147,12 +148,24 @@ impl SourceSyncManager {
                                   discarding and re-publishing from scratch",
                     },
                 );
-                store::discard_corrupt_database(database_path).map_err(|err| {
+                // Re-checked under the database lock: a second session may
+                // have repaired the file since this open failed.
+                let outcome = store::discard_if_still_unusable(database_path).map_err(|err| {
                     ErrorData::internal_error(
                         format!("discarding the corrupt or outdated project database: {err}"),
                         None,
                     )
                 })?;
+                if outcome == store::DiscardOutcome::AlreadyCurrent {
+                    return store::open_read_write(database_path)
+                        .map(Ok)
+                        .map_err(|error| {
+                            ErrorData::internal_error(
+                                format!("opening the project database for sync: {error}"),
+                                None,
+                            )
+                        });
+                }
                 self.rebuild_and_finish(root, database_path.to_path_buf(), start, sink)
                     .map(Err)
             }

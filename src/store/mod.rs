@@ -5,6 +5,7 @@
 
 mod connection;
 mod connection_guards;
+mod discard;
 mod migrations;
 mod netfs;
 mod sql_functions;
@@ -29,6 +30,7 @@ pub(crate) fn is_rusqlite_corruption(error: &rusqlite::Error) -> bool {
 }
 
 pub use connection::{StoreError, discard_corrupt_database, open_read_only, open_read_write};
+pub use discard::{DiscardError, DiscardOutcome, discard_if_still_unusable};
 pub use migrations::MigrationError;
 
 /// The schema version a fresh database is brought to. Re-exported for tests

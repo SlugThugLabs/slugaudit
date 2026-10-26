@@ -202,6 +202,8 @@ src/
 │   ├── connection.rs         typed StoreError + the open entry points
 │   ├── connection_guards.rs  symlink/permission guards, ATTACH/PRAGMA authorizer, open flags, pragmas
 │   ├── connection_guard_tests.rs read-only authorizer, PRAGMA allowlist and open-guard tests
+│   ├── discard.rs            discard an unusable database only if it is still unusable under the write lock
+│   ├── discard_tests.rs      lock-checked discard outcomes
 │   ├── netfs.rs              network-filesystem rejection
 │   ├── sql_functions.rs      line_count / line_range scalar SQL functions registered on every connection
 │   ├── sql_functions_tests.rs line-function edge cases

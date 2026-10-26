@@ -1,5 +1,5 @@
 //! Database schema verification and initialization.
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 use thiserror::Error;
 
 /// The schema version this build writes to `PRAGMA user_version`. Bumping it
@@ -61,7 +61,25 @@ pub(super) fn ensure_current_schema(connection: &mut Connection) -> Result<(), M
     }
 
     if version == 0 {
-        let tx = connection.transaction().map_err(MigrationError::Apply)?;
+        // IMMEDIATE takes the write lock up front (waiting out the busy
+        // timeout), and the version is read again under it: a second process
+        // creating the same fresh database sees the first one's schema
+        // instead of racing it.
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(MigrationError::Apply)?;
+        let locked_version: i64 = tx
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(MigrationError::ReadVersion)?;
+        if locked_version == CURRENT_SCHEMA_VERSION {
+            return Ok(());
+        }
+        if locked_version != 0 {
+            return Err(MigrationError::UnsupportedVersion {
+                found: locked_version,
+                supported: CURRENT_SCHEMA_VERSION,
+            });
+        }
         tx.execute_batch(SCHEMA_DDL)
             .map_err(MigrationError::Apply)?;
         tx.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)

@@ -24,6 +24,11 @@ pub enum StoreError {
     /// failed.
     #[error("failed to configure database connection: {0}")]
     Configure(#[source] rusqlite::Error),
+    /// Another process kept the database locked for the whole bounded wait
+    /// (the busy timeout plus the WAL-conversion retry budget) while this
+    /// connection was being set up. Retrying the call is safe.
+    #[error("the project database stayed locked by another process: {0}")]
+    Busy(#[source] rusqlite::Error),
     /// Reading or initializing the schema failed; see
     /// [`MigrationError`](super::migrations::MigrationError).
     #[error(transparent)]
@@ -80,6 +85,7 @@ impl StoreError {
             Self::Open(error) | Self::Configure(error) => super::is_rusqlite_corruption(error),
             Self::Migration(error) => error.is_corruption(),
             Self::Symlink
+            | Self::Busy(_)
             | Self::Inspect(_)
             | Self::WalUnavailable { .. }
             | Self::Permissions(_)

@@ -1,8 +1,10 @@
 use super::*;
+use crate::store::connection_guards::enable_wal;
 use crate::store::test_capture::capture_warns;
 use std::io::ErrorKind;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::time::Duration;
 
 #[test]
 fn an_uninspectable_database_path_warning_redacts_the_path() {
@@ -159,5 +161,78 @@ fn a_pragma_function_called_with_a_setter_argument_cannot_change_the_heap_limit(
             0,
             "{sql}"
         );
+    }
+}
+
+/// A rollback-mode database whose lock another connection holds: converting it
+/// to WAL reports busy immediately (no busy handler involved), which is the
+/// state two processes creating the same fresh project database hit.
+fn locked_fresh_database() -> (tempfile::TempDir, std::path::PathBuf, Connection) {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("project.db");
+    let holder = Connection::open(&path).expect("holder");
+    holder
+        .execute_batch("CREATE TABLE t(x); BEGIN EXCLUSIVE")
+        .expect("hold the exclusive lock");
+    (directory, path, holder)
+}
+
+#[test]
+fn enabling_wal_waits_out_a_lock_another_process_releases() {
+    let (_directory, path, holder) = locked_fresh_database();
+    let contender = Connection::open(&path).expect("contender");
+    contender
+        .busy_timeout(Duration::ZERO)
+        .expect("no busy wait");
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(150));
+        holder.execute_batch("COMMIT").expect("release the lock");
+    });
+
+    let result = enable_wal(&contender, Duration::from_secs(5));
+    releaser.join().expect("releaser thread");
+
+    result.expect("WAL enabled after the lock was released");
+    let mode: String = contender
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .expect("journal_mode");
+    assert_eq!(mode, "wal");
+}
+
+#[test]
+fn enabling_wal_fails_with_busy_when_the_lock_outlasts_the_budget() {
+    let (_directory, path, _holder) = locked_fresh_database();
+    let contender = Connection::open(&path).expect("contender");
+    contender
+        .busy_timeout(Duration::ZERO)
+        .expect("no busy wait");
+
+    let error =
+        enable_wal(&contender, Duration::from_millis(100)).expect_err("the lock is never released");
+
+    assert!(matches!(error, StoreError::Busy(_)), "{error:?}");
+}
+
+#[test]
+fn two_threads_opening_one_fresh_database_both_succeed() {
+    for round in 0..20 {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("project.db");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let (path, barrier) = (path.clone(), std::sync::Arc::clone(&barrier));
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    open_read_write(&path).map(|_| ())
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker
+                .join()
+                .expect("open thread")
+                .unwrap_or_else(|error| panic!("round {round}: {error}"));
+        }
     }
 }

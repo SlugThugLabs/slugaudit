@@ -524,3 +524,9 @@ Oldest first: append each new entry at the end of the file. Format: **what** / *
 - **Why:** a zero limit silently turned a feature off or made every call fail; a crashed update left litter nobody reads or removes; the copied loop had to be kept in step with the original by hand. An age rule for temp files cannot promise a write is not in progress.
 - **Where:** `src/model/limits.rs`, `src/project/config.rs`, `src/project/config_cleanup.rs`, `src/parse/budget.rs`, `src/tools/structure_exec.rs`, `src/tools/mechanic_scan.rs`, `src/evidence/calls/query_calls.rs`.
 - **Reversible:** yes. The watch zero refusal is two lines in `apply_sync_and_watch_overrides` (back to `parse_override`).
+
+## C4: only the open-failure rebuild re-checks under the lock
+- **What:** `open_or_rebuild` discards through `store::discard_if_still_unusable`, which re-checks `user_version` under the write lock. The project-row mismatch discard in `verify_metadata_or_rebuild` and `tools/project_control.rs` recovery still use `discard_corrupt_database`: their database is at the current schema version by definition, so a version re-check cannot tell a repaired file from a stale one.
+- **Why:** the observed race (and the version-mismatch race) is on the open path; a row-level re-check needs a design decision, and `tools/**` is outside this item.
+- **Where:** `src/store/discard.rs`, `src/sync/manager_orchestration.rs`.
+- **Reversible:** yes.

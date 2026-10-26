@@ -16,6 +16,7 @@ use std::path::Path;
 use std::time::Duration;
 
 pub(super) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const WAL_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 /// Owner-only access for newly created database files. Existing files with
 /// broader access are rejected rather than silently exposed.
 #[cfg(unix)]
@@ -269,15 +270,45 @@ pub(super) fn reject_insecure_permissions(_path: &Path) -> Result<(), StoreError
     Ok(())
 }
 
-/// Applies the pragmas every read-write connection requires: foreign keys
-/// on, WAL journal mode granted, and the shared busy timeout.
+/// Applies the pragmas every read-write connection requires: the shared busy
+/// timeout first (so every later statement that needs a lock waits for it),
+/// then foreign keys on and WAL journal mode granted.
 pub(super) fn configure(connection: &Connection) -> Result<(), StoreError> {
+    connection
+        .busy_timeout(BUSY_TIMEOUT)
+        .map_err(StoreError::Configure)?;
     connection
         .pragma_update(None, "foreign_keys", "ON")
         .map_err(StoreError::Configure)?;
-    let granted: String = connection
-        .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))
-        .map_err(StoreError::Configure)?;
+    enable_wal(connection, BUSY_TIMEOUT)?;
+    Ok(())
+}
+
+/// Switches the database to WAL, retrying for up to `budget` while another
+/// process holds it. Converting a fresh database to WAL needs an exclusive
+/// lock and SQLite reports `SQLITE_BUSY` for that statement immediately, even
+/// with a busy handler installed, so two processes creating the same project
+/// database at once would otherwise fail one of them. Once WAL is set it
+/// persists in the file, so the retry only matters for the first open.
+pub(super) fn enable_wal(connection: &Connection, budget: Duration) -> Result<(), StoreError> {
+    let deadline = std::time::Instant::now() + budget;
+    let granted: String = loop {
+        match connection.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0)) {
+            Ok(granted) => break granted,
+            Err(error) if is_contention(&error) => {
+                if std::time::Instant::now() >= deadline {
+                    tracing::warn!(
+                        target: "slugaudit::store",
+                        budget_ms = u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
+                        "database stayed locked by another process while enabling WAL"
+                    );
+                    return Err(StoreError::Busy(error));
+                }
+                std::thread::sleep(WAL_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(StoreError::Configure(error)),
+        }
+    };
     if !granted.eq_ignore_ascii_case("wal") {
         tracing::warn!(
             target: "slugaudit::store",
@@ -286,8 +317,13 @@ pub(super) fn configure(connection: &Connection) -> Result<(), StoreError> {
         );
         return Err(StoreError::WalUnavailable { granted });
     }
-    connection
-        .busy_timeout(BUSY_TIMEOUT)
-        .map_err(StoreError::Configure)?;
     Ok(())
+}
+
+/// True for SQLite's busy/locked codes: another connection is in the way.
+pub(super) fn is_contention(error: &rusqlite::Error) -> bool {
+    matches!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
 }
