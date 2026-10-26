@@ -528,7 +528,7 @@ as mechanics it registers for the session or persists to the project config.
   `structure`, `finding_read`; per-tool synonyms removed; `structure`'s
   second cursor documented beside it. DoD: the four output schemas share the
   struct; `check_mcp_surface --record`.
-- **C2 — instructions and errors (D8).** State: **in progress** (opus builder dispatched before the routing correction; Luna reviews INSTRUCTIONS and the surface diff before it is marked landed). Cut
+- **C2 — instructions and errors (D8).** State: **landed** — `41043ad` (INSTRUCTIONS 12,561 -> 5,474 chars; `health` behind `verbose`; `sql_error` and `unknown_language` codes; recipes split and LIKE-on-payload removed; the first-report `stale_revision` was still live — `verify_and_drain` returned the publish's revision after its own drain published a newer one — fixed and pinned by `report_first_call_tests`) + `9ed41f3` / `3919f5f` (Luna: `detail` object-only, typed one level deep, FAILURES names the new codes; health schema 6,576 chars). Builder opus for 41043ad (dispatched before the routing correction), sonnet for the follow-ups. Cut
   INSTRUCTIONS to about half: paging text once, judgment disclaimer once, no
   motivational framing; list all eight evidence kinds in the `query`
   description; shrink `health`'s schema to what a model acts on or mark it
