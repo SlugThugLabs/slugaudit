@@ -427,9 +427,14 @@ enforced atomically:
   syscall; an existing file readable or writable by group or other is
   rejected rather than silently exposed.
 
-`store/connection.rs` also installs a SQLite authorizer that blocks
-`ATTACH DATABASE` on every connection, so a read-only connection cannot reach
-a second database file. This is the engine-level half of the invariant that
+`store/connection_guards.rs` installs a SQLite authorizer that denies `ATTACH`/`DETACH` on every
+connection, so a read-only connection cannot reach a second database file. On the read-only
+connection it also denies every `PRAGMA` except a fixed allowlist of side-effect-free schema
+introspection names (`table_info`, `table_xinfo`, `table_list`, `index_list`, `index_info`,
+`index_xinfo`, `foreign_key_list`), so a pragma that acts while a statement is prepared
+(`hard_heap_limit`, `soft_heap_limit`, `temp_store_directory`) is refused before it takes effect;
+`pragma_table_info(...)` keeps working. `query` additionally sets `SQLITE_LIMIT_LENGTH` and
+`SQLITE_LIMIT_SQL_LENGTH` for its own call. This is the engine-level half of the invariant that
 correctness comes from the connection, not from inspecting query text.
 
 **Value-size ceiling.** The bundled SQLite caps one TEXT/BLOB at
@@ -551,7 +556,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 76 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 77 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only
@@ -643,7 +648,7 @@ the architecture so the next reviewer does not re-litigate it from scratch.
 - **Findings are bound to a content hash, not a line range alone.** The hash
   is what makes auto-invalidation reliable when a file changes; the line range
   is a hint for the reader.
-- **The `query` ATTACH guard is discipline, not containment.** The agent could
+- **The `query` ATTACH/PRAGMA guard is discipline, not containment.** The agent could
   read any file it has permission for with `sqlite3` directly. The authorizer
   exists so the "correctness comes from the connection" invariant stays true
   if the tool surface changes (see *Store and schema lifecycle*).
@@ -660,8 +665,8 @@ something else loudly.
 
 1. **Correctness comes from the connection itself, never from inspecting
    query text.** Read paths open `SQLITE_OPEN_READ_ONLY`; the `query` tool
-   never reaches a read-write connection, and the ATTACH authorizer blocks the
-   one read a read-only connection would otherwise permit.
+   never reaches a read-write connection, and the authorizer blocks ATTACH and every non-introspection PRAGMA, the
+   reads and prepare-time side effects a read-only connection would otherwise permit.
 2. **Symlinks and network filesystems are rejected at open time.** A
    symlinked database returns `StoreError::Symlink`; one on NFS/CIFS/SMB
    returns `StoreError::NetworkFilesystem`. The open is the only check.

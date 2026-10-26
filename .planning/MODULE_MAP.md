@@ -171,7 +171,8 @@ src/
 ├── store/                    SQLite connection boundary
 │   ├── mod.rs                open_read_write / open_read_only / discard_corrupt_database
 │   ├── connection.rs         typed StoreError + the open entry points
-│   ├── connection_guards.rs  symlink/permission/ATTACH guards, open flags, pragmas
+│   ├── connection_guards.rs  symlink/permission guards, ATTACH/PRAGMA authorizer, open flags, pragmas
+│   ├── connection_guard_tests.rs read-only authorizer, PRAGMA allowlist and open-guard tests
 │   ├── netfs.rs              network-filesystem rejection
 │   ├── sql_functions.rs      line_count / line_range scalar SQL functions registered on every connection
 │   ├── sql_functions_tests.rs line-function edge cases

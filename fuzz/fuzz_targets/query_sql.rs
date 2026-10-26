@@ -8,7 +8,8 @@
 //! 1. the read-only connection (`store::connection::open_read_only`, opened
 //!    with `SQLITE_OPEN_READ_ONLY` via the tool's verified-read transaction),
 //! 2. the authorizer installed on every connection, which denies
-//!    `ATTACH`/`DETACH` (`store::connection::guard_against_attach`),
+//!    `ATTACH`/`DETACH` and, on the read-only connection, every non-introspection
+//!    `PRAGMA` (`store::connection_guards`),
 //! 3. the subquery wrapper (`SELECT * FROM (\n…\n) LIMIT … OFFSET …`), which
 //!    is what refuses a statement that is not a `SELECT`,
 //!
