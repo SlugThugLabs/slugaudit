@@ -419,7 +419,7 @@ does not rediscover them from scratch.
 
 ## Phase 8 — 2026-10-25 deep-dive remediation and auditor-owned mechanics
 
-State: **not started** (authored 2026-10-25 by the architect from the deep dive;
+State: **Wave A landed** (2026-10-25, `7dc6410..35aabea`, gate green at `35aabea` (12/12 README *Development* gates, 1317 tests, 93.96% coverage); Waves B and C **not started**). Authored 2026-10-25 by the architect from the deep dive;
 Lead executes on branch `fix/deep-dive-2026-10-25`, one commit per item, no
 push). Evidence: `.planning/archive/audit_2026-10-25_deep_dive.md` (defects
 D1–D9, `path:line` at `c3fc7f8`). Each item lists its Definition of Done; an
@@ -436,7 +436,7 @@ as mechanics it registers for the session or persists to the project config.
 
 ### Wave A — safety and correctness (parallel; one owner per file set)
 
-- **A1 — PRAGMA at prepare time and engine limits (D1).** State: **not started**.
+- **A1 — PRAGMA at prepare time and engine limits (D1).** State: **landed** — `7dc6410` (+ `44626bb` guard tests moved and docs, `1052963` rebuild test reads `user_version` raw). Deviations: introspection-pragma allowlist keeps `pragma_table_info` working; `SQLITE_LIMIT_LENGTH` = max(`max_query_value_bytes`, 3 × `max_file_bytes`) per `query` call, so the amplifier is bounded but can still reach ~1.5 GB (estimated, not measured) on the audit profile — **still open** as a residual risk pending an owner decision on capping stored content.
   Deny `AuthAction::Pragma` in the read-only connection's authorizer
   (`src/store/connection_guards.rs`), keeping `pragma_table_info`/`pragma_*`
   table-valued reads working or documenting their loss in INSTRUCTIONS; set
@@ -447,7 +447,7 @@ as mechanics it registers for the session or persists to the project config.
   second connection and reads `PRAGMA hard_heap_limit` = 0 and a `report`
   succeeds; a test that the `zeroblob/hex/replace` amplifier fails with a
   bounded error instead of allocating.
-- **A2 — 1-based line numbers on every surface (D2).** State: **not started**.
+- **A2 — 1-based line numbers on every surface (D2).** State: **landed** — `a1427c2` (schema version 9; conversion in `evidence/sql.rs::to_row` and `structure_page.rs`). Release-binary repro: `leads` 3/4, `structure` 1–5, evidence rows agree with `cat -n`.
   Keep `model::span` zero-based internally; convert once at the evidence
   write boundary (`src/evidence/normalize.rs`) so `evidence.start_line/end_line`
   are 1-based, and at the `structure` response builder; bump the schema
@@ -457,13 +457,13 @@ as mechanics it registers for the session or persists to the project config.
   asserts `leads`, `query` evidence rows, `structure`, `finding` echo and
   `line_range()` all agree with `cat -n`; `check_mcp_surface --record` if a
   description changed.
-- **A3 — symlink-safe writes (D3).** State: **not started**. Before writing
+- **A3 — symlink-safe writes (D3).** State: **landed** — `66d1ac3`. An in-project `.gitignore` symlink is now refused too (deviation). Untested: the `Io` → internal-error arm at the `project_control` boundary. Before writing
   `config.json` or editing `.gitignore`, refuse when `symlink_metadata` of
   the target is a symlink or a non-regular file, with a typed error and remedy;
   no canonicalise-then-write. DoD: tests for `config.json -> outside` and
   `.gitignore -> outside` assert the target is untouched and the error names
   the path.
-- **A4 — parse bounded by size and time (D4).** State: **not started**. Add
+- **A4 — parse bounded by size and time (D4).** State: **landed** — `800630d` (+ `35aabea`). 50 MB case: 1.74 s, 170 MB peak RSS, `files_not_parsed = 1`. The sampler uses the pack's parse timeout (wraps the progress callback) bound to the one sync deadline; `files_not_parsed` excludes `language IS NULL`. **Still open:** no per-file parse budget, so a pathological file under 2 MiB that outlives `max_sync_wall_clock` fails every sync until edited; `Query::new` has no deadline. Add
   `max_parse_bytes` to `Limits`/profiles (default 2 MiB; env
   `SLUGAUDIT_MAX_PARSE_BYTES`; config override) distinct from
   `max_file_bytes`; a file above it is stored (subject to `max_file_bytes`)
@@ -475,14 +475,14 @@ as mechanics it registers for the session or persists to the project config.
   file. DoD: a 3 MiB generated Rust file indexes in < 2 s with
   `files_not_parsed = 1` visible in `leads` and `report`; the 50 MB case from
   the deep dive completes under 10 s with no SIGKILL.
-- **A5 — prose is stored, not parsed (D5).** State: **not started**. Classify
+- **A5 — prose is stored, not parsed (D5).** State: **landed** — `9cf6141` + `5823049` (+ `8749608`). Prose is stored as `language = 'prose'`, excluded from `parser_failure_*`, counted in `completeness.prose_files_not_parsed`; `structure` refuses prose. Classify
   Markdown, reStructuredText, plain text and similar prose as `prose`: content
   stored, no grammar run, no `Diagnostic` rows; override the pack's `.txt`
   → `vimdoc` mapping in `src/parse/language.rs`; structured config
   (JSON/YAML/TOML) stays parsed. DoD: indexing a project with a Markdown file
   containing an unterminated code fence yields 0 diagnostics; a YAML with a
   tab-indent error yields 1.
-- **A6 — grammar download: honest and retried (D6).** State: **not started**.
+- **A6 — grammar download: honest and retried (D6).** State: **landed** — `e34e0ca` + `0ed7c30`. Deviation: `has_language` kept as the gate (`has_parser` never downloads); retries gated by a process-wide 10-minute fetch cool-down after the first version retried every call and published a revision per call offline. A black-holed network blocks the first call ~60 s (pack's fixed timeout).
   Use `has_parser` where availability is meant; map the pack's download error
   to `LoadFailed` so the file is re-attempted on the next sync even when its
   hash is unchanged; document in README *Install* and in INSTRUCTIONS that
