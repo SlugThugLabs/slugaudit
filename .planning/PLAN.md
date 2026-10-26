@@ -47,7 +47,7 @@ The durable copies are the source of record. A later claim that cites a
 ## Current state (2026-10-26)
 
 - Branch `fix/deep-dive-2026-10-25` (not merged, not pushed, not tagged) carries Phase 8 Waves A, B and C on top of `8e3a0b6`: crate `slugaudit-mcp-rust` **1.1.0** (`CHANGELOG.md` `[1.1.0]`), 9 tools (adds `mechanic`), one shared `page` contract, 1-based lines, schema version 11, `[profile.release]` strip + thin LTO + codegen-units 1 (release binary 18.7 MB -> 12.4 MB).
-- Gate at `f43dc9b`: 12/12 README *Development* gates, 1,507 tests passed, 0 failed, coverage 93.28%; release-binary stdio end-to-end 12/12. `f973bc6` (test-only flake fix) follows; the final gate re-run on the plan commit is recorded in the Phase 8 header.
+- Gate at `f43dc9b`: 12/12 README *Development* gates, 1,507 tests passed, 0 failed, coverage 93.28%; release-binary stdio end-to-end 12/12. `f973bc6` (test-only flake fix) follows; the final gate re-ran green at `d8cf8e4` (recorded in the Phase 8 header).
 - Branch `wave-c-c4` and worktree `/home/slugaudit-wt/c4` (C4, integrated as `ef3b98c`) and branch `wave-a-lane-y` are kept for the owner to delete.
 
 ### Previous state (2026-10-19)
@@ -425,7 +425,7 @@ does not rediscover them from scratch.
 
 ## Phase 8 — 2026-10-25 deep-dive remediation and auditor-owned mechanics
 
-State: **Wave A landed** (2026-10-25, `7dc6410..35aabea`, gate green at `35aabea` (12/12 README *Development* gates, 1317 tests, 93.96% coverage); Wave B and Wave C landed 2026-10-26 (Wave C: C1-C6, see below), gate green at `345618f` (12/12 README *Development* gates, all test blocks 0 failed, 93.35% coverage; release-binary stdio end-to-end 8/8)). Authored 2026-10-25 by the architect from the deep dive;
+State: **Wave A landed** (2026-10-25, `7dc6410..35aabea`, gate green at `35aabea` (12/12 README *Development* gates, 1317 tests, 93.96% coverage); Wave B and Wave C landed 2026-10-26 (Wave C: C1-C6, see below), gate green at `345618f` (12/12 README *Development* gates, all test blocks 0 failed, 93.35% coverage; release-binary stdio end-to-end 8/8); Wave C gate green at `d8cf8e4` (12/12 README *Development* gates, all test blocks 0 failed, 93.29% coverage, zero-limit tests 10/10 runs clean; release-binary 1.1.0 stdio end-to-end 12/12 at `f43dc9b`)). Authored 2026-10-25 by the architect from the deep dive;
 Lead executes on branch `fix/deep-dive-2026-10-25`, one commit per item, no
 push). Evidence: `.planning/archive/audit_2026-10-25_deep_dive.md` (defects
 D1–D9, `path:line` at `c3fc7f8`). Each item lists its Definition of Done; an
