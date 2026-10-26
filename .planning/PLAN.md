@@ -555,6 +555,20 @@ as mechanics it registers for the session or persists to the project config.
 - **C5 — mechanic scan cache.** State: **landed** — `e13e0cf` + `5dee1ae` (one retention budget per pass; cache tests moved out; key tests for pattern/project/edited entry). 2,000-file Python project: cached `leads` 0.065 s vs 0.156 s. Builder sonnet.
 - **C6 — sweep.** State: **landed** — `d6795df`: stale `config.json.*.tmp` removed on load (only when `config.lock` is free), every overridable limit refuses 0 with one warning, one shared `parse::budget::parse_within`, DEVIATIONS header now says oldest-first, B0 warn-once test race fixed. Edit list drafted by sonnet, sections 1–2 applied by a haiku junior (3.4 h, stopped correctly on the race), finished by sonnet.
 
+- **C7 — output-schema size (architect spot-check, 2026-10-26).** State: **still
+  open**. After Wave C the `tools/list` wire content is 104,818 chars (was
+  67,277 before Phase 8): output schemas are 82k of it (`report` 19.1k,
+  `mechanic` 16.6k, `leads` 12.8k, `query` 8.4k, `structure` 8.2k,
+  `finding_read` 6.6k, `health` 6.6k), with 414 `description` keys and the
+  shared `Page` def embedded once per tool. Descriptions plus input schemas are
+  20.9k chars (~5.2k tokens) and INSTRUCTIONS 5,485, so a client that forwards
+  only those pays about what it did before Phase 8 with one more tool; a client
+  that forwards `outputSchema` pays ~26k tokens per session. Target: type
+  nested response objects one level deep as `health` now does, drop
+  per-property descriptions that repeat the field name, and bring every output
+  schema under 4k chars. Sonnet builder, Luna review of the surface diff,
+  `check_mcp_surface --record`.
+
 ### Recorded, not scheduled (D9)
 
 - **Stored-content cap review.** State: **not scheduled** (architect 2026-10-25: a Wave C profile decision). `query`'s `SQLITE_LIMIT_LENGTH` is max(`max_query_value_bytes`, 3 x `max_file_bytes`), so the zeroblob/hex/replace amplifier is bounded but can reach ~1.5 GB (estimated) on the audit profile; the real fix is a lower default for stored content.
