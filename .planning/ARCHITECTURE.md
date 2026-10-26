@@ -481,7 +481,8 @@ model). A parse cut at the sync deadline is `Failed` with `parse_error_reason =
 'parse_timeout'`: `ContentOnly` when `process()` itself was cut, `Partial` with
 the pack's evidence kept when a later walker re-parse was. `report.completeness`
 counts both codes, every `leads` response carries `files_not_parsed` (the
-`report` parser-failure predicate, prose excluded, narrowed to files with a
+`report` parser-failure predicate, prose (which includes the `.gitignore`,
+`.ignore` and `.dockerignore` ignore lists) excluded, narrowed to files with a
 detected language, under the request's pattern), and `structure` reads each
 file's stored size (`octet_length`) before loading it: a file over
 `max_parse_bytes` or over its 64 MiB window is skipped and counted in

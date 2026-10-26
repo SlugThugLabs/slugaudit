@@ -114,7 +114,7 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     `~/.cache/tree-sitter-language-pack/`). Offline, files in that language are still stored and searchable by \
     `content`, but have no parsed evidence: their `files.parser_availability` is `LoadFailed`, and they are \
     retried after a 10-minute cool-down or on the next server start. The first failed fetch can block one call \
-    for up to about 60 s. Markdown, reStructuredText, AsciiDoc, Org and plain-text files are stored as \
+    for up to about 60 s. Markdown, reStructuredText, AsciiDoc, Org and plain-text files, and the ignore lists `.gitignore`, `.ignore` and `.dockerignore`, are stored as \
     `language = 'prose'` and never parsed (no grammar, no evidence; `structure` refuses them).\n\n\
     STRUCTURE: `structure` runs a Tree-sitter S-expression query (required, and it must name at least one \
     capture) against indexed content — in one `file`, or project-wide with `language` and an optional `pattern` \

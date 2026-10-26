@@ -13,6 +13,12 @@ const PROSE_EXTENSIONS: [&str; 9] = [
     "md", "markdown", "mdx", "rst", "adoc", "asciidoc", "org", "txt", "text",
 ];
 
+/// File names (exact, no directory) of ignore-pattern lists: plain path lists
+/// with no grammar, stored like prose (the pack names no language for them, so
+/// they would otherwise be `language IS NULL` and read as a parser failure).
+/// The class is the same "stored, searchable, deliberately not parsed".
+const IGNORE_FILE_NAMES: [&str; 3] = [".gitignore", ".ignore", ".dockerignore"];
+
 #[must_use]
 /// True when `name` is the stored prose language or a pack grammar name that
 /// the prose table shadows (the pack names `.md` `markdown`, `.txt`
@@ -29,9 +35,18 @@ pub fn is_prose_language_name(name: &str) -> bool {
 #[must_use]
 /// Maps a file path to the language its extension indicates, or `None` when
 /// the pack does not name it. Prose files map to [`PROSE_LANGUAGE`], whatever
-/// grammar the pack would assign (it maps `.txt` to `vimdoc`). Extensionless
-/// names such as `README` get no language from the pack today and stay so.
+/// grammar the pack would assign (it maps `.txt` to `vimdoc`), and so do the
+/// ignore-pattern lists named by [`IGNORE_FILE_NAMES`] (`.gitignore`, ...).
+/// Other extensionless names such as `README` get no language from the pack
+/// today and stay so.
 pub fn detect_language(path: &str) -> Option<String> {
+    let is_ignore_file = std::path::Path::new(path)
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|name| IGNORE_FILE_NAMES.contains(&name));
+    if is_ignore_file {
+        return Some(PROSE_LANGUAGE.to_owned());
+    }
     let extension = std::path::Path::new(path)
         .extension()
         .and_then(std::ffi::OsStr::to_str)
@@ -79,6 +94,16 @@ mod tests {
         ];
         for (path, expected) in table {
             assert_eq!(detect_language(path).as_deref(), Some(expected), "{path}");
+        }
+    }
+
+    #[test]
+    fn ignore_pattern_lists_are_stored_as_prose_at_any_depth() {
+        for path in [".gitignore", "sub/.gitignore", ".ignore", ".dockerignore"] {
+            assert_eq!(detect_language(path).as_deref(), Some("prose"), "{path}");
+        }
+        for path in ["gitignore", ".gitignore.bak", ".npmignore"] {
+            assert_eq!(detect_language(path), None, "{path}");
         }
     }
 

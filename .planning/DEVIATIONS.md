@@ -370,3 +370,9 @@ Newest first. Format: **what** / **why** / **where** / **reversible?**
 - **Where:** `src/model/limit_overrides.rs`, `src/model/limits.rs`, `src/project/config.rs`.
 - **Reversible:** Yes. Cost to know: the ledger is never cleared, so a setting reverted to a previously reported bad value in the same process is not reported a second time.
 
+## B0: `.gitignore`, `.ignore` and `.dockerignore` are stored as prose, not reported as parser failures
+- **What:** `detect_language` returns `"prose"` for files named exactly `.gitignore`, `.ignore` or `.dockerignore` (any directory), so `analyze` records them `Unavailable`/`NotAttempted`/`ContentOnly`, runs no grammar and writes no Diagnostic rows, and they count in `completeness.prose_files_not_parsed` instead of the parser-failure list. The class keeps the name `prose` (no new class name); `structure` with `language = "prose"` is refused for them like other prose.
+- **Why:** Investigation: the pack maps no language to these names (`.gitignore` has no extension for it to match; only a name like `x.gitignore` reaches its `gitignore` grammar), so they were stored `language IS NULL` and the parser-failure predicate counted them as "no parser". Since `project_control on` writes a `.gitignore`, every enabled project reported `parser_failure_count >= 1`. No grammar ever ran on them, so there were no Diagnostic rows to remove.
+- **Where:** `src/parse/language.rs`, `src/server.rs` (INSTRUCTIONS), tests in `src/parse/language.rs`, `src/sync/analyze_tests.rs`, `src/tools/report_prose_tests.rs`.
+- **Reversible:** Yes. Cost to know: an already-indexed, unchanged ignore file keeps its old `language IS NULL` row (the content hash is unchanged, so it is not re-analyzed) until it changes or the database is rebuilt, so an existing project still reports it as a parser failure for now. `.npmignore`, `.gitattributes` and similar are unchanged.
+

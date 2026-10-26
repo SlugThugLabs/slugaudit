@@ -513,6 +513,38 @@ fn prose_files_yield_no_diagnostics_and_stay_queryable() {
 }
 
 #[test]
+fn an_ignore_file_yields_no_diagnostics_and_never_reaches_the_loader() {
+    let before = forced_failure::calls();
+
+    let (_project, _db, connection) = published(&[
+        (".gitignore", "target/\n.planning/slugaudit/\n"),
+        ("lib.rs", "pub fn a() {}\n"),
+    ]);
+
+    assert_eq!(
+        forced_failure::calls(),
+        before + 1,
+        "only lib.rs was parsed"
+    );
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM evidence e JOIN files f ON f.id = e.file_id \
+             WHERE f.path = '.gitignore'"
+        ),
+        0
+    );
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM files WHERE path = '.gitignore' AND language = 'prose' \
+             AND extraction_completeness = 'ContentOnly'"
+        ),
+        1
+    );
+}
+
+#[test]
 fn indexing_only_prose_files_never_reaches_the_loader() {
     let before = forced_failure::calls();
 
