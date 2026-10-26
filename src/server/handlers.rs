@@ -44,8 +44,8 @@ impl SlugAuditServer {
          diagnostics, TODO/FIXME/HACK comment markers, and credential-shaped files. Nothing here \
          is judged, ranked, scored, or ordered by importance: every item is a fact, and deciding \
          which of them matter is entirely your call. Call with only `path` to get every mechanic \
-         with its row count, its distinct-file count (`files`) and `covers` (`rust_only` means a \
-         zero count is unchecked, not absent), then call again with one `mechanic` id to get \
+         with its row count, its distinct-file count (`files`) and `covers` (the languages that \
+         count read; a language missing there is unchecked, not absent), then call again with one `mechanic` id to get \
          file/line rows, optionally narrowed with `pattern` (a path GLOB, e.g. `src/auth/*`; \
          without `*`/`?` it is a substring match). A rows response always reports `returned`/`total` \
          and `complete` plus the file denominators `files_total`/`files_covered`; there is no row \

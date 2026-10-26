@@ -63,6 +63,57 @@ fn method_calls_report_the_field_name_as_callee_name() {
 }
 
 #[test]
+fn turbofish_callees_report_the_inner_function_or_method_name() {
+    let source = "fn run(x: &str) {\n    foo::<u8>();\n    x.parse::<u32>();\n}\n";
+
+    let calls = extract_rust(source);
+
+    let named: Vec<(&str, &str, &str)> = calls
+        .iter()
+        .map(|item| {
+            (
+                item.payload["callee_name"].as_str().expect("callee_name"),
+                item.payload["callee_text"].as_str().expect("callee_text"),
+                item.payload["resolution"].as_str().expect("resolution"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        named,
+        [
+            ("foo", "foo::<u8>", "unresolved-syntactic"),
+            ("parse", "x.parse::<u32>", "unresolved-syntactic"),
+        ]
+    );
+}
+
+#[test]
+fn a_qualified_turbofish_callee_stays_qualified() {
+    let source = "fn run() { std::mem::size_of::<u8>(); }\n";
+
+    let calls = extract_rust(source);
+
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls[0].payload["callee_name"], "size_of");
+    assert_eq!(calls[0].payload["resolution"], "qualified-syntactic");
+    assert_eq!(calls[0].payload["confidence"], "high");
+}
+
+#[test]
+fn a_qualified_call_inside_a_macro_has_the_same_confidence_as_outside() {
+    let source = "fn run() { println!(\"{}\", crate::util::now()); }\n";
+
+    let calls = extract_rust(source);
+
+    let now = calls
+        .iter()
+        .find(|item| item.payload["callee_name"] == "now")
+        .expect("the macro argument call is recovered");
+    assert_eq!(now.payload["resolution"], "qualified-syntactic");
+    assert_eq!(now.payload["confidence"], "high");
+}
+
+#[test]
 fn malformed_rust_does_not_panic() {
     let calls = extract_rust("fn run() { helper(\n");
     assert!(calls.len() <= 1);

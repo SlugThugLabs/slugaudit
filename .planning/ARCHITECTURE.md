@@ -43,13 +43,18 @@ The server exposes eight tools (`src/server.rs`):
 - **`leads`** — unranked mechanical observations: call sites by callee name,
   diagnostics, TODO/FIXME/HACK comment markers, credential-shaped files.
   Counts by default, each with its row count, distinct-file count and
-  `covers` (`rust_only` / `all_languages`); file/line rows for one mechanic on
+  `covers` (the sorted languages of the files it read under the
+  pattern); file/line rows for one mechanic on
   request, optionally narrowed by a `pattern` path filter. Rows are cut by a
   response byte budget rather than a row cap, and every rows response reports
   `returned` / `total` / `complete` with `files_total` / `files_covered`. A
   resumed page may pin `expected_revision` and is refused (`stale_revision`)
-  when the index moved on. Callee-based mechanics are Rust-only in this
-  revision.
+  when the index moved on. Call evidence comes from the Rust call walker
+  (with its macro re-parse) and from one embedded tree-sitter call query per
+  language (`examples/calls/<language>.scm`: python, javascript,
+  typescript, tsx, go, java, c), all feeding one row builder
+  (`evidence/calls/site.rs`); the call-mechanic `covers` list is derived
+  from that query table, never hand-kept.
 - **`query`** — arbitrary read-only SQL against the project's own database.
   The connection itself refuses writes; the SQL is never inspected for write
   intent.
@@ -504,7 +509,7 @@ every profile; env `SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES`, project
 the sync and before compilation.
 
 **Schema versioning is discard-and-rebuild.** `store/migrations.rs` writes
-`CURRENT_SCHEMA_VERSION` (currently `10`) to `PRAGMA user_version`. A database
+`CURRENT_SCHEMA_VERSION` (currently `11`) to `PRAGMA user_version`. A database
 whose version is neither fresh (`0`) nor current resolves as
 `UnsupportedVersion`, which `is_corruption()` reports as corruption; the sync
 layer discards the file and rebuilds it from project source. There is no
@@ -620,7 +625,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 85 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 87 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only

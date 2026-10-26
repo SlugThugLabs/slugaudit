@@ -111,6 +111,7 @@ pub(super) fn count_all(
     pattern: Option<&str>,
 ) -> Result<Vec<MechanicCount>, ErrorData> {
     let glob = compile_pattern(pattern);
+    let read = super::leads_covers::languages_read(tx, glob.as_deref())?;
     MECHANICS
         .iter()
         .map(|mechanic| {
@@ -127,7 +128,7 @@ pub(super) fn count_all(
                 mechanic: mechanic.id.to_owned(),
                 count,
                 files,
-                covers: mechanic.covers,
+                covers: read.covers(mechanic.reads),
             })
         })
         .collect()

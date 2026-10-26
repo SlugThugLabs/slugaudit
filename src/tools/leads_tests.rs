@@ -213,27 +213,6 @@ fn rejects_an_unknown_mechanic_id() {
     assert!(message.contains("unwrap_calls"), "{message}");
 }
 
-#[test]
-fn call_mechanics_are_zero_for_a_project_without_rust_files() {
-    let project = tempfile::tempdir().expect("project dir");
-    activate(project.path());
-    fs::write(
-        project.path().join("app.py"),
-        b"def a(x):\n    return x.unwrap()\n",
-    )
-    .expect("write python source");
-
-    let response = run(request(project.path(), None));
-
-    // The call walker is Rust-only: the mechanic exists but is not measured
-    // for this project, so it reports zero rather than disappearing — and
-    // `covers` says which of the two a zero is.
-    assert_eq!(count_of(&response, "unwrap_calls"), 0);
-    let covers = entry(&response, "unwrap_calls").covers;
-    assert_eq!(covers, MechanicCoverage::RustOnly);
-    assert_eq!(count_of(&response, "credential_files"), 0);
-}
-
 /// The phase-3 contract: a mechanic with more rows than a page reports
 /// `complete: false` with `returned`/`total`, and the denominator is
 /// distinct files — the number a sweep can actually exhaust — not rows.
@@ -380,11 +359,9 @@ fn mechanic_counts_carry_the_file_denominator_and_what_each_mechanic_covers() {
     let unwrap = entry(&response, "unwrap_calls");
     assert_eq!(unwrap.count, 6);
     assert_eq!(unwrap.files, 3);
-    assert_eq!(unwrap.covers, MechanicCoverage::RustOnly);
-    let comment = entry(&response, "comment_markers").covers;
-    let credential = entry(&response, "credential_files").covers;
-    assert_eq!(comment, MechanicCoverage::AllLanguages);
-    assert_eq!(credential, MechanicCoverage::AllLanguages);
+    assert_eq!(unwrap.covers, ["rust"]);
+    assert_eq!(entry(&response, "comment_markers").covers, ["rust"]);
+    assert_eq!(entry(&response, "credential_files").covers, ["rust"]);
 }
 
 /// A resumed page that pins the revision it came from is refused — with the
@@ -625,3 +602,6 @@ mod leads_page_tests;
 
 #[path = "leads_line_tests.rs"]
 mod leads_line_tests;
+
+#[path = "leads_language_tests.rs"]
+mod leads_language_tests;

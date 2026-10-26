@@ -83,14 +83,29 @@ pub(super) fn node_span(
     lines: &crate::model::LineIndex<'_>,
     context: &'static str,
 ) -> crate::model::SpanAvailability {
-    let start_byte = node.start_byte();
-    let end_byte = node.end_byte();
+    range_span(
+        (node.start_byte(), node.end_byte()),
+        (node.start_position().row, node.end_position().row),
+        lines,
+        context,
+    )
+}
+
+/// [`node_span`] from a node's raw `(start, end)` bytes and rows, for a
+/// producer holding a `tree_sitter::Node` rather than the pack's wrapper (the
+/// call queries in `calls/query_calls.rs`).
+pub(super) fn range_span(
+    (start_byte, end_byte): (usize, usize),
+    (start_row, end_row): (usize, usize),
+    lines: &crate::model::LineIndex<'_>,
+    context: &'static str,
+) -> crate::model::SpanAvailability {
     let start = crate::model::Position {
-        line: crate::model::saturating_u32(node.start_position().row),
+        line: crate::model::saturating_u32(start_row),
         column: lines.column(start_byte),
     };
     let end = crate::model::Position {
-        line: crate::model::saturating_u32(node.end_position().row),
+        line: crate::model::saturating_u32(end_row),
         column: lines.column(end_byte),
     };
     match crate::model::Span::new(start_byte as u64, end_byte as u64, start, end) {
@@ -198,6 +213,7 @@ pub(super) fn parse_tree(
     Err(NoTree::Failed)
 }
 
+pub(crate) use calls::call_languages;
 pub use normalize::extract;
 pub(crate) use normalize::extract_within;
 

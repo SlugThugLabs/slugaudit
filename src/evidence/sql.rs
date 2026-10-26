@@ -16,11 +16,11 @@ pub struct EvidenceRow {
     pub start_byte: Option<i64>,
     /// Zero-based exclusive end byte, or `None` when no span is available.
     pub end_byte: Option<i64>,
-    /// Zero-based start line, or `None` when no span is available.
+    /// One-based start line, or `None` when no span is available.
     pub start_line: Option<i64>,
     /// Zero-based character start column, or `None` when no span is available.
     pub start_column: Option<i64>,
-    /// Zero-based end line, or `None` when no span is available.
+    /// One-based, inclusive end line, or `None` when no span is available.
     pub end_line: Option<i64>,
     /// Zero-based character end column, or `None` when no span is available.
     pub end_column: Option<i64>,

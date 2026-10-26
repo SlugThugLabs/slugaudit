@@ -1,17 +1,28 @@
-//! Rust call-site evidence.
+// slugaudit-line-exception: approved-by=slugthug; reason=the call dispatch and the Rust call walker it owns: the walk, its row emission and the Rust callee naming the macro re-parse shares
+//! Call-site evidence: the Rust walker, the query-driven languages
+//! (`calls/query_calls.rs`), and the one row builder both feed.
 //!
 //! This module deliberately reports syntax facts, not a compiler-grade call
 //! graph. A Tree-sitter call node proves that source contains a call-shaped
 //! expression and gives us its span; name resolution can still be ambiguous
 //! for traits, generics, function pointers, macros, and dynamic dispatch.
+//!
+//! Rust keeps a walker rather than an embedded query: it re-parses macro
+//! token trees (`calls/macro_calls.rs`), which a query cannot reach, and it
+//! records every call node — including a callee no pattern names, such as
+//! `(f)()` or `f()()`, whose whole call text becomes the callee — which a
+//! single-capture query would drop, changing existing counts.
 
-use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, LineIndex};
-use serde_json::json;
+use crate::model::{EvidenceOrigin, LineIndex};
 use std::collections::HashSet;
 
+mod call_queries;
 mod macro_calls;
+mod query_calls;
+mod site;
 use super::{Extraction, TextRangeError, node_text};
 use crate::util::Deadline;
+use site::{CallSite, call_item, is_qualified};
 use tree_sitter_language_pack::Node;
 
 const RUST_CALL_KINDS: &[&str] = &["call_expression", "macro_invocation"];
@@ -22,6 +33,34 @@ const RUST_FUNCTION_KINDS: &[&str] = &[
     "impl_item",
     "trait_item",
 ];
+
+/// Every language call evidence is extracted for: Rust (the walker) and each
+/// language with an embedded call query. Derived from the query table, so a
+/// `covers` list built from it cannot drift from what is extracted.
+pub(crate) fn call_languages() -> impl Iterator<Item = &'static str> {
+    std::iter::once("rust").chain(
+        call_queries::CALL_QUERIES
+            .iter()
+            .map(|entry| entry.language),
+    )
+}
+
+/// Extracts call-site evidence for one already indexed file in `language`:
+/// the Rust walker for Rust, the embedded call query for a language that has
+/// one, and nothing (complete, empty) for any other language. Every parse
+/// runs within what is left of `deadline`.
+pub(crate) fn extract(
+    language: &str,
+    source: &str,
+    lines: &LineIndex<'_>,
+    deadline: Option<&Deadline>,
+) -> Extraction {
+    if language == "rust" {
+        extract_rust(source, lines, deadline)
+    } else {
+        query_calls::extract(language, source, lines, deadline)
+    }
+}
 
 /// What stays fixed across one file's call walk.
 struct Input<'a> {
@@ -36,11 +75,7 @@ struct Input<'a> {
 /// was hit, the parser could not produce a tree, or a node range did not
 /// slice the source, which the caller must report as partial; it is timed
 /// out when the file's parse or a macro body's re-parse hit `deadline`.
-pub(crate) fn extract_rust(
-    source: &str,
-    lines: &LineIndex<'_>,
-    deadline: Option<&Deadline>,
-) -> Extraction {
+fn extract_rust(source: &str, lines: &LineIndex<'_>, deadline: Option<&Deadline>) -> Extraction {
     let tree = match super::parse_tree("rust", source, deadline) {
         Ok(tree) => tree,
         Err(why) => return Extraction::without_tree(why),
@@ -62,6 +97,7 @@ struct CallParts {
     callee_text: String,
     callee_name: String,
     caller: Option<String>,
+    qualified: bool,
 }
 
 fn call_parts(node: &Node, source: &str, macro_call: bool) -> Result<CallParts, TextRangeError> {
@@ -71,6 +107,10 @@ fn call_parts(node: &Node, source: &str, macro_call: bool) -> Result<CallParts, 
         None => node_text(source, node.start_byte(), node.end_byte())?,
     }
     .to_owned();
+    let qualified = match &callee {
+        Some(child) => qualified_callee(child, source)?,
+        None => is_qualified(&callee_text),
+    };
     let callee_name = match callee {
         Some(child) => simple_name(child, source)?,
         None => None,
@@ -80,7 +120,33 @@ fn call_parts(node: &Node, source: &str, macro_call: bool) -> Result<CallParts, 
         callee_text,
         callee_name,
         caller: enclosing_caller(node, source)?,
+        qualified,
     })
+}
+
+/// Whether a Rust callee is a `::` path. A turbofish (`foo::<u8>`,
+/// `x.parse::<u32>`) is a `generic_function`, whose `::` introduces type
+/// arguments, not a path: only its `function` part is checked.
+fn qualified_callee(callee: &Node, source: &str) -> Result<bool, TextRangeError> {
+    let path = match generic_function_inner(callee) {
+        Some(inner) => inner,
+        None => callee.clone(),
+    };
+    Ok(is_qualified(node_text(
+        source,
+        path.start_byte(),
+        path.end_byte(),
+    )?))
+}
+
+/// The `function` part of a turbofish callee (`generic_function`), or `None`
+/// for any other node.
+fn generic_function_inner(node: &Node) -> Option<Node> {
+    if node.kind() == "generic_function" {
+        node.child_by_field_name("function")
+    } else {
+        None
+    }
 }
 
 /// Pre-order walk with an explicit heap stack, so the thread stack stays flat
@@ -126,30 +192,20 @@ fn emit_call(
     seen: &mut HashSet<(usize, usize)>,
 ) {
     let macro_call = node.kind() == "macro_invocation";
-    let (resolution, confidence) = if macro_call {
-        ("macro", "high")
-    } else if parts.callee_text.contains("::") {
-        ("qualified-syntactic", "high")
-    } else {
-        ("unresolved-syntactic", "medium")
-    };
     let key = format!("call:{counter}");
     *counter += 1;
     if seen.insert((node.start_byte(), node.end_byte())) {
-        out.items.push(EvidenceItem {
-            key,
-            kind: EvidenceKind::Call,
+        let site = CallSite {
+            language: "rust",
             origin: EvidenceOrigin::RustCallWalker,
+            callee_text: parts.callee_text,
+            callee_name: parts.callee_name,
+            caller: parts.caller,
+            macro_call,
+            qualified: parts.qualified,
             span: super::node_span(node, input.lines, "Rust call"),
-            payload: json!({
-                "language": "rust",
-                "callee_text": parts.callee_text,
-                "callee_name": parts.callee_name,
-                "caller": parts.caller,
-                "resolution": resolution,
-                "confidence": confidence,
-            }),
-        });
+        };
+        out.items.push(call_item(key, site));
     }
     if !macro_call {
         return;
@@ -172,13 +228,17 @@ fn callee_node(node: &Node, macro_call: bool) -> Option<Node> {
             || child.kind() == "identifier"
             || child.kind() == "scoped_identifier"
             || child.kind() == "field_expression"
+            || child.kind() == "generic_function"
     })
 }
 
 /// The simple name of a callee. `field_expression` (`v.unwrap`) recurses to
 /// its last named child — the `field_identifier` — so a method call reports
-/// `unwrap`, while `callee_text` keeps the receiver for context. A loop, not
-/// recursion: the descent follows file content, so its length is untrusted.
+/// `unwrap`, while `callee_text` keeps the receiver for context. A turbofish
+/// (`generic_function`: `foo::<u8>`, `x.parse::<u32>`) recurses into its
+/// `function` part, not its type arguments, so it reports `foo` / `parse`.
+/// A loop, not recursion: the descent follows file content, so its length is
+/// untrusted.
 fn simple_name(node: Node, source: &str) -> Result<Option<String>, TextRangeError> {
     let mut current = node;
     loop {
@@ -186,6 +246,10 @@ fn simple_name(node: Node, source: &str) -> Result<Option<String>, TextRangeErro
             return Ok(Some(
                 node_text(source, current.start_byte(), current.end_byte())?.to_owned(),
             ));
+        }
+        if let Some(inner) = generic_function_inner(&current) {
+            current = inner;
+            continue;
         }
         match named_children(&current).last() {
             Some(child) => current = child,

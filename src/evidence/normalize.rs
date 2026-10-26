@@ -119,9 +119,7 @@ pub(crate) fn extract_within(
         result.imports.is_empty(),
         deadline,
     ));
-    if language == "rust" {
-        extraction.absorb(super::calls::extract_rust(source, &lines, deadline));
-    }
+    extraction.absorb(super::calls::extract(language, source, &lines, deadline));
 
     Ok(extraction)
 }

@@ -382,3 +382,28 @@ Newest first. Format: **what** / **why** / **where** / **reversible?**
 - **Why:** the pack names no language for these, so they were `language IS NULL` and read as parser failures in `report`. The bump makes existing databases rebuild, so already-indexed ignore files (whose stored language is NULL and whose content hash is unchanged) are reclassified instead of lingering as failures. The database is disposable by design.
 - **Where:** `src/parse/language.rs` (`IGNORE_FILE_NAMES`), `src/store/migrations.rs`.
 - **Reversible:** yes.
+
+## B1: `covers` lists the languages a count actually read in this index, not a static capability list
+- **What:** `MechanicCount.covers` is now a sorted `Vec<String>`: the distinct `files.language` values under the request's `pattern` that the mechanic read. Call mechanics: files whose grammar ran (`file_kind = 'indexed'`, `parse_outcome IN ('Succeeded','SyntaxErrors')`) in a language of `evidence::call_languages()` (rust + every embedded call query, derived from the query table); diagnostics and comment markers: every such parsed file's language; `credential_files`: every file with a detected language. `MechanicCoverage` (`rust_only`/`all_languages`) is removed; the mechanic table carries a `Reads` selector instead.
+- **Why:** The brief asks all-language mechanics to "list every language they actually read". A static list would be the pack's ~300 grammar names on every count (and three times per compact enumeration); the index's own languages are bounded, and answer the question `covers` exists for: which of this project's languages a zero checked. A Ruby project now shows `covers: []` on call mechanics instead of an enum the caller has to interpret.
+- **Where:** `src/tools/leads_covers.rs` (new), `src/tools/leads.rs`, `src/tools/leads_mechanics.rs`, `src/tools/leads_query.rs`, `src/tools/mod.rs`; INSTRUCTIONS, the `leads` description, README, ARCHITECTURE, `.planning/archive/mcp_surface.json`.
+- **Reversible:** Yes. Cost to know: `covers` costs two `SELECT DISTINCT language` reads per `leads` call; a project's file with call-extractable language indexed by an older build (before this change) is reported covered although its stored evidence predates call extraction, until it changes or the database is rebuilt (see the schema-bump decision in the B1 report).
+
+## B1: Rust keeps its call walker; the seven new languages use embedded queries feeding one row builder
+- **What:** No `examples/calls/rust.scm`. Python, JavaScript, TypeScript, TSX, Go, Java and C run `examples/calls/<language>.scm` (one `@callee` capture each, compiled once per process in a `static` table) through `calls/query_calls.rs`; the Rust walker, its macro re-parse and the query path all build rows through `calls/site.rs::call_item`. Query rows use origin `RawTree` ("direct raw tree-sitter AST capture"); Rust rows keep `RustCallWalker`. Every node kind and field name in the brief matched the shipped grammars (pack 1.18.0) unchanged.
+- **Why:** The Rust walker re-parses macro token trees, which a query cannot reach, and emits a row for every call node, including callees no pattern names (`(f)()`, `f()()`: whole call text as callee); a single-capture query would drop those and change existing Rust counts. A query cannot run on the pack's `Tree` wrapper (it does not expose the `tree_sitter::Tree`), so the query path parses once more with its own parser under the same per-file deadline (progress callback), as the Rust walker already did. Calls whose callee is not a plain or member name (`f()()`, `(*fp)()`, Go `g[int](x)`) are not counted in the seven query languages. The query cursor starts no match deeper than `MAX_WALK_DEPTH`, as the walkers do; the bindings walker reports such a file partial.
+- **Where:** `src/evidence/calls.rs`, `src/evidence/calls/{site,call_queries,query_calls,macro_calls}.rs`, `src/evidence/mod.rs` (`range_span`), `src/evidence/normalize.rs`, `examples/calls/*.scm`.
+- **Reversible:** Yes.
+
+## B1: turbofish callees are named from their function part, and a qualified call inside a macro is `high` confidence
+- **What:** A `generic_function` callee (`foo::<u8>()`, `x.parse::<u32>()`) now yields `callee_name` `foo`/`parse` and `callee_text` `foo::<u8>`/`x.parse::<u32>`; its qualification ignores the turbofish `::` (so `foo::<u8>()` is `unresolved-syntactic`, `std::mem::size_of::<u8>()` stays `qualified-syntactic`). A `qualified-syntactic` call recovered from a macro body now reports confidence `high`, as the same call outside a macro always did and as `evidence_payload_keys.md` documents; it was `medium`.
+- **Why:** The turbofish fix is the brief's; the confidence change falls out of the one shared row builder and removes a disagreement between the two Rust producers and the published payload contract.
+- **Where:** `src/evidence/calls.rs`, `src/evidence/calls/macro_calls.rs`, `src/evidence/calls/site.rs`.
+- **Reversible:** Yes.
+
+## B1: schema version 11 so existing databases gain call evidence
+
+- **What:** `CURRENT_SCHEMA_VERSION` 10 -> 11 alongside B1's multi-language call evidence.
+- **Why:** unchanged files in an existing database are not re-analysed, so they would keep no Call rows while `covers` lists their language — a "checked, zero" claim for code that was never read. The bump forces the disposable database to rebuild.
+- **Where:** `src/store/migrations.rs`; stated version in `.planning/ARCHITECTURE.md` and `docs/TROUBLESHOOTING.md`.
+- **Reversible:** yes.

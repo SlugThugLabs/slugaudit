@@ -4,11 +4,13 @@
 //! This lets Tree-sitter recognize nested method/function calls without
 //! treating string contents or comments as calls. All coordinates are mapped
 //! back to the original source; the synthetic probe is never emitted.
-use super::{Input, callee_node, enclosing_caller, named_children, simple_name};
+use super::{
+    CallSite, Input, call_item, callee_node, enclosing_caller, named_children, qualified_callee,
+    simple_name,
+};
 use crate::evidence::{NoTree, TextRangeError, node_text, parse_tree};
-use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, LineIndex, Span, SpanAvailability};
+use crate::model::{EvidenceItem, EvidenceOrigin, LineIndex, Span, SpanAvailability};
 use crate::util::Deadline;
-use serde_json::json;
 use std::rc::Rc;
 use tree_sitter_language_pack::Node;
 
@@ -202,15 +204,8 @@ fn emit_call_row(
         return Ok(None);
     };
     let callee_text = node_text(wrapped, callee.start_byte(), callee.end_byte())?;
-    let name = simple_name(callee, wrapped)?
+    let name = simple_name(callee.clone(), wrapped)?
         .unwrap_or_else(|| callee_text.trim_end_matches('!').to_owned());
-    let resolution = if macro_call {
-        "macro"
-    } else if callee_text.contains("::") {
-        "qualified-syntactic"
-    } else {
-        "unresolved-syntactic"
-    };
     let span = Span::new(
         start as u64,
         end as u64,
@@ -221,24 +216,18 @@ fn emit_call_row(
         |error| crate::evidence::span_unavailable("macro argument call", error),
         SpanAvailability::Present,
     );
-    Ok(Some((
-        start,
-        end,
-        EvidenceItem {
-            key: String::new(),
-            kind: EvidenceKind::Call,
-            origin: EvidenceOrigin::RustCallWalker,
-            span,
-            payload: json!({
-                "language": "rust",
-                "callee_text": callee_text,
-                "callee_name": name,
-                "caller": scan.caller,
-                "resolution": resolution,
-                "confidence": if macro_call { "high" } else { "medium" },
-            }),
-        },
-    )))
+    let site = CallSite {
+        language: "rust",
+        origin: EvidenceOrigin::RustCallWalker,
+        qualified: qualified_callee(&callee, wrapped)?,
+        callee_text: callee_text.to_owned(),
+        callee_name: name,
+        caller: scan.caller.clone(),
+        macro_call,
+        span,
+    };
+    // The key is assigned by `calls::emit_call`, after its dedup.
+    Ok(Some((start, end, call_item(String::new(), site))))
 }
 
 /// A nested macro still owns an opaque token tree after the outer fragment is

@@ -69,6 +69,8 @@ src/
 │   ├── structure_parse_bounds_tests.rs max_parse_bytes skip, window-before-load and parse-timeout partials
 │   ├── leads.rs              unranked mechanical observations
 │   ├── leads_mechanics.rs    the leads mechanic catalogue
+│   ├── leads_covers.rs       each count's `covers`: the languages the mechanic read
+│   ├── leads_language_tests.rs leads and covers over non-Rust call languages
 │   ├── leads_query.rs        the SQL each leads mechanic compiles to
 │   ├── leads_not_parsed_tests.rs files_not_parsed on every leads response and report's oversize count
 │   ├── leads_page.rs         one response assembled: counts, a row page, or the compact enumeration
@@ -145,7 +147,13 @@ src/
 │   ├── normalize_builders.rs payload builders
 │   ├── sql.rs                EvidenceKind ↔ SQL text mirror
 │   ├── bindings.rs           variable-binding / field-declaration walker
-│   ├── calls.rs              Rust call-site walker
+│   ├── calls.rs              call dispatch + the Rust call-site walker
+│   ├── calls/                submodule directory of the file module above
+│   │   ├── site.rs           the one Call row builder every producer feeds
+│   │   ├── macro_calls.rs    Rust macro token-tree re-parse for nested calls
+│   │   ├── call_queries.rs   embedded per-language call queries (examples/calls/*.scm) + compile-once cache
+│   │   ├── query_calls.rs    runs a call query: budgeted parse, capture → call site
+│   │   └── query_calls_tests.rs per-language call fixtures with comment/string decoys
 │   └── generic_imports.rs    generic import extraction
 │
 ├── watch/                    filesystem watching

@@ -114,18 +114,6 @@ pub enum LeadMode {
     Compact,
 }
 
-/// Which languages a mechanic was actually measured over. A zero count on a
-/// [`MechanicCoverage::RustOnly`] mechanic means *unchecked*, not *absent* —
-/// without this field that distinction is only prose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum MechanicCoverage {
-    /// Only the Rust call walker produces the evidence this mechanic reads.
-    RustOnly,
-    /// Produced for every indexed language.
-    AllLanguages,
-}
-
 #[derive(Debug, Serialize, JsonSchema)]
 /// One mechanic's complete counts under the request's pattern — complete
 /// regardless of paging, with no ordering by importance.
@@ -139,9 +127,14 @@ pub struct MechanicCount {
     /// denominator to enumerate: a 50,000-row mechanic is usually far fewer
     /// files, and a file is the unit a sweep can finish.
     pub files: i64,
-    /// The languages this count covers. `rust_only` with a zero count on a
-    /// non-Rust project means nothing was checked.
-    pub covers: MechanicCoverage,
+    /// The languages this count was measured over: every language of the
+    /// files under `pattern` this mechanic read, sorted. Call-site mechanics
+    /// read the files whose grammar ran in a language with call extraction
+    /// (rust, python, javascript, typescript, tsx, go, java, c); diagnostics
+    /// and comment markers read every file whose grammar ran; path mechanics
+    /// read every file. A language of this project missing here was not
+    /// checked by this mechanic, so its zero there means unchecked, not absent.
+    pub covers: Vec<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

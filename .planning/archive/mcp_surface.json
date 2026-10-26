@@ -569,7 +569,7 @@
         "destructiveHint": false,
         "readOnlyHint": true
       },
-      "description": "Want somewhere to start? Mechanical facts extracted from the index — call sites by callee name (unwrap, expect, panic, todo, unimplemented, assert), diagnostics, TODO/FIXME/HACK comment markers, and credential-shaped files. Nothing here is judged, ranked, scored, or ordered by importance: every item is a fact, and deciding which of them matter is entirely your call. Call with only `path` to get every mechanic with its row count, its distinct-file count (`files`) and `covers` (`rust_only` means a zero count is unchecked, not absent), then call again with one `mechanic` id to get file/line rows, optionally narrowed with `pattern` (a path GLOB, e.g. `src/auth/*`; without `*`/`?` it is a substring match). A rows response always reports `returned`/`total` and `complete` plus the file denominators `files_total`/`files_covered`; there is no row cap, so a page is cut only by your `limit` (omit it for everything that fits) and by the page byte size (64 KiB by default; `page_bytes` raises it up to the server ceiling, reported as `row_budget_bytes`/`rows_bytes`, with `limited_by` naming what stopped it). To page, pass `offset` = `next_offset` together with `expected_revision` = the previous page's `revision_id`: a changed index is then refused with `stale_revision` instead of silently skipping or repeating rows. For `mechanic`/`file`/`line` triples with no per-row text, pass `mode: compact`; with only `path` it then enumerates every mechanic in one response under the same completeness fields — the cheap way to see the whole surface.",
+      "description": "Want somewhere to start? Mechanical facts extracted from the index — call sites by callee name (unwrap, expect, panic, todo, unimplemented, assert), diagnostics, TODO/FIXME/HACK comment markers, and credential-shaped files. Nothing here is judged, ranked, scored, or ordered by importance: every item is a fact, and deciding which of them matter is entirely your call. Call with only `path` to get every mechanic with its row count, its distinct-file count (`files`) and `covers` (the languages that count read; a language missing there is unchecked, not absent), then call again with one `mechanic` id to get file/line rows, optionally narrowed with `pattern` (a path GLOB, e.g. `src/auth/*`; without `*`/`?` it is a substring match). A rows response always reports `returned`/`total` and `complete` plus the file denominators `files_total`/`files_covered`; there is no row cap, so a page is cut only by your `limit` (omit it for everything that fits) and by the page byte size (64 KiB by default; `page_bytes` raises it up to the server ceiling, reported as `row_budget_bytes`/`rows_bytes`, with `limited_by` naming what stopped it). To page, pass `offset` = `next_offset` together with `expected_revision` = the previous page's `revision_id`: a changed index is then refused with `stale_revision` instead of silently skipping or repeating rows. For `mechanic`/`file`/`line` triples with no per-row text, pass `mode: compact`; with only `path` it then enumerates every mechanic in one response under the same completeness fields — the cheap way to see the whole surface.",
       "inputSchema": {
         "$defs": {
           "LeadMode": {
@@ -761,8 +761,11 @@
                 "type": "integer"
               },
               "covers": {
-                "$ref": "#/$defs/MechanicCoverage",
-                "description": "The languages this count covers. `rust_only` with a zero count on a\nnon-Rust project means nothing was checked."
+                "description": "The languages this count was measured over: every language of the\nfiles under `pattern` this mechanic read, sorted. Call-site mechanics\nread the files whose grammar ran in a language with call extraction\n(rust, python, javascript, typescript, tsx, go, java, c); diagnostics\nand comment markers read every file whose grammar ran; path mechanics\nread every file. A language of this project missing here was not\nchecked by this mechanic, so its zero there means unchecked, not absent.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               "files": {
                 "description": "Distinct files containing at least one observation. This is the\ndenominator to enumerate: a 50,000-row mechanic is usually far fewer\nfiles, and a file is the unit a sweep can finish.",
@@ -781,21 +784,6 @@
               "covers"
             ],
             "type": "object"
-          },
-          "MechanicCoverage": {
-            "description": "Which languages a mechanic was actually measured over. A zero count on a\n[`MechanicCoverage::RustOnly`] mechanic means *unchecked*, not *absent* —\nwithout this field that distinction is only prose.",
-            "oneOf": [
-              {
-                "const": "rust_only",
-                "description": "Only the Rust call walker produces the evidence this mechanic reads.",
-                "type": "string"
-              },
-              {
-                "const": "all_languages",
-                "description": "Produced for every indexed language.",
-                "type": "string"
-              }
-            ]
           },
           "PageLimit": {
             "description": "What stopped a page. Reports the cap that acted; never a judgment about\nwhether the page was the right size.",

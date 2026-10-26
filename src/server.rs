@@ -53,8 +53,8 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     `dependency_edges` joined in a recursive CTE (see IMPORTS); notes you want back later → `finding` (see \
     OTHER TOOLS). grep and reading a file you already know remain the right tools for a literal lookup.\n\n\
     LEADS: `leads` with only `path` returns every mechanic id with its row count, its distinct-file count \
-    (`files`), and `covers` — `rust_only` or `all_languages`, the machine-readable form of \"a zero here means \
-    unchecked, not absent\" — in declaration order: call sites by callee (`unwrap`, `expect`, \
+    (`files`), and `covers` — the sorted languages of the files under `pattern` that mechanic read, the \
+    machine-readable form of \"a zero here means unchecked, not absent\" — in declaration order: call sites by callee (`unwrap`, `expect`, \
     `panic`/`unreachable`, `todo`/`unimplemented`, `assert`/`assert_eq`/`assert_ne`/`debug_assert*`), \
     diagnostics, TODO/FIXME/HACK/XXX comment markers, and credential-shaped file paths. Counts are complete \
     regardless of `limit`/`offset` and carry no ordering by importance. Call again with one `mechanic` id for \
@@ -72,9 +72,10 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     false, page with `offset` = `next_offset` and pass `expected_revision` = the first page's `revision_id`: if \
     the index changed mid-sweep the call is refused with `stale_revision` and a remedy restarting the sweep from \
     offset 0, instead of silently skipping or repeating rows. Three limits to know. (1) The callee-based mechanics \
-    read Call evidence, which only the Rust call walker produces: on a project with no Rust files those counts \
-    are 0 because nothing was checked, not because nothing is there — diagnostics, comment markers, and \
-    credential paths cover every indexed language. (2) Each row's `detail` is clipped to 200 characters, and \
+    read Call evidence, extracted for rust, python, javascript, typescript, tsx, go, java, and c only; their \
+    callee lists are Rust names, so in another language they count only the calls that share those names. A \
+    language absent from `covers` was not checked: its zero means nothing was read, not that nothing is there \
+    — diagnostics and comment markers read every parsed file, credential paths every file. (2) Each row's `detail` is clipped to 200 characters, and \
     `detail_clipped` is true when characters were dropped; the remainder lives only in the file. (3) Every \
     response carries `files_not_parsed`: indexed files under your `pattern` with a detected language whose \
     grammar did not run or finish (content over \

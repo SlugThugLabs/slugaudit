@@ -7,7 +7,6 @@
 //! shape to look for, which SQL expressions name it, which string to return,
 //! and what it was measured over, never whether the shape matters.
 
-use super::leads::MechanicCoverage;
 use crate::error_codes::{self, ErrorCode};
 use rmcp::ErrorData;
 
@@ -58,6 +57,18 @@ impl Family {
     }
 }
 
+/// Which indexed files a mechanic's rows can come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Reads {
+    /// `Call` evidence: files whose grammar ran, in a language call evidence
+    /// is extracted for ([`crate::evidence::call_languages`]).
+    Calls,
+    /// Evidence every grammar run produces: files whose grammar ran.
+    ParsedFiles,
+    /// File paths: every file, parsed or not.
+    Paths,
+}
+
 /// One mechanical observation surface.
 ///
 /// `predicate` is a SQL fragment with no leading `WHERE`. `detail` is a SQL
@@ -66,37 +77,39 @@ impl Family {
 pub(super) struct Mechanic {
     pub(super) id: &'static str,
     pub(super) family: Family,
-    /// The languages this mechanic was actually measured over. See
-    /// [`MechanicCoverage`] — this is the machine-readable half of "a zero
+    /// Which files this mechanic reads; its `covers` list is their languages
+    /// (see [`super::leads_covers`]) — the machine-readable half of "a zero
     /// here means unchecked, not absent".
-    pub(super) covers: MechanicCoverage,
+    pub(super) reads: Reads,
     pub(super) predicate: &'static str,
     pub(super) detail: &'static str,
 }
 
 /// Every mechanic, in declaration order. Call-site mechanics read `Call`
-/// evidence, which the Rust call walker (`src/evidence/calls.rs`) is the only
-/// producer of — they are empty for projects with no Rust files, which is why
-/// they declare [`MechanicCoverage::RustOnly`].
+/// evidence, which `src/evidence/calls.rs` extracts only for the languages
+/// [`crate::evidence::call_languages`] lists — they are empty for a project
+/// in no such language, which is why they declare [`Reads::Calls`]. Their
+/// callee names are Rust's; another language's matching call is counted,
+/// and a language without one shows covered-but-zero.
 pub(super) const MECHANICS: &[Mechanic] = &[
     Mechanic {
         id: "unwrap_calls",
         family: Family::Evidence,
-        covers: MechanicCoverage::RustOnly,
+        reads: Reads::Calls,
         predicate: "e.kind = 'Call' AND json_extract(e.payload, '$.callee_name') = 'unwrap'",
         detail: "json_extract(e.payload, '$.callee_text')",
     },
     Mechanic {
         id: "expect_calls",
         family: Family::Evidence,
-        covers: MechanicCoverage::RustOnly,
+        reads: Reads::Calls,
         predicate: "e.kind = 'Call' AND json_extract(e.payload, '$.callee_name') = 'expect'",
         detail: "json_extract(e.payload, '$.callee_text')",
     },
     Mechanic {
         id: "panic_calls",
         family: Family::Evidence,
-        covers: MechanicCoverage::RustOnly,
+        reads: Reads::Calls,
         predicate: "e.kind = 'Call' AND json_extract(e.payload, '$.callee_name') \
                     IN ('panic', 'unreachable')",
         detail: "json_extract(e.payload, '$.callee_text')",
@@ -104,7 +117,7 @@ pub(super) const MECHANICS: &[Mechanic] = &[
     Mechanic {
         id: "todo_calls",
         family: Family::Evidence,
-        covers: MechanicCoverage::RustOnly,
+        reads: Reads::Calls,
         predicate: "e.kind = 'Call' AND json_extract(e.payload, '$.callee_name') \
                     IN ('todo', 'unimplemented')",
         detail: "json_extract(e.payload, '$.callee_text')",
@@ -112,7 +125,7 @@ pub(super) const MECHANICS: &[Mechanic] = &[
     Mechanic {
         id: "assert_calls",
         family: Family::Evidence,
-        covers: MechanicCoverage::RustOnly,
+        reads: Reads::Calls,
         predicate: "e.kind = 'Call' AND json_extract(e.payload, '$.callee_name') \
                     IN ('assert', 'assert_eq', 'assert_ne', 'debug_assert', \
                         'debug_assert_eq', 'debug_assert_ne')",
@@ -121,14 +134,14 @@ pub(super) const MECHANICS: &[Mechanic] = &[
     Mechanic {
         id: "diagnostics",
         family: Family::Evidence,
-        covers: MechanicCoverage::AllLanguages,
+        reads: Reads::ParsedFiles,
         predicate: "e.kind = 'Diagnostic'",
         detail: "json_extract(e.payload, '$.message')",
     },
     Mechanic {
         id: "comment_markers",
         family: Family::Evidence,
-        covers: MechanicCoverage::AllLanguages,
+        reads: Reads::ParsedFiles,
         predicate: "e.kind = 'Comment' AND (\
                     json_extract(e.payload, '$.text') LIKE '%TODO%' \
                     OR json_extract(e.payload, '$.text') LIKE '%FIXME%' \
@@ -139,7 +152,7 @@ pub(super) const MECHANICS: &[Mechanic] = &[
     Mechanic {
         id: "credential_files",
         family: Family::Files,
-        covers: MechanicCoverage::AllLanguages,
+        reads: Reads::Paths,
         predicate: super::CREDENTIAL_PATH_PREDICATE,
         detail: "''",
     },

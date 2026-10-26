@@ -16,6 +16,7 @@ mod health;
 mod health_phase;
 mod leads;
 mod leads_compact;
+mod leads_covers;
 mod leads_mechanics;
 mod leads_page;
 mod leads_query;
@@ -48,7 +49,7 @@ pub use finding_read::{FindingReadEntry, FindingReadRequest, FindingReadResponse
 pub use health::{HealthRequest, HealthResponse, health};
 pub use leads::{
     CompactLeadRow, FileCount, LeadMode, LeadRow, LeadRows, LeadsRequest, LeadsResponse,
-    MechanicCount, MechanicCoverage, PageLimit, leads,
+    MechanicCount, PageLimit, leads,
 };
 pub use project_control::{
     GitignoreReport, GitignoreStatus, ImportReport, ProjectControlAction, ProjectControlRequest,
