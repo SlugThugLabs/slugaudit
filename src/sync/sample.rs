@@ -12,6 +12,7 @@ use crate::util::{self, Deadline};
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use thiserror::Error;
 
 // The evidence-capping loop lives beside the evidence writes in
@@ -212,6 +213,7 @@ pub(super) fn to_file_record(
         &sample.relative_path,
         content,
         limits.max_parse_bytes,
+        Duration::from_millis(limits.max_parse_wall_clock_ms),
         deadline,
     );
     if sample.utf8_lossy {

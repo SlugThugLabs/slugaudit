@@ -65,6 +65,11 @@ pub struct ProjectConfig {
     /// effective `max_file_bytes`.
     #[serde(default)]
     pub max_parse_bytes: Option<u64>,
+    /// Wall-clock allowance in milliseconds for every parse of one file; a
+    /// file whose parse outlives it is stored without structure
+    /// (`parse_timeout`) and the sync goes on. Capped by the sync budget.
+    #[serde(default)]
+    pub max_parse_wall_clock_ms: Option<u64>,
     /// Maximum cumulative size in bytes across all imported files.
     #[serde(default)]
     pub max_total_import_bytes: Option<u64>,
@@ -174,6 +179,9 @@ impl ProjectConfig {
         }
         if let Some(parse_bytes) = self.max_parse_bytes {
             limits.max_parse_bytes = parse_bytes;
+        }
+        if let Some(wall_clock_ms) = self.max_parse_wall_clock_ms {
+            limits.max_parse_wall_clock_ms = wall_clock_ms;
         }
         if let Some(import_bytes) = self.max_total_import_bytes {
             limits.max_total_import_bytes = import_bytes;
@@ -342,6 +350,18 @@ mod tests {
             logs.contains("max_parse_bytes exceeds max_file_bytes; clamping"),
             "{logs}"
         );
+    }
+
+    #[test]
+    fn a_configured_max_parse_wall_clock_ms_overrides_the_profile_default() {
+        let config = ProjectConfig {
+            max_parse_wall_clock_ms: Some(250),
+            ..Default::default()
+        };
+
+        let applied = config.apply_to_limits(ResourceLimits::default());
+
+        assert_eq!(applied.max_parse_wall_clock_ms, 250);
     }
 
     #[test]

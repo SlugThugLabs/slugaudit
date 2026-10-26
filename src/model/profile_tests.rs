@@ -152,3 +152,21 @@ fn every_profile_parses_at_most_2_mib_per_file_below_its_file_cap() {
         );
     }
 }
+
+#[test]
+fn every_profile_gives_one_file_5_seconds_of_parse_time_below_the_sync_budget() {
+    for profile in [
+        AuditProfile::Lean,
+        AuditProfile::Audit,
+        AuditProfile::Adaptive,
+    ] {
+        let limits = limits_for_profile(profile);
+
+        assert_eq!(limits.max_parse_wall_clock_ms, 5_000, "{profile:?}");
+        assert!(
+            std::time::Duration::from_millis(limits.max_parse_wall_clock_ms)
+                < limits.max_sync_wall_clock,
+            "{profile:?}"
+        );
+    }
+}

@@ -2,7 +2,7 @@ use super::Extraction;
 use crate::model::{EvidenceItem, LineIndex, Position, Span, SpanAvailability, saturating_u32};
 use crate::util::Deadline;
 use tree_sitter_language_pack::{
-    DiagnosticSeverity, Error as PackError, ProcessConfig, Span as PackSpan, process,
+    DiagnosticSeverity, Error as PackError, ProcessConfig, ProcessResult, Span as PackSpan, process,
 };
 
 use super::normalize_builders::{
@@ -47,13 +47,15 @@ pub(crate) fn extract_within(
     deadline: Option<&Deadline>,
 ) -> Result<Extraction, PackError> {
     let mut config = ProcessConfig::new(language).all();
-    if let Some(deadline) = deadline {
+    let result = if let Some(deadline) = deadline {
         let Some(budget) = deadline.remaining_millis() else {
             return Err(PackError::ParseTimeout { timeout_ms: 0 });
         };
         config = config.with_parse_timeout_ms(Some(budget.get()));
-    }
-    let result = process(source, &config)?;
+        process_on_fresh_thread(source, &config)?
+    } else {
+        process(source, &config)?
+    };
 
     let lines = LineIndex::new(source);
     let mut items = Vec::new();
@@ -122,6 +124,50 @@ pub(crate) fn extract_within(
     }
 
     Ok(extraction)
+}
+
+/// Runs the pack's `process()` on a thread of its own, so a bounded parse
+/// cannot poison a parser another file will use.
+///
+/// The pack keeps one tree-sitter parser per language per thread and reuses it
+/// for every later `process()`. A parse cancelled by the progress callback
+/// leaves that parser to resume the cancelled document on its next use unless
+/// `reset()` is called, which `process()` does not do: the next file parsed on
+/// that thread would then be read against the wrong source (a slice-out-of-
+/// bounds panic inside the pack, in the field). The cache is thread-local, so
+/// a thread that ends takes any poisoned parser with it; the cost is one
+/// short-lived thread and one parser setup per file, small beside the parse.
+/// An unbounded `process()` cannot be cancelled and so needs no isolation.
+///
+/// A panic inside the pack is returned as [`PackError::ParseFailed`] (logged
+/// once, without the payload) instead of unwinding into the sync.
+fn process_on_fresh_thread(
+    source: &str,
+    config: &ProcessConfig,
+) -> Result<ProcessResult, PackError> {
+    std::thread::scope(|scope| {
+        let worker = std::thread::Builder::new()
+            .name("slugaudit-parse".to_owned())
+            .spawn_scoped(scope, || process(source, config))
+            .map_err(|error| {
+                tracing::error!(
+                    operation = "parse_thread",
+                    error_kind = ?error.kind(),
+                    "could not start the thread for a bounded parse",
+                );
+                PackError::Config("could not start the thread for a bounded parse".to_owned())
+            })?;
+        match worker.join() {
+            Ok(result) => result,
+            Err(_panic_payload) => {
+                tracing::error!(
+                    operation = "parse_thread",
+                    "the language pack panicked while parsing; recording the parse as failed",
+                );
+                Err(PackError::ParseFailed)
+            }
+        }
+    })
 }
 
 /// Parses `source` once and runs both the variable-binding walker and

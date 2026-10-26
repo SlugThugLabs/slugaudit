@@ -117,6 +117,7 @@ src/
 │   ├── revision_skipped.rs   existence rows for discovered-but-skipped files
 │   ├── revision_support.rs   stale-finding invalidation inside a publish transaction
 │   ├── analyze.rs            tree-sitter parse + evidence extraction for one file
+│   ├── analyze_results.rs    the ParseResult an analysis ends in, one constructor per outcome
 │   ├── analyze_seam.rs       pack-extraction boundary + test-only failure/call-count seam
 │   ├── analyze_bounds_tests.rs max_parse_bytes and parse_timeout outcomes of analyze
 │   ├── classify.rs           path-derived authored/generated/vendored file class

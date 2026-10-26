@@ -401,6 +401,7 @@ fn analyze_under_a_spent_sync_deadline_records_parse_timeout_without_parsing() {
         "src/lib.rs",
         Some("pub fn lib() {}\n"),
         crate::model::ResourceLimits::default().max_parse_bytes,
+        Duration::from_secs(5),
         &spent,
     );
 
@@ -530,6 +531,7 @@ fn a_parse_that_outlives_the_sync_budget_is_cancelled_and_recorded_parse_timeout
         "src/big.rs",
         Some(&content),
         limits.max_parse_bytes,
+        Duration::from_millis(limits.max_parse_wall_clock_ms),
         &deadline,
     );
     let elapsed = started.elapsed();
@@ -546,4 +548,48 @@ fn a_parse_that_outlives_the_sync_budget_is_cancelled_and_recorded_parse_timeout
     );
     assert!(result.evidence.is_empty());
     assert!(elapsed < Duration::from_secs(1), "analyze took {elapsed:?}");
+}
+
+/// The sync budget still ends the sync: a file whose parse outlives it is cut
+/// at the sync deadline (the per-file allowance here is far longer), and the
+/// publish fails with the budget error and publishes nothing, as before the
+/// per-file allowance existed.
+#[test]
+fn a_parse_that_outlives_the_sync_budget_still_fails_the_publish() {
+    let project = tempfile::tempdir().expect("project dir");
+    let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
+    write(
+        project.path(),
+        "slow.rs",
+        line.repeat(1_900_000 / line.len()).as_bytes(),
+    );
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    let limits = ResourceLimits {
+        max_sync_wall_clock: Duration::from_millis(300),
+        max_parse_wall_clock_ms: 600_000,
+        ..ResourceLimits::default()
+    };
+
+    let error = publish_with_limits(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+        &limits,
+    )
+    .expect_err("the sync budget ran out during the parse");
+
+    assert!(
+        matches!(
+            error,
+            PublishError::TimeBudgetExceeded { .. }
+                | PublishError::Discovery(DiscoveryError::TimeBudgetExceeded { .. })
+        ),
+        "expected a time-budget error, got {error:?}"
+    );
+    assert!(
+        stored_paths(&connection).is_empty(),
+        "nothing was published"
+    );
 }

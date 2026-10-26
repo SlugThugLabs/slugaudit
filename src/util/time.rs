@@ -70,6 +70,22 @@ impl Deadline {
         (elapsed >= self.budget).then_some(elapsed)
     }
 
+    /// A deadline for one unit of work inside this operation: `cap` from now,
+    /// or this deadline itself when it would end sooner (or at the same
+    /// moment). The returned [`BudgetBound`] says which of the two the unit
+    /// runs under, so a caller that sees the unit cut at its deadline knows,
+    /// by type rather than by comparing clocks afterwards, whether the unit's
+    /// own allowance ran out (the operation goes on) or the operation's did
+    /// (the operation is over).
+    pub(crate) fn capped(&self, cap: Duration) -> (Self, BudgetBound) {
+        let remaining = self.budget.saturating_sub(self.started.elapsed());
+        if cap < remaining {
+            (Self::after(cap), BudgetBound::Unit)
+        } else {
+            (*self, BudgetBound::Operation)
+        }
+    }
+
     /// Whole milliseconds left in the budget, rounded down, for an API that
     /// takes a millisecond timeout (the language pack's parse timeout).
     /// `None` once less than one millisecond remains: a sub-millisecond
@@ -84,6 +100,17 @@ impl Deadline {
             .saturating_add(u64::from(remaining.subsec_millis()));
         NonZeroU64::new(millis)
     }
+}
+
+/// Which budget a [`Deadline::capped`] unit of work runs under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BudgetBound {
+    /// The unit's own cap is the sooner one: running out of it ends the unit
+    /// only, and the operation still has time.
+    Unit,
+    /// The operation's deadline is the sooner one (or ties): running out of
+    /// it ends the operation.
+    Operation,
 }
 
 #[cfg(test)]
@@ -126,5 +153,47 @@ mod deadline_tests {
             remaining.get() > 59_000 && remaining.get() <= 60_000,
             "{remaining}"
         );
+    }
+
+    #[test]
+    fn a_cap_below_the_remaining_budget_is_a_unit_bound() {
+        let operation = Deadline::after(Duration::from_secs(60));
+
+        let (unit, bound) = operation.capped(Duration::from_secs(5));
+
+        assert_eq!(bound, BudgetBound::Unit);
+        let remaining = unit.remaining_millis().expect("time is left").get();
+        assert!((4_000..=5_000).contains(&remaining), "{remaining}");
+    }
+
+    #[test]
+    fn a_cap_above_the_remaining_budget_is_an_operation_bound() {
+        let operation = Deadline::after(Duration::from_secs(5));
+
+        let (unit, bound) = operation.capped(Duration::from_secs(60));
+
+        assert_eq!(bound, BudgetBound::Operation);
+        let remaining = unit.remaining_millis().expect("time is left").get();
+        assert!(remaining <= 5_000, "{remaining}");
+    }
+
+    #[test]
+    fn a_spent_operation_is_an_operation_bound_whatever_the_cap() {
+        let operation = Deadline::after(Duration::ZERO);
+
+        let (unit, bound) = operation.capped(Duration::from_secs(5));
+
+        assert_eq!(bound, BudgetBound::Operation);
+        assert!(unit.exceeded().is_some());
+    }
+
+    #[test]
+    fn a_zero_cap_is_a_spent_unit_bound() {
+        let operation = Deadline::after(Duration::from_secs(60));
+
+        let (unit, bound) = operation.capped(Duration::ZERO);
+
+        assert_eq!(bound, BudgetBound::Unit);
+        assert!(unit.exceeded().is_some());
     }
 }

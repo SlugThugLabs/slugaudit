@@ -81,6 +81,12 @@ pub(crate) const DEFAULT_PAGE_BYTES: usize = 64 * 1024;
 /// cost it bounds is per parse, not per host.
 pub(crate) const DEFAULT_MAX_PARSE_BYTES: u64 = 2 * 1024 * 1024;
 
+/// Wall-clock allowance for every parse of one file, in milliseconds, in
+/// every profile (see `ResourceLimits::max_parse_wall_clock_ms`). Well above
+/// a normal parse (a 2 MiB file parses in well under a second) and far below
+/// the sync budget, so one pathological file costs seconds, not the sync.
+pub(crate) const DEFAULT_MAX_PARSE_WALL_CLOCK_MS: u64 = 5_000;
+
 /// Watch-scope walk caps. The walk enumerates the directories that carry a
 /// `notify` watch, so its size is bounded in both entries (one potential
 /// kernel watch descriptor and one entry in the scope's path set each) and
@@ -110,6 +116,7 @@ fn lean_limits() -> ResourceLimits {
     ResourceLimits {
         max_file_bytes: 32 * 1024 * 1024,
         max_parse_bytes: DEFAULT_MAX_PARSE_BYTES,
+        max_parse_wall_clock_ms: DEFAULT_MAX_PARSE_WALL_CLOCK_MS,
         max_total_import_bytes: 2 * 1024 * 1024 * 1024,
         max_query_response_bytes: 32 * 1024 * 1024,
         default_page_bytes: DEFAULT_PAGE_BYTES,
@@ -136,6 +143,7 @@ fn audit_limits() -> ResourceLimits {
     ResourceLimits {
         max_file_bytes: 256 * 1024 * 1024,
         max_parse_bytes: DEFAULT_MAX_PARSE_BYTES,
+        max_parse_wall_clock_ms: DEFAULT_MAX_PARSE_WALL_CLOCK_MS,
         max_total_import_bytes: 32 * 1024 * 1024 * 1024,
         max_query_response_bytes: 256 * 1024 * 1024,
         default_page_bytes: DEFAULT_PAGE_BYTES,
@@ -168,6 +176,7 @@ fn adaptive_limits() -> ResourceLimits {
     ResourceLimits {
         max_file_bytes: max_file,
         max_parse_bytes: DEFAULT_MAX_PARSE_BYTES,
+        max_parse_wall_clock_ms: DEFAULT_MAX_PARSE_WALL_CLOCK_MS,
         max_total_import_bytes: import_budget,
         max_query_response_bytes: max_file as usize,
         default_page_bytes: DEFAULT_PAGE_BYTES,

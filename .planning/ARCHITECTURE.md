@@ -397,8 +397,21 @@ as deletions.
   and each walker, call and macro-body re-parse) gets what is left of the
   same deadline through the pack's parse timeout, which cancels from
   tree-sitter's parse progress callback; under a millisecond left, the parse
-  is not started. A cut parse is recorded `parse_timeout` and the sync then
-  fails closed at its next between-files deadline check. The permit is
+  is not started. A cut parse is recorded `parse_timeout`. Each file also has
+  its own allowance, `max_parse_wall_clock_ms` (default 5000 in every profile;
+  env `SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS`, project `config.json`
+  `max_parse_wall_clock_ms`), and all parses of a file share the lesser of it
+  and what is left of the sync deadline (`Deadline::capped`, whose
+  `BudgetBound` says which one the file ran under). When the file's own
+  allowance runs out the file is stored with `parse_timeout` (`ContentOnly`,
+  or `Partial` when only a re-parse was cut), counted in `files_not_parsed`
+  and `report.completeness.parse_timeout_file_count`, and the sync goes on;
+  an unchanged `parse_timeout` file is not re-parsed on later syncs (a
+  `Failed` row is not a retry candidate), editing it parses it again. When the
+  sync deadline runs out first the sync fails closed at its next
+  between-files deadline check. A bounded `process()` runs on a thread of its
+  own because the pack caches one parser per thread and a cancelled parse
+  leaves that parser resuming the cancelled document on its next use. The permit is
   bounded because the work it guards is bounded.
 - **Barrier sync loops at most `MAX_BARRIER_LOOPS = 16` times**
   (`sync/reconcile/mod.rs`). Snapshot dirty/deleted sets, reconcile, then loop
@@ -474,6 +487,7 @@ file's stored size (`octet_length`) before loading it: a file over
 `max_parse_bytes` or over its 64 MiB window is skipped and counted in
 `files_over_parse_limit`, so no single file can exceed the window. Measured
 before this ceiling: a 50 MB Rust file took 185 s and 7.5 GB RSS to parse.
+`max_parse_wall_clock_ms` (above) bounds the time of a file under the ceiling.
 
 **Schema versioning is discard-and-rebuild.** `store/migrations.rs` writes
 `CURRENT_SCHEMA_VERSION` (currently `7`) to `PRAGMA user_version`. A database

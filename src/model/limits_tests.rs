@@ -233,3 +233,28 @@ fn a_max_parse_bytes_env_var_above_max_file_bytes_is_clamped_and_reported() {
         },
     );
 }
+
+#[test]
+fn the_max_parse_wall_clock_ms_env_var_overrides_the_profile_default() {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    temp_env::with_var("SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS", Some("750"), || {
+        let limits = ResourceLimits::from_env();
+
+        assert_eq!(limits.max_parse_wall_clock_ms, 750);
+    });
+}
+
+#[test]
+fn an_unparseable_max_parse_wall_clock_ms_keeps_the_default_and_says_so() {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    temp_env::with_var("SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS", Some("soon"), || {
+        let (limits, logs) = crate::store::test_capture::capture_warns(ResourceLimits::from_env);
+
+        assert_eq!(limits.max_parse_wall_clock_ms, 5_000);
+        assert!(
+            logs.contains("SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS")
+                && logs.contains("not a valid value and was ignored"),
+            "{logs}"
+        );
+    });
+}

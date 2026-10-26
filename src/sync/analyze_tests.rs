@@ -1,6 +1,7 @@
 use super::*;
 use crate::model::{ExtractionCompleteness, ParseOutcome, ParserAvailability};
 use crate::parse::fetch_gate::test_controls;
+use crate::sync::analyze_results::COOLDOWN_REASON;
 use crate::sync::analyze_seam::forced_failure;
 
 /// `analyze` under the default `max_parse_bytes` and a deadline no test
@@ -10,6 +11,7 @@ fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult {
         relative_path,
         content,
         2 * 1024 * 1024,
+        std::time::Duration::from_secs(600),
         &generous_deadline(),
     )
 }

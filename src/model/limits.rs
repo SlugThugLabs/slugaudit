@@ -70,6 +70,21 @@ pub struct ResourceLimits {
     /// Env: `SLUGAUDIT_MAX_PARSE_BYTES` (u64); project `config.json` key
     /// `max_parse_bytes`.
     pub max_parse_bytes: u64,
+    /// Wall-clock budget, in milliseconds, for every parse of one file (the
+    /// pack's `process()` and each walker, call and macro-body re-parse
+    /// share it). Each file runs under the lesser of this and what is left of
+    /// the sync budget (`max_sync_wall_clock`). When this allowance is what
+    /// runs out, only that file is affected: it is stored `ContentOnly` (or
+    /// `Partial` when only a re-parse was cut) with
+    /// `parse_error_reason = 'parse_timeout'`, counted in
+    /// `report.completeness` and in every `leads` response's
+    /// `files_not_parsed`, and the sync goes on with the next file. When the
+    /// sync budget runs out first, the sync fails as before. A cut file with
+    /// unchanged content is not re-parsed on later syncs (like any unchanged
+    /// file); editing it parses it again. 5000 (5 s) in every profile.
+    /// Env: `SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS` (milliseconds, u64); project
+    /// `config.json` key `max_parse_wall_clock_ms`.
+    pub max_parse_wall_clock_ms: u64,
     /// Cap on the sum of sampled file sizes in one publish. This is a
     /// **work budget**, not a process memory bound: peak memory also includes
     /// in-flight samples, evidence payloads, and parse transients, so a tree
@@ -204,6 +219,9 @@ fn apply_import_overrides(limits: &mut ResourceLimits) {
     }
     if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_PARSE_BYTES") {
         limits.max_parse_bytes = val;
+    }
+    if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS") {
+        limits.max_parse_wall_clock_ms = val;
     }
     if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES") {
         limits.max_total_import_bytes = val;
