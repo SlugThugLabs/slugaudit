@@ -364,3 +364,9 @@ Newest first. Format: **what** / **why** / **where** / **reversible?**
 - **Where:** `src/model/profile.rs`, `src/model/limits.rs`, `src/project/config.rs`, `src/project/config_tests.rs`, `src/tools/structure.rs`, `src/tools/structure_limit_tests.rs`.
 - **Reversible:** Yes. Cost to know: a client that sent a 16-128 KB query now needs to raise the limit.
 
+## B0: zero is refused for three limits, and override warnings are logged once per cause
+- **What:** `SLUGAUDIT_MAX_PARSE_BYTES`, `SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS`, `SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES` and the matching `config.json` keys refuse `0`: a warning names the setting (`SLUGAUDIT_...` or `config <key>`) and the value already in place (the profile default, or what the environment set when the config says 0) stays. A process-wide ledger (`model/limit_overrides.rs`, `Mutex<BTreeSet<(setting, value)>>` behind `util::lock_or_recover`) makes the zero warnings and the `max_parse_bytes` clamp warning appear once per (setting, configured value); a changed value warns again. `clamp_parse_to_file_bytes` moved there from `limits.rs` and `ResourceLimits::from_env` became `pub(super)` for its tests.
+- **Why:** `max_parse_bytes = 0` made every file `oversize_for_parse` without a word; the limits are rebuilt from the project config on every tool call and sync, so the clamp warning was logged three times for one cause.
+- **Where:** `src/model/limit_overrides.rs`, `src/model/limits.rs`, `src/project/config.rs`.
+- **Reversible:** Yes. Cost to know: the ledger is never cleared, so a setting reverted to a previously reported bad value in the same process is not reported a second time.
+

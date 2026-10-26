@@ -488,6 +488,12 @@ file's stored size (`octet_length`) before loading it: a file over
 `files_over_parse_limit`, so no single file can exceed the window. Measured
 before this ceiling: a 50 MB Rust file took 185 s and 7.5 GB RSS to parse.
 `max_parse_wall_clock_ms` (above) bounds the time of a file under the ceiling.
+A `0` for `max_parse_bytes`, `max_parse_wall_clock_ms` or
+`max_structure_query_bytes`, in the environment or `config.json`, is refused
+with a warning naming the setting and the value already in place stays. A
+warning about one cause (a zero, or the `max_parse_bytes` clamp to
+`max_file_bytes`) is logged once per process per (setting, configured value),
+because the limits are rebuilt on every call (`model/limit_overrides.rs`).
 
 **Structure query text.** `Query::new` has no deadline hook, so `structure`
 bounds the query text instead: `max_structure_query_bytes` (default 16 KiB in
@@ -613,7 +619,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 84 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 85 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only

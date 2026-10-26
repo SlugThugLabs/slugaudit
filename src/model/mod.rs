@@ -1,6 +1,7 @@
 //! SlugAudit-owned contracts shared by parsing, storage, and tools.
 
 mod evidence;
+mod limit_overrides;
 mod limits;
 mod parser;
 mod profile;

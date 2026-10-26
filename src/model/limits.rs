@@ -67,6 +67,7 @@ pub struct ResourceLimits {
     /// memory and time, which grow with input size (a 50 MB Rust file took
     /// 185 s and 7.5 GB RSS before this cap). 2 MiB in every profile. Clamped
     /// to `max_file_bytes`, with a warning, when an override sets it higher.
+    /// A `0` override is refused with a warning and the default stays.
     /// Env: `SLUGAUDIT_MAX_PARSE_BYTES` (u64); project `config.json` key
     /// `max_parse_bytes`.
     pub max_parse_bytes: u64,
@@ -81,7 +82,8 @@ pub struct ResourceLimits {
     /// `files_not_parsed`, and the sync goes on with the next file. When the
     /// sync budget runs out first, the sync fails as before. A cut file with
     /// unchanged content is not re-parsed on later syncs (like any unchanged
-    /// file); editing it parses it again. 5000 (5 s) in every profile.
+    /// file); editing it parses it again. 5000 (5 s) in every profile; a `0`
+    /// override is refused with a warning and the default stays.
     /// Env: `SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS` (milliseconds, u64); project
     /// `config.json` key `max_parse_wall_clock_ms`.
     pub max_parse_wall_clock_ms: u64,
@@ -126,7 +128,8 @@ pub struct ResourceLimits {
     /// Maximum tree-sitter query text length for `structure` (UTF-8 bytes).
     /// `Query::new` has no deadline of its own, so a longer query is refused
     /// with `invalid_params` (stating its size and this limit, never its
-    /// text) before it is compiled. 16 KiB in every profile.
+    /// text) before it is compiled. 16 KiB in every profile; a `0` override is
+    /// refused with a warning and the default stays.
     /// Env: `SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES` (usize); project
     /// `config.json` key `max_structure_query_bytes`.
     pub max_structure_query_bytes: usize,
@@ -194,7 +197,7 @@ impl ResourceLimits {
     /// Internal to [`process_limits`], the production entry point that
     /// caches the result; this is not public API.
     #[must_use]
-    fn from_env() -> Self {
+    pub(super) fn from_env() -> Self {
         let mut limits = base_limits();
         apply_import_overrides(&mut limits);
         apply_query_overrides(&mut limits);
@@ -221,35 +224,14 @@ fn apply_import_overrides(limits: &mut ResourceLimits) {
     if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_FILE_BYTES") {
         limits.max_file_bytes = clamp_sqlite_value("SLUGAUDIT_MAX_FILE_BYTES", val);
     }
-    if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_PARSE_BYTES") {
+    if let Some(val) = nonzero_override("SLUGAUDIT_MAX_PARSE_BYTES") {
         limits.max_parse_bytes = val;
     }
-    if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS") {
+    if let Some(val) = nonzero_override("SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS") {
         limits.max_parse_wall_clock_ms = val;
     }
     if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES") {
         limits.max_total_import_bytes = val;
-    }
-}
-
-impl ResourceLimits {
-    /// Clamps `max_parse_bytes` to `max_file_bytes` after every override.
-    ///
-    /// A file over `max_file_bytes` is never read, so a parse cap above it can
-    /// never act; keeping it would report a limit that is not the one in
-    /// force. Runs after the env overrides and again after the project config
-    /// (`ProjectConfig::apply_to_limits`), and says so when it acts, like the
-    /// SQLite clamp.
-    pub(crate) fn clamp_parse_to_file_bytes(&mut self) {
-        if self.max_parse_bytes > self.max_file_bytes {
-            tracing::warn!(
-                limit = "max_parse_bytes",
-                requested = self.max_parse_bytes,
-                cap = self.max_file_bytes,
-                "max_parse_bytes exceeds max_file_bytes; clamping",
-            );
-            self.max_parse_bytes = self.max_file_bytes;
-        }
     }
 }
 
@@ -278,7 +260,7 @@ fn apply_query_overrides(limits: &mut ResourceLimits) {
 
 /// Applies the Tree-sitter `structure` overrides.
 fn apply_structure_overrides(limits: &mut ResourceLimits) {
-    if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES") {
+    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES") {
         limits.max_structure_query_bytes = val;
     }
     if let Some(val) = parse_override::<usize>("SLUGAUDIT_MAX_STRUCTURE_MATCHES") {
@@ -319,6 +301,17 @@ fn clamp_sqlite_value(name: &str, value: u64) -> u64 {
     } else {
         value
     }
+}
+
+/// [`parse_override`] for a limit where zero is meaningless: a `0` is refused
+/// with a warning naming the variable (once per process), and the value
+/// already in place stays.
+fn nonzero_override<T>(name: &'static str) -> Option<T>
+where
+    T: std::str::FromStr + Default + PartialEq,
+    T::Err: std::fmt::Display,
+{
+    super::limit_overrides::refuse_zero(name, parse_override::<T>(name)?)
 }
 
 /// Parses one `SLUGAUDIT_<FIELD>` override.

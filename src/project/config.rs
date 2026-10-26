@@ -61,16 +61,17 @@ pub struct ProjectConfig {
     pub max_file_bytes: Option<u64>,
     /// Largest file content in bytes a grammar is run on; larger files are
     /// stored but not parsed (`oversize_for_parse`). Clamped to the
-    /// effective `max_file_bytes`.
+    /// effective `max_file_bytes`. `0` is refused with a warning.
     #[serde(default)]
     pub max_parse_bytes: Option<u64>,
     /// Wall-clock allowance in milliseconds for every parse of one file; a
     /// file whose parse outlives it is stored without structure
     /// (`parse_timeout`) and the sync goes on. Capped by the sync budget.
+    /// `0` is refused with a warning.
     #[serde(default)]
     pub max_parse_wall_clock_ms: Option<u64>,
     /// Longest `structure` query text in bytes; a longer query is refused
-    /// before it is compiled.
+    /// before it is compiled. `0` is refused with a warning.
     #[serde(default)]
     pub max_structure_query_bytes: Option<usize>,
     /// Maximum cumulative size in bytes across all imported files.
@@ -180,13 +181,21 @@ impl ProjectConfig {
             }
             limits.max_file_bytes = capped;
         }
-        if let Some(parse_bytes) = self.max_parse_bytes {
+        if let Some(parse_bytes) =
+            ResourceLimits::config_nonzero("config max_parse_bytes", self.max_parse_bytes)
+        {
             limits.max_parse_bytes = parse_bytes;
         }
-        if let Some(wall_clock_ms) = self.max_parse_wall_clock_ms {
+        if let Some(wall_clock_ms) = ResourceLimits::config_nonzero(
+            "config max_parse_wall_clock_ms",
+            self.max_parse_wall_clock_ms,
+        ) {
             limits.max_parse_wall_clock_ms = wall_clock_ms;
         }
-        if let Some(query_bytes) = self.max_structure_query_bytes {
+        if let Some(query_bytes) = ResourceLimits::config_nonzero(
+            "config max_structure_query_bytes",
+            self.max_structure_query_bytes,
+        ) {
             limits.max_structure_query_bytes = query_bytes;
         }
         if let Some(import_bytes) = self.max_total_import_bytes {

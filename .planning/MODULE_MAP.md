@@ -195,6 +195,8 @@ src/
 │   ├── mod.rs                re-exports
 │   ├── limits.rs             ResourceLimits + process_limits()
 │   ├── limits_tests.rs       limits unit tests
+│   ├── limit_overrides.rs    zero-override refusal, parse clamp and the warn-once ledger
+│   ├── limit_overrides_tests.rs zero refusal and warn-once tests
 │   ├── profile.rs            Lean / Audit / Adaptive profiles
 │   ├── profile_tests.rs      profile unit tests
 │   ├── system_ram.rs         host memory detection
