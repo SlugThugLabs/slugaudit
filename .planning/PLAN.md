@@ -419,7 +419,7 @@ does not rediscover them from scratch.
 
 ## Phase 8 — 2026-10-25 deep-dive remediation and auditor-owned mechanics
 
-State: **Wave A landed** (2026-10-25, `7dc6410..35aabea`, gate green at `35aabea` (12/12 README *Development* gates, 1317 tests, 93.96% coverage); Waves B and C **not started**). Authored 2026-10-25 by the architect from the deep dive;
+State: **Wave A landed** (2026-10-25, `7dc6410..35aabea`, gate green at `35aabea` (12/12 README *Development* gates, 1317 tests, 93.96% coverage); Wave B landed 2026-10-26, gate green at `345618f` (12/12 README *Development* gates, all test blocks 0 failed, 93.35% coverage; release-binary stdio end-to-end 8/8); Wave C **not started**). Authored 2026-10-25 by the architect from the deep dive;
 Lead executes on branch `fix/deep-dive-2026-10-25`, one commit per item, no
 push). Evidence: `.planning/archive/audit_2026-10-25_deep_dive.md` (defects
 D1–D9, `path:line` at `c3fc7f8`). Each item lists its Definition of Done; an
@@ -493,15 +493,17 @@ as mechanics it registers for the session or persists to the project config.
 
 ### Wave B — value (after Wave A is integrated and green)
 
+- **B0 — Wave A residue (architect, 2026-10-25).** State: **landed** — `c4635d3` (config-write Io arm tested via a clean refactor), `d1f93c8` (per-file `max_parse_wall_clock_ms`, default 5000; a timed-out file is `parse_timeout`, counted, and the sync continues; each bounded parse runs on a short-lived thread because the pack reuses a cancelled parser per thread and then panicked — cost ~0.11 ms/file, 10k-file soak 5.1 s -> 6.3 s), `4525da2` (`max_structure_query_bytes` 16 KiB on every profile, refused before `Query::new`), `2f61367` (0 refused for the three parse/structure limits; override warnings once per cause), `e1d7939` + `1f13c6a` (ignore/attribute dotfiles stored as prose; schema 10). Untested: the pack-panic -> `ParseFailed` mapping (no hermetic trigger).
+
 - **B1 — call evidence for Python, JavaScript, TypeScript, TSX, Go, Java, C
-  (D7).** State: **not started**. Replace the Rust-only node matching with a
+  (D7).** State: **landed** — `79b7c7d` (schema 11). Embedded `examples/calls/<language>.scm` queries for the seven languages; Rust keeps its walker (a query cannot reach macro token trees); turbofish fixed (83 rows renamed, +7 turbofish calls inside macro arguments that were silently dropped); `covers` = languages actually read. Built-in counts on this repository's own sources unchanged. Replace the Rust-only node matching with a
   per-language table or embedded `.scm` call queries (one `@callee` capture),
   keeping the shared span/confidence/detail logic and the Rust macro re-parse;
   `covers` becomes the explicit set of languages a mechanic reads; fix the
   Rust turbofish fall-through. DoD: one fixture per language with a known
   call count, including decoys in comments and strings; `leads` on the Python
   fixture returns the expected non-zero count with `covers` listing python.
-- **B2 — auditor-owned mechanics.** State: **not started**. New tool
+- **B2 — auditor-owned mechanics.** State: **landed** — `bc78af2` + `f4de900` (review BLOCK fixed: every `config.json` writer goes through one locked, atomic read-modify-write; `project_control on profile` no longer deletes persisted mechanics; built-in-only `leads` scans no custom entry; `mechanic remove {index}`; alias languages refused) + `345618f` (alias drift test, one direction only — the pack's alias table is private). New tool
   `mechanic` with `add` / `remove` / `list`: an entry is `{id, language,
   query, note}`; `query` is compiled on `add` and a bad one is refused with
   the compile error; `add` returns the first count immediately (same fields
@@ -544,6 +546,9 @@ as mechanics it registers for the session or persists to the project config.
   call and are not part of this phase.
 
 ### Recorded, not scheduled (D9)
+
+- **Stored-content cap review.** State: **not scheduled** (architect 2026-10-25: a Wave C profile decision). `query`'s `SQLITE_LIMIT_LENGTH` is max(`max_query_value_bytes`, 3 x `max_file_bytes`), so the zeroblob/hex/replace amplifier is bounded but can reach ~1.5 GB (estimated) on the audit profile; the real fix is a lower default for stored content.
+- **Wave B residue.** State: **still open**, small: two servers opening a fresh project database at once can fail one with `database is locked` at connection configure (2 of 7 trials; fits the per-project sync lock above); the parse-under-deadline loop exists three times (`structure_exec::parse_within`, `evidence/calls/query_calls.rs`, the pack-timeout path); `config.json.<pid>.<n>.tmp` files left by a crash are never swept; a custom mechanic re-parses its language's files on every `leads` call that selects it; the alias table can still drift in the pack-adds-an-alias direction.
 
 - Watcher removal in favour of the sweep plus a re-hash of files whose stored
   mtime is within 2 s of now, behind a per-project in-process sync lock.
