@@ -80,8 +80,9 @@ src/
 │   ├── mechanic_register.rs  add/remove: id, collision and cap rules beside the writes they guard
 │   ├── mechanic_catalog.rs   one call's catalogue: session, project_config, built-ins, and invalid entries
 │   ├── mechanic_scan.rs      a registered mechanic's tree-sitter scan under one deadline
-│   ├── mechanic_tests.rs     add/count/remove, collisions, refused queries, ordering, first-report note
-│   ├── mechanic_persist_tests.rs persist/reload, other keys kept, symlink refused, invalid entries reported
+│   ├── mechanic_tests.rs     add/count/remove, collisions, refused queries and languages, ordering, first-report note
+│   ├── mechanic_persist_tests.rs persist/reload, other keys kept, symlink refused, invalid entries reported and removed by index
+│   ├── mechanic_scan_tests.rs which registered entries a leads call scans; the spent-budget error and its code
 │   ├── finding.rs            the single write tool: request/response contract and caps
 │   ├── finding_insert.rs     validation + session-scoped insert-or-refresh of a finding
 │   ├── finding_read.rs       session-gated finding query
@@ -187,10 +188,12 @@ src/
 │   ├── activation_lock.rs    exclusive database lock held while disable removes it
 │   ├── database_path.rs      where this project's project.db lives
 │   ├── config.rs             in-repo config (.planning/slugaudit/config.json)
+│   ├── config_store.rs       the one write path of config.json: config.lock, read-modify-write, atomic replace
+│   ├── config_store_tests.rs keys kept, unreadable refused, crash before rename, symlink re-check, lock wait, no lost update
 │   ├── mechanics_config.rs   the versioned `mechanics` section of config.json: read, report, read-modify-write
 │   ├── mechanics_config_tests.rs persisted section: other keys kept, nothing unreadable overwritten, bad entries reported
 │   ├── session_mechanics.rs  the per-server in-memory mechanics and the one-time report note
-│   └── config_tests.rs       config load, write guard and limit-mapping tests
+│   └── config_tests.rs       config load and limit-mapping tests
 │
 ├── store/                    SQLite connection boundary
 │   ├── mod.rs                open_read_write / open_read_only / discard_corrupt_database

@@ -443,3 +443,72 @@ Newest first. Format: **what** / **why** / **where** / **reversible?**
 - **Why:** an invalid persisted entry is absent from `mechanic_counts`; without the count on `leads` that absence would be silent there. The compact order follows the listing order the brief fixes.
 - **Where:** `src/tools/leads.rs`, `src/tools/leads_custom.rs`, `src/tools/mechanic.rs`, `src/tools/mechanic_catalog.rs`.
 - **Reversible:** yes.
+
+## B2b: one locked, atomic write path for config.json (`ProjectConfig::update_raw`)
+- **What:** `ProjectConfig::write_raw` is gone. Every writer (`project_control on` with `profile`, `mechanic` persist/remove) goes through `ProjectConfig::update_raw(root, |object| ..)` in the new `src/project/config_store.rs`: exclusive `File::try_lock` on the sibling `.planning/slugaudit/config.lock` polled every 20 ms for at most 5 s (then `ConfigWriteError::Locked`, an internal error), held for the whole read-modify-write; a missing `config.json` is an empty object; malformed JSON (`Malformed`) or a non-object (`NotAnObject`) is refused (`invalid_params`) and never overwritten; the result is size-checked against the 1 MiB read cap; the replace is a `create_new` temp file `config.json.<pid>.<seq>.tmp` in the same directory, `write_all`, the target's permissions copied, `sync_all`, a `symlink_metadata` re-check of `config.json` (still regular or absent), `rename`, then a directory `fsync`. The temp file is removed on every failure before the rename; a failed removal is logged once and the original error returned. `enable` now sets only `profile`; `mechanics_config` uses the same helper (no second read-modify-write). Supersedes the B2 entry's "not guarded" note and A3's accepted check-then-write race for this file.
+- **Why:** P1-1 (`on` with `profile` replaced the file and deleted persisted mechanics) and P1-2 (truncate-in-place `fs::write`, no serialisation across processes).
+- **Where:** `src/project/config_store.rs`, `src/project/config.rs`, `src/project/mechanics_config.rs`, `src/tools/project_control.rs`.
+- **Reversible:** yes.
+
+## B2b: the directory fsync after the rename fails the call (`NotDurable`)
+- **What:** on Unix the directory is opened and `sync_all`ed after the rename; an error is returned as `ConfigWriteError::NotDurable` (internal error) whose message says the file *was* updated but may not survive a crash. On non-Unix targets the directory sync is skipped (Windows cannot open a directory as a `File` without extra flags); the rename is still atomic.
+- **Why:** the brief forbids a best-effort sync that swallows errors; after the rename nothing can be rolled back, so the honest report is "applied, not durable", not "failed".
+- **Where:** `src/project/config_store.rs`.
+- **Reversible:** yes.
+
+## B2b: `config.lock` is opened without following links, checked by inode
+- **What:** a missing lock file is created with `create_new` (O_EXCL never follows a link, a dangling one included); an existing one must be a regular file by `symlink_metadata`, is opened read-write without create/truncate, and must then be the same directory entry (`dev`/`ino` of the open file equal those of a fresh `symlink_metadata`) or the update is refused as `NotRegularFile`. On non-Unix the post-open check is only "both are regular files". The lock file is never deleted (deleting it would let two holders lock different inodes). `libc`/`O_NOFOLLOW` was not added (no new dependency).
+- **Why:** A3's rule applied to the second file this path writes, without a dependency.
+- **Where:** `src/project/config_store.rs`.
+- **Reversible:** yes.
+
+## B2b: the crash-safety tests use a hook argument, not a cfg(test) seam
+- **What:** the private `update_with(root, wait, before_rename, change)` takes a `&mut dyn FnMut(&Path) -> io::Result<()>` run after the temp file is synced and before the re-check and rename; `update_raw` passes a no-op and a 5 s wait. Tests use it to fail that window (the old file stays, no temp file is left, the source error is kept), to swap `config.json` for a symlink there (refused, link target untouched), and to shorten the lock wait.
+- **Why:** tests run as root, so permission bits cannot make the temp path uncreatable; a hook keeps one production code path instead of a `cfg(test)` branch.
+- **Where:** `src/project/config_store.rs`, `src/project/config_store_tests.rs`.
+- **Reversible:** yes.
+
+## B2b: persist re-checks the id under the config lock
+- **What:** `persist_entry` refuses an id already present in `mechanics.entries` (`MechanicsWriteError::Duplicate`, `invalid_params`) inside the locked read-modify-write, besides the tool's earlier check.
+- **Why:** with two servers on one project, both could pass the unlocked check and persist the same id; the second would then be reported invalid on every load.
+- **Where:** `src/project/mechanics_config.rs`.
+- **Reversible:** yes.
+
+## B2b: `leads` scans only the registered entries a call needs
+- **What:** counts-only and the compact whole-surface page scan every registered entry; a call naming a registered entry scans only it; a call naming a built-in scans none. `mechanic_counts` then lists the built-ins plus only the scanned registered entries (an unscanned entry is omitted, not listed with a made-up 0); the field doc says so.
+- **Why:** P2-3: one slow entry made every `leads` call fail, including built-in pages. Listing unscanned entries with a count would be a false number; adding a nullable count would have changed the count type every caller reads.
+- **Where:** `src/tools/leads_page.rs`, `src/tools/leads_custom.rs`, `src/tools/mechanic_scan.rs`, `src/tools/leads.rs`.
+- **Reversible:** yes.
+
+## B2b: a spent registered-mechanic budget is `internal_error` + new code `mechanic_budget_exhausted`
+- **What:** the scan's budget error is now an internal error naming the running entry ids (the one whose cursor ran out, or every entry of the language whose shared parse ran out) with `{"code": "mechanic_budget_exhausted", "remedy": ..}`, the remedy naming `mechanic` action `remove`, a narrower `pattern`, and `SLUGAUDIT_MAX_STRUCTURE_EXECUTION_TIME_SECS`. Documented in ARCHITECTURE's code table. Supersedes the B2 entry's `invalid_params`.
+- **Why:** the brief asks for the operational budget mapping; `sync_budget_exhausted` names the sync knob, so it did not fit and a new code was needed.
+- **Where:** `src/error_codes.rs`, `src/tools/mechanic_scan.rs`, `.planning/ARCHITECTURE.md`.
+- **Reversible:** yes (a shipped code is stable once released).
+
+## B2b: `mechanic remove` by `index` is decided under the config lock with the catalogue rules
+- **What:** `remove` takes `index` (refused together with `id`, and on any action but `remove`). Under the config lock and the session lock, the persisted section as it is now is run through the same catalogue loader `report` uses (`mechanic_catalog::load_from`); the entry is removed only if that index is still listed invalid with source `project_config`, else `NotInvalid` (or `NoEntryAt`), `invalid_params`. A whole-section failure (`index: null`, e.g. a future `version`) is not removable this way and still needs a hand edit. Removing a built-in id now points at `index` in its message.
+- **Why:** P2-4; re-deciding under the lock means an index that shifted because another process removed an entry can never delete a valid entry.
+- **Where:** `src/tools/mechanic_register.rs`, `src/tools/mechanic.rs`, `src/tools/mechanic_catalog.rs`, `src/project/mechanics_config.rs`.
+- **Reversible:** yes.
+
+## B2b: `language` must be the exact stored name; pack aliases refused
+- **What:** `language` must be `[a-z0-9_]{1,64}` (all 371 pack names in 1.18.0 fit) and not one of the pack's six aliases (`bazel`, `gradle`, `ignorefile`, `lisp`, `makefile`, `shell`), which are refused naming the canonical name. The alias list is a copy of tree-sitter-language-pack 1.18.0's private `LANGUAGE_ALIASES`; a pack upgrade must re-check it.
+- **Why:** finding: `Python` was already refused (the pack lookup is case-sensitive, so "unknown language"), but `shell` compiled against `bash` while `files.language` stores `bash`, so it counted zero forever (verified by disabling the check: the add succeeded with count 0 and `covers: []`). The new message states the convention for both.
+- **Where:** `src/tools/mechanic_catalog.rs`.
+- **Reversible:** yes.
+
+## B2b: `first_count.files_total` of 0 for a mechanic with no match is correct
+- **What:** quinn's `py_exec` (persisted, no match) reporting `files_total: 0`, `files_covered: 0` while `py_eval` (session, matches) reported 1 is not a persist-path bug: `files_total` is the number of files holding at least one row, as for every built-in; the files read are `covers`. The field doc of `first_count` now states it; a test pins both cases.
+- **Where:** `src/tools/mechanic.rs`, `src/tools/mechanic_persist_tests.rs`.
+- **Reversible:** n/a.
+
+## B2b: `parse_within` shared, the copy deleted
+- **What:** `structure_exec::parse_within` and `Parsed` are `pub(super)`; `mechanic_scan` uses them, so a cancelled parse now also `reset()`s the parser. Supersedes the B2 entry's "copy" note.
+- **Where:** `src/tools/structure_exec.rs`, `src/tools/mechanic_scan.rs`.
+- **Reversible:** yes.
+
+## B2b: P2-6 key order in config.json is not preserved
+- **What:** a rewrite of `config.json` emits keys in `serde_json::Map`'s sorted order (no `preserve_order` feature); values and keys are kept, order and formatting are not. Accepted per the brief; Cargo features unchanged.
+- **Where:** `src/project/config_store.rs`.
+- **Reversible:** yes (enable `preserve_order`).

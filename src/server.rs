@@ -89,7 +89,7 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     `project_config`, `builtin`) and its note, session first. Session entries last until this server exits; \
     `persist: true` writes the entry to `.planning/slugaudit/config.json` for later sessions. A built-in can never \
     be removed or overridden. `report.mechanics.invalid` lists persisted entries that failed to load, with the \
-    error.\n\n\
+    error and `index`; `mechanic remove` with that `index` deletes one no `id` can name.\n\n\
     QUERY SCHEMA: `files` (id, path, language, byte_len, content — full text of every indexed file, including \
     non-code files), `evidence` (id, file_id, kind, start_line, end_line [1-based, inclusive; every line number in this server is 1-based], payload — JSON; kinds Structure, \
     Import, Export, Comment, Docstring, Symbol, Diagnostic, Call), `dependency_edges` \

@@ -461,8 +461,9 @@ least one discovered file, and the reasons are in the same block.
 
 ## MCP surface and snapshot
 
-The tool surface is the contract: eight tools (`report`, `leads`, `query`,
-`structure`, `finding`, `finding_read`, `project_control`, `health`), their
+The tool surface is the contract: nine tools (`report`, `leads`, `query`,
+`structure`, `finding`, `finding_read`, `project_control`, `health`,
+`mechanic`), their
 titles, descriptions, input and output schemas, annotations, and the
 pull-based resources under `slugaudit://`. `check_mcp_surface` derives the
 live `tools/list` + `resources/list` from the server and compares it with

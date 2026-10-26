@@ -91,16 +91,32 @@ query is compiled against the real grammar on `add` and must name exactly one
 capture; each distinct captured node is one row. `leads` scans the parsed
 files of the entry's language (the same file set the built-in evidence
 mechanics read) under `max_structure_execution_time`; a spent budget fails
-the call instead of returning a partial count. Two lifetimes:
+the call with `mechanic_budget_exhausted`, naming the entries that were
+running, instead of returning a partial count. Only the registered entries a
+call needs are scanned: all of them for counts only or a compact whole-surface
+page, the one selected entry for its page, none when a built-in is selected
+(its `mechanic_counts` then lists only the built-ins and the selected entry).
+`language` must be the exact lowercase name the index stores (`python`, not
+`Python`; `bash`, not the pack alias `shell`). Two lifetimes:
 
 - **session** — held in memory by the server's `SourceSyncManager`
   (`project::SessionMechanics`), never written, gone when the process exits;
   at most 64 per server.
 - **project_config** — `persist: true` writes the entry into the versioned
   `mechanics` section of `.planning/slugaudit/config.json`
-  (`{"version": 1, "entries": [...]}`, at most 64) by a read-modify-write that
-  keeps every other key and goes through the symlink-refusing
-  `ProjectConfig::write_raw`; it is re-read on every call.
+  (`{"version": 1, "entries": [...]}`, at most 64) through
+  `ProjectConfig::update_raw`, the one write path of `config.json` (also used
+  by `project_control on` for `profile`): an exclusive advisory lock on the
+  sibling `config.lock` (bounded wait, then a "locked by another process"
+  error) held for the whole read-modify-write; a missing file is an empty
+  object, a file that is not a JSON object is refused and never overwritten;
+  every other key is kept; the result is size-checked against the read cap and
+  replaced atomically (temp file in the same directory, `sync_all`, re-check
+  that `config.json` is not a symlink or non-regular file, `rename`, directory
+  `fsync`). `config.json` and `config.lock` are refused when either is a
+  symlink or not a regular file. It is re-read on every call. `mechanic remove`
+  takes `id`, or `index` for a persisted entry reported invalid (no string id,
+  or a built-in's id), decided under the same lock.
 
 `leads` and `report` list entries session first, then project_config, then
 builtin, each with its `source` and the author's `note`. An entry that fails
@@ -656,7 +672,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 90 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 92 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only
@@ -869,6 +885,7 @@ surface).
 | `unknown_mechanic` | `leads` was asked for a mechanic id that is not in the catalogue, or `mechanic remove` for an id no session or persisted entry has | `tools::leads_mechanics::resolve_mechanic`, `tools::mechanic_register::remove` |
 | `sql_too_large` | the SQL passed to `query` exceeded `max_query_sql_bytes` | `tools::query::query_with_limits` |
 | `file_not_indexed` | the named file has no indexed source content (never discovered, skipped as oversize/unreadable, or binary) | `tools::structure_source::fetch_source`, `tools::finding::fetch_file` |
+| `mechanic_budget_exhausted` | an auditor-registered mechanic's scan spent `max_structure_execution_time` before every file was read, so no count is returned; the message names the entries that were running, and the remedy names `mechanic remove`, a narrower `pattern` and the knob instead of a retry | `tools::mechanic_scan::budget_error` |
 <!-- error-codes:end -->
 
 `health` is the deliberate exception: it answers normally in the not-enabled

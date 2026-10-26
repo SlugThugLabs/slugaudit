@@ -223,3 +223,99 @@ fn an_unknown_mechanics_version_is_reported_invalid_not_ignored() {
         "a future section is not rewritten"
     );
 }
+
+/// A valid entry at index 0 and, at 1 and 2, two invalid entries no `id`
+/// can remove: one with a built-in's id, one with no id at all.
+fn config_with_unremovable_by_id(project: &tempfile::TempDir) {
+    let section = serde_json::json!({"profile": "lean", "mechanics": {"version": 1, "entries": [
+        {"id": "py_eval", "language": "python", "query": EVAL_QUERY, "note": "eval"},
+        {"id": "unwrap_calls", "language": "python", "query": EVAL_QUERY, "note": "n"},
+        {"language": "python", "query": EVAL_QUERY, "note": "no id"},
+    ]}});
+    fs::write(config_path(project), section.to_string()).expect("write config");
+}
+
+fn remove_at(path: &str, index: usize) -> MechanicRequest {
+    let mut request = action(path, MechanicAction::Remove, None);
+    request.index = Some(index);
+    request
+}
+
+#[test]
+fn invalid_persisted_entries_no_id_can_name_are_removed_by_their_index() {
+    let project = python_project();
+    let path = path_of(&project);
+    config_with_unremovable_by_id(&project);
+    let manager = sync::SourceSyncManager::default();
+
+    let builtin_id = call(&manager, remove_at(&path, 1)).expect("remove the built-in's id");
+    let no_id = call(&manager, remove_at(&path, 1)).expect("the id-less entry is now at 1");
+
+    assert_eq!(builtin_id.id.as_deref(), Some("unwrap_calls"));
+    assert_eq!(builtin_id.source, Some(MechanicSource::ProjectConfig));
+    assert_eq!(no_id.id, None);
+    assert_eq!(no_id.mechanics_invalid, 0, "{:?}", no_id.invalid);
+    assert_eq!(
+        no_id.mechanics[0].id, "py_eval",
+        "the valid sibling is untouched"
+    );
+    let written: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(config_path(&project)).expect("read config"))
+            .expect("config stays JSON");
+    assert_eq!(written["profile"], "lean");
+    assert_eq!(
+        written["mechanics"]["entries"].as_array().map(Vec::len),
+        Some(1)
+    );
+}
+
+#[test]
+fn removing_a_valid_persisted_entry_by_index_is_refused_and_the_file_unchanged() {
+    let project = python_project();
+    let path = path_of(&project);
+    config_with_unremovable_by_id(&project);
+    let before = fs::read_to_string(config_path(&project)).expect("read config");
+    let manager = sync::SourceSyncManager::default();
+
+    let error = call(&manager, remove_at(&path, 0)).expect_err("index 0 loads");
+
+    assert_eq!(
+        error.code,
+        rmcp::model::ErrorCode::INVALID_PARAMS,
+        "{error:?}"
+    );
+    assert!(
+        error.message.contains("index 0 is not invalid"),
+        "{}",
+        error.message
+    );
+    let after = fs::read_to_string(config_path(&project)).expect("read config");
+    assert_eq!(after, before);
+}
+
+#[test]
+fn a_first_count_with_no_match_has_zero_files_total_and_a_match_counts_its_files() {
+    let project = python_project();
+    let path = path_of(&project);
+    let manager = sync::SourceSyncManager::default();
+    let mut no_match = persisted(&path, "py_exec");
+    no_match.query = Some(EVAL_QUERY.replace("eval", "exec"));
+
+    let persisted_zero = call(&manager, no_match).expect("persist");
+    let session_hit = call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).expect("add");
+
+    let zero = persisted_zero.first_count.expect("first count");
+    assert_eq!(
+        (zero.total, zero.files_total, zero.files_covered),
+        (0, 0, 0),
+        "files_total counts files holding a row, not files read"
+    );
+    let entry = zero
+        .mechanic_counts
+        .iter()
+        .find(|count| count.mechanic == "py_exec")
+        .expect("listed");
+    assert_eq!(entry.covers, ["python"], "the python files were read");
+    let hit = session_hit.first_count.expect("first count");
+    assert_eq!((hit.total, hit.files_total), (4, 2));
+}

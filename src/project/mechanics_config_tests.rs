@@ -2,6 +2,7 @@
 //! key, nothing is overwritten that this server cannot read back, and every
 //! malformed entry is reported with its position.
 use super::*;
+use crate::project::config_store::config_path;
 use std::fs;
 
 fn project_with_config(contents: Option<&str>) -> tempfile::TempDir {
@@ -67,7 +68,10 @@ fn persist_entry_refuses_a_config_that_is_not_json_and_leaves_it_unchanged() {
     let error = persist_entry(project.path(), &entry("calls")).expect_err("not overwritten");
 
     assert!(
-        matches!(error, MechanicsWriteError::Read(ConfigError::Parse { .. })),
+        matches!(
+            error,
+            MechanicsWriteError::Config(ConfigWriteError::Malformed { .. })
+        ),
         "{error}"
     );
     let written = fs::read_to_string(config_path(project.path())).expect("read config");
@@ -130,4 +134,109 @@ fn load_persisted_reports_a_section_without_a_version_as_one_invalid_section() {
         "{:?}",
         loaded.invalid
     );
+}
+
+#[test]
+fn concurrent_persists_of_distinct_mechanics_keep_every_entry() {
+    const WRITERS: usize = 12;
+    let project = std::sync::Arc::new(project_with_config(Some(r#"{"profile": "lean"}"#)));
+    let start = std::sync::Arc::new(std::sync::Barrier::new(WRITERS));
+
+    let handles: Vec<_> = (0..WRITERS)
+        .map(|writer| {
+            let project = std::sync::Arc::clone(&project);
+            let start = std::sync::Arc::clone(&start);
+            std::thread::spawn(move || {
+                start.wait();
+                persist_entry(project.path(), &entry(&format!("m{writer}")))
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().expect("writer thread").expect("persist");
+    }
+
+    let mut ids: Vec<String> = load_persisted(project.path())
+        .entries
+        .into_iter()
+        .map(|(_, entry)| entry.id)
+        .collect();
+    ids.sort();
+    let mut expected: Vec<String> = (0..WRITERS).map(|writer| format!("m{writer}")).collect();
+    expected.sort();
+    assert_eq!(ids, expected, "no persist lost another's entry");
+    let config = ProjectConfig::load(project.path())
+        .expect("config parses")
+        .expect("config present");
+    assert_eq!(config.profile, Some(crate::model::AuditProfile::Lean));
+}
+
+#[test]
+fn persist_entry_refuses_an_id_already_in_the_file_and_leaves_it_unchanged() {
+    let project = project_with_config(None);
+    persist_entry(project.path(), &entry("calls")).expect("first persist");
+    let before = fs::read_to_string(config_path(project.path())).expect("read config");
+
+    let error = persist_entry(project.path(), &entry("calls")).expect_err("same id");
+
+    assert!(
+        matches!(error, MechanicsWriteError::Duplicate(ref id) if id == "calls"),
+        "{error}"
+    );
+    let after = fs::read_to_string(config_path(project.path())).expect("read config");
+    assert_eq!(after, before);
+}
+
+const ONE_VALID_ONE_BROKEN: &str = r#"{"profile": "lean", "mechanics": {"version": 1, "entries": [
+    {"id": "calls", "language": "python", "query": "(call) @call", "note": "every call"},
+    {"language": "python"}
+]}}"#;
+
+#[test]
+fn remove_persisted_at_removes_the_entry_the_check_still_finds_invalid() {
+    let project = project_with_config(Some(ONE_VALID_ONE_BROKEN));
+
+    remove_persisted_at(project.path(), 1, |persisted| {
+        persisted
+            .invalid
+            .iter()
+            .any(|failed| failed.index == Some(1))
+    })
+    .expect("remove the broken entry");
+
+    let loaded = load_persisted(project.path());
+    assert_eq!(loaded.entries, [(0, entry("calls"))]);
+    assert!(loaded.invalid.is_empty(), "{:?}", loaded.invalid);
+    let config = ProjectConfig::load(project.path())
+        .expect("config parses")
+        .expect("config present");
+    assert_eq!(config.profile, Some(crate::model::AuditProfile::Lean));
+}
+
+#[test]
+fn remove_persisted_at_refuses_an_entry_the_check_finds_valid_and_leaves_the_file() {
+    let project = project_with_config(Some(ONE_VALID_ONE_BROKEN));
+
+    let error = remove_persisted_at(project.path(), 0, |_| false).expect_err("valid entry");
+
+    assert!(
+        matches!(error, MechanicsWriteError::NotInvalid(0)),
+        "{error}"
+    );
+    let written = fs::read_to_string(config_path(project.path())).expect("read config");
+    assert_eq!(written, ONE_VALID_ONE_BROKEN);
+}
+
+#[test]
+fn remove_persisted_at_past_the_end_is_no_entry_and_leaves_the_file() {
+    let project = project_with_config(Some(ONE_VALID_ONE_BROKEN));
+
+    let error = remove_persisted_at(project.path(), 2, |_| true).expect_err("no such index");
+
+    assert!(
+        matches!(error, MechanicsWriteError::NoEntryAt(2)),
+        "{error}"
+    );
+    let written = fs::read_to_string(config_path(project.path())).expect("read config");
+    assert_eq!(written, ONE_VALID_ONE_BROKEN);
 }

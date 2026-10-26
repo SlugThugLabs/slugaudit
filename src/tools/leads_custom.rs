@@ -24,17 +24,18 @@ use rusqlite::Transaction;
 use std::collections::BTreeSet;
 use std::ops::ControlFlow;
 
-/// One count per registered entry, in catalogue order (session, then
-/// project_config), from the scan's tallies.
+/// One count per scanned registered entry, in catalogue order (session,
+/// then project_config), from the scan's tallies. An entry that was not
+/// scanned is not listed: an empty tally is not a count of zero.
 pub(super) fn counts(
     catalog: &Catalog,
+    scanned: &[usize],
     tallies: &[Tally],
     read: &LanguagesRead,
 ) -> Vec<MechanicCount> {
-    catalog
-        .custom
+    scanned
         .iter()
-        .zip(tallies)
+        .filter_map(|index| Some((catalog.custom.get(*index)?, tallies.get(*index)?)))
         .map(|(registered, tally)| MechanicCount {
             mechanic: registered.entry.id.clone(),
             source: registered.source,
@@ -124,7 +125,7 @@ fn collect<R: serde::Serialize>(
     mechanic_scan::scan(
         tx,
         custom,
-        Some(index),
+        &[index],
         glob.as_deref(),
         scope.deadline,
         &mut |hit| collector.offer(hit.file, || make(&hit)),

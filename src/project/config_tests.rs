@@ -1,4 +1,5 @@
-//! Tests for the project config: load, write guard and limit mapping.
+//! Tests for the project config: load and limit mapping (the write path is
+//! tested in `config_store_tests.rs`).
 
 use super::*;
 use crate::store::test_capture::capture_warns;
@@ -194,20 +195,4 @@ fn a_non_numeric_max_parse_bytes_is_a_parse_error() {
     let error = ProjectConfig::load(dir.path()).expect_err("a string is not a byte count");
 
     assert!(matches!(error, ConfigError::Parse { .. }), "{error}");
-}
-
-#[test]
-fn write_raw_refuses_a_directory_at_config_json() {
-    let project = tempfile::tempdir().expect("temp dir");
-    let config_path = project.path().join(".planning/slugaudit/config.json");
-    std::fs::create_dir_all(&config_path).expect("directory in the file's place");
-
-    let error =
-        ProjectConfig::write_raw(project.path(), "{}").expect_err("a directory must be refused");
-
-    assert!(
-        matches!(&error, ConfigWriteError::NotRegularFile { path } if *path == config_path),
-        "{error:?}"
-    );
-    assert!(config_path.is_dir(), "the directory is left in place");
 }

@@ -65,7 +65,7 @@ pub(super) fn run_query(
 }
 
 /// What one budgeted parse produced.
-enum Parsed {
+pub(super) enum Parsed {
     Tree(Tree),
     /// The progress callback stopped the parse because the deadline passed.
     Cancelled,
@@ -79,7 +79,11 @@ enum Parsed {
 /// it and the call returns `None`). A halted parser keeps its partial state
 /// to resume, so it is reset before it is used again. Verified against
 /// tree-sitter 0.26.13 (`binding_rust/lib.rs`), 2026-10-25.
-fn parse_within(parser: &mut Parser, content: &str, deadline: Option<Instant>) -> Parsed {
+pub(super) fn parse_within(
+    parser: &mut Parser,
+    content: &str,
+    deadline: Option<Instant>,
+) -> Parsed {
     let bytes = content.as_bytes();
     let mut read = |offset: usize, _| bytes.get(offset..).unwrap_or_default();
     let mut cancelled = false;

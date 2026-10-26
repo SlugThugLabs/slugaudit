@@ -9,10 +9,11 @@
 //! counts are decided in `tools::mechanic_catalog`, so a malformed entry is
 //! reported there with its reason instead of being dropped here.
 
-use super::config::{ConfigError, ConfigWriteError, ProjectConfig};
+use super::config::{ConfigError, ProjectConfig};
+use super::config_store::{ConfigWriteError, read_value};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use thiserror::Error;
 
 /// The only `mechanics.version` this server reads and writes.
@@ -62,16 +63,10 @@ pub struct PersistedMechanics {
 }
 
 /// Why a `persist` or a persisted `remove` did not change `config.json`.
-/// Nothing is written on any of these.
+/// Nothing is written on any of these, except as
+/// [`ConfigWriteError::NotDurable`] states.
 #[derive(Debug, Error)]
 pub enum MechanicsWriteError {
-    /// The existing `config.json` could not be read or is not JSON; it is
-    /// not overwritten, so nothing it holds is lost.
-    #[error("{0}; fix or remove it before persisting a mechanic")]
-    Read(#[source] ConfigError),
-    /// The existing `config.json` holds JSON that is not an object.
-    #[error("config file at '{0}' is not a JSON object; fix it before persisting a mechanic")]
-    NotAnObject(PathBuf),
     /// The existing `mechanics` section is not one this server can extend
     /// (a missing or future `version`, or an unexpected shape).
     #[error("the mechanics section of config.json cannot be updated: {0}")]
@@ -79,20 +74,26 @@ pub enum MechanicsWriteError {
     /// The project already holds [`MAX_PERSISTED_MECHANICS`] entries.
     #[error("config.json already holds {MAX_PERSISTED_MECHANICS} persisted mechanics, the cap")]
     Full,
-    /// The updated file would be larger than the server reads back.
-    #[error("config.json would be {bytes} bytes, over the {limit}-byte limit the server reads")]
-    TooLarge {
-        /// Encoded size of the updated file.
-        bytes: usize,
-        /// The read cap.
-        limit: u64,
-    },
+    /// A persisted entry already has this id (another process may have
+    /// persisted it since this call checked).
+    #[error("`{0}` is already persisted in config.json")]
+    Duplicate(String),
     /// No persisted entry has the requested id.
     #[error("no persisted mechanic has id `{0}`")]
     NotFound(String),
-    /// The symlink-safe write itself failed.
+    /// `mechanics.entries` has no entry at the requested index.
+    #[error("config.json has no persisted mechanic at index {0}")]
+    NoEntryAt(usize),
+    /// The entry at the requested index loads; only an entry reported in
+    /// `invalid` is removed by index (a valid one is removed by its id).
+    #[error(
+        "the persisted mechanic at index {0} is not invalid; remove a valid entry by its `id`, \
+         or list again if config.json changed"
+    )]
+    NotInvalid(usize),
+    /// Reading, locking, or writing `config.json` failed or was refused.
     #[error(transparent)]
-    Write(#[from] ConfigWriteError),
+    Config(#[from] ConfigWriteError),
 }
 
 /// Reads the persisted `mechanics` section of `project_root`'s
@@ -101,7 +102,7 @@ pub enum MechanicsWriteError {
 /// report it while the valid entries still load.
 #[must_use]
 pub fn load_persisted(project_root: &Path) -> PersistedMechanics {
-    match read_config_value(project_root) {
+    match read_value(project_root) {
         Ok(None) => PersistedMechanics::default(),
         Ok(Some(value)) => match value.get("mechanics") {
             None => PersistedMechanics::default(),
@@ -138,6 +139,14 @@ pub fn persist_entry(
     let encoded = serde_json::to_value(entry)
         .map_err(|error| MechanicsWriteError::Section(error.to_string()))?;
     modify_entries(project_root, |entries| {
+        // Re-checked under the config lock: the caller's own check read the
+        // file before another process may have persisted the same id.
+        if entries
+            .iter()
+            .any(|existing| existing.get("id").and_then(Value::as_str) == Some(&entry.id))
+        {
+            return Err(MechanicsWriteError::Duplicate(entry.id.clone()));
+        }
         if entries.len() >= MAX_PERSISTED_MECHANICS {
             return Err(MechanicsWriteError::Full);
         }
@@ -164,32 +173,32 @@ pub fn remove_persisted(project_root: &Path, id: &str) -> Result<(), MechanicsWr
     })
 }
 
-fn config_path(project_root: &Path) -> PathBuf {
-    project_root
-        .join(".planning")
-        .join("slugaudit")
-        .join("config.json")
-}
-
-/// The whole `config.json` as JSON, read under the same size cap
-/// [`ProjectConfig::load`] uses; `None` when the file does not exist.
-fn read_config_value(project_root: &Path) -> Result<Option<Value>, ConfigError> {
-    let path = config_path(project_root);
-    let exists = path.try_exists().map_err(|source| ConfigError::Io {
-        path: path.clone(),
-        source,
-    })?;
-    if !exists {
-        return Ok(None);
-    }
-    let content = crate::util::read_file_capped(&path, crate::util::MAX_FOREIGN_TEXT_BYTES)
-        .map_err(|source| ConfigError::Io {
-            path: path.clone(),
-            source,
-        })?;
-    serde_json::from_str(&content)
-        .map(Some)
-        .map_err(|source| ConfigError::Parse { path, source })
+/// Removes the persisted entry at `index` of `mechanics.entries` — the way
+/// out for an entry with no string id or with a built-in's id, which no
+/// `id` can name. `still_invalid` decides, under the config lock and over
+/// the entries as they are now, whether the entry at `index` is still one
+/// that fails to load; a valid entry is never removed by index.
+///
+/// # Errors
+///
+/// [`MechanicsWriteError::NoEntryAt`] past the end,
+/// [`MechanicsWriteError::NotInvalid`] when `still_invalid` says no; see
+/// [`MechanicsWriteError`] for the rest. The file is unchanged on error.
+pub fn remove_persisted_at(
+    project_root: &Path,
+    index: usize,
+    still_invalid: impl FnOnce(&PersistedMechanics) -> bool,
+) -> Result<(), MechanicsWriteError> {
+    modify_entries(project_root, |entries| {
+        if index >= entries.len() {
+            return Err(MechanicsWriteError::NoEntryAt(index));
+        }
+        if !still_invalid(&parse_entries(entries)) {
+            return Err(MechanicsWriteError::NotInvalid(index));
+        }
+        entries.remove(index);
+        Ok(())
+    })
 }
 
 fn whole_section_invalid(error: String) -> PersistedMechanics {
@@ -231,10 +240,15 @@ fn section_entries(section: &Value) -> Result<&Vec<Value>, String> {
 }
 
 fn parse_section(section: &Value) -> PersistedMechanics {
-    let entries = match section_entries(section) {
-        Ok(entries) => entries,
-        Err(error) => return whole_section_invalid(error),
-    };
+    match section_entries(section) {
+        Ok(entries) => parse_entries(entries),
+        Err(error) => whole_section_invalid(error),
+    }
+}
+
+/// Reads `mechanics.entries` entry by entry: past the cap or not a
+/// [`MechanicEntry`] is invalid, with its index; the rest load.
+fn parse_entries(entries: &[Value]) -> PersistedMechanics {
     let mut parsed = PersistedMechanics::default();
     for (index, raw) in entries.iter().enumerate() {
         let id = raw.get("id").and_then(Value::as_str).map(str::to_owned);
@@ -258,41 +272,28 @@ fn parse_section(section: &Value) -> PersistedMechanics {
     parsed
 }
 
-/// Read-modify-write of `mechanics.entries`: every other key of the file is
-/// carried over untouched, the size is checked against the read cap, and the
-/// write goes through [`ProjectConfig::write_raw`], which refuses a symlink
-/// or non-regular `config.json`.
+/// Read-modify-write of `mechanics.entries` through
+/// [`ProjectConfig::update_raw`] (locked, atomic, symlink-refusing): every
+/// other key of the file is carried over untouched, and a section this
+/// server cannot read is refused rather than rewritten.
 fn modify_entries(
     project_root: &Path,
     change: impl FnOnce(&mut Vec<Value>) -> Result<(), MechanicsWriteError>,
 ) -> Result<(), MechanicsWriteError> {
-    let mut config = match read_config_value(project_root).map_err(MechanicsWriteError::Read)? {
-        Some(Value::Object(object)) => object,
-        Some(_) => return Err(MechanicsWriteError::NotAnObject(config_path(project_root))),
-        None => Map::new(),
-    };
-    let mut entries = match config.get("mechanics") {
-        Some(section) => section_entries(section)
-            .map_err(MechanicsWriteError::Section)?
-            .clone(),
-        None => Vec::new(),
-    };
-    change(&mut entries)?;
-    let mut section = Map::new();
-    section.insert("version".to_owned(), Value::from(MECHANICS_SECTION_VERSION));
-    section.insert("entries".to_owned(), Value::Array(entries));
-    config.insert("mechanics".to_owned(), Value::Object(section));
-    // `{:#}` is the pretty `Display` of a `Value`, which cannot fail.
-    let encoded = format!("{:#}", Value::Object(config));
-    let limit = crate::util::MAX_FOREIGN_TEXT_BYTES;
-    if !u64::try_from(encoded.len()).is_ok_and(|bytes| bytes <= limit) {
-        return Err(MechanicsWriteError::TooLarge {
-            bytes: encoded.len(),
-            limit,
-        });
-    }
-    ProjectConfig::write_raw(project_root, &encoded)?;
-    Ok(())
+    ProjectConfig::update_raw(project_root, |config| {
+        let mut entries = match config.get("mechanics") {
+            Some(section) => section_entries(section)
+                .map_err(MechanicsWriteError::Section)?
+                .clone(),
+            None => Vec::new(),
+        };
+        change(&mut entries)?;
+        let mut section = Map::new();
+        section.insert("version".to_owned(), Value::from(MECHANICS_SECTION_VERSION));
+        section.insert("entries".to_owned(), Value::Array(entries));
+        config.insert("mechanics".to_owned(), Value::Object(section));
+        Ok(())
+    })
 }
 
 #[cfg(test)]

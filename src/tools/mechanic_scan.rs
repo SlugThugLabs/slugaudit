@@ -12,18 +12,21 @@
 //! patterns of one query both capture is counted once.
 //!
 //! A spent budget fails the call: a partial count would read as a complete
-//! one.
+//! one. Only the entries a call needs are scanned (`leads` naming a built-in
+//! scans none), so one slow entry cannot fail calls that never asked for it,
+//! and the failure names the entries that were running.
 
 use super::leads_covers::PARSED_FILES;
 use super::mechanic_catalog::Registered;
+use super::structure_exec::{Parsed, parse_within};
+use crate::error_codes::{self, ErrorCode};
 use rmcp::ErrorData;
 use rusqlite::{Transaction, params_from_iter};
 use std::collections::HashSet;
 use std::ops::ControlFlow;
 use std::time::Instant;
 use tree_sitter::{
-    ParseOptions, ParseState, Parser, QueryCursor, QueryCursorOptions, QueryCursorState,
-    StreamingIterator, Tree,
+    Parser, QueryCursor, QueryCursorOptions, QueryCursorState, StreamingIterator, Tree,
 };
 
 /// One distinct captured node of one entry.
@@ -53,19 +56,25 @@ pub(super) struct Tally {
 /// What a hit callback tells the scan: keep going, or stop every scan now.
 pub(super) type Flow = Result<ControlFlow<()>, ErrorData>;
 
-/// The error a spent budget fails the call with. Contract, not transient:
-/// the same scan over the same files runs out again.
-fn budget_error() -> ErrorData {
-    ErrorData::invalid_params(
-        "registered mechanics ran out of their execution time budget \
-         (max_structure_execution_time) before every file was read, so no count is returned; \
-         narrow `pattern`, remove a mechanic with `mechanic` action `remove`, or raise \
-         SLUGAUDIT_MAX_STRUCTURE_EXECUTION_TIME_SECS",
-        None,
+/// The error a spent budget fails the call with, naming the entries that
+/// were running (`ids` are `[a-z0-9_]` by the catalogue's id rule).
+/// Operational, like a spent sync budget, and permanent for the same scan:
+/// the code's remedy names `mechanic remove`, a narrower `pattern` and the
+/// knob rather than a retry.
+fn budget_error(ids: &[&str]) -> ErrorData {
+    ErrorData::internal_error(
+        format!(
+            "registered mechanic `{}` ran out of the execution time budget \
+             (max_structure_execution_time) before every file was read, so no count is returned",
+            ids.join("`, `")
+        ),
+        error_codes::payload(ErrorCode::MechanicBudgetExhausted),
     )
 }
 
-/// Counts every entry of `custom` under `glob`, in one pass per language.
+/// Counts the entries of `custom` listed in `selected` under `glob`, in one
+/// pass per language. The result is indexed like `custom`; an entry not in
+/// `selected` keeps an empty tally and must not be reported as counted.
 ///
 /// # Errors
 ///
@@ -74,12 +83,13 @@ fn budget_error() -> ErrorData {
 pub(super) fn tally(
     tx: &Transaction<'_>,
     custom: &[Registered],
+    selected: &[usize],
     glob: Option<&str>,
     deadline: Option<Instant>,
     keep_files: bool,
 ) -> Result<Vec<Tally>, ErrorData> {
     let mut tallies = vec![Tally::default(); custom.len()];
-    scan(tx, custom, None, glob, deadline, &mut |hit| {
+    scan(tx, custom, selected, glob, deadline, &mut |hit| {
         let tally = tallies.get_mut(hit.entry).ok_or_else(|| {
             super::context::internal_error("counting mechanics", "a hit named no entry")
         })?;
@@ -96,8 +106,8 @@ pub(super) fn tally(
     Ok(tallies)
 }
 
-/// Runs the entries of `custom` (only entry `only` when set) over their
-/// languages' files under `glob`, calling `on_hit` per distinct captured
+/// Runs the entries of `custom` listed in `selected` over their languages'
+/// files under `glob`, calling `on_hit` per distinct captured
 /// node: for one entry, in path then position order. `on_hit` returning
 /// `Break` ends the whole scan early and successfully.
 ///
@@ -107,16 +117,13 @@ pub(super) fn tally(
 pub(super) fn scan(
     tx: &Transaction<'_>,
     custom: &[Registered],
-    only: Option<usize>,
+    selected: &[usize],
     glob: Option<&str>,
     deadline: Option<Instant>,
     on_hit: &mut dyn FnMut(Hit<'_>) -> Flow,
 ) -> Result<(), ErrorData> {
-    let selected: Vec<usize> = (0..custom.len())
-        .filter(|index| only.is_none_or(|only| only == *index))
-        .collect();
     let mut languages: Vec<&str> = Vec::new();
-    for index in &selected {
+    for index in selected {
         if let Some(registered) = custom.get(*index)
             && !languages.contains(&registered.entry.language.as_str())
         {
@@ -206,33 +213,30 @@ impl LanguageScan<'_> {
         Ok(ControlFlow::Continue(()))
     }
 
-    /// Parses `content` under the deadline, through tree-sitter's parse
-    /// progress callback (the same mechanism `structure` uses).
+    /// Parses `content` under the deadline with `structure`'s budgeted
+    /// parse; a cancelled parse fails the call naming this language's
+    /// entries, since the parse is shared by all of them.
     fn parse(&self, parser: &mut Parser, content: &str) -> Result<Tree, ErrorData> {
         if self.past_deadline() {
-            return Err(budget_error());
+            return Err(budget_error(&self.ids()));
         }
-        let bytes = content.as_bytes();
-        let mut read = |offset: usize, _| bytes.get(offset..).unwrap_or_default();
-        let deadline = self.deadline;
-        let mut cancelled = false;
-        let mut check = |_state: &ParseState| -> ControlFlow<()> {
-            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                cancelled = true;
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        };
-        let options = ParseOptions::new().progress_callback(&mut check);
-        match parser.parse_with_options(&mut read, None, Some(options)) {
-            Some(tree) => Ok(tree),
-            None if cancelled => Err(budget_error()),
-            None => Err(super::context::internal_error(
+        match parse_within(parser, content, self.deadline) {
+            Parsed::Tree(tree) => Ok(tree),
+            Parsed::Cancelled => Err(budget_error(&self.ids())),
+            Parsed::NoTree => Err(super::context::internal_error(
                 "parsing a file for a registered mechanic",
                 "the parser returned no syntax tree",
             )),
         }
+    }
+
+    /// The ids of this language's entries, in catalogue order.
+    fn ids(&self) -> Vec<&str> {
+        self.entries
+            .iter()
+            .filter_map(|index| self.custom.get(*index))
+            .map(|registered| registered.entry.id.as_str())
+            .collect()
     }
 
     fn past_deadline(&self) -> bool {
@@ -302,7 +306,7 @@ impl LanguageScan<'_> {
         }
         drop(captures);
         if timed_out {
-            return Err(budget_error());
+            return Err(budget_error(&[registered.entry.id.as_str()]));
         }
         Ok(flow)
     }

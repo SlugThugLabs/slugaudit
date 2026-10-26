@@ -26,28 +26,6 @@ pub enum ConfigError {
     },
 }
 
-/// Errors encountered while writing `.planning/slugaudit/config.json`.
-#[derive(Debug, Error)]
-pub enum ConfigWriteError {
-    /// The path is a symlink or not a regular file, so writing would follow a
-    /// link out of the project or clobber a non-file. Nothing was written.
-    #[error(
-        "refusing to write config file at '{path}': it is a symlink or not a regular file; replace it with a regular file or remove it"
-    )]
-    NotRegularFile {
-        /// Path to the configuration file.
-        path: PathBuf,
-    },
-    /// Inspecting or writing the config file failed.
-    #[error("failed to write config file at '{path}': {source}")]
-    Io {
-        /// Path to the configuration file.
-        path: PathBuf,
-        /// Underlying I/O error.
-        source: std::io::Error,
-    },
-}
-
 /// Optional per-project configuration overrides. An unknown key is a parse
 /// error, so a misspelled limit is reported instead of silently ignored.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -117,36 +95,6 @@ impl ProjectConfig {
             source,
         })?;
         Ok(Some(cfg))
-    }
-
-    /// Writes `contents` to `.planning/slugaudit/config.json` under
-    /// `project_root`.
-    ///
-    /// The exact path is inspected with `symlink_metadata` first: a symlink
-    /// (to anywhere) or any non-regular file is refused, so the write can
-    /// never land on a link target outside the project. A missing file is
-    /// created. The check and the write are not atomic; that narrow race is
-    /// accepted (`libc` is not a direct dependency, so `O_NOFOLLOW` is not
-    /// used).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConfigWriteError::NotRegularFile`] for a symlink or
-    /// non-regular file, and [`ConfigWriteError::Io`] for any other failure.
-    pub fn write_raw(project_root: &Path, contents: &str) -> Result<(), ConfigWriteError> {
-        let path = project_root
-            .join(".planning")
-            .join("slugaudit")
-            .join("config.json");
-        match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if !metadata.file_type().is_file() => {
-                return Err(ConfigWriteError::NotRegularFile { path });
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(source) => return Err(ConfigWriteError::Io { path, source }),
-        }
-        std::fs::write(&path, contents).map_err(|source| ConfigWriteError::Io { path, source })
     }
 
     /// Loads project config if present and valid; falls back to default on error or absence.

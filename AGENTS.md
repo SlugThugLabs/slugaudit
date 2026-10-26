@@ -378,7 +378,7 @@ before replacing the binary (`src/update.rs`).
   `cargo test` at the root — it needs nightly and a sanitizer. Three targets cover the
   untrusted-input surfaces: `structure_query` (Tree-sitter query strings), `query_sql`
   (agent SQL, including authorizer-bypass shapes) and `request_arguments` (the
-  `params.arguments` decode into the eight request types — this repository has **no frame
+  `params.arguments` decode into the nine request types — this repository has **no frame
   parser to fuzz**: `src/main.rs` hands stdio to `rmcp`, which owns framing). Run one with
 
   ```sh

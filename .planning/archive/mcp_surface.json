@@ -864,7 +864,7 @@
             "description": "What stopped the page: the scope ended, the caller's `limit`, or the\nbyte budget."
           },
           "mechanic_counts": {
-            "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit`/`offset`, and carry no\nordering by importance: session entries first (oldest first), then\nproject_config entries (file order), then the built-ins in their fixed\ndeclaration order.",
+            "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit`/`offset`, and carry no\nordering by importance: session entries first (oldest first), then\nproject_config entries (file order), then the built-ins in their fixed\ndeclaration order. A call naming one `mechanic` scans only that\nregistered entry (none for a built-in), so the other registered\nentries are not listed then; call with no `mechanic` to count them all.",
             "items": {
               "$ref": "#/$defs/MechanicCount"
             },
@@ -976,7 +976,7 @@
               },
               {
                 "const": "remove",
-                "description": "Remove the session or persisted entry `id`.",
+                "description": "Remove the session or persisted entry `id`, or the invalid persisted\nentry at `index`.",
                 "type": "string"
               },
               {
@@ -1001,9 +1001,19 @@
               "null"
             ]
           },
+          "index": {
+            "default": null,
+            "description": "`remove` only, instead of `id`: the `index` of a persisted entry\nlisted in `invalid` (`report.mechanics.invalid`, or `list`) — the way\nto remove an entry with no string id or with a built-in's id. Only an\nentry that still fails to load is removed this way; a valid one is\nrefused (remove it by `id`). Passing both `id` and `index` is refused.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "language": {
             "default": null,
-            "description": "`add`: the grammar the query compiles against and the indexed files\nit reads (e.g. `python`, `rust`). Prose is refused.",
+            "description": "`add`: the grammar the query compiles against and the indexed files\nit reads: exactly the lowercase name the index stores for a file\n(`python`, `rust`, `javascript`, `tsx`), never a capitalised name or\na pack alias such as `shell` (use `bash`). Prose is refused.",
             "type": [
               "string",
               "null"
@@ -1216,7 +1226,7 @@
                 "description": "What stopped the page: the scope ended, the caller's `limit`, or the\nbyte budget."
               },
               "mechanic_counts": {
-                "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit`/`offset`, and carry no\nordering by importance: session entries first (oldest first), then\nproject_config entries (file order), then the built-ins in their fixed\ndeclaration order.",
+                "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit`/`offset`, and carry no\nordering by importance: session entries first (oldest first), then\nproject_config entries (file order), then the built-ins in their fixed\ndeclaration order. A call naming one `mechanic` scans only that\nregistered entry (none for a built-in), so the other registered\nentries are not listed then; call with no `mechanic` to count them all.",
                 "items": {
                   "$ref": "#/$defs/MechanicCount"
                 },
@@ -1318,7 +1328,7 @@
               },
               {
                 "const": "remove",
-                "description": "Remove the session or persisted entry `id`.",
+                "description": "Remove the session or persisted entry `id`, or the invalid persisted\nentry at `index`.",
                 "type": "string"
               },
               {
@@ -1468,10 +1478,10 @@
                 "type": "null"
               }
             ],
-            "description": "`add` only: the response `leads` returns for `mechanic` = `id` at the\ncurrent revision — complete counts (`mechanic_counts`, where the new\nentry carries `count`, `files` and `covers`), the first page of\n`rows`, `total`, `files_total`, `files_covered` and\n`files_not_parsed`. Page on with `leads`."
+            "description": "`add` only: the response `leads` returns for `mechanic` = `id` at the\ncurrent revision — complete counts (`mechanic_counts`: the built-ins\nand the new entry with its `count`, `files` and `covers`), the first\npage of `rows`, `total`, `files_total`, `files_covered` and\n`files_not_parsed`. As in `leads`, `files_total` is the number of\nfiles holding at least one row, not the files read (those are\n`covers` and the index): a query with no match has `total`,\n`files_total` and `files_covered` all `0`. Page on with `leads`."
           },
           "id": {
-            "description": "`add`/`remove`: the id the action applied to.",
+            "description": "`add`/`remove`: the id the action applied to; `null` for a `remove`\nby `index` whose entry had no string id.",
             "type": [
               "string",
               "null"

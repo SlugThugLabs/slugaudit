@@ -79,14 +79,16 @@ pub(super) fn build(
     let glob = compile_pattern(scope.pattern);
     let read = languages_read(tx, glob.as_deref())?;
     let whole_surface = scope.mode == LeadMode::Compact && scope.selected.is_none();
+    let scanned = scanned_entries(scope);
     let tallies = mechanic_scan::tally(
         tx,
         &scope.catalog.custom,
+        &scanned,
         glob.as_deref(),
         scope.deadline,
         whole_surface,
     )?;
-    let mut mechanic_counts = leads_custom::counts(scope.catalog, &tallies, &read);
+    let mut mechanic_counts = leads_custom::counts(scope.catalog, &scanned, &tallies, &read);
     mechanic_counts.extend(count_all(tx, scope.pattern, &read)?);
     let counts = Counts {
         mechanic_counts,
@@ -112,6 +114,18 @@ pub(super) fn build(
         }
     };
     envelope(revision_id, counts, prepared, paging)
+}
+
+/// The registered entries this call scans: every one when no mechanic is
+/// selected (counts only, or the compact whole surface), only the selected
+/// one, and none when a built-in is selected — so an entry the caller did not
+/// ask for can neither slow nor fail the call.
+fn scanned_entries(scope: &Scope<'_>) -> Vec<usize> {
+    match scope.selected {
+        None => (0..scope.catalog.custom.len()).collect(),
+        Some(Selected::Builtin(_)) => Vec::new(),
+        Some(Selected::Registered(index)) => vec![index],
+    }
 }
 
 /// One page of a single mechanic's full rows.

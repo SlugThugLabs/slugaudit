@@ -77,7 +77,8 @@ pub struct InvalidMechanic {
 pub enum MechanicAction {
     /// Register `{id, language, query, note}` and return its first count.
     Add,
-    /// Remove the session or persisted entry `id`.
+    /// Remove the session or persisted entry `id`, or the invalid persisted
+    /// entry at `index`.
     Remove,
     /// List every mechanic and every entry that failed to load.
     List,
@@ -95,8 +96,17 @@ pub struct MechanicRequest {
     /// It can never be a built-in's id or one already registered.
     #[serde(default)]
     pub id: Option<String>,
+    /// `remove` only, instead of `id`: the `index` of a persisted entry
+    /// listed in `invalid` (`report.mechanics.invalid`, or `list`) — the way
+    /// to remove an entry with no string id or with a built-in's id. Only an
+    /// entry that still fails to load is removed this way; a valid one is
+    /// refused (remove it by `id`). Passing both `id` and `index` is refused.
+    #[serde(default)]
+    pub index: Option<usize>,
     /// `add`: the grammar the query compiles against and the indexed files
-    /// it reads (e.g. `python`, `rust`). Prose is refused.
+    /// it reads: exactly the lowercase name the index stores for a file
+    /// (`python`, `rust`, `javascript`, `tsx`), never a capitalised name or
+    /// a pack alias such as `shell` (use `bash`). Prose is refused.
     #[serde(default)]
     pub language: Option<String>,
     /// `add`: a Tree-sitter S-expression with exactly one capture, e.g.
@@ -130,7 +140,8 @@ pub struct MechanicRequest {
 pub struct MechanicResponse {
     /// The action that ran.
     pub action: MechanicAction,
-    /// `add`/`remove`: the id the action applied to.
+    /// `add`/`remove`: the id the action applied to; `null` for a `remove`
+    /// by `index` whose entry had no string id.
     pub id: Option<String>,
     /// `add`/`remove`: where that entry lives (or lived).
     pub source: Option<MechanicSource>,
@@ -142,10 +153,13 @@ pub struct MechanicResponse {
     /// `invalid.len()`.
     pub mechanics_invalid: usize,
     /// `add` only: the response `leads` returns for `mechanic` = `id` at the
-    /// current revision — complete counts (`mechanic_counts`, where the new
-    /// entry carries `count`, `files` and `covers`), the first page of
-    /// `rows`, `total`, `files_total`, `files_covered` and
-    /// `files_not_parsed`. Page on with `leads`.
+    /// current revision — complete counts (`mechanic_counts`: the built-ins
+    /// and the new entry with its `count`, `files` and `covers`), the first
+    /// page of `rows`, `total`, `files_total`, `files_covered` and
+    /// `files_not_parsed`. As in `leads`, `files_total` is the number of
+    /// files holding at least one row, not the files read (those are
+    /// `covers` and the index): a query with no match has `total`,
+    /// `files_total` and `files_covered` all `0`. Page on with `leads`.
     pub first_count: Option<LeadsResponse>,
 }
 
@@ -157,8 +171,10 @@ pub struct MechanicResponse {
 /// id that is a built-in's or already registered, a query that does not
 /// compile or does not name exactly one capture, an unknown or prose
 /// language, a full session or project list, a `remove` of a built-in or an
-/// unknown id, or a `config.json` that is a symlink or cannot be extended;
-/// an internal error for a failed read or write of `config.json`, a failed
+/// unknown id, a `remove` by an `index` that is not an invalid persisted
+/// entry, or a `config.json` that is a symlink or cannot be extended; an
+/// internal error for a failed read or write of `config.json`, a
+/// `config.json` locked by another process past the bounded wait, a failed
 /// sync, or a failed first count.
 pub fn mechanic(
     request: &Parameters<MechanicRequest>,
@@ -176,8 +192,8 @@ pub fn mechanic(
             (Some(id), Some(source), Some(first_count))
         }
         MechanicAction::Remove => {
-            let (id, source) = remove(request, &root, manager)?;
-            (Some(id), Some(source), None)
+            let (id, source) = remove(request, &root, &limits, manager)?;
+            (id, Some(source), None)
         }
     };
     let catalog = mechanic_catalog::load(&root, manager.session_mechanics(), &limits);
@@ -202,6 +218,18 @@ pub fn mechanic(
 fn validate(request: &MechanicRequest) -> Result<(), ErrorData> {
     if crate::util::exceeds_input_bytes(&request.path, MAX_PATH_BYTES) {
         return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
+    }
+    if request.index.is_some() && request.id.is_some() {
+        return Err(ErrorData::invalid_params(
+            "`remove` takes `id` or `index`, not both",
+            None,
+        ));
+    }
+    if request.index.is_some() && request.action != MechanicAction::Remove {
+        return Err(ErrorData::invalid_params(
+            "`index` is only for `remove`",
+            None,
+        ));
     }
     for (name, value) in [
         ("id", &request.id),
@@ -229,3 +257,7 @@ mod tests;
 #[cfg(test)]
 #[path = "mechanic_persist_tests.rs"]
 mod persist_tests;
+
+#[cfg(test)]
+#[path = "mechanic_scan_tests.rs"]
+mod scan_tests;

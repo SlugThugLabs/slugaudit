@@ -138,15 +138,34 @@ fn err(msg: impl Into<String>) -> ErrorData {
     ErrorData::internal_error(msg.into(), None)
 }
 
-/// Maps a failed profile-config write to the tool error. A symlinked or
-/// non-regular `config.json` is a project-state problem the caller must fix
-/// (`invalid_params`); any other I/O failure is operational (`internal_error`).
+/// Maps a failed profile-config update to the tool error. A file the caller
+/// must fix — a symlinked or non-regular `config.json`, one that is not a
+/// JSON object, or one that would outgrow the read cap — is `invalid_params`;
+/// an I/O failure, a lock held past the bounded wait, or a directory sync
+/// that failed after the replace is operational (`internal_error`).
 fn config_write_error(error: project::ConfigWriteError) -> ErrorData {
     match &error {
-        project::ConfigWriteError::NotRegularFile { .. } => {
+        project::ConfigWriteError::NotRegularFile { .. }
+        | project::ConfigWriteError::Malformed { .. }
+        | project::ConfigWriteError::NotAnObject { .. }
+        | project::ConfigWriteError::TooLarge { .. } => {
             ErrorData::invalid_params(format!("write profile config: {error}"), None)
         }
-        project::ConfigWriteError::Io { .. } => err(format!("write profile config: {error}")),
+        project::ConfigWriteError::Locked { .. }
+        | project::ConfigWriteError::Io { .. }
+        | project::ConfigWriteError::NotDurable { .. } => {
+            err(format!("write profile config: {error}"))
+        }
+    }
+}
+
+/// The name `config.json` stores for a profile — the serde name
+/// `ProjectConfig` reads back.
+fn profile_name(profile: crate::model::AuditProfile) -> &'static str {
+    match profile {
+        crate::model::AuditProfile::Lean => "lean",
+        crate::model::AuditProfile::Audit => "audit",
+        crate::model::AuditProfile::Adaptive => "adaptive",
     }
 }
 
@@ -239,13 +258,16 @@ fn enable(
     // the initial import below fails, and it never fails this call.
     let gitignore = gitignore_report(project::ensure_gitignore(root));
     if let Some(profile) = profile_override {
-        let cfg = serde_json::json!({ "profile": profile });
-        // `{:#}` renders a `Value` through `Display` with the same pretty
-        // formatter `to_string_pretty` uses, but without a fallible call:
-        // serializing a `Value` cannot fail, so there is no error arm to
-        // leave untested.
-        let encoded = format!("{cfg:#}");
-        project::ProjectConfig::write_raw(root.as_path(), &encoded).map_err(config_write_error)?;
+        // Sets `profile` only: every other key (limits, persisted mechanics)
+        // is kept by the shared locked, atomic read-modify-write.
+        project::ProjectConfig::update_raw(root.as_path(), |config| {
+            config.insert(
+                "profile".to_owned(),
+                serde_json::Value::from(profile_name(profile)),
+            );
+            Ok::<(), project::ConfigWriteError>(())
+        })
+        .map_err(config_write_error)?;
     }
     let db_path = project::database_path(root);
     let mut connection = match store::open_read_write(&db_path) {

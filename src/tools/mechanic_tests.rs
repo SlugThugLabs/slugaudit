@@ -38,6 +38,7 @@ pub(super) fn add(path: &str, id: &str, language: &str, query: &str) -> Mechanic
         path: path.to_owned(),
         action: MechanicAction::Add,
         id: Some(id.to_owned()),
+        index: None,
         language: Some(language.to_owned()),
         query: Some(query.to_owned()),
         note: Some("dynamic code execution".to_owned()),
@@ -52,6 +53,7 @@ pub(super) fn action(path: &str, action: MechanicAction, id: Option<&str>) -> Me
         path: path.to_owned(),
         action,
         id: id.map(str::to_owned),
+        index: None,
         language: None,
         query: None,
         note: None,
@@ -107,14 +109,14 @@ pub(super) fn sources(response: &LeadsResponse) -> Vec<(String, MechanicSource)>
         .collect()
 }
 
-fn refusal(manager: &sync::SourceSyncManager, request: MechanicRequest) -> ErrorData {
+pub(super) fn refusal(manager: &sync::SourceSyncManager, request: MechanicRequest) -> ErrorData {
     match call(manager, request) {
         Ok(response) => panic!("the call must be refused, got {response:?}"),
         Err(error) => error,
     }
 }
 
-fn assert_refused(error: &ErrorData, needle: &str) {
+pub(super) fn assert_refused(error: &ErrorData, needle: &str) {
     assert_eq!(
         error.code,
         rmcp::model::ErrorCode::INVALID_PARAMS,
@@ -463,25 +465,36 @@ fn leads_and_report_list_session_then_project_config_then_builtin() {
 }
 
 #[test]
-fn a_registered_scan_past_its_budget_fails_the_leads_call() {
+fn a_capitalised_language_is_refused_with_the_naming_convention() {
     let project = python_project();
     let path = path_of(&project);
     let manager = sync::SourceSyncManager::default();
-    call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).expect("add");
-    let mut limits = crate::tools::resolve_limits(&path).expect("limits");
-    limits.max_structure_execution_time = std::time::Duration::ZERO;
-    let root = crate::tools::project_root(&path).expect("root");
-    let catalog = mechanic_catalog::load(&root, manager.session_mechanics(), &limits);
-    let request = leads_request(&path, None, LeadMode::Full);
 
-    let error = crate::tools::leads::leads_with_catalog(
-        &request,
-        &limits,
-        &catalog,
-        &NoopProgressSink,
-        &manager,
-    )
-    .expect_err("a spent budget is an error, never a partial count");
+    let error = refusal(&manager, add(&path, "py_eval", "Python", EVAL_QUERY));
 
-    assert_refused(&error, "max_structure_execution_time");
+    assert_refused(&error, "lowercase pack name the index stores");
+}
+
+#[test]
+fn a_pack_alias_language_is_refused_with_its_canonical_name() {
+    let project = python_project();
+    let path = path_of(&project);
+    let manager = sync::SourceSyncManager::default();
+
+    let error = refusal(&manager, add(&path, "sh_eval", "shell", "(command) @c"));
+
+    assert_refused(&error, "use `bash`");
+}
+
+#[test]
+fn a_remove_with_both_id_and_index_is_refused() {
+    let project = python_project();
+    let path = path_of(&project);
+    let manager = sync::SourceSyncManager::default();
+    let mut request = action(&path, MechanicAction::Remove, Some("py_eval"));
+    request.index = Some(0);
+
+    let error = refusal(&manager, request);
+
+    assert_refused(&error, "`id` or `index`, not both");
 }

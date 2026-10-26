@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=the catalogue invariants: the field and language rules, the compile, and the one loader that report, leads and remove-by-index share must not drift apart
 //! The mechanic catalogue one call sees: this server's session entries, the
 //! project's persisted entries, and the built-ins — in that order — plus every
 //! entry that could not be loaded, with its reason.
@@ -12,7 +13,7 @@
 use super::leads_mechanics::MECHANICS;
 use super::mechanic::{InvalidMechanic, MechanicListing, MechanicSource};
 use crate::model::ResourceLimits;
-use crate::project::{MechanicEntry, SessionMechanics};
+use crate::project::{MechanicEntry, PersistedMechanics, SessionMechanics};
 use std::path::Path;
 use tree_sitter::Query;
 
@@ -22,6 +23,21 @@ pub(super) const MAX_ID_BYTES: usize = 64;
 pub(super) const MAX_NOTE_BYTES: usize = 1024;
 /// Longest language name, in bytes.
 pub(super) const MAX_LANGUAGE_BYTES: usize = 64;
+
+/// The language pack's name aliases (tree-sitter-language-pack 1.18.0,
+/// `registry.rs` `LANGUAGE_ALIASES`). The pack resolves them when it loads a
+/// grammar, so `shell` compiles, but `files.language` holds only the
+/// canonical name the pack's extension table returns (`bash`), so a mechanic
+/// written against an alias would count zero forever. Refused with the
+/// canonical name instead.
+const PACK_ALIASES: &[(&str, &str)] = &[
+    ("bazel", "starlark"),
+    ("gradle", "groovy"),
+    ("ignorefile", "gitignore"),
+    ("lisp", "commonlisp"),
+    ("makefile", "make"),
+    ("shell", "bash"),
+];
 
 /// A loaded entry with its compiled query.
 pub(super) struct Registered {
@@ -89,9 +105,24 @@ fn check_shape(entry: &MechanicEntry, limits: &ResourceLimits) -> Result<(), Str
             "note must be non-empty and at most {MAX_NOTE_BYTES} bytes"
         ));
     }
-    if entry.language.is_empty() || entry.language.len() > MAX_LANGUAGE_BYTES {
+    let stored_shape = entry
+        .language
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
+    if entry.language.is_empty() || entry.language.len() > MAX_LANGUAGE_BYTES || !stored_shape {
         return Err(format!(
-            "language must be non-empty and at most {MAX_LANGUAGE_BYTES} bytes"
+            "language must be 1 to {MAX_LANGUAGE_BYTES} characters of a-z, 0-9 and _: the \
+             lowercase pack name the index stores for a file (python, rust, javascript, tsx, \
+             csharp), compared exactly"
+        ));
+    }
+    if let Some((_, canonical)) = PACK_ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == entry.language)
+    {
+        return Err(format!(
+            "language `{}` is an alias the index never stores; use `{canonical}`",
+            entry.language
         ));
     }
     if crate::parse::is_prose_language_name(&entry.language) {
@@ -144,11 +175,23 @@ pub(super) fn load(
     session: &SessionMechanics,
     limits: &ResourceLimits,
 ) -> Catalog {
+    let persisted = crate::project::load_persisted(project_root);
+    load_from(&session.entries(), persisted, limits)
+}
+
+/// The catalogue over explicit session entries and persisted section — the
+/// same rules [`load`] applies, for a caller that already holds both (a
+/// remove by index, deciding under the config lock).
+pub(super) fn load_from(
+    session: &[MechanicEntry],
+    persisted: PersistedMechanics,
+    limits: &ResourceLimits,
+) -> Catalog {
     let mut catalog = Catalog {
         custom: Vec::new(),
         invalid: Vec::new(),
     };
-    for (index, entry) in session.entries().into_iter().enumerate() {
+    for (index, entry) in session.iter().cloned().enumerate() {
         let checked = collision(&catalog, &entry.id).and_then(|()| compile(&entry, limits));
         match checked {
             Ok(query) => catalog.custom.push(Registered {
@@ -164,7 +207,6 @@ pub(super) fn load(
             }),
         }
     }
-    let persisted = crate::project::load_persisted(project_root);
     let mut invalid: Vec<InvalidMechanic> = persisted
         .invalid
         .into_iter()

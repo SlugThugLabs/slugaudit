@@ -7,6 +7,7 @@
 mod activation;
 mod activation_lock;
 mod config;
+mod config_store;
 mod database_path;
 mod gitignore;
 mod mechanics_config;
@@ -17,11 +18,13 @@ pub use activation::{
     ActivationError, GitignoreOutcome, activation_dir, disable, enable, ensure_gitignore,
     find_project_root, resolve_project,
 };
-pub use config::{ConfigError, ConfigWriteError, ProjectConfig};
+pub use config::{ConfigError, ProjectConfig};
+pub use config_store::ConfigWriteError;
 pub use database_path::database_path;
 pub use mechanics_config::{
     InvalidPersistedEntry, MAX_PERSISTED_MECHANICS, MECHANICS_SECTION_VERSION, MechanicEntry,
     MechanicsWriteError, PersistedMechanics, load_persisted, persist_entry, remove_persisted,
+    remove_persisted_at,
 };
 pub use root::{ProjectRoot, RootError};
 pub use session_mechanics::{MAX_SESSION_MECHANICS, SessionMechanics};

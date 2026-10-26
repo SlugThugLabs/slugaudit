@@ -55,6 +55,10 @@ pub enum ErrorCode {
     /// discovered, skipped as oversize/unreadable, or binary — so it
     /// cannot be read or parsed out of the index.
     FileNotIndexed,
+    /// An auditor-registered mechanic's scan spent the call's
+    /// `max_structure_execution_time` before every file was read, so no
+    /// count is returned. Permanent for the same scan, like the sync budget.
+    MechanicBudgetExhausted,
 }
 
 impl ErrorCode {
@@ -71,6 +75,7 @@ impl ErrorCode {
         ErrorCode::UnknownMechanic,
         ErrorCode::SqlTooLarge,
         ErrorCode::FileNotIndexed,
+        ErrorCode::MechanicBudgetExhausted,
     ];
 
     /// The stable wire string: lowercase `snake_case`, never renamed.
@@ -83,6 +88,7 @@ impl ErrorCode {
             ErrorCode::UnknownMechanic => "unknown_mechanic",
             ErrorCode::SqlTooLarge => "sql_too_large",
             ErrorCode::FileNotIndexed => "file_not_indexed",
+            ErrorCode::MechanicBudgetExhausted => "mechanic_budget_exhausted",
         }
     }
 
@@ -114,6 +120,11 @@ impl ErrorCode {
             ErrorCode::FileNotIndexed => {
                 "check what is indexed with SELECT path FROM files WHERE path LIKE … — a \
                  skipped (oversize/unreadable) or binary file has no content to read"
+            }
+            ErrorCode::MechanicBudgetExhausted => {
+                "a permanent limit for this scan, not a transient failure — retrying unchanged \
+                 fails identically; remove the named entry with mechanic action remove, narrow \
+                 leads `pattern`, or raise SLUGAUDIT_MAX_STRUCTURE_EXECUTION_TIME_SECS (seconds)"
             }
         }
     }

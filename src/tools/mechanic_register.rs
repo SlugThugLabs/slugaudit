@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=every change to the mechanic registry (add, remove by id, remove by index) sits beside the check that guards it and the one error mapping they share
 //! `mechanic add` and `mechanic remove`: the registration rules and the
 //! writes they guard. Split from `mechanic.rs` (the tool contract) because
 //! this is the only code that changes the registry — the session list and
@@ -10,7 +11,7 @@ use super::mechanic_catalog::{self, Catalog, Registered, is_builtin};
 use crate::error_codes::{self, ErrorCode};
 use crate::progress::ProgressSink;
 use crate::project::{
-    ConfigError, ConfigWriteError, MAX_PERSISTED_MECHANICS, MAX_SESSION_MECHANICS, MechanicEntry,
+    ConfigWriteError, MAX_PERSISTED_MECHANICS, MAX_SESSION_MECHANICS, MechanicEntry,
     MechanicsWriteError,
 };
 use crate::sync;
@@ -153,17 +154,26 @@ fn insert_candidate(
     );
 }
 
-/// Removes the session entry `id`, or else the persisted one. A built-in is
-/// refused.
+/// Removes the session entry `id`, or else the persisted one, or the invalid
+/// persisted entry at `index`. A built-in is refused. Returns the removed
+/// entry's id (none for an index whose entry has no string id).
 pub(super) fn remove(
     request: &MechanicRequest,
     root: &Path,
+    limits: &crate::model::ResourceLimits,
     manager: &sync::SourceSyncManager,
-) -> Result<(String, MechanicSource), ErrorData> {
+) -> Result<(Option<String>, MechanicSource), ErrorData> {
+    if let Some(index) = request.index {
+        return remove_invalid_at(root, index, limits, manager)
+            .map(|id| (id, MechanicSource::ProjectConfig));
+    }
     let id = required(request.id.as_ref(), "id", "remove")?;
     if is_builtin(&id) {
         return Err(ErrorData::invalid_params(
-            format!("`{id}` is a built-in mechanic; built-ins can never be removed"),
+            format!(
+                "`{id}` is a built-in mechanic; built-ins can never be removed (a persisted \
+                 entry using this id is listed in `invalid`: remove it by its `index`)"
+            ),
             None,
         ));
     }
@@ -181,18 +191,50 @@ pub(super) fn remove(
             Err(error) => Err(write_error(error)),
         }
     })?;
-    Ok((id, source))
+    Ok((Some(id), source))
+}
+
+/// Removes the persisted entry at `index` if, judged under the config lock
+/// with this server's session entries, it is still listed invalid: the same
+/// catalogue rules `report` and `list` apply, over the file as it is now, so
+/// an index that moved (another process removed an entry) can never remove a
+/// valid entry.
+fn remove_invalid_at(
+    root: &Path,
+    index: usize,
+    limits: &crate::model::ResourceLimits,
+    manager: &sync::SourceSyncManager,
+) -> Result<Option<String>, ErrorData> {
+    manager.session_mechanics().with_entries(|session| {
+        let mut removed = None;
+        crate::project::remove_persisted_at(root, index, |persisted| {
+            let catalog = mechanic_catalog::load_from(session, persisted.clone(), limits);
+            let invalid = catalog.invalid.into_iter().find(|failed| {
+                failed.source == MechanicSource::ProjectConfig && failed.index == Some(index)
+            });
+            let found = invalid.is_some();
+            removed = invalid.and_then(|failed| failed.id);
+            found
+        })
+        .map_err(write_error)?;
+        Ok(removed)
+    })
 }
 
 /// Maps a failed `config.json` update to the tool error, in the style of
-/// `project_control`'s config write: a file the caller must fix (a symlink,
-/// malformed JSON, a section this server cannot extend, a full list) is
-/// `invalid_params`; an I/O failure is operational.
+/// `project_control`'s config write: a file or request the caller must fix (a
+/// symlink, malformed JSON, a section this server cannot extend, a full
+/// list, a duplicate id, an index that is not an invalid entry) is
+/// `invalid_params`; an I/O failure, a lock held past the bounded wait, or a
+/// directory sync that failed after the replace is operational.
 fn write_error(error: MechanicsWriteError) -> ErrorData {
     let operational = matches!(
         &error,
-        MechanicsWriteError::Write(ConfigWriteError::Io { .. })
-            | MechanicsWriteError::Read(ConfigError::Io { .. })
+        MechanicsWriteError::Config(
+            ConfigWriteError::Io { .. }
+                | ConfigWriteError::Locked { .. }
+                | ConfigWriteError::NotDurable { .. }
+        )
     );
     if operational {
         super::context::internal_error("writing the mechanics config", error)
