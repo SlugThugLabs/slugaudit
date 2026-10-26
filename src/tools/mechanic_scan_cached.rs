@@ -9,7 +9,7 @@
 //!
 //! Only a complete scan is cached: a spent time budget fails the call before
 //! anything is stored. Rows are retained while the pass runs only up to the
-//! cache budget; an entry whose rows outgrow it is counted (`skipped_too_large`
+//! cache budget in total across the pass's entries; an entry whose rows outgrow it is counted (`skipped_too_large`
 //! in `health`), not cached, and its pages stream from the database as they
 //! did before the cache existed.
 
@@ -85,6 +85,66 @@ struct Retained {
     overflowed: bool,
 }
 
+/// The rows one scan pass retains for caching, with one budget shared by
+/// every entry of the pass: a call selecting many uncached entries holds at
+/// most the cache budget in total, not the budget per entry. An entry whose
+/// row would take the pass past the budget gives up its rows (and releases
+/// their bytes); it is still counted, just not cached.
+pub(super) struct Pass {
+    budget: usize,
+    bytes: usize,
+    entries: Vec<Retained>,
+}
+
+impl Pass {
+    pub(super) fn new(budget: usize, entries: usize) -> Self {
+        Self {
+            budget,
+            bytes: 0,
+            entries: (0..entries).map(|_| Retained::default()).collect(),
+        }
+    }
+
+    /// Offers one row of entry `index` for retention.
+    pub(super) fn offer(&mut self, index: usize, row: CachedRow) {
+        let Some(keep) = self.entries.get_mut(index) else {
+            return;
+        };
+        if keep.overflowed {
+            return;
+        }
+        let size = row.estimated_bytes();
+        if self.bytes.saturating_add(size) > self.budget {
+            self.bytes = self.bytes.saturating_sub(keep.bytes);
+            keep.bytes = 0;
+            keep.overflowed = true;
+            keep.rows = Vec::new();
+        } else {
+            self.bytes = self.bytes.saturating_add(size);
+            keep.bytes = keep.bytes.saturating_add(size);
+            keep.rows.push(row);
+        }
+    }
+
+    /// Estimated bytes of the rows retained right now, over all entries
+    /// (the seam the retention test reads).
+    #[cfg(test)]
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Entry `index`'s rows, or `None` when it gave up retaining them.
+    fn take(&mut self, index: usize) -> Option<Vec<CachedRow>> {
+        let keep = self.entries.get_mut(index)?;
+        if keep.overflowed {
+            return None;
+        }
+        self.bytes = self.bytes.saturating_sub(keep.bytes);
+        keep.bytes = 0;
+        Some(std::mem::take(&mut keep.rows))
+    }
+}
+
 /// Counts the entries of `custom` listed in `selected` under `glob`, serving
 /// each from the cache when it can and scanning the rest in one pass.
 ///
@@ -126,39 +186,31 @@ pub(super) fn tally_cached(
         return Ok(scanned);
     }
     let budget = scope.cache.budget();
-    let mut retained: Vec<Retained> = custom.iter().map(|_| Retained::default()).collect();
+    let mut pass = Pass::new(budget, custom.len());
     mechanic_scan::scan(tx, custom, &missed, glob, deadline, &mut |hit| {
         let tally = scanned.tallies.get_mut(hit.entry).ok_or_else(|| {
             super::context::internal_error("counting mechanics", "a hit named no entry")
         })?;
         tally.record(hit.file, keep_files);
-        if let Some(keep) = retained.get_mut(hit.entry)
-            && !keep.overflowed
-        {
-            let row = CachedRow {
+        pass.offer(
+            hit.entry,
+            CachedRow {
                 file: hit.file.to_owned(),
                 line: hit.line,
                 text: hit.text.chars().take(MAX_DETAIL_CHARS + 1).collect(),
-            };
-            keep.bytes = keep.bytes.saturating_add(row.estimated_bytes());
-            if keep.bytes > budget {
-                keep.overflowed = true;
-                keep.rows = Vec::new();
-            } else {
-                keep.rows.push(row);
-            }
-        }
+            },
+        );
         Ok(ControlFlow::Continue(()))
     })?;
     for index in missed {
-        let (Some(registered), Some(keep)) = (custom.get(index), retained.get_mut(index)) else {
+        let Some(registered) = custom.get(index) else {
             continue;
         };
-        if keep.overflowed {
+        let Some(rows) = pass.take(index) else {
             scope.cache.note_too_large();
             continue;
-        }
-        let rows = Arc::new(std::mem::take(&mut keep.rows));
+        };
+        let rows = Arc::new(rows);
         scope
             .cache
             .insert(key_of(scope, registered, glob), Arc::clone(&rows));

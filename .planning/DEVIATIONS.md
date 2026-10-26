@@ -536,3 +536,9 @@ Oldest first: append each new entry at the end of the file. Format: **what** / *
 - **Why:** correctness for the glob; a bound so a huge-hit query cannot hold memory; layering.
 - **Where:** `src/project/mechanic_scan_cache.rs`, `src/sync/manager.rs`, `src/tools/mechanic_scan_cached.rs`, `src/tools/leads_page.rs`, `src/tools/leads_custom.rs`, `src/tools/health.rs`.
 - **Reversible:** yes; remove the cache scope from `leads_page::Scope`.
+
+## C5 follow-up: one retention budget per scan pass
+- **What:** The rows a scan pass retains for caching share one budget (the cache budget) across all entries of the pass, instead of one budget per missed entry. The entry whose row would take the pass past the budget drops its rows and releases their bytes; it is counted in `skipped_too_large` and answered exactly, just not cached. So `skipped_too_large` now also counts an entry that fit the budget alone but not beside the others in the same pass.
+- **Why:** per-entry budgets let a call selecting N uncached entries (64 session + 64 persisted) hold N x 32 MiB at once.
+- **Where:** `src/tools/mechanic_scan_cached.rs` (`Pass`).
+- **Reversible:** yes; give each entry its own counter again.

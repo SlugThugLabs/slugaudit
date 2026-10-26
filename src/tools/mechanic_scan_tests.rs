@@ -313,3 +313,132 @@ fn a_scan_cut_by_the_time_budget_is_not_cached() {
     );
     assert_eq!(cache_stats(&manager).entries, 0, "nothing partial was kept");
 }
+
+fn count_of(response: &crate::tools::LeadsResponse, id: &str) -> i64 {
+    response
+        .mechanic_counts
+        .iter()
+        .find(|count| count.mechanic == id)
+        .unwrap_or_else(|| panic!("no count for {id}"))
+        .count
+}
+
+#[test]
+fn a_different_pattern_glob_on_the_same_revision_is_a_miss_with_its_own_count() {
+    let project = python_project();
+    let path = path_of(&project);
+    let manager = sync::SourceSyncManager::default();
+    call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).expect("add");
+    let misses = cache_stats(&manager).misses;
+    let mut narrowed = leads_request(&path, Some("py_eval"), LeadMode::Full);
+    narrowed.pattern = Some("lib".to_owned());
+
+    let response = run_leads(&manager, narrowed);
+
+    assert_eq!(response.total, 1, "only lib/util.py is under the pattern");
+    assert_eq!(cache_stats(&manager).misses, misses + 1, "it scanned again");
+}
+
+#[test]
+fn a_second_project_on_one_manager_does_not_hit_the_first_projects_entry() {
+    let first = python_project();
+    let second = python_project();
+    std::fs::write(second.path().join("extra.py"), "eval(\"9\")\n").expect("write extra");
+    let (first_path, second_path) = (path_of(&first), path_of(&second));
+    let manager = sync::SourceSyncManager::default();
+    call(&manager, add(&first_path, "py_eval", "python", EVAL_QUERY)).expect("add first");
+    let misses = cache_stats(&manager).misses;
+
+    let response = run_leads(
+        &manager,
+        leads_request(&second_path, Some("py_eval"), LeadMode::Full),
+    );
+
+    assert_eq!(response.total, 5, "the second project's own count");
+    assert_eq!(
+        cache_stats(&manager).misses,
+        misses + 1,
+        "the second project scanned its own files instead of hitting the first's entry"
+    );
+}
+
+#[test]
+fn a_persisted_entry_edited_in_config_json_misses_and_counts_with_the_new_query() {
+    let project = python_project();
+    let path = path_of(&project);
+    let manager = sync::SourceSyncManager::default();
+    let mut persisted = add(&path, "py_eval", "python", EVAL_QUERY);
+    persisted.persist = true;
+    call(&manager, persisted).expect("persist");
+    let config = project.path().join(".planning/slugaudit/config.json");
+    let text = std::fs::read_to_string(&config).expect("read config");
+    let edited = text.replace(r#"\"eval\""#, r#"\"exec\""#);
+    assert_ne!(edited, text, "the query was edited");
+    std::fs::write(&config, edited).expect("another process edits config.json");
+    let misses = cache_stats(&manager).misses;
+
+    let response = run_leads(
+        &manager,
+        leads_request(&path, Some("py_eval"), LeadMode::Full),
+    );
+
+    assert_eq!(response.total, 0, "the edited query matches no exec call");
+    assert_eq!(cache_stats(&manager).misses, misses + 1, "it scanned again");
+}
+
+#[test]
+fn a_pass_over_many_entries_retains_at_most_the_budget_in_total() {
+    use crate::tools::mechanic_scan_cached::Pass;
+    let row = crate::project::CachedRow {
+        file: "a.py".to_owned(),
+        line: 1,
+        text: "x".to_owned(),
+    };
+    let size = row.estimated_bytes();
+    let mut pass = Pass::new(size * 5, 4);
+
+    for _ in 0..3 {
+        for entry in 0..4 {
+            pass.offer(entry, row.clone());
+            assert!(
+                pass.retained_bytes() <= size * 5,
+                "retained {} past the shared budget",
+                pass.retained_bytes()
+            );
+        }
+    }
+
+    assert!(pass.retained_bytes() <= size * 5);
+}
+
+#[test]
+fn many_uncached_entries_in_one_call_over_a_tiny_budget_are_all_counted_exactly() {
+    let sizing = sync::SourceSyncManager::default();
+    let project = python_project();
+    let path = path_of(&project);
+    call(&sizing, add(&path, "sizing", "python", EVAL_QUERY)).expect("add");
+    let one_entry = cache_stats(&sizing).bytes;
+    let budget = one_entry + one_entry / 2;
+    let manager = sync::SourceSyncManager::with_mechanic_cache_budget(budget);
+    for id in ["e1", "e2", "e3", "e4", "e5"] {
+        call(&manager, add(&path, id, "python", EVAL_QUERY)).expect("add");
+    }
+    std::fs::write(
+        project.path().join("extra.py"),
+        "eval(\"4\")\neval(\"5\")\n",
+    )
+    .expect("new revision");
+    let skipped_before = cache_stats(&manager).skipped_too_large;
+
+    let response = run_leads(&manager, leads_request(&path, None, LeadMode::Full));
+
+    for id in ["e1", "e2", "e3", "e4", "e5"] {
+        assert_eq!(count_of(&response, id), 6, "{id}");
+    }
+    let stats = cache_stats(&manager);
+    assert!(stats.bytes <= budget, "{} > {budget}", stats.bytes);
+    assert!(
+        stats.skipped_too_large > skipped_before,
+        "entries past the pass budget were counted, not cached"
+    );
+}
