@@ -138,6 +138,18 @@ fn err(msg: impl Into<String>) -> ErrorData {
     ErrorData::internal_error(msg.into(), None)
 }
 
+/// Maps a failed profile-config write to the tool error. A symlinked or
+/// non-regular `config.json` is a project-state problem the caller must fix
+/// (`invalid_params`); any other I/O failure is operational (`internal_error`).
+fn config_write_error(error: project::ConfigWriteError) -> ErrorData {
+    match &error {
+        project::ConfigWriteError::NotRegularFile { .. } => {
+            ErrorData::invalid_params(format!("write profile config: {error}"), None)
+        }
+        project::ConfigWriteError::Io { .. } => err(format!("write profile config: {error}")),
+    }
+}
+
 /// Enables or disables SlugAudit for a project.
 ///
 /// When `action` is `"on"`, creates the activation directory and immediately
@@ -233,17 +245,7 @@ fn enable(
         // serializing a `Value` cannot fail, so there is no error arm to
         // leave untested.
         let encoded = format!("{cfg:#}");
-        project::ProjectConfig::write_raw(root.as_path(), &encoded).map_err(
-            |error| match error {
-                // A project-state problem the caller must fix, not a server fault.
-                project::ConfigWriteError::NotRegularFile { .. } => {
-                    ErrorData::invalid_params(format!("write profile config: {error}"), None)
-                }
-                project::ConfigWriteError::Io { .. } => {
-                    err(format!("write profile config: {error}"))
-                }
-            },
-        )?;
+        project::ProjectConfig::write_raw(root.as_path(), &encoded).map_err(config_write_error)?;
     }
     let db_path = project::database_path(root);
     let mut connection = match store::open_read_write(&db_path) {
@@ -309,6 +311,10 @@ fn disable(
         gitignore: None,
     }))
 }
+
+#[cfg(test)]
+#[path = "project_control_config_tests.rs"]
+mod config_write_tests;
 
 #[cfg(test)]
 #[path = "project_control_tests.rs"]
