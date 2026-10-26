@@ -376,3 +376,9 @@ Newest first. Format: **what** / **why** / **where** / **reversible?**
 - **Where:** `src/parse/language.rs`, `src/server.rs` (INSTRUCTIONS), tests in `src/parse/language.rs`, `src/sync/analyze_tests.rs`, `src/tools/report_prose_tests.rs`.
 - **Reversible:** Yes. Cost to know: an already-indexed, unchanged ignore file keeps its old `language IS NULL` row (the content hash is unchanged, so it is not re-analyzed) until it changes or the database is rebuilt, so an existing project still reports it as a parser failure for now. `.npmignore`, `.gitattributes` and similar are unchanged.
 
+## Ignore-file table widened and schema bumped to 10 (B0 follow-up)
+
+- **What:** `.npmignore`, `.prettierignore`, `.eslintignore` and `.gitattributes` join `.gitignore`/`.ignore`/`.dockerignore` as stored-not-parsed pattern lists; `CURRENT_SCHEMA_VERSION` 9 -> 10.
+- **Why:** the pack names no language for these, so they were `language IS NULL` and read as parser failures in `report`. The bump makes existing databases rebuild, so already-indexed ignore files (whose stored language is NULL and whose content hash is unchanged) are reclassified instead of lingering as failures. The database is disposable by design.
+- **Where:** `src/parse/language.rs` (`IGNORE_FILE_NAMES`), `src/store/migrations.rs`.
+- **Reversible:** yes.

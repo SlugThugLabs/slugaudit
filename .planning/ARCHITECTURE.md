@@ -504,7 +504,7 @@ every profile; env `SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES`, project
 the sync and before compilation.
 
 **Schema versioning is discard-and-rebuild.** `store/migrations.rs` writes
-`CURRENT_SCHEMA_VERSION` (currently `7`) to `PRAGMA user_version`. A database
+`CURRENT_SCHEMA_VERSION` (currently `10`) to `PRAGMA user_version`. A database
 whose version is neither fresh (`0`) nor current resolves as
 `UnsupportedVersion`, which `is_corruption()` reports as corruption; the sync
 layer discards the file and rebuilds it from project source. There is no

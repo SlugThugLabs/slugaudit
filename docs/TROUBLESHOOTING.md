@@ -163,7 +163,7 @@ operator action:
   `database is corrupt or outdated; discarding and re-publishing from
   scratch` (the path is a redacted id) and rebuilds from source.
 - **Unsupported schema version** — a database whose `PRAGMA user_version` is
-  neither fresh (`0`) nor current (`CURRENT_SCHEMA_VERSION`, currently `8`) is
+  neither fresh (`0`) nor current (`CURRENT_SCHEMA_VERSION`, currently `10`) is
   treated as corruption and discarded. There is no migration path; the schema
   is discard-and-rebuild. The 7 → 8 bump added the derived
   `unrepresentable_paths` table, so an existing version-7 database rebuilds

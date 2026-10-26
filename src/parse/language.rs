@@ -13,11 +13,19 @@ const PROSE_EXTENSIONS: [&str; 9] = [
     "md", "markdown", "mdx", "rst", "adoc", "asciidoc", "org", "txt", "text",
 ];
 
-/// File names (exact, no directory) of ignore-pattern lists: plain path lists
+/// File names (exact, no directory) of ignore- and attribute-pattern lists: plain path lists
 /// with no grammar, stored like prose (the pack names no language for them, so
 /// they would otherwise be `language IS NULL` and read as a parser failure).
 /// The class is the same "stored, searchable, deliberately not parsed".
-const IGNORE_FILE_NAMES: [&str; 3] = [".gitignore", ".ignore", ".dockerignore"];
+const IGNORE_FILE_NAMES: [&str; 7] = [
+    ".gitignore",
+    ".ignore",
+    ".dockerignore",
+    ".npmignore",
+    ".prettierignore",
+    ".eslintignore",
+    ".gitattributes",
+];
 
 #[must_use]
 /// True when `name` is the stored prose language or a pack grammar name that
@@ -99,10 +107,19 @@ mod tests {
 
     #[test]
     fn ignore_pattern_lists_are_stored_as_prose_at_any_depth() {
-        for path in [".gitignore", "sub/.gitignore", ".ignore", ".dockerignore"] {
+        for path in [
+            ".gitignore",
+            "sub/.gitignore",
+            ".ignore",
+            ".dockerignore",
+            ".npmignore",
+            ".prettierignore",
+            ".eslintignore",
+            ".gitattributes",
+        ] {
             assert_eq!(detect_language(path).as_deref(), Some("prose"), "{path}");
         }
-        for path in ["gitignore", ".gitignore.bak", ".npmignore"] {
+        for path in ["gitignore", ".gitignore.bak", "npmignore"] {
             assert_eq!(detect_language(path), None, "{path}");
         }
     }
