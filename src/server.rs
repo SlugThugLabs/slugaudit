@@ -90,11 +90,11 @@ const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — sym
     one capture) on one `file` or a whole `language`. `finding` records a conclusion you reviewed, \
     bound to the file's content hash (stale once it changes), visible only to this session; \
     `finding_read` reads them. `project_control` `on` enables and indexes a project, `off` disables \
-    it. `health` reports phase and next action; `verbose: true` adds operator detail.\n\n\
+    it. `health` reports phase and next action; `verbose: true` adds detail.\n\n\
     FLOW: report → leads → mechanic add for shapes you decide matter → query/structure → read source \
     only where evidence points → finding.\n\n\
-    FAILURES: errors carry `data.code` (e.g. `project_not_enabled`) and `remedy`, the next action. \
-    Branch on `code`; do what `remedy` says instead of retrying unchanged.\n\n\
+    FAILURES: errors carry `data.code` (e.g. `project_not_enabled`, `sql_error`, `unknown_language`) and \
+    `remedy`, the next action. Branch on `code`; follow `remedy`, don't retry unchanged.\n\n\
     JUDGMENT IS YOURS: SlugAudit reports evidence and never judges, rates or ranks it; the severity \
     and category on a finding are the ones you supply. Never claim SlugAudit identified, rated or \
     recommended anything.";
