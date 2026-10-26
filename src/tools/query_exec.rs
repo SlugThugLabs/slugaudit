@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=Everything one query statement runs under (engine value and SQL length limits, VM-step and wall-clock budgets) together with the paging that runs inside them.
 //! Executing one `query` statement: the VM-step and wall-clock budgets, the
 //! byte-budgeted page, and the exact total.
 //!
@@ -12,16 +13,76 @@ use super::query_value::{
 
 use super::context::internal_error;
 use super::query::{
-    ABORT_NONE, ABORT_STEP_BUDGET, ABORT_WALL_CLOCK, describe_error, single_statement_body,
+    ABORT_NONE, ABORT_STEP_BUDGET, ABORT_WALL_CLOCK, describe_error, refuse_wrapped,
+    single_statement_body,
 };
-use crate::model::ResourceLimits;
+use crate::model::{ResourceLimits, SQLITE_MAX_VALUE_BYTES};
 use crate::util::serialized_len;
 use rmcp::ErrorData;
+use rusqlite::limits::Limit;
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{MappedRows, Row, Transaction};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
+
+/// Bytes the page and count wrappers add around the caller's statement:
+/// `SELECT * FROM (\n`, `\n) LIMIT -1 OFFSET ` and an offset of at most 19
+/// digits is 54; the count wrapper is shorter. Rounded up so the engine's
+/// SQL-length limit never refuses a statement the tool's own
+/// `max_query_sql_bytes` check accepted.
+const WRAPPER_OVERHEAD_BYTES: u64 = 64;
+
+/// Worst-case growth of stored file text over the file bytes it came from:
+/// lossy UTF-8 decoding replaces each invalid byte with U+FFFD, three bytes.
+const LOSSY_UTF8_GROWTH: u64 = 3;
+
+/// The engine limits one `query` connection runs under.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct EngineLimits {
+    /// `SQLITE_LIMIT_LENGTH`: the longest string or blob SQLite will build
+    /// or read, so an expression such as `hex(zeroblob(n))` fails with "too
+    /// big" before allocating instead of growing to gigabytes. SQLite checks
+    /// it when a stored column is read as well, so it must cover every value
+    /// indexing can store: the larger of `max_query_value_bytes` and the
+    /// lossy-decoded size of a `max_file_bytes` file, clamped to what the
+    /// bundled SQLite can hold.
+    pub(super) value_length: i32,
+    /// `SQLITE_LIMIT_SQL_LENGTH`: the tool's `max_query_sql_bytes` plus the
+    /// wrapper's overhead, so the engine accepts no more SQL than the tool
+    /// claims to.
+    pub(super) sql_length: i32,
+}
+
+/// Computes [`EngineLimits`] from the call's resource limits.
+pub(super) fn engine_limits(
+    limits: &ResourceLimits,
+) -> Result<EngineLimits, std::num::TryFromIntError> {
+    let value_bytes = u64::try_from(limits.max_query_value_bytes)?;
+    let stored_bytes = limits.max_file_bytes.saturating_mul(LOSSY_UTF8_GROWTH);
+    let value_length = value_bytes.max(stored_bytes).min(SQLITE_MAX_VALUE_BYTES);
+    // The bundled SQLite's SQL-length ceiling is also 1,000,000,000
+    // (`sqlite3_limit` reports it as the default, verified 2026-10-25).
+    let sql_length = u64::try_from(limits.max_query_sql_bytes)?
+        .saturating_add(WRAPPER_OVERHEAD_BYTES)
+        .min(SQLITE_MAX_VALUE_BYTES);
+    Ok(EngineLimits {
+        value_length: i32::try_from(value_length)?,
+        sql_length: i32::try_from(sql_length)?,
+    })
+}
+
+/// Applies [`engine_limits`] to the connection before any caller SQL is
+/// prepared.
+fn apply_engine_limits(tx: &Transaction<'_>, limits: &ResourceLimits) -> Result<(), ErrorData> {
+    let bounds = engine_limits(limits)
+        .map_err(|error| internal_error("computing the query engine limits", error))?;
+    tx.set_limit(Limit::SQLITE_LIMIT_LENGTH, bounds.value_length)
+        .map_err(|error| internal_error("setting the query value-length limit", error))?;
+    tx.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, bounds.sql_length)
+        .map_err(|error| internal_error("setting the query SQL-length limit", error))?;
+    Ok(())
+}
 
 /// `now + budget`, or `None` when that instant cannot be represented (a
 /// configured budget of centuries). `None` means no wall-clock deadline: an
@@ -82,6 +143,7 @@ pub(super) fn run_query(
     page_bytes: usize,
     limits: &ResourceLimits,
 ) -> Result<Collected, ErrorData> {
+    apply_engine_limits(tx, limits)?;
     let abort_reason = install_budget(tx, limits);
     let page = single_statement_body(tx, trimmed, &abort_reason)
         .and_then(|body| execute_and_collect(tx, body, offset, page_bytes, limits, &abort_reason));
@@ -152,7 +214,7 @@ fn execute_and_collect(
     let wrapped = format!("SELECT * FROM (\n{body}\n) LIMIT -1 OFFSET {offset}");
     let mut statement = tx
         .prepare(&wrapped)
-        .map_err(|error| describe_error(&error, abort_reason))?;
+        .map_err(|error| refuse_wrapped(&error, abort_reason))?;
     let column_names: Vec<String> = statement
         .column_names()
         .into_iter()

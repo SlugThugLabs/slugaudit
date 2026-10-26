@@ -2,8 +2,8 @@
 //!
 //! These are the private halves of the open contract in [`super::connection`]:
 //! symlink and permission refusals, network-filesystem rejection is in
-//! `netfs`, parent-directory resolution, open flags, the ATTACH authorizer,
-//! and post-open pragma configuration. Kept apart so `connection.rs` stays
+//! `netfs`, parent-directory resolution, open flags, the ATTACH and PRAGMA
+//! authorizers, and post-open pragma configuration. Kept apart so `connection.rs` stays
 //! within the production line limit while preserving the single atomic open
 //! ordering: inspect, create private, inspect permissions, open, configure.
 //!
@@ -116,22 +116,86 @@ pub(super) fn open_flags(read_write: bool) -> OpenFlags {
 /// at the layer it is made, so ATTACH stays blocked even if the tool
 /// surface changes.
 ///
-/// Installed on both open paths so no connection — read-only *or*
-/// read-write — can ever reach a second database file.
+/// Installed on the read-write path; the read-only path installs
+/// [`guard_read_only`], which denies the same ATTACH/DETACH and adds PRAGMA,
+/// so no connection — read-only *or* read-write — can ever reach a second
+/// database file.
 pub(super) fn guard_against_attach(connection: &Connection) {
-    use rusqlite::hooks::{AuthAction, Authorization};
     // rusqlite 0.37's `authorizer` stores the hook and returns `()`; the
     // callback fires during statement preparation, so a denied ATTACH
     // fails at prepare time and surfaces as an ordinary statement error.
+    // Everything else (SELECTs, joins, CTEs, window functions, JSON
+    // functions, the server's own DML/PRAGMA) passes through untouched.
     connection.authorizer(Some(|context: rusqlite::hooks::AuthContext<'_>| {
-        match context.action {
-            AuthAction::Attach { .. } | AuthAction::Detach { .. } => Authorization::Deny,
-            // Everything else (SELECTs, joins, CTEs, window functions,
-            // JSON functions, the server's own DML/PRAGMA) passes through
-            // untouched.
-            _ => Authorization::Allow,
-        }
+        authorize(&context.action, false)
     }));
+}
+
+/// The read-only connection's authorizer: ATTACH/DETACH denied as in
+/// [`guard_against_attach`], and every PRAGMA denied except the
+/// schema-introspection names in [`INTROSPECTION_PRAGMAS`].
+///
+/// A PRAGMA is not inert until it runs: SQLite applies `hard_heap_limit`,
+/// `soft_heap_limit`, `temp_store_directory` and others while *preparing*
+/// the statement, so a statement the `query` tool goes on to refuse has
+/// already changed process-wide state. The authorizer callback is invoked
+/// from `sqlite3Pragma` before any of that code runs (verified against the
+/// bundled SQLite 2026-10-25: a denied `PRAGMA hard_heap_limit=1` leaves the
+/// limit at 0), so the denial is what makes the refusal side-effect free.
+pub(super) fn guard_read_only(connection: &Connection) {
+    connection.authorizer(Some(|context: rusqlite::hooks::AuthContext<'_>| {
+        authorize(&context.action, true)
+    }));
+}
+
+/// Pragmas the read-only connection authorizes, so the `pragma_<name>`
+/// table-valued functions keep working: SQLite's pragma virtual table runs
+/// them by preparing `PRAGMA <name>='<arg>'` on the same connection, and the
+/// authorizer sees that internal statement exactly like one the caller
+/// typed. Each name is a pure read of the schema catalogue whose only
+/// argument is a table or index name to look up: `table_info`/`table_xinfo`
+/// (columns), `table_list` (tables), `index_list`/`index_info`/`index_xinfo`
+/// (indexes) and `foreign_key_list`. None of them sets a value, writes,
+/// changes a limit or memory setting, or touches the filesystem.
+///
+/// Deliberately excluded: every pragma that is a setter when given a value
+/// (`user_version`, `journal_mode`, the heap limits, ...), `optimize` (runs
+/// ANALYZE), the whole-database checks (`integrity_check`, `quick_check`,
+/// `foreign_key_check`), and catalogue reads outside the schema
+/// (`database_list` names the database file path).
+pub(super) const INTROSPECTION_PRAGMAS: [&str; 7] = [
+    "table_info",
+    "table_xinfo",
+    "table_list",
+    "index_list",
+    "index_info",
+    "index_xinfo",
+    "foreign_key_list",
+];
+
+/// The shared decision. The pragma value is not inspected: SQLite hands the
+/// authorizer the same `(name, value)` for `PRAGMA table_info(files)`,
+/// `PRAGMA table_info = files` and `pragma_table_info('files')`, so the
+/// allowlist is by name only, which is safe because for these names the
+/// value is only ever a name to look up. The name arrives as typed, so it is
+/// compared case-insensitively, as SQLite resolves it.
+fn authorize(
+    action: &rusqlite::hooks::AuthAction<'_>,
+    read_only: bool,
+) -> rusqlite::hooks::Authorization {
+    use rusqlite::hooks::{AuthAction, Authorization};
+    match action {
+        AuthAction::Attach { .. } | AuthAction::Detach { .. } => Authorization::Deny,
+        AuthAction::Pragma { pragma_name, .. }
+            if read_only
+                && !INTROSPECTION_PRAGMAS
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(pragma_name)) =>
+        {
+            Authorization::Deny
+        }
+        _ => Authorization::Allow,
+    }
 }
 
 /// If `path` doesn't exist yet, creates it with owner-only permissions set

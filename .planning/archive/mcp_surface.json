@@ -1154,7 +1154,7 @@
             "type": "string"
           },
           "sql": {
-            "description": "Read-only SQL against the project's own database — arbitrary joins,\nCTEs, and window functions are fine. Only SELECT is accepted: the\nstatement is wrapped in a subquery, so writes and other statement\nforms (PRAGMA, EXPLAIN, VACUUM, ...) are rejected by the wrapper.\nThere is no keyword blocklist or table allowlist, and the connection\nitself is read-only as a second boundary.",
+            "description": "Read-only SQL against the project's own database — arbitrary joins,\nCTEs, and window functions are fine. Only SELECT is accepted: the\nstatement is wrapped in a subquery, so writes and other statement\nforms (PRAGMA, EXPLAIN, VACUUM, ...) are rejected by the wrapper.\nThere is no keyword blocklist or table allowlist, and the connection\nitself is read-only as a second boundary. Its authorizer refuses\nPRAGMA, ATTACH and DETACH; of the `pragma_*` table-valued functions\nonly schema introspection works (`pragma_table_info`,\n`pragma_table_xinfo`, `pragma_table_list`, `pragma_index_list`,\n`pragma_index_info`, `pragma_index_xinfo`, `pragma_foreign_key_list`).",
             "type": "string"
           }
         },

@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=The read-write and read-only open contract with its inline failure and authorizer tests, inline because connection_tests.rs is at the 500-line test cap.
 //! Database connection open and refusal contract: the read-write and
 //! read-only entry points, plus `StoreError` and corrupt-database discard.
 //! The inspection, permission, and pragma guards they call live in
@@ -5,7 +6,7 @@
 
 use super::connection_guards::{
     BUSY_TIMEOUT, configure, create_with_private_permissions_if_missing, guard_against_attach,
-    open_flags, reject_insecure_permissions, reject_symlink, resolve_parent_dir,
+    guard_read_only, open_flags, reject_insecure_permissions, reject_symlink, resolve_parent_dir,
 };
 use super::netfs::reject_network_filesystem;
 use rusqlite::Connection;
@@ -139,7 +140,9 @@ pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
 /// Opens a connection that cannot write no matter what SQL it executes.
 /// This is the safety boundary for the `query` tool: correctness comes from
 /// the connection itself, never from inspecting query text. Requires an
-/// already-migrated database; it never creates or alters the schema.
+/// already-migrated database; it never creates or alters the schema. Its
+/// authorizer denies ATTACH/DETACH and every PRAGMA except schema
+/// introspection, at prepare time, before a pragma can take effect.
 ///
 /// # Errors
 ///
@@ -164,7 +167,7 @@ pub fn open_read_only(path: &Path) -> Result<Connection, StoreError> {
     connection
         .busy_timeout(BUSY_TIMEOUT)
         .map_err(StoreError::Configure)?;
-    guard_against_attach(&connection);
+    guard_read_only(&connection);
     super::sql_functions::register(&connection).map_err(StoreError::Configure)?;
     Ok(connection)
 }
@@ -233,10 +236,82 @@ mod guard_tests {
         let path = directory.path().join("project.db");
         open_read_write(&path).expect("create database");
         let ro = open_read_only(&path).expect("open read-only");
+        // The read-only authorizer denies `PRAGMA busy_timeout`; the timeout
+        // is a connection property independent of the authorizer, so the
+        // test lifts the authorizer to read it.
+        ro.authorizer(
+            None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>,
+        );
         let timeout: i64 = ro
             .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
             .expect("read");
         assert_eq!(timeout, 5_000);
+    }
+
+    /// `soft_heap_limit` is applied while SQLite *prepares* the statement,
+    /// so only a prepare-time denial keeps it from taking effect. It is
+    /// process-wide, which is why a fresh connection reads it back.
+    #[test]
+    fn the_read_only_connection_denies_a_pragma_before_it_takes_effect() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("project.db");
+        let rw = open_read_write(&path).expect("create database");
+        let soft = |connection: &Connection| -> i64 {
+            connection
+                .query_row("PRAGMA soft_heap_limit", [], |row| row.get(0))
+                .expect("read soft_heap_limit")
+        };
+        let before = soft(&rw);
+
+        let denied = open_read_only(&path)
+            .expect("open read-only")
+            .prepare("PRAGMA soft_heap_limit = 123456789")
+            .map(|_| ());
+
+        assert_eq!(
+            denied
+                .as_ref()
+                .err()
+                .and_then(rusqlite::Error::sqlite_error_code),
+            Some(rusqlite::ErrorCode::AuthorizationForStatementDenied),
+            "{denied:?}"
+        );
+        assert_eq!(soft(&Connection::open_in_memory().expect("fresh")), before);
+        assert_eq!(
+            soft(&rw),
+            before,
+            "the read-write connection still runs pragmas"
+        );
+    }
+
+    #[test]
+    fn the_read_only_connection_allows_only_schema_introspection_pragmas() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("project.db");
+        open_read_write(&path).expect("create database");
+        let ro = open_read_only(&path).expect("open read-only");
+        let count = |sql: &str| ro.query_row(sql, [], |row| row.get::<_, i64>(0));
+
+        for sql in [
+            "SELECT count(*) FROM pragma_table_info('files')",
+            "SELECT count(*) FROM pragma_TABLE_XINFO('files', 'main')",
+            "SELECT count(*) FROM pragma_table_list",
+            "SELECT count(*) FROM pragma_index_list('evidence')",
+            "SELECT count(*) FROM pragma_foreign_key_list('evidence')",
+        ] {
+            assert!(count(sql).is_ok_and(|n| n > 0), "{sql}: {:?}", count(sql));
+        }
+        for sql in [
+            "SELECT count(*) FROM pragma_user_version",
+            "SELECT count(*) FROM pragma_optimize(0xfffe)",
+            "SELECT count(*) FROM pragma_database_list",
+        ] {
+            assert_eq!(
+                count(sql).err().and_then(|error| error.sqlite_error_code()),
+                Some(rusqlite::ErrorCode::AuthorizationForStatementDenied),
+                "{sql}"
+            );
+        }
     }
 }
 

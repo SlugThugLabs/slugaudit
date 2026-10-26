@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=The query tool contract in one place: request/response shapes, validation order, statement validation and every refusal message, including the PRAGMA/authorizer refusals.
 use super::context::{ensure_synced, guard_expected_revision, with_verified_read};
 use super::page_size;
 use super::query_clip::ClippedCell;
@@ -34,7 +35,11 @@ pub struct QueryRequest {
     /// statement is wrapped in a subquery, so writes and other statement
     /// forms (PRAGMA, EXPLAIN, VACUUM, ...) are rejected by the wrapper.
     /// There is no keyword blocklist or table allowlist, and the connection
-    /// itself is read-only as a second boundary.
+    /// itself is read-only as a second boundary. Its authorizer refuses
+    /// PRAGMA, ATTACH and DETACH; of the `pragma_*` table-valued functions
+    /// only schema introspection works (`pragma_table_info`,
+    /// `pragma_table_xinfo`, `pragma_table_list`, `pragma_index_list`,
+    /// `pragma_index_info`, `pragma_index_xinfo`, `pragma_foreign_key_list`).
     pub sql: String,
     /// Number of matching rows to skip when paging through a result.
     /// Combined with the response's `next_offset`, and valid only while
@@ -300,10 +305,48 @@ pub(super) fn single_statement_body(
     Ok(text.trim_end().trim_end_matches(';').to_owned())
 }
 
+/// The refusal for a statement that SQLite parses on its own but cannot run
+/// as the wrapper's subquery: it is valid SQL of another kind. Only the
+/// wrapper's syntax error is classified this way, because the bare statement
+/// already compiled, so a syntax error can come only from the wrapping; any
+/// other failure keeps [`describe_error`]'s text.
+pub(super) fn refuse_wrapped(error: &rusqlite::Error, abort_reason: &Arc<AtomicU8>) -> ErrorData {
+    if !matches!(error, rusqlite::Error::SqlInputError { .. }) {
+        return describe_error(error, abort_reason);
+    }
+    ErrorData::invalid_params(
+        format!(
+            "sql was refused: `query` accepts a single read-only SELECT/WITH statement, and \
+             this is another kind of statement (PRAGMA, EXPLAIN, a write, DDL or a \
+             transaction command), so it cannot run as a subquery (SQLite: {error})"
+        ),
+        None,
+    )
+}
+
 /// Converts an aborted-query error into a message naming which budget was
 /// hit, rather than surfacing SQLite's generic "interrupted" text as if it
-/// were always the step budget.
+/// were always the step budget. An authorizer denial (PRAGMA, ATTACH,
+/// DETACH, at prepare time or from a `pragma_*` table function during the
+/// step) becomes the refusal that says what `query` accepts; SQLite's own
+/// error is kept in the message and logged here, once.
 pub(super) fn describe_error(error: &rusqlite::Error, abort_reason: &Arc<AtomicU8>) -> ErrorData {
+    if error.sqlite_error_code() == Some(rusqlite::ErrorCode::AuthorizationForStatementDenied) {
+        // SQLite's text for this code is the static "not authorized"; the
+        // SQL itself is never logged.
+        tracing::info!(error = %error, "query refused by the read-only connection's authorizer");
+        return ErrorData::invalid_params(
+            format!(
+                "sql was refused: `query` accepts a single read-only SELECT/WITH statement. \
+                 The read-only connection does not authorize PRAGMA statements, ATTACH or \
+                 DETACH, and of the pragma table-valued functions only schema introspection \
+                 is allowed (pragma_table_info, pragma_table_xinfo, pragma_table_list, \
+                 pragma_index_list, pragma_index_info, pragma_index_xinfo, \
+                 pragma_foreign_key_list) (SQLite: {error})"
+            ),
+            None,
+        );
+    }
     let message = match abort_reason.load(Ordering::Relaxed) {
         ABORT_STEP_BUDGET => format!("query exceeded its virtual-machine step budget: {error}"),
         ABORT_WALL_CLOCK => format!("query exceeded its wall-clock time budget: {error}"),

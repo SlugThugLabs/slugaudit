@@ -226,3 +226,61 @@ Newest first. Format: **what** / **why** / **where** / **reversible?**
 - **Why:** the owner's recurring pain, in his words: something is discussed and thought to be in the
   plan, then a crash happens, and the next agent "goes huh?".
 - **Reversible:** yes (it is prose, but it is the mechanism that keeps this file honest).
+
+## A1: the read-only authorizer allowlists seven schema-introspection pragmas
+
+- **What:** the plan says "deny `AuthAction::Pragma`". The read-only connection's authorizer
+  (`guard_read_only`) denies every PRAGMA except `table_info`, `table_xinfo`, `table_list`,
+  `index_list`, `index_info`, `index_xinfo` and `foreign_key_list`, matched by name,
+  case-insensitively, with any value. The read-write connection is unchanged (ATTACH/DETACH only).
+- **Why:** a blanket deny breaks `pragma_table_info('files')`: SQLite's pragma virtual table
+  prepares `PRAGMA table_info='files'` on the same connection and the authorizer sees it like
+  caller SQL (verified 2026-10-25). The value cannot be the rule: the authorizer receives the same
+  `(name, value)` for `PRAGMA table_info(files)`, `PRAGMA table_info = files` and
+  `pragma_table_info('files')`. For the seven names the value is only a table/index name to look
+  up, so none can write, change a limit or memory setting, or touch the filesystem. The denial
+  fires in `sqlite3Pragma` before any prepare-time side effect (a denied `hard_heap_limit=1`
+  leaves the limit at 0). Lost to agents: `pragma_user_version`, `pragma_journal_mode` and every
+  other `pragma_*` function, plus `optimize`, `integrity_check`, `database_list`.
+- **Where:** `src/store/connection_guards.rs` (`INTROSPECTION_PRAGMAS`, `authorize`),
+  `src/store/connection.rs`, `src/tools/query.rs` (`QueryRequest.sql` doc, refusal messages).
+- **Reversible:** yes; shrink or grow the list, or empty it for a blanket deny.
+
+## A1: SQLite LENGTH bound is three bytes per file byte, set on the `query` call only
+
+- **What:** `SQLITE_LIMIT_LENGTH` = max(`max_query_value_bytes`, 3 x `max_file_bytes`), clamped to
+  SQLite's 1,000,000,000; `SQLITE_LIMIT_SQL_LENGTH` = `max_query_sql_bytes` + 64 (wrapper
+  overhead). Both are set in `query_exec::run_query` before the caller's SQL is prepared, not in
+  `store::open_read_only`.
+- **Why:** SQLite checks LENGTH when it reads a stored column, so the bound must cover every stored
+  value. The brief's suggested max(value, file) does not: a text file with invalid UTF-8 is stored
+  lossy-decoded (`String::from_utf8_lossy`, 3 bytes of U+FFFD per invalid byte), so a file at
+  `max_file_bytes` can be stored at up to 3x that and would become unreadable even through
+  `substr` (verified with a test, `a_stored_value_of_exactly_the_length_bound_is_still_readable_with_substr`).
+  The cost: under the Audit profile the bound is 768 MiB. The deep-dive amplifier fails at
+  `zeroblob()` under Lean (96 MiB); under Audit `zeroblob(250000000)` and its 500 MB `hex()` fit,
+  and the `replace` fails only when its output passes 768 MiB, an estimated peak near 1.5 GB
+  (arithmetic from SQLite's allocation path, not measured, to spare the shared host) against the
+  2.1 GB the deep dive saw. Bounded, but not small. Lowering it needs indexing to cap stored
+  content at `max_file_bytes` (owner decision). Set per call because the limits are per project
+  (`resolve_limits`) and only `query` runs caller SQL; `structure`, `report`, `leads`, `finding`
+  and `health` read stored content with fixed SQL and keep SQLite's default.
+  The SQL overhead keeps the engine from refusing a statement the tool's own size check accepted.
+- **Where:** `src/tools/query_exec.rs` (`engine_limits`, `apply_engine_limits`); `Cargo.toml`
+  (rusqlite `limits` feature; `Cargo.lock` unchanged).
+- **Reversible:** yes.
+
+## A1: a statement that compiles alone but not as a subquery is refused as "not a SELECT"
+
+- **What:** when the bare statement prepares and the wrapper `SELECT * FROM (...)` then fails with
+  a syntax error, `query` now says `sql was refused: query accepts a single read-only SELECT/WITH
+  statement, and this is another kind of statement ... (SQLite: <error>)`. An authorizer denial
+  (PRAGMA, ATTACH, DETACH, or a denied `pragma_*` function) says the same opening sentence and
+  lists the allowed introspection functions. Both stay `invalid_params` with no code. The
+  comments-only message is kept for SQL that holds no statement.
+- **Why:** the brief asks for a refusal that says what `query` accepts. No SQL is lexed: the
+  classification uses only what SQLite reports (the bare statement compiled, so a syntax error can
+  come only from the wrapping). The pinned message in
+  `read_only_non_select_statements_are_refused_by_the_wrapper` was updated to the new text.
+- **Where:** `src/tools/query.rs` (`refuse_wrapped`, `describe_error`), `src/tools/query_exec.rs`.
+- **Reversible:** yes.
