@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=one cohesive analysis boundary: language gate, pack-error classification and the three ParseResult builders share one error taxonomy
+// slugaudit-line-exception: approved-by=slugthug; reason=The per-file analysis decision in one place: the language, prose and parse-size gates, pack-error classification, and one ParseResult constructor per outcome (without content, content-only, withheld, timeout, cool-down, succeeded, load-failed, parse-failed).
 use super::analyze_seam::run_extraction;
 use crate::evidence::Extraction;
 use crate::model::{
