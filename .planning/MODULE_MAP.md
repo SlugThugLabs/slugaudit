@@ -66,9 +66,11 @@ src/
 │   ├── structure_exec.rs     query execution under match cap + time budget
 │   ├── structure_page.rs     byte paging of matches and the multi-file memory-window cursor
 │   ├── structure_source.rs   source loading + multi-file and snippet helpers
+│   ├── structure_parse_bounds_tests.rs max_parse_bytes skip, window-before-load and parse-timeout partials
 │   ├── leads.rs              unranked mechanical observations
 │   ├── leads_mechanics.rs    the leads mechanic catalogue
 │   ├── leads_query.rs        the SQL each leads mechanic compiles to
+│   ├── leads_not_parsed_tests.rs files_not_parsed on every leads response and report's oversize count
 │   ├── leads_page.rs         one response assembled: counts, a row page, or the compact enumeration
 │   ├── leads_compact.rs      the compact mechanic/file/line row shape over one mechanic or all
 │   ├── finding.rs            the single write tool: request/response contract and caps
@@ -116,6 +118,7 @@ src/
 │   ├── revision_support.rs   stale-finding invalidation inside a publish transaction
 │   ├── analyze.rs            tree-sitter parse + evidence extraction for one file
 │   ├── analyze_seam.rs       pack-extraction boundary + test-only failure/call-count seam
+│   ├── analyze_bounds_tests.rs max_parse_bytes and parse_timeout outcomes of analyze
 │   ├── classify.rs           path-derived authored/generated/vendored file class
 │   └── race_hook.rs          test-only race-injection hook
 │

@@ -170,8 +170,10 @@ limits can be overridden with environment variables named `SLUGAUDIT_<FIELD>` (f
 example `SLUGAUDIT_MAX_FILE_BYTES`, `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS`); each field
 and its variable are documented in `src/model/limits.rs`. `query` and `leads` return
 64 KiB pages by default (`SLUGAUDIT_DEFAULT_PAGE_BYTES`, or `default_page_bytes` in
-`config.json`); a request's `page_bytes` raises it up to `SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES`. An unset or unparseable
-override is ignored, leaving the default in place.
+`config.json`); a request's `page_bytes` raises it up to `SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES`. Files larger than
+`SLUGAUDIT_MAX_PARSE_BYTES` (2 MiB by default, or `max_parse_bytes` in `config.json`) are stored and
+searchable but not parsed; `leads` reports them in `files_not_parsed` and `report` in its completeness
+block. An unset or unparseable override is ignored, leaving the default in place.
 
 Logging goes to `stderr`; `stdout` carries JSON-RPC only. Set
 `SLUGAUDIT_LOG_FORMAT=json` for one-line JSON log events.

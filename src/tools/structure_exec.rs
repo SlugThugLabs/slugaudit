@@ -1,6 +1,8 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=one query execution: the budgeted parse and the budgeted capture cursor share one deadline and one Run state
 //! Executing a compiled structure query: parsing each file, running the
 //! capture cursor under the match cap and the wall-clock budget, and mapping
-//! captured nodes back to source coordinates.
+//! captured nodes back to source coordinates. The parse runs under the same
+//! budget as the cursor, through tree-sitter's parse progress callback.
 
 use super::query_exec::deadline_after;
 use super::structure::StructureMatch;
@@ -12,7 +14,8 @@ use rmcp::ErrorData;
 use std::ops::ControlFlow;
 use std::time::Instant;
 use tree_sitter::{
-    Parser, Query, QueryCursor, QueryCursorOptions, QueryCursorState, StreamingIterator, Tree,
+    ParseOptions, ParseState, Parser, Query, QueryCursor, QueryCursorOptions, QueryCursorState,
+    StreamingIterator, Tree,
 };
 
 /// Runs `query` over `files`, returning one page of matches. `truncated` is
@@ -43,6 +46,7 @@ pub(super) fn run_query(
         page_bytes: paging.page_bytes,
         matches_bytes: 0,
         unparsed_files: Vec::new(),
+        parse_timed_out_file: None,
     };
     let truncated = run.scan_files(&mut parser, files)?;
     if run.timed_out {
@@ -56,7 +60,47 @@ pub(super) fn run_query(
         truncated,
         matches_bytes: run.matches_bytes,
         unparsed_files: run.unparsed_files,
+        parse_timed_out_file: run.parse_timed_out_file,
     })
+}
+
+/// What one budgeted parse produced.
+enum Parsed {
+    Tree(Tree),
+    /// The progress callback stopped the parse because the deadline passed.
+    Cancelled,
+    /// The parser returned no tree for another reason.
+    NoTree,
+}
+
+/// Parses `content` under `deadline` through tree-sitter 0.26's
+/// `Parser::parse_with_options` + `ParseOptions::progress_callback` (the
+/// callback runs periodically during the parse; `ControlFlow::Break` halts
+/// it and the call returns `None`). A halted parser keeps its partial state
+/// to resume, so it is reset before it is used again. Verified against
+/// tree-sitter 0.26.13 (`binding_rust/lib.rs`), 2026-10-25.
+fn parse_within(parser: &mut Parser, content: &str, deadline: Option<Instant>) -> Parsed {
+    let bytes = content.as_bytes();
+    let mut read = |offset: usize, _| bytes.get(offset..).unwrap_or_default();
+    let mut cancelled = false;
+    let mut check_deadline = |_state: &ParseState| -> ControlFlow<()> {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            cancelled = true;
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    let options = ParseOptions::new().progress_callback(&mut check_deadline);
+    let tree = parser.parse_with_options(&mut read, None, Some(options));
+    match tree {
+        Some(tree) => Parsed::Tree(tree),
+        None if cancelled => {
+            parser.reset();
+            Parsed::Cancelled
+        }
+        None => Parsed::NoTree,
+    }
 }
 
 /// One query execution's budget and accumulated output.
@@ -74,12 +118,16 @@ struct Run<'q> {
     page_bytes: usize,
     matches_bytes: usize,
     unparsed_files: Vec<String>,
+    /// Multi-file: the file whose parse the deadline cancelled.
+    parse_timed_out_file: Option<String>,
 }
 
 impl Run<'_> {
     /// Scans files in order until they run out, a further match is seen past
     /// a full page, or the deadline passes. Returns whether such a further
-    /// match exists.
+    /// match exists. A parse the deadline cancels ends a multi-file scan with
+    /// what earlier files produced, flagged by `parse_timed_out_file`; for a
+    /// single file there is nothing to return, so it is the budget error.
     fn scan_files(
         &mut self,
         parser: &mut Parser,
@@ -89,15 +137,31 @@ impl Run<'_> {
             if self.out_of_budget() {
                 return Ok(true);
             }
-            let Some(tree) = parser.parse(content, None) else {
-                if self.mode.single_file {
+            let tree = match parse_within(parser, content, self.deadline) {
+                Parsed::Tree(tree) => tree,
+                Parsed::Cancelled if self.mode.single_file => {
+                    self.timed_out = true;
+                    return Ok(false);
+                }
+                Parsed::Cancelled => {
+                    tracing::warn!(
+                        file_id = %crate::util::redacted_path(std::path::Path::new(file_path)),
+                        content_bytes = content.len(),
+                        "structure: parse cancelled at the execution budget; returning the matches so far",
+                    );
+                    self.parse_timed_out_file = Some(file_path.clone());
+                    return Ok(false);
+                }
+                Parsed::NoTree if self.mode.single_file => {
                     return Err(ErrorData::internal_error(
                         "parser returned no syntax tree",
                         None,
                     ));
                 }
-                self.unparsed_files.push(file_path.clone());
-                continue;
+                Parsed::NoTree => {
+                    self.unparsed_files.push(file_path.clone());
+                    continue;
+                }
             };
             if self.scan_tree(file_path, content, &tree)? {
                 return Ok(true);

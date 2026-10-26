@@ -79,7 +79,7 @@ fn reconcile_single_dirty_path(
         return Ok(DirtyOutcome::Unchanged);
     }
 
-    match indexable_record(&path, &absolute_path, &options.limits)? {
+    match indexable_record(&path, &absolute_path, options)? {
         Some(record) => Ok(DirtyOutcome::Upsert(Box::new(record))),
         None => {
             sample::push_skipped_record(skipped_records, existing_hashes, &path, &absolute_path);
@@ -130,10 +130,12 @@ fn existing_hash_matches(
         .is_some_and(|existing| existing == content_hash)
 }
 
+/// Samples and analyzes one dirty file under the options' limits; its
+/// parses run within what is left of the reconcile deadline.
 fn indexable_record(
     path: &str,
     absolute_path: &Path,
-    limits: &ResourceLimits,
+    options: &ReconcileOptions,
 ) -> Result<Option<FileRecord>, ReconcileError> {
     let kind = sniff_kind(absolute_path)?;
     let discovered = DiscoveredFile {
@@ -141,8 +143,13 @@ fn indexable_record(
         absolute_path: absolute_path.to_path_buf(),
         kind,
     };
+    let limits = &options.limits;
     match sample::sample_file(&discovered, limits) {
-        Ok(sample) => Ok(Some(sample::to_file_record(sample, limits))),
+        Ok(sample) => Ok(Some(sample::to_file_record(
+            sample,
+            limits,
+            &options.deadline,
+        ))),
         Err(sample::SampleError::TooLarge { .. }) => Ok(None),
         Err(error) => Err(error.into()),
     }

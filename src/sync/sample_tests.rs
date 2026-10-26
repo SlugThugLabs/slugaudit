@@ -177,7 +177,7 @@ fn evidence_limit_truncation_downgrades_a_full_run_to_partial() {
         modified_unix_seconds: None,
     };
 
-    let record = to_file_record(sample, &limits);
+    let record = to_file_record(sample, &limits, &generous_deadline());
 
     assert!(has_truncation_marker(&record.evidence));
     assert_eq!(record.run.completeness, ExtractionCompleteness::Partial);
@@ -198,7 +198,7 @@ fn a_full_run_within_every_evidence_cap_stays_full() {
         modified_unix_seconds: None,
     };
 
-    let record = to_file_record(sample, &ResourceLimits::default());
+    let record = to_file_record(sample, &ResourceLimits::default(), &generous_deadline());
 
     assert!(!has_truncation_marker(&record.evidence));
     assert_eq!(record.run.completeness, ExtractionCompleteness::Full);
@@ -553,4 +553,9 @@ fn the_truncation_marker_names_items_that_failed_to_serialize_only_when_there_we
         "unmeasurable items must not be double-counted as cap drops: {}",
         message(&with)
     );
+}
+
+/// A sync deadline no test parse comes near.
+fn generous_deadline() -> crate::util::Deadline {
+    crate::util::Deadline::after(std::time::Duration::from_secs(600))
 }

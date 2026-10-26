@@ -399,7 +399,7 @@ fn a_file_with_no_detected_language_is_refused_by_name() {
         .execute("UPDATE files SET language = NULL WHERE path = 'lib.rs'", [])
         .expect("clear the detected language");
 
-    let error = crate::tools::structure_source::fetch_source(&connection, "lib.rs")
+    let error = crate::tools::structure_source::fetch_source(&connection, "lib.rs", u64::MAX)
         .expect_err("a file with no detected language must be refused");
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
@@ -415,7 +415,7 @@ fn a_file_with_no_detected_language_is_refused_by_name() {
 fn a_database_failure_reading_a_file_is_an_internal_error_not_a_bad_argument() {
     let connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
 
-    let error = crate::tools::structure_source::fetch_source(&connection, "lib.rs")
+    let error = crate::tools::structure_source::fetch_source(&connection, "lib.rs", u64::MAX)
         .expect_err("a missing files table must fail");
 
     assert_eq!(
@@ -457,7 +457,10 @@ fn a_database_failure_loading_files_is_an_internal_error_not_an_empty_scan() {
         "rust",
         None,
         None,
-        MAX_MULTI_FILE_TOTAL_BYTES,
+        crate::tools::structure_source::WindowBounds {
+            window_bytes: MAX_MULTI_FILE_TOTAL_BYTES,
+            max_parse_bytes: u64::MAX,
+        },
     )
     .expect_err("a missing files table must fail, not scan nothing");
 

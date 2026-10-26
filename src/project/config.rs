@@ -60,6 +60,11 @@ pub struct ProjectConfig {
     /// Maximum individual file size in bytes to index.
     #[serde(default)]
     pub max_file_bytes: Option<u64>,
+    /// Largest file content in bytes a grammar is run on; larger files are
+    /// stored but not parsed (`oversize_for_parse`). Clamped to the
+    /// effective `max_file_bytes`.
+    #[serde(default)]
+    pub max_parse_bytes: Option<u64>,
     /// Maximum cumulative size in bytes across all imported files.
     #[serde(default)]
     pub max_total_import_bytes: Option<u64>,
@@ -167,12 +172,16 @@ impl ProjectConfig {
             }
             limits.max_file_bytes = capped;
         }
+        if let Some(parse_bytes) = self.max_parse_bytes {
+            limits.max_parse_bytes = parse_bytes;
+        }
         if let Some(import_bytes) = self.max_total_import_bytes {
             limits.max_total_import_bytes = import_bytes;
         }
         if let Some(page_bytes) = self.default_page_bytes {
             limits.default_page_bytes = page_bytes;
         }
+        limits.clamp_parse_to_file_bytes();
         limits
     }
 }
@@ -304,6 +313,51 @@ mod tests {
             crate::model::SQLITE_MAX_VALUE_BYTES,
             "SQLite cannot store a larger content value; the project limit is clamped"
         );
+    }
+
+    #[test]
+    fn a_configured_max_parse_bytes_overrides_the_profile_default() {
+        let config = ProjectConfig {
+            max_parse_bytes: Some(4_096),
+            ..Default::default()
+        };
+
+        let applied = config.apply_to_limits(ResourceLimits::default());
+
+        assert_eq!(applied.max_parse_bytes, 4_096);
+    }
+
+    #[test]
+    fn a_configured_max_parse_bytes_above_max_file_bytes_is_clamped_and_reported() {
+        let config = ProjectConfig {
+            max_file_bytes: Some(10_000),
+            max_parse_bytes: Some(20_000),
+            ..Default::default()
+        };
+
+        let (applied, logs) = capture_warns(|| config.apply_to_limits(ResourceLimits::default()));
+
+        assert_eq!(applied.max_parse_bytes, 10_000);
+        assert!(
+            logs.contains("max_parse_bytes exceeds max_file_bytes; clamping"),
+            "{logs}"
+        );
+    }
+
+    #[test]
+    fn a_non_numeric_max_parse_bytes_is_a_parse_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf_dir = dir.path().join(".planning").join("slugaudit");
+        std::fs::create_dir_all(&conf_dir).expect("create dir");
+        std::fs::write(
+            conf_dir.join("config.json"),
+            r#"{"max_parse_bytes": "big"}"#,
+        )
+        .expect("write");
+
+        let error = ProjectConfig::load(dir.path()).expect_err("a string is not a byte count");
+
+        assert!(matches!(error, ConfigError::Parse { .. }), "{error}");
     }
 
     #[test]

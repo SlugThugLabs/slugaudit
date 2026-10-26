@@ -35,6 +35,8 @@ pub(super) struct RunOutput {
     pub(super) matches_bytes: usize,
     /// Multi-file only: files the parser produced no tree for.
     pub(super) unparsed_files: Vec<String>,
+    /// Multi-file only: the file whose parse the deadline cancelled.
+    pub(super) parse_timed_out_file: Option<String>,
 }
 
 /// A bare pattern with no `@capture` can never return a node; reject it
@@ -166,6 +168,8 @@ pub(super) fn structure_response(
         truncated = run.truncated,
         files_not_scanned = window.files_not_scanned,
         unparsed = run.unparsed_files.len(),
+        over_parse_limit = window.files_over_parse_limit,
+        parse_timed_out = run.parse_timed_out_file.is_some(),
         page_bytes = page.bytes,
         clamped = page.clamped_from.is_some(),
         "structure executed"
@@ -182,7 +186,12 @@ pub(super) fn structure_response(
         matches_bytes: run.matches_bytes,
         files_not_scanned: window.files_not_scanned,
         bytes_not_scanned: window.bytes_not_scanned,
-        next_start_after_file: window.next_start_after_file,
+        next_start_after_file: run
+            .parse_timed_out_file
+            .clone()
+            .or(window.next_start_after_file),
         unparsed_files: run.unparsed_files,
+        files_over_parse_limit: window.files_over_parse_limit,
+        parse_timed_out_file: run.parse_timed_out_file,
     })
 }

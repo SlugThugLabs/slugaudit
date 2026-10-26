@@ -1,4 +1,6 @@
+use super::Extraction;
 use crate::model::{EvidenceItem, LineIndex, Position, Span, SpanAvailability, saturating_u32};
+use crate::util::Deadline;
 use tree_sitter_language_pack::{
     DiagnosticSeverity, Error as PackError, ProcessConfig, Span as PackSpan, process,
 };
@@ -12,7 +14,8 @@ use super::normalize_builders::{
 /// its result into SlugAudit's own evidence records. This is the only
 /// place a pack type crosses into SlugAudit's model — payloads are built
 /// field-by-field so our evidence contract never silently follows
-/// upstream's own wire format.
+/// upstream's own wire format. Unbounded in time; the sync path uses
+/// [`extract_within`].
 ///
 /// # Errors
 ///
@@ -20,7 +23,36 @@ use super::normalize_builders::{
 /// fails outright; a tree with syntax-error nodes is not an error here, it
 /// surfaces as `Diagnostic` evidence instead.
 pub fn extract(language: &str, source: &str) -> Result<(Vec<EvidenceItem>, bool), PackError> {
-    let config = ProcessConfig::new(language).all();
+    // With no deadline no parse can time out, so `timed_out` is always false.
+    extract_within(language, source, None)
+        .map(|extraction| (extraction.items, extraction.truncated))
+}
+
+/// [`extract`] bounded by `deadline` (`None`: unbounded). Every parse of the
+/// file — the pack's `process()` and each walker re-parse — gets what is
+/// left of the same deadline, through the pack's parse timeout (which
+/// cancels from tree-sitter's parse progress callback), so the whole file
+/// shares one budget.
+///
+/// # Errors
+///
+/// As [`extract`], plus [`PackError::ParseTimeout`] when `process()` was
+/// cancelled at the deadline, or was not started because less than a
+/// millisecond was left (then `timeout_ms` is 0: the budget it had). A
+/// timeout in a later re-parse is not an error: the pack's evidence is kept
+/// and [`Extraction::timed_out`] is set.
+pub(crate) fn extract_within(
+    language: &str,
+    source: &str,
+    deadline: Option<&Deadline>,
+) -> Result<Extraction, PackError> {
+    let mut config = ProcessConfig::new(language).all();
+    if let Some(deadline) = deadline {
+        let Some(budget) = deadline.remaining_millis() else {
+            return Err(PackError::ParseTimeout { timeout_ms: 0 });
+        };
+        config = config.with_parse_timeout_ms(Some(budget.get()));
+    }
     let result = process(source, &config)?;
 
     let lines = LineIndex::new(source);
@@ -74,34 +106,42 @@ pub fn extract(language: &str, source: &str) -> Result<(Vec<EvidenceItem>, bool)
     // pack's `process` parse is unavoidable — `tree-sitter-language-pack`
     // exposes no `process_with_tree(source, tree)` overload — but the
     // two extra ones collapse to one.
-    let (walker_items, mut depth_capped) =
-        extract_extra_walkers(language, source, &lines, result.imports.is_empty());
-    items.extend(walker_items);
+    let mut extraction = Extraction {
+        items,
+        ..Extraction::default()
+    };
+    extraction.absorb(extract_extra_walkers(
+        language,
+        source,
+        &lines,
+        result.imports.is_empty(),
+        deadline,
+    ));
     if language == "rust" {
-        let (call_items, calls_capped) = super::calls::extract_rust(source, &lines);
-        items.extend(call_items);
-        depth_capped |= calls_capped;
+        extraction.absorb(super::calls::extract_rust(source, &lines, deadline));
     }
 
-    Ok((items, depth_capped))
+    Ok(extraction)
 }
 
 /// Parses `source` once and runs both the variable-binding walker and
 /// (when `pack_imports_was_empty`) the generic import walker on the
-/// same `Tree`. Returns the items and whether the extraction is truncated:
-/// a walker stopped early at [`crate::evidence::MAX_WALK_DEPTH`], a node
-/// range did not slice the source, or `language` has no parser or the source
-/// did not parse (then no items at all). The flag is the whole reason this
-/// returns a pair: a truncated extraction that a caller cannot tell apart
-/// from a complete one would claim completeness it does not have.
+/// same `Tree`. The result is truncated when a walker stopped early at
+/// [`crate::evidence::MAX_WALK_DEPTH`], a node range did not slice the
+/// source, or `language` has no parser or the source did not parse (then no
+/// items at all); it is timed out when that parse hit `deadline`. A
+/// truncated extraction that a caller cannot tell apart from a complete one
+/// would claim completeness it does not have.
 fn extract_extra_walkers(
     language: &str,
     source: &str,
     lines: &LineIndex<'_>,
     pack_imports_was_empty: bool,
-) -> (Vec<EvidenceItem>, bool) {
-    let Some(tree) = super::parse_tree(language, source) else {
-        return (Vec::new(), true);
+    deadline: Option<&Deadline>,
+) -> Extraction {
+    let tree = match super::parse_tree(language, source, deadline) {
+        Ok(tree) => tree,
+        Err(why) => return Extraction::without_tree(why),
     };
     let root = tree.root_node();
 
@@ -112,7 +152,11 @@ fn extract_extra_walkers(
         capped |=
             super::generic_imports::walk_imports(&root, source, lines, &mut items, &mut counter);
     }
-    (items, capped)
+    Extraction {
+        items,
+        truncated: capped,
+        timed_out: false,
+    }
 }
 
 pub(super) fn convert_span(span: &PackSpan, lines: &LineIndex<'_>) -> SpanAvailability {

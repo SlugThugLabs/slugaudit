@@ -20,7 +20,7 @@ const MAX_REVISION_BYTES: usize = 256;
 
 #[cfg(test)]
 pub(super) use super::structure_source::MAX_TEXT_BYTES;
-use super::structure_source::{MAX_MULTI_FILE_TOTAL_BYTES, load_targets};
+use super::structure_source::{MAX_MULTI_FILE_TOTAL_BYTES, WindowBounds, load_targets};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 /// A Tree-sitter query to run against one indexed file, or every indexed
@@ -129,11 +129,25 @@ pub struct StructureResponse {
     pub files_not_scanned: usize,
     /// Content bytes of those unscanned files.
     pub bytes_not_scanned: u64,
-    /// Present when `files_not_scanned` > 0.
+    /// Present when `files_not_scanned` > 0, or when `parse_timed_out_file`
+    /// is set (then it is that file, so the next window skips it).
     pub next_start_after_file: Option<String>,
     /// Multi-file only: files the parser produced no syntax tree for, so they
     /// contributed no matches. Empty when none.
     pub unparsed_files: Vec<String>,
+    /// Multi-file only: matching files in this window's path range larger
+    /// than `max_parse_bytes` (or the 64 MiB scan window, if smaller). They
+    /// were skipped without being loaded and contributed no matches; their
+    /// content is still searchable via `query`. When above 0 the result does
+    /// not cover every matching file.
+    pub files_over_parse_limit: usize,
+    /// Multi-file only: set when the execution time budget ran out while this
+    /// file was being parsed. The parse was cancelled, the scan stopped, and
+    /// `matches` holds only what earlier files produced: the result is
+    /// incomplete. Resume with `start_after_file` = `next_start_after_file`
+    /// (this file) to continue past it. A single-file query whose parse runs
+    /// out of time is refused with the execution-budget error instead.
+    pub parse_timed_out_file: Option<String>,
 }
 
 /// # Errors
@@ -168,7 +182,11 @@ fn structure_with_limits(
 
     let synced = ensure_synced(&request.path, sink, manager)?;
     guard_expected_revision(&synced.revision_id, request.expected_revision.as_deref())?;
-    let (target_language, window) = load_targets(&synced, request, window_bytes)?;
+    let bounds = WindowBounds {
+        window_bytes,
+        max_parse_bytes: limits.max_parse_bytes,
+    };
+    let (target_language, window) = load_targets(&synced, request, bounds)?;
     let (ts_language, compiled_query) = compile_query(&target_language, &request.query)?;
 
     let single_file = request.file.is_some();
@@ -273,3 +291,7 @@ mod tests;
 #[cfg(test)]
 #[path = "structure_limit_tests.rs"]
 mod limit_tests;
+
+#[cfg(test)]
+#[path = "structure_parse_bounds_tests.rs"]
+mod parse_bounds_tests;

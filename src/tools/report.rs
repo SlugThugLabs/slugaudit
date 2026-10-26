@@ -117,6 +117,19 @@ pub struct CompletenessEnvelope {
     /// never appear in `parser_failure_*`. Subtract this from those counts to
     /// see the files that lack evidence for another reason.
     pub prose_files_not_parsed: i64,
+    /// `indexed` files larger than `max_parse_bytes` (`parse_error_reason =
+    /// 'oversize_for_parse'`): content is stored and searchable via `query`,
+    /// but no grammar was run, so they have no evidence and every `leads`
+    /// mechanic that reads evidence is blind to them. They are also listed
+    /// among the parser failures and counted in `leads.files_not_parsed`.
+    pub oversize_for_parse_file_count: i64,
+    /// `indexed` files a parse of which was cut at the sync deadline
+    /// (`parse_error_reason = 'parse_timeout'`): content is stored; no
+    /// evidence when the main parse was cut (`ContentOnly`), the main
+    /// parse's evidence but no call or binding evidence when a later
+    /// re-parse was (`Partial`). Also listed among the parser failures and
+    /// counted in `leads.files_not_parsed`.
+    pub parse_timeout_file_count: i64,
 }
 
 /// Edge totals in both directions, over the whole revision.
@@ -208,8 +221,11 @@ pub struct ImportResolutionCount {
 pub struct ParserFailureFile {
     pub path: String,
     pub parse_outcome: String,
-    /// Set only when the parser returned a hard error (not just syntax
-    /// error nodes). `None` for `NotAttempted` and `SyntaxErrors`.
+    /// Why no tree was extracted: the grammar's load error, the parser's
+    /// hard error (not just syntax error nodes), or a stable code —
+    /// `oversize_for_parse` (content over `max_parse_bytes`, never parsed) or
+    /// `parse_timeout` (the parse was cancelled at the deadline). `None` when
+    /// no grammar exists for the file or for `SyntaxErrors`.
     pub parse_error_reason: Option<String>,
     /// One of `Full`, `Partial`, `ContentOnly`, `Unavailable`. `ContentOnly`
     /// means the file's text *is* indexed but no parser ran over it — the

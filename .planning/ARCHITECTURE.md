@@ -388,8 +388,18 @@ as deletions.
   cooperatively (per discovered file, per dirty path, per barrier iteration).
   `query` has an SQLite VM-step budget and a wall-clock budget enforced
   through the progress handler. `structure` has a wall-clock budget enforced
-  through Tree-sitter's native progress callback. The permit is bounded
-  because the work it guards is bounded.
+  through Tree-sitter's native progress callbacks, both while each file is
+  parsed (`Parser::parse_with_options`) and while the query cursor runs; a
+  multi-file parse cancelled at the budget returns the earlier files' matches
+  flagged by `parse_timed_out_file`. Sync parses are bounded in size by
+  `max_parse_bytes` (below) and in time by the sync deadline, both between
+  files and inside each parse: every parse of a file (the pack's `process()`
+  and each walker, call and macro-body re-parse) gets what is left of the
+  same deadline through the pack's parse timeout, which cancels from
+  tree-sitter's parse progress callback; under a millisecond left, the parse
+  is not started. A cut parse is recorded `parse_timeout` and the sync then
+  fails closed at its next between-files deadline check. The permit is
+  bounded because the work it guards is bounded.
 - **Barrier sync loops at most `MAX_BARRIER_LOOPS = 16` times**
   (`sync/reconcile/mod.rs`). Snapshot dirty/deleted sets, reconcile, then loop
   if new events arrived during reconciliation. Exceeding the cap means a
@@ -445,6 +455,25 @@ override is reduced, so an over-limit file becomes a reported skipped row
 rather than a failed publish. `max_total_import_bytes` is a sampled-bytes
 **work budget**, not a memory bound; the separate memory/in-flight design is
 a pending decision (PLAN, 2026-10-19).
+
+**Parse ceiling.** `max_parse_bytes` (default 2 MiB in every profile; env
+`SLUGAUDIT_MAX_PARSE_BYTES`, project `config.json` `max_parse_bytes`, clamped
+to `max_file_bytes` with a warning) is separate from `max_file_bytes`, which
+governs storage. A file between the two is stored and searchable, but
+`sync::analyze` hands it to no grammar (no fetch, load or parse, decided
+before the fetch gate like prose): `parser_availability = 'Unavailable'`,
+`parse_outcome = 'NotAttempted'`, `extraction_completeness = 'ContentOnly'`,
+`parse_error_reason = 'oversize_for_parse'` (`ParseOutcome::Withheld` in the
+model). A parse cut at the sync deadline is `Failed` with `parse_error_reason =
+'parse_timeout'`: `ContentOnly` when `process()` itself was cut, `Partial` with
+the pack's evidence kept when a later walker re-parse was. `report.completeness`
+counts both codes, every `leads` response carries `files_not_parsed` (the
+`report` parser-failure predicate, prose excluded, narrowed to files with a
+detected language, under the request's pattern), and `structure` reads each
+file's stored size (`octet_length`) before loading it: a file over
+`max_parse_bytes` or over its 64 MiB window is skipped and counted in
+`files_over_parse_limit`, so no single file can exceed the window. Measured
+before this ceiling: a 50 MB Rust file took 185 s and 7.5 GB RSS to parse.
 
 **Schema versioning is discard-and-rebuild.** `store/migrations.rs` writes
 `CURRENT_SCHEMA_VERSION` (currently `7`) to `PRAGMA user_version`. A database
@@ -563,7 +592,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 79 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 82 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only

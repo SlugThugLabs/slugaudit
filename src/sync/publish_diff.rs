@@ -232,7 +232,7 @@ pub(super) fn build_upserts_and_deletions(
                     elapsed_ms: elapsed.as_millis(),
                 });
             }
-            upserts.push(to_file_record(sample, limits));
+            upserts.push(to_file_record(sample, limits, deadline));
         }
     }
     Ok((upserts, deletions))

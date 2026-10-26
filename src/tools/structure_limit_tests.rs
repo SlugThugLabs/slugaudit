@@ -245,7 +245,9 @@ fn files_past_the_memory_window_are_reported_and_a_continuation_reaches_them() {
             start_after_file: start_after.clone(),
             ..Default::default()
         });
-        let response = run_with(&request, &limits, 1);
+        // Each fixture file is 17 or 18 bytes, so an 18-byte window holds
+        // exactly one of them.
+        let response = run_with(&request, &limits, 18);
         windows += 1;
         names.extend(response.matches.iter().map(|m| m.text.clone()));
         match response.next_start_after_file {
@@ -275,7 +277,8 @@ fn a_window_that_ends_exactly_at_the_last_file_reports_nothing_unscanned() {
         ..Default::default()
     });
 
-    let response = run_with(&request, &ResourceLimits::default(), 1);
+    // "pub fn alpha() {}\n" is 18 bytes: the window ends exactly at it.
+    let response = run_with(&request, &ResourceLimits::default(), 18);
 
     assert_eq!(response.files_not_scanned, 0);
     assert_eq!(response.next_start_after_file, None);

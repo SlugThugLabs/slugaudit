@@ -54,20 +54,17 @@ pub(super) fn build(
     paging: Paging,
 ) -> Result<Json<LeadsResponse>, ErrorData> {
     let mechanic_counts = count_all(tx, pattern)?;
+    let files_not_parsed = leads_query::files_not_parsed(tx, pattern)?;
     let prepared = match (mode, selected) {
         (LeadMode::Full, None) => {
-            let response = counts_only(revision_id, mechanic_counts, paging);
+            let response = counts_only(revision_id, mechanic_counts, files_not_parsed, paging);
             return Ok(Json(response));
         }
         (LeadMode::Full, Some(mechanic)) => full(tx, mechanic, pattern, paging, &mechanic_counts)?,
         (LeadMode::Compact, selected) => compact(tx, selected, pattern, paging, &mechanic_counts)?,
     };
-    Ok(Json(envelope(
-        revision_id,
-        mechanic_counts,
-        prepared,
-        paging,
-    )?))
+    let counts = (mechanic_counts, files_not_parsed);
+    Ok(Json(envelope(revision_id, counts, prepared, paging)?))
 }
 
 /// One page of a single mechanic's full rows.
@@ -159,11 +156,13 @@ fn compact(
 fn counts_only(
     revision_id: &str,
     mechanic_counts: Vec<MechanicCount>,
+    files_not_parsed: i64,
     paging: Paging,
 ) -> LeadsResponse {
     LeadsResponse {
         revision_id: revision_id.to_owned(),
         mechanic_counts,
+        files_not_parsed,
         rows: LeadRows::Full(Vec::new()),
         returned: 0,
         total: 0,
@@ -182,9 +181,11 @@ fn counts_only(
 
 /// Wraps a prepared page in the envelope, deriving `complete` and
 /// `next_offset` from what the page actually returned.
+/// The second argument is the complete counts pass: every mechanic's counts
+/// and `files_not_parsed`, both independent of paging.
 fn envelope(
     revision_id: &str,
-    mechanic_counts: Vec<MechanicCount>,
+    (mechanic_counts, files_not_parsed): (Vec<MechanicCount>, i64),
     prepared: Prepared,
     paging: Paging,
 ) -> Result<LeadsResponse, ErrorData> {
@@ -193,6 +194,7 @@ fn envelope(
     Ok(LeadsResponse {
         revision_id: revision_id.to_owned(),
         mechanic_counts,
+        files_not_parsed,
         rows: prepared.rows,
         returned: prepared.returned,
         total: prepared.total,

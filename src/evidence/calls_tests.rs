@@ -1,7 +1,7 @@
 use crate::model::LineIndex;
 
 fn extract_rust(source: &str) -> Vec<crate::model::EvidenceItem> {
-    super::extract_rust(source, &LineIndex::new(source)).0
+    super::extract_rust(source, &LineIndex::new(source), None).items
 }
 use crate::model::EvidenceKind;
 
@@ -125,4 +125,45 @@ fn nested_macros_do_not_duplicate_inner_method_calls() {
         1,
         "{calls:?}"
     );
+}
+
+#[test]
+fn a_call_walk_under_a_spent_deadline_is_timed_out_not_truncated() {
+    let source = "fn run() { helper(); }\n";
+    let spent = crate::util::Deadline::after(std::time::Duration::ZERO);
+
+    let extraction = super::extract_rust(source, &LineIndex::new(source), Some(&spent));
+
+    assert!(extraction.items.is_empty());
+    assert!(extraction.timed_out);
+    assert!(!extraction.truncated);
+}
+
+#[test]
+fn a_macro_body_re_parse_under_a_spent_deadline_is_timed_out() {
+    let source = "fn run() { println!(\"{}\", helper()); }\n";
+    let lines = LineIndex::new(source);
+    let tree = crate::evidence::parse_tree("rust", source, None).expect("a tree");
+    let mut pending = vec![tree.root_node()];
+    let mut macro_node = None;
+    while let Some(node) = pending.pop() {
+        if node.kind() == "macro_invocation" {
+            macro_node = Some(node);
+            break;
+        }
+        crate::evidence::push_children(&mut pending, &node, |child| child);
+    }
+    let macro_node = macro_node.expect("the fixture has a macro");
+    let spent = crate::util::Deadline::after(std::time::Duration::ZERO);
+    let input = super::Input {
+        source,
+        lines: &lines,
+        deadline: Some(&spent),
+    };
+
+    let recovered = super::macro_calls::extract(&macro_node, &input);
+
+    assert!(recovered.timed_out);
+    assert!(!recovered.capped);
+    assert!(recovered.rows.is_empty(), "helper() was not recovered");
 }

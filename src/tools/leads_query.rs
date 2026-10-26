@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=the compiled leads statements and the reads that execute them, including the files_not_parsed count that qualifies them, form one cohesive read layer
 //! The statements each `leads` family compiles to, and the reads that
 //! execute them.
 //!
@@ -10,6 +11,7 @@
 //! Every read accepts the same optional `pattern`; it is compiled once by
 //! [`compile_pattern`] and bound as a SQL parameter, never interpolated.
 
+use super::PARSER_FAILURE_PREDICATE;
 use super::leads::{FileCount, LeadRow, MechanicCount, PageLimit};
 use super::leads_mechanics::{MECHANICS, Mechanic};
 use crate::util::serialized_len;
@@ -129,6 +131,31 @@ pub(super) fn count_all(
             })
         })
         .collect()
+}
+
+/// Indexed files under `pattern` with a detected language whose grammar did
+/// not run or did not finish: the predicate `report` uses for its parser
+/// failures (prose excluded), so the two tools cannot disagree, narrowed to
+/// `language IS NOT NULL` — a file with no detected language (`.gitignore`,
+/// `LICENSE`) has no grammar to run, so no mechanic could have read it, and
+/// counting it made almost every project report a non-zero floor. `report`
+/// still lists those files. See `LeadsResponse::files_not_parsed`.
+pub(super) fn files_not_parsed(
+    tx: &Transaction<'_>,
+    pattern: Option<&str>,
+) -> Result<i64, ErrorData> {
+    let glob = compile_pattern(pattern);
+    let filter = if glob.is_some() {
+        " AND path GLOB ?1"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT count(*) FROM files WHERE {PARSER_FAILURE_PREDICATE} \
+         AND language IS NOT NULL{filter}"
+    );
+    tx.query_row(&sql, params_from_iter(glob.iter()), |row| row.get(0))
+        .map_err(|error| super::context::internal_error("counting files not parsed", error))
 }
 
 /// One page of rows: the rows, their serialized JSON size, and what stopped

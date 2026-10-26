@@ -4,27 +4,30 @@
 //! through [`forced_failure`], and count how often the pack loader was
 //! reached, so the download-failure and cool-down paths run with no network
 //! and without touching the user's grammar cache.
-use crate::model::EvidenceItem;
+use crate::evidence::Extraction;
+use crate::util::Deadline;
 use tree_sitter_language_pack::Error as PackError;
 
 #[cfg(not(test))]
 pub(super) fn run_extraction(
     language: &str,
     content: &str,
-) -> Result<(Vec<EvidenceItem>, bool), PackError> {
-    crate::evidence::extract(language, content)
+    deadline: &Deadline,
+) -> Result<Extraction, PackError> {
+    crate::evidence::extract_within(language, content, Some(deadline))
 }
 
 #[cfg(test)]
 pub(super) fn run_extraction(
     language: &str,
     content: &str,
-) -> Result<(Vec<EvidenceItem>, bool), PackError> {
+    deadline: &Deadline,
+) -> Result<Extraction, PackError> {
     forced_failure::count_call();
     if let Some(make_error) = forced_failure::current() {
         return Err(make_error());
     }
-    crate::evidence::extract(language, content)
+    crate::evidence::extract_within(language, content, Some(deadline))
 }
 
 /// Test-only injection of a pack error into [`run_extraction`], scoped to

@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=one per-file sampling pipeline: the bounded read, the skip and UTF-8 classification, and folding that sample's analysis into its FileRecord
 use super::analyze::analyze;
 use super::discovery::{DiscoveredFile, FileKind};
 use super::hash;
@@ -7,7 +8,7 @@ use crate::model::{
     EvidenceItem, EvidenceKind, EvidenceOrigin, ExtractionCompleteness, ResourceLimits,
     SourceIdentity, SpanAvailability,
 };
-use crate::util;
+use crate::util::{self, Deadline};
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -199,9 +200,20 @@ fn utf8_lossy_evidence() -> EvidenceItem {
 /// Runs pack analysis on a sampled file and folds the result into a
 /// storable `FileRecord`, appending an encoding diagnostic when the
 /// content required lossy UTF-8 conversion and capping evidence to
-/// `limits.evidence`.
-pub(super) fn to_file_record(sample: Sample, limits: &ResourceLimits) -> FileRecord {
-    let mut parsed = analyze(&sample.relative_path, sample.content.as_deref());
+/// `limits.evidence`. The file's parses run within what is left of the
+/// sync `deadline`.
+pub(super) fn to_file_record(
+    sample: Sample,
+    limits: &ResourceLimits,
+    deadline: &Deadline,
+) -> FileRecord {
+    let content = sample.content.as_deref();
+    let mut parsed = analyze(
+        &sample.relative_path,
+        content,
+        limits.max_parse_bytes,
+        deadline,
+    );
     if sample.utf8_lossy {
         parsed.evidence.push(utf8_lossy_evidence());
     }

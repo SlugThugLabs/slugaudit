@@ -829,6 +829,11 @@
             "format": "int64",
             "type": "integer"
           },
+          "files_not_parsed": {
+            "description": "Indexed files under the request's `pattern` with a detected language\nwhose grammar did not run or did not finish, so the mechanics that\nread evidence saw them partly or not at all: content over\n`max_parse_bytes` (`oversize_for_parse`), a parse cut at the sync\ndeadline (`parse_timeout`), a grammar that failed to load, a detected\nlanguage the pack has no grammar for, or a failed parse. Every count\nin `mechanic_counts` is a floor while this is above 0. Not counted:\nprose, and files with no detected language (`.gitignore`, `LICENSE`):\nno mechanic reads either. `report`'s parser failures list all of\nthese files with reasons.",
+            "format": "int64",
+            "type": "integer"
+          },
           "files_total": {
             "description": "Distinct files holding at least one observation of any mechanic in\nscope — the denominator a sweep can exhaust. `0` when a `full` call\nrequested no mechanic. For a single mechanic it equals that\n`mechanic_counts` entry's `files`.",
             "format": "int64",
@@ -909,6 +914,7 @@
         "required": [
           "revision_id",
           "mechanic_counts",
+          "files_not_parsed",
           "rows",
           "returned",
           "total",
@@ -1416,6 +1422,16 @@
                 "format": "int64",
                 "type": "integer"
               },
+              "oversize_for_parse_file_count": {
+                "description": "`indexed` files larger than `max_parse_bytes` (`parse_error_reason =\n'oversize_for_parse'`): content is stored and searchable via `query`,\nbut no grammar was run, so they have no evidence and every `leads`\nmechanic that reads evidence is blind to them. They are also listed\namong the parser failures and counted in `leads.files_not_parsed`.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "parse_timeout_file_count": {
+                "description": "`indexed` files a parse of which was cut at the sync deadline\n(`parse_error_reason = 'parse_timeout'`): content is stored; no\nevidence when the main parse was cut (`ContentOnly`), the main\nparse's evidence but no call or binding evidence when a later\nre-parse was (`Partial`). Also listed among the parser failures and\ncounted in `leads.files_not_parsed`.",
+                "format": "int64",
+                "type": "integer"
+              },
               "prose_files_not_parsed": {
                 "description": "`indexed` files stored as `language = 'prose'` (Markdown,\nreStructuredText, AsciiDoc, Org, plain text): content is stored and\nsearchable, but no grammar is run on them by design, so they are\n`ContentOnly`, have no evidence, and are counted in\n`indexed_files_without_evidence`, yet they are not parser failures and\nnever appear in `parser_failure_*`. Subtract this from those counts to\nsee the files that lack evidence for another reason.",
                 "format": "int64",
@@ -1449,7 +1465,9 @@
               "unrepresentable_path_count",
               "evidence_capped_file_count",
               "indexed_files_without_evidence",
-              "prose_files_not_parsed"
+              "prose_files_not_parsed",
+              "oversize_for_parse_file_count",
+              "parse_timeout_file_count"
             ],
             "type": "object"
           },
@@ -1583,7 +1601,7 @@
                 "type": "string"
               },
               "parse_error_reason": {
-                "description": "Set only when the parser returned a hard error (not just syntax\nerror nodes). `None` for `NotAttempted` and `SyntaxErrors`.",
+                "description": "Why no tree was extracted: the grammar's load error, the parser's\nhard error (not just syntax error nodes), or a stable code —\n`oversize_for_parse` (content over `max_parse_bytes`, never parsed) or\n`parse_timeout` (the parse was cancelled at the deadline). `None` when\nno grammar exists for the file or for `SyntaxErrors`.",
                 "type": [
                   "string",
                   "null"
@@ -1903,6 +1921,12 @@
             "minimum": 0,
             "type": "integer"
           },
+          "files_over_parse_limit": {
+            "description": "Multi-file only: matching files in this window's path range larger\nthan `max_parse_bytes` (or the 64 MiB scan window, if smaller). They\nwere skipped without being loaded and contributed no matches; their\ncontent is still searchable via `query`. When above 0 the result does\nnot cover every matching file.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
           "language": {
             "description": "The grammar this query ran against.",
             "type": "string"
@@ -1930,7 +1954,7 @@
             ]
           },
           "next_start_after_file": {
-            "description": "Present when `files_not_scanned` > 0.",
+            "description": "Present when `files_not_scanned` > 0, or when `parse_timed_out_file`\nis set (then it is that file, so the next window skips it).",
             "type": [
               "string",
               "null"
@@ -1948,6 +1972,13 @@
             "minimum": 0,
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "parse_timed_out_file": {
+            "description": "Multi-file only: set when the execution time budget ran out while this\nfile was being parsed. The parse was cancelled, the scan stopped, and\n`matches` holds only what earlier files produced: the result is\nincomplete. Resume with `start_after_file` = `next_start_after_file`\n(this file) to continue past it. A single-file query whose parse runs\nout of time is refused with the execution-budget error instead.",
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -1976,7 +2007,8 @@
           "matches_bytes",
           "files_not_scanned",
           "bytes_not_scanned",
-          "unparsed_files"
+          "unparsed_files",
+          "files_over_parse_limit"
         ],
         "type": "object"
       },

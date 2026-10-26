@@ -58,6 +58,18 @@ pub struct ResourceLimits {
     /// what the bundled SQLite can hold.
     /// Env: `SLUGAUDIT_MAX_FILE_BYTES` (u64).
     pub max_file_bytes: u64,
+    /// Largest file content, in bytes, a grammar is run on. A file above it
+    /// (and within `max_file_bytes`) is still stored and searchable through
+    /// `query`, but no grammar is fetched, loaded or run over it: it is
+    /// recorded `ContentOnly` with `parse_error_reason = 'oversize_for_parse'`,
+    /// counted in `report.completeness` and in every `leads` response's
+    /// `files_not_parsed`, and `structure` skips it. Bounds the parse's
+    /// memory and time, which grow with input size (a 50 MB Rust file took
+    /// 185 s and 7.5 GB RSS before this cap). 2 MiB in every profile. Clamped
+    /// to `max_file_bytes`, with a warning, when an override sets it higher.
+    /// Env: `SLUGAUDIT_MAX_PARSE_BYTES` (u64); project `config.json` key
+    /// `max_parse_bytes`.
+    pub max_parse_bytes: u64,
     /// Cap on the sum of sampled file sizes in one publish. This is a
     /// **work budget**, not a process memory bound: peak memory also includes
     /// in-flight samples, evidence payloads, and parse transients, so a tree
@@ -169,6 +181,7 @@ impl ResourceLimits {
         apply_query_overrides(&mut limits);
         apply_structure_overrides(&mut limits);
         apply_sync_and_watch_overrides(&mut limits);
+        limits.clamp_parse_to_file_bytes();
         limits
     }
 }
@@ -189,8 +202,32 @@ fn apply_import_overrides(limits: &mut ResourceLimits) {
     if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_FILE_BYTES") {
         limits.max_file_bytes = clamp_sqlite_value("SLUGAUDIT_MAX_FILE_BYTES", val);
     }
+    if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_PARSE_BYTES") {
+        limits.max_parse_bytes = val;
+    }
     if let Some(val) = parse_override::<u64>("SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES") {
         limits.max_total_import_bytes = val;
+    }
+}
+
+impl ResourceLimits {
+    /// Clamps `max_parse_bytes` to `max_file_bytes` after every override.
+    ///
+    /// A file over `max_file_bytes` is never read, so a parse cap above it can
+    /// never act; keeping it would report a limit that is not the one in
+    /// force. Runs after the env overrides and again after the project config
+    /// (`ProjectConfig::apply_to_limits`), and says so when it acts, like the
+    /// SQLite clamp.
+    pub(crate) fn clamp_parse_to_file_bytes(&mut self) {
+        if self.max_parse_bytes > self.max_file_bytes {
+            tracing::warn!(
+                limit = "max_parse_bytes",
+                requested = self.max_parse_bytes,
+                cap = self.max_file_bytes,
+                "max_parse_bytes exceeds max_file_bytes; clamping",
+            );
+            self.max_parse_bytes = self.max_file_bytes;
+        }
     }
 }
 

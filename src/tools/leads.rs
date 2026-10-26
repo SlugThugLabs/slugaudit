@@ -230,6 +230,17 @@ pub struct LeadsResponse {
     /// Counts are complete regardless of `limit`/`offset`, and carry no
     /// ordering by importance — the order is the fixed declaration order.
     pub mechanic_counts: Vec<MechanicCount>,
+    /// Indexed files under the request's `pattern` with a detected language
+    /// whose grammar did not run or did not finish, so the mechanics that
+    /// read evidence saw them partly or not at all: content over
+    /// `max_parse_bytes` (`oversize_for_parse`), a parse cut at the sync
+    /// deadline (`parse_timeout`), a grammar that failed to load, a detected
+    /// language the pack has no grammar for, or a failed parse. Every count
+    /// in `mechanic_counts` is a floor while this is above 0. Not counted:
+    /// prose, and files with no detected language (`.gitignore`, `LICENSE`):
+    /// no mechanic reads either. `report`'s parser failures list all of
+    /// these files with reasons.
+    pub files_not_parsed: i64,
     /// The page's rows, shaped by the request's `mode`. Empty when a `full`
     /// call supplied no `mechanic`; a `compact` call with no `mechanic`
     /// enumerates every mechanic instead, one triple per row.
@@ -384,3 +395,7 @@ fn validate_leads_request(
 #[cfg(test)]
 #[path = "leads_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "leads_not_parsed_tests.rs"]
+mod not_parsed_tests;

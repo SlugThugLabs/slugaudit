@@ -1,8 +1,10 @@
 // slugaudit-line-exception: approved-by=slugthug; reason=one cohesive analysis boundary: language gate, pack-error classification and the three ParseResult builders share one error taxonomy
 use super::analyze_seam::run_extraction;
+use crate::evidence::Extraction;
 use crate::model::{
     EvidenceItem, EvidenceKind, ExtractionCompleteness, ParseOutcome, ParserAvailability, ParserRun,
 };
+use crate::util::Deadline;
 use tree_sitter_language_pack::Error as PackError;
 
 pub(super) struct ParseResult {
@@ -115,8 +117,18 @@ fn pack_error_kind(error: &PackError) -> &'static str {
 /// Detects a file's language and runs pack extraction when possible. Never
 /// invents completeness: a file the pack can't identify or doesn't support
 /// gets `ContentOnly`/`NotAttempted` — its text is indexed — and only a file
-/// with no content at all is `Unavailable`.
-pub(super) fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult {
+/// with no content at all is `Unavailable`. Content longer than
+/// `max_parse_bytes` is never handed to the pack (no grammar fetch, load or
+/// parse): it is `ContentOnly` with the `oversize_for_parse` reason. Every
+/// parse of the file runs within what is left of the sync `deadline`; one
+/// cut at it is recorded with the `parse_timeout` reason (see
+/// [`timeout_result`]) and the sync goes on to its own deadline check.
+pub(super) fn analyze(
+    relative_path: &str,
+    content: Option<&str>,
+    max_parse_bytes: u64,
+    deadline: &Deadline,
+) -> ParseResult {
     let Some(content) = content else {
         tracing::trace!(path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)), "no content; parser not invoked");
         return ParseResult::without_content();
@@ -145,18 +157,88 @@ pub(super) fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult
         );
         return ParseResult::content_only(Some(language), true);
     }
+    if content.len() as u64 > max_parse_bytes {
+        return withheld_result(relative_path, language, ParseOutcome::OVERSIZE_FOR_PARSE);
+    }
     if crate::parse::fetch_gate::blocks_fetch(&language) {
         return cooldown_result(relative_path, language);
     }
-    match run_extraction(&language, content) {
-        Ok((items, depth_capped)) => succeeded_result(relative_path, language, items, depth_capped),
+    match run_extraction(&language, content, deadline) {
+        Ok(extraction) if extraction.timed_out => {
+            timeout_result(relative_path, language, extraction.items)
+        }
+        Ok(extraction) => succeeded_result(relative_path, language, extraction),
         Err(error) if is_load_failure(&error) => {
             if is_fetch_failure(&error) {
                 crate::parse::fetch_gate::record_fetch_failure();
             }
             load_failed_result(relative_path, language, &error)
         }
+        Err(PackError::ParseTimeout { .. }) => timeout_result(relative_path, language, Vec::new()),
         Err(error) => parse_failed_result(relative_path, language, &error),
+    }
+}
+
+/// A file whose grammar was deliberately not run: its content is stored and
+/// searchable (`ContentOnly`), and `reason` (a stable code) is stored in
+/// `parse_error_reason`, where `report`, `leads.files_not_parsed` and
+/// `query` see it. No grammar is fetched, so availability is `Unavailable`
+/// (unknown, not claimed), like prose.
+fn withheld_result(relative_path: &str, language: String, reason: &str) -> ParseResult {
+    tracing::debug!(
+        path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
+        language = %language,
+        reason,
+        "grammar not run on this file; recording ContentOnly with the reason",
+    );
+    ParseResult {
+        language: Some(language),
+        language_detected: true,
+        run: ParserRun {
+            availability: ParserAvailability::Unavailable,
+            outcome: ParseOutcome::Withheld {
+                reason: reason.to_owned(),
+            },
+            completeness: ExtractionCompleteness::ContentOnly,
+        },
+        evidence: Vec::new(),
+    }
+}
+
+/// A parse cut at the sync deadline (cancelled by the pack's parse timeout,
+/// or not started because under a millisecond was left): the outcome is
+/// `Failed` with the stable `parse_timeout` code rather than the pack's
+/// message. `evidence` is what was extracted before the cut — empty when
+/// `process()` itself was cut (`ContentOnly`), the pack's evidence when a
+/// later walker re-parse was (`Partial`: real but incomplete, so it is kept
+/// rather than dropped). The pack logs a cancellation itself.
+fn timeout_result(
+    relative_path: &str,
+    language: String,
+    evidence: Vec<EvidenceItem>,
+) -> ParseResult {
+    tracing::debug!(
+        path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
+        language = %language,
+        evidence_items = evidence.len(),
+        "parse cut at the deadline; recording Failed with parse_timeout",
+    );
+    let completeness = if evidence.is_empty() {
+        ExtractionCompleteness::ContentOnly
+    } else {
+        ExtractionCompleteness::Partial
+    };
+    ParseResult {
+        language: Some(language),
+        language_detected: true,
+        run: ParserRun {
+            availability: ParserAvailability::Available,
+            outcome: ParseOutcome::Failed {
+                reason: ParseOutcome::PARSE_TIMEOUT.to_owned(),
+            },
+            completeness,
+        },
+        evidence,
     }
 }
 
@@ -193,13 +275,14 @@ fn cooldown_result(relative_path: &str, language: String) -> ParseResult {
 /// the third case — the tree parsed cleanly but SlugAudit's own walkers did
 /// not reach the bottom of it, so the extraction is truncated even though
 /// the outcome is `Succeeded`. Reporting that as `Full` would claim a
-/// completeness the walk did not achieve.
-fn succeeded_result(
-    relative_path: &str,
-    language: String,
-    items: Vec<EvidenceItem>,
-    depth_capped: bool,
-) -> ParseResult {
+/// completeness the walk did not achieve. (A timed-out extraction goes to
+/// [`timeout_result`] instead.)
+fn succeeded_result(relative_path: &str, language: String, extraction: Extraction) -> ParseResult {
+    let Extraction {
+        items,
+        truncated: depth_capped,
+        ..
+    } = extraction;
     let diagnostic_count = items
         .iter()
         .filter(|item| item.kind == EvidenceKind::Diagnostic)
@@ -299,3 +382,7 @@ fn parse_failed_result(relative_path: &str, language: String, error: &PackError)
 #[cfg(test)]
 #[path = "analyze_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "analyze_bounds_tests.rs"]
+mod bounds_tests;

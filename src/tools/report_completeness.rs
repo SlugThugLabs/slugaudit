@@ -45,6 +45,16 @@ pub(super) fn build(
         [crate::parse::PROSE_LANGUAGE],
         |row| row.get(0),
     )?;
+    let (oversize_for_parse_file_count, parse_timeout_file_count) = connection.query_row(
+        "SELECT count(*) FILTER (WHERE parse_error_reason = ?1), \
+                count(*) FILTER (WHERE parse_error_reason = ?2) \
+         FROM files WHERE file_kind = 'indexed'",
+        [
+            crate::model::ParseOutcome::OVERSIZE_FOR_PARSE,
+            crate::model::ParseOutcome::PARSE_TIMEOUT,
+        ],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
 
     Ok(CompletenessEnvelope {
         file_kind_counts: grouped.file_kind_counts,
@@ -57,6 +67,8 @@ pub(super) fn build(
         evidence_capped_file_count,
         indexed_files_without_evidence,
         prose_files_not_parsed,
+        oversize_for_parse_file_count,
+        parse_timeout_file_count,
     })
 }
 

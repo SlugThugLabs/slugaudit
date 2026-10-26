@@ -45,9 +45,26 @@ pub enum ParseOutcome {
         /// Why parsing failed.
         reason: String,
     },
+    /// Parsing was deliberately not attempted, for a stable reason code
+    /// stored in `files.parse_error_reason` (e.g.
+    /// [`ParseOutcome::OVERSIZE_FOR_PARSE`]). Stored as `NotAttempted`: the
+    /// reason column is what tells it apart from a file no grammar exists
+    /// for, so no new `parse_outcome` value is needed.
+    Withheld {
+        /// The stable reason code.
+        reason: String,
+    },
 }
 
 impl ParseOutcome {
+    /// `files.parse_error_reason` for a file whose content exceeds
+    /// `max_parse_bytes`: stored and searchable, never handed to a grammar.
+    pub const OVERSIZE_FOR_PARSE: &'static str = "oversize_for_parse";
+    /// `files.parse_error_reason` for a parse cut at the sync deadline: the
+    /// pack's parse timeout (tree-sitter's progress callback) cancelled it,
+    /// or under a millisecond was left so it never started (outcome `Failed`).
+    pub const PARSE_TIMEOUT: &'static str = "parse_timeout";
+
     /// The stable text tag stored in `files.parse_outcome`. `SyntaxErrors`'s
     /// count is not persisted here — it's always derivable from
     /// `evidence` rows with `kind = 'Diagnostic'`, so storing it twice
@@ -55,7 +72,7 @@ impl ParseOutcome {
     #[must_use]
     pub fn as_sql_text(&self) -> &'static str {
         match self {
-            Self::NotAttempted => "NotAttempted",
+            Self::NotAttempted | Self::Withheld { .. } => "NotAttempted",
             Self::Succeeded => "Succeeded",
             Self::SyntaxErrors { .. } => "SyntaxErrors",
             Self::Failed { .. } => "Failed",
@@ -135,7 +152,12 @@ impl ParserRun {
             self.availability,
             ParserAvailability::Unavailable | ParserAvailability::LoadFailed { .. }
         );
-        if unavailable && !matches!(self.outcome, ParseOutcome::NotAttempted) {
+        if unavailable
+            && !matches!(
+                self.outcome,
+                ParseOutcome::NotAttempted | ParseOutcome::Withheld { .. }
+            )
+        {
             return Err("an unavailable parser cannot report a parse outcome");
         }
         if matches!(self.outcome, ParseOutcome::Succeeded)
@@ -147,14 +169,17 @@ impl ParserRun {
     }
 
     /// The single failure-reason text to persist alongside this run, if
-    /// either half of it carries one. `LoadFailed`/`Failed` are mutually
-    /// exclusive by `validate`'s own rule, so there's never a conflict to
-    /// resolve between them.
+    /// either half of it carries one. `LoadFailed` pairs only with an outcome
+    /// that never ran (`validate`'s own rule), so a `LoadFailed` reason and a
+    /// `Failed` reason never conflict; a `Withheld` outcome's code is the
+    /// reason otherwise.
     #[must_use]
     pub fn error_reason(&self) -> Option<String> {
         match (&self.availability, &self.outcome) {
             (ParserAvailability::LoadFailed { reason }, _)
-            | (_, ParseOutcome::Failed { reason }) => Some(reason.clone()),
+            | (_, ParseOutcome::Failed { reason } | ParseOutcome::Withheld { reason }) => {
+                Some(reason.clone())
+            }
             _ => None,
         }
     }
@@ -223,6 +248,21 @@ mod tests {
             completeness: ExtractionCompleteness::Unavailable,
         };
         assert_eq!(run.error_reason().as_deref(), Some("load"));
+    }
+
+    #[test]
+    fn a_withheld_parse_stores_as_not_attempted_with_its_reason_code() {
+        let run = ParserRun {
+            availability: ParserAvailability::Unavailable,
+            outcome: ParseOutcome::Withheld {
+                reason: ParseOutcome::OVERSIZE_FOR_PARSE.to_owned(),
+            },
+            completeness: ExtractionCompleteness::ContentOnly,
+        };
+
+        assert_eq!(run.validate(), Ok(()));
+        assert_eq!(run.outcome.as_sql_text(), "NotAttempted");
+        assert_eq!(run.error_reason().as_deref(), Some("oversize_for_parse"));
     }
 
     #[test]

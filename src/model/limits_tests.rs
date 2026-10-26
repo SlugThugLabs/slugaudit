@@ -187,3 +187,49 @@ fn the_default_page_size_is_64_kib_and_the_env_var_overrides_it() {
         assert_eq!(ResourceLimits::from_env().default_page_bytes, 1_234);
     });
 }
+
+#[test]
+fn the_max_parse_bytes_env_var_overrides_the_profile_default() {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    temp_env::with_var("SLUGAUDIT_MAX_PARSE_BYTES", Some("65536"), || {
+        let limits = ResourceLimits::from_env();
+
+        assert_eq!(limits.max_parse_bytes, 65_536);
+    });
+}
+
+#[test]
+fn an_unparseable_max_parse_bytes_keeps_the_default_and_says_so() {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    temp_env::with_var("SLUGAUDIT_MAX_PARSE_BYTES", Some("two-mib"), || {
+        let (limits, logs) = crate::store::test_capture::capture_warns(ResourceLimits::from_env);
+
+        assert_eq!(limits.max_parse_bytes, 2 * 1024 * 1024);
+        assert!(
+            logs.contains("SLUGAUDIT_MAX_PARSE_BYTES")
+                && logs.contains("not a valid value and was ignored"),
+            "{logs}"
+        );
+    });
+}
+
+#[test]
+fn a_max_parse_bytes_env_var_above_max_file_bytes_is_clamped_and_reported() {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    temp_env::with_vars(
+        [
+            ("SLUGAUDIT_MAX_FILE_BYTES", Some("1048576")),
+            ("SLUGAUDIT_MAX_PARSE_BYTES", Some("4194304")),
+        ],
+        || {
+            let (limits, logs) =
+                crate::store::test_capture::capture_warns(ResourceLimits::from_env);
+
+            assert_eq!(limits.max_parse_bytes, 1_048_576);
+            assert!(
+                logs.contains("max_parse_bytes exceeds max_file_bytes; clamping"),
+                "{logs}"
+            );
+        },
+    );
+}

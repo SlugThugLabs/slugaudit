@@ -135,3 +135,20 @@ fn every_profile_defaults_to_a_64_kib_page_under_its_ceiling() {
         assert!(limits.default_page_bytes <= limits.max_query_response_bytes);
     }
 }
+
+#[test]
+fn every_profile_parses_at_most_2_mib_per_file_below_its_file_cap() {
+    for profile in [
+        AuditProfile::Lean,
+        AuditProfile::Audit,
+        AuditProfile::Adaptive,
+    ] {
+        let limits = limits_for_profile(profile);
+
+        assert_eq!(limits.max_parse_bytes, 2 * 1024 * 1024, "{profile:?}");
+        assert!(
+            limits.max_parse_bytes < limits.max_file_bytes,
+            "{profile:?}"
+        );
+    }
+}

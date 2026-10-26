@@ -3,6 +3,21 @@ use crate::model::{ExtractionCompleteness, ParseOutcome, ParserAvailability};
 use crate::parse::fetch_gate::test_controls;
 use crate::sync::analyze_seam::forced_failure;
 
+/// `analyze` under the default `max_parse_bytes` and a deadline no test
+/// parse comes near; shadows the glob import.
+fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult {
+    super::analyze(
+        relative_path,
+        content,
+        2 * 1024 * 1024,
+        &generous_deadline(),
+    )
+}
+
+fn generous_deadline() -> Deadline {
+    Deadline::after(std::time::Duration::from_secs(600))
+}
+
 #[test]
 fn sampled_content_with_no_detectable_language_is_content_only() {
     let result = analyze("README", Some("plain text"));

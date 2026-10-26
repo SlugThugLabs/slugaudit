@@ -1,5 +1,6 @@
 //! Process timestamps and cooperative operation deadlines.
 
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -68,6 +69,21 @@ impl Deadline {
         let elapsed = self.started.elapsed();
         (elapsed >= self.budget).then_some(elapsed)
     }
+
+    /// Whole milliseconds left in the budget, rounded down, for an API that
+    /// takes a millisecond timeout (the language pack's parse timeout).
+    /// `None` once less than one millisecond remains: a sub-millisecond
+    /// remainder counts as spent, so a caller never hands a zero timeout
+    /// (which the pack rejects, and which would otherwise read as "no
+    /// limit") to a parser. Saturates at `u64::MAX` milliseconds.
+    pub(crate) fn remaining_millis(&self) -> Option<NonZeroU64> {
+        let remaining = self.budget.checked_sub(self.started.elapsed())?;
+        let millis = remaining
+            .as_secs()
+            .saturating_mul(1_000)
+            .saturating_add(u64::from(remaining.subsec_millis()));
+        NonZeroU64::new(millis)
+    }
 }
 
 #[cfg(test)]
@@ -84,5 +100,31 @@ mod deadline_tests {
     fn a_generous_budget_is_not_exceeded_immediately() {
         let deadline = Deadline::after(Duration::from_secs(60));
         assert!(deadline.exceeded().is_none());
+    }
+
+    #[test]
+    fn a_spent_budget_has_no_milliseconds_remaining() {
+        let deadline = Deadline::after(Duration::ZERO);
+
+        assert_eq!(deadline.remaining_millis(), None);
+    }
+
+    #[test]
+    fn a_sub_millisecond_remainder_counts_as_spent() {
+        let deadline = Deadline::after(Duration::from_micros(999));
+
+        assert_eq!(deadline.remaining_millis(), None);
+    }
+
+    #[test]
+    fn a_live_budget_reports_its_whole_remaining_milliseconds() {
+        let deadline = Deadline::after(Duration::from_secs(60));
+
+        let remaining = deadline.remaining_millis().expect("time is left");
+
+        assert!(
+            remaining.get() > 59_000 && remaining.get() <= 60_000,
+            "{remaining}"
+        );
     }
 }

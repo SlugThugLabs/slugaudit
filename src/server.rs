@@ -71,11 +71,15 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     the page is still returned and flagged `oversized_row`. When `complete` is \
     false, page with `offset` = `next_offset` and pass `expected_revision` = the first page's `revision_id`: if \
     the index changed mid-sweep the call is refused with `stale_revision` and a remedy restarting the sweep from \
-    offset 0, instead of silently skipping or repeating rows. Two limits to know. (1) The callee-based mechanics \
+    offset 0, instead of silently skipping or repeating rows. Three limits to know. (1) The callee-based mechanics \
     read Call evidence, which only the Rust call walker produces: on a project with no Rust files those counts \
     are 0 because nothing was checked, not because nothing is there — diagnostics, comment markers, and \
     credential paths cover every indexed language. (2) Each row's `detail` is clipped to 200 characters, and \
-    `detail_clipped` is true when characters were dropped; the remainder lives only in the file.\n\n\
+    `detail_clipped` is true when characters were dropped; the remainder lives only in the file. (3) Every \
+    response carries `files_not_parsed`: indexed files under your `pattern` with a detected language whose \
+    grammar did not run or finish (content over \
+    `max_parse_bytes`, 2 MiB by default; a grammar that failed to load; a failed or timed-out parse); while it \
+    is above 0 every count is a floor, and `report` lists those files with the reason.\n\n\
     QUERY SCHEMA: `files` (id, path, language, byte_len, content — full text of every indexed file, including \
     non-code files), `evidence` (id, file_id, kind, start_line, end_line [1-based, inclusive; every line number in this server is 1-based], payload — JSON; kinds Structure, \
     Import, Export, Comment, Docstring, Symbol, Diagnostic, Call), `dependency_edges` \

@@ -75,6 +75,12 @@ pub(crate) fn profile_from_env() -> Option<AuditProfile> {
 /// large enough for a useful page. Clamped to `max_query_response_bytes`.
 pub(crate) const DEFAULT_PAGE_BYTES: usize = 64 * 1024;
 
+/// Largest file content a grammar is run on, in every profile (see
+/// `ResourceLimits::max_parse_bytes`). Parse time and memory grow with the
+/// input, so this is what bounds them; it is not scaled with RAM because the
+/// cost it bounds is per parse, not per host.
+pub(crate) const DEFAULT_MAX_PARSE_BYTES: u64 = 2 * 1024 * 1024;
+
 /// Watch-scope walk caps. The walk enumerates the directories that carry a
 /// `notify` watch, so its size is bounded in both entries (one potential
 /// kernel watch descriptor and one entry in the scope's path set each) and
@@ -103,6 +109,7 @@ pub fn limits_for_profile(profile: AuditProfile) -> ResourceLimits {
 fn lean_limits() -> ResourceLimits {
     ResourceLimits {
         max_file_bytes: 32 * 1024 * 1024,
+        max_parse_bytes: DEFAULT_MAX_PARSE_BYTES,
         max_total_import_bytes: 2 * 1024 * 1024 * 1024,
         max_query_response_bytes: 32 * 1024 * 1024,
         default_page_bytes: DEFAULT_PAGE_BYTES,
@@ -128,6 +135,7 @@ fn lean_limits() -> ResourceLimits {
 fn audit_limits() -> ResourceLimits {
     ResourceLimits {
         max_file_bytes: 256 * 1024 * 1024,
+        max_parse_bytes: DEFAULT_MAX_PARSE_BYTES,
         max_total_import_bytes: 32 * 1024 * 1024 * 1024,
         max_query_response_bytes: 256 * 1024 * 1024,
         default_page_bytes: DEFAULT_PAGE_BYTES,
@@ -159,6 +167,7 @@ fn adaptive_limits() -> ResourceLimits {
     let max_file = (ram.total_bytes / 10).clamp(256 * 1024 * 1024, SQLITE_MAX_VALUE_BYTES);
     ResourceLimits {
         max_file_bytes: max_file,
+        max_parse_bytes: DEFAULT_MAX_PARSE_BYTES,
         max_total_import_bytes: import_budget,
         max_query_response_bytes: max_file as usize,
         default_page_bytes: DEFAULT_PAGE_BYTES,

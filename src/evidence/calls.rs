@@ -10,7 +10,8 @@ use serde_json::json;
 use std::collections::HashSet;
 
 mod macro_calls;
-use super::{TextRangeError, node_text};
+use super::{Extraction, TextRangeError, node_text};
+use crate::util::Deadline;
 use tree_sitter_language_pack::Node;
 
 const RUST_CALL_KINDS: &[&str] = &["call_expression", "macro_invocation"];
@@ -22,26 +23,38 @@ const RUST_FUNCTION_KINDS: &[&str] = &[
     "trait_item",
 ];
 
+/// What stays fixed across one file's call walk.
+struct Input<'a> {
+    source: &'a str,
+    lines: &'a LineIndex<'a>,
+    /// Bounds the file's parse and every macro-body re-parse (one budget).
+    deadline: Option<&'a Deadline>,
+}
+
 /// Extracts Rust call-site evidence from one already indexed source file.
-/// The flag is true when the extraction is truncated, which the caller must
-/// report as partial: a walk bound (tree depth or macro nesting) was hit, the
-/// parser could not produce a tree, or a node range did not slice the source.
-pub(crate) fn extract_rust(source: &str, lines: &LineIndex<'_>) -> (Vec<EvidenceItem>, bool) {
-    let Some(tree) = super::parse_tree("rust", source) else {
-        return (Vec::new(), true);
+/// The result is truncated when a walk bound (tree depth or macro nesting)
+/// was hit, the parser could not produce a tree, or a node range did not
+/// slice the source, which the caller must report as partial; it is timed
+/// out when the file's parse or a macro body's re-parse hit `deadline`.
+pub(crate) fn extract_rust(
+    source: &str,
+    lines: &LineIndex<'_>,
+    deadline: Option<&Deadline>,
+) -> Extraction {
+    let tree = match super::parse_tree("rust", source, deadline) {
+        Ok(tree) => tree,
+        Err(why) => return Extraction::without_tree(why),
     };
-    let mut items = Vec::new();
-    let mut counter = 0usize;
-    let mut seen = HashSet::new();
-    let capped = walk(
-        tree.root_node(),
+    let input = Input {
         source,
         lines,
-        &mut items,
-        &mut counter,
-        &mut seen,
-    );
-    (items, capped)
+        deadline,
+    };
+    let mut out = Extraction::default();
+    let mut counter = 0usize;
+    let mut seen = HashSet::new();
+    walk(tree.root_node(), &input, &mut out, &mut counter, &mut seen);
+    out
 }
 
 /// The text-derived fields of one call node.
@@ -76,45 +89,42 @@ fn call_parts(node: &Node, source: &str, macro_call: bool) -> Result<CallParts, 
 /// dedup identical to the recursive walk this replaced.
 fn walk(
     root: Node,
-    source: &str,
-    lines: &LineIndex<'_>,
-    items: &mut Vec<EvidenceItem>,
+    input: &Input<'_>,
+    out: &mut Extraction,
     counter: &mut usize,
     seen: &mut HashSet<(usize, usize)>,
-) -> bool {
-    let mut capped = false;
+) {
     let mut pending = vec![(root, 0)];
     while let Some((node, depth)) = pending.pop() {
         if depth >= crate::evidence::MAX_WALK_DEPTH {
-            capped = true;
+            out.truncated = true;
             continue;
         }
         if RUST_CALL_KINDS.contains(&node.kind().as_str()) {
             let macro_call = node.kind() == "macro_invocation";
-            match call_parts(&node, source, macro_call) {
-                Ok(parts) => capped |= emit_call(&node, parts, source, lines, items, counter, seen),
+            match call_parts(&node, input.source, macro_call) {
+                Ok(parts) => emit_call(&node, parts, input, out, counter, seen),
                 Err(error) => {
                     tracing::warn!(%error, "Rust call node skipped; extraction is partial");
-                    capped = true;
+                    out.truncated = true;
                 }
             }
         }
         crate::evidence::push_children(&mut pending, &node, |child| (child, depth + 1));
     }
-    capped
 }
 
 /// Pushes the call row for `node` (and, for a macro, the calls recovered from
-/// its token tree). Returns true when the macro scan was truncated.
+/// its token tree), recording in `out` whether the macro scan was truncated
+/// or timed out.
 fn emit_call(
     node: &Node,
     parts: CallParts,
-    source: &str,
-    lines: &LineIndex<'_>,
-    items: &mut Vec<EvidenceItem>,
+    input: &Input<'_>,
+    out: &mut Extraction,
     counter: &mut usize,
     seen: &mut HashSet<(usize, usize)>,
-) -> bool {
+) {
     let macro_call = node.kind() == "macro_invocation";
     let (resolution, confidence) = if macro_call {
         ("macro", "high")
@@ -126,11 +136,11 @@ fn emit_call(
     let key = format!("call:{counter}");
     *counter += 1;
     if seen.insert((node.start_byte(), node.end_byte())) {
-        items.push(EvidenceItem {
+        out.items.push(EvidenceItem {
             key,
             kind: EvidenceKind::Call,
             origin: EvidenceOrigin::RustCallWalker,
-            span: super::node_span(node, lines, "Rust call"),
+            span: super::node_span(node, input.lines, "Rust call"),
             payload: json!({
                 "language": "rust",
                 "callee_text": parts.callee_text,
@@ -142,17 +152,18 @@ fn emit_call(
         });
     }
     if !macro_call {
-        return false;
+        return;
     }
-    let recovered = macro_calls::extract(node, source, lines);
+    let recovered = macro_calls::extract(node, input);
     for (start, end, mut item) in recovered.rows {
         if seen.insert((start, end)) {
             item.key = format!("call:{counter}");
             *counter += 1;
-            items.push(item);
+            out.items.push(item);
         }
     }
-    recovered.capped
+    out.truncated |= recovered.capped;
+    out.timed_out |= recovered.timed_out;
 }
 
 fn callee_node(node: &Node, macro_call: bool) -> Option<Node> {
