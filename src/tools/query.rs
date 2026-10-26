@@ -43,15 +43,12 @@ pub struct QueryRequest {
     /// `pragma_index_info`, `pragma_index_xinfo`, `pragma_foreign_key_list`).
     pub sql: String,
     /// Number of matching rows to skip when paging through a result.
-    /// Combined with the response's `page.next_offset`, and valid only while
-    /// the revision id stays the same across pages (see [`QueryResponse`]).
+    /// Pass the previous response's `page.next_offset`; valid only while
+    /// `page.revision_id` stays the same across pages.
     #[serde(default)]
     pub offset: usize,
-    /// Set to the previous page's `revision_id` when resuming a sweep. If
-    /// the index changed since that page, the call is refused with the
-    /// `stale_revision` code instead of returning a page whose ordering no
-    /// longer matches the offset: `files`/`evidence` hold only the current
-    /// revision, so a stored offset means nothing once the tree changes.
+    /// Set to the previous page's `page.revision_id`; if the index changed
+    /// since, the call is refused with `stale_revision`.
     #[serde(default)]
     pub expected_revision: Option<String>,
     /// Page size in serialized JSON bytes. Omit it for the server default
@@ -85,11 +82,9 @@ pub struct QueryRequest {
 /// returning rows from a different ordering.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct QueryResponse {
-    /// The shared paging contract for `rows`. A page is cut only by bytes,
-    /// on a row boundary (`limited_by` is `page_bytes`, `ceiling` or
-    /// `none`); `total` is the exact row count of the whole result, computed
-    /// by SQLite over the same statement, null only when counting exhausted
-    /// its budget (`total_unavailable` then says why).
+    /// Paging for `rows`, cut by bytes on a row boundary. `total` is the exact
+    /// row count SQLite computes over the same statement; null only when
+    /// counting ran out of budget (`total_unavailable` says why).
     pub page: Page,
     /// This page's rows, one JSON object per row with column names as keys,
     /// in the query's own row order.
@@ -168,7 +163,7 @@ fn query_with_limits(
         PageLimit::None
     };
     let (total, total_unavailable) = match collected.total {
-        RowTotal::Exact(total) => (Some(total), None),
+        RowTotal::Exact(total) => (Some(super::page::total_of(total)?), None),
         RowTotal::Unavailable(reason) => (None, Some(reason.to_owned())),
     };
 

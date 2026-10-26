@@ -54,13 +54,13 @@ The server exposes nine tools (`src/server.rs`):
   first count, which is a `leads` response), `query`, `structure` and
   `finding_read` embed one nested `page` object: `returned`, `total` (null
   only where the tool cannot count: `structure` always, `query` when the
-  count spends its budget), `complete`, `next_offset`, `page_bytes` (the
+  count spends its budget), `complete`, `next_offset` (null when nothing remains), `page_bytes` (the
   budget after the clamp to `max_query_response_bytes`), `bytes_used`,
   `limited_by` (`none` / `limit` / `page_bytes` / `ceiling` / `match_cap` /
   `scan_window` / `time_budget`) and `revision_id`. Every one of them takes
   `expected_revision` on resume. Tool-specific extras stay beside `page`;
   `structure`'s second cursor `next_start_after_file` resumes the next scan
-  window when `complete` is false and `next_offset` is absent. Call evidence comes from the Rust call walker
+  window when `complete` is false and `next_offset` is null. Call evidence comes from the Rust call walker
   (with its macro re-parse) and from one embedded tree-sitter call query per
   language (`examples/calls/<language>.scm`: python, javascript,
   typescript, tsx, go, java, c), all feeding one row builder

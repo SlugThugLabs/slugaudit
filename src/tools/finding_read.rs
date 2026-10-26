@@ -44,15 +44,15 @@ pub struct FindingReadRequest {
     #[schemars(default)]
     pub file: Option<String>,
     /// Number of findings to skip when paging. Pass the previous page's
-    /// `page.next_offset` here; a response carries it only while rows remain.
+    /// `page.next_offset` here (null when nothing remains).
     #[schemars(description = "Findings to skip when paging; use the response's page.next_offset")]
     #[serde(default)]
     pub offset: usize,
-    /// Set to the previous page's `page.revision_id` when resuming. If the
-    /// index changed since that page, the call is refused with the
-    /// `stale_revision` code (whose remedy restarts from offset 0), with the
-    /// same semantics as `leads`, `query` and `structure`.
-    #[schemars(description = "Pin the revision a resumed page expects; a mismatch is refused")]
+    /// Set to the previous page's `page.revision_id`; if the index changed
+    /// since, the call is refused with `stale_revision`.
+    #[schemars(
+        description = "Set to the previous page's `page.revision_id`; if the index changed since, the call is refused with `stale_revision`."
+    )]
     #[serde(default)]
     pub expected_revision: Option<String>,
 }
@@ -98,13 +98,9 @@ pub struct FindingReadEntry {
 /// One page of the current session's findings, read against the current
 /// revision.
 pub struct FindingReadResponse {
-    /// The shared paging contract for `findings`. `page_bytes` is the
-    /// configured `default_page_bytes` (64 KiB unless configured otherwise),
-    /// clamped to the hard ceiling `max_query_response_bytes`; there is no
-    /// request override. A single row larger than the budget is still
-    /// returned, with its description clipped and `detail_clipped` set (or
-    /// whole when even an empty description cannot fit), so paging always
-    /// advances. Page on with the same `file` filter.
+    /// Paging for `findings`; `total` counts this session's findings under
+    /// the `file` filter. `page_bytes` is `default_page_bytes` clamped to the
+    /// ceiling (no request override). Page on with the same `file` filter.
     pub page: Page,
     /// This page's findings, ordered by id.
     pub findings: Vec<FindingReadEntry>,
@@ -134,6 +130,7 @@ pub fn finding_read(
         let read = read_session_findings(tx, scope, request.offset, size.bytes)?;
         Ok((read, count_session_findings(tx, scope)?))
     })?;
+    let total = super::page::total_of(total)?;
     let page = page_of(
         &read,
         total,
@@ -156,7 +153,7 @@ pub fn finding_read(
 
 /// The page envelope for one read: `next_offset` and a byte cut only when
 /// rows remain past it.
-fn page_of(read: &Read, total: i64, offset: usize, size: PageSize, revision_id: String) -> Page {
+fn page_of(read: &Read, total: u64, offset: usize, size: PageSize, revision_id: String) -> Page {
     let returned = read.findings.len();
     Page {
         returned,

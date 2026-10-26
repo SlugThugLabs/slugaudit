@@ -10,8 +10,17 @@
 //! `structure`'s second cursor `next_start_after_file`) stay beside it on the
 //! tool's own response.
 
+use rmcp::ErrorData;
 use schemars::JsonSchema;
 use serde::Serialize;
+
+use super::context::internal_error;
+
+/// Converts a SQLite count into [`Page::total`]'s unsigned type. A count is
+/// never negative, so a negative one is an internal error, not a clamp.
+pub(super) fn total_of(count: i64) -> Result<u64, ErrorData> {
+    u64::try_from(count).map_err(|error| internal_error("reading a negative row total", error))
+}
 
 /// What cut a page. It reports the bound that acted, never a judgment about
 /// whether the page was the right size.
@@ -31,7 +40,8 @@ pub enum PageLimit {
     /// returns nothing more; page on with `next_offset`.
     Ceiling,
     /// `structure` only: the per-page match cap `max_structure_matches` was
-    /// reached; more matches exist and `next_offset` continues.
+    /// reached; more matches exist and `next_offset` continues. A larger
+    /// `page_bytes` does not lift it.
     MatchCap,
     /// `structure` only: the multi-file scan window ended before the
     /// matching files did (`files_not_scanned` > 0). There is no
@@ -45,40 +55,27 @@ pub enum PageLimit {
     TimeBudget,
 }
 
-/// One page of a paged result: how much came back, how much there is, how
-/// the page was cut, and how to get the next one. Every paged tool carries
-/// exactly these fields under `page`, with the same meaning.
-///
-/// To page: while `complete` is false and `next_offset` is present, repeat
+/// One page of a paged result; every paged tool carries these fields under
+/// `page` with the same meaning. To page: while `complete` is false, repeat
 /// the call with `offset` = `next_offset` and `expected_revision` =
-/// `revision_id`; a changed index is then refused with `stale_revision`
-/// instead of silently skipping or repeating items. `structure` alone has a
-/// second cursor beside this struct: when `complete` is false and
-/// `next_offset` is absent, repeat with `start_after_file` = the response's
-/// `next_start_after_file` and `offset` 0.
+/// `revision_id`. `structure` alone has a second cursor: when `next_offset`
+/// is null and `complete` is false, use its `next_start_after_file`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Page {
     /// Items in this page: rows (`leads`, `query`), matches (`structure`),
     /// or findings (`finding_read`).
     pub returned: usize,
     /// Items the whole request selects, ignoring `offset` and the page cut;
-    /// never an estimate. `leads`: the rows of the requested mechanic (or of
-    /// every mechanic in a compact whole-surface call; `0` for a counts-only
-    /// call). `query`: the exact row count SQLite computed over the same
-    /// statement, null only when counting ran out of its budget (the
-    /// response's `total_unavailable` says why). `finding_read`: this
-    /// session's findings under the `file` filter. `structure`: always null,
-    /// because counting the matches means running the whole scan.
-    pub total: Option<i64>,
-    /// True when nothing remains to page: the result ends on this page. For
-    /// `structure` it also means no scan window remains (no
-    /// `next_start_after_file`). False means more remain: follow
-    /// `next_offset`, or for `structure` without one, its
-    /// `next_start_after_file`.
+    /// never an estimate. Always present; null when the tool cannot count it
+    /// (always on `structure`; on `query` when counting ran out of budget).
+    /// What it counts is on each tool's `page` property.
+    pub total: Option<u64>,
+    /// True when nothing remains to page. For `structure` it also means no
+    /// scan window remains (no `next_start_after_file`).
     pub complete: bool,
-    /// Present only when more items remain in this result: pass it as
-    /// `offset` on the next call (same other arguments) together with
-    /// `expected_revision` = `revision_id`.
+    /// Always present; null when nothing remains to page (`complete`), and on
+    /// `structure` also when only a new scan window remains. Otherwise pass it
+    /// as `offset` on the next call.
     pub next_offset: Option<usize>,
     /// The byte budget that applied to this page's items, in serialized JSON
     /// bytes: the request's `page_bytes` or the server default
@@ -86,11 +83,11 @@ pub struct Page {
     /// the ceiling `max_query_response_bytes`. `limited_by` = `ceiling` says
     /// the clamp acted on a cut page.
     pub page_bytes: usize,
-    /// Serialized JSON bytes of this page's items, measured per item. The
-    /// first item is always returned so paging advances, so this exceeds
-    /// `page_bytes` only when that first item alone is larger (see the tool's
-    /// `oversized_row` or `clipped_cells`). The rest of the response envelope
-    /// is additional.
+    /// Serialized JSON bytes of this page's items. The first item is always
+    /// returned so paging advances, so this exceeds `page_bytes` only when
+    /// that item alone is larger: `leads` sets `oversized_row`, `query` clips
+    /// cells (`clipped_cells`, `non_finite_cells`), `finding_read` sets the
+    /// row's `detail_clipped`; `structure` has no flag.
     pub bytes_used: usize,
     /// What cut this page; `none` exactly when the result ended.
     pub limited_by: PageLimit,
@@ -131,6 +128,44 @@ mod tests {
                 "revision_id": "rev-1",
             })
         );
+    }
+
+    #[test]
+    fn a_last_page_serializes_next_offset_and_unknown_total_as_json_null() {
+        let page = Page {
+            returned: 1,
+            total: None,
+            complete: true,
+            next_offset: None,
+            page_bytes: 100,
+            bytes_used: 10,
+            limited_by: PageLimit::None,
+            revision_id: "rev-1".to_owned(),
+        };
+
+        let value = serde_json::to_value(&page).expect("a page serializes");
+
+        assert_eq!(value["next_offset"], serde_json::Value::Null);
+        assert_eq!(value["total"], serde_json::Value::Null);
+        assert!(
+            value
+                .as_object()
+                .expect("an object")
+                .contains_key("next_offset"),
+            "the key stays on the wire"
+        );
+    }
+
+    #[test]
+    fn a_negative_count_is_refused_as_a_page_total() {
+        let error = total_of(-1).expect_err("a negative count is not a total");
+
+        assert!(
+            error.message.contains("negative row total"),
+            "{}",
+            error.message
+        );
+        assert_eq!(total_of(7).expect("a count converts"), 7);
     }
 
     #[test]

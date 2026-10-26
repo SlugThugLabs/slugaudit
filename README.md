@@ -22,7 +22,7 @@ agent queries over MCP.
 - **Caps are reported in the response.** `leads`, `query`, `structure` and
   `finding_read` share one `page` object (`returned`, `total`, `complete`,
   `next_offset`, `page_bytes`, `bytes_used`, `limited_by`, `revision_id`): it says
-  what cut the page and, when more remain, the `next_offset` to continue from;
+  what cut the page and, the `next_offset` to continue from (null when nothing remains);
   `leads` rows flag detail text that was clipped (`detail_clipped`).
 
 For each enabled project, SlugAudit owns exactly one derived-data directory:

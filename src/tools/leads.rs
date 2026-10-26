@@ -78,12 +78,11 @@ pub struct LeadsRequest {
     #[schemars(description = "Rows to skip when paging")]
     #[serde(default)]
     pub offset: Option<usize>,
-    /// Set to the previous page's `revision_id` when resuming a sweep. If
-    /// the index has changed since that page, the call is refused with the
-    /// `stale_revision` code instead of silently skipping or repeating rows:
-    /// the index keeps no per-revision copy of `files` / `evidence`, so a
-    /// stored offset only means anything against the revision it came from.
-    #[schemars(description = "Pin the revision a resumed page expects; a mismatch is refused")]
+    /// Set to the previous page's `page.revision_id`; if the index changed
+    /// since, the call is refused with `stale_revision`.
+    #[schemars(
+        description = "Set to the previous page's `page.revision_id`; if the index changed since, the call is refused with `stale_revision`."
+    )]
     #[serde(default)]
     pub expected_revision: Option<String>,
     /// Row representation. `full` (the default) returns each row's `detail`
@@ -210,14 +209,10 @@ pub struct FileCount {
 /// One leads call: complete counts, the page's rows, and the paging/budget
 /// truth that makes them quotable as-is.
 pub struct LeadsResponse {
-    /// The shared paging contract for `rows`: `page.revision_id` is the
-    /// revision the counts and rows were read from; `page.total` is the rows
-    /// in the enumerated scope — the requested mechanic, or (in `compact`
-    /// mode with no `mechanic`) every mechanic — under the same `pattern`,
-    /// and `0` with `complete` true when a `full` call requested no
-    /// mechanic. A page is cut by `limit` or by bytes, never by a row cap;
-    /// a byte-cut page is at or below any `limit`, so raising `limit`
-    /// returns nothing more.
+    /// Paging for `rows`. `total` is the rows of the requested mechanic (every
+    /// mechanic in a `compact` call without one) under `pattern`; `0` for a
+    /// `full` call naming no mechanic. A page is cut by `limit` or by bytes,
+    /// so raising `limit` past a byte cut returns nothing more.
     pub page: Page,
     /// Every mechanic this revision can answer under the request's
     /// `pattern`, with its row and distinct-file counts and what it covers.

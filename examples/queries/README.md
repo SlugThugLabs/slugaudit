@@ -33,7 +33,7 @@ beside their rows:
 | `returned` | Items in this page. |
 | `total` | Items the whole request selects (exact; `null` when the tool cannot count it: `structure` always, `query` when counting ran out of budget). |
 | `complete` | `true` when nothing remains to page. |
-| `next_offset` | Present only while more remain: pass it as `offset` on the next call. |
+| `next_offset` | Always present; `null` when nothing remains, otherwise pass it as `offset` on the next call. |
 | `page_bytes` | The byte budget that applied, after the clamp to the server ceiling. |
 | `bytes_used` | Serialized JSON bytes of this page's items. |
 | `limited_by` | What cut the page: `none`, `limit`, `page_bytes`, `ceiling`, `match_cap`, `scan_window` or `time_budget`. |
@@ -43,7 +43,7 @@ Pages are cut by bytes, not by a row count; a recipe that may return many
 rows pages by passing `offset` = `page.next_offset` and `expected_revision` =
 `page.revision_id`, so a changed index is refused (`stale_revision`) instead of
 skipping or repeating rows. `structure` alone has a second cursor beside
-`page`: when `complete` is `false` and there is no `next_offset`, repeat with
+`page`: when `complete` is `false` and `next_offset` is `null`, repeat with
 `start_after_file` = `next_start_after_file` and `offset` 0.
 
 ---

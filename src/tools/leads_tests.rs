@@ -466,7 +466,7 @@ fn compact_rows_are_mechanic_file_line_triples_without_detail() {
     let rows = compact_rows(&response);
     assert!(rows.iter().any(|r| r.mechanic == "unwrap_calls"));
     assert!(rows.iter().any(|r| r.mechanic == "comment_markers"));
-    let returned = i64::try_from(response.page.returned).expect("fits");
+    let returned = u64::try_from(response.page.returned).expect("fits");
     assert_eq!(Some(returned), response.page.total);
     let serialized = serde_json::to_value(rows).expect("rows serialize");
     let row = &serialized[0];

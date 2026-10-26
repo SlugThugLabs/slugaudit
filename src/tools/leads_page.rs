@@ -259,7 +259,7 @@ fn envelope(
     Ok(LeadsResponse {
         page: Page {
             returned: prepared.returned,
-            total: Some(prepared.total),
+            total: Some(super::page::total_of(prepared.total)?),
             complete,
             next_offset: (!complete).then_some(through),
             page_bytes: paging.size.bytes,

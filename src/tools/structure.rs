@@ -72,8 +72,8 @@ pub struct StructureRequest {
     /// when it reports `files_not_scanned`.
     #[serde(default)]
     pub start_after_file: Option<String>,
-    /// Set to a previous page's `revision_id` when resuming; if the index
-    /// changed since, the call is refused instead of paging a shifted order.
+    /// Set to the previous page's `page.revision_id`; if the index changed
+    /// since, the call is refused with `stale_revision`.
     #[serde(default)]
     pub expected_revision: Option<String>,
 }
@@ -102,12 +102,10 @@ pub struct StructureMatch {
 /// The matches for one structure call, the revision they were read from,
 /// and every cut that bounded them, each with the way past it.
 pub struct StructureResponse {
-    /// The shared paging contract for `matches`. `structure` has two
-    /// cursors: `page.next_offset` continues inside the current scan window,
-    /// and `next_start_after_file` (beside this struct) starts the next
-    /// window. `page.complete` is true only when neither remains.
-    /// `page.total` is always null: counting the matches means running the
-    /// whole scan.
+    /// Paging for `matches`, with two cursors: `next_offset` continues inside
+    /// the scan window, `next_start_after_file` (beside this object) starts
+    /// the next. `complete` means neither remains. `total` is always null
+    /// (counting needs the whole scan).
     pub page: Page,
     /// The grammar this query ran against.
     pub language: String,

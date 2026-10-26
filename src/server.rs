@@ -53,14 +53,14 @@ const INSTRUCTIONS: &str = "SlugAudit is built for you, not for humans: it is an
     `dependency_edges` joined in a recursive CTE (see IMPORTS); notes you want back later → `finding` (see \
     OTHER TOOLS). grep and reading a file you already know remain the right tools for a literal lookup.\n\n\
     PAGING: `leads`, `query`, `structure` and `finding_read` return one `page` object: `returned`, `total` \
-    (null when not counted), `complete`, `next_offset` (present only while more remain), `page_bytes` (the byte \
+    (null when the tool cannot count), `complete`, `next_offset` (null when nothing remains), `page_bytes` (the byte \
     budget after the clamp to the server ceiling), `bytes_used`, `limited_by` (`none`, `limit`, `page_bytes`, \
-    `ceiling` — a larger `page_bytes` returns nothing more —, `match_cap`, `scan_window`, `time_budget`) and \
+    `ceiling` — a larger `page_bytes` returns nothing more —, `match_cap` (`max_structure_matches`; a larger `page_bytes` does not lift it), `scan_window`, `time_budget`) and \
     `revision_id`. Pages are cut by bytes; the only count bounds are your own `limit` (`leads`) and \
     `structure`'s per-page match cap. To page, pass `offset` = `page.next_offset` and \
     `expected_revision` = `page.revision_id`: if the index changed mid-sweep the call is refused with \
     `stale_revision` and a remedy restarting from offset 0, instead of silently skipping or repeating rows. \
-    `structure` alone has a second cursor beside `page`: when `complete` is false and `next_offset` is absent, \
+    `structure` alone has a second cursor beside `page`: when `complete` is false and `next_offset` is null, \
     repeat with `start_after_file` = `next_start_after_file` and `offset` 0.\n\n\
     LEADS: `leads` with only `path` returns every mechanic id with its row count, its distinct-file count \
     (`files`), and `covers` — the sorted languages of the files under `pattern` that mechanic read, the \
