@@ -128,6 +128,15 @@ pub(super) fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult
         );
         return ParseResult::content_only(None, false);
     };
+    if language == crate::parse::PROSE_LANGUAGE {
+        // Prose is stored and searchable but never parsed: no grammar is
+        // fetched or loaded, so it yields no Diagnostic/Structure rows.
+        tracing::trace!(
+            path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
+            "prose file; parser not invoked"
+        );
+        return ParseResult::content_only(Some(language), true);
+    }
     if !crate::parse::language_available(&language) {
         tracing::debug!(
             path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),

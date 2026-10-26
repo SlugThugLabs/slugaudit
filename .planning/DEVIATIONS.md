@@ -309,3 +309,9 @@ Newest first. Format: **what** / **why** / **where** / **reversible?**
 - **Why:** Measured on e79d74c: every tool call paid one failed fetch per `LoadFailed` file and published a revision, which broke `expected_revision` paging offline and cost about 5 x 61 s per call on a black-holed network.
 - **Where:** `src/parse/fetch_gate.rs`, `src/sync/analyze.rs`, `src/sync/analyze_seam.rs`, `src/sync/sweep.rs`, `src/sync/reconcile/queries.rs`, `src/sync/publish_diff.rs`, tests in `src/sync/analyze_tests.rs`.
 - **Reversible:** Yes. Cost to know: after the network returns, an already-failed file waits up to 10 minutes (or a restart) for its grammar; a non-fetch `LoadFailed` file (for example a corrupt cached library) still re-parses and publishes a revision on every sync while the gate is open.
+
+## Prose files are stored with language "prose" and never parsed
+- **What:** `detect_language` returns the single value `"prose"` for `.md .markdown .mdx .rst .adoc .asciidoc .org .txt .text` (case-insensitive), overriding the pack (`.txt` -> `vimdoc`). `analyze` records such files `Unavailable`/`NotAttempted`/`ContentOnly` with `language_detected = 1` and runs no grammar. Extensionless names (`README`, `LICENSE`) get no language from the pack today, so no detection was added. `.env`/dotenv is unchanged.
+- **Why:** Prose through a grammar produced only noise Diagnostic rows. `language = 'prose'` needs no schema change (`language` is free TEXT) and tells a model "deliberately not parsed" apart from `language IS NULL` (undetected) and a pack language with `LoadFailed`.
+- **Where:** `src/parse/language.rs`, `src/sync/analyze.rs`.
+- **Reversible:** Yes; drop the prose branch and the extension table.

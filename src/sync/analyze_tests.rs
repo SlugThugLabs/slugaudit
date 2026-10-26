@@ -431,3 +431,92 @@ fn a_load_failure_that_is_not_a_fetch_failure_does_not_close_the_gate() {
     ));
     assert!(crate::parse::fetch_gate::load_failed_retry_due());
 }
+
+/// Publishes `files` (path, content) into a fresh project and returns the
+/// open database; the project and database directories live as long as it.
+fn published(
+    files: &[(&str, &str)],
+) -> (tempfile::TempDir, tempfile::TempDir, rusqlite::Connection) {
+    use crate::progress::NoopProgressSink;
+    use crate::sync::test_support::write;
+
+    let project = tempfile::tempdir().expect("project dir");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection =
+        crate::store::open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    for (path, content) in files {
+        write(project.path(), path, content.as_bytes());
+    }
+    crate::sync::publish::publish(&mut connection, project.path(), "1.0", &NoopProgressSink)
+        .expect("publish");
+    (project, db_dir, connection)
+}
+
+fn count(connection: &rusqlite::Connection, sql: &str) -> i64 {
+    connection
+        .query_row(sql, [], |row| row.get(0))
+        .expect("count query")
+}
+
+#[test]
+fn prose_files_yield_no_diagnostics_and_stay_queryable() {
+    let (_project, _db, connection) = published(&[
+        ("README.md", "# T\n\n```rust\nfn unterminated( {\n"),
+        ("notes.txt", "needle in plain text\n"),
+    ]);
+
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM evidence WHERE kind = 'Diagnostic'"
+        ),
+        0
+    );
+    assert_eq!(count(&connection, "SELECT COUNT(*) FROM evidence"), 0);
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM files WHERE content LIKE '%unterminated(%' \
+             OR content LIKE '%needle%'"
+        ),
+        2
+    );
+    assert_eq!(
+        stored_run(&connection, "notes.txt"),
+        ("Unavailable".to_owned(), "NotAttempted".to_owned())
+    );
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM files WHERE language = 'prose' AND language_detected = 1 \
+             AND extraction_completeness = 'ContentOnly'"
+        ),
+        2
+    );
+}
+
+#[test]
+fn indexing_only_prose_files_never_reaches_the_loader() {
+    let before = forced_failure::calls();
+
+    let _published = published(&[("a.md", "# a\n"), ("b.txt", "b\n"), ("c.rst", "c\n====\n")]);
+
+    assert_eq!(
+        forced_failure::calls(),
+        before,
+        "prose must not load a grammar"
+    );
+}
+
+#[test]
+fn a_yaml_tab_indentation_error_yields_one_diagnostic_row() {
+    let (_project, _db, connection) = published(&[("ci.yaml", "a:\n\t- b\n")]);
+
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM evidence WHERE kind = 'Diagnostic'"
+        ),
+        1
+    );
+}
