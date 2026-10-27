@@ -138,10 +138,32 @@ impl Materialize for StoredMatch {
     }
 }
 
+/// What page one's request fixed about how every page of the result is cut,
+/// so a continuation never re-derives it from the process limits.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(in crate::tools) struct CutFacts {
+    /// Whether page one's budget was the ceiling.
+    pub(in crate::tools) at_ceiling: bool,
+    /// The match cap (`max_structure_matches`) page one ran under.
+    pub(in crate::tools) max_matches: usize,
+}
+
+impl CutFacts {
+    /// These facts, with the ceiling flag of the budget the request itself
+    /// asked for (`Some`) in place of the stored one.
+    pub(in crate::tools) fn judged(self, asked_at_ceiling: Option<bool>) -> Self {
+        Self {
+            at_ceiling: asked_at_ceiling.unwrap_or(self.at_ceiling),
+            ..self
+        }
+    }
+}
+
 /// The tool-level facts stored with a result and returned unchanged on every
 /// page.
 #[derive(Debug, Serialize, Deserialize)]
 pub(in crate::tools) struct StructureExtra {
+    pub(in crate::tools) cut: CutFacts,
     pub(in crate::tools) language: String,
     pub(in crate::tools) files_not_scanned: usize,
     pub(in crate::tools) bytes_not_scanned: u64,
@@ -166,12 +188,13 @@ pub(in crate::tools) struct PageCut {
 }
 
 impl PageCut {
-    /// A cut for the effective budget `page_bytes`; a budget at or above
-    /// `ceiling` reports `ceiling` when it cuts.
-    pub(in crate::tools) fn new(page_bytes: usize, ceiling: usize, max_matches: usize) -> Self {
+    /// A cut for the effective budget `page_bytes`; a budget flagged
+    /// `at_ceiling` reports `ceiling` when it cuts.
+    pub(in crate::tools) fn new(page_bytes: usize, facts: CutFacts) -> Self {
+        let max_matches = facts.max_matches;
         Self {
             page_bytes,
-            byte_cut: if page_bytes >= ceiling {
+            byte_cut: if facts.at_ceiling {
                 PageLimit::Ceiling
             } else {
                 PageLimit::PageBytes

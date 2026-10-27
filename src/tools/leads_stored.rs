@@ -23,10 +23,6 @@ pub(super) struct StoredLead {
     pub(super) detail_clipped: bool,
     /// Distinct files in this row and every row before it.
     pub(super) files_seen: i64,
-    /// The `limit` page one was asked for, `0` for none. Stored on the row
-    /// because the page cut sees the rows (the first one is offered) before
-    /// the extras: a continuation without a `limit` of its own keeps it.
-    pub(super) limit: i64,
 }
 
 impl StoredLead {
@@ -74,7 +70,6 @@ const COLUMNS: &[&str] = &[
     "detail",
     "detail_clipped",
     "files_seen",
-    "limit",
 ];
 
 impl Materialize for StoredLead {
@@ -90,7 +85,6 @@ impl Materialize for StoredLead {
             Cell::Text(self.detail.clone()),
             Cell::Int(i64::from(self.detail_clipped)),
             Cell::Int(self.files_seen),
-            Cell::Int(self.limit),
         ]
     }
 
@@ -103,7 +97,6 @@ impl Materialize for StoredLead {
                 Cell::Text(detail),
                 Cell::Int(clipped),
                 Cell::Int(files_seen),
-                Cell::Int(limit),
             ] => Ok(Self {
                 mechanic: mechanic.clone(),
                 file: file.clone(),
@@ -111,7 +104,6 @@ impl Materialize for StoredLead {
                 detail: detail.clone(),
                 detail_clipped: *clipped != 0,
                 files_seen: *files_seen,
-                limit: *limit,
             }),
             _ => Err(ResultStoreError::Invalid {
                 reason: "leads row layout",
@@ -154,25 +146,23 @@ pub(super) struct Extras {
     /// Whether the page budget of page one was the ceiling, so a page that
     /// the stored budget cuts reports `ceiling`.
     pub(super) at_ceiling: bool,
+    /// The row `limit` page one was asked for; a continuation without a
+    /// `limit` of its own keeps it.
+    pub(super) limit: Option<usize>,
 }
 
-/// Stores rows, tracking the distinct files and the page-one `limit`.
+/// Stores rows, tracking the distinct files.
 pub(in crate::tools) struct Feed<'a, 'w, 's> {
     sink: &'a mut RowSink<'w, 's>,
     seen: HashSet<String>,
-    limit: i64,
 }
 
 impl<'a, 'w, 's> Feed<'a, 'w, 's> {
-    pub(super) fn new(
-        sink: &'a mut RowSink<'w, 's>,
-        limit: Option<usize>,
-    ) -> Result<Self, ErrorData> {
-        Ok(Self {
+    pub(super) fn new(sink: &'a mut RowSink<'w, 's>) -> Self {
+        Self {
             sink,
             seen: HashSet::new(),
-            limit: limit.map_or(Ok(0), to_i64)?,
-        })
+        }
     }
 
     /// Distinct files across the rows stored so far.
@@ -189,7 +179,6 @@ impl<'a, 'w, 's> Feed<'a, 'w, 's> {
             detail: row.detail,
             detail_clipped: row.detail_clipped,
             files_seen: 0,
-            limit: 0,
         })
     }
 
@@ -202,14 +191,12 @@ impl<'a, 'w, 's> Feed<'a, 'w, 's> {
             detail: String::new(),
             detail_clipped: false,
             files_seen: 0,
-            limit: 0,
         })
     }
 
     fn store(&mut self, mut row: StoredLead) -> Result<(), ErrorData> {
         self.seen.insert(row.file.clone());
         row.files_seen = to_i64(self.seen.len())?;
-        row.limit = self.limit;
         self.sink.push(&row)
     }
 }

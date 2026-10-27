@@ -149,8 +149,8 @@ pub fn finding_read(
                 },
             })
         },
-        |effective| {
-            cut = PageCut::new(effective);
+        |ctx| {
+            cut = PageCut::new(ctx.page_bytes);
             |row: &StoredRow| cut.accept(row)
         },
     )?;

@@ -17,8 +17,8 @@ use super::page::{Completeness, Page, PageLimit};
 use crate::error_codes::store_error;
 use crate::progress::ProgressSink;
 use crate::store::{
-    Cell, Materialize, ResultId, ResultSpec, ResultStore, ResultStoreError, ResultWriter,
-    StoredRow, Take,
+    Cell, Materialize, ResultId, ResultMeta, ResultSpec, ResultStore, ResultStoreError,
+    ResultWriter, StoredRow, Take,
 };
 use crate::sync::SourceSyncManager;
 use rmcp::ErrorData;
@@ -170,11 +170,18 @@ struct Stored<E> {
     page_bytes: usize,
 }
 
-/// Just the budget, read before a continuation's page so `accept` can be built
-/// from it.
-#[derive(Deserialize)]
-struct StoredBudget {
-    page_bytes: usize,
+/// What the page cut may know about the result it cuts, identical on a new
+/// request (after `produce`) and on a continuation (decoded from the stored
+/// result): the tool never reads a process limit or the store to learn it.
+pub(super) struct PageContext<'a, E> {
+    /// The effective byte budget of this page: the request's own (already
+    /// clamped to the ceiling by the tool) or the one the result's first page
+    /// used. Also echoed in `page.page_bytes`.
+    pub page_bytes: usize,
+    /// The column names stored with the result.
+    pub columns: &'a [String],
+    /// The tool-level extras the producer reported, as stored.
+    pub extra: &'a E,
 }
 
 /// Serves one page; see the module docs. The budget of a continuation is
@@ -214,11 +221,12 @@ where
     paginate_with(manager, &pinned, request, produce, |_| accept)
 }
 
-/// [`paginate`] for a caller whose `accept` depends on the effective page
-/// budget, which only this function knows for a continuation: the request's
-/// `requested_page_bytes` when it carries one, else the budget stored with the
-/// result. A new request's budget is `spec.page_bytes`. `accept_for` receives
-/// the effective budget, which is also echoed in `page.page_bytes`.
+/// [`paginate`] for a caller whose `accept` depends on the result it cuts.
+/// `accept_for` receives one [`PageContext`] for both branches: the effective
+/// budget (a continuation's `requested_page_bytes` when it carries one, else
+/// the budget stored with the result; a new request's is `spec.page_bytes`),
+/// the stored column names and the stored extras. It returns the `accept`
+/// closure, which must own what it needs from the context.
 ///
 /// # Errors
 ///
@@ -228,7 +236,7 @@ pub(super) fn paginate_with<E, P, A>(
     spec: &PageSpec,
     request: PageRequest<'_>,
     produce: P,
-    accept_for: impl FnOnce(usize) -> A,
+    accept_for: impl FnOnce(&PageContext<'_, E>) -> A,
 ) -> Result<Served<E>, ErrorData>
 where
     E: Serialize + DeserializeOwned,
@@ -277,20 +285,23 @@ where
                     SinkError::ColumnsNotDeclared,
                 ));
             };
-            let stored = serde_json::to_value(Stored {
+            let stored = Stored {
                 completeness: produced.completeness,
                 extra: produced.extra,
                 page_bytes: spec.page_bytes,
-            })
-            .map_err(|error| internal_error("encoding the result extras", error))?;
-            let handle = writer.finish(&stored).map_err(|e| store_error(&e))?;
+            };
+            let encoded = serde_json::to_value(&stored)
+                .map_err(|error| internal_error("encoding the result extras", error))?;
+            let handle = writer.finish(&encoded).map_err(|e| store_error(&e))?;
+            let meta = store.meta_of(handle.id).map_err(|e| store_error(&e))?;
             serve(
                 &store,
                 spec,
                 handle.id,
                 0,
-                spec.page_bytes,
-                accept_for(spec.page_bytes),
+                stored,
+                meta.as_ref(),
+                accept_for,
             )
         }
     }
@@ -300,7 +311,7 @@ fn continue_page<E, A>(
     manager: &SourceSyncManager,
     spec: &PageSpec,
     token: &str,
-    accept_for: impl FnOnce(usize) -> A,
+    accept_for: impl FnOnce(&PageContext<'_, E>) -> A,
 ) -> Result<Served<E>, ErrorData>
 where
     E: DeserializeOwned,
@@ -321,32 +332,45 @@ where
         );
         return Err(store_error(&ResultStoreError::Unknown));
     }
-    let budget: StoredBudget = serde_json::from_value(meta.completeness.clone())
-        .map_err(|error| internal_error("decoding the stored page budget", error))?;
-    let page_bytes = spec.requested_page_bytes.unwrap_or(budget.page_bytes);
+    let mut stored: Stored<E> = serde_json::from_value(meta.completeness.clone())
+        .map_err(|error| internal_error("decoding the stored result extras", error))?;
+    if let Some(requested) = spec.requested_page_bytes {
+        stored.page_bytes = requested;
+    }
     serve(
         &store,
         spec,
         cursor.result,
         cursor.ord,
-        page_bytes,
-        accept_for(page_bytes),
+        stored,
+        meta.as_ref(),
+        accept_for,
     )
 }
 
-fn serve<E: DeserializeOwned>(
+/// Reads the page at `from_ord` of result `id`. `stored` carries the extras
+/// and the effective budget (`stored.page_bytes`), `meta` the stored columns.
+fn serve<E, A>(
     store: &ResultStore,
     spec: &PageSpec,
     id: ResultId,
     from_ord: u64,
-    page_bytes: usize,
-    accept: impl FnMut(&StoredRow) -> Take,
-) -> Result<Served<E>, ErrorData> {
+    stored: Stored<E>,
+    meta: &ResultMeta,
+    accept_for: impl FnOnce(&PageContext<'_, E>) -> A,
+) -> Result<Served<E>, ErrorData>
+where
+    A: FnMut(&StoredRow) -> Take,
+{
+    let page_bytes = stored.page_bytes;
+    let accept = accept_for(&PageContext {
+        page_bytes,
+        columns: &meta.columns,
+        extra: &stored.extra,
+    });
     let read = store
         .read_page_with(id, from_ord, spec.offer_first_row, accept)
         .map_err(|e| store_error(&e))?;
-    let stored: Stored<E> = serde_json::from_value(read.meta.completeness.clone())
-        .map_err(|error| internal_error("decoding the stored result extras", error))?;
     let complete = read.next_ord.is_none();
     let page = Page {
         returned: read.rows.len(),

@@ -14,7 +14,7 @@ use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use stored::{PageCut, StoredMatch};
+use stored::{CutFacts, PageCut, StoredMatch};
 
 const MAX_PATH_BYTES: usize = 32 * 1024;
 const MAX_FILTER_BYTES: usize = 8 * 1024;
@@ -166,8 +166,8 @@ pub fn structure(
 ) -> Result<Json<StructureResponse>, ErrorData> {
     let request_path = request.0.path.as_str();
     // A continuation ignores `path`, so it has no project to read limits from;
-    // its page budget comes from the stored result, these limits only supply
-    // the ceiling and the match cap.
+    // its page budget, ceiling flag and match cap come from the stored result;
+    // these limits only clamp an explicit `page_bytes`.
     let limits = if request.0.cursor.is_none() && !request_path.is_empty() {
         super::resolve_limits(request_path)?
     } else {
@@ -200,16 +200,23 @@ fn structure_with_limits(
     let mut spec = PageSpec::typed::<StoredMatch>("structure", page.bytes);
     spec.offer_first_row = true;
     spec.requested_page_bytes = request.page_bytes.map(|_| page.bytes);
-    let ceiling = limits.max_query_response_bytes;
-    let max_matches = limits.max_structure_matches;
-    let mut cut = PageCut::new(page.bytes, ceiling, max_matches);
+    // What page one fixes about every page's cut is stored with the result;
+    // a continuation reads it back and never the process limits.
+    let facts = CutFacts {
+        at_ceiling: page.at_ceiling,
+        max_matches: limits.max_structure_matches,
+    };
+    // A budget the request itself asked for is judged against the ceiling it
+    // was clamped to; an inherited one against page one's.
+    let asked_at_ceiling = request.page_bytes.map(|_| page.at_ceiling);
+    let mut cut = PageCut::new(page.bytes, facts);
     let served = paginate_with(
         manager,
         &spec,
         page_request,
-        |tx, rows| produce(tx, rows, request, limits, window_bytes),
-        |effective| {
-            cut = PageCut::new(effective, ceiling, max_matches);
+        |tx, rows| produce(tx, rows, request, limits, window_bytes, facts),
+        |ctx| {
+            cut = PageCut::new(ctx.page_bytes, ctx.extra.cut.judged(asked_at_ceiling));
             |row: &StoredRow| cut.accept(row)
         },
     )?;

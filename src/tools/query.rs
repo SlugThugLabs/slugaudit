@@ -160,15 +160,14 @@ fn query_with_limits(
     let continuation = cursor.is_some();
 
     // Only a budget the request asked for overrides the one page one used.
-    let requested = page_bytes.map(|_| page.bytes);
-    let (collected, stored_page) =
-        run_query(manager, paging, trimmed, limits, page.bytes, requested)?;
+    let (collected, stored_page, at_ceiling) =
+        run_query(manager, paging, trimmed, limits, page, page_bytes.is_some())?;
     let complete = stored_page.complete;
     // The budget that applied (a continuation may inherit page one's) cuts at
     // the ceiling exactly when it is the ceiling.
     let applied = PageSize {
         bytes: stored_page.page_bytes,
-        at_ceiling: stored_page.page_bytes >= limits.max_query_response_bytes,
+        at_ceiling,
     };
     let limited_by = if complete {
         PageLimit::None

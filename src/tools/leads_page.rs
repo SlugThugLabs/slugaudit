@@ -71,8 +71,6 @@ struct Cutting {
     stopped_by: Option<PageLimit>,
     taken: usize,
     bytes_used: usize,
-    /// The row limit in force, known once the first row is offered.
-    limit: Option<Option<usize>>,
 }
 
 /// Serves one page: a new request when `scope` is given (its rows are
@@ -103,9 +101,12 @@ pub(super) fn page(
                 "a continuation produces no rows",
             )),
         },
-        |budget| {
+        |ctx| {
             let cutting = &mut cutting;
-            move |row: &StoredRow| accept(cutting, cut.limit, budget, row)
+            // The request's `limit`, else the one page one was asked for.
+            let limit = cut.limit.or(ctx.extra.limit);
+            let budget = ctx.page_bytes;
+            move |row: &StoredRow| accept(cutting, limit, budget, row)
         },
     )?;
     if let Some(error) = cutting.failure.take() {
@@ -116,7 +117,7 @@ pub(super) fn page(
     let mut page = served.page;
     let bytes_used = cutting.bytes_used;
     page.bytes_used = bytes_used;
-    let at_ceiling = if scope.is_some() || cut.explicit_bytes {
+    let at_ceiling = if cut.explicit_bytes {
         cut.size.at_ceiling
     } else {
         extras.at_ceiling
@@ -156,7 +157,7 @@ pub(super) fn page(
 /// The page cut for one offered row. Every row is offered, the first too
 /// (its verdict is ignored by the reader), so the bytes of the page are
 /// exactly the bytes of the rows taken.
-fn accept(cutting: &mut Cutting, asked: Option<usize>, budget: usize, row: &StoredRow) -> Take {
+fn accept(cutting: &mut Cutting, limit: Option<usize>, budget: usize, row: &StoredRow) -> Take {
     let stored = match StoredLead::from_values(&row.cells) {
         Ok(stored) => stored,
         Err(error) => {
@@ -171,14 +172,6 @@ fn accept(cutting: &mut Cutting, asked: Option<usize>, budget: usize, row: &Stor
             return Take::No;
         }
     };
-    // The request's `limit`, else the one page one was asked for.
-    let limit = *cutting.limit.get_or_insert_with(|| {
-        asked.or_else(|| {
-            usize::try_from(stored.limit)
-                .ok()
-                .filter(|limit| *limit > 0)
-        })
-    });
     if cutting.taken > 0 {
         if limit.is_some_and(|limit| cutting.taken >= limit) {
             cutting.stopped_by = Some(PageLimit::Limit);
@@ -231,7 +224,7 @@ fn produce(
     let mut counts = leads_custom::counts(scope.catalog, &scanned, &found.tallies, &read);
     counts.extend(count_all(tx, scope.pattern, &read)?);
     let files_not_parsed = leads_query::files_not_parsed(tx, scope.pattern)?;
-    let mut feed = Feed::new(sink, cut.limit)?;
+    let mut feed = Feed::new(sink);
     match (scope.mode, scope.selected) {
         (LeadMode::Full, None) => {}
         (LeadMode::Full, Some(Selected::Builtin(mechanic))) => {
@@ -270,6 +263,7 @@ fn produce(
             files_total: to_i64(feed.files())?,
             compact: scope.mode == LeadMode::Compact,
             at_ceiling: cut.size.at_ceiling,
+            limit: cut.limit,
         },
     })
 }

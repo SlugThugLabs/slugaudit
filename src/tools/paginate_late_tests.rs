@@ -196,9 +196,11 @@ fn paginate_a_push_before_the_columns_are_declared_is_an_internal_error() {
 }
 
 /// A budget-recording accept closure for `paginate_with`.
-fn budget_probe(seen: &std::cell::Cell<usize>) -> impl FnOnce(usize) -> fn(&StoredRow) -> Take {
-    |budget| {
-        seen.set(budget);
+fn budget_probe(
+    seen: &std::cell::Cell<usize>,
+) -> impl FnOnce(&PageContext<'_, Totals>) -> fn(&StoredRow) -> Take {
+    |ctx| {
+        seen.set(ctx.page_bytes);
         |_| Take::Yes
     }
 }
@@ -226,8 +228,8 @@ fn budgeted_page_one(manager: &SourceSyncManager, path: &str, budget: usize) -> 
             }
             Ok(produced_totals())
         },
-        |budget| {
-            seen.set(budget);
+        |ctx| {
+            seen.set(ctx.page_bytes);
             per_page(1)
         },
     )
@@ -339,4 +341,76 @@ fn paginate_offer_first_row_shows_the_first_row_to_accept_and_still_takes_it() {
 
     assert_eq!(*asked.borrow(), vec![2, 3]);
     assert_eq!(numbers(&second), vec![2]);
+}
+
+/// What `accept_for` was handed: budget, columns and the extras' `produced`.
+type Seen = std::cell::RefCell<Option<(usize, Vec<String>, u64)>>;
+
+fn context_probe(seen: &Seen) -> impl FnOnce(&PageContext<'_, Totals>) -> fn(&StoredRow) -> Take {
+    |ctx| {
+        *seen.borrow_mut() = Some((ctx.page_bytes, ctx.columns.to_vec(), ctx.extra.produced));
+        |_| Take::Yes
+    }
+}
+
+#[test]
+fn paginate_context_on_a_new_request_carries_the_produced_extras_and_columns() {
+    let (_project, path) = project();
+    let manager = manager(ROOMY);
+    let seen: Seen = Seen::default();
+
+    paginate_with(
+        &manager,
+        &budget_spec(2048, None),
+        PageRequest::Fresh {
+            path: &path,
+            sink: &NoopProgressSink,
+        },
+        |_, sink| {
+            sink.push(&Demo(1))?;
+            Ok(produced_totals())
+        },
+        context_probe(&seen),
+    )
+    .expect("page one");
+
+    assert_eq!(*seen.borrow(), Some((2048, cols(&["n"]), 2)));
+}
+
+#[test]
+fn paginate_context_on_a_continuation_carries_the_extras_and_columns_of_page_one() {
+    let (_project, path) = project();
+    let manager = manager(ROOMY);
+    let first = budgeted_page_one(&manager, &path, 2048);
+    let seen: Seen = Seen::default();
+
+    paginate_with(
+        &manager,
+        &budget_spec(77, None),
+        PageRequest::Cursor(&cursor_of(&first)),
+        |_, _| panic!("a continuation never produces"),
+        context_probe(&seen),
+    )
+    .expect("page two");
+
+    assert_eq!(*seen.borrow(), Some((2048, cols(&["n"]), 2)));
+}
+
+#[test]
+fn paginate_context_columns_declared_by_the_producer_reach_the_continuation() {
+    let (_project, path) = project();
+    let manager = manager(ROOMY);
+    let first = late_fresh(&manager, &path).expect("page one");
+    let seen: Seen = Seen::default();
+
+    paginate_with(
+        &manager,
+        &late_spec("late"),
+        PageRequest::Cursor(&cursor_of(&first)),
+        |_, _| panic!("a continuation never produces"),
+        context_probe(&seen),
+    )
+    .expect("page two");
+
+    assert_eq!(*seen.borrow(), Some((1000, cols(&["a", "b"]), 2)));
 }

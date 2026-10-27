@@ -161,7 +161,8 @@ pub(super) fn list(
                 },
             })
         },
-        |budget| {
+        |ctx| {
+            let budget = ctx.page_bytes;
             let mut used = 0usize;
             let failure = &failure;
             move |row: &StoredRow| match MechanicListing::from_values(&row.cells)

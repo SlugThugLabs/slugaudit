@@ -11,19 +11,19 @@ use super::query_value::{Collected, PageBuilder, cell_from, read_row};
 
 use super::context::internal_error;
 use super::page::{Completeness, Page};
+use super::page_size::PageSize;
 use super::paginate::{PageRequest, PageSpec, Produced, RowSink, paginate_with};
 use super::query::{
     ABORT_NONE, ABORT_STEP_BUDGET, ABORT_WALL_CLOCK, describe_error, refuse_wrapped,
     single_statement_body,
 };
-use crate::error_codes::store_error;
 use crate::model::{ResourceLimits, SQLITE_MAX_VALUE_BYTES};
-use crate::store::{ResultStoreError, StoredRow};
+use crate::store::StoredRow;
 use crate::sync::SourceSyncManager;
 use rmcp::ErrorData;
 use rusqlite::Transaction;
 use rusqlite::limits::Limit;
-use std::cell::RefCell;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
@@ -144,10 +144,14 @@ fn wrapped_sql(body: &str) -> String {
 /// Either way the page is cut at `page.bytes` serialized JSON bytes, the
 /// oversized first row clipped.
 ///
-/// `page_bytes` is the budget of a new request. `requested_page_bytes` is
-/// what the request itself asked for, already clamped to the ceiling: a
-/// continuation without one uses the budget page one used, so the page size
-/// does not change when the caller leaves it out.
+/// `size` is the budget of a new request. `explicit_bytes` says the request
+/// itself asked for it (already clamped to the ceiling): a continuation
+/// without one uses the budget page one used, so the page size does not
+/// change when the caller leaves it out.
+///
+/// Returns the page, its shared block and whether the budget that applied was
+/// the ceiling (the request's when it asked, else page one's, stored with the
+/// result).
 ///
 /// A budget that runs out fails the whole call: no rows are served and no
 /// result is stored.
@@ -156,23 +160,16 @@ pub(super) fn run_query(
     request: PageRequest<'_>,
     trimmed: &str,
     limits: &ResourceLimits,
-    page_bytes: usize,
-    requested_page_bytes: Option<usize>,
-) -> Result<(Collected, Page), ErrorData> {
-    let builder = RefCell::new(PageBuilder::new());
-    if let PageRequest::Cursor(token) = request {
-        // The cut needs the column names to measure a row; a new request
-        // learns them from its statement inside `produce`.
-        builder
-            .borrow_mut()
-            .set_names(stored_columns(manager, token)?);
-    }
+    size: PageSize,
+    explicit_bytes: bool,
+) -> Result<(Collected, Page, bool), ErrorData> {
+    let mut builder = PageBuilder::new();
     // The columns come from the prepared statement inside `produce`.
     let spec = PageSpec {
         tool: "query",
         columns: Vec::new(),
-        page_bytes,
-        requested_page_bytes,
+        page_bytes: size.bytes,
+        requested_page_bytes: explicit_bytes.then_some(size.bytes),
         offer_first_row: true,
     };
     let served = paginate_with(
@@ -180,31 +177,34 @@ pub(super) fn run_query(
         &spec,
         request,
         |tx, rows| {
-            stream_rows(tx, trimmed, limits, &builder, rows)?;
+            stream_rows(tx, trimmed, limits, rows)?;
             Ok(Produced {
                 completeness: Completeness::Complete,
-                extra: (),
+                extra: QueryExtra {
+                    at_ceiling: size.at_ceiling,
+                },
             })
         },
-        |budget| {
-            builder.borrow_mut().set_budget(budget);
-            |row: &StoredRow| builder.borrow_mut().accept(row)
+        |ctx| {
+            builder.set_names(ctx.columns.to_vec());
+            builder.set_budget(ctx.page_bytes);
+            let builder = &mut builder;
+            |row: &StoredRow| builder.accept(row)
         },
     )?;
-    Ok((builder.into_inner().finish(served.rows.len())?, served.page))
+    let at_ceiling = if explicit_bytes {
+        size.at_ceiling
+    } else {
+        served.meta.at_ceiling
+    };
+    Ok((builder.finish(served.rows.len())?, served.page, at_ceiling))
 }
 
-/// The column names stored with the result `token` continues. A registry
-/// lookup only: it reads no row and renews nothing. An unknown, expired or
-/// foreign cursor is refused by [`paginate_with`] as for every tool; one that
-/// cannot be decoded fails here with the same wire code.
-fn stored_columns(manager: &SourceSyncManager, token: &str) -> Result<Vec<String>, ErrorData> {
-    let Some(store) = manager.result_stores().current() else {
-        return Err(store_error(&ResultStoreError::Unknown));
-    };
-    let cursor = store.decode_cursor(token).map_err(|e| store_error(&e))?;
-    let meta = store.meta_of(cursor.result).map_err(|e| store_error(&e))?;
-    Ok(meta.columns.clone())
+/// What a `query` result stores with it: whether page one's budget was the
+/// ceiling, so a continuation reports the same `limited_by` without limits.
+#[derive(Serialize, Deserialize)]
+pub(super) struct QueryExtra {
+    at_ceiling: bool,
 }
 
 /// Runs the wrapped `SELECT` inside the verified read transaction and pushes
@@ -213,13 +213,12 @@ fn stream_rows(
     tx: &Transaction<'_>,
     trimmed: &str,
     limits: &ResourceLimits,
-    builder: &RefCell<PageBuilder>,
     rows: &mut RowSink<'_, '_>,
 ) -> Result<(), ErrorData> {
     apply_engine_limits(tx, limits)?;
     let abort_reason = install_budget(tx, limits);
     let outcome = single_statement_body(tx, trimmed, &abort_reason)
-        .and_then(|body| push_all(tx, &body, limits, &abort_reason, builder, rows));
+        .and_then(|body| push_all(tx, &body, limits, &abort_reason, rows));
     clear_budget(tx);
     outcome
 }
@@ -229,7 +228,6 @@ fn push_all(
     body: &str,
     limits: &ResourceLimits,
     abort_reason: &Arc<AtomicU8>,
-    builder: &RefCell<PageBuilder>,
     rows: &mut RowSink<'_, '_>,
 ) -> Result<(), ErrorData> {
     let mut statement = tx
@@ -240,8 +238,7 @@ fn push_all(
         .into_iter()
         .map(str::to_owned)
         .collect();
-    rows.set_columns(names.clone())?;
-    builder.borrow_mut().set_names(names);
+    rows.set_columns(names)?;
     let value_cap = limits.max_query_value_bytes;
     let column_count = statement.column_count();
     let mapped = statement

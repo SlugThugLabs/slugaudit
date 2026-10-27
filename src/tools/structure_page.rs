@@ -4,7 +4,7 @@
 
 use super::page::{Completeness, Page, PageLimit};
 use super::paginate::{Served, decode_rows};
-use super::structure::stored::{PageCut, StoredMatch, StructureExtra};
+use super::structure::stored::{CutFacts, PageCut, StoredMatch, StructureExtra};
 use super::structure::{StructureMatch, StructureResponse};
 use super::structure_source::{MAX_SNIPPET_BYTES, SourceWindow, truncate_snippet, truncate_text};
 use crate::model::{LineIndex, saturating_u32};
@@ -149,8 +149,14 @@ pub(super) fn completeness_of(window: &SourceWindow, run: &RunOutput) -> Complet
 }
 
 /// The extras of a finished scan.
-pub(super) fn extra_of(language: String, window: SourceWindow, run: RunOutput) -> StructureExtra {
+pub(super) fn extra_of(
+    language: String,
+    window: SourceWindow,
+    run: RunOutput,
+    cut: CutFacts,
+) -> StructureExtra {
     StructureExtra {
+        cut,
         language,
         files_not_scanned: window.files_not_scanned,
         bytes_not_scanned: window.bytes_not_scanned,
