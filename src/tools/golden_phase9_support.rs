@@ -14,12 +14,14 @@ const REVISION: &str = "<REVISION_ID>";
 const PROJECT: &str = "<PROJECT>";
 /// Paging fields removed at comparison, wherever they appear in a response,
 /// so a response with or without them compares equal.
-const PAGING_KEYS: [&str; 5] = [
+const PAGING_KEYS: [&str; 6] = [
     "offset",
     "next_offset",
     "expected_revision",
     "cursor",
     "completeness",
+    // Removed from `query` in 9.3; the fixtures recorded it as null.
+    "total_unavailable",
 ];
 
 pub(super) fn fixture_dir() -> PathBuf {
