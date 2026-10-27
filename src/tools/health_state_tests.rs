@@ -530,6 +530,7 @@ fn health_with_verbose_adds_the_operator_detail_beside_the_default_fields() {
             "database",
             "database_read_failed",
             "mechanic_cache",
+            "result_store",
             "server",
             "system_memory",
             "watcher"
@@ -549,6 +550,10 @@ fn health_with_verbose_adds_the_operator_detail_beside_the_default_fields() {
         ["parser_pack_version", "skipped_file_count"]
     );
     assert_eq!(detail["database_read_failed"], false);
+    assert!(
+        detail["result_store"].is_null(),
+        "no paged result was made yet"
+    );
     for field in ["phase", "remedy", "watcher", "database"] {
         assert_eq!(
             answer[field], plain[field],

@@ -15,6 +15,7 @@ mod finding_insert;
 mod finding_read;
 mod health;
 mod health_phase;
+mod health_result_store;
 mod leads;
 mod leads_compact;
 mod leads_covers;

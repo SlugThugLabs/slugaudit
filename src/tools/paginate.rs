@@ -224,7 +224,7 @@ where
                 .map_err(|e| store_error(&e))?;
             let pending = ResultSpec {
                 tool: spec.tool.to_owned(),
-                project: "default".to_owned(),
+                project: project_label(runtime_dir)?,
                 revision_id: synced.revision_id.clone(),
                 columns: Vec::new(),
             };
@@ -267,6 +267,16 @@ where
     }
 }
 
+/// The label stored with a result: the project root's path id, as the logs
+/// show it. The runtime directory is `<root>/.planning/slugaudit`.
+fn project_label(runtime_dir: &std::path::Path) -> Result<String, ErrorData> {
+    let root = runtime_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .ok_or_else(|| internal_error("locating the project root", "no project root"))?;
+    Ok(crate::util::redacted_path(root))
+}
+
 fn continue_page<E, A>(
     manager: &SourceSyncManager,
     spec: &PageSpec,
@@ -290,7 +300,7 @@ where
             tool = spec.tool,
             "cursor refused: it belongs to another tool"
         );
-        return Err(store_error(&ResultStoreError::Unknown));
+        return Err(store_error(&store.refuse_foreign_tool()));
     }
     let mut stored: Stored<E> = serde_json::from_value(meta.completeness.clone())
         .map_err(|error| internal_error("decoding the stored result extras", error))?;

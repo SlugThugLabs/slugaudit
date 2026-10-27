@@ -110,6 +110,7 @@ src/
 │   ├── finding_read_paged_tests.rs finding_read paged through the result store
 │   ├── project_control.rs    enable/disable a project: contract and handlers
 │   ├── health.rs             operational snapshot: schema, process counters, DB read
+│   ├── health_result_store.rs health detail's result-store stats (classes, bytes, sweep)
 │   └── health_phase.rs       health's per-project state derivation (no side effects)
 │
 ├── sync/                     detection and persistence of what changed on disk
