@@ -185,6 +185,15 @@ fn continue_page<E: DeserializeOwned>(
         return Err(store_error(&ResultStoreError::Unknown));
     };
     let cursor = store.decode_cursor(token).map_err(|e| store_error(&e))?;
+    // Before any read: a read renews the result and may mark it delivered,
+    // which another tool's cursor must never do.
+    if store.tool_of(cursor.result).map_err(|e| store_error(&e))? != spec.tool {
+        tracing::info!(
+            tool = spec.tool,
+            "cursor refused: it belongs to another tool"
+        );
+        return Err(store_error(&ResultStoreError::Unknown));
+    }
     serve(&store, spec, cursor.result, cursor.ord, accept)
 }
 
@@ -198,13 +207,6 @@ fn serve<E: DeserializeOwned>(
     let read = store
         .read_page(id, from_ord, accept)
         .map_err(|e| store_error(&e))?;
-    if read.meta.tool != spec.tool {
-        tracing::info!(
-            tool = spec.tool,
-            "cursor refused: it belongs to another tool"
-        );
-        return Err(store_error(&ResultStoreError::Unknown));
-    }
     let stored: Stored<E> = serde_json::from_value(read.meta.completeness.clone())
         .map_err(|error| internal_error("decoding the stored result extras", error))?;
     let complete = read.next_ord.is_none();

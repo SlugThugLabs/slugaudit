@@ -151,6 +151,17 @@ impl ResultStore {
         Err(ResultStoreError::Expired)
     }
 
+    /// The name of the tool that produced `id`, read from the registry. It
+    /// renews nothing, marks nothing and reads no SQL, so a caller can check
+    /// a cursor's owner before any read touches the result.
+    ///
+    /// # Errors
+    ///
+    /// `Expired` when the result was reclaimed (counted once, as for a read).
+    pub fn tool_of(&self, id: ResultId) -> Result<String, ResultStoreError> {
+        Ok(self.lookup(id)?.meta.tool.clone())
+    }
+
     /// Admits a committed result, reclaiming under pressure. One log line for
     /// the materialisation and one per reclaim; never rows.
     pub(super) fn admit(&self, id: ResultId, entry: Entry) -> Result<(), ResultStoreError> {

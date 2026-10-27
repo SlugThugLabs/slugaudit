@@ -235,6 +235,32 @@ fn paginate_cursor_of_another_tool_is_unknown_cursor() {
 }
 
 #[test]
+fn paginate_wrong_tool_cursor_on_the_last_page_does_not_mark_delivered() {
+    let (_project, path) = project();
+    let manager = manager(ROOMY);
+    let first = fresh(&manager, &path, 15, 10).expect("page one");
+    let stats = || {
+        let stats = manager.result_stores().current().expect("a store").stats();
+        (
+            stats.active.results,
+            stats.idle.results,
+            stats.delivered.results,
+        )
+    };
+    let before = stats();
+
+    let error = next(&manager, "other", &cursor_of(&first), 10)
+        .err()
+        .expect("refused");
+
+    assert_eq!(code_of(&error), "unknown_cursor");
+    assert_eq!(before, (1, 0, 0));
+    assert_eq!(stats(), before, "class is untouched");
+    next(&manager, TOOL, &cursor_of(&first), 10).expect("the right tool finishes it");
+    assert_eq!(stats(), (0, 0, 1), "the right tool still delivers it");
+}
+
+#[test]
 fn paginate_garbage_cursor_is_unknown_cursor() {
     let (_project, path) = project();
     let manager = manager(ROOMY);

@@ -240,3 +240,29 @@ fn result_store_a_failed_conversion_of_the_first_row_leaves_the_result_untouched
     let stats = fx.store.stats();
     assert_eq!((stats.delivered.results, stats.idle.results), (0, 1));
 }
+
+#[test]
+fn result_store_tool_of_names_the_producer_without_renewing_or_marking() {
+    let fx = fixture(1 << 30);
+    let handle = write_rows(&fx.store, 10, 3).expect("write");
+    fx.set_time(1_000 + i64::try_from(GRACE_SECS).expect("grace fits") + 1);
+    assert_eq!(fx.store.stats().idle.results, 1, "idle before the call");
+
+    let tool = fx.store.tool_of(handle.id).expect("tool");
+
+    let stats = fx.store.stats();
+    assert_eq!(tool, "query");
+    assert_eq!((stats.idle.results, stats.active.results), (1, 0));
+    assert_eq!(stats.delivered.results, 0);
+}
+
+#[test]
+fn result_store_tool_of_a_reclaimed_result_is_expired_and_counted_once() {
+    let fx = fixture(1 << 30);
+    let stale = ResultId(uuid::Uuid::new_v4());
+
+    let error = fx.store.tool_of(stale).expect_err("not registered");
+
+    assert!(matches!(error, ResultStoreError::Expired));
+    assert_eq!(fx.store.stats().expired_cursors, 1);
+}
