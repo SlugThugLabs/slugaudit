@@ -358,6 +358,7 @@ pub(super) fn leads_with_catalog(
     let cut = Cut {
         limit: request.limit.map(|rows| rows.max(1)),
         size,
+        explicit_bytes: request.page_bytes.is_some(),
     };
     let paging = page_request(request.cursor.as_deref(), request.path.as_deref(), sink)?;
     let scope = match paging {

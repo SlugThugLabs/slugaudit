@@ -323,3 +323,75 @@ fn paged_leads_compact_pages_by_cursor() {
     assert_eq!(covered.last().copied(), Some(first.files_total));
     assert!(rest.last().expect("a last page").page.complete);
 }
+
+/// A continuation exactly as a caller sends it when it repeats nothing but the
+/// cursor: no `page_bytes`, no `limit`.
+fn bare_continuation(page: &LeadsResponse) -> LeadsRequest {
+    LeadsRequest {
+        page_bytes: None,
+        ..continuation(page)
+    }
+}
+
+fn run_with_defaults(
+    manager: &crate::sync::SourceSyncManager,
+    request: LeadsRequest,
+    default_page_bytes: usize,
+) -> LeadsResponse {
+    let limits = ResourceLimits {
+        default_page_bytes,
+        ..ResourceLimits::default()
+    };
+    let Json(response) = leads_with_limits(
+        &Parameters(request),
+        &limits,
+        &crate::progress::NoopProgressSink,
+        manager,
+    )
+    .expect("leads succeeds");
+    response
+}
+
+#[test]
+fn paged_leads_continuation_keeps_the_page_budget_of_page_one() {
+    let project = unwrap_fixture(4, 6); // 24 rows
+    let manager = crate::sync::SourceSyncManager::default();
+    let first = run_with_defaults(
+        &manager,
+        request(project.path(), Some("unwrap_calls")),
+        SMALL_PAGE,
+    );
+    assert_eq!(first.page.page_bytes, SMALL_PAGE);
+    assert!(first.page.cursor.is_some(), "a small default forces paging");
+
+    let mut seen = places(&first);
+    let mut last = first;
+    while last.page.cursor.is_some() {
+        // The process default is 64 KiB: only the stored budget can cut here.
+        last = run_with_defaults(&manager, bare_continuation(&last), 1_000_000);
+        assert_eq!(last.page.page_bytes, SMALL_PAGE);
+        assert!(last.page.bytes_used <= SMALL_PAGE || last.page.returned == 1);
+        seen.extend(places(&last));
+    }
+
+    assert_eq!(seen.len(), 24, "every row is served exactly once");
+}
+
+#[test]
+fn paged_leads_continuation_keeps_the_limit_of_page_one() {
+    let project = unwrap_fixture(4, 6); // 24 rows
+    let manager = crate::sync::SourceSyncManager::default();
+    let mut asked = request(project.path(), Some("unwrap_calls"));
+    asked.limit = Some(5);
+    let first = run_on(&manager, asked);
+    assert_eq!(first.page.returned, 5);
+
+    let second = run_on(&manager, bare_continuation(&first));
+    let mut own = bare_continuation(&first);
+    own.limit = Some(2);
+    let smaller = run_on(&manager, own);
+
+    assert_eq!(second.page.returned, 5, "page one's limit still applies");
+    assert_eq!(second.page.limited_by, PageLimit::Limit);
+    assert_eq!(smaller.page.returned, 2, "the request's own limit wins");
+}
