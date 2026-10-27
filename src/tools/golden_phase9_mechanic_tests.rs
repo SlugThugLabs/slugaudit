@@ -2,13 +2,15 @@
 use super::golden_phase9_support::{check_case, path_of, rust_project};
 use crate::progress::NoopProgressSink;
 use crate::sync::SourceSyncManager;
-use crate::tools::{MechanicAction, MechanicRequest, mechanic};
+use crate::tools::{LegacyPaging, MechanicAction, MechanicRequest, mechanic};
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::Value;
 
 fn mechanic_request(project: &tempfile::TempDir, action: MechanicAction) -> MechanicRequest {
     MechanicRequest {
-        path: path_of(project),
+        path: Some(path_of(project)),
+        cursor: None,
+        legacy_paging: LegacyPaging::default(),
         action,
         id: None,
         index: None,
@@ -47,6 +49,8 @@ fn add_println_mechanic(
 fn clone_mechanic(request: &MechanicRequest) -> MechanicRequest {
     MechanicRequest {
         path: request.path.clone(),
+        cursor: request.cursor.clone(),
+        legacy_paging: LegacyPaging::default(),
         action: request.action,
         id: request.id.clone(),
         index: request.index,
@@ -74,5 +78,18 @@ fn golden_phase9_mechanic_add_and_list() {
     )
     .expect("mechanic list succeeds")
     .0;
+    let page = listed.page.clone().expect("list carries a page block");
+    assert_eq!(
+        (page.returned, page.complete, page.cursor),
+        (listed.mechanics.len(), true, None),
+        "the small catalogue fits one page"
+    );
+    // The fixture predates the `page` block `list` gained with the cursor; the
+    // block is asserted above, everything else is compared unchanged.
+    let mut listed = serde_json::to_value(listed).expect("response serializes");
+    listed
+        .as_object_mut()
+        .expect("response is an object")
+        .remove("page");
     check_case("mechanic_list", &project, &"list", &listed);
 }

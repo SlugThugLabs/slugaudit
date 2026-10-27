@@ -84,6 +84,7 @@ fn check_free(
 /// id loses cleanly.
 pub(super) fn add(
     request: &MechanicRequest,
+    path: &str,
     root: &Path,
     limits: &crate::model::ResourceLimits,
     sink: &dyn ProgressSink,
@@ -106,7 +107,7 @@ pub(super) fn add(
     let mut catalog = mechanic_catalog::load(root, session, limits);
     insert_candidate(&mut catalog, entry.clone(), source, query);
     let first = LeadsRequest {
-        path: request.path.clone(),
+        path: path.to_owned(),
         mechanic: Some(entry.id.clone()),
         pattern: None,
         limit: request.limit,
