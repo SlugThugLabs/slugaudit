@@ -71,6 +71,20 @@ fn a_refused_pragma_statement_keeps_its_refusal_and_carries_no_code() {
 }
 
 #[test]
+fn result_store_surface_create_temp_table_through_query_is_refused() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+
+    let error = ask(&project, "CREATE TEMP TABLE planted (x)");
+
+    assert!(
+        error.message.starts_with("sql was refused"),
+        "{}",
+        error.message
+    );
+    assert_eq!(error.data, None, "a refusal is not an SQL error");
+}
+
+#[test]
 fn a_value_over_the_per_value_cap_carries_no_sql_error_code() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let limits = ResourceLimits {
