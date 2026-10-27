@@ -605,14 +605,14 @@ agent copies one cursor and manages no revisions; the grace period never
 invalidates a report, it only governs reclaim eligibility under pressure, and
 continuing a result renews its protection.
 
-- **9.0 — Golden capture.** State: **not started**. Before any paging change,
+- **9.0 — Golden capture.** State: **landed** e85bb10 (22 fixtures, `tests/golden/phase9/generate.sh`, 14 passing tests; NaN is unreachable in the bundled build even through a `cfg(test)` function, SQLite stores it as NULL, so the NaN fixture records NULL cells and an empty `non_finite_cells`). Before any paging change,
   capture per-tool response fixtures from `2ad7bc3` on the existing test
   fixtures (`leads` counts and rows incl. compact, `query` incl. clipped,
   non-finite and NUL-text cases, `structure` single-file and project-wide,
   `finding_read`, `mechanic` add/list) into `tests/golden/phase9/`. DoD: the
   fixtures are committed with the script that produced them; a test loads
   them (it is allowed to fail until 9.3 lands and is marked so).
-- **9.1 — `store/result_store/`.** State: **not started**. File lifecycle
+- **9.1 — `store/result_store/`.** State: **landed** cdfc0ac, review fixes 9da1f03, test hardening 194cea4 (Victor and Quinn reviewed; non-unix stub not compiled, no Windows target installed; `max_result_store_bytes` is derived from the profile's response ceiling and does not follow an env override of `max_query_response_bytes`). File lifecycle
   (create under `.planning/slugaudit/results/`, open, unlink, pragmas), owner
   lock file, startup sweep, schema (`meta`, `rows` with untyped columns and the
   `nonfinite` marker), the `Materialize` trait, batched writer (1,000 rows per
@@ -634,7 +634,7 @@ continuing a result renews its protection.
   `result_store_unavailable`; abort mid-write leaves no file (process-spawn
   test); a planted leftover is swept at startup while a locked one is not;
   cross-thread insert/read through the per-result mutex.
-- **9.2 — Shared pagination layer.** State: **not started**. `tools/context.rs`
+- **9.2 — Shared pagination layer.** State: **landed** d3119fc, wrong-tool precheck d5c7694. `Page` keeps `next_offset` until the last 9.3 migration removes it; `check_mcp_surface` fails on 25 `Page`/`Completeness` keys, expected until 9.3 records it. Follow-up for 9.5: a wrong-tool cursor does not increment the `unknown_cursors` stat. `tools/context.rs`
   gains one `paginate` entry: without `cursor` it syncs, opens the verified
   read transaction, materialises via the tool's `Materialize` producer and
   serves page one; with `cursor` it serves the stored page with no sync and no
