@@ -22,7 +22,7 @@ use super::mechanic_catalog::Catalog;
 use super::mechanic_scan_cached::{self, CacheScope};
 use super::page::{Completeness, PageLimit};
 use super::page_size::PageSize;
-use super::paginate::paginate_with;
+use super::paginate::paginate;
 use crate::error_codes::store_error;
 use crate::project::MechanicScanCache;
 use crate::store::{Materialize, StoredRow, Take};
@@ -79,7 +79,7 @@ struct Cutting {
 /// # Errors
 ///
 /// Propagates any failure of the sync, the counts, row, or coverage reads, the
-/// registered mechanics' scan, and the result store; see [`paginate_with`].
+/// registered mechanics' scan, and the result store; see [`paginate`].
 pub(super) fn page(
     manager: &SourceSyncManager,
     request: PageRequest<'_>,
@@ -88,9 +88,8 @@ pub(super) fn page(
 ) -> Result<LeadsResponse, ErrorData> {
     let mut cutting = Cutting::default();
     let mut spec = PageSpec::typed::<StoredLead>(TOOL, cut.size.bytes);
-    spec.offer_first_row = true;
     spec.requested_page_bytes = cut.explicit_bytes.then_some(cut.size.bytes);
-    let served = paginate_with::<Extras, _, _>(
+    let served = paginate::<Extras, _, _>(
         manager,
         &spec,
         request,

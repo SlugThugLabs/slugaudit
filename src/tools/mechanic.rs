@@ -172,12 +172,12 @@ pub struct MechanicResponse {
     /// current revision — complete counts (`mechanic_counts`: the built-ins
     /// and the new entry with its `count`, `files` and `covers`), the first
     /// page of `rows` under the shared `page` contract (`page.total`,
-    /// `page.next_offset`, `page.revision_id`), `files_total`,
+    /// `page.cursor`, `page.revision_id`), `files_total`,
     /// `files_covered` and `files_not_parsed`. As in `leads`, `files_total`
     /// is the number of files holding at least one row, not the files read
     /// (those are `covers` and the index): a query with no match has
     /// `page.total`, `files_total` and `files_covered` all `0`. Page on with
-    /// `leads`, passing `page.next_offset` and `page.revision_id`.
+    /// `leads`, passing `page.cursor`.
     pub first_count: Option<LeadsResponse>,
     /// `list` only: the shared paging block for `mechanics`. While
     /// `page.cursor` is present, repeat the call with only that `cursor`;

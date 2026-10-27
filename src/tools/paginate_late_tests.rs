@@ -10,7 +10,6 @@ fn late_spec(tool: &'static str) -> PageSpec {
         columns: Vec::new(),
         page_bytes: 1000,
         requested_page_bytes: None,
-        offer_first_row: false,
     }
 }
 
@@ -39,7 +38,7 @@ fn late_fresh(manager: &SourceSyncManager, path: &str) -> Result<Served<Totals>,
             sink.push_cells(&[Cell::Int(2), Cell::Null])?;
             Ok(produced_totals())
         },
-        per_page(1),
+        |_| per_page(1),
     )
 }
 
@@ -54,7 +53,7 @@ fn paginate_columns_set_by_the_producer_are_stored_and_returned_on_every_page() 
         &late_spec("late"),
         PageRequest::Cursor(&cursor_of(&first)),
         |_, _| panic!("a continuation never produces"),
-        per_page(1),
+        |_| per_page(1),
     )
     .expect("page two");
 
@@ -91,7 +90,7 @@ fn declare_twice_or_late(
             misuse(sink)?;
             Ok(produced_totals())
         },
-        per_page(1),
+        |_| per_page(1),
     )
     .err()
     .expect("the misuse fails the call")
@@ -157,7 +156,7 @@ fn paginate_set_columns_when_the_spec_has_columns_is_an_internal_error() {
             sink.set_columns(cols(&["b"]))?;
             Ok(produced_totals())
         },
-        per_page(1),
+        |_| per_page(1),
     )
     .err()
     .expect("columns are already known");
@@ -181,7 +180,7 @@ fn paginate_a_push_before_the_columns_are_declared_is_an_internal_error() {
             sink.push_cells(&[Cell::Int(1)])?;
             Ok(produced_totals())
         },
-        per_page(1),
+        |_| per_page(1),
     )
     .err()
     .expect("no columns yet");
@@ -195,7 +194,7 @@ fn paginate_a_push_before_the_columns_are_declared_is_an_internal_error() {
     );
 }
 
-/// A budget-recording accept closure for `paginate_with`.
+/// A budget-recording accept closure for `paginate`.
 fn budget_probe(
     seen: &std::cell::Cell<usize>,
 ) -> impl FnOnce(&PageContext<'_, Totals>) -> fn(&StoredRow) -> Take {
@@ -215,7 +214,7 @@ fn budget_spec(page_bytes: usize, requested: Option<usize>) -> PageSpec {
 
 fn budgeted_page_one(manager: &SourceSyncManager, path: &str, budget: usize) -> Served<Totals> {
     let seen = std::cell::Cell::new(0);
-    let served = paginate_with(
+    let served = paginate(
         manager,
         &budget_spec(budget, None),
         PageRequest::Fresh {
@@ -250,7 +249,7 @@ fn paginate_continuation_without_page_bytes_uses_the_budget_stored_with_the_resu
     assert_eq!(first.page.page_bytes, 2048);
     let seen = std::cell::Cell::new(0);
 
-    let second: Served<Totals> = paginate_with(
+    let second: Served<Totals> = paginate(
         &manager,
         &budget_spec(77, None),
         PageRequest::Cursor(&cursor_of(&first)),
@@ -270,7 +269,7 @@ fn paginate_continuation_with_an_explicit_page_bytes_uses_and_echoes_it() {
     let first = budgeted_page_one(&manager, &path, 2048);
     let seen = std::cell::Cell::new(0);
 
-    let second: Served<Totals> = paginate_with(
+    let second: Served<Totals> = paginate(
         &manager,
         &budget_spec(77, Some(512)),
         PageRequest::Cursor(&cursor_of(&first)),
@@ -295,7 +294,7 @@ fn paginate_continuation_page_bytes_above_the_ceiling_is_clamped_by_the_tool_res
     let size = crate::tools::page_size::resolve(Some(1 << 20), &limits).expect("clamps");
     let seen = std::cell::Cell::new(0);
 
-    let second: Served<Totals> = paginate_with(
+    let second: Served<Totals> = paginate(
         &manager,
         &budget_spec(77, Some(size.bytes)),
         PageRequest::Cursor(&cursor_of(&first)),
@@ -308,33 +307,22 @@ fn paginate_continuation_page_bytes_above_the_ceiling_is_clamped_by_the_tool_res
 }
 
 #[test]
-fn paginate_legacy_entry_keeps_the_callers_budget_on_a_continuation() {
-    let (_project, path) = project();
-    let manager = manager(ROOMY);
-    let first = budgeted_page_one(&manager, &path, 2048);
-
-    let second = next(&manager, TOOL, &cursor_of(&first), 1).expect("page two");
-
-    assert_eq!(second.page.page_bytes, 1000, "the spec's budget, as before");
-}
-
-#[test]
-fn paginate_offer_first_row_shows_the_first_row_to_accept_and_still_takes_it() {
+fn paginate_offers_the_first_row_to_accept_and_still_takes_it() {
     let (_project, path) = project();
     let manager = manager(ROOMY);
     let first = fresh(&manager, &path, 5, 2).expect("page one");
     let asked = std::cell::RefCell::new(Vec::new());
-    let mut offering = spec(TOOL);
-    offering.offer_first_row = true;
 
     let second: Served<Totals> = paginate(
         &manager,
-        &offering,
+        &spec(TOOL),
         PageRequest::Cursor(&cursor_of(&first)),
         |_, _| panic!("a continuation never produces"),
-        |row| {
-            asked.borrow_mut().push(row.ord);
-            Take::No
+        |_| {
+            |row: &StoredRow| {
+                asked.borrow_mut().push(row.ord);
+                Take::No
+            }
         },
     )
     .expect("page two");
@@ -359,7 +347,7 @@ fn paginate_context_on_a_new_request_carries_the_produced_extras_and_columns() {
     let manager = manager(ROOMY);
     let seen: Seen = Seen::default();
 
-    paginate_with(
+    paginate(
         &manager,
         &budget_spec(2048, None),
         PageRequest::Fresh {
@@ -384,7 +372,7 @@ fn paginate_context_on_a_continuation_carries_the_extras_and_columns_of_page_one
     let first = budgeted_page_one(&manager, &path, 2048);
     let seen: Seen = Seen::default();
 
-    paginate_with(
+    paginate(
         &manager,
         &budget_spec(77, None),
         PageRequest::Cursor(&cursor_of(&first)),
@@ -403,7 +391,7 @@ fn paginate_context_columns_declared_by_the_producer_reach_the_continuation() {
     let first = late_fresh(&manager, &path).expect("page one");
     let seen: Seen = Seen::default();
 
-    paginate_with(
+    paginate(
         &manager,
         &late_spec("late"),
         PageRequest::Cursor(&cursor_of(&first)),

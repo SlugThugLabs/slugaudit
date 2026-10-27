@@ -82,7 +82,6 @@ fn paged_finding_read_pages_cover_every_row_once_within_the_byte_budget() {
             assert_eq!(page.page.total, Some(ROWS as u64));
             assert_eq!(page.page.returned, page.findings.len());
             assert_eq!(page.page.revision_id, first.page.revision_id);
-            assert_eq!(page.page.next_offset, None);
             let last = index + 1 == pages.len();
             assert_eq!(page.page.complete, last);
             assert_eq!(page.page.cursor.is_none(), last);

@@ -4,7 +4,7 @@
 
 use super::page::{LegacyPaging, Page};
 use super::page_size;
-use super::paginate::{PageSpec, page_request, paginate_with};
+use super::paginate::{PageSpec, page_request, paginate};
 use super::structure_exec::produce;
 use super::structure_page::structure_response;
 use crate::model::{ResourceLimits, process_limits};
@@ -198,7 +198,6 @@ fn structure_with_limits(
         None => validate_request(request, limits)?,
     }
     let mut spec = PageSpec::typed::<StoredMatch>("structure", page.bytes);
-    spec.offer_first_row = true;
     spec.requested_page_bytes = request.page_bytes.map(|_| page.bytes);
     // What page one fixes about every page's cut is stored with the result;
     // a continuation reads it back and never the process limits.
@@ -210,7 +209,7 @@ fn structure_with_limits(
     // was clamped to; an inherited one against page one's.
     let asked_at_ceiling = request.page_bytes.map(|_| page.at_ceiling);
     let mut cut = PageCut::new(page.bytes, facts);
-    let served = paginate_with(
+    let served = paginate(
         manager,
         &spec,
         page_request,

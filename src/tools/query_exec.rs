@@ -12,7 +12,7 @@ use super::query_value::{Collected, PageBuilder, cell_from, read_row};
 use super::context::internal_error;
 use super::page::{Completeness, Page};
 use super::page_size::PageSize;
-use super::paginate::{PageRequest, PageSpec, Produced, RowSink, paginate_with};
+use super::paginate::{PageRequest, PageSpec, Produced, RowSink, paginate};
 use super::query::{
     ABORT_NONE, ABORT_STEP_BUDGET, ABORT_WALL_CLOCK, describe_error, refuse_wrapped,
     single_statement_body,
@@ -170,9 +170,8 @@ pub(super) fn run_query(
         columns: Vec::new(),
         page_bytes: size.bytes,
         requested_page_bytes: explicit_bytes.then_some(size.bytes),
-        offer_first_row: true,
     };
-    let served = paginate_with(
+    let served = paginate(
         manager,
         &spec,
         request,

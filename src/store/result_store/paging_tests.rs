@@ -28,7 +28,7 @@ fn walk(store: &ResultStore, id: ResultId, page_rows: usize) -> (Vec<u64>, usize
         let page = store
             .read_page(id, from, |_| {
                 taken += 1;
-                if taken < page_rows {
+                if taken <= page_rows {
                     Take::Yes
                 } else {
                     Take::No
@@ -62,26 +62,6 @@ fn result_store_pages_are_disjoint_and_cover_the_result_once_at_every_boundary()
             );
         }
     }
-}
-
-#[test]
-fn result_store_the_first_row_is_taken_without_asking_the_closure() {
-    let fx = fixture(1 << 30);
-    let handle = write_rows(&fx.store, 5, 3).expect("write");
-    let mut asked = Vec::new();
-
-    let page = fx
-        .store
-        .read_page(handle.id, 2, |row| {
-            asked.push(row.ord);
-            Take::No
-        })
-        .expect("page");
-
-    assert_eq!(page.rows.len(), 1);
-    assert_eq!(page.rows[0].ord, 2);
-    assert_eq!(asked, vec![3]);
-    assert_eq!(page.next_ord, Some(3));
 }
 
 #[test]
@@ -317,7 +297,7 @@ fn result_store_first_row_is_offered_to_accept_but_always_taken() {
 
     let page = fx
         .store
-        .read_page_with(handle.id, 2, true, |row| {
+        .read_page(handle.id, 2, |row| {
             asked.push(row.ord);
             Take::No
         })
@@ -337,7 +317,7 @@ fn result_store_offering_the_first_row_with_yes_everywhere_offers_every_row() {
 
     let page = fx
         .store
-        .read_page_with(handle.id, 1, true, |row| {
+        .read_page(handle.id, 1, |row| {
             asked.push(row.ord);
             Take::Yes
         })
@@ -346,25 +326,6 @@ fn result_store_offering_the_first_row_with_yes_everywhere_offers_every_row() {
     assert_eq!(asked, vec![1, 2, 3, 4]);
     assert_eq!(page.rows.len(), 4);
     assert_eq!(page.next_ord, None);
-}
-
-#[test]
-fn result_store_read_page_with_the_flag_off_is_read_page() {
-    let fx = fixture(1 << 30);
-    let handle = write_rows(&fx.store, 5, 3).expect("write");
-    let mut asked = Vec::new();
-
-    let page = fx
-        .store
-        .read_page_with(handle.id, 2, false, |row| {
-            asked.push(row.ord);
-            Take::No
-        })
-        .expect("page");
-
-    assert_eq!(asked, vec![3]);
-    assert_eq!(page.rows.len(), 1);
-    assert_eq!(page.next_ord, Some(3));
 }
 
 #[test]

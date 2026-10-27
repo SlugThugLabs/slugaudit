@@ -50,9 +50,9 @@ fn project() -> (tempfile::TempDir, String) {
     (project, path)
 }
 
-/// Accepts `rows` rows per page (the first is always taken by the store).
+/// Accepts `rows` rows per page (the first is offered and always taken).
 fn per_page(rows: usize) -> impl FnMut(&StoredRow) -> Take {
-    let mut seen = 1;
+    let mut seen = 0;
     move |_| {
         seen += 1;
         if seen <= rows { Take::Yes } else { Take::No }
@@ -91,7 +91,7 @@ fn fresh(
                 },
             })
         },
-        per_page(page_rows),
+        |_| per_page(page_rows),
     )
 }
 
@@ -106,7 +106,7 @@ fn next(
         &spec(tool),
         PageRequest::Cursor(token),
         |_, _| panic!("a continuation never produces"),
-        per_page(page_rows),
+        |_| per_page(page_rows),
     )
 }
 
@@ -148,7 +148,6 @@ fn paginate_without_a_cursor_syncs_once_and_serves_page_one() {
     assert!(!served.page.complete);
     assert_eq!(served.page.limited_by, PageLimit::PageBytes);
     assert_eq!(served.page.completeness, Some(Completeness::Complete));
-    assert_eq!(served.page.next_offset, None);
     assert!(served.page.cursor.is_some());
     assert_eq!(served.meta, Totals { produced: 25 });
 }
@@ -398,7 +397,7 @@ fn paginate_producer_failure_mid_stream_leaves_no_cursor_and_no_entry() {
             }
             Err(ErrorData::invalid_params("producer gave up", None))
         },
-        per_page(10),
+        |_| per_page(10),
     );
 
     let error = outcome.err().expect("the producer error propagates");
@@ -420,7 +419,6 @@ fn paginate_raw_rows_round_trip_without_a_typed_layout() {
         columns: vec!["a".to_owned(), "b".to_owned()],
         page_bytes: 10,
         requested_page_bytes: None,
-        offer_first_row: false,
     };
 
     let served: Served<Totals> = paginate(
@@ -437,7 +435,7 @@ fn paginate_raw_rows_round_trip_without_a_typed_layout() {
                 extra: Totals { produced: 1 },
             })
         },
-        per_page(10),
+        |_| per_page(10),
     )
     .expect("raw page");
 

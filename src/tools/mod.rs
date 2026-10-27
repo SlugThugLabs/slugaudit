@@ -76,8 +76,8 @@ mod golden_phase9_structure_tests;
 mod golden_phase9_finding_read_tests;
 
 pub use context::{
-    PageRequest, PageSpec, Produced, RowSink, Served, decode_rows, ensure_synced, page_request,
-    paginate,
+    PageContext, PageRequest, PageSpec, Produced, RowSink, Served, decode_rows, ensure_synced,
+    page_request, paginate,
 };
 pub use finding::{FindingRequest, FindingResponse, finding};
 pub use finding_read::{FindingReadEntry, FindingReadRequest, FindingReadResponse, finding_read};

@@ -64,21 +64,21 @@ pub enum PageLimit {
     /// The byte budget was reached and that budget is the server ceiling
     /// `max_query_response_bytes`: the requested (or configured default)
     /// `page_bytes` was at or above it and was clamped. A larger `page_bytes`
-    /// returns nothing more; page on with `next_offset`.
+    /// returns nothing more; page on with `cursor`.
     Ceiling,
     /// `structure` only: the per-page match cap `max_structure_matches` was
-    /// reached; more matches exist and `next_offset` continues. A larger
+    /// reached; more matches exist and `cursor` continues. A larger
     /// `page_bytes` does not lift it.
     MatchCap,
     /// `structure` only: the multi-file scan window ended before the
-    /// matching files did (`files_not_scanned` > 0). There is no
-    /// `next_offset`; continue with `start_after_file` =
-    /// `next_start_after_file` and `offset` 0.
+    /// matching files did (`files_not_scanned` > 0). Read the stored result to
+    /// its end with `cursor`, then make a new request with `start_after_file`
+    /// = `next_start_after_file`.
     ScanWindow,
     /// `structure` only: the execution time budget cancelled the parse of
-    /// `parse_timed_out_file`. There is no `next_offset`; continue with
-    /// `start_after_file` = `next_start_after_file` (that file) and `offset`
-    /// 0.
+    /// `parse_timed_out_file`. Read the stored result to its end with
+    /// `cursor`, then make a new request with `start_after_file` =
+    /// `next_start_after_file` (that file).
     TimeBudget,
 }
 
@@ -107,19 +107,19 @@ pub enum Completeness {
 
 /// One page of a paged result; every paged tool carries these fields under
 /// `page` with the same meaning. To page: while `cursor` is present, repeat
-/// the call with only that `cursor`; it names a result stored when the first
-/// call ran, so the rows do not move and no `path` is needed. `cursor` is
-/// absent exactly when `complete` is true. `next_offset` and
-/// `expected_revision` are the pre-cursor mechanism and remain only on the
-/// tools not yet moved to cursors; `structure` alone has a second cursor
-/// there: when `next_offset` is null and `complete` is false, use its
+/// the call with only that `cursor` (plus `page_bytes`, and `limit` on
+/// `leads`, to resize the page); it names a result stored when the first call
+/// ran, so the rows do not move, `revision_id` is that of the first call, and
+/// no `path` is needed. `cursor` is absent exactly when `complete` is true.
+/// `structure` alone has a second step after the last page: when `completeness`
+/// is `partial`, make a new request with `start_after_file` =
 /// `next_start_after_file`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Page {
     /// Items in this page: rows (`leads`, `query`), matches (`structure`),
     /// or findings (`finding_read`).
     pub returned: usize,
-    /// Items the whole request selects, ignoring `offset` and the page cut;
+    /// Items the whole request selects, ignoring the page cut;
     /// never an estimate. Always present; null when the tool cannot count it
     /// (always on `structure`; on `query` when counting ran out of budget).
     /// What it counts is on each tool's `page` property.
@@ -127,19 +127,13 @@ pub struct Page {
     /// True when nothing remains to page. For `structure` it also means no
     /// scan window remains (no `next_start_after_file`).
     pub complete: bool,
-    /// Pre-cursor paging only: always present; null when nothing remains to
-    /// page (`complete`), and on `structure` also when only a new scan window
-    /// remains. Otherwise pass it as `offset` on the next call. Removed with
-    /// the last tool that still uses it.
-    pub next_offset: Option<usize>,
     /// The token for the next page, copied exactly into the next call's
-    /// `cursor`. Omitted when nothing remains (`complete`) and on tools that
-    /// still page by `next_offset`. A cursor does not survive a server
-    /// restart.
+    /// `cursor`. Omitted when nothing remains (`complete`). A cursor does not
+    /// survive a server restart.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
     /// Whether the scan behind the stored result covered everything; omitted
-    /// on tools that do not store results yet.
+    /// when the tool reports no scan.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completeness: Option<Completeness>,
     /// The byte budget that applied to this page's items, in serialized JSON
@@ -156,8 +150,8 @@ pub struct Page {
     pub bytes_used: usize,
     /// What cut this page; `none` exactly when the result ended.
     pub limited_by: PageLimit,
-    /// The index revision every part of this response was read from. Pass it
-    /// as `expected_revision` when resuming.
+    /// The index revision every part of this response was read from: that of
+    /// the call that made the result, on every page.
     pub revision_id: String,
 }
 
@@ -221,12 +215,11 @@ mod tests {
     }
 
     #[test]
-    fn a_page_serializes_exactly_the_eight_shared_field_names() {
+    fn a_page_serializes_exactly_the_seven_shared_field_names() {
         let page = Page {
             returned: 2,
             total: Some(5),
             complete: false,
-            next_offset: Some(2),
             cursor: None,
             completeness: None,
             page_bytes: 100,
@@ -243,7 +236,6 @@ mod tests {
                 "returned": 2,
                 "total": 5,
                 "complete": false,
-                "next_offset": 2,
                 "page_bytes": 100,
                 "bytes_used": 90,
                 "limited_by": "ceiling",
@@ -253,12 +245,11 @@ mod tests {
     }
 
     #[test]
-    fn a_last_page_serializes_next_offset_and_unknown_total_as_json_null() {
+    fn a_last_page_serializes_unknown_total_as_json_null_and_has_no_next_offset() {
         let page = Page {
             returned: 1,
             total: None,
             complete: true,
-            next_offset: None,
             cursor: None,
             completeness: None,
             page_bytes: 100,
@@ -269,14 +260,13 @@ mod tests {
 
         let value = serde_json::to_value(&page).expect("a page serializes");
 
-        assert_eq!(value["next_offset"], serde_json::Value::Null);
         assert_eq!(value["total"], serde_json::Value::Null);
         assert!(
-            value
+            !value
                 .as_object()
                 .expect("an object")
                 .contains_key("next_offset"),
-            "the key stays on the wire"
+            "the pre-cursor field is gone from the wire"
         );
     }
 

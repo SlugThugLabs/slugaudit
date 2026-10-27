@@ -207,7 +207,7 @@ impl PageCut {
         }
     }
 
-    /// The `accept` closure of `paginate_with`.
+    /// The `accept` closure of `paginate`.
     pub(in crate::tools) fn accept(&mut self, row: &StoredRow) -> Take {
         if self.failure.is_some() {
             return Take::No;

@@ -17,7 +17,7 @@ use crate::store::{Cell, Materialize, ResultStoreError, StoredRow, Take};
 use crate::sync::SourceSyncManager;
 use crate::tools::context::internal_error;
 use crate::tools::page_size;
-use crate::tools::paginate::paginate_with;
+use crate::tools::paginate::paginate;
 use crate::tools::{
     Completeness, PageLimit, PageRequest, PageSpec, Produced, Served, decode_rows, page_request,
 };
@@ -138,10 +138,9 @@ pub(super) fn list(
         }
     };
     let mut spec = PageSpec::typed::<MechanicListing>(TOOL, size.map_or(0, |size| size.bytes));
-    spec.offer_first_row = true;
     spec.requested_page_bytes = size.map(|size| size.bytes);
     let failure = RefCell::new(None);
-    let served: Served<ListExtra> = paginate_with(
+    let served: Served<ListExtra> = paginate(
         manager,
         &spec,
         which,

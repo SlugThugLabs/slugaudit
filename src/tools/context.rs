@@ -8,7 +8,8 @@ use rusqlite::{Transaction, TransactionBehavior};
 pub(crate) use sync::SyncedProject;
 
 pub use super::paginate::{
-    PageRequest, PageSpec, Produced, RowSink, Served, decode_rows, page_request, paginate,
+    PageContext, PageRequest, PageSpec, Produced, RowSink, Served, decode_rows, page_request,
+    paginate,
 };
 
 #[cfg(test)]

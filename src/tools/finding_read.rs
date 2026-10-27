@@ -18,7 +18,7 @@
 use super::context::session_id;
 use super::page::{LegacyPaging, Page, PageLimit};
 use super::page_size;
-use super::paginate::{PageRequest, PageSpec, Produced, decode_rows, page_request, paginate_with};
+use super::paginate::{PageRequest, PageSpec, Produced, decode_rows, page_request, paginate};
 use super::resolve_limits;
 use crate::store::StoredRow;
 use crate::sync;
@@ -130,13 +130,12 @@ pub fn finding_read(
         PageRequest::Fresh { path, .. } => Some(page_size::resolve(None, &resolve_limits(path)?)?),
         PageRequest::Cursor(_) => None,
     };
-    let mut spec = PageSpec::typed::<StoredFinding>(TOOL, size.map_or(0, |size| size.bytes));
-    spec.offer_first_row = true;
+    let spec = PageSpec::typed::<StoredFinding>(TOOL, size.map_or(0, |size| size.bytes));
     let current_session = session_id().to_string();
     let scope = (current_session.as_str(), request.file.as_deref());
 
     let mut cut = PageCut::new(0);
-    let served = paginate_with::<FindingExtra, _, _>(
+    let served = paginate::<FindingExtra, _, _>(
         manager,
         &spec,
         page_request,

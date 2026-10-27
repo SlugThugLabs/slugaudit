@@ -51,12 +51,9 @@ pub struct PageSpec {
     /// budget its continuations default to.
     pub page_bytes: usize,
     /// The `page_bytes` a continuation's request carried (already clamped to
-    /// the ceiling by the tool), if any. Read by [`paginate_with`] only: a
-    /// continuation uses it, else the budget stored with the result.
+    /// the ceiling by the tool), if any: a continuation uses it, else the
+    /// budget stored with the result.
     pub requested_page_bytes: Option<usize>,
-    /// Offer the first row of a page to `accept` too (its verdict is ignored:
-    /// the first row is always taken), so the tool's byte accounting sees it.
-    pub offer_first_row: bool,
 }
 
 impl PageSpec {
@@ -67,7 +64,6 @@ impl PageSpec {
             columns: R::columns().iter().map(|name| (*name).to_owned()).collect(),
             page_bytes,
             requested_page_bytes: None,
-            offer_first_row: false,
         }
     }
 }
@@ -173,7 +169,7 @@ struct Stored<E> {
 /// What the page cut may know about the result it cuts, identical on a new
 /// request (after `produce`) and on a continuation (decoded from the stored
 /// result): the tool never reads a process limit or the store to learn it.
-pub(super) struct PageContext<'a, E> {
+pub struct PageContext<'a, E> {
     /// The effective byte budget of this page: the request's own (already
     /// clamped to the ceiling by the tool) or the one the result's first page
     /// used. Also echoed in `page.page_bytes`.
@@ -184,13 +180,18 @@ pub(super) struct PageContext<'a, E> {
     pub extra: &'a E,
 }
 
-/// Serves one page; see the module docs. The budget of a continuation is
-/// `spec.page_bytes`; see [`paginate_with`] for the stored budget.
+/// Serves one page; see the module docs.
 ///
 /// `produce` runs inside the verified read transaction and streams rows
 /// through the [`RowSink`] (it never needs the whole result in memory).
-/// `accept` decides where the byte-limited page ends; the first row is always
-/// taken.
+/// `accept_for` receives one [`PageContext`] for both branches: the effective
+/// budget (a continuation's `requested_page_bytes` when it carries one, else
+/// the budget stored with the result; a new request's is `spec.page_bytes`),
+/// the stored column names and the stored extras. It returns the `accept`
+/// closure, which must own what it needs from the context. Every row of the
+/// page is offered to `accept`, the first too so the tool's byte accounting
+/// sees it; the first is always taken whatever the verdict, so a page always
+/// advances, and the page ends at the first later `No`.
 ///
 /// # Errors
 ///
@@ -199,39 +200,6 @@ pub(super) struct PageContext<'a, E> {
 /// or `result_store_unavailable`. A failed materialisation leaves no cursor
 /// and no stored result.
 pub fn paginate<E, P, A>(
-    manager: &SourceSyncManager,
-    spec: &PageSpec,
-    request: PageRequest<'_>,
-    produce: P,
-    accept: A,
-) -> Result<Served<E>, ErrorData>
-where
-    E: Serialize + DeserializeOwned,
-    P: FnOnce(&Transaction<'_>, &mut RowSink<'_, '_>) -> Result<Produced<E>, ErrorData>,
-    A: FnMut(&StoredRow) -> Take,
-{
-    // The caller's budget is the effective one on every page.
-    let pinned = PageSpec {
-        tool: spec.tool,
-        columns: spec.columns.clone(),
-        page_bytes: spec.page_bytes,
-        requested_page_bytes: Some(spec.page_bytes),
-        offer_first_row: spec.offer_first_row,
-    };
-    paginate_with(manager, &pinned, request, produce, |_| accept)
-}
-
-/// [`paginate`] for a caller whose `accept` depends on the result it cuts.
-/// `accept_for` receives one [`PageContext`] for both branches: the effective
-/// budget (a continuation's `requested_page_bytes` when it carries one, else
-/// the budget stored with the result; a new request's is `spec.page_bytes`),
-/// the stored column names and the stored extras. It returns the `accept`
-/// closure, which must own what it needs from the context.
-///
-/// # Errors
-///
-/// As [`paginate`].
-pub(super) fn paginate_with<E, P, A>(
     manager: &SourceSyncManager,
     spec: &PageSpec,
     request: PageRequest<'_>,
@@ -294,15 +262,7 @@ where
                 .map_err(|error| internal_error("encoding the result extras", error))?;
             let handle = writer.finish(&encoded).map_err(|e| store_error(&e))?;
             let meta = store.meta_of(handle.id).map_err(|e| store_error(&e))?;
-            serve(
-                &store,
-                spec,
-                handle.id,
-                0,
-                stored,
-                meta.as_ref(),
-                accept_for,
-            )
+            serve(&store, handle.id, 0, stored, meta.as_ref(), accept_for)
         }
     }
 }
@@ -339,7 +299,6 @@ where
     }
     serve(
         &store,
-        spec,
         cursor.result,
         cursor.ord,
         stored,
@@ -352,7 +311,6 @@ where
 /// and the effective budget (`stored.page_bytes`), `meta` the stored columns.
 fn serve<E, A>(
     store: &ResultStore,
-    spec: &PageSpec,
     id: ResultId,
     from_ord: u64,
     stored: Stored<E>,
@@ -369,14 +327,13 @@ where
         extra: &stored.extra,
     });
     let read = store
-        .read_page_with(id, from_ord, spec.offer_first_row, accept)
+        .read_page(id, from_ord, accept)
         .map_err(|e| store_error(&e))?;
     let complete = read.next_ord.is_none();
     let page = Page {
         returned: read.rows.len(),
         total: Some(read.row_count),
         complete,
-        next_offset: None,
         cursor: read.next_ord.map(|ord| store.cursor(id, ord).to_string()),
         completeness: Some(stored.completeness),
         page_bytes,

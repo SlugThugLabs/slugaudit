@@ -319,10 +319,6 @@ fn an_oversized_description_is_clipped_on_a_char_boundary_and_flagged() {
             response.page.bytes_used,
             response.page.page_bytes
         );
-        assert!(
-            response.page.next_offset.is_none(),
-            "the scope was exhausted"
-        );
         assert!(response.page.complete, "the scope was exhausted");
     });
 }
