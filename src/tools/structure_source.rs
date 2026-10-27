@@ -1,5 +1,5 @@
 // slugaudit-line-exception: approved-by=slugthug; reason=every index read structure makes (single file, size-checked window, continuation counts) shares one filter and one error mapping
-use super::context::{SyncedProject, internal_error, with_verified_read};
+use super::context::internal_error;
 use super::structure::StructureRequest;
 use crate::error_codes::{self, ErrorCode};
 use crate::parse::PROSE_LANGUAGE;
@@ -240,15 +240,15 @@ pub(super) fn fetch_sources_for_language(
 /// The grammar to use and the window of `(path, content)` pairs to scan: the
 /// one named file (language detected from the index; refused when over
 /// `max_parse_bytes`), or the next memory window of indexed files of the
-/// requested language matching `pattern`.
+/// requested language matching `pattern`. Reads through the caller's verified
+/// read transaction, so the window and the scan share one revision.
 pub(super) fn load_targets(
-    synced: &SyncedProject,
+    connection: &rusqlite::Connection,
     request: &StructureRequest,
     bounds: WindowBounds,
 ) -> Result<(String, SourceWindow), ErrorData> {
     if let Some(file) = &request.file {
-        let (content, detected) =
-            with_verified_read(synced, |tx| fetch_source(tx, file, bounds.max_parse_bytes))?;
+        let (content, detected) = fetch_source(connection, file, bounds.max_parse_bytes)?;
         let files = vec![(file.clone(), content)];
         return Ok((detected, SourceWindow::complete(files)));
     }
@@ -258,16 +258,14 @@ pub(super) fn load_targets(
             None,
         )
     })?;
-    let window = with_verified_read(synced, |tx| {
-        ensure_indexed_language(tx, language)?;
-        fetch_sources_for_language(
-            tx,
-            language,
-            request.pattern.as_deref(),
-            request.start_after_file.as_deref(),
-            bounds,
-        )
-    })?;
+    ensure_indexed_language(connection, language)?;
+    let window = fetch_sources_for_language(
+        connection,
+        language,
+        request.pattern.as_deref(),
+        request.start_after_file.as_deref(),
+        bounds,
+    )?;
     Ok((language.to_owned(), window))
 }
 

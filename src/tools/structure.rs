@@ -2,33 +2,41 @@
 //! validation, and target loading. Query execution lives in
 //! `structure_exec`.
 
-use super::context::{ensure_synced, guard_expected_revision};
-use super::page::Page;
+use super::page::{LegacyPaging, Page};
 use super::page_size;
-use super::structure_exec::run_query;
-use super::structure_page::{OutputMode, Paging, structure_response};
-use crate::model::ResourceLimits;
+use super::paginate::{PageSpec, page_request, paginate};
+use super::structure_exec::produce;
+use super::structure_page::structure_response;
+use crate::model::{ResourceLimits, process_limits};
 use crate::sync;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tree_sitter::Query;
+use stored::{PageCut, StoredMatch};
 
 const MAX_PATH_BYTES: usize = 32 * 1024;
 const MAX_FILTER_BYTES: usize = 8 * 1024;
-const MAX_REVISION_BYTES: usize = 256;
 
+use super::structure_source::MAX_MULTI_FILE_TOTAL_BYTES;
 #[cfg(test)]
 pub(super) use super::structure_source::MAX_TEXT_BYTES;
-use super::structure_source::{MAX_MULTI_FILE_TOTAL_BYTES, WindowBounds, load_targets};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 /// A Tree-sitter query to run against one indexed file, or every indexed
-/// file of one language.
+/// file of one language. The matches are stored when the call runs; the
+/// response's `page.cursor` pages through that stored answer.
 pub struct StructureRequest {
-    /// Any path inside the active project.
+    /// Any path inside the active project. Required without `cursor`;
+    /// ignored with one.
+    #[serde(default)]
     pub path: String,
+    /// The `page.cursor` of a previous response, copied exactly. It
+    /// continues that stored result: nothing is synced or re-scanned, and
+    /// `path` and every other request-shaping parameter are ignored
+    /// (`page_bytes` still applies).
+    #[serde(default)]
+    pub cursor: Option<String>,
     /// Project-relative path of a single file to match against.
     /// When omitted, matches all files in the project matching `language`.
     #[serde(default)]
@@ -51,12 +59,6 @@ pub struct StructureRequest {
     /// Defaults to true for single-file queries, and false (lean 1-line snippet) for multi-file queries.
     #[serde(default)]
     pub full_text: Option<bool>,
-    /// Number of matches to skip when paging through a result; use the
-    /// previous response's `page.next_offset`. Valid only while
-    /// `page.revision_id` is unchanged, and only together with the same
-    /// `start_after_file`.
-    #[serde(default)]
-    pub offset: usize,
     /// Page size in serialized JSON bytes of `matches`. Omit it for the server
     /// default (64 KiB unless configured otherwise; the response's
     /// `page.page_bytes` says what applied). A value above the hard ceiling
@@ -68,14 +70,16 @@ pub struct StructureRequest {
     #[serde(default)]
     pub page_bytes: Option<usize>,
     /// Multi-file queries only: scan only files whose path sorts strictly
-    /// after this one. Use the previous response's `next_start_after_file`
-    /// when it reports `files_not_scanned`.
+    /// after this one. To scan the files a window-limited result did not
+    /// reach, make a new request with `start_after_file` set to the result's
+    /// `resume_after_file` (also reported as `next_start_after_file`); it
+    /// syncs and describes the current tree.
     #[serde(default)]
     pub start_after_file: Option<String>,
-    /// Set to the previous page's `page.revision_id`; if the index changed
-    /// since, the call is refused with `stale_revision`.
-    #[serde(default)]
-    pub expected_revision: Option<String>,
+    /// Refuses the removed `offset` and `expected_revision` parameters.
+    #[serde(flatten, default)]
+    #[schemars(skip)]
+    pub legacy_paging: LegacyPaging,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -102,10 +106,11 @@ pub struct StructureMatch {
 /// The matches for one structure call, the revision they were read from,
 /// and every cut that bounded them, each with the way past it.
 pub struct StructureResponse {
-    /// Paging for `matches`, with two cursors: `next_offset` continues inside
-    /// the scan window, `next_start_after_file` (beside this object) starts
-    /// the next. `complete` means neither remains. `total` is always null
-    /// (counting needs the whole scan).
+    /// Paging for `matches`. `cursor` pages through the stored result;
+    /// `completeness` says whether the scan behind it covered everything
+    /// (`partial` names `resume_after_file`). `complete` means no page and no
+    /// scan window remains. `total` is always null (counting needs the whole
+    /// scan).
     pub page: Page,
     /// The grammar this query ran against.
     pub language: String,
@@ -115,20 +120,17 @@ pub struct StructureResponse {
     /// Multi-file only: matching files past the memory window that were not
     /// loaded into this call's scan window, so certainly not scanned. Zero
     /// means every matching file after `start_after_file` was loaded into the
-    /// window — it does not mean every loaded file was scanned, because a page
-    /// cut (`page.next_offset` present) can stop inside the window and leave
-    /// later loaded files contributing nothing to this page. When above 0
-    /// `page.complete` is false: finish `page.next_offset` paging, then repeat
-    /// with `start_after_file` = `next_start_after_file` and offset 0.
+    /// window. When above 0 the stored result is `partial` and
+    /// `page.complete` is false: read it to the end with `page.cursor`, then
+    /// make a new request with `start_after_file` = `next_start_after_file`.
     pub files_not_scanned: usize,
     /// Content bytes of those unscanned files.
     pub bytes_not_scanned: u64,
-    /// The second cursor: the `start_after_file` that starts the next scan
-    /// window, with `offset` 0. Present when `files_not_scanned` > 0
-    /// (`page.limited_by` = `scan_window` once `page.next_offset` is
-    /// exhausted), or when `parse_timed_out_file` is set (then it is that
-    /// file, so the next window skips it; `page.limited_by` =
-    /// `time_budget`).
+    /// The `start_after_file` for the new request that scans past this
+    /// result (the result's `resume_after_file`). Present when
+    /// `files_not_scanned` > 0 (`completeness.limited_by` = `scan_window`),
+    /// or when `parse_timed_out_file` is set (then it is that file, so the
+    /// new request skips it; `completeness.limited_by` = `time_budget`).
     pub next_start_after_file: Option<String>,
     /// Multi-file only: files the parser produced no syntax tree for, so they
     /// contributed no matches. Empty when none.
@@ -142,9 +144,10 @@ pub struct StructureResponse {
     /// Multi-file only: set when the execution time budget ran out while this
     /// file was being parsed. The parse was cancelled, the scan stopped, and
     /// `matches` holds only what earlier files produced: the result is
-    /// incomplete. Resume with `start_after_file` = `next_start_after_file`
-    /// (this file) to continue past it. A single-file query whose parse runs
-    /// out of time is refused with the execution-budget error instead.
+    /// partial. Make a new request with `start_after_file` =
+    /// `next_start_after_file` (this file) to continue past it. A single-file
+    /// query whose parse runs out of time is refused with the
+    /// execution-budget error instead.
     pub parse_timed_out_file: Option<String>,
 }
 
@@ -152,13 +155,21 @@ pub struct StructureResponse {
 ///
 /// Returns an error if `request.path` isn't an active project, `request.file`
 /// isn't indexed with a detected, pack-supported language, the query text
-/// is empty/too large or fails to compile, or the parser returns no tree.
+/// is empty/too large or fails to compile, the parser returns no tree, the
+/// request carries the removed `offset` or `expected_revision`, or `cursor`
+/// names no readable stored result.
 pub fn structure(
     request: &Parameters<StructureRequest>,
     sink: &dyn crate::progress::ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<StructureResponse>, ErrorData> {
-    let limits = super::resolve_limits(&request.0.path)?;
+    let request_path = request.0.path.as_str();
+    // A continuation ignores `path`, so it has no project to read limits from.
+    let limits = if request.0.cursor.is_none() && !request_path.is_empty() {
+        super::resolve_limits(request_path)?
+    } else {
+        *process_limits()
+    };
     structure_with_limits(request, &limits, MAX_MULTI_FILE_TOTAL_BYTES, sink, manager)
 }
 
@@ -175,53 +186,36 @@ fn structure_with_limits(
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<StructureResponse>, ErrorData> {
     let request = &request.0;
-    validate_request(request, limits)?;
+    request.legacy_paging.refuse()?;
     let page = page_size::resolve(request.page_bytes, limits)?;
-
-    let synced = ensure_synced(&request.path, sink, manager)?;
-    guard_expected_revision(&synced.revision_id, request.expected_revision.as_deref())?;
-    let bounds = WindowBounds {
-        window_bytes,
-        max_parse_bytes: limits.max_parse_bytes,
-    };
-    let (target_language, window) = load_targets(&synced, request, bounds)?;
-    let (ts_language, compiled_query) = compile_query(&target_language, &request.query)?;
-
-    let single_file = request.file.is_some();
-    let mode = OutputMode {
-        full_text: request.full_text.unwrap_or(single_file),
-        single_file,
-    };
-    let paging = Paging {
-        offset: request.offset,
-        page_bytes: page.bytes,
-    };
-    let run = run_query(
-        &compiled_query,
-        &ts_language,
-        &window.files,
-        limits,
-        &mode,
-        &paging,
+    let path = (!request.path.is_empty()).then_some(request.path.as_str());
+    let page_request = page_request(request.cursor.as_deref(), path, sink)?;
+    match request.cursor.as_deref() {
+        Some(cursor) => validate_cursor(cursor)?,
+        None => validate_request(request, limits)?,
+    }
+    let spec = PageSpec::typed::<StoredMatch>("structure", page.bytes);
+    let mut cut = PageCut::new(page, limits.max_structure_matches);
+    let served = paginate(
+        manager,
+        &spec,
+        page_request,
+        |tx, rows| produce(tx, rows, request, limits, window_bytes),
+        |row| cut.accept(row),
     )?;
-    Ok(structure_response(
-        synced.revision_id,
-        target_language,
-        window,
-        run,
-        page,
-        request.offset,
-    ))
+    cut.check()?;
+    structure_response(served, &cut)
 }
 
-/// Compiles the requested grammar and query, mapping failures to contract
-/// errors.
-fn compile_query(language: &str, text: &str) -> Result<(tree_sitter::Language, Query), ErrorData> {
-    let ts_language = tree_sitter_language_pack::get_language(language)
-        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-    let compiled_query = Query::new(&ts_language, text)
-        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-    Ok((ts_language, compiled_query))
+/// Bounds the cursor like every other string input.
+fn validate_cursor(cursor: &str) -> Result<(), ErrorData> {
+    if crate::util::exceeds_input_bytes(cursor, MAX_FILTER_BYTES) {
+        return Err(ErrorData::invalid_params(
+            format!("cursor exceeds {MAX_FILTER_BYTES} bytes"),
+            None,
+        ));
+    }
+    Ok(())
 }
 
 /// Rejects oversized or empty inputs before any sync or parse work.
@@ -237,11 +231,6 @@ fn validate_request(request: &StructureRequest, limits: &ResourceLimits) -> Resu
             "start_after_file",
             request.start_after_file.as_deref(),
             MAX_PATH_BYTES,
-        ),
-        (
-            "expected_revision",
-            request.expected_revision.as_deref(),
-            MAX_REVISION_BYTES,
         ),
     ] {
         if value.is_some_and(|value| crate::util::exceeds_input_bytes(value, max_bytes)) {
@@ -283,6 +272,9 @@ fn validate_request(request: &StructureRequest, limits: &ResourceLimits) -> Resu
     Ok(())
 }
 
+#[path = "structure_stored.rs"]
+pub(super) mod stored;
+
 #[cfg(test)]
 #[path = "structure_tests.rs"]
 mod tests;
@@ -298,3 +290,7 @@ mod parse_bounds_tests;
 #[cfg(test)]
 #[path = "structure_language_tests.rs"]
 mod language_tests;
+
+#[cfg(test)]
+#[path = "structure_paged_tests.rs"]
+mod paged_tests;
