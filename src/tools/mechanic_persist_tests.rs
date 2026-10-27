@@ -30,6 +30,9 @@ fn a_persisted_mechanic_is_reloaded_by_a_new_server_and_a_session_one_is_not() {
         add(&path, "py_eval_session", "python", EVAL_QUERY),
     )
     .expect("add");
+    // One manager per process in production: the first server's owner lock
+    // (keyed by the shared session id) must be released before a second starts.
+    drop(first_server);
 
     let second_server = sync::SourceSyncManager::default();
     let leads = run_leads(&second_server, leads_request(&path, None, LeadMode::Full));

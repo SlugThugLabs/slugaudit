@@ -83,8 +83,10 @@ fn golden_phase9_leads_counts_rows_pages_and_compact() {
 
 fn mechanic_request(project: &tempfile::TempDir, action: MechanicAction) -> MechanicRequest {
     MechanicRequest {
-        path: path_of(project),
+        path: Some(path_of(project)),
         action,
+        cursor: None,
+        legacy_paging: LegacyPaging::default(),
         id: None,
         index: None,
         language: None,
@@ -123,6 +125,8 @@ fn clone_mechanic(request: &MechanicRequest) -> MechanicRequest {
     MechanicRequest {
         path: request.path.clone(),
         action: request.action,
+        cursor: request.cursor.clone(),
+        legacy_paging: LegacyPaging::default(),
         id: request.id.clone(),
         index: request.index,
         language: request.language.clone(),

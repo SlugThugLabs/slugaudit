@@ -66,6 +66,7 @@ src/
 │   ├── query_clip.rs         clipping an oversized first row's TEXT/BLOB cells, with substr continuations
 │   ├── query_clip_tests.rs   clipping walks (5 MB text, blob, units) and line functions through query
 │   ├── query_error_tests.rs  sql_error on SQLite failures; refusals and value caps carry no code
+│   ├── query_paged_tests.rs  query paged through the result store: cursor, snapshot, continuation
 │   ├── golden_phase9_support.rs  shared golden helpers: fixtures, normalise, mask_paging (removes paging keys), check_case
 │   ├── golden_phase9_leads_tests.rs  leads golden cases (counts, rows, compact, custom mechanic rows)
 │   ├── golden_phase9_mechanic_tests.rs  mechanic add/list golden cases
@@ -78,6 +79,8 @@ src/
 │   ├── structure_source.rs   source loading + multi-file and snippet helpers
 │   ├── structure_parse_bounds_tests.rs max_parse_bytes skip, window-before-load and parse-timeout partials
 │   ├── structure_language_tests.rs unknown_language naming the indexed languages
+│   ├── structure_stored.rs   structure matches stored as a result and served by cursor
+│   ├── structure_paged_tests.rs structure paged through the result store: both cursors, continuation
 │   ├── leads.rs              unranked mechanical observations
 │   ├── leads_mechanics.rs    the leads mechanic catalogue
 │   ├── leads_covers.rs       each count's `covers`: the languages the mechanic read
@@ -87,17 +90,24 @@ src/
 │   ├── leads_page.rs         one response assembled: counts, a row page, or the compact enumeration
 │   ├── leads_compact.rs      the compact mechanic/file/line row shape over one mechanic or all
 │   ├── leads_custom.rs       registered mechanics in leads: counts and the streaming page cut
+│   ├── leads_stored.rs       leads rows stored as a result and served by cursor
+│   ├── leads_paged_tests.rs  leads paged through the result store: cursor, partial custom scans
 │   ├── mechanic.rs           auditor-registered mechanics: add/remove/list contract
 │   ├── mechanic_register.rs  add/remove: id, collision and cap rules beside the writes they guard
+│   ├── mechanic_list.rs      the stored `list` result and its cursor continuation
 │   ├── mechanic_catalog.rs   one call's catalogue: session, project_config, built-ins, and invalid entries
 │   ├── mechanic_scan.rs      a registered mechanic's tree-sitter scan under one deadline
 │   ├── mechanic_scan_cached.rs the per-revision cache in front of that scan: lookup, one pass for the misses, rows kept for paging
 │   ├── mechanic_tests.rs     add/count/remove, collisions, refused queries and languages, ordering, first-report note
 │   ├── mechanic_persist_tests.rs persist/reload, other keys kept, symlink refused, invalid entries reported and removed by index
 │   ├── mechanic_scan_tests.rs which registered entries a leads call scans; the spent-budget error and its code
+│   ├── mechanic_paged_tests.rs mechanic list paged through the result store
+│   ├── mechanic_scan_stop_tests.rs a registered mechanic's scan stopped by the deadline: partial page and resume_after_file
 │   ├── finding.rs            the single write tool: request/response contract and caps
 │   ├── finding_insert.rs     validation + session-scoped insert-or-refresh of a finding
 │   ├── finding_read.rs       session-gated finding query
+│   ├── finding_read_rows.rs  finding_read row selection and conversion for the result store
+│   ├── finding_read_paged_tests.rs finding_read paged through the result store
 │   ├── project_control.rs    enable/disable a project: contract and handlers
 │   ├── health.rs             operational snapshot: schema, process counters, DB read
 │   └── health_phase.rs       health's per-project state derivation (no side effects)

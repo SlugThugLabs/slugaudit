@@ -76,14 +76,14 @@ pub(super) fn call(
 
 pub(super) fn leads_request(path: &str, mechanic: Option<&str>, mode: LeadMode) -> LeadsRequest {
     LeadsRequest {
-        path: path.to_owned(),
+        path: Some(path.to_owned()),
         mechanic: mechanic.map(str::to_owned),
         pattern: None,
         limit: None,
-        offset: None,
-        expected_revision: None,
+        cursor: None,
         mode,
         page_bytes: None,
+        legacy_paging: crate::tools::LegacyPaging::default(),
     }
 }
 
@@ -220,10 +220,10 @@ fn a_registered_mechanic_pages_by_limit_and_offset_with_cumulative_files() {
     );
     assert_eq!(first.page.limited_by, crate::tools::PageLimit::Limit);
     assert_eq!((first.files_total, first.files_covered), (2, 1));
-    assert_eq!(first.page.next_offset, Some(3));
+    assert!(first.page.cursor.is_some());
     let mut next = leads_request(&path, Some("py_eval"), LeadMode::Compact);
-    next.offset = first.page.next_offset;
-    next.expected_revision = Some(first.page.revision_id.clone());
+    next.path = None;
+    next.cursor = first.page.cursor.clone();
     let second = run_leads(&manager, next);
     assert_eq!((second.page.returned, second.page.complete), (1, true));
     assert_eq!(second.files_covered, 2);
@@ -255,7 +255,8 @@ fn a_compact_whole_surface_page_lists_registered_rows_before_builtin_rows() {
     assert_eq!((first.page.returned, first.page.total), (4, Some(5)));
     assert_eq!((first.files_total, first.files_covered), (3, 2));
     let mut next = leads_request(&path, None, LeadMode::Compact);
-    next.offset = first.page.next_offset;
+    next.path = None;
+    next.cursor = first.page.cursor.clone();
     let second = run_leads(&manager, next);
     let LeadRows::Compact(rows) = &second.rows else {
         panic!("a compact page");

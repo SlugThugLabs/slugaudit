@@ -107,14 +107,14 @@ pub(super) fn add(
     let mut catalog = mechanic_catalog::load(root, session, limits);
     insert_candidate(&mut catalog, entry.clone(), source, query);
     let first = LeadsRequest {
-        path: path.to_owned(),
+        path: Some(path.to_owned()),
         mechanic: Some(entry.id.clone()),
         pattern: None,
         limit: request.limit,
-        offset: None,
-        expected_revision: None,
+        cursor: None,
         mode: LeadMode::Full,
         page_bytes: request.page_bytes,
+        legacy_paging: crate::tools::LegacyPaging::default(),
     };
     let first_count = leads_with_catalog(&first, limits, &catalog, sink, manager)?;
     session.with_entries(|entries| {

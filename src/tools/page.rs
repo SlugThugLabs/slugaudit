@@ -15,14 +15,7 @@ use rmcp::ErrorData;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::context::internal_error;
 use crate::error_codes::{ErrorCode, payload};
-
-/// Converts a SQLite count into [`Page::total`]'s unsigned type. A count is
-/// never negative, so a negative one is an internal error, not a clamp.
-pub(super) fn total_of(count: i64) -> Result<u64, ErrorData> {
-    u64::try_from(count).map_err(|error| internal_error("reading a negative row total", error))
-}
 
 /// The pre-cursor paging parameters, kept only so a request that still sends
 /// them is refused with a message instead of the parameters being silently
@@ -285,18 +278,6 @@ mod tests {
                 .contains_key("next_offset"),
             "the key stays on the wire"
         );
-    }
-
-    #[test]
-    fn a_negative_count_is_refused_as_a_page_total() {
-        let error = total_of(-1).expect_err("a negative count is not a total");
-
-        assert!(
-            error.message.contains("negative row total"),
-            "{}",
-            error.message
-        );
-        assert_eq!(total_of(7).expect("a count converts"), 7);
     }
 
     #[test]
