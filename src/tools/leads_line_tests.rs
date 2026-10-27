@@ -24,10 +24,10 @@ fn scanned_line(needle: &str) -> i64 {
 fn sql_rows(project: &tempfile::TempDir, sql: &str) -> Vec<serde_json::Value> {
     query(
         &Parameters(QueryRequest {
-            path: project.path().to_string_lossy().into_owned(),
+            path: Some(project.path().to_string_lossy().into_owned()),
             sql: sql.to_owned(),
-            offset: 0,
-            expected_revision: None,
+            cursor: None,
+            legacy_paging: Default::default(),
             page_bytes: None,
         }),
         &crate::progress::NoopProgressSink,

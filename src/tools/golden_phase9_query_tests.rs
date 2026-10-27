@@ -2,24 +2,43 @@
 use super::golden_phase9_support::{check_case, path_of, rust_project};
 use crate::progress::NoopProgressSink;
 use crate::sync::SourceSyncManager;
-use crate::tools::{QueryRequest, query};
+use crate::tools::{LegacyPaging, QueryRequest, query};
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::{Value, json};
+
+/// The fixtures were recorded before `total_unavailable` was removed; the
+/// field is always null there, so it is put back to compare the rest.
+fn restore_removed_field(mut response: Value) -> Value {
+    response["total_unavailable"] = Value::Null;
+    response
+}
 
 fn run_query(
     project: &tempfile::TempDir,
     manager: &SourceSyncManager,
     sql: &str,
-    offset: usize,
     page_bytes: Option<usize>,
-    expected_revision: Option<String>,
+) -> Value {
+    call(manager, Some(path_of(project)), sql, None, page_bytes)
+}
+
+fn run_cursor(manager: &SourceSyncManager, cursor: &str, page_bytes: Option<usize>) -> Value {
+    call(manager, None, "", Some(cursor.to_owned()), page_bytes)
+}
+
+fn call(
+    manager: &SourceSyncManager,
+    path: Option<String>,
+    sql: &str,
+    cursor: Option<String>,
+    page_bytes: Option<usize>,
 ) -> Value {
     let response = query(
         &Parameters(QueryRequest {
-            path: path_of(project),
+            path,
             sql: sql.to_owned(),
-            offset,
-            expected_revision,
+            cursor,
+            legacy_paging: LegacyPaging::default(),
             page_bytes,
         }),
         &NoopProgressSink,
@@ -27,13 +46,13 @@ fn run_query(
     )
     .expect("query succeeds")
     .0;
-    serde_json::to_value(response).expect("response serializes")
+    restore_removed_field(serde_json::to_value(response).expect("response serializes"))
 }
 
 fn query_case(name: &str, sql: &str, page_bytes: Option<usize>) {
     let project = rust_project();
     let manager = SourceSyncManager::default();
-    let response = run_query(&project, &manager, sql, 0, page_bytes, None);
+    let response = run_query(&project, &manager, sql, page_bytes);
     check_case(
         name,
         &project,
@@ -120,18 +139,18 @@ fn golden_phase9_query_multi_page() {
     let project = rust_project();
     let manager = SourceSyncManager::default();
     let sql = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<60) SELECT i, printf('%050d', i) AS pad FROM n";
-    let one = run_query(&project, &manager, sql, 0, Some(1000), None);
+    let one = run_query(&project, &manager, sql, Some(1000));
     check_case(
         "query_multi_page1",
         &project,
         &json!({ "sql": sql, "page_bytes": 1000 }),
         &one,
     );
-    let next = one["page"]["next_offset"]
-        .as_u64()
-        .expect("a second page exists");
-    let revision = one["page"]["revision_id"].as_str().map(str::to_owned);
-    let two = run_query(&project, &manager, sql, next as usize, Some(1000), revision);
+    let cursor = one["page"]["cursor"]
+        .as_str()
+        .expect("a second page exists")
+        .to_owned();
+    let two = run_cursor(&manager, &cursor, Some(1000));
     check_case(
         "query_multi_page2",
         &project,

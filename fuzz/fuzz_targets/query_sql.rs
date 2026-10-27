@@ -50,10 +50,10 @@ fuzz_target!(|data: &[u8]| {
     }
     let fixture = &*support::FIXTURE;
     let request = Parameters(QueryRequest {
-        path: fixture.path(),
+        path: Some(fixture.path()),
         sql: String::from_utf8_lossy(data).into_owned(),
-        offset: 0,
-        expected_revision: None,
+        cursor: None,
+        legacy_paging: Default::default(),
         page_bytes: None,
     });
 

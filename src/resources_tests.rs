@@ -262,10 +262,10 @@ fn every_sql_recipe_runs_unedited_through_the_query_tool() {
         let sql = std::fs::read_to_string(recipe).expect("read the recipe");
         let response = crate::tools::query(
             &rmcp::handler::server::wrapper::Parameters(crate::tools::QueryRequest {
-                path: project.path().to_string_lossy().into_owned(),
+                path: Some(project.path().to_string_lossy().into_owned()),
                 sql,
-                offset: 0,
-                expected_revision: None,
+                cursor: None,
+                legacy_paging: Default::default(),
                 page_bytes: None,
             }),
             &crate::progress::NoopProgressSink,

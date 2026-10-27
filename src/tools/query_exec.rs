@@ -1,34 +1,37 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=Everything one query statement runs under (engine value and SQL length limits, VM-step and wall-clock budgets) together with the paging that runs inside them.
+// slugaudit-line-exception: approved-by=slugthug; reason=Everything one query statement runs under (engine value and SQL length limits, VM-step and wall-clock budgets) together with the materialisation and paging that run inside them.
 //! Executing one `query` statement: the VM-step and wall-clock budgets, the
-//! byte-budgeted page, and the exact total.
+//! materialisation of its rows into the result store, and the byte-budgeted
+//! page served from the stored copy.
 //!
 //! Split from `query.rs` so that file stays the tool contract (request and
 //! response shapes, validation order, statement validation and error text)
 //! and this one owns what runs under the progress handler.
 
-use super::query_clip::{ClippedCell, clip_row};
-use super::query_value::{
-    Collected, RowTotal, non_finite_cells, read_row, row_serialized_lower_bound, row_to_json,
-};
+use super::query_value::{Collected, PageBuilder, cell_from, read_row, values_of};
 
 use super::context::internal_error;
+use super::page::{Completeness, Page};
+use super::page_size::PageSize;
+use super::paginate::{PageRequest, PageSpec, Produced, RowSink, Served, paginate};
 use super::query::{
     ABORT_NONE, ABORT_STEP_BUDGET, ABORT_WALL_CLOCK, describe_error, refuse_wrapped,
     single_statement_body,
 };
 use crate::model::{ResourceLimits, SQLITE_MAX_VALUE_BYTES};
-use crate::util::serialized_len;
+use crate::progress::ProgressSink;
+use crate::store::Take;
+use crate::sync::SourceSyncManager;
 use rmcp::ErrorData;
+use rusqlite::Transaction;
 use rusqlite::limits::Limit;
-use rusqlite::types::Value as SqlValue;
-use rusqlite::{MappedRows, Row, Transaction};
+use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
-/// Bytes the page and count wrappers add around the caller's statement:
-/// `SELECT * FROM (\n`, `\n) LIMIT -1 OFFSET ` and an offset of at most 19
-/// digits is 54; the count wrapper is shorter. Rounded up so the engine's
+/// Bytes the wrapper adds around the caller's statement:
+/// `SELECT * FROM (\n` and `\n) LIMIT -1 OFFSET 0` is 35. Rounded up so the engine's
 /// SQL-length limit never refuses a statement the tool's own
 /// `max_query_sql_bytes` check accepted.
 const WRAPPER_OVERHEAD_BYTES: u64 = 64;
@@ -128,190 +131,190 @@ fn clear_budget(tx: &Transaction<'_>) {
     tx.progress_handler(0, None::<fn() -> bool>);
 }
 
-/// Executes `trimmed` under a VM-step and wall-clock budget, returning the
-/// rows that fit `page_bytes` and the exact size of the whole result (or the
-/// reason it could not be counted).
-///
-/// The total costs nothing extra when the page already ends the result: then
-/// it is `offset + rows` exactly. Only a cut page (or an `offset` past the
-/// end) is counted, by SQLite, under its own fresh budget — a count that
-/// exhausts it reports why instead of failing the call.
-pub(super) fn run_query(
+/// The tool-level extras stored with a `query` result and returned on every
+/// page: the column names, which a continuation needs to key its rows.
+#[derive(Serialize, Deserialize)]
+struct QueryMeta {
+    columns: Vec<String>,
+}
+
+/// The producer handed to a continuation, which never produces.
+fn never_produces<E>(
+    _: &Transaction<'_>,
+    _: &mut RowSink<'_, '_>,
+) -> Result<Produced<E>, ErrorData> {
+    Err(internal_error(
+        "continuing a stored query result",
+        "a continuation must not produce rows",
+    ))
+}
+
+/// The one statement shape every query runs as. The user SQL is wrapped on
+/// its own line so a trailing `-- line comment` terminates at the newline
+/// rather than swallowing the closing `)`, which would otherwise produce a
+/// confusing parse error. The wrapper makes anything but a `SELECT`/`WITH` a
+/// syntax error. `LIMIT -1 OFFSET 0` is "everything"; paging is the store's.
+fn wrapped_sql(body: &str) -> String {
+    format!("SELECT * FROM (\n{body}\n) LIMIT -1 OFFSET 0")
+}
+
+/// Proves `trimmed` is one statement that runs as the wrapper's subquery and
+/// returns its result column names, so the result can be created before the
+/// first row exists. No row is read.
+fn result_columns(
     tx: &Transaction<'_>,
     trimmed: &str,
-    offset: usize,
-    page_bytes: usize,
     limits: &ResourceLimits,
-) -> Result<Collected, ErrorData> {
+) -> Result<Vec<String>, ErrorData> {
     apply_engine_limits(tx, limits)?;
-    let abort_reason = install_budget(tx, limits);
-    let page = single_statement_body(tx, trimmed, &abort_reason)
-        .and_then(|body| execute_and_collect(tx, body, offset, page_bytes, limits, &abort_reason));
-    clear_budget(tx);
-    let (body, mut collected) = page?;
-    let rows_len = i64::try_from(collected.rows.len())
-        .map_err(|error| internal_error("counting the page's rows", error))?;
-    let offset_rows = i64::try_from(offset)
-        .map_err(|error| ErrorData::invalid_params(format!("offset {offset}: {error}"), None))?;
-    collected.total = if !collected.more && (offset == 0 || rows_len > 0) {
-        RowTotal::Exact(offset_rows.saturating_add(rows_len))
-    } else {
-        let count_budget = install_budget(tx, limits);
-        let counted = count_rows(tx, &body, &count_budget);
-        clear_budget(tx);
-        counted?
-    };
-    Ok(collected)
-}
-
-/// `SELECT count(*)` over the same single-statement body, wrapped like the
-/// page query. A spent budget becomes [`RowTotal::Unavailable`]; any other
-/// failure fails the call.
-fn count_rows(
-    tx: &Transaction<'_>,
-    body: &str,
-    abort_reason: &Arc<AtomicU8>,
-) -> Result<RowTotal, ErrorData> {
-    let counted = tx.query_row(&format!("SELECT count(*) FROM (\n{body}\n)"), [], |row| {
-        row.get::<_, i64>(0)
-    });
-    match counted {
-        Ok(total) => Ok(RowTotal::Exact(total)),
-        Err(error) => match abort_reason.load(Ordering::Relaxed) {
-            ABORT_STEP_BUDGET => {
-                tracing::warn!(error = %error, "query total count exceeded its step budget");
-                Ok(RowTotal::Unavailable(
-                    "counting the whole result exceeded the VM-step budget (max_query_vm_steps)",
-                ))
-            }
-            ABORT_WALL_CLOCK => {
-                tracing::warn!(error = %error, "query total count exceeded its time budget");
-                Ok(RowTotal::Unavailable(
-                    "counting the whole result exceeded the wall-clock budget (max_query_wall_clock)",
-                ))
-            }
-            _ => Err(describe_error(&error, abort_reason)),
-        },
-    }
-}
-
-/// Runs the wrapped `SELECT`, mapping each row while tagging any error with
-/// the abort reason the progress handler may have already recorded. Returns
-/// the single-statement body too, for the count.
-fn execute_and_collect(
-    tx: &Transaction<'_>,
-    body: String,
-    offset: usize,
-    page_bytes: usize,
-    limits: &ResourceLimits,
-    abort_reason: &Arc<AtomicU8>,
-) -> Result<(String, Collected), ErrorData> {
-    // The user SQL is wrapped on its own line so a trailing `-- line comment`
-    // terminates at the newline rather than swallowing the closing `)` and
-    // `LIMIT` clause, which would otherwise produce a confusing parse error.
-    // `LIMIT -1` is "no limit": SQLite requires a LIMIT before OFFSET, and the
-    // page is cut only by the byte budget below.
-    let wrapped = format!("SELECT * FROM (\n{body}\n) LIMIT -1 OFFSET {offset}");
-    let mut statement = tx
-        .prepare(&wrapped)
-        .map_err(|error| refuse_wrapped(&error, abort_reason))?;
-    let column_names: Vec<String> = statement
+    let abort_reason = Arc::new(AtomicU8::new(ABORT_NONE));
+    let body = single_statement_body(tx, trimmed, &abort_reason)?;
+    let statement = tx
+        .prepare(&wrapped_sql(&body))
+        .map_err(|error| refuse_wrapped(&error, &abort_reason))?;
+    Ok(statement
         .column_names()
         .into_iter()
         .map(str::to_owned)
-        .collect();
+        .collect())
+}
+
+/// Serves one page of `trimmed`'s result: a new request materialises every
+/// row into the result store under the VM-step and wall-clock budgets and
+/// serves page one; a cursor serves the stored page. Either way the page is
+/// cut at `page.bytes` serialized JSON bytes, the oversized first row clipped.
+///
+/// A budget that runs out fails the whole call: no rows are served and no
+/// result is stored.
+pub(super) fn run_query(
+    manager: &SourceSyncManager,
+    request: PageRequest<'_>,
+    trimmed: &str,
+    limits: &ResourceLimits,
+    page: PageSize,
+) -> Result<(Collected, Page), ErrorData> {
+    match request {
+        PageRequest::Fresh { path, sink } => {
+            fresh_page(manager, path, sink, trimmed, limits, page.bytes)
+        }
+        PageRequest::Cursor(token) => continuation_page(manager, token, page.bytes),
+    }
+}
+
+fn fresh_page(
+    manager: &SourceSyncManager,
+    path: &str,
+    sink: &dyn ProgressSink,
+    trimmed: &str,
+    limits: &ResourceLimits,
+    page_bytes: usize,
+) -> Result<(Collected, Page), ErrorData> {
+    // The result's column count must be known before its first row, and the
+    // statement is validated before any store space is claimed for it.
+    let synced = super::context::ensure_synced(path, sink, manager)?;
+    let columns =
+        super::context::with_verified_read(&synced, |tx| result_columns(tx, trimmed, limits))?;
+    let builder = RefCell::new(PageBuilder::new(columns.clone(), page_bytes));
+    let spec = PageSpec {
+        tool: "query",
+        columns: columns.clone(),
+        page_bytes,
+    };
+    let served = paginate(
+        manager,
+        &spec,
+        PageRequest::Fresh { path, sink },
+        |tx, rows| {
+            stream_rows(tx, trimmed, limits, &builder, rows)?;
+            Ok(Produced {
+                completeness: Completeness::Complete,
+                extra: QueryMeta { columns },
+            })
+        },
+        |row| builder.borrow_mut().accept(row),
+    )?;
+    Ok((builder.into_inner().finish(served.rows.len())?, served.page))
+}
+
+/// Serves a stored page. The store never offers the first row of a page to
+/// the cut, so it is read first (together with the column names stored with
+/// the result) to start the byte count from it.
+fn continuation_page(
+    manager: &SourceSyncManager,
+    token: &str,
+    page_bytes: usize,
+) -> Result<(Collected, Page), ErrorData> {
+    let spec = PageSpec {
+        tool: "query",
+        columns: Vec::new(),
+        page_bytes,
+    };
+    let first: Served<QueryMeta> = paginate(
+        manager,
+        &spec,
+        PageRequest::Cursor(token),
+        never_produces,
+        |_| Take::No,
+    )?;
+    let mut builder = PageBuilder::new(first.meta.columns, page_bytes);
+    let [first_row] = first.rows.as_slice() else {
+        return Err(internal_error(
+            "continuing a stored query result",
+            "the first row of a page was not returned",
+        ));
+    };
+    builder.take_first(&values_of(first_row), first_row.ord)?;
+    let builder = RefCell::new(builder);
+    let served: Served<QueryMeta> = paginate(
+        manager,
+        &spec,
+        PageRequest::Cursor(token),
+        never_produces,
+        |row| builder.borrow_mut().accept(row),
+    )?;
+    Ok((builder.into_inner().finish(served.rows.len())?, served.page))
+}
+
+/// Runs the wrapped `SELECT` inside the verified read transaction and pushes
+/// every row into the store, under a fresh VM-step and wall-clock budget.
+fn stream_rows(
+    tx: &Transaction<'_>,
+    trimmed: &str,
+    limits: &ResourceLimits,
+    builder: &RefCell<PageBuilder>,
+    rows: &mut RowSink<'_, '_>,
+) -> Result<(), ErrorData> {
+    apply_engine_limits(tx, limits)?;
+    let abort_reason = install_budget(tx, limits);
+    let outcome = single_statement_body(tx, trimmed, &abort_reason)
+        .and_then(|body| push_all(tx, &body, limits, &abort_reason, builder, rows));
+    clear_budget(tx);
+    outcome
+}
+
+fn push_all(
+    tx: &Transaction<'_>,
+    body: &str,
+    limits: &ResourceLimits,
+    abort_reason: &Arc<AtomicU8>,
+    builder: &RefCell<PageBuilder>,
+    rows: &mut RowSink<'_, '_>,
+) -> Result<(), ErrorData> {
+    let mut statement = tx
+        .prepare(&wrapped_sql(body))
+        .map_err(|error| refuse_wrapped(&error, abort_reason))?;
     let value_cap = limits.max_query_value_bytes;
-    let column_count = column_names.len();
+    let column_count = statement.column_count();
     let mapped = statement
         .query_map([], move |row| read_row(row, column_count, value_cap))
         .map_err(|error| describe_error(&error, abort_reason))?;
-    let collected = collect_page(mapped, &column_names, offset, page_bytes, abort_reason)?;
-    Ok((body, collected))
-}
-
-/// Fills one page from the mapped rows, cutting it at `page_bytes` and
-/// reporting whether a row was seen past the page.
-fn collect_page(
-    mapped: MappedRows<'_, impl FnMut(&Row<'_>) -> rusqlite::Result<Vec<SqlValue>>>,
-    column_names: &[String],
-    offset: usize,
-    page_bytes: usize,
-    abort_reason: &Arc<AtomicU8>,
-) -> Result<Collected, ErrorData> {
-    let mut rows = Vec::new();
-    let mut clipped = Vec::new();
-    let mut non_finite = Vec::new();
-    let mut total_bytes = 0usize;
-    let mut size_cut = false;
-    for row in mapped {
+    for (index, row) in mapped.enumerate() {
         let values = row.map_err(|error| describe_error(&error, abort_reason))?;
-        let row_index = offset.saturating_add(rows.len());
-        if row_serialized_lower_bound(&values) > page_bytes {
-            // The bound never exceeds the exact serialized size, so this row
-            // must cross the page. Converting it would clone its TEXT and
-            // hex-expand its BLOB only to drop the result, so skip that work.
-            if !rows.is_empty() {
-                size_cut = true;
-                break;
-            }
-            // The first row is always kept so paging makes progress; it needs
-            // only the raw values for clipping.
-            let (row, row_bytes, cells) =
-                clip_oversized_row(column_names, &values, page_bytes, row_index)?;
-            clipped = cells;
-            total_bytes = total_bytes.saturating_add(row_bytes);
-            non_finite.extend(non_finite_cells(column_names, &values, row_index));
-            rows.push(row);
-            continue;
+        if index == 0 {
+            builder.borrow_mut().take_first(&values, 0)?;
         }
-        let (mut value, mut row_bytes) = json_row(column_names, &values)?;
-        if rows.is_empty() && row_bytes > page_bytes {
-            // The first row is always kept so paging makes progress, but its
-            // TEXT/BLOB cells are cut to the page and each cut is reported.
-            let (row, bytes, cells) =
-                clip_oversized_row(column_names, &values, page_bytes, row_index)?;
-            value = row;
-            row_bytes = bytes;
-            clipped = cells;
-        } else if !rows.is_empty() && total_bytes.saturating_add(row_bytes) > page_bytes {
-            size_cut = true;
-            break;
-        }
-        total_bytes = total_bytes.saturating_add(row_bytes);
-        non_finite.extend(non_finite_cells(column_names, &values, row_index));
-        rows.push(value);
+        let cells: Vec<_> = values.into_iter().map(cell_from).collect();
+        rows.push_cells(&cells)?;
     }
-    Ok(Collected {
-        rows,
-        more: size_cut,
-        bytes_used: total_bytes,
-        total: RowTotal::Exact(0),
-        clipped,
-        non_finite,
-    })
-}
-
-/// Converts a row that alone exceeds the page into its clipped JSON, its
-/// serialized size, and the cells that were cut.
-fn clip_oversized_row(
-    column_names: &[String],
-    values: &[SqlValue],
-    page_bytes: usize,
-    row_index: usize,
-) -> Result<(serde_json::Value, usize, Vec<ClippedCell>), ErrorData> {
-    let cut = clip_row(column_names, values, page_bytes, row_index)?;
-    let row_bytes = serialized_len(&cut.row)
-        .map_err(|error| internal_error("measuring query row size", error))?;
-    Ok((cut.row, row_bytes, cut.cells))
-}
-
-/// Converts one row to its JSON form and serialized size.
-fn json_row(
-    column_names: &[String],
-    values: &[SqlValue],
-) -> Result<(serde_json::Value, usize), ErrorData> {
-    let value = row_to_json(column_names, values)?;
-    let row_bytes = serialized_len(&value)
-        .map_err(|error| internal_error("measuring query row size", error))?;
-    Ok((value, row_bytes))
+    Ok(())
 }

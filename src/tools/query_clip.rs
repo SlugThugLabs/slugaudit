@@ -22,8 +22,7 @@ use serde::Serialize;
 /// One TEXT or BLOB cell that was cut to fit the page.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ClippedCell {
-    /// Zero-based index of the row in the whole result (`offset` plus its
-    /// position on the page), the same numbering `offset` uses.
+    /// Zero-based index of the row in the whole result.
     pub row: usize,
     /// Result column name of the clipped cell.
     pub column: String,

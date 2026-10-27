@@ -7,10 +7,10 @@ use crate::tools::test_support::activated_project;
 fn ask(project: &tempfile::TempDir, sql: &str) -> ErrorData {
     query(
         &Parameters(QueryRequest {
-            path: project.path().to_string_lossy().into_owned(),
+            path: Some(project.path().to_string_lossy().into_owned()),
             sql: sql.to_owned(),
-            offset: 0,
-            expected_revision: None,
+            cursor: None,
+            legacy_paging: LegacyPaging::default(),
             page_bytes: None,
         }),
         &crate::progress::NoopProgressSink,
@@ -80,10 +80,10 @@ fn a_value_over_the_per_value_cap_carries_no_sql_error_code() {
 
     let error = query_with_limits(
         &Parameters(QueryRequest {
-            path: project.path().to_string_lossy().into_owned(),
+            path: Some(project.path().to_string_lossy().into_owned()),
             sql: "SELECT 'abcdefgh' AS text".to_owned(),
-            offset: 0,
-            expected_revision: None,
+            cursor: None,
+            legacy_paging: LegacyPaging::default(),
             page_bytes: None,
         }),
         &limits,
