@@ -86,7 +86,7 @@ pub(super) fn write_finding_with_description(
 
 /// Writes the project-config key `resolve_limits` reads, so a test can set
 /// a page budget without an env var (`process_limits` is a `OnceLock`).
-fn write_default_page_bytes(project: &tempfile::TempDir, page_bytes: usize) {
+pub(super) fn write_default_page_bytes(project: &tempfile::TempDir, page_bytes: usize) {
     let config = db_path(project)
         .parent()
         .expect("database has a parent")

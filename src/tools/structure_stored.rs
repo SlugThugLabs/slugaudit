@@ -6,7 +6,6 @@
 use crate::error_codes::store_error;
 use crate::store::{Cell, Materialize, ResultStoreError, StoredRow, Take};
 use crate::tools::page::PageLimit;
-use crate::tools::page_size::PageSize;
 use crate::tools::structure::StructureMatch;
 use rmcp::ErrorData;
 use serde::{Deserialize, Serialize};
@@ -60,36 +59,10 @@ fn text_of(cell: &Cell) -> Result<String, ResultStoreError> {
     }
 }
 
-fn usize_of(cell: &Cell) -> Result<usize, ResultStoreError> {
-    usize::try_from(u64_of(cell)?).map_err(|_| invalid_layout())
-}
-
-/// One stored row: the match plus its serialized size and the size of the
-/// row before it. The store never offers a page's first row to the page cut,
-/// so the second row of every page carries the first row's size and the byte
-/// budget stays exact from the first match on.
+/// One stored row: the match.
 #[derive(Debug)]
 pub(in crate::tools) struct StoredMatch {
     pub(in crate::tools) found: StructureMatch,
-    /// Serialized JSON bytes of `found`.
-    pub(in crate::tools) bytes: usize,
-    /// The same for the previous row; 0 for the first.
-    pub(in crate::tools) prev_bytes: usize,
-}
-
-impl StoredMatch {
-    /// Measures `found` as it serializes into a page.
-    pub(in crate::tools) fn measured(
-        found: StructureMatch,
-        prev_bytes: usize,
-    ) -> Result<Self, ErrorData> {
-        let bytes = match_bytes(&found)?;
-        Ok(Self {
-            found,
-            bytes,
-            prev_bytes,
-        })
-    }
 }
 
 impl Materialize for StoredMatch {
@@ -107,8 +80,6 @@ impl Materialize for StoredMatch {
             "text",
             "text_truncated",
             "extraction_failed",
-            "json_bytes",
-            "prev_json_bytes",
         ]
     }
 
@@ -127,8 +98,6 @@ impl Materialize for StoredMatch {
             Cell::Text(found.text.clone()),
             Cell::Int(i64::from(found.text_truncated)),
             Cell::Int(i64::from(found.extraction_failed)),
-            int_of(self.bytes as u64),
-            int_of(self.prev_bytes as u64),
         ]
     }
 
@@ -146,8 +115,6 @@ impl Materialize for StoredMatch {
             text,
             text_truncated,
             extraction_failed,
-            bytes,
-            prev_bytes,
         ] = values
         else {
             return Err(invalid_layout());
@@ -167,8 +134,6 @@ impl Materialize for StoredMatch {
                 text_truncated: bool_of(text_truncated)?,
                 extraction_failed: bool_of(extraction_failed)?,
             },
-            bytes: usize_of(bytes)?,
-            prev_bytes: usize_of(prev_bytes)?,
         })
     }
 }
@@ -187,8 +152,9 @@ pub(in crate::tools) struct StructureExtra {
 }
 
 /// Decides where one stored page ends: at `max_matches` rows or when the next
-/// match would push the serialized bytes past the page budget. The store
-/// always keeps a page's first row, so every page advances.
+/// match would push the serialized bytes past the page budget. The first row
+/// of a page is offered too (its verdict is ignored), so `bytes_used` counts
+/// it and every page advances.
 pub(in crate::tools) struct PageCut {
     page_bytes: usize,
     byte_cut: PageLimit,
@@ -200,10 +166,16 @@ pub(in crate::tools) struct PageCut {
 }
 
 impl PageCut {
-    pub(in crate::tools) fn new(page: PageSize, max_matches: usize) -> Self {
+    /// A cut for the effective budget `page_bytes`; a budget at or above
+    /// `ceiling` reports `ceiling` when it cuts.
+    pub(in crate::tools) fn new(page_bytes: usize, ceiling: usize, max_matches: usize) -> Self {
         Self {
-            page_bytes: page.bytes,
-            byte_cut: page.byte_cut(),
+            page_bytes,
+            byte_cut: if page_bytes >= ceiling {
+                PageLimit::Ceiling
+            } else {
+                PageLimit::PageBytes
+            },
             max_matches,
             taken: 0,
             bytes_used: 0,
@@ -212,40 +184,48 @@ impl PageCut {
         }
     }
 
-    /// The `accept` closure of `paginate`. The store never offers it a
-    /// page's first row, so the first call (the page's second row) starts
-    /// from the first row's size, which that row carries.
+    /// The `accept` closure of `paginate_with`.
     pub(in crate::tools) fn accept(&mut self, row: &StoredRow) -> Take {
         if self.failure.is_some() {
             return Take::No;
         }
-        let stored = match StoredMatch::from_values(&row.cells) {
-            Ok(stored) => stored,
+        let bytes = match StoredMatch::from_values(&row.cells)
+            .map_err(|error| store_error(&error))
+            .and_then(|stored| match_bytes(&stored.found))
+        {
+            Ok(bytes) => bytes,
             Err(error) => {
-                self.failure = Some(store_error(&error));
+                self.failure = Some(error);
                 return Take::No;
             }
         };
         if self.taken == 0 {
+            // The first row of a page is always taken.
             self.taken = 1;
-            self.bytes_used = stored.prev_bytes;
+            self.bytes_used = bytes;
+            return Take::Yes;
         }
         if self.taken >= self.max_matches {
             self.cut = PageLimit::MatchCap;
             return Take::No;
         }
-        if self.bytes_used.saturating_add(stored.bytes) > self.page_bytes {
+        if self.bytes_used.saturating_add(bytes) > self.page_bytes {
             self.cut = self.byte_cut;
             return Take::No;
         }
         self.taken += 1;
-        self.bytes_used = self.bytes_used.saturating_add(stored.bytes);
+        self.bytes_used = self.bytes_used.saturating_add(bytes);
         Take::Yes
     }
 
     /// What ended the page, `none` when the rows simply ran out.
     pub(in crate::tools) fn limit(&self) -> PageLimit {
         self.cut
+    }
+
+    /// Serialized JSON bytes of the matches the page took.
+    pub(in crate::tools) fn bytes_used(&self) -> usize {
+        self.bytes_used
     }
 
     /// The failure `accept` met, if any.
