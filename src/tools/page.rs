@@ -12,7 +12,7 @@
 
 use rmcp::ErrorData;
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::context::internal_error;
 
@@ -24,7 +24,7 @@ pub(super) fn total_of(count: i64) -> Result<u64, ErrorData> {
 
 /// What cut a page. It reports the bound that acted, never a judgment about
 /// whether the page was the right size.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PageLimit {
     /// Nothing: the result ended on this page and `complete` is true.
@@ -55,11 +55,38 @@ pub enum PageLimit {
     TimeBudget,
 }
 
+/// Whether the scan behind a stored result covered everything it set out to.
+/// It is written once with the result, so every page of that result reports
+/// the same value, however many calls the caller takes to read it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Completeness {
+    /// Every file or row the request selects was scanned.
+    Complete,
+    /// The scan stopped early (`structure` and custom-mechanic scans, which
+    /// run under a file window and the call deadline). Continuing is a new
+    /// request that syncs, starting after `resume_after_file`.
+    Partial {
+        /// The bound that stopped the scan (`scan_window` or `time_budget`).
+        limited_by: PageLimit,
+        /// The last file fully scanned; the new request resumes after it.
+        resume_after_file: Option<String>,
+        /// Files scanned before the scan stopped.
+        files_scanned: u64,
+        /// Files the request selects.
+        files_total: u64,
+    },
+}
+
 /// One page of a paged result; every paged tool carries these fields under
-/// `page` with the same meaning. To page: while `complete` is false, repeat
-/// the call with `offset` = `next_offset` and `expected_revision` =
-/// `revision_id`. `structure` alone has a second cursor: when `next_offset`
-/// is null and `complete` is false, use its `next_start_after_file`.
+/// `page` with the same meaning. To page: while `cursor` is present, repeat
+/// the call with only that `cursor`; it names a result stored when the first
+/// call ran, so the rows do not move and no `path` is needed. `cursor` is
+/// absent exactly when `complete` is true. `next_offset` and
+/// `expected_revision` are the pre-cursor mechanism and remain only on the
+/// tools not yet moved to cursors; `structure` alone has a second cursor
+/// there: when `next_offset` is null and `complete` is false, use its
+/// `next_start_after_file`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Page {
     /// Items in this page: rows (`leads`, `query`), matches (`structure`),
@@ -73,10 +100,21 @@ pub struct Page {
     /// True when nothing remains to page. For `structure` it also means no
     /// scan window remains (no `next_start_after_file`).
     pub complete: bool,
-    /// Always present; null when nothing remains to page (`complete`), and on
-    /// `structure` also when only a new scan window remains. Otherwise pass it
-    /// as `offset` on the next call.
+    /// Pre-cursor paging only: always present; null when nothing remains to
+    /// page (`complete`), and on `structure` also when only a new scan window
+    /// remains. Otherwise pass it as `offset` on the next call. Removed with
+    /// the last tool that still uses it.
     pub next_offset: Option<usize>,
+    /// The token for the next page, copied exactly into the next call's
+    /// `cursor`. Omitted when nothing remains (`complete`) and on tools that
+    /// still page by `next_offset`. A cursor does not survive a server
+    /// restart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// Whether the scan behind the stored result covered everything; omitted
+    /// on tools that do not store results yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completeness: Option<Completeness>,
     /// The byte budget that applied to this page's items, in serialized JSON
     /// bytes: the request's `page_bytes` or the server default
     /// (`default_page_bytes`, 64 KiB unless configured), after the clamp to
@@ -107,6 +145,8 @@ mod tests {
             total: Some(5),
             complete: false,
             next_offset: Some(2),
+            cursor: None,
+            completeness: None,
             page_bytes: 100,
             bytes_used: 90,
             limited_by: PageLimit::Ceiling,
@@ -137,6 +177,8 @@ mod tests {
             total: None,
             complete: true,
             next_offset: None,
+            cursor: None,
+            completeness: None,
             page_bytes: 100,
             bytes_used: 10,
             limited_by: PageLimit::None,

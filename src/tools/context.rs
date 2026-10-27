@@ -7,6 +7,10 @@ use rusqlite::{Transaction, TransactionBehavior};
 
 pub(crate) use sync::SyncedProject;
 
+pub use super::paginate::{
+    PageRequest, PageSpec, Produced, RowSink, Served, decode_rows, paginate,
+};
+
 #[cfg(test)]
 pub(crate) use crate::util::override_session_id_for_test;
 pub(crate) use crate::util::session_id;

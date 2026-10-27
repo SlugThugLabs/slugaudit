@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=the closed set of wire error codes: the enum, its wire strings, remedies, payload builders and the one store-error mapping must stay in one table so a code cannot drift from its remedy
 //! Stable, machine-readable failure codes.
 //!
 //! rmcp's `ErrorData` carries a free-form `data` value beside its human
@@ -68,6 +69,22 @@ pub enum ErrorCode {
     /// this project has. The message lists the languages the index holds;
     /// the remedy stays static.
     UnknownLanguage,
+    /// A `cursor` that is malformed, was issued by another process or
+    /// server run, belongs to another tool, or points past its result. A
+    /// cursor does not survive a server restart.
+    UnknownCursor,
+    /// A well-formed cursor whose stored result was reclaimed to make room
+    /// for a newer one.
+    ResultExpired,
+    /// The result store has no room for a new result because every byte is
+    /// held by results still being paged.
+    ResultStoreFull,
+    /// One result alone is larger than the whole result store budget.
+    ResultTooLarge,
+    /// The result store cannot hold or serve results on this machine: its
+    /// disk is full or unwritable, or the platform lacks the file semantics
+    /// it needs. Other tools keep working.
+    ResultStoreUnavailable,
 }
 
 impl ErrorCode {
@@ -87,6 +104,11 @@ impl ErrorCode {
         ErrorCode::MechanicBudgetExhausted,
         ErrorCode::SqlError,
         ErrorCode::UnknownLanguage,
+        ErrorCode::UnknownCursor,
+        ErrorCode::ResultExpired,
+        ErrorCode::ResultStoreFull,
+        ErrorCode::ResultTooLarge,
+        ErrorCode::ResultStoreUnavailable,
     ];
 
     /// The stable wire string: lowercase `snake_case`, never renamed.
@@ -102,6 +124,11 @@ impl ErrorCode {
             ErrorCode::MechanicBudgetExhausted => "mechanic_budget_exhausted",
             ErrorCode::SqlError => "sql_error",
             ErrorCode::UnknownLanguage => "unknown_language",
+            ErrorCode::UnknownCursor => "unknown_cursor",
+            ErrorCode::ResultExpired => "result_expired",
+            ErrorCode::ResultStoreFull => "result_store_full",
+            ErrorCode::ResultTooLarge => "result_too_large",
+            ErrorCode::ResultStoreUnavailable => "result_store_unavailable",
         }
     }
 
@@ -147,6 +174,24 @@ impl ErrorCode {
             ErrorCode::UnknownLanguage => {
                 "retry with one of the languages the message lists as indexed in this project, \
                  spelled exactly as stored (report lists them under languages)"
+            }
+            ErrorCode::UnknownCursor => {
+                "copy the cursor exactly as returned, or repeat the request without one; a \
+                 cursor does not survive a server restart"
+            }
+            ErrorCode::ResultExpired => {
+                "the result was reclaimed to make room: repeat the request without a cursor"
+            }
+            ErrorCode::ResultStoreFull => {
+                "finish or abandon open paged reads, or narrow the request (LIMIT, filters)"
+            }
+            ErrorCode::ResultTooLarge => {
+                "narrow the request: add LIMIT or filters; the whole result must fit the \
+                 store budget"
+            }
+            ErrorCode::ResultStoreUnavailable => {
+                "the result store cannot be used on this machine or its disk is full or \
+                 unwritable; see docs/TROUBLESHOOTING.md; other tools keep working"
             }
         }
     }
@@ -194,6 +239,34 @@ pub fn stale_page_payload() -> Option<Value> {
                    would be resuming, so the same offset can skip or repeat rows; the call \
                    you are making already re-synced the index"
     }))
+}
+
+/// The one mapping from a result store failure to the wire. The store logged
+/// the failure where it decided it, so this does not log again. Messages come
+/// from the error's own `Display`, which holds only static contexts and the
+/// active-result count, never a path, SQL or row content. Failures that are
+/// neither a caller mistake nor an unusable store (`Invalid`, `Io`, `Sqlite`,
+/// `Json`, `Corrupt`) are internal errors with no code.
+#[must_use]
+pub fn store_error(error: &crate::store::ResultStoreError) -> rmcp::ErrorData {
+    use crate::store::ResultStoreError as E;
+    let message = error.to_string();
+    let invalid = |code| rmcp::ErrorData::invalid_params(message.clone(), payload(code));
+    match error {
+        E::Unavailable { .. } => rmcp::ErrorData::internal_error(
+            message.clone(),
+            payload(ErrorCode::ResultStoreUnavailable),
+        ),
+        E::Full { .. } => invalid(ErrorCode::ResultStoreFull),
+        E::TooLarge => invalid(ErrorCode::ResultTooLarge),
+        E::Expired => invalid(ErrorCode::ResultExpired),
+        E::Unknown => invalid(ErrorCode::UnknownCursor),
+        E::Invalid { .. }
+        | E::Io { .. }
+        | E::Sqlite { .. }
+        | E::Json { .. }
+        | E::Corrupt { .. } => rmcp::ErrorData::internal_error(message.clone(), None),
+    }
 }
 
 #[cfg(test)]
@@ -293,6 +366,48 @@ mod tests {
             remedy,
             ErrorCode::StaleRevision.remedy(),
             "a resumed page must not be told to simply retry"
+        );
+    }
+
+    /// Each store failure maps to exactly one wire code (or none for the
+    /// internal faults), with the static remedy and a message that carries
+    /// no more than the error's own text.
+    #[test]
+    fn store_errors_map_to_their_wire_codes_and_static_remedies() {
+        use crate::store::ResultStoreError as E;
+        let unavailable = E::Unavailable {
+            context: "open the result store",
+            source: Box::new(std::io::Error::other("secret path /x")),
+        };
+        let cases = [
+            (E::Unknown, Some(ErrorCode::UnknownCursor), false),
+            (E::Expired, Some(ErrorCode::ResultExpired), false),
+            (
+                E::Full { active_count: 3 },
+                Some(ErrorCode::ResultStoreFull),
+                false,
+            ),
+            (E::TooLarge, Some(ErrorCode::ResultTooLarge), false),
+            (unavailable, Some(ErrorCode::ResultStoreUnavailable), true),
+            (E::Corrupt { context: "x" }, None, true),
+        ];
+
+        for (error, code, internal) in cases {
+            let mapped = store_error(&error);
+
+            let expected = code.map(|code| json!({"code": code.as_str(), "remedy": code.remedy()}));
+            assert_eq!(mapped.data, expected, "{error:?}");
+            assert_eq!(
+                mapped.code == rmcp::model::ErrorCode::INTERNAL_ERROR,
+                internal,
+                "{error:?}"
+            );
+            assert_eq!(mapped.message, error.to_string());
+            assert!(!mapped.message.contains("secret"), "{}", mapped.message);
+        }
+        assert_eq!(
+            store_error(&crate::store::ResultStoreError::Full { active_count: 3 }).message,
+            "the result store is full: 3 active results hold the space"
         );
     }
 }

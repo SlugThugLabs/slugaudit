@@ -28,6 +28,7 @@ mod mechanic_scan;
 mod mechanic_scan_cached;
 mod page;
 mod page_size;
+mod paginate;
 mod project_control;
 mod query;
 mod query_clip;
@@ -54,7 +55,9 @@ mod redaction_tests;
 #[path = "golden_phase9_tests.rs"]
 mod golden_phase9_tests;
 
-pub use context::ensure_synced;
+pub use context::{
+    PageRequest, PageSpec, Produced, RowSink, Served, decode_rows, ensure_synced, paginate,
+};
 pub use finding::{FindingRequest, FindingResponse, finding};
 pub use finding_read::{FindingReadEntry, FindingReadRequest, FindingReadResponse, finding_read};
 pub use health::{HealthRequest, HealthResponse, health};
@@ -66,7 +69,7 @@ pub use mechanic::{
     InvalidMechanic, MechanicAction, MechanicListing, MechanicRequest, MechanicResponse,
     MechanicSource, mechanic,
 };
-pub use page::{Page, PageLimit};
+pub use page::{Completeness, Page, PageLimit};
 pub use project_control::{
     GitignoreReport, GitignoreStatus, ImportReport, ProjectControlAction, ProjectControlRequest,
     ProjectControlResponse, project_control,

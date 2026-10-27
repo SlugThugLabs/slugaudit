@@ -630,3 +630,33 @@ Oldest first: append each new entry at the end of the file. Format: **what** / *
 - **Why:** `libc` is not a direct dependency and the brief forbids adding one.
 - **Where:** `src/store/result_store/platform.rs`.
 - **Reversible:** yes.
+
+## 9.2: `next_offset` stays on `Page`; the new fields are omitted when empty
+- **What:** `Page` gains `cursor` and `completeness` as `Option`s with `skip_serializing_if`, and keeps `next_offset`. The five `Page { .. }` construction sites got `cursor: None, completeness: None` and nothing else. `Completeness` is `complete` | `partial{limited_by, resume_after_file, files_scanned, files_total}` and `PageLimit` gained `Deserialize` so it can be stored.
+- **Why:** removing `next_offset` would force all tools to migrate in one commit; omitting the new fields keeps unmigrated wire JSON byte-identical. A migrated tool serialises no `cursor` key on its last page until 9.3 decides otherwise.
+- **Where:** `src/tools/page.rs`, `src/tools/{finding_read,query,structure_page,leads_page}.rs` (mechanical field init only).
+- **Reversible:** yes; the last 9.3 migration removes `next_offset`.
+
+## 9.2: one result store slot on the manager, keyed by runtime directory
+- **What:** `SourceSyncManager` holds one `ResultStoreSlot` (new `src/sync/result_stores.rs`). A request for another runtime dir drops the current store and opens a new one; a continuation uses the current store and never opens one.
+- **Why:** a continuation carries no path, so it cannot name a directory; a map of stores would keep other projects' stores and budgets alive after `project_control`. The price: a cursor issued before a project switch reads as `unknown_cursor`.
+- **Where:** `src/sync/result_stores.rs`, `src/sync/manager.rs` (field, accessor, test constructor), `src/sync/mod.rs`.
+- **Reversible:** yes.
+
+## 9.2: paginate items are `pub`, and the page is built with byte fields the tool overwrites
+- **What:** `paginate`, its types, `ResultStoreSlot` and `store_error` are `pub` (re-exported through `tools`). `Served.page` carries `bytes_used: 0` and `limited_by` `page_bytes` (or `none` on the last page); the tool, which measured bytes in its `accept` closure, overwrites them. The `project` label stored in a result is the constant `default`.
+- **Why:** nothing calls `paginate` until 9.3, and the lint contract forbids `allow(dead_code)`; reachable `pub` API is the only warning-free form, as for `ensure_synced`. The byte accounting lives in the tool's `accept` closure, not in the store.
+- **Where:** `src/tools/paginate.rs`, `src/tools/context.rs`, `src/tools/mod.rs`, `src/error_codes.rs`.
+- **Reversible:** yes; narrow to `pub(crate)` once 9.3 uses them.
+
+## 9.2: the 9.1 fault seam is not reachable, so unavailable is tested through the real failure
+- **What:** `result_store_unavailable` is tested by blocking `<runtime>/results` with a regular file, which makes `ResultStore::open` fail for real. The `Fault` seam lives in a private module of the store and was not widened.
+- **Why:** the brief allows widening only where 9.1 already exposes it.
+- **Where:** `src/tools/paginate_tests.rs`.
+- **Reversible:** yes.
+
+## 9.2: a cursor of another tool is detected after the read
+- **What:** the tool check runs on the stored `meta.tool` after `read_page`, so a wrong-tool cursor still renews the result's last access and, on its final page, marks it delivered.
+- **Why:** the 9.1 API has no metadata lookup without a read; adding one is a store change the brief reserves to the lead. The effect is limited to reclaim priority of a result the caller already holds a valid cursor for.
+- **Where:** `src/tools/paginate.rs`.
+- **Reversible:** yes (add `ResultStore::meta_of(id)`).

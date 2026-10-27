@@ -185,6 +185,8 @@ fn query_with_limits(
             total,
             complete: !collected.more,
             next_offset,
+            cursor: None,
+            completeness: None,
             page_bytes: page.bytes,
             bytes_used: collected.bytes_used,
             limited_by,

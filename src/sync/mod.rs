@@ -20,6 +20,7 @@ mod publish_diff;
 mod publish_log;
 mod race_hook;
 mod reconcile;
+mod result_stores;
 mod revalidate;
 mod revision;
 mod revision_edges;
@@ -37,6 +38,7 @@ pub(crate) use manager::map_activation_error;
 pub use manager::{SourceSyncManager, SyncedProject};
 pub use manifest::{ChangeStatus, FileChange, compare};
 pub use publish::{PublishError, PublishReport, publish};
+pub use result_stores::ResultStoreSlot;
 pub use revision::{FileRecord, RevisionError};
 
 #[cfg(test)]

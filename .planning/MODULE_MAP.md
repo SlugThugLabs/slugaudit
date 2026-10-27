@@ -60,6 +60,7 @@ src/
 │   ├── query.rs              arbitrary read-only SQL with budgets
 │   ├── query_exec.rs         query execution: single-statement proof, budgets, byte-budgeted page, exact total
 │   ├── page.rs               the one paging contract (`Page`, `PageLimit`) every paged tool embeds
+│   ├── paginate.rs           the one paging entry: new request syncs and materialises, a cursor only reads the stored result
 │   ├── page_size.rs          effective page size (request or default, clamped to the ceiling)
 │   ├── query_value.rs        SQLite row/value → JSON with a per-value cap
 │   ├── query_clip.rs         clipping an oversized first row's TEXT/BLOB cells, with substr continuations
@@ -99,6 +100,7 @@ src/
 ├── sync/                     detection and persistence of what changed on disk
 │   ├── mod.rs                public exports
 │   ├── manager.rs            SourceSyncManager: state, watcher ownership, observability
+│   ├── result_stores.rs      the process's lazily opened result store, one slot keyed by runtime dir
 │   ├── manager_orchestration.rs  ensure_current: resolve, open/recover, recovery logs, rebuild tail
 │   ├── manager_health.rs     sync_by_health: the WatcherHealth dispatch
 │   ├── manager_health_support.rs  event barrier, post-sync revision read, sweep-error mapping

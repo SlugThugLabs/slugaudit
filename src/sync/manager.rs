@@ -116,6 +116,9 @@ pub struct SourceSyncManager {
     /// `project::MechanicScanCache`. Held beside the session mechanics for
     /// the same reason: per-server state every tool already receives.
     mechanic_scan_cache: crate::project::MechanicScanCache,
+    /// The lazily opened result store for paged results; see
+    /// `result_stores`. Per-server state like the fields above.
+    result_stores: super::result_stores::ResultStoreSlot,
 }
 
 impl SourceSyncManager {
@@ -138,6 +141,21 @@ impl SourceSyncManager {
             session_findings_purged: Arc::new(Mutex::new(HashMap::new())),
             session_mechanics: crate::project::SessionMechanics::default(),
             mechanic_scan_cache: crate::project::MechanicScanCache::default(),
+            result_stores: super::result_stores::ResultStoreSlot::default(),
+        }
+    }
+
+    /// The result store slot; see the field.
+    pub fn result_stores(&self) -> &super::result_stores::ResultStoreSlot {
+        &self.result_stores
+    }
+
+    /// A manager whose result store obeys `limits`.
+    #[cfg(test)]
+    pub(crate) fn with_result_store_limits(limits: crate::store::ResultStoreLimits) -> Self {
+        Self {
+            result_stores: super::result_stores::ResultStoreSlot::with_limits(limits),
+            ..Self::default()
         }
     }
 

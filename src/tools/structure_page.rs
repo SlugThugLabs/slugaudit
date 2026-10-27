@@ -194,6 +194,8 @@ pub(super) fn structure_response(
             total: None,
             complete: limited_by == PageLimit::None,
             next_offset,
+            cursor: None,
+            completeness: None,
             page_bytes: page.bytes,
             bytes_used: run.bytes_used,
             limited_by,

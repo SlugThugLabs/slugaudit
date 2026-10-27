@@ -50,6 +50,20 @@ The server exposes nine tools (`src/server.rs`):
   shared `page` (below) with `files_total` / `files_covered` beside it. A
   resumed page may pin `expected_revision` and is refused (`stale_revision`)
   when the index moved on.
+- **One paging entry** (`tools/paginate.rs`, re-exported by `tools/context.rs`).
+  `paginate` takes either a new request or a `cursor`. A new request syncs,
+  opens the verified read transaction, streams the tool's rows (typed through
+  `Materialize`, or raw cells for `query`) into the result store, stores the
+  completeness and the tool's extras with the result, and serves page one from
+  the stored copy. A `cursor` call decodes the token, checks the result belongs
+  to the calling tool, and reads the stored result: no sync, no revision check,
+  no `path`, so rows and `revision_id` are those of the first call. The store
+  is one slot on `SourceSyncManager` (`sync/result_stores.rs`), opened lazily
+  and replaced when the runtime directory changes, so a project switch never
+  keeps another project's store. Store failures map to wire codes in one place,
+  `error_codes::store_error`. `Page` carries `cursor` and `completeness`
+  (omitted from the wire until a tool moves onto `paginate`); `next_offset`
+  stays until the last tool migrates.
 - **One paging contract** (`tools/page.rs`). `leads` (and the `mechanic add`
   first count, which is a `leads` response), `query`, `structure` and
   `finding_read` embed one nested `page` object: `returned`, `total` (null
@@ -739,7 +753,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 105 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 106 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only
@@ -956,6 +970,11 @@ surface).
 | `mechanic_budget_exhausted` | an auditor-registered mechanic's scan spent `max_structure_execution_time` before every file was read, so no count is returned; the message names the entries that were running, and the remedy names `mechanic remove`, a narrower `pattern` and the knob instead of a retry | `tools::mechanic_scan::budget_error` |
 | `sql_error` | SQLite could not compile or run the statement passed to `query` (a syntax error, an unknown table or column, a function or type error); refusals of the statement's kind (PRAGMA, ATTACH, a write, more than one statement) and spent query budgets carry no code; the remedy names schema discovery | `tools::query::describe_error` |
 | `unknown_language` | a project-wide `structure` call named a language no indexed file in this project has; the message lists the indexed languages (from the index, never the pack's list) and the remedy is static | `tools::structure_source::ensure_indexed_language` |
+| `unknown_cursor` | a `cursor` that is malformed, was issued by another server run, belongs to another tool, or points past its result; a cursor does not survive a restart | `error_codes::store_error` (`ResultStoreError::Unknown`), `tools::paginate::paginate` |
+| `result_expired` | a well-formed cursor whose stored result was reclaimed to make room for a newer one; the remedy is to repeat the request without a cursor | `error_codes::store_error` (`ResultStoreError::Expired`) |
+| `result_store_full` | a new result does not fit and every byte is held by results still being paged; the message carries the active count as a number only | `error_codes::store_error` (`ResultStoreError::Full`) |
+| `result_too_large` | one result alone is larger than the whole result store budget (`max_result_store_bytes`); nothing is stored and no cursor is returned | `error_codes::store_error` (`ResultStoreError::TooLarge`) |
+| `result_store_unavailable` | the result store cannot hold or serve results (disk full or unwritable, unsupported platform); other tools keep working | `error_codes::store_error` (`ResultStoreError::Unavailable`) |
 <!-- error-codes:end -->
 
 `health` is the deliberate exception: it answers normally in the not-enabled

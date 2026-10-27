@@ -160,6 +160,8 @@ fn page_of(read: &Read, total: u64, offset: usize, size: PageSize, revision_id: 
         total: Some(total),
         complete: !read.more,
         next_offset: read.more.then_some(offset.saturating_add(returned)),
+        cursor: None,
+        completeness: None,
         page_bytes: size.bytes,
         bytes_used: read.bytes_used,
         limited_by: if read.more {
