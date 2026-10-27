@@ -8,6 +8,7 @@ use super::queries::{
     StoredState, commit_reconcile_changes, load_existing_hashes, touch_unchanged,
 };
 use super::{ReconcileError, ReconcileOptions, ReconcileReport};
+use crate::ignore_rules::is_excluded_path;
 use crate::model::{ResourceLimits, SourceIdentity};
 use crate::sync::discovery::{self, DiscoveredFile, sniff_kind};
 use crate::sync::revision_skipped::SkippedRecord;
@@ -41,6 +42,11 @@ fn reconcile_single_dirty_path(
     stored: &StoredState,
     skipped_records: &mut Vec<SkippedRecord>,
 ) -> Result<DirtyOutcome, ReconcileError> {
+    // SlugAudit's own state (the runtime dir, including the result store) is
+    // never indexed, whatever upstream filter handed the path over.
+    if is_excluded_path(&path) {
+        return Ok(DirtyOutcome::Ignored);
+    }
     let existing_hashes = &stored.hashes;
     let absolute_path = root.join(&path);
     let Some(metadata) = discovery::regular_file_metadata(&absolute_path)? else {

@@ -14,6 +14,7 @@ use crate::sync::sweep::sweep;
 use crate::sync::test_support::{create_project, setup_project, stored_paths, sync_project, write};
 use crate::util::Deadline;
 use crate::watch::{WatchManager, WatchScope, WatcherHealth};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -163,21 +164,17 @@ fn result_store_proof_watcher_scope_excludes_results_dir() {
     );
 }
 
-/// Reconcile is fed by two upstream filters (the watcher's event
-/// classification and the stat sweep's walk); this drives the sweep's
-/// candidates through the real reconcile, alongside a genuine new file.
+/// Reconcile itself refuses the results directory: the planted store paths
+/// are handed to it directly (as dirty paths, and the stray file as a
+/// deletion), alongside a genuine new file.
 #[test]
 fn result_store_proof_reconcile_ignores_results_dir() {
     let (project, _db_dir, mut connection, revision) = setup_project();
     let (_slot, planted) = plant_store_files(project.path());
     write(project.path(), "c.rs", b"fn c() {}\n");
-    let deadline = Deadline::after(process_limits().max_sync_wall_clock);
-    let report = sweep(&connection, project.path(), &deadline).expect("sweep succeeds");
-    assert!(
-        report.candidates.contains("c.rs"),
-        "{:?}",
-        report.candidates
-    );
+    let mut dirty: HashSet<String> = planted.iter().cloned().collect();
+    dirty.insert("c.rs".to_owned());
+    let on_disk: HashSet<String> = ["a.rs", "b.rs", "c.rs"].map(str::to_owned).into();
     let limits = *process_limits();
     let options = ReconcileOptions {
         limits,
@@ -188,11 +185,11 @@ fn result_store_proof_reconcile_ignores_results_dir() {
     reconcile_dirty_paths_with_deadline(
         &mut connection,
         project.path(),
-        report.candidates,
-        report.deleted,
+        dirty,
+        HashSet::new(),
         Some(&revision),
         &options,
-        &report.on_disk,
+        &on_disk,
     )
     .expect("reconcile succeeds");
 
