@@ -624,3 +624,9 @@ Oldest first: append each new entry at the end of the file. Format: **what** / *
 - **Why:** these are the only paging-only fields present in today's responses; the rest describe content. 9.3 extends the mask if it changes more.
 - **Where:** `src/tools/golden_phase9_tests.rs`, `tests/golden/phase9/README.md`.
 - **Reversible:** yes.
+
+## Result store (9.1b): lock file opened without libc
+- **What:** the owner-lock file is opened with `create_new`, and an existing one only when `symlink_metadata` reports a regular file and the opened handle has the same dev/ino. `O_NOFOLLOW` is not used.
+- **Why:** `libc` is not a direct dependency and the brief forbids adding one.
+- **Where:** `src/store/result_store/platform.rs`.
+- **Reversible:** yes.

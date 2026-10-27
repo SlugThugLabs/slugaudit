@@ -174,3 +174,69 @@ fn result_store_a_result_without_complete_state_is_not_addressable() {
         "{result:?}"
     );
 }
+
+/// Rows of the standard shape whose `from_values` fails for id 9.
+#[derive(Debug)]
+struct FailsAtNine;
+
+impl Materialize for FailsAtNine {
+    fn columns() -> &'static [&'static str] {
+        &["id", "payload"]
+    }
+
+    fn to_values(&self) -> Vec<Cell> {
+        vec![Cell::Int(0), Cell::Text(String::new())]
+    }
+
+    fn from_values(values: &[Cell]) -> Result<Self, ResultStoreError> {
+        match values {
+            [Cell::Int(9), _] => Err(ResultStoreError::Invalid {
+                reason: "nine is not convertible",
+            }),
+            _ => Ok(Self),
+        }
+    }
+}
+
+#[test]
+fn result_store_a_failed_typed_conversion_on_the_last_page_leaves_the_result_untouched() {
+    let fx = fixture(1 << 30);
+    let handle = write_rows(&fx.store, 10, 3).expect("write");
+    fx.set_time(1_000 + GRACE_SECS as i64 + 100);
+
+    let first = fx
+        .store
+        .read_typed::<FailsAtNine>(handle.id, 7, |_| Take::Yes);
+    let retry = fx
+        .store
+        .read_typed::<FailsAtNine>(handle.id, 7, |_| Take::Yes);
+
+    assert!(
+        matches!(first, Err(ResultStoreError::Invalid { .. })),
+        "{first:?}"
+    );
+    assert!(
+        matches!(retry, Err(ResultStoreError::Invalid { .. })),
+        "{retry:?}"
+    );
+    let stats = fx.store.stats();
+    assert_eq!((stats.delivered.results, stats.idle.results), (0, 1));
+}
+
+#[test]
+fn result_store_a_failed_conversion_of_the_first_row_leaves_the_result_untouched() {
+    let fx = fixture(1 << 30);
+    let handle = write_rows(&fx.store, 10, 3).expect("write");
+    fx.set_time(1_000 + GRACE_SECS as i64 + 100);
+
+    let outcome = fx
+        .store
+        .read_typed::<FailsAtNine>(handle.id, 9, |_| Take::Yes);
+
+    assert!(
+        matches!(outcome, Err(ResultStoreError::Invalid { .. })),
+        "{outcome:?}"
+    );
+    let stats = fx.store.stats();
+    assert_eq!((stats.delivered.results, stats.idle.results), (0, 1));
+}

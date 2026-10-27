@@ -158,3 +158,22 @@ fn result_store_stats_report_budget_classes_and_bytes() {
     );
     assert_eq!(stats.admitted_bytes, unit * 3);
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn result_store_a_refused_admission_releases_the_incoming_file_and_connection() {
+    let unit = unit_bytes();
+    let fx = fixture(unit);
+    let kept = write_at(&fx, 10);
+    touch(&fx.store, kept.id);
+
+    let refused = write_rows(&fx.store, ROWS, PAYLOAD);
+
+    assert!(
+        matches!(refused, Err(ResultStoreError::Full { active_count: 1 })),
+        "{:?}",
+        refused.err()
+    );
+    assert!(db_files(&fx.results_dir()).is_empty());
+    assert_eq!(deleted_descriptors_under(fx.dir.path()).len(), 1);
+}

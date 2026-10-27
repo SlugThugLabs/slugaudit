@@ -3,7 +3,7 @@
 use super::cursor::{Cursor, ResultId};
 use super::error::{ResultStoreError, UnsupportedPlatform};
 use super::owner::{self, SweepOutcome};
-use super::registry::{Entry, Registry};
+use super::registry::{Entry, Refused, Registry};
 use super::stats::StoreStats;
 use crate::util::lock_or_recover;
 use std::fs::File;
@@ -160,9 +160,33 @@ impl ResultStore {
             entry.bytes,
         );
         let (now, grace) = (self.now(), self.limits.active_grace_secs);
-        let reclaimed = self
-            .registry()
-            .admit(id, entry, self.limits.max_bytes, now, grace)?;
+        let budget = self.limits.max_bytes;
+        // The guard is a temporary of this statement: it is released before
+        // anything is logged or dropped.
+        let admitted = self.registry().admit(id, entry, budget, now, grace);
+        let reclaimed = match admitted {
+            Ok(reclaimed) => reclaimed,
+            Err(refused) => {
+                match &refused.error {
+                    ResultStoreError::Full { active_count } => tracing::info!(
+                        active_count,
+                        bytes = refused.entry.bytes,
+                        budget,
+                        "result refused: the store is full"
+                    ),
+                    _ => tracing::info!(
+                        result = %id,
+                        bytes = refused.entry.bytes,
+                        budget,
+                        "result refused: larger than the whole budget"
+                    ),
+                }
+                let Refused { error, entry } = refused;
+                // Closes the refused entry's connection and file, lock released.
+                drop(entry);
+                return Err(error);
+            }
+        };
         for victim in &reclaimed {
             tracing::info!(
                 result = %victim.id,

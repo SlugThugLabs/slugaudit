@@ -113,6 +113,13 @@ pub(super) struct Reclaimed {
     pub(super) entry: Arc<Entry>,
 }
 
+/// A refused admission: the error and the entry that was not admitted, so the
+/// caller drops it (closing its connection and unlinked file) after the lock.
+pub(super) struct Refused {
+    pub(super) error: ResultStoreError,
+    pub(super) entry: Box<Entry>,
+}
+
 #[derive(Default)]
 pub(super) struct Registry {
     pub(super) entries: HashMap<ResultId, Arc<Entry>>,
@@ -133,13 +140,23 @@ impl Registry {
         budget: u64,
         now: i64,
         grace_secs: u64,
-    ) -> Result<Vec<Reclaimed>, ResultStoreError> {
+    ) -> Result<Vec<Reclaimed>, Refused> {
         if entry.bytes > budget {
             self.counters.refused_too_large += 1;
-            tracing::info!(result = %id, bytes = entry.bytes, budget, "result refused: larger than the whole budget");
-            return Err(ResultStoreError::TooLarge);
+            return Err(Refused {
+                error: ResultStoreError::TooLarge,
+                entry: Box::new(entry),
+            });
         }
-        let plan = self.plan_reclaim(entry.bytes, budget, now, grace_secs)?;
+        let plan = match self.plan_reclaim(entry.bytes, budget, now, grace_secs) {
+            Ok(plan) => plan,
+            Err(error) => {
+                return Err(Refused {
+                    error,
+                    entry: Box::new(entry),
+                });
+            }
+        };
         let mut reclaimed = Vec::with_capacity(plan.len());
         for (victim, class) in plan {
             if let Some(removed) = self.entries.remove(&victim) {
@@ -191,12 +208,6 @@ impl Registry {
         }
         let active_count = self.count_class(ResultClass::Active, now, grace_secs);
         self.counters.refused_full += 1;
-        tracing::info!(
-            active_count,
-            bytes,
-            budget,
-            "result refused: the store is full"
-        );
         Err(ResultStoreError::Full { active_count })
     }
 

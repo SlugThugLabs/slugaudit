@@ -44,25 +44,32 @@ mod imp {
     }
 
     /// The owner-lock file, created if missing, never through a symlink.
+    /// A new file is made with `create_new` (which does not follow a
+    /// symlink); an existing one must be a regular file by `symlink_metadata`
+    /// and the opened handle must be that same inode.
     pub(in super::super) fn open_lock_file(path: &Path) -> io::Result<File> {
-        match std::fs::symlink_metadata(path) {
-            Ok(meta) if !meta.is_file() => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "lock path is a symlink or not a file",
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).mode(0o600);
+        match options.clone().create_new(true).open(path) {
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            created => return created,
         }
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(path)
+        let named = std::fs::symlink_metadata(path)?;
+        if !named.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "lock path is a symlink or not a file",
+            ));
+        }
+        let file = options.open(path)?;
+        let held = file.metadata()?;
+        if held.dev() != named.dev() || held.ino() != named.ino() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "lock path changed while opening",
+            ));
+        }
+        Ok(file)
     }
 
     /// True when `path` still names the inode `file` holds.

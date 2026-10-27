@@ -379,3 +379,29 @@ fn result_store_writers_and_pagers_on_many_threads_finish_with_consistent_totals
             .all(|h| read_all(&fx.store, h.id).len() == 1_200)
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn result_store_open_refuses_a_symlinked_lock_file() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    let target = elsewhere.path().join("target");
+    std::fs::write(&target, b"keep").expect("target");
+    let session = Uuid::new_v4();
+    let results = dir.path().join("results");
+    std::fs::create_dir(&results).expect("results dir");
+    std::os::unix::fs::symlink(
+        &target,
+        results.join(format!("{}.lock", session.hyphenated())),
+    )
+    .expect("symlink");
+
+    let outcome = ResultStore::open(dir.path(), session, limits(1 << 30));
+
+    assert!(
+        matches!(outcome, Err(ResultStoreError::Unavailable { .. })),
+        "{:?}",
+        outcome.err()
+    );
+    assert_eq!(std::fs::read(&target).expect("target intact"), b"keep");
+}

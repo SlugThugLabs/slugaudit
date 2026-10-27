@@ -1,10 +1,11 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=One responsibility: reading a page of a stored result (raw and typed) and decoding its rows, which must share the fetch-then-mark-served ordering.
 //! Reading a page of a stored result. The reader holds no position: the same
 //! `from_ord` always returns the same rows.
 
 use super::cell::{Cell, Materialize, NonFinite, StoredRow, Take};
 use super::cursor::{Cursor, ResultId};
 use super::error::ResultStoreError;
-use super::registry::ResultMeta;
+use super::registry::{Entry, ResultMeta};
 use super::result_file::column_list;
 use super::store::ResultStore;
 use rusqlite::types::ValueRef;
@@ -37,6 +38,13 @@ pub struct TypedPage<T> {
     pub meta: Arc<ResultMeta>,
 }
 
+/// A page read but not yet counted as served.
+struct Fetched {
+    entry: Arc<Entry>,
+    rows: Vec<StoredRow>,
+    next_ord: Option<u64>,
+}
+
 impl ResultStore {
     /// Reads the page that starts at `from_ord`. The first row is always
     /// taken (the closure is not asked about it); each later row is offered to
@@ -55,6 +63,27 @@ impl ResultStore {
         from_ord: u64,
         mut accept: impl FnMut(&StoredRow) -> Take,
     ) -> Result<PageRead, ResultStoreError> {
+        let Fetched {
+            entry,
+            rows,
+            next_ord,
+        } = self.fetch(id, from_ord, &mut accept)?;
+        entry.served(self.now(), next_ord.is_none());
+        Ok(PageRead {
+            rows,
+            next_ord,
+            row_count: entry.meta.row_count,
+            meta: Arc::clone(&entry.meta),
+        })
+    }
+
+    /// Reads a page without renewing or marking the result.
+    fn fetch(
+        &self,
+        id: ResultId,
+        from_ord: u64,
+        accept: &mut impl FnMut(&StoredRow) -> Take,
+    ) -> Result<Fetched, ResultStoreError> {
         let entry = self.lookup(id)?;
         if from_ord > entry.meta.row_count {
             return Err(self.unknown_cursor());
@@ -64,14 +93,12 @@ impl ResultStore {
             if !is_complete(&conn)? {
                 return Err(self.unknown_cursor());
             }
-            read_rows(&conn, entry.meta.columns.len(), from_ord, &mut accept)?
+            read_rows(&conn, entry.meta.columns.len(), from_ord, accept)?
         };
-        entry.served(self.now(), next_ord.is_none());
-        Ok(PageRead {
+        Ok(Fetched {
+            entry,
             rows,
             next_ord,
-            row_count: entry.meta.row_count,
-            meta: Arc::clone(&entry.meta),
         })
     }
 
@@ -100,27 +127,46 @@ impl ResultStore {
         from_ord: u64,
         mut accept: impl FnMut(&T) -> Take,
     ) -> Result<TypedPage<T>, ResultStoreError> {
+        // Every row is converted exactly once, before the result is marked
+        // served: a conversion failure leaves its class and age untouched.
         let mut failure = None;
-        let page = self.read_page(id, from_ord, |row| match T::from_values(&row.cells) {
-            Ok(typed) => accept(&typed),
-            Err(error) => {
-                failure.get_or_insert(error);
-                Take::No
+        let mut later = Vec::new();
+        let Fetched {
+            entry,
+            rows,
+            next_ord,
+        } = self.fetch(id, from_ord, &mut |row| {
+            if failure.is_some() {
+                return Take::No;
+            }
+            match T::from_values(&row.cells) {
+                Ok(typed) => {
+                    let take = accept(&typed);
+                    if take == Take::Yes {
+                        later.push(typed);
+                    }
+                    take
+                }
+                Err(error) => {
+                    failure = Some(error);
+                    Take::No
+                }
             }
         })?;
         if let Some(error) = failure {
             return Err(error);
         }
-        let rows = page
-            .rows
-            .iter()
-            .map(|row| T::from_values(&row.cells))
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut typed = Vec::with_capacity(rows.len());
+        if let Some(first) = rows.first() {
+            typed.push(T::from_values(&first.cells)?);
+        }
+        typed.append(&mut later);
+        entry.served(self.now(), next_ord.is_none());
         Ok(TypedPage {
-            rows,
-            next_ord: page.next_ord,
-            row_count: page.row_count,
-            meta: page.meta,
+            rows: typed,
+            next_ord,
+            row_count: entry.meta.row_count,
+            meta: Arc::clone(&entry.meta),
         })
     }
 
