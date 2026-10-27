@@ -753,7 +753,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 117 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 119 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only
@@ -938,6 +938,29 @@ something else loudly.
     collides on load is reported invalid rather than shadowing anything. The
     built-in table (`leads_mechanics::MECHANICS`) is compiled in and nothing
     at runtime edits it.
+15. **A paged result is immutable.** Once committed, a result's rows, order,
+    totals and completeness never change; every page of a cursor describes the
+    revision its first page was taken from, whatever the tree or the index
+    does afterwards.
+16. **A continuation does not sync.** A call carrying `cursor` reads the stored
+    result and nothing else: no sync, no revision check, no `path`. With
+    `health` it is one of two calls that do not bring the project current; a
+    call without a cursor is a new request and syncs as every tool does.
+17. **Nothing is addressable before it is committed.** No cursor, registry
+    entry or readable page exists for a result until its writer has committed
+    and been admitted; a failed materialisation leaves no trace a caller could
+    name.
+18. **An active result is never reclaimed.** Pressure from a newer result
+    may take delivered and idle results, never one still being paged; when
+    only active results remain, the newcomer is refused instead.
+19. **The result store and `project.db` hold disjoint data.** Results live
+    under `<runtime dir>/results/`, which discovery, the stat sweep, the
+    watcher scope and reconcile all exclude, and each result is an unlinked
+    private file with its own connection. So replacing the database (stale
+    root, incompatible version, corruption recovery, `project_control off`)
+    cannot disturb an open result, and open results never hold a WAL reader
+    that would block a publish or a checkpoint. The proofs are the
+    `result_store_proof_` tests in `sync/result_store_proof_*_tests.rs`.
 
 ### Machine-readable failure codes
 

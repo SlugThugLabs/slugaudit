@@ -117,6 +117,8 @@ src/
 │   ├── mod.rs                public exports
 │   ├── manager.rs            SourceSyncManager: state, watcher ownership, observability
 │   ├── result_stores.rs      the process's lazily opened result store, one slot keyed by runtime dir
+│   ├── result_store_proof_exclusion_tests.rs results dir and lock excluded from discovery, sweep, watcher, reconcile
+│   ├── result_store_proof_replacement_tests.rs open results survive each database replacement and a WAL truncate
 │   ├── manager_orchestration.rs  ensure_current: resolve, open/recover, recovery logs, rebuild tail
 │   ├── manager_health.rs     sync_by_health: the WatcherHealth dispatch
 │   ├── manager_health_support.rs  event barrier, post-sync revision read, sweep-error mapping
