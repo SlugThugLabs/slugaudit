@@ -753,7 +753,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 106 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 110 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only
@@ -975,6 +975,7 @@ surface).
 | `result_store_full` | a new result does not fit and every byte is held by results still being paged; the message carries the active count as a number only | `error_codes::store_error` (`ResultStoreError::Full`) |
 | `result_too_large` | one result alone is larger than the whole result store budget (`max_result_store_bytes`); nothing is stored and no cursor is returned | `error_codes::store_error` (`ResultStoreError::TooLarge`) |
 | `result_store_unavailable` | the result store cannot hold or serve results (disk full or unwritable, unsupported platform); other tools keep working | `error_codes::store_error` (`ResultStoreError::Unavailable`) |
+| `paging_parameter_removed` | a request carried `offset` or `expected_revision`, the pre-cursor paging parameters removed when the tools moved to cursors; the remedy names `cursor` | `tools::page::LegacyPaging::refuse` |
 <!-- error-codes:end -->
 
 `health` is the deliberate exception: it answers normally in the not-enabled

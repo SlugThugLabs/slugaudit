@@ -85,6 +85,9 @@ pub enum ErrorCode {
     /// disk is full or unwritable, or the platform lacks the file semantics
     /// it needs. Other tools keep working.
     ResultStoreUnavailable,
+    /// A request carried `offset` or `expected_revision`, the pre-cursor
+    /// paging parameters that were removed when the tools moved to cursors.
+    PagingParameterRemoved,
 }
 
 impl ErrorCode {
@@ -109,6 +112,7 @@ impl ErrorCode {
         ErrorCode::ResultStoreFull,
         ErrorCode::ResultTooLarge,
         ErrorCode::ResultStoreUnavailable,
+        ErrorCode::PagingParameterRemoved,
     ];
 
     /// The stable wire string: lowercase `snake_case`, never renamed.
@@ -129,6 +133,7 @@ impl ErrorCode {
             ErrorCode::ResultStoreFull => "result_store_full",
             ErrorCode::ResultTooLarge => "result_too_large",
             ErrorCode::ResultStoreUnavailable => "result_store_unavailable",
+            ErrorCode::PagingParameterRemoved => "paging_parameter_removed",
         }
     }
 
@@ -192,6 +197,10 @@ impl ErrorCode {
             ErrorCode::ResultStoreUnavailable => {
                 "the result store cannot be used on this machine or its disk is full or \
                  unwritable; see docs/TROUBLESHOOTING.md; other tools keep working"
+            }
+            ErrorCode::PagingParameterRemoved => {
+                "offset and expected_revision were removed; pass the cursor from the previous \
+                 page's page.cursor, or omit it for a new request"
             }
         }
     }

@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=the one paging contract: Page, PageLimit, Completeness and the legacy-paging refusal are one wire contract and must stay together
 //! The one paging contract every paged tool returns: `leads` (and the
 //! `mechanic add` first count, which is a `leads` response), `query`,
 //! `structure` and `finding_read` each embed a [`Page`] as their `page`
@@ -15,11 +16,44 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::context::internal_error;
+use crate::error_codes::{ErrorCode, payload};
 
 /// Converts a SQLite count into [`Page::total`]'s unsigned type. A count is
 /// never negative, so a negative one is an internal error, not a clamp.
 pub(super) fn total_of(count: i64) -> Result<u64, ErrorData> {
     u64::try_from(count).map_err(|error| internal_error("reading a negative row total", error))
+}
+
+/// The pre-cursor paging parameters, kept only so a request that still sends
+/// them is refused with a message instead of the parameters being silently
+/// dropped. A request embeds it as
+/// `#[serde(flatten, default)] #[schemars(skip)] pub legacy_paging: LegacyPaging`,
+/// so the fields are accepted on input and absent from the tool schema. The
+/// values are kept as raw JSON: only their presence matters.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LegacyPaging {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    offset: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expected_revision: Option<serde_json::Value>,
+}
+
+impl LegacyPaging {
+    /// Refuses a request that carries `offset` or `expected_revision`.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` with the `paging_parameter_removed` code when either
+    /// field is present (including an explicit JSON null).
+    pub fn refuse(&self) -> Result<(), ErrorData> {
+        if self.offset.is_none() && self.expected_revision.is_none() {
+            return Ok(());
+        }
+        Err(ErrorData::invalid_params(
+            "offset and expected_revision were removed from this tool; page with the cursor",
+            payload(ErrorCode::PagingParameterRemoved),
+        ))
+    }
 }
 
 /// What cut a page. It reports the bound that acted, never a judgment about
@@ -137,6 +171,61 @@ pub struct Page {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_paging_refuses_an_offset_with_the_cursor_remedy() {
+        let legacy: LegacyPaging =
+            serde_json::from_value(serde_json::json!({ "offset": 5 })).expect("parses");
+
+        let error = legacy.refuse().expect_err("offset is removed");
+
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        let data = error.data.expect("a payload");
+        assert_eq!(data["code"], "paging_parameter_removed");
+        assert!(data["remedy"].as_str().expect("remedy").contains("cursor"));
+    }
+
+    #[test]
+    fn legacy_paging_refuses_an_expected_revision_with_the_cursor_remedy() {
+        let legacy: LegacyPaging =
+            serde_json::from_value(serde_json::json!({ "expected_revision": "r1" }))
+                .expect("parses");
+
+        let error = legacy.refuse().expect_err("expected_revision is removed");
+
+        let data = error.data.expect("a payload");
+        assert_eq!(data["code"], "paging_parameter_removed");
+        assert!(data["remedy"].as_str().expect("remedy").contains("cursor"));
+    }
+
+    #[test]
+    fn legacy_paging_accepts_a_request_with_neither_field() {
+        let legacy: LegacyPaging = serde_json::from_value(serde_json::json!({})).expect("parses");
+
+        legacy.refuse().expect("nothing to refuse");
+    }
+
+    #[test]
+    fn legacy_paging_flattened_into_a_request_is_read_but_not_in_its_schema() {
+        #[derive(Deserialize, JsonSchema)]
+        struct Probe {
+            #[serde(default)]
+            path: Option<String>,
+            #[serde(flatten, default)]
+            #[schemars(skip)]
+            legacy_paging: LegacyPaging,
+        }
+
+        let probe: Probe = serde_json::from_value(serde_json::json!({ "path": "p", "offset": 1 }))
+            .expect("parses");
+        let schema = serde_json::to_string(&schemars::schema_for!(Probe)).expect("schema");
+
+        assert_eq!(probe.path.as_deref(), Some("p"));
+        probe.legacy_paging.refuse().expect_err("offset was sent");
+        assert!(!schema.contains("offset"), "{schema}");
+        assert!(!schema.contains("expected_revision"), "{schema}");
+        assert!(!schema.contains("legacy_paging"), "{schema}");
+    }
 
     #[test]
     fn a_page_serializes_exactly_the_eight_shared_field_names() {

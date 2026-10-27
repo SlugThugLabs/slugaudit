@@ -244,6 +244,29 @@ pub fn decode_rows<R: Materialize>(rows: &[StoredRow]) -> Result<Vec<R>, ErrorDa
         .collect()
 }
 
+/// Resolves the cursor/path pair every migrated tool takes into a
+/// [`PageRequest`]. With a cursor the call continues a stored result: `path`
+/// and every request-shaping parameter are ignored (only `page_bytes` is
+/// honoured). Without one it is a new request and `path` is required.
+///
+/// # Errors
+///
+/// `invalid_params` when there is neither a cursor nor a path.
+pub fn page_request<'a>(
+    cursor: Option<&'a str>,
+    path: Option<&'a str>,
+    sink: &'a dyn ProgressSink,
+) -> Result<PageRequest<'a>, ErrorData> {
+    match (cursor, path) {
+        (Some(token), _) => Ok(PageRequest::Cursor(token)),
+        (None, Some(path)) => Ok(PageRequest::Fresh { path, sink }),
+        (None, None) => Err(ErrorData::invalid_params(
+            "path is required when no cursor is given",
+            None,
+        )),
+    }
+}
+
 #[cfg(test)]
 #[path = "paginate_tests.rs"]
 mod tests;

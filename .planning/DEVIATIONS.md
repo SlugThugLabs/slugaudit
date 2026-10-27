@@ -660,3 +660,9 @@ Oldest first: append each new entry at the end of the file. Format: **what** / *
 - **Why:** the 9.1 API has no metadata lookup without a read; adding one is a store change the brief reserves to the lead. The effect is limited to reclaim priority of a result the caller already holds a valid cursor for.
 - **Where:** `src/tools/paginate.rs`.
 - **Reversible:** yes (add `ResultStore::meta_of(id)`).
+
+## 9.3-0: with a cursor, path and request-shaping parameters are ignored
+- **What:** `page_request` resolves a request with a cursor to `PageRequest::Cursor` even when `path` (or any other request-shaping parameter) is also sent; only `page_bytes` is honoured.
+- **Why:** a cursor names a stored result, so the original request already fixed everything else; refusing the extras would break callers that resend their full request.
+- **Where:** `src/tools/paginate.rs` (`page_request`).
+- **Reversible:** yes.

@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=the tools module root: one declaration and re-export list for every tool plus the per-tool golden test modules
 //! Tool handlers orchestrate: they resolve the active project, ensure it's
 //! synced, and format a response. They own no parsing, SQL, or storage
 //! logic themselves — that lives in `sync`, `store`, and `evidence`.
@@ -52,11 +53,31 @@ pub(crate) mod test_support;
 mod redaction_tests;
 
 #[cfg(test)]
-#[path = "golden_phase9_tests.rs"]
-mod golden_phase9_tests;
+mod golden_phase9_support;
+
+#[cfg(test)]
+#[path = "golden_phase9_leads_tests.rs"]
+mod golden_phase9_leads_tests;
+
+#[cfg(test)]
+#[path = "golden_phase9_mechanic_tests.rs"]
+mod golden_phase9_mechanic_tests;
+
+#[cfg(test)]
+#[path = "golden_phase9_query_tests.rs"]
+mod golden_phase9_query_tests;
+
+#[cfg(test)]
+#[path = "golden_phase9_structure_tests.rs"]
+mod golden_phase9_structure_tests;
+
+#[cfg(test)]
+#[path = "golden_phase9_finding_read_tests.rs"]
+mod golden_phase9_finding_read_tests;
 
 pub use context::{
-    PageRequest, PageSpec, Produced, RowSink, Served, decode_rows, ensure_synced, paginate,
+    PageRequest, PageSpec, Produced, RowSink, Served, decode_rows, ensure_synced, page_request,
+    paginate,
 };
 pub use finding::{FindingRequest, FindingResponse, finding};
 pub use finding_read::{FindingReadEntry, FindingReadRequest, FindingReadResponse, finding_read};
@@ -69,7 +90,7 @@ pub use mechanic::{
     InvalidMechanic, MechanicAction, MechanicListing, MechanicRequest, MechanicResponse,
     MechanicSource, mechanic,
 };
-pub use page::{Completeness, Page, PageLimit};
+pub use page::{Completeness, LegacyPaging, Page, PageLimit};
 pub use project_control::{
     GitignoreReport, GitignoreStatus, ImportReport, ProjectControlAction, ProjectControlRequest,
     ProjectControlResponse, project_control,

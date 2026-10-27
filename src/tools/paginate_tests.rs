@@ -445,3 +445,34 @@ fn paginate_raw_rows_round_trip_without_a_typed_layout() {
     );
     assert_eq!(served.page.total, Some(1));
 }
+
+#[test]
+fn page_request_with_a_cursor_continues_and_ignores_the_path() {
+    let request =
+        page_request(Some("tok"), Some("/ignored"), &NoopProgressSink).expect("a cursor resolves");
+
+    assert!(matches!(request, PageRequest::Cursor("tok")));
+}
+
+#[test]
+fn page_request_without_a_cursor_is_fresh_on_the_path() {
+    let request = page_request(None, Some("/project"), &NoopProgressSink).expect("a path resolves");
+
+    assert!(matches!(
+        request,
+        PageRequest::Fresh {
+            path: "/project",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn page_request_with_neither_cursor_nor_path_is_invalid_params() {
+    let error = page_request(None, None, &NoopProgressSink)
+        .err()
+        .expect("nothing to resolve");
+
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(error.message, "path is required when no cursor is given");
+}
