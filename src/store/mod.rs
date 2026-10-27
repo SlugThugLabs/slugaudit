@@ -36,7 +36,7 @@ pub use migrations::MigrationError;
 pub use result_store::{
     Cell, ClassStats, Clock, Cursor, Materialize, NonFinite, PageRead, ResultClass, ResultHandle,
     ResultId, ResultMeta, ResultSpec, ResultStore, ResultStoreError, ResultStoreLimits,
-    ResultWriter, StoreStats, StoredRow, SweepOutcome, Take, TypedPage,
+    ResultWriter, StoreStats, StoredRow, SweepOutcome, Take,
 };
 
 /// The schema version a fresh database is brought to. Re-exported for tests

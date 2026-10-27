@@ -56,7 +56,7 @@ pub use cell::{Cell, Materialize, NonFinite, StoredRow, Take};
 pub use cursor::{Cursor, ResultId};
 pub use error::ResultStoreError;
 pub use owner::SweepOutcome;
-pub use reader::{PageRead, TypedPage};
+pub use reader::PageRead;
 pub use registry::{ResultClass, ResultMeta};
 pub use stats::{ClassStats, StoreStats};
 pub use store::{Clock, ResultStore, ResultStoreLimits};
