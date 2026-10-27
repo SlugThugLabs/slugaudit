@@ -588,6 +588,116 @@ as mechanics it registers for the session or persists to the project config.
   code; the server log already carries `session_id`/`call_id` per call, so a
   log-derived measure is possible without a code change. State: **not scheduled**.
 
+## Phase 9 — Immutable paged results (the result store)
+
+State: **not started** (approved by the owner 2026-10-26; architect's design
+and evidence in `.planning/archive/design_2026-10-26_result_store.md`, which a
+builder reads before touching paging). Branch `fix/deep-dive-2026-10-25`, one
+commit per item, never push. Phase 9 is complete only when every acceptance
+check in 9.7 passes on the integrated tree; avoidable defects are fixed, not
+recorded as limitations.
+
+Contract (owner): new requests sync and describe the current tree; a paged
+result is one immutable answer and every page describes the revision page one
+was taken from; edits while reading never alter the result being read; no
+silent skip, repeat or revision mix; exhaustion and expiry are explicit; the
+agent copies one cursor and manages no revisions; the grace period never
+invalidates a report, it only governs reclaim eligibility under pressure, and
+continuing a result renews its protection.
+
+- **9.0 — Golden capture.** State: **not started**. Before any paging change,
+  capture per-tool response fixtures from `2ad7bc3` on the existing test
+  fixtures (`leads` counts and rows incl. compact, `query` incl. clipped,
+  non-finite and NUL-text cases, `structure` single-file and project-wide,
+  `finding_read`, `mechanic` add/list) into `tests/golden/phase9/`. DoD: the
+  fixtures are committed with the script that produced them; a test loads
+  them (it is allowed to fail until 9.3 lands and is marked so).
+- **9.1 — `store/result_store/`.** State: **not started**. File lifecycle
+  (create under `.planning/slugaudit/results/`, open, unlink, pragmas), owner
+  lock file, startup sweep, schema (`meta`, `rows` with untyped columns and the
+  `nonfinite` marker), the `Materialize` trait, batched writer (1,000 rows per
+  batch, meta last, registry after commit, rollback-and-remove on any error),
+  ordinal page reader with the existing byte cut, registry with
+  active/idle/delivered classes, admission (fit → admit; else reclaim
+  delivered oldest-first, then idle oldest-first, never active; else refuse),
+  cursor codec (`v1.<nonce>.<result>.<ord>`), stats, limits
+  `max_result_store_bytes` (4 × `max_query_response_bytes`) and
+  `result_active_grace_secs` (900) with env/profile/config entries documented
+  in `limits.rs`. Platform: Unix unlink-after-open; any other target fails
+  closed at open with `result_store_unavailable`. DoD (unit): fidelity matrix
+  round-trips every storage class and records NaN/±Inf in `nonfinite`; same
+  token twice → identical rows; disjoint pages cover the result exactly once;
+  admission order as specified and an active result is never reclaimed; an
+  idle result older than the grace period is still readable and becomes
+  active on continuation; a result over budget leaves no file; a failure
+  mid-write leaves no file and no registry entry; full-disk seam →
+  `result_store_unavailable`; abort mid-write leaves no file (process-spawn
+  test); a planted leftover is swept at startup while a locked one is not;
+  cross-thread insert/read through the per-result mutex.
+- **9.2 — Shared pagination layer.** State: **not started**. `tools/context.rs`
+  gains one `paginate` entry: without `cursor` it syncs, opens the verified
+  read transaction, materialises via the tool's `Materialize` producer and
+  serves page one; with `cursor` it serves the stored page with no sync and no
+  revision check. `tools/page.rs` gains `cursor`, `completeness`; loses
+  `next_offset`. Error codes `unknown_cursor`, `result_expired`,
+  `result_store_full`, `result_too_large`, `result_store_unavailable` with
+  remedies in `error_codes.rs`. DoD: unit tests for both branches and every
+  code; `check_source_limits` passes with a cohesive module, no artificial seam.
+- **9.3 — Tool migrations** (one builder per tool, disjoint files, after 9.2).
+  State: **not started**. `leads`: rows and `mechanic_counts` from one
+  transaction, `e.id` tie-breaker, custom scans may be `partial`. `query`:
+  all-or-nothing, remove the separate `count(*)`, `total_rows_unavailable`
+  and its budget; `total` exact. `structure`: partial semantics on the stored
+  result (`complete_scan`, `limited_by`, `resume_after_file`), resume is a
+  new request. `finding_read` and `mechanic`: cursor paging. `offset` and
+  `expected_revision` removed from all five. DoD per tool: golden equality
+  with 9.0 fixtures apart from the paging fields; the edit-between-pages test
+  (page one, edit so one row vanishes and one appears, read all pages, union
+  equals a full fetch taken at page one, `total` unchanged, then a fresh
+  request shows the edit).
+- **9.4 — Exclusion and database-replacement proofs.** State: **not started**.
+  Tests that `results/*.db` and the lock file are excluded from discovery, the
+  stat sweep, the watcher scope and reconcile (create them, run a full publish
+  and a sweep, assert no `files` row and no watcher event reaches reconcile);
+  tests that each of the four database-replacement paths (stale root,
+  incompatible version, corruption recovery, `project_control off`) runs while
+  a result is open and the continuation still completes; a publish and
+  `wal_checkpoint(TRUNCATE)` succeed with results open and the WAL truncates
+  to zero. DoD: all pass; `ARCHITECTURE.md` gains the invariants (immutable
+  paged result; continuation does not sync; nothing addressable before
+  commit; active results never reclaimed; result store and `project.db` hold
+  disjoint data).
+- **9.5 — Surface, docs, authorizer.** State: **not started**. INSTRUCTIONS
+  paging paragraph rewritten around `cursor`; store stats in `health` detail;
+  the read-only authorizer denies `CREATE TEMP TABLE`; `docs/TROUBLESHOOTING.md`
+  gains the result-store section (location, cleanup, platform policy, the
+  five codes); CHANGELOG under 1.1.0 (breaking: `offset`/`expected_revision`
+  removed, `cursor` added); `check_mcp_surface --record`; Luna reviews the
+  surface diff and the INSTRUCTIONS text. DoD: all gates; INSTRUCTIONS size
+  reported in the commit body.
+- **9.6 — Budget confirmation.** State: **not started**. On the 68k-line
+  project copy under `audit`, measure: materialisation time and file size for
+  `leads` all rows, `query` `SELECT path, content FROM files`, project-wide
+  `structure`; peak RSS with eight results open; confirm or adjust the
+  multiplier 4 and grace 900 s, recording the numbers in the design record.
+- **9.7 — Acceptance (phase gate).** State: **not started**. Full README gate
+  list via clerk; the stdio MCP end-to-end against a fresh release build via
+  quinn: `on` → `leads` page one → edit a file removing one match and adding
+  one → `leads` with cursor until `complete` (union equals a full fetch taken
+  at page one; totals unchanged) → `leads` without cursor shows the edit →
+  same cursor twice gives identical pages → final-page retry works → a token
+  from a restarted server gives `unknown_cursor` → `query` with NaN (via the
+  test-registered function if no SQL expression yields NaN in the bundled
+  build), +Inf, NUL text, blob and numeric-looking text pages identically to
+  the 9.0 golden → `structure` project-wide on a window-limited project
+  reports `complete_scan: false` and resumes as a new request → `health`
+  verbose shows store stats. Phase 9 is **landed** only when 9.0–9.7 are all
+  landed with commit hashes here.
+
+Recorded, not scheduled, from Phase 9: fold the mechanic scan cache into the
+result store (same mechanism keyed by revision); a `release` action for
+abandoned results if admission refusals are ever observed in practice.
+
 ## Remaining P1 debt (historical; superseded by wave 5)
 
 State: **superseded** — the wave-5 audit is a fresh, complete inventory
