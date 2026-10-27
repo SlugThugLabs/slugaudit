@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=the open-time guards (symlink, permission, ATTACH and read-only authorizers, WAL) are the private half of one open contract and share its error type
 //! Open-time guards and connection configuration for the store.
 //!
 //! These are the private halves of the open contract in [`super::connection`]:
@@ -133,7 +134,8 @@ pub(super) fn guard_against_attach(connection: &Connection) {
 }
 
 /// The read-only connection's authorizer: ATTACH/DETACH denied as in
-/// [`guard_against_attach`], and every PRAGMA denied except the
+/// [`guard_against_attach`], every CREATE TEMP TABLE/INDEX/TRIGGER/VIEW denied,
+/// and every PRAGMA denied except the
 /// schema-introspection names in [`INTROSPECTION_PRAGMAS`].
 ///
 /// A PRAGMA is not inert until it runs: SQLite applies `hard_heap_limit`,
@@ -187,6 +189,16 @@ fn authorize(
     use rusqlite::hooks::{AuthAction, Authorization};
     match action {
         AuthAction::Attach { .. } | AuthAction::Detach { .. } => Authorization::Deny,
+        // A read-only connection can still create TEMP objects (they live in
+        // the connection's own temp database), so the whole family is denied.
+        AuthAction::CreateTempTable { .. }
+        | AuthAction::CreateTempIndex { .. }
+        | AuthAction::CreateTempTrigger { .. }
+        | AuthAction::CreateTempView { .. }
+            if read_only =>
+        {
+            Authorization::Deny
+        }
         AuthAction::Pragma { pragma_name, .. }
             if read_only
                 && !INTROSPECTION_PRAGMAS

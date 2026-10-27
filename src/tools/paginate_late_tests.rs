@@ -402,3 +402,75 @@ fn paginate_context_columns_declared_by_the_producer_reach_the_continuation() {
 
     assert_eq!(*seen.borrow(), Some((1000, cols(&["a", "b"]), 2)));
 }
+
+#[test]
+fn result_store_surface_wrong_tool_cursor_counts_as_an_unknown_cursor() {
+    let (_project, path) = project();
+    let manager = manager(ROOMY);
+    let first = fresh(&manager, &path, 25, 10).expect("page one");
+    let store = manager.result_stores().current().expect("a store");
+    assert_eq!(store.stats().unknown_cursors, 0);
+
+    let error = next(&manager, "other", &cursor_of(&first), 10)
+        .err()
+        .expect("refused");
+
+    assert_eq!(code_of(&error), "unknown_cursor");
+    assert_eq!(store.stats().unknown_cursors, 1);
+}
+
+#[test]
+fn result_store_surface_stored_project_label_is_the_root_path_id_of_the_logs() {
+    let (project, path) = project();
+    let manager = manager(ROOMY);
+    let first = fresh(&manager, &path, 25, 10).expect("page one");
+    let store = manager.result_stores().current().expect("a store");
+    let cursor = store
+        .decode_cursor(&cursor_of(&first))
+        .expect("the cursor decodes");
+
+    let label = store.meta_of(cursor.result).expect("meta").project.clone();
+
+    let root = std::fs::canonicalize(project.path()).expect("canonical root");
+    assert_eq!(label, crate::util::redacted_path(&root));
+}
+
+#[test]
+fn result_store_surface_verbose_health_reports_the_store_stats() {
+    let (_project, path) = project();
+    let manager = manager(ROOMY);
+    let first = fresh(&manager, &path, 25, 10).expect("page one");
+    assert!(next(&manager, "other", &cursor_of(&first), 10).is_err());
+    let request = rmcp::handler::server::wrapper::Parameters(crate::tools::HealthRequest {
+        path: Some(path.clone()),
+        verbose: true,
+    });
+
+    let answer = crate::tools::health(&request, &NoopProgressSink, &manager).expect("health");
+
+    let value = serde_json::to_value(answer.0).expect("health serializes");
+    let store = &value["detail"]["result_store"];
+    assert_eq!(store["active"]["results"], 1);
+    assert!(store["active"]["bytes"].as_u64().expect("bytes") > 0);
+    assert_eq!(store["delivered"]["results"], 0);
+    assert_eq!(store["budget_bytes"], ROOMY);
+    assert_eq!(store["unknown_cursors"], 1);
+    assert_eq!(store["sweep"]["errors"], 0);
+    assert!(store["sweep"]["first_error"].is_null());
+}
+
+#[test]
+fn result_store_surface_default_health_omits_the_store_detail() {
+    let (_project, path) = project();
+    let manager = manager(ROOMY);
+    fresh(&manager, &path, 25, 10).expect("page one");
+    let request = rmcp::handler::server::wrapper::Parameters(crate::tools::HealthRequest {
+        path: Some(path.clone()),
+        verbose: false,
+    });
+
+    let answer = crate::tools::health(&request, &NoopProgressSink, &manager).expect("health");
+
+    let value = serde_json::to_value(answer.0).expect("health serializes");
+    assert!(value.get("detail").is_none());
+}

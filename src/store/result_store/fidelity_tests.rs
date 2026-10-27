@@ -156,12 +156,17 @@ fn result_store_typed_rows_round_trip_through_materialize_with_their_meta() {
         .expect("write_all");
     let page = fx
         .store
-        .read_typed::<Pair>(handle.id, 0, |_| Take::Yes)
-        .expect("read_typed");
+        .read_page(handle.id, 0, |_| Take::Yes)
+        .expect("read_page");
+    let typed: Vec<Pair> = page
+        .rows
+        .iter()
+        .map(|row| Pair::from_values(&row.cells).expect("from_values"))
+        .collect();
 
-    assert_eq!(page.rows.len(), 5);
+    assert_eq!(typed.len(), 5);
     assert_eq!(
-        page.rows[3],
+        typed[3],
         Pair {
             name: "n3".to_owned(),
             count: 3
@@ -184,7 +189,12 @@ fn result_store_typed_read_surfaces_a_layout_mismatch() {
     let fx = fixture(1 << 30);
     let handle = write_rows(&fx.store, 3, 4).expect("write");
 
-    let result = fx.store.read_typed::<Pair>(handle.id, 0, |_| Take::Yes);
+    let page = fx
+        .store
+        .read_page(handle.id, 0, |_| Take::Yes)
+        .expect("read_page");
+
+    let result = Pair::from_values(&page.rows[0].cells);
 
     assert!(
         matches!(result, Err(ResultStoreError::Invalid { .. })),

@@ -90,6 +90,12 @@ pub(super) fn read_all(store: &ResultStore, id: ResultId) -> Vec<StoredRow> {
         .rows
 }
 
+/// Reads the page a token names: the production path, decode then read.
+pub(super) fn read_token(store: &ResultStore, token: &str) -> Result<PageRead, ResultStoreError> {
+    let cursor = store.decode_cursor(token)?;
+    store.read_page(cursor.result, cursor.ord, |_| Take::Yes)
+}
+
 pub(super) fn db_files(results_dir: &std::path::Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(results_dir)
         .expect("list results")

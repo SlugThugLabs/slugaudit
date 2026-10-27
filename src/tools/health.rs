@@ -33,8 +33,8 @@
 //!
 //! `phase` and `remedy` summarize the first two groups.
 //! `detail.system_memory` is host state, reported because it sizes the
-//! adaptive import budget, and `detail.mechanic_cache` the registered-mechanic
-//! scan cache.
+//! adaptive import budget, `detail.mechanic_cache` the registered-mechanic
+//! scan cache, and `detail.result_store` the paged-result store.
 
 use crate::store;
 use crate::sync;
@@ -51,6 +51,7 @@ use super::ToolCounters;
 #[cfg(test)]
 use super::health_phase::derive_phase;
 use super::health_phase::{compute_global_only_state, compute_project_state};
+use super::health_result_store::ResultStoreState;
 
 /// Request for the `health` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -96,7 +97,7 @@ pub struct HealthResponse {
     pub database: Option<DatabaseSummary>,
     /// Operator detail, present only with `verbose: true`; absent otherwise.
     /// Keys: `watcher`, `database`, `database_read_failed`, `server`,
-    /// `system_memory`, `mechanic_cache`. Their inner fields are
+    /// `system_memory`, `mechanic_cache`, `result_store`. Their inner fields are
     /// operator-facing and listed in docs/TROUBLESHOOTING.md.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "HealthDetail", default)]
@@ -144,6 +145,11 @@ pub struct HealthDetail {
     /// Mechanic scan cache counters.
     #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub mechanic_cache: MechanicCacheState,
+    /// Paged-result store: results and bytes by class, budget, reclaims,
+    /// refusals, refused cursors and the startup sweep. Null until the first
+    /// paged result is made in this process.
+    #[schemars(with = "Option<serde_json::Map<String, serde_json::Value>>")]
+    pub result_store: Option<ResultStoreState>,
 }
 
 /// Unreconciled watcher counts and sequences.
@@ -456,6 +462,7 @@ pub fn health(
         server: server_counters(manager),
         system_memory: crate::model::detect_system_memory(),
         mechanic_cache: MechanicCacheState::snapshot(manager),
+        result_store: super::health_result_store::snapshot(manager),
     });
 
     Ok(Json(HealthResponse {

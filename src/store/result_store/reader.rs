@@ -1,11 +1,11 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=One responsibility: reading a page of a stored result (raw and typed) and decoding its rows, which must share the fetch-then-mark-served ordering.
+// slugaudit-line-exception: approved-by=slugthug; reason=One responsibility: reading a page of a stored result and decoding its rows.
 //! Reading a page of a stored result. The reader holds no position: the same
 //! `from_ord` always returns the same rows.
 
-use super::cell::{Cell, Materialize, NonFinite, StoredRow, Take};
+use super::cell::{Cell, NonFinite, StoredRow, Take};
 use super::cursor::{Cursor, ResultId};
 use super::error::ResultStoreError;
-use super::registry::{Entry, ResultMeta};
+use super::registry::ResultMeta;
 use super::result_file::column_list;
 use super::store::ResultStore;
 use rusqlite::types::ValueRef;
@@ -23,26 +23,6 @@ pub struct PageRead {
     pub row_count: u64,
     /// What the result is.
     pub meta: Arc<ResultMeta>,
-}
-
-/// A page of typed rows.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TypedPage<T> {
-    /// The rows.
-    pub rows: Vec<T>,
-    /// Where the next page starts; `None` at the end.
-    pub next_ord: Option<u64>,
-    /// Exact number of rows in the result.
-    pub row_count: u64,
-    /// What the result is.
-    pub meta: Arc<ResultMeta>,
-}
-
-/// A page read but not yet counted as served.
-struct Fetched {
-    entry: Arc<Entry>,
-    rows: Vec<StoredRow>,
-    next_ord: Option<u64>,
 }
 
 impl ResultStore {
@@ -64,27 +44,6 @@ impl ResultStore {
         from_ord: u64,
         mut accept: impl FnMut(&StoredRow) -> Take,
     ) -> Result<PageRead, ResultStoreError> {
-        let Fetched {
-            entry,
-            rows,
-            next_ord,
-        } = self.fetch(id, from_ord, &mut accept)?;
-        entry.served(self.now(), next_ord.is_none());
-        Ok(PageRead {
-            rows,
-            next_ord,
-            row_count: entry.meta.row_count,
-            meta: Arc::clone(&entry.meta),
-        })
-    }
-
-    /// Reads a page without renewing or marking the result.
-    fn fetch(
-        &self,
-        id: ResultId,
-        from_ord: u64,
-        accept: &mut impl FnMut(&StoredRow) -> Take,
-    ) -> Result<Fetched, ResultStoreError> {
         let entry = self.lookup(id)?;
         if from_ord > entry.meta.row_count {
             return Err(self.unknown_cursor());
@@ -94,71 +53,11 @@ impl ResultStore {
             if !is_complete(&conn)? {
                 return Err(self.unknown_cursor());
             }
-            read_rows(&conn, entry.meta.columns.len(), from_ord, accept)?
+            read_rows(&conn, entry.meta.columns.len(), from_ord, &mut accept)?
         };
-        Ok(Fetched {
-            entry,
-            rows,
-            next_ord,
-        })
-    }
-
-    /// Decodes `token` and reads the page it names.
-    ///
-    /// # Errors
-    ///
-    /// As [`ResultStore::decode_cursor`] and [`ResultStore::read_page`].
-    pub fn read_cursor(
-        &self,
-        token: &str,
-        accept: impl FnMut(&StoredRow) -> Take,
-    ) -> Result<PageRead, ResultStoreError> {
-        let cursor = self.decode_cursor(token)?;
-        self.read_page(cursor.result, cursor.ord, accept)
-    }
-
-    /// [`ResultStore::read_page`] over a [`Materialize`] row type.
-    ///
-    /// # Errors
-    ///
-    /// Those of `read_page`, plus whatever `T::from_values` reports.
-    pub fn read_typed<T: Materialize>(
-        &self,
-        id: ResultId,
-        from_ord: u64,
-        mut accept: impl FnMut(&T) -> Take,
-    ) -> Result<TypedPage<T>, ResultStoreError> {
-        // Every row is converted exactly once, before the result is marked
-        // served: a conversion failure leaves its class and age untouched.
-        let mut failure = None;
-        let mut typed = Vec::new();
-        let Fetched {
-            entry, next_ord, ..
-        } = self.fetch(id, from_ord, &mut |row| {
-            if failure.is_some() {
-                return Take::No;
-            }
-            match T::from_values(&row.cells) {
-                Ok(row_typed) => {
-                    let take = accept(&row_typed);
-                    // The first row is kept whatever the verdict on it.
-                    if take == Take::Yes || typed.is_empty() {
-                        typed.push(row_typed);
-                    }
-                    take
-                }
-                Err(error) => {
-                    failure = Some(error);
-                    Take::No
-                }
-            }
-        })?;
-        if let Some(error) = failure {
-            return Err(error);
-        }
         entry.served(self.now(), next_ord.is_none());
-        Ok(TypedPage {
-            rows: typed,
+        Ok(PageRead {
+            rows,
             next_ord,
             row_count: entry.meta.row_count,
             meta: Arc::clone(&entry.meta),

@@ -6,13 +6,6 @@ use crate::tools::{LegacyPaging, QueryRequest, query};
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::{Value, json};
 
-/// The fixtures were recorded before `total_unavailable` was removed; the
-/// field is always null there, so it is put back to compare the rest.
-fn restore_removed_field(mut response: Value) -> Value {
-    response["total_unavailable"] = Value::Null;
-    response
-}
-
 fn run_query(
     project: &tempfile::TempDir,
     manager: &SourceSyncManager,
@@ -46,7 +39,7 @@ fn call(
     )
     .expect("query succeeds")
     .0;
-    restore_removed_field(serde_json::to_value(response).expect("response serializes"))
+    serde_json::to_value(response).expect("response serializes")
 }
 
 fn query_case(name: &str, sql: &str, page_bytes: Option<usize>) {

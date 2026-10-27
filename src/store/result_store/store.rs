@@ -140,6 +140,14 @@ impl ResultStore {
         ResultStoreError::Unknown
     }
 
+    /// Counts a cursor refused because it belongs to another tool and returns
+    /// the error to report. The caller logs the refusal, so this does not.
+    #[must_use]
+    pub fn refuse_foreign_tool(&self) -> ResultStoreError {
+        self.registry().counters.unknown_cursors += 1;
+        ResultStoreError::Unknown
+    }
+
     pub(super) fn lookup(&self, id: ResultId) -> Result<Arc<Entry>, ResultStoreError> {
         let mut registry = self.registry();
         if let Some(entry) = registry.entries.get(&id) {

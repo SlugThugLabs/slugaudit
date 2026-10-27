@@ -21,8 +21,10 @@ agent queries over MCP.
   the agent never has to double-check whether its view is current.
 - **Caps are reported in the response.** `leads`, `query`, `structure` and
   `finding_read` share one `page` object (`returned`, `total`, `complete`,
-  `next_offset`, `page_bytes`, `bytes_used`, `limited_by`, `revision_id`): it says
-  what cut the page and, the `next_offset` to continue from (null when nothing remains);
+  `cursor`, `page_bytes`, `bytes_used`, `limited_by`, `revision_id`, `completeness`): it
+  says what cut the page and gives the `cursor` to continue with (absent when nothing
+  remains). Pages come from one stored copy of the first call's answer, so edits made
+  while reading never skip or repeat rows;
   `leads` rows flag detail text that was clipped (`detail_clipped`).
 
 For each enabled project, SlugAudit owns exactly one derived-data directory:

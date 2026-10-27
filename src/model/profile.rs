@@ -102,7 +102,7 @@ const RESULT_STORE_BUDGET_FACTOR: u64 = 4;
 pub(crate) const DEFAULT_RESULT_ACTIVE_GRACE_SECS: u64 = 900;
 
 /// The result store budget derived from a profile's response ceiling.
-fn result_store_budget(max_query_response_bytes: usize) -> u64 {
+pub(super) fn result_store_budget(max_query_response_bytes: usize) -> u64 {
     (max_query_response_bytes as u64).saturating_mul(RESULT_STORE_BUDGET_FACTOR)
 }
 

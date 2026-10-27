@@ -236,3 +236,41 @@ fn two_threads_opening_one_fresh_database_both_succeed() {
         }
     }
 }
+
+#[test]
+fn result_store_surface_read_only_connection_denies_every_create_temp_form() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("project.db");
+    open_read_write(&path).expect("create database");
+    let ro = open_read_only(&path).expect("open read-only");
+
+    for statement in [
+        "CREATE TEMP TABLE t (x)",
+        "CREATE TEMP VIEW v AS SELECT 1",
+        "CREATE TEMP TABLE IF NOT EXISTS u (x)",
+    ] {
+        let error = ro
+            .execute_batch(statement)
+            .expect_err("a temp object is refused");
+        assert!(
+            error.to_string().contains("not authorized"),
+            "{statement}: {error}"
+        );
+    }
+    let temp_objects: i64 = ro
+        .query_row("SELECT count(*) FROM sqlite_temp_master", [], |row| {
+            row.get(0)
+        })
+        .expect("count temp objects");
+    assert_eq!(temp_objects, 0);
+}
+
+#[test]
+fn result_store_surface_read_write_connection_still_creates_temp_tables() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("project.db");
+    let rw = open_read_write(&path).expect("create database");
+
+    rw.execute_batch("CREATE TEMP TABLE t (x)")
+        .expect("the writer is not restricted");
+}

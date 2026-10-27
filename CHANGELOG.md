@@ -53,9 +53,16 @@ migration step.
   Oversized cells are clipped with a ready `substr` continuation reported in
   `clipped_cells`, and the SQL functions `line_count(text)` and
   `line_range(text, start, end)` are available on every connection.
-- `expected_revision` on resumed `leads`, `query`, `structure` and `finding_read`
-  pages: a resume against a changed index is refused with `stale_revision`
-  instead of silently skipping or repeating rows.
+- Stored paged results: the first call of `leads`, `query`, `structure`,
+  `finding_read` and `mechanic list` writes its rows and totals to a result store
+  under `.planning/slugaudit/results/`, and every page describes that one
+  snapshot however the files change meanwhile. New limits
+  `SLUGAUDIT_MAX_RESULT_STORE_BYTES` (4 times `max_query_response_bytes` by
+  default) and `SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS` (900), also `config.json` keys.
+  New error codes `unknown_cursor`, `result_expired`, `result_store_full`,
+  `result_too_large`, `result_store_unavailable` and `paging_parameter_removed`;
+  `health` `verbose` reports the store under `detail.result_store`. See
+  `docs/TROUBLESHOOTING.md`.
 - `structure` pages matches by bytes, reports `files_not_scanned` with a
   `next_start_after_file` continuation when the multi-file memory window cuts a
   scan, and bounds its query text (`SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES`, 16 KiB).
@@ -90,18 +97,31 @@ migration step.
 
 ### Changed
 
+- **Breaking:** paging moves to an opaque `cursor`. `offset` and
+  `expected_revision` are removed from `leads`, `query`, `structure`,
+  `finding_read` and `mechanic`, and a request that still sends either is refused
+  with `paging_parameter_removed`. Every response carries `page.cursor` (absent on
+  the last page) and `page.completeness` (`complete`, or `partial` with
+  `limited_by`, `resume_after_file`, `files_scanned` and `files_total`); to
+  continue, repeat the call with only that `cursor`. A continuation does not sync,
+  so it returns the rows, totals and `revision_id` of the first page. `next_offset`
+  is gone from `page`. `structure` no longer continues a window-limited scan with a
+  second cursor: a partial result is resumed by a new request carrying the
+  `start_after_file` request parameter (the result's `resume_after_file`, also
+  reported as `next_start_after_file`), which syncs. `query` is all-or-nothing: the
+  whole statement is stored or the call fails, so `total` is always exact and
+  `total_unavailable` and its separate count budget are removed.
 - **Breaking:** one paging contract. `query`, `structure`, `finding_read`, `leads`
   and the `mechanic` list/count responses carry a shared `page` object with
-  `returned`, `total`, `complete`, `next_offset`, `page_bytes`, `bytes_used`,
+  `returned`, `total`, `complete`, `cursor`, `page_bytes`, `bytes_used`,
   `limited_by` and `revision_id`. Against 1.0.10 this removes the top-level
   `truncated`, `next_offset` and `revision_id` from `query`, `truncated` and
   `revision_id` from `structure`, and `revision_id` from `finding_read`; read
   them from `page` instead. `structure` and `finding_read` now page, and
-  `finding_read` gains the `expected_revision` input and reports `complete`.
+  `finding_read` reports `complete`.
   A request above the page ceiling is clamped, and `page_bytes` already
   reflects the clamp. `limited_by` is one of `none`, `limit`, `page_bytes`,
-  `ceiling`, `match_cap`, `scan_window` or `time_budget`. `query`'s exact-total
-  fallback field is `total_unavailable`. Tool-specific extras (`clipped_cells`,
+  `ceiling`, `match_cap`, `scan_window` or `time_budget`. Tool-specific extras (`clipped_cells`,
   `non_finite_cells`, `oversized_row`, `files_total`, `files_covered`,
   `files_not_parsed`, `files_not_scanned`, `bytes_not_scanned`,
   `next_start_after_file`) sit beside `page`. `query`'s `non_finite_cells`
