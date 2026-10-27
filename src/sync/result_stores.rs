@@ -74,3 +74,11 @@ impl ResultStoreSlot {
             .map(|(_, store)| Arc::clone(store))
     }
 }
+
+#[cfg(test)]
+#[path = "result_store_proof_exclusion_tests.rs"]
+mod proof_exclusion_tests;
+
+#[cfg(test)]
+#[path = "result_store_proof_replacement_tests.rs"]
+mod proof_replacement_tests;
