@@ -18,13 +18,13 @@
 use super::context::session_id;
 use super::page::{LegacyPaging, Page, PageLimit};
 use super::page_size;
-use super::paginate::{PageRequest, PageSpec, Produced, decode_rows, page_request, paginate};
+use super::paginate::{PageRequest, PageSpec, Produced, decode_rows, page_request, paginate_with};
 use super::resolve_limits;
-use crate::model::{ResourceLimits, process_limits};
+use crate::store::StoredRow;
 use crate::sync;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rows::{PageCut, StoredFinding, clip_description, produce, serialized_len};
+use rows::{FindingExtra, PageCut, StoredFinding, clip_description, produce, serialized_len};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -124,14 +124,19 @@ pub fn finding_read(
     request.legacy_paging.refuse()?;
     validate_read_request(request)?;
     let page_request = page_request(request.cursor.as_deref(), request.path.as_deref(), sink)?;
-    let limits = limits_for(&page_request)?;
-    let size = page_size::resolve(None, &limits)?;
-    let spec = PageSpec::typed::<StoredFinding>(TOOL, size.bytes);
+    // Only a new request names a project, so only it reads limits; a
+    // continuation uses the budget and ceiling flag stored with the result.
+    let size = match &page_request {
+        PageRequest::Fresh { path, .. } => Some(page_size::resolve(None, &resolve_limits(path)?)?),
+        PageRequest::Cursor(_) => None,
+    };
+    let mut spec = PageSpec::typed::<StoredFinding>(TOOL, size.map_or(0, |size| size.bytes));
+    spec.offer_first_row = true;
     let current_session = session_id().to_string();
     let scope = (current_session.as_str(), request.file.as_deref());
 
-    let mut cut = PageCut::new(size.bytes);
-    let served = paginate::<(), _, _>(
+    let mut cut = PageCut::new(0);
+    let served = paginate_with::<FindingExtra, _, _>(
         manager,
         &spec,
         page_request,
@@ -139,20 +144,26 @@ pub fn finding_read(
             produce(tx, scope, rows)?;
             Ok(Produced {
                 completeness: super::page::Completeness::Complete,
-                extra: (),
+                extra: FindingExtra {
+                    at_ceiling: size.is_some_and(|size| size.at_ceiling),
+                },
             })
         },
-        |row| cut.accept(row),
+        |effective| {
+            cut = PageCut::new(effective);
+            |row: &StoredRow| cut.accept(row)
+        },
     )?;
     cut.finish()?;
+    let budget = served.page.page_bytes;
     let mut findings: Vec<FindingReadEntry> = decode_rows::<StoredFinding>(&served.rows)?
         .into_iter()
         .map(|stored| stored.entry)
         .collect();
     if let Some(first) = findings.first_mut()
-        && serialized_len(first)? > size.bytes
+        && serialized_len(first)? > budget
     {
-        clip_description(first, size.bytes)?;
+        clip_description(first, budget)?;
     }
     let mut bytes_used = 0usize;
     for entry in &findings {
@@ -162,8 +173,10 @@ pub fn finding_read(
     page.bytes_used = bytes_used;
     page.limited_by = if page.complete {
         PageLimit::None
+    } else if served.meta.at_ceiling {
+        PageLimit::Ceiling
     } else {
-        size.byte_cut()
+        PageLimit::PageBytes
     };
     tracing::info!(
         revision_id = page.revision_id,
@@ -173,15 +186,6 @@ pub fn finding_read(
         "finding_read page built"
     );
     Ok(Json(FindingReadResponse { page, findings }))
-}
-
-/// The limits that size the page. A new request reads the project's; a
-/// continuation names no project, so the process limits apply.
-fn limits_for(request: &PageRequest<'_>) -> Result<ResourceLimits, ErrorData> {
-    match request {
-        PageRequest::Fresh { path, .. } => resolve_limits(path),
-        PageRequest::Cursor(_) => Ok(*process_limits()),
-    }
 }
 
 /// Rejects an input that cannot be served before any database work: an

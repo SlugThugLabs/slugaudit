@@ -48,7 +48,6 @@ pub(super) fn run_query(
         timed_out: false,
         cursor: QueryCursor::new(),
         files_scanned: 0,
-        last_bytes: 0,
         unparsed_files: Vec::new(),
         parse_timed_out_file: None,
     };
@@ -78,8 +77,6 @@ struct Run<'q, 'w, 's> {
     cursor: QueryCursor,
     /// Files finished before the scan stopped.
     files_scanned: usize,
-    /// Serialized size of the last stored match (see `StoredMatch`).
-    last_bytes: usize,
     unparsed_files: Vec<String>,
     /// Multi-file: the file whose parse the deadline cancelled.
     parse_timed_out_file: Option<String>,
@@ -181,9 +178,7 @@ impl Run<'_, '_, '_> {
                 capture_names.get(capture.index as usize).copied(),
                 self.mode.full_text,
             );
-            let stored = StoredMatch::measured(found, self.last_bytes)?;
-            self.last_bytes = stored.bytes;
-            self.sink.push(&stored)?;
+            self.sink.push(&StoredMatch { found })?;
         }
         drop(captures);
         self.timed_out |= timed_out;

@@ -172,7 +172,7 @@ pub(super) fn structure_response(
     cut: &PageCut,
 ) -> Result<Json<StructureResponse>, ErrorData> {
     let stored = decode_rows::<StoredMatch>(&served.rows)?;
-    let bytes_used = stored.iter().map(|row| row.bytes).sum();
+    let bytes_used = cut.bytes_used();
     let matches: Vec<StructureMatch> = stored.into_iter().map(|row| row.found).collect();
     let extra = served.meta;
     let more_pages = served.page.cursor.is_some();

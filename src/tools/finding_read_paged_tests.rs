@@ -1,6 +1,6 @@
 //! Cursor paging of `finding_read`: the stored result is one immutable answer.
 use super::tests::{
-    cursor_request, db_path, request, with_stable_session, write_finding,
+    cursor_request, db_path, request, with_stable_session, write_default_page_bytes, write_finding,
     write_finding_with_description,
 };
 use super::*;
@@ -285,5 +285,26 @@ fn paged_finding_read_cursor_ignores_path_and_file() {
 
         assert_eq!(ids_of(&[&plain]), ids_of(&[&shaped]));
         assert_eq!(plain.page, shaped.page);
+    });
+}
+
+#[test]
+fn paged_finding_read_continuation_keeps_the_page_budget_of_page_one() {
+    with_stable_session(|| {
+        let manager = SourceSyncManager::default();
+        let (project, path, _) = project_with_findings(&manager);
+        // A budget that holds about two of the 10,000 character findings,
+        // well under the process default a continuation would otherwise use.
+        write_default_page_bytes(&project, 21_000);
+        let first = read(&manager, request(&path, None)).expect("page one");
+        let cursor = first.page.cursor.clone().expect("several pages");
+
+        let second = read(&manager, cursor_request(&cursor)).expect("page two");
+
+        assert_eq!(first.page.page_bytes, 21_000);
+        assert_eq!(second.page.page_bytes, 21_000);
+        assert_eq!(second.findings.len(), first.findings.len());
+        assert!(second.page.bytes_used <= 21_000);
+        assert_eq!(second.page.limited_by, PageLimit::PageBytes);
     });
 }

@@ -4,6 +4,7 @@
 //! `golden_phase9_mechanic_tests`.
 use super::tests::{EVAL_QUERY, action, add, call, path_of, python_project};
 use super::*;
+use crate::tools::PageLimit;
 use std::collections::BTreeSet;
 
 /// Small enough that the built-ins plus two registered entries need at least
@@ -202,4 +203,34 @@ fn paged_mechanic_list_without_path_or_cursor_is_refused() {
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     assert_eq!(error.message, "path is required when no cursor is given");
+}
+
+#[test]
+fn paged_mechanic_continuation_keeps_the_page_budget_of_page_one() {
+    let project = python_project();
+    let path = path_of(&project);
+    let manager = sync::SourceSyncManager::default();
+    two_registered(&manager, &path);
+    let config = project
+        .path()
+        .join(".planning")
+        .join("slugaudit")
+        .join("config.json");
+    std::fs::write(config, format!("{{\"default_page_bytes\": {SMALL_PAGE}}}"))
+        .expect("write project config");
+    let mut request = action(&path, MechanicAction::List, None);
+    request.page_bytes = None;
+    let first = call(&manager, request).expect("page one");
+    let cursor = cursor_of(&first).expect("more pages remain");
+
+    let mut next = continuation(&cursor, SMALL_PAGE);
+    next.page_bytes = None;
+    let second = call(&manager, next).expect("page two");
+
+    let page = second.page.as_ref().expect("list carries a page");
+    assert_eq!(first.page.as_ref().expect("page").page_bytes, SMALL_PAGE);
+    assert_eq!(page.page_bytes, SMALL_PAGE);
+    assert!(page.bytes_used <= SMALL_PAGE);
+    assert_eq!(page.limited_by, PageLimit::PageBytes);
+    assert!(cursor_of(&second).is_some(), "still several pages");
 }

@@ -4,10 +4,11 @@
 
 use super::page::{LegacyPaging, Page};
 use super::page_size;
-use super::paginate::{PageSpec, page_request, paginate};
+use super::paginate::{PageSpec, page_request, paginate_with};
 use super::structure_exec::produce;
 use super::structure_page::structure_response;
 use crate::model::{ResourceLimits, process_limits};
+use crate::store::StoredRow;
 use crate::sync;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -164,7 +165,9 @@ pub fn structure(
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<StructureResponse>, ErrorData> {
     let request_path = request.0.path.as_str();
-    // A continuation ignores `path`, so it has no project to read limits from.
+    // A continuation ignores `path`, so it has no project to read limits from;
+    // its page budget comes from the stored result, these limits only supply
+    // the ceiling and the match cap.
     let limits = if request.0.cursor.is_none() && !request_path.is_empty() {
         super::resolve_limits(request_path)?
     } else {
@@ -194,14 +197,21 @@ fn structure_with_limits(
         Some(cursor) => validate_cursor(cursor)?,
         None => validate_request(request, limits)?,
     }
-    let spec = PageSpec::typed::<StoredMatch>("structure", page.bytes);
-    let mut cut = PageCut::new(page, limits.max_structure_matches);
-    let served = paginate(
+    let mut spec = PageSpec::typed::<StoredMatch>("structure", page.bytes);
+    spec.offer_first_row = true;
+    spec.requested_page_bytes = request.page_bytes.map(|_| page.bytes);
+    let ceiling = limits.max_query_response_bytes;
+    let max_matches = limits.max_structure_matches;
+    let mut cut = PageCut::new(page.bytes, ceiling, max_matches);
+    let served = paginate_with(
         manager,
         &spec,
         page_request,
         |tx, rows| produce(tx, rows, request, limits, window_bytes),
-        |row| cut.accept(row),
+        |effective| {
+            cut = PageCut::new(effective, ceiling, max_matches);
+            |row: &StoredRow| cut.accept(row)
+        },
     )?;
     cut.check()?;
     structure_response(served, &cut)

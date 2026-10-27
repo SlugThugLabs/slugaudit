@@ -9,14 +9,19 @@ use crate::store::{Cell, Materialize, ResultStoreError, StoredRow, Take};
 use crate::tools::context::internal_error;
 use crate::tools::paginate::RowSink;
 use rmcp::ErrorData;
+use serde::{Deserialize, Serialize};
 
-/// A finding as stored in the result: the entry plus the serialized size of
-/// the row before it. The store does not offer the first row of a page to the
-/// byte cut, so each row carries its predecessor's size and the cut still
-/// counts the first row.
+/// A finding as stored in the result.
 pub(super) struct StoredFinding {
     pub(super) entry: FindingReadEntry,
-    prev_bytes: i64,
+}
+
+/// What is stored with the result and returned on every page: whether the
+/// budget of the first page was the ceiling, so a continuation reports the
+/// same `limited_by` without reading any limits.
+#[derive(Serialize, Deserialize)]
+pub(super) struct FindingExtra {
+    pub(super) at_ceiling: bool,
 }
 
 impl Materialize for StoredFinding {
@@ -32,7 +37,6 @@ impl Materialize for StoredFinding {
             "description",
             "status",
             "source_hash",
-            "prev_bytes",
         ]
     }
 
@@ -49,7 +53,6 @@ impl Materialize for StoredFinding {
             Cell::Text(entry.description.clone()),
             Cell::Text(entry.status.clone()),
             Cell::Text(entry.source_hash.clone()),
-            Cell::Int(self.prev_bytes),
         ]
     }
 
@@ -76,7 +79,6 @@ impl Materialize for StoredFinding {
             description,
             status,
             source_hash,
-            Cell::Int(prev_bytes),
         ] = values
         else {
             return Err(LAYOUT);
@@ -95,7 +97,6 @@ impl Materialize for StoredFinding {
                 status: text(status)?,
                 source_hash: text(source_hash)?,
             },
-            prev_bytes: *prev_bytes,
         })
     }
 }
@@ -107,20 +108,12 @@ pub(super) fn produce(
     scope: SessionScope<'_>,
     rows: &mut RowSink<'_, '_>,
 ) -> Result<(), ErrorData> {
-    let mut prev_bytes = 0i64;
-    each_session_finding(tx, scope, |entry| {
-        let size = serialized_len(&entry)?;
-        let stored = StoredFinding { entry, prev_bytes };
-        rows.push(&stored)?;
-        prev_bytes = i64::try_from(size)
-            .map_err(|error| internal_error("measuring a session finding's size", error))?;
-        Ok(())
-    })
+    each_session_finding(tx, scope, |entry| rows.push(&StoredFinding { entry }))
 }
 
 /// The byte cut of one page: rows are taken while their serialized sizes fit
-/// the budget. The first row of a page is always taken (clipped afterwards),
-/// so paging always makes progress.
+/// the budget. The first row of a page is offered too and always taken
+/// (clipped afterwards), so paging always makes progress.
 pub(super) struct PageCut {
     budget: usize,
     used: Option<usize>,
@@ -149,13 +142,12 @@ impl PageCut {
     fn measure(&mut self, row: &StoredRow) -> Result<Take, ErrorData> {
         let stored = StoredFinding::from_values(&row.cells).map_err(|e| store_error(&e))?;
         let size = serialized_len(&stored.entry)?;
-        let used = match self.used {
-            Some(used) => used,
-            None => usize::try_from(stored.prev_bytes)
-                .map_err(|error| internal_error("reading a stored finding size", error))?,
+        let Some(used) = self.used else {
+            // The first row of a page counts whatever its size.
+            self.used = Some(size);
+            return Ok(Take::Yes);
         };
         if used.saturating_add(size) > self.budget {
-            self.used = Some(used);
             return Ok(Take::No);
         }
         self.used = Some(used.saturating_add(size));

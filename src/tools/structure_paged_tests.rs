@@ -356,3 +356,32 @@ fn a_match_count_exactly_at_the_cap_is_not_reported_as_cut() {
     assert!(response.page.complete && response.page.cursor.is_none());
     assert_eq!(response.page.limited_by, PageLimit::None);
 }
+
+#[test]
+fn paged_structure_continuation_keeps_the_page_budget_of_page_one() {
+    let project = two_file_project();
+    let manager = SourceSyncManager::default();
+    let small_default = ResourceLimits {
+        default_page_bytes: SMALL_PAGE,
+        ..ResourceLimits::default()
+    };
+    let first = structure_with_limits(
+        &request(&project, None, None),
+        &small_default,
+        MAX_MULTI_FILE_TOTAL_BYTES,
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .map(|Json(response)| response)
+    .expect("page one succeeds");
+    let token = first.page.cursor.clone().expect("a second page exists");
+
+    // The continuation names no page_bytes and runs under the larger default.
+    let second = page_of(&project, Some(&token), None, &manager);
+
+    assert_eq!(first.page.page_bytes, SMALL_PAGE);
+    assert_eq!(second.page.page_bytes, SMALL_PAGE);
+    assert!(second.page.bytes_used <= SMALL_PAGE);
+    assert_eq!(second.page.limited_by, PageLimit::PageBytes);
+    assert!(second.page.cursor.is_some(), "still several pages");
+}
