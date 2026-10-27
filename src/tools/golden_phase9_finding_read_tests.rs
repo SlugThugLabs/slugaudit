@@ -2,12 +2,12 @@
 use super::golden_phase9_support::{check_case, path_of, rust_project};
 use crate::progress::NoopProgressSink;
 use crate::sync::SourceSyncManager;
-use crate::tools::{FindingReadRequest, FindingRequest, finding, finding_read};
+use crate::tools::{FindingReadRequest, FindingRequest, LegacyPaging, finding, finding_read};
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::json;
 
 #[test]
-fn golden_phase9_finding_read_list_and_offset() {
+fn paged_finding_read_matches_the_golden_apart_from_paging_fields() {
     let _guard = crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK, "session_test_lock");
     let project = rust_project();
     let manager = SourceSyncManager::default();
@@ -28,19 +28,46 @@ fn golden_phase9_finding_read_list_and_offset() {
         )
         .expect("finding is stored");
     }
-    for (name, offset) in [("finding_read_list", 0), ("finding_read_offset1", 1)] {
-        let response = finding_read(
-            &Parameters(FindingReadRequest {
-                path: path_of(&project),
-                file: None,
-                offset,
-                expected_revision: None,
-            }),
-            &NoopProgressSink,
-            &manager,
-        )
-        .expect("finding_read succeeds")
-        .0;
-        check_case(name, &project, &json!({ "offset": offset }), &response);
-    }
+    let read = |request: FindingReadRequest| {
+        finding_read(&Parameters(request), &NoopProgressSink, &manager)
+            .expect("finding_read succeeds")
+            .0
+    };
+    let by_path = FindingReadRequest {
+        path: Some(path_of(&project)),
+        file: None,
+        cursor: None,
+        legacy_paging: LegacyPaging::default(),
+    };
+    let list = read(by_path);
+    check_case("finding_read_list", &project, &json!({}), &list);
+
+    // The old `offset: 1` case: a page budget that holds one finding makes
+    // page one the first row, and the cursor page is the rest (rows two and
+    // three), which is what the offset-1 fixture recorded.
+    let config = project
+        .path()
+        .join(".planning")
+        .join("slugaudit")
+        .join("config.json");
+    std::fs::write(config, "{\"default_page_bytes\": 300}").expect("write project config");
+    let first = read(FindingReadRequest {
+        path: Some(path_of(&project)),
+        file: None,
+        cursor: None,
+        legacy_paging: LegacyPaging::default(),
+    });
+    let token = first.page.cursor.clone().expect("page one leaves a cursor");
+    let second = read(FindingReadRequest {
+        path: None,
+        file: None,
+        cursor: Some(token),
+        legacy_paging: LegacyPaging::default(),
+    });
+    check_case(
+        "finding_read_offset1",
+        &project,
+        &json!({ "cursor": "page two" }),
+        &second,
+    );
 }
