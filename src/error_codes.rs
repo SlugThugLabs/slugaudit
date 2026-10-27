@@ -230,26 +230,6 @@ pub fn budget_payload(elapsed_ms: Option<u128>) -> Option<Value> {
     }
 }
 
-/// [`payload`] for [`ErrorCode::StaleRevision`] when a *paged* read is
-/// resumed against a revision that is no longer current — the caller
-/// supplied an `expected_revision` and the index moved on since.
-///
-/// The code is the same condition as [`ErrorCode::StaleRevision`], but the
-/// remedy is not: re-issuing a resumed page at the same `offset` continues
-/// a sweep whose row order no longer matches the rows already returned, so
-/// "retry" would quietly skip or repeat rows. The remedy restarts the sweep
-/// instead. This mirrors [`budget_payload`], which likewise selects a
-/// different payload for one code depending on what actually happened.
-#[must_use]
-pub fn stale_page_payload() -> Option<Value> {
-    Some(json!({
-        "code": ErrorCode::StaleRevision.as_str(),
-        "remedy": "restart the sweep from offset 0 — the revision changed since the page you \
-                   would be resuming, so the same offset can skip or repeat rows; the call \
-                   you are making already re-synced the index"
-    }))
-}
-
 /// The one mapping from a result store failure to the wire. The store logged
 /// the failure where it decided it, so this does not log again. Messages come
 /// from the error's own `Display`, which holds only static contexts and the
@@ -356,25 +336,6 @@ mod tests {
         assert!(
             budget_payload(None).is_none(),
             "a non-budget failure must not carry the budget code"
-        );
-    }
-
-    /// A resumed page's refusal carries the same code as the read-path
-    /// stale-revision guard but not the same remedy: "retry" would resume
-    /// the sweep at an offset that no longer means what it did.
-    #[test]
-    fn the_stale_page_payload_keeps_the_code_and_restarts_the_sweep() {
-        let payload = stale_page_payload().expect("a stale page carries a payload");
-        assert_eq!(payload["code"], "stale_revision");
-        let remedy = payload["remedy"].as_str().expect("remedy is a string");
-        assert!(
-            remedy.contains("offset 0"),
-            "the remedy must restart the sweep: {remedy}"
-        );
-        assert_ne!(
-            remedy,
-            ErrorCode::StaleRevision.remedy(),
-            "a resumed page must not be told to simply retry"
         );
     }
 
