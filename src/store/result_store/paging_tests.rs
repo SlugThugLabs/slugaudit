@@ -175,6 +175,48 @@ fn result_store_a_result_without_complete_state_is_not_addressable() {
     );
 }
 
+#[test]
+#[cfg(target_os = "linux")]
+fn result_store_a_writer_dropped_before_finish_leaves_no_trace() {
+    let fx = fixture(1 << 30);
+    let mut writer = fx.store.begin(spec(&["id"])).expect("begin");
+    for index in 0..50 {
+        writer.push(&[Cell::Int(index)]).expect("push");
+    }
+    // The file is unlinked at creation; its descriptor still names the id.
+    let open = deleted_descriptors_under(fx.dir.path());
+    assert_eq!(open.len(), 1, "the open writer holds one descriptor");
+    let stem = open[0]
+        .trim_end_matches(" (deleted)")
+        .rsplit('/')
+        .next()
+        .and_then(|name| name.strip_suffix(".db"))
+        .expect("descriptor named <session>-<id>.db");
+    // The name is `<session>-<result>.db`; a UUID is 36 characters.
+    let id_text = stem.get(stem.len() - 36..).expect("result id suffix");
+    let id = ResultId(uuid::Uuid::parse_str(id_text).expect("file named by result id"));
+
+    drop(writer);
+
+    let stats = fx.store.stats();
+    assert_eq!(
+        (
+            stats.active.results + stats.idle.results + stats.delivered.results,
+            stats.admitted_bytes
+        ),
+        (0, 0)
+    );
+    let outcome = fx
+        .store
+        .read_cursor(&fx.store.cursor(id, 0).to_string(), |_| Take::Yes);
+    assert!(
+        matches!(outcome, Err(ResultStoreError::Expired)),
+        "{outcome:?}"
+    );
+    assert!(db_files(&fx.results_dir()).is_empty());
+    assert!(deleted_descriptors_under(fx.dir.path()).is_empty());
+}
+
 /// Rows of the standard shape whose `from_values` fails for id 9.
 #[derive(Debug)]
 struct FailsAtNine;

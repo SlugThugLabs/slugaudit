@@ -23,13 +23,24 @@ fn survives(fx: &Fixture, handle: &ResultHandle) -> bool {
     }
 }
 
+/// Whether `handle` is still registered, without renewing its last access.
+fn registered(fx: &Fixture, handle: &ResultHandle) -> bool {
+    match fx.store.tool_of(handle.id) {
+        Ok(_) => true,
+        Err(ResultStoreError::Expired) => false,
+        Err(other) => panic!("unexpected {other:?}"),
+    }
+}
+
 #[test]
-fn result_store_admission_reclaims_delivered_oldest_first_then_idle_oldest_first() {
+fn result_store_admission_reclaims_delivered_oldest_first_before_any_idle() {
     let unit = unit_bytes();
     let fx = fixture(unit * 3);
     let a = write_at(&fx, 10);
     let b = write_at(&fx, 20);
     let c = write_at(&fx, 30);
+    // Delivery order (B at 40, A at 50) is the reverse of creation order, so
+    // a creation-order sort would reclaim A first.
     fx.set_time(40);
     read_all(&fx.store, b.id);
     fx.set_time(50);
@@ -37,27 +48,73 @@ fn result_store_admission_reclaims_delivered_oldest_first_then_idle_oldest_first
 
     let d = write_at(&fx, 60);
 
-    assert!(!survives(&fx, &b), "the oldest delivered result goes first");
-    assert!(survives(&fx, &a) && survives(&fx, &c) && survives(&fx, &d));
+    assert!(
+        !registered(&fx, &b),
+        "the oldest delivered result goes first"
+    );
+    assert!(registered(&fx, &a) && registered(&fx, &c) && registered(&fx, &d));
 
     let e = write_at(&fx, 70);
 
     assert!(
-        !survives(&fx, &a),
+        !registered(&fx, &a),
         "the next delivered result goes before any idle one"
     );
-    assert!(survives(&fx, &c) && survives(&fx, &d) && survives(&fx, &e));
-
-    // Everything left goes idle; one read makes D active again.
-    fx.set_time(70 + GRACE_SECS as i64 + 100);
-    touch(&fx.store, d.id);
-    let f = write_at(&fx, 70 + GRACE_SECS as i64 + 100);
-
-    assert!(!survives(&fx, &c), "the oldest idle result goes first");
-    assert!(survives(&fx, &d), "the re-activated result is protected");
-    assert!(survives(&fx, &e) && survives(&fx, &f));
+    assert!(registered(&fx, &c) && registered(&fx, &d) && registered(&fx, &e));
     let stats = fx.store.stats();
-    assert_eq!((stats.reclaimed_delivered, stats.reclaimed_idle), (2, 1));
+    assert_eq!((stats.reclaimed_delivered, stats.reclaimed_idle), (2, 0));
+}
+
+// Mutation check: sorting idle candidates by creation order (`seq`) instead
+// of `last_access` reclaims A first and fails this test.
+#[test]
+fn result_store_admission_reclaims_idle_results_by_last_access_not_creation_order() {
+    let unit = unit_bytes();
+    let fx = fixture(unit * 3);
+    let a = write_at(&fx, 10);
+    let b = write_at(&fx, 20);
+    let c = write_at(&fx, 30);
+    // A is the oldest created but the most recently accessed: last-access
+    // order is B(20), C(30), A(40).
+    fx.set_time(40);
+    touch(&fx.store, a.id);
+    fx.set_time(40 + GRACE_SECS as i64 + 100);
+
+    let d = write_at(&fx, 40 + GRACE_SECS as i64 + 100);
+
+    assert!(
+        !registered(&fx, &b),
+        "the least recently accessed goes first"
+    );
+    assert!(registered(&fx, &a) && registered(&fx, &c) && registered(&fx, &d));
+
+    let e = write_at(&fx, 40 + GRACE_SECS as i64 + 101);
+
+    assert!(
+        !registered(&fx, &c),
+        "then the next least recently accessed"
+    );
+    assert!(registered(&fx, &a) && registered(&fx, &d) && registered(&fx, &e));
+    let stats = fx.store.stats();
+    assert_eq!((stats.reclaimed_delivered, stats.reclaimed_idle), (0, 2));
+}
+
+#[test]
+fn result_store_a_re_activated_result_is_protected_from_idle_reclaim() {
+    let unit = unit_bytes();
+    let fx = fixture(unit * 2);
+    let a = write_at(&fx, 10);
+    let b = write_at(&fx, 20);
+    fx.set_time(20 + GRACE_SECS as i64 + 100);
+    touch(&fx.store, a.id);
+
+    let c = write_at(&fx, 20 + GRACE_SECS as i64 + 100);
+
+    assert!(
+        !registered(&fx, &b),
+        "the idle result goes, not the active one"
+    );
+    assert!(registered(&fx, &a) && registered(&fx, &c));
 }
 
 #[test]
