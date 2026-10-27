@@ -3,7 +3,7 @@
 use super::cursor::{Cursor, ResultId};
 use super::error::{ResultStoreError, UnsupportedPlatform};
 use super::owner::{self, SweepOutcome};
-use super::registry::{Entry, Refused, Registry};
+use super::registry::{Entry, Refused, Registry, ResultMeta};
 use super::stats::StoreStats;
 use crate::util::lock_or_recover;
 use std::fs::File;
@@ -160,6 +160,17 @@ impl ResultStore {
     /// `Expired` when the result was reclaimed (counted once, as for a read).
     pub fn tool_of(&self, id: ResultId) -> Result<String, ResultStoreError> {
         Ok(self.lookup(id)?.meta.tool.clone())
+    }
+
+    /// What `id` is (tool, columns and the tool's stored record), read from
+    /// the registry. Like [`ResultStore::tool_of`] it renews nothing and
+    /// marks nothing.
+    ///
+    /// # Errors
+    ///
+    /// `Expired` when the result was reclaimed (counted once, as for a read).
+    pub fn meta_of(&self, id: ResultId) -> Result<Arc<ResultMeta>, ResultStoreError> {
+        Ok(Arc::clone(&self.lookup(id)?.meta))
     }
 
     /// Admits a committed result, reclaiming under pressure. One log line for

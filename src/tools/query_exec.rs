@@ -219,6 +219,8 @@ fn fresh_page(
         tool: "query",
         columns: columns.clone(),
         page_bytes,
+        requested_page_bytes: None,
+        offer_first_row: false,
     };
     let served = paginate(
         manager,
@@ -248,6 +250,8 @@ fn continuation_page(
         tool: "query",
         columns: Vec::new(),
         page_bytes,
+        requested_page_bytes: None,
+        offer_first_row: false,
     };
     let first: Served<QueryMeta> = paginate(
         manager,

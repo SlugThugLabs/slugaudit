@@ -308,3 +308,73 @@ fn result_store_tool_of_a_reclaimed_result_is_expired_and_counted_once() {
     assert!(matches!(error, ResultStoreError::Expired));
     assert_eq!(fx.store.stats().expired_cursors, 1);
 }
+
+#[test]
+fn result_store_first_row_is_offered_to_accept_but_always_taken() {
+    let fx = fixture(1 << 30);
+    let handle = write_rows(&fx.store, 5, 3).expect("write");
+    let mut asked = Vec::new();
+
+    let page = fx
+        .store
+        .read_page_with(handle.id, 2, true, |row| {
+            asked.push(row.ord);
+            Take::No
+        })
+        .expect("page");
+
+    assert_eq!(asked, vec![2, 3], "the first row is offered, then the next");
+    assert_eq!(page.rows.len(), 1, "a No on the first row still yields it");
+    assert_eq!(page.rows[0].ord, 2);
+    assert_eq!(page.next_ord, Some(3));
+}
+
+#[test]
+fn result_store_offering_the_first_row_with_yes_everywhere_offers_every_row() {
+    let fx = fixture(1 << 30);
+    let handle = write_rows(&fx.store, 5, 3).expect("write");
+    let mut asked = Vec::new();
+
+    let page = fx
+        .store
+        .read_page_with(handle.id, 1, true, |row| {
+            asked.push(row.ord);
+            Take::Yes
+        })
+        .expect("page");
+
+    assert_eq!(asked, vec![1, 2, 3, 4]);
+    assert_eq!(page.rows.len(), 4);
+    assert_eq!(page.next_ord, None);
+}
+
+#[test]
+fn result_store_read_page_with_the_flag_off_is_read_page() {
+    let fx = fixture(1 << 30);
+    let handle = write_rows(&fx.store, 5, 3).expect("write");
+    let mut asked = Vec::new();
+
+    let page = fx
+        .store
+        .read_page_with(handle.id, 2, false, |row| {
+            asked.push(row.ord);
+            Take::No
+        })
+        .expect("page");
+
+    assert_eq!(asked, vec![3]);
+    assert_eq!(page.rows.len(), 1);
+    assert_eq!(page.next_ord, Some(3));
+}
+
+#[test]
+fn result_store_meta_of_returns_the_stored_meta_without_serving() {
+    let fx = fixture(1 << 30);
+    let handle = write_rows(&fx.store, 3, 3).expect("write");
+
+    let meta = fx.store.meta_of(handle.id).expect("meta");
+
+    assert_eq!(meta.tool, "query");
+    assert_eq!(meta.columns, vec!["id".to_owned(), "payload".to_owned()]);
+    assert_eq!(meta.completeness, complete());
+}

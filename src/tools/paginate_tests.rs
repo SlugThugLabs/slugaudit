@@ -419,6 +419,8 @@ fn paginate_raw_rows_round_trip_without_a_typed_layout() {
         tool: "raw",
         columns: vec!["a".to_owned(), "b".to_owned()],
         page_bytes: 10,
+        requested_page_bytes: None,
+        offer_first_row: false,
     };
 
     let served: Served<Totals> = paginate(
@@ -476,3 +478,6 @@ fn page_request_with_neither_cursor_nor_path_is_invalid_params() {
     assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     assert_eq!(error.message, "path is required when no cursor is given");
 }
+
+#[path = "paginate_late_tests.rs"]
+mod late;

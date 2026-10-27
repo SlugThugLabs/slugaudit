@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=one paging entry: request/spec types, the producer's row sink, fresh materialisation and continuation share the cursor, budget and stored-extras contract
 //! The one paging entry every paged tool calls.
 //!
 //! A call without a cursor is a new request: it syncs, streams the tool's rows
@@ -16,7 +17,8 @@ use super::page::{Completeness, Page, PageLimit};
 use crate::error_codes::store_error;
 use crate::progress::ProgressSink;
 use crate::store::{
-    Cell, Materialize, ResultSpec, ResultStore, ResultStoreError, ResultWriter, StoredRow, Take,
+    Cell, Materialize, ResultId, ResultSpec, ResultStore, ResultStoreError, ResultWriter,
+    StoredRow, Take,
 };
 use crate::sync::SourceSyncManager;
 use rmcp::ErrorData;
@@ -40,11 +42,21 @@ pub enum PageRequest<'a> {
 pub struct PageSpec {
     /// The tool name; a cursor only continues the tool that issued it.
     pub tool: &'static str,
-    /// Column names, stored with the result.
+    /// Column names, stored with the result. Empty when the producer declares
+    /// them with [`RowSink::set_columns`] (the columns of a `query` come from
+    /// its prepared statement).
     pub columns: Vec<String>,
     /// The byte budget the caller's `accept` closure enforces, echoed in the
-    /// page.
+    /// page. For a new request it is also stored with the result, as the
+    /// budget its continuations default to.
     pub page_bytes: usize,
+    /// The `page_bytes` a continuation's request carried (already clamped to
+    /// the ceiling by the tool), if any. Read by [`paginate_with`] only: a
+    /// continuation uses it, else the budget stored with the result.
+    pub requested_page_bytes: Option<usize>,
+    /// Offer the first row of a page to `accept` too (its verdict is ignored:
+    /// the first row is always taken), so the tool's byte accounting sees it.
+    pub offer_first_row: bool,
 }
 
 impl PageSpec {
@@ -54,6 +66,8 @@ impl PageSpec {
             tool,
             columns: R::columns().iter().map(|name| (*name).to_owned()).collect(),
             page_bytes,
+            requested_page_bytes: None,
+            offer_first_row: false,
         }
     }
 }
@@ -69,10 +83,45 @@ pub struct Produced<E> {
 
 /// The producer's handle for streaming rows into the store.
 pub struct RowSink<'w, 's> {
-    writer: &'w mut ResultWriter<'s>,
+    store: &'s ResultStore,
+    /// The spec with empty columns, used when the producer declares them.
+    pending: &'w ResultSpec,
+    writer: &'w mut Option<ResultWriter<'s>>,
+}
+
+/// A misuse of [`RowSink`] by its producer.
+#[derive(Debug, thiserror::Error)]
+enum SinkError {
+    /// `set_columns` after the columns were already known.
+    #[error("the result columns were already declared")]
+    ColumnsAlreadyDeclared,
+    /// A row pushed before any columns were declared.
+    #[error("a row was pushed before the result columns were declared")]
+    ColumnsNotDeclared,
 }
 
 impl RowSink<'_, '_> {
+    /// Declares the result's columns. Callable once, before the first push,
+    /// and only when [`PageSpec::columns`] was empty.
+    ///
+    /// # Errors
+    ///
+    /// An internal error when the columns are already known (declared twice,
+    /// supplied by the spec, or a row was pushed), or a store failure mapped
+    /// to its wire code.
+    pub fn set_columns(&mut self, columns: Vec<String>) -> Result<(), ErrorData> {
+        if self.writer.is_some() {
+            return Err(internal_error(
+                "declaring the result columns",
+                SinkError::ColumnsAlreadyDeclared,
+            ));
+        }
+        let mut spec = self.pending.clone();
+        spec.columns = columns;
+        *self.writer = Some(self.store.begin(spec).map_err(|e| store_error(&e))?);
+        Ok(())
+    }
+
     /// Stores one typed row.
     ///
     /// # Errors
@@ -88,7 +137,13 @@ impl RowSink<'_, '_> {
     ///
     /// A store failure mapped to its wire code.
     pub fn push_cells(&mut self, cells: &[Cell]) -> Result<(), ErrorData> {
-        self.writer.push(cells).map_err(|e| store_error(&e))
+        let Some(writer) = self.writer.as_mut() else {
+            return Err(internal_error(
+                "storing a result row",
+                SinkError::ColumnsNotDeclared,
+            ));
+        };
+        writer.push(cells).map_err(|e| store_error(&e))
     }
 }
 
@@ -102,6 +157,8 @@ pub struct Served<E> {
     pub page: Page,
     /// The tool-level extras stored with the result.
     pub meta: E,
+    /// The column names stored with the result.
+    pub columns: Vec<String>,
 }
 
 /// Completeness and extras as stored in the result's metadata.
@@ -109,9 +166,19 @@ pub struct Served<E> {
 struct Stored<E> {
     completeness: Completeness,
     extra: E,
+    /// The effective page budget of the request that made the result.
+    page_bytes: usize,
 }
 
-/// Serves one page; see the module docs.
+/// Just the budget, read before a continuation's page so `accept` can be built
+/// from it.
+#[derive(Deserialize)]
+struct StoredBudget {
+    page_bytes: usize,
+}
+
+/// Serves one page; see the module docs. The budget of a continuation is
+/// `spec.page_bytes`; see [`paginate_with`] for the stored budget.
 ///
 /// `produce` runs inside the verified read transaction and streams rows
 /// through the [`RowSink`] (it never needs the whole result in memory).
@@ -136,8 +203,40 @@ where
     P: FnOnce(&Transaction<'_>, &mut RowSink<'_, '_>) -> Result<Produced<E>, ErrorData>,
     A: FnMut(&StoredRow) -> Take,
 {
+    // The caller's budget is the effective one on every page.
+    let pinned = PageSpec {
+        tool: spec.tool,
+        columns: spec.columns.clone(),
+        page_bytes: spec.page_bytes,
+        requested_page_bytes: Some(spec.page_bytes),
+        offer_first_row: spec.offer_first_row,
+    };
+    paginate_with(manager, &pinned, request, produce, |_| accept)
+}
+
+/// [`paginate`] for a caller whose `accept` depends on the effective page
+/// budget, which only this function knows for a continuation: the request's
+/// `requested_page_bytes` when it carries one, else the budget stored with the
+/// result. A new request's budget is `spec.page_bytes`. `accept_for` receives
+/// the effective budget, which is also echoed in `page.page_bytes`.
+///
+/// # Errors
+///
+/// As [`paginate`].
+pub(super) fn paginate_with<E, P, A>(
+    manager: &SourceSyncManager,
+    spec: &PageSpec,
+    request: PageRequest<'_>,
+    produce: P,
+    accept_for: impl FnOnce(usize) -> A,
+) -> Result<Served<E>, ErrorData>
+where
+    E: Serialize + DeserializeOwned,
+    P: FnOnce(&Transaction<'_>, &mut RowSink<'_, '_>) -> Result<Produced<E>, ErrorData>,
+    A: FnMut(&StoredRow) -> Take,
+{
     match request {
-        PageRequest::Cursor(token) => continue_page(manager, spec, token, accept),
+        PageRequest::Cursor(token) => continue_page(manager, spec, token, accept_for),
         PageRequest::Fresh { path, sink } => {
             let synced = ensure_synced(path, sink, manager)?;
             let runtime_dir = synced.database_path.parent().ok_or_else(|| {
@@ -147,39 +246,66 @@ where
                 .result_stores()
                 .for_dir(runtime_dir)
                 .map_err(|e| store_error(&e))?;
-            let mut writer = store
-                .begin(ResultSpec {
-                    tool: spec.tool.to_owned(),
-                    project: "default".to_owned(),
-                    revision_id: synced.revision_id.clone(),
-                    columns: spec.columns.clone(),
-                })
-                .map_err(|e| store_error(&e))?;
+            let pending = ResultSpec {
+                tool: spec.tool.to_owned(),
+                project: "default".to_owned(),
+                revision_id: synced.revision_id.clone(),
+                columns: Vec::new(),
+            };
+            // With columns in the spec the writer starts now; otherwise the
+            // producer declares them before its first row.
+            let mut writer = if spec.columns.is_empty() {
+                None
+            } else {
+                let mut known = pending.clone();
+                known.columns.clone_from(&spec.columns);
+                Some(store.begin(known).map_err(|e| store_error(&e))?)
+            };
             let produced = with_verified_read(&synced, |tx| {
                 produce(
                     tx,
                     &mut RowSink {
+                        store: &store,
+                        pending: &pending,
                         writer: &mut writer,
                     },
                 )
             })?;
+            let Some(writer) = writer else {
+                return Err(internal_error(
+                    "storing the result",
+                    SinkError::ColumnsNotDeclared,
+                ));
+            };
             let stored = serde_json::to_value(Stored {
                 completeness: produced.completeness,
                 extra: produced.extra,
+                page_bytes: spec.page_bytes,
             })
             .map_err(|error| internal_error("encoding the result extras", error))?;
             let handle = writer.finish(&stored).map_err(|e| store_error(&e))?;
-            serve(&store, spec, handle.id, 0, accept)
+            serve(
+                &store,
+                spec,
+                handle.id,
+                0,
+                spec.page_bytes,
+                accept_for(spec.page_bytes),
+            )
         }
     }
 }
 
-fn continue_page<E: DeserializeOwned>(
+fn continue_page<E, A>(
     manager: &SourceSyncManager,
     spec: &PageSpec,
     token: &str,
-    accept: impl FnMut(&StoredRow) -> Take,
-) -> Result<Served<E>, ErrorData> {
+    accept_for: impl FnOnce(usize) -> A,
+) -> Result<Served<E>, ErrorData>
+where
+    E: DeserializeOwned,
+    A: FnMut(&StoredRow) -> Take,
+{
     let Some(store) = manager.result_stores().current() else {
         tracing::info!("cursor refused: no result was ever stored");
         return Err(store_error(&ResultStoreError::Unknown));
@@ -187,25 +313,37 @@ fn continue_page<E: DeserializeOwned>(
     let cursor = store.decode_cursor(token).map_err(|e| store_error(&e))?;
     // Before any read: a read renews the result and may mark it delivered,
     // which another tool's cursor must never do.
-    if store.tool_of(cursor.result).map_err(|e| store_error(&e))? != spec.tool {
+    let meta = store.meta_of(cursor.result).map_err(|e| store_error(&e))?;
+    if meta.tool != spec.tool {
         tracing::info!(
             tool = spec.tool,
             "cursor refused: it belongs to another tool"
         );
         return Err(store_error(&ResultStoreError::Unknown));
     }
-    serve(&store, spec, cursor.result, cursor.ord, accept)
+    let budget: StoredBudget = serde_json::from_value(meta.completeness.clone())
+        .map_err(|error| internal_error("decoding the stored page budget", error))?;
+    let page_bytes = spec.requested_page_bytes.unwrap_or(budget.page_bytes);
+    serve(
+        &store,
+        spec,
+        cursor.result,
+        cursor.ord,
+        page_bytes,
+        accept_for(page_bytes),
+    )
 }
 
 fn serve<E: DeserializeOwned>(
     store: &ResultStore,
     spec: &PageSpec,
-    id: crate::store::ResultId,
+    id: ResultId,
     from_ord: u64,
+    page_bytes: usize,
     accept: impl FnMut(&StoredRow) -> Take,
 ) -> Result<Served<E>, ErrorData> {
     let read = store
-        .read_page(id, from_ord, accept)
+        .read_page_with(id, from_ord, spec.offer_first_row, accept)
         .map_err(|e| store_error(&e))?;
     let stored: Stored<E> = serde_json::from_value(read.meta.completeness.clone())
         .map_err(|error| internal_error("decoding the stored result extras", error))?;
@@ -217,7 +355,7 @@ fn serve<E: DeserializeOwned>(
         next_offset: None,
         cursor: read.next_ord.map(|ord| store.cursor(id, ord).to_string()),
         completeness: Some(stored.completeness),
-        page_bytes: spec.page_bytes,
+        page_bytes,
         bytes_used: 0,
         limited_by: if complete {
             PageLimit::None
@@ -230,6 +368,7 @@ fn serve<E: DeserializeOwned>(
         rows: read.rows,
         page,
         meta: stored.extra,
+        columns: read.meta.columns.clone(),
     })
 }
 

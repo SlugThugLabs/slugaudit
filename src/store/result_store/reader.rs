@@ -50,7 +50,8 @@ impl ResultStore {
     /// taken (the closure is not asked about it); each later row is offered to
     /// `accept` in ordinal order and the page ends at the first `No`. Serving
     /// a page renews the result's protection; serving the last one marks it
-    /// delivered.
+    /// delivered. See [`ResultStore::read_page_with`] to have the first row
+    /// offered too.
     ///
     /// # Errors
     ///
@@ -61,13 +62,32 @@ impl ResultStore {
         &self,
         id: ResultId,
         from_ord: u64,
+        accept: impl FnMut(&StoredRow) -> Take,
+    ) -> Result<PageRead, ResultStoreError> {
+        self.read_page_with(id, from_ord, false, accept)
+    }
+
+    /// [`ResultStore::read_page`] with a choice about the first row. With
+    /// `offer_first_row` the first row of the page is offered to `accept` as
+    /// well, so the caller's byte accounting sees every row, but the verdict
+    /// on it is ignored: the first row is always taken, so a page always
+    /// advances.
+    ///
+    /// # Errors
+    ///
+    /// As [`ResultStore::read_page`].
+    pub fn read_page_with(
+        &self,
+        id: ResultId,
+        from_ord: u64,
+        offer_first_row: bool,
         mut accept: impl FnMut(&StoredRow) -> Take,
     ) -> Result<PageRead, ResultStoreError> {
         let Fetched {
             entry,
             rows,
             next_ord,
-        } = self.fetch(id, from_ord, &mut accept)?;
+        } = self.fetch(id, from_ord, offer_first_row, &mut accept)?;
         entry.served(self.now(), next_ord.is_none());
         Ok(PageRead {
             rows,
@@ -82,6 +102,7 @@ impl ResultStore {
         &self,
         id: ResultId,
         from_ord: u64,
+        offer_first_row: bool,
         accept: &mut impl FnMut(&StoredRow) -> Take,
     ) -> Result<Fetched, ResultStoreError> {
         let entry = self.lookup(id)?;
@@ -93,7 +114,13 @@ impl ResultStore {
             if !is_complete(&conn)? {
                 return Err(self.unknown_cursor());
             }
-            read_rows(&conn, entry.meta.columns.len(), from_ord, accept)?
+            read_rows(
+                &conn,
+                entry.meta.columns.len(),
+                from_ord,
+                offer_first_row,
+                accept,
+            )?
         };
         Ok(Fetched {
             entry,
@@ -135,7 +162,7 @@ impl ResultStore {
             entry,
             rows,
             next_ord,
-        } = self.fetch(id, from_ord, &mut |row| {
+        } = self.fetch(id, from_ord, false, &mut |row| {
             if failure.is_some() {
                 return Take::No;
             }
@@ -195,6 +222,7 @@ fn read_rows(
     conn: &Connection,
     columns: usize,
     from_ord: u64,
+    offer_first_row: bool,
     accept: &mut impl FnMut(&StoredRow) -> Take,
 ) -> Result<(Vec<StoredRow>, Option<u64>), ResultStoreError> {
     let sql = format!(
@@ -208,8 +236,13 @@ fn read_rows(
     let mut rows = Vec::new();
     while let Some(raw) = cursor.next().map_err(read)? {
         let row = decode_row(raw, columns)?;
-        if !rows.is_empty() && accept(&row) == Take::No {
-            return Ok((rows, Some(row.ord)));
+        let first = rows.is_empty();
+        // The first row's verdict is never used: a page always advances.
+        if !first || offer_first_row {
+            let take = accept(&row);
+            if !first && take == Take::No {
+                return Ok((rows, Some(row.ord)));
+            }
         }
         rows.push(row);
     }
