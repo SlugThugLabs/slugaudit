@@ -29,11 +29,14 @@ pub(super) struct Collected {
 
 /// Cuts a stored result into one byte-budgeted page of JSON rows.
 ///
-/// The store offers every row but the first to [`PageBuilder::accept`]; the
-/// first (always kept, so paging makes progress) is given to
-/// [`PageBuilder::take_first`], which clips it when it alone exceeds the page.
-/// An error while measuring a row cannot be returned from `accept`, so it is
-/// kept and surfaces from [`PageBuilder::finish`].
+/// The store offers every row of the page to [`PageBuilder::accept`], the
+/// first included. The first (always kept, so paging makes progress) is
+/// clipped when it alone exceeds the page; later rows are taken while they
+/// still fit. The column names and the budget are not known when the builder
+/// is made (a new request learns the names from its prepared statement, a
+/// continuation from the stored result), so they are set before the first
+/// row is offered. An error while measuring a row cannot be returned from
+/// `accept`, so it is kept and surfaces from [`PageBuilder::finish`].
 pub(super) struct PageBuilder {
     names: Vec<String>,
     page_bytes: usize,
@@ -45,10 +48,10 @@ pub(super) struct PageBuilder {
 }
 
 impl PageBuilder {
-    pub(super) fn new(names: Vec<String>, page_bytes: usize) -> Self {
+    pub(super) fn new() -> Self {
         Self {
-            names,
-            page_bytes,
+            names: Vec::new(),
+            page_bytes: 0,
             used: 0,
             rows: Vec::new(),
             clipped: Vec::new(),
@@ -57,19 +60,19 @@ impl PageBuilder {
         }
     }
 
+    /// Sets the result's column names, before the first row is offered.
+    pub(super) fn set_names(&mut self, names: Vec<String>) {
+        self.names = names;
+    }
+
+    /// Sets the byte budget of the page, before the first row is offered.
+    pub(super) fn set_budget(&mut self, page_bytes: usize) {
+        self.page_bytes = page_bytes;
+    }
+
     /// Takes the page's first row at result position `ord`.
-    ///
-    /// # Errors
-    ///
-    /// Duplicate column names, or a row that cannot be measured.
-    pub(super) fn take_first(&mut self, values: &[SqlValue], ord: u64) -> Result<(), ErrorData> {
+    fn take_first(&mut self, values: &[SqlValue], ord: u64) -> Result<(), ErrorData> {
         let row_index = row_index_of(ord)?;
-        if !self.rows.is_empty() {
-            return Err(internal_error(
-                "building a query page",
-                "the first row was taken twice",
-            ));
-        }
         // The bound never exceeds the exact serialized size, so a row above
         // the page is clipped without converting it first.
         let (row, bytes, cells) = if row_serialized_lower_bound(values) > self.page_bytes {
@@ -101,7 +104,8 @@ impl PageBuilder {
         Ok((cut.row, bytes, cut.cells))
     }
 
-    /// The store's question for every row after the first: does it still fit?
+    /// The store's question for each row of the page: does it still fit? The
+    /// first row is always kept (the store ignores the verdict for it).
     pub(super) fn accept(&mut self, row: &StoredRow) -> Take {
         if self.failure.is_some() {
             return Take::No;
@@ -116,14 +120,12 @@ impl PageBuilder {
     }
 
     fn try_accept(&mut self, row: &StoredRow) -> Result<Take, ErrorData> {
+        let values = values_of(row);
         if self.rows.is_empty() {
-            return Err(internal_error(
-                "building a query page",
-                "a row was offered before the first",
-            ));
+            self.take_first(&values, row.ord)?;
+            return Ok(Take::Yes);
         }
         let row_index = row_index_of(row.ord)?;
-        let values = values_of(row);
         if row_serialized_lower_bound(&values) > self.page_bytes {
             return Ok(Take::No);
         }
