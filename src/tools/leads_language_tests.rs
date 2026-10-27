@@ -52,10 +52,10 @@ fn query_reads_every_python_call_as_call_evidence() {
 
     let rows = query(
         &Parameters(QueryRequest {
-            path: project.path().to_string_lossy().into_owned(),
+            path: Some(project.path().to_string_lossy().into_owned()),
             sql: sql.to_owned(),
-            offset: 0,
-            expected_revision: None,
+            cursor: None,
+            legacy_paging: Default::default(),
             page_bytes: None,
         }),
         &crate::progress::NoopProgressSink,

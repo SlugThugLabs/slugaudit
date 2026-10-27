@@ -376,10 +376,10 @@ fn tool_call_logging_never_emits_the_calls_argument_or_result() {
     const TOOL: &str = "query_tool_call_logging";
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let request = QueryRequest {
-        path: project.path().to_string_lossy().into_owned(),
+        path: Some(project.path().to_string_lossy().into_owned()),
         sql: format!("SELECT '{SENTINEL}' AS marker FROM files"),
-        offset: 0,
-        expected_revision: None,
+        cursor: None,
+        legacy_paging: Default::default(),
         page_bytes: None,
     };
 
@@ -427,10 +427,10 @@ fn a_failed_tool_call_logs_the_static_error_class_but_never_the_message() {
     const SECRET: &str = "SENTINEL_ERROR_LOG_7231";
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let request = QueryRequest {
-        path: project.path().to_string_lossy().into_owned(),
+        path: Some(project.path().to_string_lossy().into_owned()),
         sql: format!("SELECT {SECRET} FROM files"),
-        offset: 0,
-        expected_revision: None,
+        cursor: None,
+        legacy_paging: Default::default(),
         page_bytes: None,
     };
 
@@ -493,17 +493,17 @@ fn a_failed_tool_call_logs_the_static_error_class_but_never_the_message() {
 /// failure fact that is safe to log; it must reach the completion line when
 /// the producer attached one, while the message beside it stays out.
 #[test]
-fn a_failed_tool_call_logs_the_machine_readable_code_but_not_the_pinned_revision_id() {
+fn a_failed_tool_call_logs_the_machine_readable_code_but_not_the_cursor_token() {
     let _session_guard =
         crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK, "session_test_lock");
     const TOOL: &str = "query_error_logging_machine_code";
-    const STALE_REVISION: &str = "SENTINEL_STALE_REVISION_4187";
+    const CURSOR_TOKEN: &str = "SENTINEL_CURSOR_TOKEN_4187";
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let request = QueryRequest {
-        path: project.path().to_string_lossy().into_owned(),
+        path: Some(project.path().to_string_lossy().into_owned()),
         sql: "SELECT path FROM files".to_owned(),
-        offset: 0,
-        expected_revision: Some(STALE_REVISION.to_owned()),
+        cursor: Some(CURSOR_TOKEN.to_owned()),
+        legacy_paging: Default::default(),
         page_bytes: None,
     };
 
@@ -525,13 +525,11 @@ fn a_failed_tool_call_logs_the_machine_readable_code_but_not_the_pinned_revision
         Level::INFO,
     );
 
-    let error = result
-        .err()
-        .expect("a stale expected_revision must fail the query");
-    assert!(
-        error.message.contains(STALE_REVISION),
-        "control: the caller still receives the offending revision id: {}",
-        error.message
+    let error = result.err().expect("an unknown cursor must fail the query");
+    assert_eq!(
+        error.data.as_ref().and_then(|data| data["code"].as_str()),
+        Some("unknown_cursor"),
+        "control: the caller still receives the typed error: {error:?}"
     );
 
     let completions = completion_lines(&logs, TOOL);
@@ -544,12 +542,12 @@ fn a_failed_tool_call_logs_the_machine_readable_code_but_not_the_pinned_revision
     assert_eq!(logged_field(line, "outcome"), "error");
     assert_eq!(
         logged_field(line, "code"),
-        "stale_revision",
+        "unknown_cursor",
         "the machine-readable code must be logged: {line}"
     );
     assert_eq!(logged_field(line, "error_class"), "-32602");
     assert!(
-        !logs.contains(STALE_REVISION),
-        "the revision id leaked into the tool-call log:\n{logs}"
+        !logs.contains(CURSOR_TOKEN),
+        "the cursor token leaked into the tool-call log:\n{logs}"
     );
 }

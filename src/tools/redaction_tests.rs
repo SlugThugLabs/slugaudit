@@ -49,10 +49,10 @@ fn query_logging_never_emits_sql_text() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let sql = format!("SELECT '{SQL_SENTINEL}' AS marker FROM files");
     let request = QueryRequest {
-        path: project.path().to_string_lossy().into_owned(),
+        path: Some(project.path().to_string_lossy().into_owned()),
         sql,
-        offset: 0,
-        expected_revision: None,
+        cursor: None,
+        legacy_paging: Default::default(),
         page_bytes: None,
     };
     let (result, logs) = capture_at_level(

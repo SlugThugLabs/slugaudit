@@ -20,10 +20,10 @@ fn project() -> tempfile::TempDir {
 fn ask(project: &tempfile::TempDir, sql: &str) -> Result<QueryResponse, ErrorData> {
     query(
         &Parameters(QueryRequest {
-            path: project.path().to_string_lossy().into_owned(),
+            path: Some(project.path().to_string_lossy().into_owned()),
             sql: sql.to_owned(),
-            offset: 0,
-            expected_revision: None,
+            cursor: None,
+            legacy_paging: LegacyPaging::default(),
             page_bytes: None,
         }),
         &crate::progress::NoopProgressSink,
@@ -351,10 +351,10 @@ fn a_comments_only_statement_is_refused_rather_than_run_as_an_empty_query() {
 fn a_query_path_over_the_cap_is_refused_before_any_sync() {
     let error = query_with_limits(
         &Parameters(QueryRequest {
-            path: "x".repeat(32 * 1024 + 1),
+            path: Some("x".repeat(32 * 1024 + 1)),
             sql: "SELECT 1".to_owned(),
-            offset: 0,
-            expected_revision: None,
+            cursor: None,
+            legacy_paging: LegacyPaging::default(),
             page_bytes: None,
         }),
         &ResourceLimits::default(),
@@ -368,30 +368,6 @@ fn a_query_path_over_the_cap_is_refused_before_any_sync() {
     assert_eq!(error.message.as_ref(), "path exceeds 32768 bytes");
 }
 
-#[test]
-fn an_expected_revision_over_the_query_cap_is_refused_before_any_sync() {
-    let directory = tempfile::tempdir().expect("project dir");
-    let error = query_with_limits(
-        &Parameters(QueryRequest {
-            path: directory.path().to_string_lossy().into_owned(),
-            sql: "SELECT 1".to_owned(),
-            offset: 0,
-            expected_revision: Some("x".repeat(257)),
-            page_bytes: None,
-        }),
-        &ResourceLimits::default(),
-        &crate::progress::NoopProgressSink,
-        &crate::sync::SourceSyncManager::default(),
-    )
-    .err()
-    .expect("an oversized expected_revision must be refused");
-
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert_eq!(
-        error.message.as_ref(),
-        "expected_revision exceeds 256 bytes"
-    );
-}
 /// Demands the clear refusal: `invalid_params`, saying what `query`
 /// accepts, never the comments-only message.
 fn assert_refused_as_not_a_select(error: &ErrorData, sql: &str) {
@@ -511,10 +487,10 @@ fn ask_bounded(
         .expect("engine limits")
         .value_length;
     let request = Parameters(QueryRequest {
-        path: project.path().to_string_lossy().into_owned(),
+        path: Some(project.path().to_string_lossy().into_owned()),
         sql: sql.to_owned(),
-        offset: 0,
-        expected_revision: None,
+        cursor: None,
+        legacy_paging: LegacyPaging::default(),
         page_bytes: None,
     });
     let manager = crate::sync::SourceSyncManager::default();
