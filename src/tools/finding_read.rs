@@ -1,4 +1,3 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=the finding_read contract: request/response shapes, validation, the session-scoped page read with its count, and the byte cut that clips the first row share one session filter
 //! `finding_read` MCP tool — returns findings scoped to the current
 //! agent session. Unlike raw `query` access to the `findings` table
 //! (which returns rows from every session), `finding_read` gates on the
@@ -9,52 +8,55 @@
 //! A page is cut by serialized JSON bytes, not by a row count: a finding
 //! carries up to 10,000 characters of agent-authored description, so a
 //! session that wrote many findings would otherwise produce an unbounded
-//! response. Rows are ordered by id and resumed with `next_offset` under the
-//! shared [`Page`] contract, pinned by `expected_revision` like every other
-//! paging tool. The first row of a page is always returned, with its
+//! response. Rows are ordered by id and stored as one immutable result when
+//! the first page is read; later pages are served from that stored result by
+//! `cursor` under the shared [`Page`] contract, so a finding recorded between
+//! pages never changes the answer being read. The first row of a page is always returned, with its
 //! description clipped on a character boundary and flagged, so paging always
 //! makes progress and nothing is silently dropped.
 
-use super::context::{
-    ensure_synced, guard_expected_revision, internal_error, session_id, with_verified_read,
-};
-use super::page::{Page, PageLimit};
-use super::page_size::{self, PageSize};
+use super::context::session_id;
+use super::page::{LegacyPaging, Page, PageLimit};
+use super::page_size;
+use super::paginate::{PageRequest, PageSpec, Produced, decode_rows, page_request, paginate};
 use super::resolve_limits;
+use crate::model::{ResourceLimits, process_limits};
 use crate::sync;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
+use rows::{PageCut, StoredFinding, clip_description, produce, serialized_len};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 const MAX_PATH_BYTES: usize = 32 * 1024;
 const MAX_FILE_BYTES: usize = 8 * 1024;
-const MAX_REVISION_BYTES: usize = 256;
+const TOOL: &str = "finding_read";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 /// Read request for the calling session's findings: the project, and
-/// optionally one file within it.
+/// optionally one file within it; or the `cursor` of a page already read.
 pub struct FindingReadRequest {
     /// Any path inside the active project — used to select the database.
-    #[schemars(description = "Any path inside the active project")]
-    pub path: String,
+    /// Required unless `cursor` is given.
+    #[schemars(description = "Any path inside the active project; required without a cursor")]
+    #[serde(default)]
+    pub path: Option<String>,
     /// Optional project-relative file path. When supplied, only findings
     /// for that file are returned. Omit to return all current-session
     /// findings for the project.
     #[schemars(default)]
     pub file: Option<String>,
-    /// Number of findings to skip when paging. Pass the previous page's
-    /// `page.next_offset` here (null when nothing remains).
-    #[schemars(description = "Findings to skip when paging; use the response's page.next_offset")]
-    #[serde(default)]
-    pub offset: usize,
-    /// Set to the previous page's `page.revision_id`; if the index changed
-    /// since, the call is refused with `stale_revision`.
+    /// The previous page's `page.cursor`. The call then serves the next page
+    /// of the stored result and ignores `path` and `file`.
     #[schemars(
-        description = "Set to the previous page's `page.revision_id`; if the index changed since, the call is refused with `stale_revision`."
+        description = "The previous page's `page.cursor`; continues that stored result and ignores `path` and `file`"
     )]
     #[serde(default)]
-    pub expected_revision: Option<String>,
+    pub cursor: Option<String>,
+    /// The removed `offset` / `expected_revision`, kept only to refuse them.
+    #[serde(flatten, default)]
+    #[schemars(skip)]
+    pub legacy_paging: LegacyPaging,
 }
 
 /// One finding row, scoped to the current agent session. Every field is
@@ -99,8 +101,9 @@ pub struct FindingReadEntry {
 /// revision.
 pub struct FindingReadResponse {
     /// Paging for `findings`; `total` counts this session's findings under
-    /// the `file` filter. `page_bytes` is `default_page_bytes` clamped to the
-    /// ceiling (no request override). Page on with the same `file` filter.
+    /// the `file` filter, as they were when the first page was read.
+    /// `page_bytes` is `default_page_bytes` clamped to the ceiling (no request
+    /// override). Page on by repeating the call with `page.cursor`.
     pub page: Page,
     /// This page's findings, ordered by id.
     pub findings: Vec<FindingReadEntry>,
@@ -108,84 +111,86 @@ pub struct FindingReadResponse {
 
 /// # Errors
 ///
-/// Returns an error if `request.path` isn't inside an active project,
-/// `offset` exceeds SQLite's supported range, `expected_revision` no longer
-/// matches the current revision (`stale_revision`), or syncing or reading
-/// the database fails.
+/// Returns an error if the request carries the removed `offset` or
+/// `expected_revision` (`paging_parameter_removed`), has neither `cursor`
+/// nor `path`, `path` isn't inside an active project, the `cursor` is
+/// unknown or expired, or syncing, storing or reading the result fails.
 pub fn finding_read(
     request: &Parameters<FindingReadRequest>,
     sink: &dyn crate::progress::ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<FindingReadResponse>, ErrorData> {
     let request = &request.0;
+    request.legacy_paging.refuse()?;
     validate_read_request(request)?;
-    let limits = resolve_limits(&request.path)?;
+    let page_request = page_request(request.cursor.as_deref(), request.path.as_deref(), sink)?;
+    let limits = limits_for(&page_request)?;
     let size = page_size::resolve(None, &limits)?;
-
-    let synced = ensure_synced(&request.path, sink, manager)?;
-    guard_expected_revision(&synced.revision_id, request.expected_revision.as_deref())?;
+    let spec = PageSpec::typed::<StoredFinding>(TOOL, size.bytes);
     let current_session = session_id().to_string();
-    let (read, total) = with_verified_read(&synced, |tx| {
-        let scope = (current_session.as_str(), request.file.as_deref());
-        let read = read_session_findings(tx, scope, request.offset, size.bytes)?;
-        Ok((read, count_session_findings(tx, scope)?))
-    })?;
-    let total = super::page::total_of(total)?;
-    let page = page_of(
-        &read,
-        total,
-        request.offset,
-        size,
-        synced.revision_id.clone(),
-    );
+    let scope = (current_session.as_str(), request.file.as_deref());
+
+    let mut cut = PageCut::new(size.bytes);
+    let served = paginate::<(), _, _>(
+        manager,
+        &spec,
+        page_request,
+        |tx, rows| {
+            produce(tx, scope, rows)?;
+            Ok(Produced {
+                completeness: super::page::Completeness::Complete,
+                extra: (),
+            })
+        },
+        |row| cut.accept(row),
+    )?;
+    cut.finish()?;
+    let mut findings: Vec<FindingReadEntry> = decode_rows::<StoredFinding>(&served.rows)?
+        .into_iter()
+        .map(|stored| stored.entry)
+        .collect();
+    if let Some(first) = findings.first_mut()
+        && serialized_len(first)? > size.bytes
+    {
+        clip_description(first, size.bytes)?;
+    }
+    let mut bytes_used = 0usize;
+    for entry in &findings {
+        bytes_used = bytes_used.saturating_add(serialized_len(entry)?);
+    }
+    let mut page = served.page;
+    page.bytes_used = bytes_used;
+    page.limited_by = if page.complete {
+        PageLimit::None
+    } else {
+        size.byte_cut()
+    };
     tracing::info!(
         revision_id = page.revision_id,
         row_count = page.returned,
-        total,
+        total = page.total,
         complete = page.complete,
         "finding_read page built"
     );
-    Ok(Json(FindingReadResponse {
-        page,
-        findings: read.findings,
-    }))
+    Ok(Json(FindingReadResponse { page, findings }))
 }
 
-/// The page envelope for one read: `next_offset` and a byte cut only when
-/// rows remain past it.
-fn page_of(read: &Read, total: u64, offset: usize, size: PageSize, revision_id: String) -> Page {
-    let returned = read.findings.len();
-    Page {
-        returned,
-        total: Some(total),
-        complete: !read.more,
-        next_offset: read.more.then_some(offset.saturating_add(returned)),
-        cursor: None,
-        completeness: None,
-        page_bytes: size.bytes,
-        bytes_used: read.bytes_used,
-        limited_by: if read.more {
-            size.byte_cut()
-        } else {
-            PageLimit::None
-        },
-        revision_id,
+/// The limits that size the page. A new request reads the project's; a
+/// continuation names no project, so the process limits apply.
+fn limits_for(request: &PageRequest<'_>) -> Result<ResourceLimits, ErrorData> {
+    match request {
+        PageRequest::Fresh { path, .. } => resolve_limits(path),
+        PageRequest::Cursor(_) => Ok(*process_limits()),
     }
 }
 
-/// One byte-budgeted page of findings, its serialized size, and whether rows
-/// remain after it.
-#[derive(Debug)]
-struct Read {
-    findings: Vec<FindingReadEntry>,
-    bytes_used: usize,
-    more: bool,
-}
-
 /// Rejects an input that cannot be served before any database work: an
-/// oversized `path`/`file`, or an `offset` outside SQLite's integer range.
+/// oversized `path` or `file`.
 fn validate_read_request(request: &FindingReadRequest) -> Result<(), ErrorData> {
-    if crate::util::exceeds_input_bytes(&request.path, MAX_PATH_BYTES)
+    if request
+        .path
+        .as_deref()
+        .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_PATH_BYTES))
         || request
             .file
             .as_deref()
@@ -196,179 +201,16 @@ fn validate_read_request(request: &FindingReadRequest) -> Result<(), ErrorData> 
             None,
         ));
     }
-    if request
-        .expected_revision
-        .as_deref()
-        .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_REVISION_BYTES))
-    {
-        return Err(ErrorData::invalid_params(
-            "expected_revision exceeds 256 bytes",
-            None,
-        ));
-    }
-    // SQLite treats an integer literal too large for i64 as a REAL, which
-    // would page from an unpredictable position instead of failing. This is
-    // a contract error in the caller's own arithmetic, so it carries no code.
-    if request.offset as u64 > i64::MAX as u64 {
-        return Err(ErrorData::invalid_params(
-            format!(
-                "offset {} exceeds the maximum supported page offset ({}); \
-                 page from the start or from a returned next_offset",
-                request.offset,
-                i64::MAX
-            ),
-            None,
-        ));
-    }
     Ok(())
 }
 
-/// Which findings a read selects: the calling session's, optionally for one
-/// file.
-type SessionScope<'a> = (&'a str, Option<&'a str>);
-
-/// Counts every finding the read selects, ignoring the offset and the page
-/// cut, in the same transaction as the page.
-fn count_session_findings(
-    tx: &rusqlite::Transaction<'_>,
-    (current_session, file_filter): SessionScope<'_>,
-) -> Result<i64, ErrorData> {
-    let (filter, query_params) = session_filter(current_session, file_filter);
-    tx.query_row(
-        &format!("SELECT count(*) FROM findings WHERE {filter}"),
-        rusqlite::params_from_iter(query_params.iter()),
-        |row| row.get(0),
-    )
-    .map_err(|error| internal_error("counting the session findings", error))
-}
-
-/// Reads at most one byte-budgeted page of the session's findings.
-fn read_session_findings(
-    tx: &rusqlite::Transaction<'_>,
-    (current_session, file_filter): SessionScope<'_>,
-    offset: usize,
-    page_bytes: usize,
-) -> Result<Read, ErrorData> {
-    let (filter, query_params) = session_filter(current_session, file_filter);
-    // `offset` was validated against i64::MAX above; LIMIT -1 is "no limit"
-    // (SQLite requires a LIMIT before OFFSET) and the byte budget cuts the
-    // page instead.
-    let sql = format!(
-        "SELECT id, path, line_start, line_end, severity, category, \
-             title, description, status, source_hash \
-         FROM findings WHERE {filter} ORDER BY id LIMIT -1 OFFSET {offset}"
-    );
-    let mut statement = tx
-        .prepare(&sql)
-        .map_err(|error| internal_error("preparing the session findings read", error))?;
-    let rows = statement
-        .query_map(
-            rusqlite::params_from_iter(query_params.iter()),
-            finding_entry,
-        )
-        .map_err(|error| internal_error("executing the session findings read", error))?;
-    collect_page(rows, page_bytes)
-}
-
-/// The WHERE clause and bound parameters that select one session's
-/// findings, shared by the page read and its count so the two cannot select
-/// different rows.
-fn session_filter(
-    current_session: &str,
-    file_filter: Option<&str>,
-) -> (&'static str, Vec<rusqlite::types::Value>) {
-    let mut query_params = vec![rusqlite::types::Value::Text(current_session.to_owned())];
-    let Some(file) = file_filter else {
-        return ("session_id = ?1", query_params);
-    };
-    query_params.push(rusqlite::types::Value::Text(file.to_owned()));
-    ("session_id = ?1 AND path = ?2", query_params)
-}
-
-/// Maps one findings row to its response entry.
-fn finding_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<FindingReadEntry> {
-    Ok(FindingReadEntry {
-        id: row.get(0)?,
-        path: row.get(1)?,
-        line_start: row.get(2)?,
-        line_end: row.get(3)?,
-        severity: row.get(4)?,
-        category: row.get(5)?,
-        title: row.get(6)?,
-        description: row.get(7)?,
-        detail_clipped: false,
-        status: row.get(8)?,
-        source_hash: row.get(9)?,
-    })
-}
-
-/// Cuts the byte-budgeted page from the row stream, always keeping the
-/// first row so paging makes progress.
-fn collect_page(
-    rows: impl Iterator<Item = rusqlite::Result<FindingReadEntry>>,
-    page_bytes: usize,
-) -> Result<Read, ErrorData> {
-    let mut findings = Vec::new();
-    let mut bytes_used = 0usize;
-    let mut more = false;
-    for row in rows {
-        let mut entry = row.map_err(|error| internal_error("reading a session finding", error))?;
-        let mut row_bytes = serialized_len(&entry)?;
-        if bytes_used.saturating_add(row_bytes) > page_bytes {
-            if !findings.is_empty() {
-                more = true;
-                break;
-            }
-            // The first row is always kept so paging makes progress.
-            clip_description(&mut entry, page_bytes)?;
-            row_bytes = serialized_len(&entry)?;
-        }
-        bytes_used = bytes_used.saturating_add(row_bytes);
-        findings.push(entry);
-    }
-    Ok(Read {
-        findings,
-        bytes_used,
-        more,
-    })
-}
-
-/// Clips `description` to the longest character prefix whose serialized row
-/// fits `budget`, setting `detail_clipped` only when characters were
-/// removed. Restores the whole text when not even an empty description
-/// fits, so an oversized row is returned whole rather than silently
-/// emptied (its `page.bytes_used` then exceeds `page.page_bytes`, which the
-/// response reports as-is).
-fn clip_description(entry: &mut FindingReadEntry, budget: usize) -> Result<(), ErrorData> {
-    let chars: Vec<char> = entry.description.chars().collect();
-    let original = entry.description.clone();
-    // The flag is part of the serialized row, so the search must measure the
-    // row as it will actually be returned (flag set), never one byte short.
-    entry.detail_clipped = true;
-    let mut low = 0usize;
-    let mut high = chars.len();
-    while low < high {
-        let mid = low + (high - low).div_ceil(2);
-        entry.description = chars[..mid].iter().collect();
-        if serialized_len(entry)? <= budget {
-            low = mid;
-        } else {
-            high = mid - 1;
-        }
-    }
-    entry.description = chars[..low].iter().collect();
-    if low == chars.len() || (low == 0 && serialized_len(entry)? > budget) {
-        entry.description = original;
-        entry.detail_clipped = false;
-    }
-    Ok(())
-}
-
-fn serialized_len(entry: &FindingReadEntry) -> Result<usize, ErrorData> {
-    crate::util::serialized_len(entry)
-        .map_err(|error| internal_error("measuring a session finding's response size", error))
-}
+#[path = "finding_read_rows.rs"]
+mod rows;
 
 #[cfg(test)]
 #[path = "finding_read_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "finding_read_paged_tests.rs"]
+mod paged_tests;

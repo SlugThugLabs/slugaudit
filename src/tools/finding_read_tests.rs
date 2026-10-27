@@ -1,3 +1,4 @@
+use super::rows::each_session_finding;
 use super::*;
 use crate::store;
 use crate::sync;
@@ -18,21 +19,30 @@ use rusqlite::Connection;
 /// trigger the purge against this test's rows. Holding the shared lock
 /// for the whole write→sync→read cycle keeps the session stable and
 /// keeps the purge from ever targeting these rows.
-fn with_stable_session<T>(f: impl FnOnce() -> T) -> T {
+pub(super) fn with_stable_session<T>(f: impl FnOnce() -> T) -> T {
     let _guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     f()
 }
 
-fn request(path: &str, file: Option<&str>) -> FindingReadRequest {
+pub(super) fn request(path: &str, file: Option<&str>) -> FindingReadRequest {
     FindingReadRequest {
-        path: path.to_owned(),
+        path: Some(path.to_owned()),
         file: file.map(str::to_owned),
-        offset: 0,
-        expected_revision: None,
+        cursor: None,
+        legacy_paging: LegacyPaging::default(),
     }
 }
 
-fn db_path(project: &tempfile::TempDir) -> std::path::PathBuf {
+pub(super) fn cursor_request(token: &str) -> FindingReadRequest {
+    FindingReadRequest {
+        path: None,
+        file: None,
+        cursor: Some(token.to_owned()),
+        legacy_paging: LegacyPaging::default(),
+    }
+}
+
+pub(super) fn db_path(project: &tempfile::TempDir) -> std::path::PathBuf {
     project
         .path()
         .join(".planning")
@@ -40,7 +50,7 @@ fn db_path(project: &tempfile::TempDir) -> std::path::PathBuf {
         .join("project.db")
 }
 
-fn write_finding(
+pub(super) fn write_finding(
     project: &tempfile::TempDir,
     file: &str,
     title: &str,
@@ -49,7 +59,7 @@ fn write_finding(
     write_finding_with_description(project, file, title, "d", manager)
 }
 
-fn write_finding_with_description(
+pub(super) fn write_finding_with_description(
     project: &tempfile::TempDir,
     file: &str,
     title: &str,
@@ -196,10 +206,8 @@ fn an_oversized_read_path_or_file_is_a_typed_error() {
     let base = directory.path().to_string_lossy().into_owned();
 
     let oversized_path = FindingReadRequest {
-        path: "x".repeat(MAX_PATH_BYTES + 1),
-        file: None,
-        offset: 0,
-        expected_revision: None,
+        path: Some("x".repeat(MAX_PATH_BYTES + 1)),
+        ..request("", None)
     };
     let Err(path_error) = finding_read(
         &Parameters(oversized_path),
@@ -215,10 +223,8 @@ fn an_oversized_read_path_or_file_is_a_typed_error() {
     assert_eq!(path_error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
 
     let oversized_file = FindingReadRequest {
-        path: base,
         file: Some("x".repeat(MAX_FILE_BYTES + 1)),
-        offset: 0,
-        expected_revision: None,
+        ..request(&base, None)
     };
     let Err(file_error) = finding_read(
         &Parameters(oversized_file),
@@ -235,56 +241,11 @@ fn an_oversized_read_path_or_file_is_a_typed_error() {
 }
 
 #[test]
-fn finding_read_refuses_an_offset_past_the_supported_maximum() {
-    // SQLite reads an integer literal too large for i64 as a REAL, which
-    // would page from an unpredictable position instead of failing — the
-    // current session's rows would come back wrong with no error.
-    with_stable_session(|| {
-        let project = activated_project("lib.rs", b"fn main() {}\n");
-        let manager = sync::SourceSyncManager::default();
-        write_finding(&project, "lib.rs", "paging guard", &manager);
-
-        let at = |offset: usize| {
-            finding_read(
-                &Parameters(FindingReadRequest {
-                    path: project.path().to_string_lossy().into_owned(),
-                    file: None,
-                    offset,
-                    expected_revision: None,
-                }),
-                &crate::progress::NoopProgressSink,
-                &manager,
-            )
-            .map(|Json(response)| response)
-        };
-
-        let error = at(i64::MAX as usize + 1).expect_err("an out-of-range offset is refused");
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-        assert_eq!(
-            error.message,
-            format!(
-                "offset {} exceeds the maximum supported page offset ({}); \
-                 page from the start or from a returned next_offset",
-                i64::MAX as usize + 1,
-                i64::MAX
-            ),
-            "the guard names the offending value and the bound",
-        );
-
-        // The bound itself is still usable and yields no rows at all, not
-        // rows from a floating-point position.
-        let page = at(i64::MAX as usize).expect("the maximum offset is accepted");
-        assert!(page.findings.is_empty(), "no finding lives at that offset");
-        assert!(page.page.next_offset.is_none());
-    });
-}
-
-#[test]
 fn a_missing_findings_table_is_an_internal_error() {
     let mut connection = Connection::open_in_memory().expect("in-memory database");
     let tx = connection.transaction().expect("transaction");
 
-    let error = read_session_findings(&tx, ("session", None), 0, 1_000)
+    let error = each_session_finding(&tx, ("session", None), |_| Ok(()))
         .expect_err("the statement cannot prepare against a missing table");
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
@@ -309,7 +270,7 @@ fn an_undecodable_finding_row_is_an_internal_error() {
         .expect("create test schema");
     let tx = connection.transaction().expect("transaction");
 
-    let error = read_session_findings(&tx, ("session", None), 0, 10_000)
+    let error = each_session_finding(&tx, ("session", None), |_| Ok(()))
         .expect_err("a TEXT column holding an integer cannot decode into a String");
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
@@ -318,93 +279,6 @@ fn an_undecodable_finding_row_is_an_internal_error() {
         "{}",
         error.message
     );
-}
-
-/// A page is cut by serialized bytes, resumed by `next_offset`, and the
-/// pages together are exactly the stored rows: no row is lost to the budget
-/// and none is returned twice.
-#[test]
-fn finding_read_pages_by_byte_budget_without_losing_or_duplicating_rows() {
-    with_stable_session(|| {
-        let project = activated_project("lib.rs", b"fn main() {}\n");
-        let manager = sync::SourceSyncManager::default();
-        let description = "d".repeat(10_000);
-        let mut written = Vec::new();
-        for index in 0..5 {
-            let finding = write_finding_with_description(
-                &project,
-                "lib.rs",
-                &format!("finding {index}"),
-                &description,
-                &manager,
-            );
-            written.push(finding.id);
-        }
-        write_default_page_bytes(&project, 15_000);
-
-        let mut offset = 0usize;
-        let mut seen = Vec::new();
-        let mut pages = 0usize;
-        loop {
-            let response = finding_read(
-                &Parameters(FindingReadRequest {
-                    path: project.path().to_string_lossy().into_owned(),
-                    file: None,
-                    offset,
-                    expected_revision: None,
-                }),
-                &crate::progress::NoopProgressSink,
-                &manager,
-            )
-            .expect("page")
-            .0;
-            let page = &response.page;
-            assert_eq!(page.page_bytes, 15_000, "the configured page applies");
-            assert!(
-                page.bytes_used <= page.page_bytes,
-                "page {} spent {} bytes of a {} budget",
-                pages,
-                page.bytes_used,
-                page.page_bytes
-            );
-            assert_eq!(page.returned, 1, "returned counts this page's findings");
-            assert_eq!(
-                page.total,
-                Some(5),
-                "total counts every finding the read selects"
-            );
-            assert_eq!(page.complete, page.next_offset.is_none());
-            let expected_cut = if page.complete {
-                crate::tools::PageLimit::None
-            } else {
-                crate::tools::PageLimit::PageBytes
-            };
-            assert_eq!(
-                page.limited_by, expected_cut,
-                "a cut page names the byte budget"
-            );
-            assert_eq!(response.findings.len(), 1, "one 10 KB row per 15 KB page");
-            assert!(
-                !response.findings[0].detail_clipped,
-                "a row that fits must not be clipped"
-            );
-            seen.extend(response.findings.iter().map(|entry| entry.id));
-            pages += 1;
-            match response.page.next_offset {
-                Some(next) => {
-                    assert!(next > offset, "a page must always make progress");
-                    offset = next;
-                }
-                None => break,
-            }
-        }
-
-        assert_eq!(pages, 5, "every row needs its own page");
-        assert_eq!(
-            seen, written,
-            "the pages must be the stored rows in id order, exactly once each"
-        );
-    });
 }
 
 /// A description too large for the budget is clipped on a character
@@ -451,95 +325,4 @@ fn an_oversized_description_is_clipped_on_a_char_boundary_and_flagged() {
         );
         assert!(response.page.complete, "the scope was exhausted");
     });
-}
-
-/// A resumed page pinned to a revision the index has moved past is refused
-/// with `stale_revision`, as on every other paging tool, instead of paging an
-/// offset taken against another revision.
-#[test]
-fn finding_read_refuses_a_resumed_page_whose_expected_revision_is_stale() {
-    with_stable_session(|| {
-        let project = activated_project("lib.rs", b"fn main() {}\n");
-        let manager = sync::SourceSyncManager::default();
-        write_finding(&project, "lib.rs", "pinned", &manager);
-        let first = finding_read(
-            &Parameters(request(&project.path().to_string_lossy(), None)),
-            &crate::progress::NoopProgressSink,
-            &manager,
-        )
-        .expect("first page")
-        .0;
-        std::fs::write(project.path().join("lib.rs"), b"fn main() { moved(); }\n").expect("modify");
-
-        let error = finding_read(
-            &Parameters(FindingReadRequest {
-                expected_revision: Some(first.page.revision_id.clone()),
-                ..request(&project.path().to_string_lossy(), None)
-            }),
-            &crate::progress::NoopProgressSink,
-            &manager,
-        )
-        .map(|Json(response)| response)
-        .expect_err("a stale pinned revision is refused");
-
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-        let code = error
-            .data
-            .as_ref()
-            .and_then(|data| data.get("code"))
-            .and_then(serde_json::Value::as_str);
-        assert_eq!(code, Some("stale_revision"), "{error:?}");
-    });
-}
-
-/// A pin that still names the current revision is honoured: the page comes
-/// back under that same revision.
-#[test]
-fn finding_read_serves_a_resumed_page_whose_expected_revision_is_current() {
-    with_stable_session(|| {
-        let project = activated_project("lib.rs", b"fn main() {}\n");
-        let manager = sync::SourceSyncManager::default();
-        write_finding(&project, "lib.rs", "pinned", &manager);
-        let first = finding_read(
-            &Parameters(request(&project.path().to_string_lossy(), None)),
-            &crate::progress::NoopProgressSink,
-            &manager,
-        )
-        .expect("first page")
-        .0;
-
-        let resumed = finding_read(
-            &Parameters(FindingReadRequest {
-                expected_revision: Some(first.page.revision_id.clone()),
-                ..request(&project.path().to_string_lossy(), None)
-            }),
-            &crate::progress::NoopProgressSink,
-            &manager,
-        )
-        .expect("a current pin is served")
-        .0;
-
-        assert_eq!(resumed.page.revision_id, first.page.revision_id);
-        assert_eq!(resumed.page.total, Some(1));
-    });
-}
-
-#[test]
-fn an_oversized_finding_read_expected_revision_is_refused() {
-    let directory = tempfile::tempdir().expect("temp dir");
-    let oversized = FindingReadRequest {
-        expected_revision: Some("r".repeat(MAX_REVISION_BYTES + 1)),
-        ..request(&directory.path().to_string_lossy(), None)
-    };
-
-    let error = finding_read(
-        &Parameters(oversized),
-        &crate::progress::NoopProgressSink,
-        &sync::SourceSyncManager::default(),
-    )
-    .map(|Json(response)| response)
-    .expect_err("an oversized expected_revision is refused before resolution");
-
-    assert_eq!(error.message, "expected_revision exceeds 256 bytes");
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
 }
