@@ -666,3 +666,135 @@ Oldest first: append each new entry at the end of the file. Format: **what** / *
 - **Why:** a cursor names a stored result, so the original request already fixed everything else; refusing the extras would break callers that resend their full request.
 - **Where:** `src/tools/paginate.rs` (`page_request`).
 - **Reversible:** yes.
+
+## 9.3 finding_read: a continuation sizes its page from the process limits
+- **What:** `finding_read` has no `page_bytes` request field. A new request sizes its page from the project's resolved limits (`default_page_bytes` from `config.json`, as before); a continuation names no project (`path` is ignored), so it uses the process limits. A project that sets `default_page_bytes` in `config.json` therefore has page one cut at that budget and later pages at the process default; `page.page_bytes` reports the budget of the page it is on.
+- **Why:** the store does not expose the result's project directory to a tool, and a continuation must not resolve a path. Adding a `page_bytes` field was a surface change outside the brief.
+- **Where:** `src/tools/finding_read.rs` (`limits_for`).
+- **Reversible:** yes; add `page_bytes: Option<usize>` to the request (as `leads`/`query` have) or expose the project root from the stored result.
+
+## 9.3 finding_read: each stored row carries its predecessor's serialized size
+- **What:** the stored row has an extra column `prev_bytes` (serialized size of the row before it, 0 for the first).
+- **Why:** the store never offers the first row of a page to `accept`, so the byte cut could not count it and a page could exceed `page_bytes`. The first accepted-or-not row's size is read from the next row's `prev_bytes`.
+- **Where:** `src/tools/finding_read_rows.rs` (`StoredFinding`, `PageCut`).
+- **Reversible:** yes; if `paginate` ever offers the first row to `accept`, drop the column.
+
+## 9.3 finding_read: new file finding_read_rows.rs and finding_read_paged_tests.rs
+- **What:** `src/tools/finding_read_rows.rs` (production, declared by `#[path]` in finding_read.rs, carries a line exception) and `src/tools/finding_read_paged_tests.rs` (tests).
+- **Why:** finding_read.rs would have been 354 code lines; the split is along the stored-result responsibility. The old test file would have passed 500 lines.
+- **Where:** Lead must add `finding_read_rows.rs` to the module map in `.planning/MODULE_MAP.md` and raise the `*_tests.rs` count in `.planning/ARCHITECTURE.md` by 1.
+- **Reversible:** yes.
+
+## 9.3 finding_read: tests removed with the removed parameters
+- **What:** removed `finding_read_refuses_an_offset_past_the_supported_maximum`, `finding_read_pages_by_byte_budget_...`, both `..._expected_revision_...` pins and `an_oversized_finding_read_expected_revision_is_refused`; covered by the new `paged_finding_read_*` tests. The golden offset-1 case now reads page two by cursor after a 300-byte project page budget made page one a single row; the fixture is unchanged.
+- **Why:** the parameters no longer exist.
+- **Where:** `src/tools/finding_read_tests.rs`, `src/tools/golden_phase9_finding_read_tests.rs`.
+- **Reversible:** n/a.
+
+## 9.3 mechanic: add's first count is continued by the `leads` cursor, not a `mechanic` cursor
+- **What:** `mechanic add` keeps returning `first_count` (a `LeadsResponse`) from `leads_with_catalog`; its `page.cursor` (once the leads lane lands) is a `leads` cursor and is continued by calling `leads`. Only `list` stores a `mechanic` result. The registration runs once, on the request without a cursor; a request with a cursor is always a list continuation and never registers or removes, whatever `action` it names.
+- **Why:** the count is the leads engine's result (counts, rows, files); re-implementing it under tool `mechanic` would duplicate leads and would be refused by the wrong-tool cursor check anyway. `Page` docs already state "the `mechanic add` first count, which is a `leads` response". A leads continuation after the mechanic is removed still serves the stored result (it is a stored leads result).
+- **Where:** `src/tools/mechanic.rs`, `mechanic_register.rs`, `mechanic_list.rs`.
+- **Reversible:** yes.
+
+## 9.3 mechanic: `list` has a `page` block; the golden compares it without `page`
+- **What:** `MechanicResponse.page: Option<Page>` (skipped when None, so add/remove are unchanged); `list` fills it and is paged by `page_bytes` (no `limit`). The golden test asserts the block, then removes `page` before comparing to the unchanged `mechanic_list.json`.
+- **Why:** the fixture predates the cursor; `mask_paging` masks only the five paging keys, and a new top-level `page` object is not one of them. `golden_phase9_support.rs` is not mine.
+- **Where:** `src/tools/golden_phase9_mechanic_tests.rs`.
+- **Reversible:** yes (extend `PAGING_KEYS`/re-record at 9.5).
+
+## 9.3 mechanic: `path` optional and `cursor` added on every action; `list` now syncs
+- **What:** `path` is optional (required without a cursor), `cursor` is new, `action` stays required but is ignored with a cursor. `list` goes through `paginate`, so a fresh list now syncs the project (it did not before).
+- **Why:** the shared layer syncs on every fresh request; the stored rows then carry the page-one `revision_id`.
+- **Where:** `src/tools/mechanic.rs`, `mechanic_list.rs`.
+- **Reversible:** yes.
+
+## 9.3 mechanic: byte cut cannot count the first row
+- **What:** the store never offers a page's first row to `accept`, so the `page_bytes` cut counts only rows after the first; a page may exceed `page_bytes` by at most one listing (about 17 KiB worst case). `bytes_used` reports the true size.
+- **Why:** store API (`read_page`) contract; not changeable from this lane. Suggest offering the first row to `accept` (still always taking it) so every tool can count it.
+- **Where:** `src/tools/mechanic_list.rs`.
+- **Reversible:** yes.
+
+## structure: `complete` stays false on the last page of a partial result
+- **What:** For a window-limited or time-budget result the final page has no `cursor`, `page.complete` is false, `page.limited_by` is the completeness bound (`scan_window`/`time_budget`) and `page.completeness` is `partial`. Only a `complete` scan reports `complete: true`.
+- **Why:** Today's response reports `complete: false` there; reading it as exhaustive would hide unscanned files. `Page` docs for `structure` already say `complete` also means no scan window remains.
+- **Where:** `src/tools/structure_page.rs` (`structure_response`).
+- **Reversible:** Yes; one expression. Note `cursor` is then absent while `complete` is false (resume is a new request).
+
+## structure: `page.total` stays null
+- **What:** The stored row count is not reported as `total`; the response overrides it to null.
+- **Why:** The golden fixtures record null, and a count of a window-limited scan would misstate the project.
+- **Where:** `src/tools/structure_page.rs`.
+- **Reversible:** Yes.
+
+## structure: first row size is carried by the second row
+- **What:** Stored rows carry two extra columns, `json_bytes` and `prev_json_bytes`.
+- **Why:** The store never offers a page's first row to `accept`, so the byte budget could not include it; the second row of each page supplies the first row's size. A fix inside `paginate`/the reader (offer the first row too) would make this unnecessary.
+- **Where:** `src/tools/structure_stored.rs`, `structure_exec.rs`.
+- **Reversible:** Yes.
+
+## structure: `path` stays a `String` (default empty) rather than `Option<String>`
+- **What:** `path` is `#[serde(default)] String`; empty means absent (schema: not required).
+- **Why:** `src/tools/leads_line_tests.rs` (not in this lane) builds `StructureRequest { path: String, .. }`; `Option` would break its compile.
+- **Where:** `src/tools/structure.rs`.
+- **Reversible:** Yes: switch to `Option<String>` and add `Some(..)` in `leads_line_tests.rs`.
+
+## structure: continuation uses process limits; `resume_after_file` for a time-out is the timed-out file
+- **What:** A cursor call has no project to read config from, so `page_bytes` default/ceiling and the match cap come from `process_limits()`. For `time_budget`, `resume_after_file` is the file whose parse was cancelled (as `next_start_after_file` was before), not the last file fully scanned.
+- **Why:** Resuming after the last fully scanned file would re-parse the timed-out file and time out again with no progress.
+- **Where:** `src/tools/structure.rs`, `structure_page.rs`.
+- **Reversible:** Yes.
+
+## structure: the scan runs inside the verified read transaction
+- **What:** Window load, parse and match scan all run in the one read transaction `paginate` opens (previously the transaction ended before parsing).
+- **Why:** Rows must be pushed inside `produce`; this also makes window and scan share one revision. Cost: the snapshot is held up to `max_structure_execution_time`, which delays WAL truncation meanwhile.
+- **Where:** `src/tools/structure_exec.rs` (`produce`).
+- **Reversible:** Partly (would need a producer that takes the window pre-loaded).
+
+## query: columns are read in a validating pre-pass before the result is created
+- **What:** A new `query` call syncs and prepares the statement (read transaction) once to learn its column names, then `paginate` syncs again and materialises. The column names are also stored as the result's extra (`QueryMeta`), and a continuation first reads the page's first row through `paginate` (accept = `Take::No`) to get them and to seed the byte count, then reads the page with the real cut.
+- **Why:** `PageSpec.columns` is needed before the writer exists, but a query's columns are only known after SQLite prepares it. The store never offers a page's first row to `accept`, yet the byte cut must count it (golden `bytes_used` and page cuts are byte-identical to the old tool). Statement errors are now also refused before any store space is claimed.
+- **Where:** `src/tools/query_exec.rs` (`fresh_page`, `continuation_page`, `result_columns`), `src/tools/query_value.rs` (`PageBuilder`).
+- **Reversible:** Yes. If `paginate` offered the first row to `accept` (or `PageSpec.columns` could be supplied by `produce`), the pre-pass and the peek read disappear.
+
+## query: `total_unavailable` removed from the response
+- **What:** The field and its count pass are gone; `page.total` is the stored row count. The 9.0 fixtures still contain `"total_unavailable": null`, so the golden test helper puts that null back before comparing (fixtures untouched).
+- **Why:** The plan removes it; `golden_phase9_support::mask_paging` is not mine to extend.
+- **Where:** `src/tools/query.rs`, `src/tools/golden_phase9_query_tests.rs` (`restore_removed_field`).
+- **Reversible:** Yes; 9.5 can add `total_unavailable` to the masked keys and delete the helper (or re-record).
+
+## query: a continuation runs under the process limits
+- **What:** With a cursor there is no `path`, so `query` uses `process_limits()` for `page_bytes` resolution (default, ceiling) instead of the project's config.
+- **Why:** The cursor names no project; the stored result does not record the limits.
+- **Where:** `src/tools/query.rs` (`query`).
+- **Reversible:** Yes (store the effective limits in the result extra).
+
+## query: edits outside the owned list (compile- or semantics-forced)
+- **What:** `QueryRequest` literals updated in `src/server_runner_tests.rs`, `src/resources_tests.rs`, `src/tools/redaction_tests.rs`, `src/tools/leads_language_tests.rs`, `src/tools/leads_line_tests.rs`, `fuzz/fuzz_targets/query_sql.rs`. In `server_runner_tests.rs` the test that provoked `stale_revision` through `query` now provokes `unknown_cursor` with a sentinel cursor and is renamed `a_failed_tool_call_logs_the_machine_readable_code_but_not_the_cursor_token`.
+- **Why:** `offset`/`expected_revision` no longer exist on the request; `query` can no longer return `stale_revision` from a pin.
+- **Where:** the files above.
+- **Reversible:** No (follows from the removal).
+
+## leads continuation honours limit and page_bytes
+- **What:** A `leads` call with a `cursor` ignores `path`, `mechanic`, `pattern` and `mode` but still applies `limit` and `page_bytes` (and the process limits, since no project is named).
+- **Why:** Both only cut the page, they do not shape the result. The golden page 2 (limit 5 on the continuation) needs `limit` to be honoured; `page_bytes` was already decided in 9.3-0.
+- **Where:** `src/tools/leads.rs` (`leads`, `leads_with_catalog`), `src/tools/leads_page.rs` (`page`).
+- **Reversible:** Yes; ignore `limit` on a continuation and the golden page 2 changes.
+
+## Registered-mechanic scans stop as partial results on the call deadline only
+- **What:** A spent `max_structure_execution_time` no longer fails a `leads` call with `mechanic_budget_exhausted`. The scan stops, the rows of fully scanned files are the result, and `page.completeness` is `partial{limited_by: time_budget, resume_after_file, files_scanned, files_total}` on every page. There is no scan window for registered scans (they stream file by file), so `scan_window` is never reported by `leads`. `mechanic_budget_exhausted` remains only where rows cannot be reported: an entry too large for the scan cache budget whose second scan is also stopped.
+- **Why:** The directive asks for partial semantics; a stop in the middle of a file would otherwise repeat or lose hits on resume, so a file the deadline cuts contributes no hit (hits are held until the file is done). `resume_after_file` is the last file fully scanned in the language that was running; `files_scanned`/`files_total` span all languages of the scan. Counts of a stopped entry are floors. No new request parameter: resuming is a new call that rescans (narrow `pattern` or raise the knob), as documented on `path`/`mechanic`.
+- **Where:** `src/tools/mechanic_scan.rs` (`ScanEnd`, `Stop`), `mechanic_scan_cached.rs`, `leads_custom.rs`, `leads_page.rs`. The brief's test name `..._stopped_by_window_...` is `paged_leads_custom_scan_stopped_by_deadline_is_partial_on_every_page` (plus the engine test `a_scan_stopped_between_files_reports_the_last_file_it_finished`).
+- **Reversible:** Yes, but it changes a documented error into a partial result.
+
+## leads stores per-row sizes and a running file count
+- **What:** Each stored row carries `files_seen` (distinct files up to and including it), its own serialized size and the previous row's size. A counts-only call also stores an empty result.
+- **Why:** The store's `accept` closure is never offered the first row of a page, so the byte cut needs the first row's size from the second row; `files_covered` and `bytes_used` must be exact on a continuation that cannot see earlier rows. Going through `paginate` for counts-only keeps one path and one `revision_id` rule.
+- **Where:** `src/tools/leads_stored.rs`, `leads_page.rs`.
+- **Reversible:** Yes (storage layout only).
+
+## Bounded cursor input
+- **What:** A `cursor` over 1024 bytes is refused with `invalid_params` ("cursor exceeds 1024 bytes") before the store sees it.
+- **Why:** Every other free-form `leads` field has a byte cap; the real token is under 200 bytes.
+- **Where:** `src/tools/leads.rs` (`MAX_CURSOR_BYTES`).
+- **Reversible:** Yes.
