@@ -35,7 +35,9 @@ pub(super) fn path_of(project: &tempfile::TempDir) -> String {
 
 pub(super) fn add(path: &str, id: &str, language: &str, query: &str) -> MechanicRequest {
     MechanicRequest {
-        path: path.to_owned(),
+        path: Some(path.to_owned()),
+        cursor: None,
+        legacy_paging: LegacyPaging::default(),
         action: MechanicAction::Add,
         id: Some(id.to_owned()),
         index: None,
@@ -50,7 +52,9 @@ pub(super) fn add(path: &str, id: &str, language: &str, query: &str) -> Mechanic
 
 pub(super) fn action(path: &str, action: MechanicAction, id: Option<&str>) -> MechanicRequest {
     MechanicRequest {
-        path: path.to_owned(),
+        path: Some(path.to_owned()),
+        cursor: None,
+        legacy_paging: LegacyPaging::default(),
         action,
         id: id.map(str::to_owned),
         index: None,

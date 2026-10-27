@@ -13,6 +13,7 @@
 use super::leads::LeadsResponse;
 use super::mechanic_catalog;
 use super::mechanic_register::{add, remove};
+use super::{LegacyPaging, Page};
 use crate::progress::ProgressSink;
 use crate::sync;
 use rmcp::ErrorData;
@@ -27,7 +28,7 @@ const MAX_FIELD_BYTES: usize = 64 * 1024;
 
 /// Where a mechanic comes from. Listings are ordered session, then
 /// project_config, then builtin.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MechanicSource {
     /// Registered with `mechanic add` on this server; ends when it exits.
@@ -56,7 +57,7 @@ pub struct MechanicListing {
 /// A registered entry that could not be loaded, with the reason. It is not
 /// counted by `leads` until it is fixed or removed, and it is never dropped
 /// from this list.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct InvalidMechanic {
     /// `project_config` for a persisted entry (or the whole section);
     /// `session` for a session entry whose grammar no longer loads.
@@ -88,10 +89,25 @@ pub enum MechanicAction {
 /// One `mechanic` call: the action, the entry for `add`, the id for
 /// `remove`, and the first page's size for `add`.
 pub struct MechanicRequest {
-    /// Any path inside the active project.
-    pub path: String,
-    /// `add`, `remove`, or `list`.
+    /// Any path inside the active project. Required unless `cursor` is given.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// `add`, `remove`, or `list`. Ignored when `cursor` is given: a cursor
+    /// only ever continues a stored `list`, and never registers or removes
+    /// anything.
     pub action: MechanicAction,
+    /// `list` only: the `page.cursor` of the previous page, copied exactly.
+    /// It continues the list as it was when the first page was read, without
+    /// a `path`; every other field except `page_bytes` is ignored. To page
+    /// the first count `add` returns, use that response's own `page.cursor`
+    /// with `leads`.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Refuses the removed `offset` and `expected_revision` with a message
+    /// that names `cursor`.
+    #[serde(flatten, default)]
+    #[schemars(skip)]
+    pub legacy_paging: LegacyPaging,
     /// `add`/`remove`: the entry id, 1-64 characters of `a-z`, `0-9`, `_`.
     /// It can never be a built-in's id or one already registered.
     #[serde(default)]
@@ -130,7 +146,7 @@ pub struct MechanicRequest {
     #[serde(default)]
     pub limit: Option<usize>,
     /// `add`: first page size in serialized JSON bytes, as `leads`'
-    /// `page_bytes`.
+    /// `page_bytes`. `list`: the size of each page of listings.
     #[serde(default)]
     pub page_bytes: Option<usize>,
 }
@@ -163,6 +179,13 @@ pub struct MechanicResponse {
     /// `page.total`, `files_total` and `files_covered` all `0`. Page on with
     /// `leads`, passing `page.next_offset` and `page.revision_id`.
     pub first_count: Option<LeadsResponse>,
+    /// `list` only: the shared paging block for `mechanics`. While
+    /// `page.cursor` is present, repeat the call with only that `cursor`;
+    /// every page reports the `revision_id`, `invalid` and `mechanics`
+    /// order of page one. `add` and `remove` return the whole catalogue and
+    /// no `page`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<Page>,
 }
 
 /// Adds, removes, or lists auditor-registered mechanics.
@@ -184,13 +207,20 @@ pub fn mechanic(
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<MechanicResponse>, ErrorData> {
     let request = &request.0;
+    request.legacy_paging.refuse()?;
     validate(request)?;
-    let root = super::project_root(&request.path)?;
+    if request.cursor.is_some() {
+        return list::list(request, sink, manager).map(Json);
+    }
+    let path = request.path.as_deref().ok_or_else(|| {
+        ErrorData::invalid_params("path is required when no cursor is given", None)
+    })?;
+    let root = super::project_root(path)?;
     let limits = super::limits_for_root(&root);
     let (id, source, first_count) = match request.action {
-        MechanicAction::List => (None, None, None),
+        MechanicAction::List => return list::list(request, sink, manager).map(Json),
         MechanicAction::Add => {
-            let (id, source, first_count) = add(request, &root, &limits, sink, manager)?;
+            let (id, source, first_count) = add(request, path, &root, &limits, sink, manager)?;
             (Some(id), Some(source), Some(first_count))
         }
         MechanicAction::Remove => {
@@ -214,11 +244,16 @@ pub fn mechanic(
         mechanics_invalid: catalog.invalid.len(),
         invalid: catalog.invalid,
         first_count,
+        page: None,
     }))
 }
 
 fn validate(request: &MechanicRequest) -> Result<(), ErrorData> {
-    if crate::util::exceeds_input_bytes(&request.path, MAX_PATH_BYTES) {
+    if request
+        .path
+        .as_deref()
+        .is_some_and(|path| crate::util::exceeds_input_bytes(path, MAX_PATH_BYTES))
+    {
         return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
     }
     if request.index.is_some() && request.id.is_some() {
@@ -252,6 +287,9 @@ fn validate(request: &MechanicRequest) -> Result<(), ErrorData> {
     Ok(())
 }
 
+#[path = "mechanic_list.rs"]
+mod list;
+
 #[cfg(test)]
 #[path = "mechanic_tests.rs"]
 mod tests;
@@ -259,6 +297,10 @@ mod tests;
 #[cfg(test)]
 #[path = "mechanic_persist_tests.rs"]
 mod persist_tests;
+
+#[cfg(test)]
+#[path = "mechanic_paged_tests.rs"]
+mod paged_tests;
 
 #[cfg(test)]
 #[path = "mechanic_scan_tests.rs"]
