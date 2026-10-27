@@ -27,6 +27,7 @@ pub(super) struct FamilySql {
     path: &'static str,
     line: &'static str,
     order: &'static str,
+    row_id: &'static str,
     file_key: &'static str,
     pattern: &'static str,
 }
@@ -35,7 +36,8 @@ const EVIDENCE_SQL: FamilySql = FamilySql {
     from: "evidence e JOIN files f ON e.file_id = f.id",
     path: "f.path",
     line: "COALESCE(e.start_line, 0)",
-    order: "f.path, e.start_line",
+    order: "f.path, e.start_line, e.id",
+    row_id: "e.id",
     file_key: "e.file_id",
     pattern: "f.path GLOB ?",
 };
@@ -45,6 +47,7 @@ const FILES_SQL: FamilySql = FamilySql {
     path: "path",
     line: "0",
     order: "path",
+    row_id: "id",
     file_key: "path",
     pattern: "path GLOB ?",
 };
@@ -234,11 +237,17 @@ impl Mechanic {
         self.family.sql().line
     }
 
-    /// The stable row order every read shares: by file, then by line. A page
-    /// boundary can split a file but never reorder the files, which is what
-    /// makes `files_covered` cumulative for a sweep at one revision.
+    /// The stable row order every read shares: by file, then by line, then by
+    /// the evidence row's id, so two observations on one line keep one order
+    /// within a revision. The order is fixed when the result is stored, which
+    /// is what makes `files_covered` cumulative for a sweep.
     pub(super) fn order_expr(&self) -> &'static str {
         self.family.sql().order
+    }
+
+    /// The row's unique id, the final tie-break of the compact union's order.
+    pub(super) fn id_expr(&self) -> &'static str {
+        self.family.sql().row_id
     }
 
     /// The column identifying the file a row belongs to — the key the

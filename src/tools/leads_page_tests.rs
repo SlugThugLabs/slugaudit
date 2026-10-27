@@ -22,7 +22,7 @@ fn leads_page_bytes_sets_the_row_budget_and_pages_on_it() {
     assert!(paged.page.bytes_used <= half);
     assert_eq!(paged.page.limited_by, PageLimit::PageBytes);
     assert!(!paged.oversized_row);
-    assert_eq!(paged.page.next_offset, Some(paged.page.returned));
+    assert!(paged.page.cursor.is_some());
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn leads_flags_a_first_row_larger_than_the_page() {
 
     assert_eq!(response.page.returned, 1, "one row per page minimum");
     assert!(response.oversized_row);
-    assert_eq!(response.page.next_offset, Some(1));
+    assert!(response.page.cursor.is_some());
 }
 
 #[test]
@@ -96,36 +96,6 @@ fn leads_counts_only_reply_carries_the_page_size_that_applied() {
         ResourceLimits::default().default_page_bytes
     );
     assert!(!response.oversized_row);
-}
-
-#[test]
-fn an_offset_sqlite_cannot_hold_is_refused_in_both_modes_not_bound_as_no_limit() {
-    let project = unwrap_fixture(1, 2);
-    for mode in [LeadMode::Full, LeadMode::Compact] {
-        let mut huge = request(project.path(), Some("unwrap_calls"));
-        huge.mode = mode;
-        huge.offset = Some(usize::MAX);
-
-        let error = try_run(huge).expect_err("an offset above i64::MAX must fail");
-
-        assert!(
-            error
-                .message
-                .contains("exceeds the maximum supported integer"),
-            "{}",
-            error.message
-        );
-    }
-}
-
-#[test]
-fn a_mechanic_missing_from_the_counts_fails_instead_of_reading_as_zero() {
-    use crate::tools::leads_page::{count_of, files_of};
-
-    let error = count_of(&[], "unwrap_calls").expect_err("no entry must not count as 0");
-
-    assert!(error.message.contains("unwrap_calls"), "{}", error.message);
-    assert!(files_of(&[], "unwrap_calls").is_err());
 }
 
 /// The byte budget replaces the deleted row cap: with no `limit`, rows stop
@@ -160,7 +130,7 @@ fn the_byte_budget_stops_the_page_in_both_modes_and_reports_it() {
             response.page.bytes_used
         );
         assert_eq!(response.page.total, Some(12), "the total is still complete");
-        assert_eq!(response.page.next_offset, Some(1));
+        assert!(response.page.cursor.is_some());
     }
     // A byte-limited page cannot grow by raising `limit`; the schema's own
     // advice must name the knob that acted.

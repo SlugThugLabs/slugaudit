@@ -22,14 +22,14 @@ fn oversize_fixture() -> tempfile::TempDir {
 
 fn leads_request(project: &tempfile::TempDir, mechanic: Option<&str>) -> LeadsRequest {
     LeadsRequest {
-        path: project.path().to_string_lossy().into_owned(),
+        path: Some(project.path().to_string_lossy().into_owned()),
         mechanic: mechanic.map(str::to_owned),
         pattern: None,
         limit: None,
-        offset: None,
-        expected_revision: None,
+        cursor: None,
         mode: LeadMode::Full,
         page_bytes: None,
+        legacy_paging: crate::tools::LegacyPaging::default(),
     }
 }
 

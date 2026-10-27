@@ -7,8 +7,9 @@
 //! same revision parses nothing and a page is cut from the cached rows
 //! exactly as it would be from a fresh scan.
 //!
-//! Only a complete scan is cached: a spent time budget fails the call before
-//! anything is stored. Rows are retained while the pass runs only up to the
+//! Only a complete scan is cached: a spent time budget ends the pass early
+//! ([`Scanned::stop`]) and nothing it found is stored, though the call may
+//! still use the rows it holds. Rows are retained while the pass runs only up to the
 //! cache budget in total across the pass's entries; an entry whose rows outgrow it is counted (`skipped_too_large`
 //! in `health`), not cached, and its pages stream from the database as they
 //! did before the cache existed.
@@ -16,11 +17,10 @@
 use super::leads_query::MAX_DETAIL_CHARS;
 use super::mechanic::MechanicSource;
 use super::mechanic_catalog::Registered;
-use super::mechanic_scan::{self, Tally};
+use super::mechanic_scan::{self, ScanEnd, Stop, Tally};
 use crate::project::{CachedRow, MechanicScanCache, ScanKey};
 use rmcp::ErrorData;
 use rusqlite::Transaction;
-use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -46,6 +46,9 @@ pub(super) struct Scanned {
     /// Indexed like `custom`: the entry's rows when they are held by the
     /// cache (or were just cached), `None` when not scanned or too large.
     pub(super) rows: Vec<Option<Rows>>,
+    /// Set when the call deadline stopped the pass: the tallies and rows of
+    /// the entries it scanned cover only the files read before the stop.
+    pub(super) stop: Option<Stop>,
 }
 
 fn source_tag(source: MechanicSource) -> &'static str {
@@ -69,10 +72,10 @@ fn key_of(scope: &CacheScope<'_>, registered: &Registered, glob: Option<&str>) -
 }
 
 /// A tally derived from cached rows, which are file-contiguous in path order.
-fn tally_of(rows: &[CachedRow], keep_files: bool) -> Tally {
+fn tally_of(rows: &[CachedRow]) -> Tally {
     let mut tally = Tally::default();
     for row in rows {
-        tally.record(&row.file, keep_files);
+        tally.record(&row.file);
     }
     tally
 }
@@ -150,20 +153,21 @@ impl Pass {
 ///
 /// # Errors
 ///
-/// Fails like [`mechanic_scan::scan`]: a database read error, a grammar that
-/// no longer loads, or a spent budget. Nothing is cached on failure.
+/// Fails like [`mechanic_scan::scan`]: a database read error or a grammar
+/// that no longer loads. Nothing is cached on failure or when the deadline
+/// stopped the pass.
 pub(super) fn tally_cached(
     tx: &Transaction<'_>,
     custom: &[Registered],
     selected: &[usize],
     glob: Option<&str>,
     deadline: Option<Instant>,
-    keep_files: bool,
     scope: &CacheScope<'_>,
 ) -> Result<Scanned, ErrorData> {
     let mut scanned = Scanned {
         tallies: vec![Tally::default(); custom.len()],
         rows: vec![None; custom.len()],
+        stop: None,
     };
     let mut missed = Vec::new();
     for index in selected {
@@ -173,7 +177,7 @@ pub(super) fn tally_cached(
         match scope.cache.get(&key_of(scope, registered, glob)) {
             Some(rows) => {
                 if let Some(slot) = scanned.tallies.get_mut(*index) {
-                    *slot = tally_of(&rows, keep_files);
+                    *slot = tally_of(&rows);
                 }
                 if let Some(slot) = scanned.rows.get_mut(*index) {
                     *slot = Some(rows);
@@ -187,11 +191,11 @@ pub(super) fn tally_cached(
     }
     let budget = scope.cache.budget();
     let mut pass = Pass::new(budget, custom.len());
-    mechanic_scan::scan(tx, custom, &missed, glob, deadline, &mut |hit| {
+    let end = mechanic_scan::scan(tx, custom, &missed, glob, deadline, &mut |hit| {
         let tally = scanned.tallies.get_mut(hit.entry).ok_or_else(|| {
             super::context::internal_error("counting mechanics", "a hit named no entry")
         })?;
-        tally.record(hit.file, keep_files);
+        tally.record(hit.file);
         pass.offer(
             hit.entry,
             CachedRow {
@@ -200,20 +204,31 @@ pub(super) fn tally_cached(
                 text: hit.text.chars().take(MAX_DETAIL_CHARS + 1).collect(),
             },
         );
-        Ok(ControlFlow::Continue(()))
+        Ok(())
     })?;
+    let stopped = match end {
+        ScanEnd::Finished => false,
+        ScanEnd::Stopped(stop) => {
+            scanned.stop = Some(stop);
+            true
+        }
+    };
     for index in missed {
         let Some(registered) = custom.get(index) else {
             continue;
         };
         let Some(rows) = pass.take(index) else {
-            scope.cache.note_too_large();
+            if !stopped {
+                scope.cache.note_too_large();
+            }
             continue;
         };
         let rows = Arc::new(rows);
-        scope
-            .cache
-            .insert(key_of(scope, registered, glob), Arc::clone(&rows));
+        if !stopped {
+            scope
+                .cache
+                .insert(key_of(scope, registered, glob), Arc::clone(&rows));
+        }
         if let Some(slot) = scanned.rows.get_mut(index) {
             *slot = Some(rows);
         }

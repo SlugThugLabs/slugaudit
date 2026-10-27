@@ -1,87 +1,205 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=one leads envelope: the counts pass, the page dispatch and the completeness fields every page shape shares
-//! Assembling one `leads` response from the counts and the page a request
-//! asked for — the counts-only reply, the full row page, or the compact
-//! whole-surface (or single-mechanic) enumeration.
+// slugaudit-line-exception: approved-by=slugthug; reason=one leads result: the producer that fills the store from one read transaction and the page assembly that serves it share one envelope and one cut rule
+//! Assembling one `leads` response: the producer that streams the rows and the
+//! counts out of one verified read transaction into the result store, and the
+//! page assembly that serves any page of a stored result.
 //!
-//! Split out of `leads.rs` so that file stays the declarative contract
-//! (request and response shapes), and out of the two row modules so the
-//! envelope — which completeness field means what — lives in exactly one
-//! place, shared by both `mode`s. Nothing here ranks or interprets a row.
+//! A call without a cursor produces the whole result (counts, then every row
+//! of the requested scope in its stable order) and serves page one; a call
+//! with a cursor serves the stored page and reads nothing else. Either way the
+//! page is cut here, by the caller's `limit` and the byte budget, from the
+//! per-row sizes stored beside each row, and everything that is not per-page
+//! (the counts, the file denominators) comes back from the extras stored with
+//! the result, so every page of one result agrees.
 
-use super::leads::{FileCount, LeadMode, LeadRows, LeadsResponse, MechanicCount};
+use super::context::{
+    PageRequest, PageSpec, Produced, RowSink, decode_rows, internal_error, paginate,
+};
+use super::leads::{CompactLeadRow, FileCount, LeadMode, LeadRow, LeadRows, LeadsResponse};
 use super::leads_compact;
 use super::leads_covers::languages_read;
 use super::leads_custom;
-use super::leads_mechanics::{Mechanic, Selected};
+use super::leads_mechanics::Selected;
 use super::leads_query::{self, compile_pattern, count_all, page_file_counts};
 use super::mechanic_catalog::Catalog;
 use super::mechanic_scan_cached::{self, CacheScope};
-use super::page::{Page, PageLimit};
+use super::page::{Completeness, PageLimit};
 use super::page_size::PageSize;
+use crate::error_codes::store_error;
+use crate::project::MechanicScanCache;
+use crate::store::{Materialize, StoredRow, Take};
+use crate::sync::SourceSyncManager;
 use rmcp::ErrorData;
 use rusqlite::Transaction;
 use std::time::Instant;
 
-/// The paging window one call asks for: the caller's `limit`, the rows to
-/// skip, and the response byte budget.
-#[derive(Clone, Copy)]
-pub(super) struct Paging {
-    pub(super) limit: Option<usize>,
-    pub(super) offset: usize,
-    /// The byte budget, and whether it is the ceiling.
-    pub(super) size: PageSize,
-}
+#[path = "leads_stored.rs"]
+mod stored;
+pub(super) use stored::Feed;
+use stored::{Extras, StoredLead, count_of, stored_of, to_i64};
 
-/// Everything one call asks of the page builder.
+/// The tool name a `leads` cursor is bound to.
+const TOOL: &str = "leads";
+
+/// Everything a new request asks of the producer.
 pub(super) struct Scope<'a> {
     /// The registered entries (and failures) this call sees.
     pub(super) catalog: &'a Catalog,
     pub(super) selected: Option<Selected>,
     pub(super) mode: LeadMode,
     pub(super) pattern: Option<&'a str>,
-    pub(super) paging: Paging,
     /// When the registered mechanics' scan must stop
     /// (`max_structure_execution_time`); `None` means no deadline.
     pub(super) deadline: Option<Instant>,
     /// Where this call's registered-mechanic scans are cached.
-    pub(super) cache: CacheScope<'a>,
+    pub(super) cache: &'a MechanicScanCache,
 }
 
-/// Everything one page contributes to the envelope; `complete` and
-/// `next_offset` are derived from `returned` and `total` in [`envelope`].
-pub(super) struct Prepared {
-    pub(super) rows: LeadRows,
-    pub(super) returned: usize,
-    pub(super) total: i64,
-    pub(super) files_total: i64,
-    pub(super) files_covered: i64,
-    pub(super) page_file_counts: Vec<FileCount>,
-    pub(super) limited_by: PageLimit,
-    pub(super) bytes_used: usize,
+/// How a page is cut: the caller's `limit` and the response byte budget.
+#[derive(Clone, Copy)]
+pub(super) struct Cut {
+    pub(super) limit: Option<usize>,
+    /// The byte budget, and whether it is the ceiling.
+    pub(super) size: PageSize,
 }
 
-/// The complete counts pass, independent of paging.
-struct Counts {
-    mechanic_counts: Vec<MechanicCount>,
-    files_not_parsed: i64,
-    mechanics_invalid: usize,
-}
-
-/// Counts plus the page the request asked for.
+/// Serves one page: a new request when `scope` is given (its rows are
+/// produced and stored first), the stored page when the request is a cursor.
 ///
 /// # Errors
 ///
-/// Propagates any failure of the counts, row, or coverage reads, and of the
-/// registered mechanics' scan; see [`leads_query`], [`leads_compact`] and
-/// [`mechanic_scan_cached`].
-pub(super) fn build(
-    tx: &Transaction<'_>,
-    revision_id: &str,
-    scope: &Scope<'_>,
+/// Propagates any failure of the sync, the counts, row, or coverage reads, the
+/// registered mechanics' scan, and the result store; see [`paginate`].
+pub(super) fn page(
+    manager: &SourceSyncManager,
+    request: PageRequest<'_>,
+    cut: Cut,
+    scope: Option<&Scope<'_>>,
 ) -> Result<LeadsResponse, ErrorData> {
+    let budget = to_i64(cut.size.bytes)?;
+    let mut failure = None;
+    let mut stopped_by = PageLimit::None;
+    let mut taken = 1_usize;
+    let mut used: Option<i64> = None;
+    let accept = |row: &StoredRow| {
+        let stored = match StoredLead::from_values(&row.cells) {
+            Ok(stored) => stored,
+            Err(error) => {
+                failure = Some(store_error(&error));
+                return Take::No;
+            }
+        };
+        // The first row of the page is never offered; the row after it knows
+        // its size.
+        let so_far = *used.get_or_insert(stored.prev_bytes);
+        if cut.limit.is_some_and(|limit| taken >= limit) {
+            stopped_by = PageLimit::Limit;
+            return Take::No;
+        }
+        if so_far.saturating_add(stored.bytes) > budget {
+            stopped_by = PageLimit::PageBytes;
+            return Take::No;
+        }
+        used = Some(so_far.saturating_add(stored.bytes));
+        taken += 1;
+        Take::Yes
+    };
+    let spec = PageSpec::typed::<StoredLead>(TOOL, cut.size.bytes);
+    let served = paginate::<Extras, _, _>(
+        manager,
+        &spec,
+        request,
+        |tx, sink| match scope {
+            Some(scope) => produce(tx, sink, scope),
+            None => Err(internal_error(
+                "serving a leads continuation",
+                "a continuation produces no rows",
+            )),
+        },
+        accept,
+    )?;
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    let rows: Vec<StoredLead> = decode_rows(&served.rows)?;
+    let extras = served.meta;
+    let mut page = served.page;
+    let bytes_used = rows.iter().try_fold(0_usize, |sum, row| {
+        usize::try_from(row.bytes)
+            .map(|bytes| sum.saturating_add(bytes))
+            .map_err(|error| internal_error("reading a stored row size", error))
+    })?;
+    page.bytes_used = bytes_used;
+    page.limited_by = match (page.complete, stopped_by) {
+        (true, _) => PageLimit::None,
+        (false, PageLimit::Limit) => PageLimit::Limit,
+        (false, _) => cut.size.byte_cut(),
+    };
+    let files_covered = if page.complete {
+        extras.files_total
+    } else {
+        rows.last().map_or(0, |row| row.files_seen)
+    };
+    let files = rows.iter().map(|row| row.file.as_str());
+    let page_file_counts: Vec<FileCount> = page_file_counts(files);
+    let rows = if extras.compact {
+        LeadRows::Compact(
+            rows.into_iter()
+                .map(|row| CompactLeadRow {
+                    mechanic: row.mechanic,
+                    file: row.file,
+                    line: row.line,
+                })
+                .collect(),
+        )
+    } else {
+        LeadRows::Full(
+            rows.into_iter()
+                .map(|row| LeadRow {
+                    file: row.file,
+                    line: row.line,
+                    detail: row.detail,
+                    detail_clipped: row.detail_clipped,
+                })
+                .collect(),
+        )
+    };
+    Ok(LeadsResponse {
+        oversized_row: bytes_used > cut.size.bytes,
+        page,
+        mechanic_counts: extras.counts.into_iter().map(count_of).collect(),
+        mechanics_invalid: extras.mechanics_invalid,
+        files_not_parsed: extras.files_not_parsed,
+        rows,
+        files_total: extras.files_total,
+        files_covered,
+        page_file_counts,
+    })
+}
+
+/// Counts and rows from one read transaction: the counts pass, then every
+/// row of the requested scope in its stable order.
+fn produce(
+    tx: &Transaction<'_>,
+    sink: &mut RowSink<'_, '_>,
+    scope: &Scope<'_>,
+) -> Result<Produced<Extras>, ErrorData> {
     let glob = compile_pattern(scope.pattern);
     let read = languages_read(tx, glob.as_deref())?;
-    let whole_surface = scope.mode == LeadMode::Compact && scope.selected.is_none();
+    let revision: String = tx
+        .query_row(
+            "SELECT revision_id FROM revisions WHERE is_current = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| internal_error("reading the current revision", error))?;
+    let project = tx
+        .path()
+        .ok_or_else(|| internal_error("locating the project database", "no file path"))?;
+    let cache = CacheScope {
+        cache: scope.cache,
+        project,
+        revision: &revision,
+    };
     let scanned = scanned_entries(scope);
     let found = mechanic_scan_cached::tally_cached(
         tx,
@@ -89,226 +207,61 @@ pub(super) fn build(
         &scanned,
         glob.as_deref(),
         scope.deadline,
-        whole_surface,
-        &scope.cache,
+        &cache,
     )?;
-    let mut mechanic_counts = leads_custom::counts(scope.catalog, &scanned, &found.tallies, &read);
-    mechanic_counts.extend(count_all(tx, scope.pattern, &read)?);
-    let counts = Counts {
-        mechanic_counts,
-        files_not_parsed: leads_query::files_not_parsed(tx, scope.pattern)?,
-        mechanics_invalid: scope.catalog.invalid.len(),
-    };
-    let (pattern, paging) = (scope.pattern, scope.paging);
-    let listed = &counts.mechanic_counts;
-    let prepared = match (scope.mode, scope.selected) {
-        (LeadMode::Full, None) => return Ok(counts_only(revision_id, counts, paging)),
+    let mut counts = leads_custom::counts(scope.catalog, &scanned, &found.tallies, &read);
+    counts.extend(count_all(tx, scope.pattern, &read)?);
+    let files_not_parsed = leads_query::files_not_parsed(tx, scope.pattern)?;
+    let mut feed = Feed::new(sink);
+    match (scope.mode, scope.selected) {
+        (LeadMode::Full, None) => {}
         (LeadMode::Full, Some(Selected::Builtin(mechanic))) => {
-            full(tx, mechanic, pattern, paging, listed)?
+            leads_query::stream_rows(tx, mechanic, scope.pattern, &mut |row| feed.full(row))?;
         }
         (LeadMode::Compact, Some(Selected::Builtin(mechanic))) => {
-            compact(tx, Some(mechanic), pattern, paging, listed)?
+            let only = leads_compact::scope(Some(mechanic));
+            leads_compact::stream(tx, &only, scope.pattern, &mut |row| feed.compact(row))?;
         }
-        (LeadMode::Compact, None) if scope.catalog.custom.is_empty() => {
-            compact(tx, None, pattern, paging, listed)?
+        (LeadMode::Compact, None) => {
+            for index in 0..scope.catalog.custom.len() {
+                leads_custom::rows(tx, scope, index, &found, &mut feed)?;
+            }
+            let all = leads_compact::scope(None);
+            leads_compact::stream(tx, &all, scope.pattern, &mut |row| feed.compact(row))?;
         }
-        (LeadMode::Compact, None) => leads_custom::whole_surface(tx, scope, &found, listed)?,
-        (mode, Some(Selected::Registered(index))) => {
-            leads_custom::single(tx, scope, index, mode, &found, listed)?
+        (_, Some(Selected::Registered(index))) => {
+            leads_custom::rows(tx, scope, index, &found, &mut feed)?;
         }
+    }
+    let completeness = match found.stop {
+        None => Completeness::Complete,
+        Some(stop) => Completeness::Partial {
+            limited_by: PageLimit::TimeBudget,
+            resume_after_file: stop.resume_after_file,
+            files_scanned: stop.files_scanned,
+            files_total: stop.files_total,
+        },
     };
-    envelope(revision_id, counts, prepared, paging)
+    Ok(Produced {
+        completeness,
+        extra: Extras {
+            counts: counts.into_iter().map(stored_of).collect(),
+            mechanics_invalid: scope.catalog.invalid.len(),
+            files_not_parsed,
+            files_total: to_i64(feed.files())?,
+            compact: scope.mode == LeadMode::Compact,
+        },
+    })
 }
 
 /// The registered entries this call scans: every one when no mechanic is
 /// selected (counts only, or the compact whole surface), only the selected
 /// one, and none when a built-in is selected — so an entry the caller did not
-/// ask for can neither slow nor fail the call.
+/// ask for can neither slow nor stop the call.
 fn scanned_entries(scope: &Scope<'_>) -> Vec<usize> {
     match scope.selected {
         None => (0..scope.catalog.custom.len()).collect(),
         Some(Selected::Builtin(_)) => Vec::new(),
         Some(Selected::Registered(index)) => vec![index],
     }
-}
-
-/// One page of a single mechanic's full rows.
-fn full(
-    tx: &Transaction<'_>,
-    mechanic: &Mechanic,
-    pattern: Option<&str>,
-    paging: Paging,
-    counts: &[MechanicCount],
-) -> Result<Prepared, ErrorData> {
-    let page = leads_query::rows_for(
-        tx,
-        mechanic,
-        pattern,
-        paging.limit,
-        paging.offset,
-        paging.size.bytes,
-    )?;
-    let returned = page.rows.len();
-    let total = count_of(counts, mechanic.id)?;
-    let files_total = files_of(counts, mechanic.id)?;
-    let through = paging.offset.saturating_add(returned);
-    let complete = seen(through)? >= total;
-    // The page that ends the mechanic has seen every file by construction;
-    // earlier pages ask the index how many distinct files their rows reach.
-    let files_covered = if complete {
-        files_total
-    } else {
-        leads_query::files_covered(tx, mechanic, pattern, through)?
-    };
-    let file_counts = page_file_counts(page.rows.iter().map(|row| row.file.as_str()));
-    Ok(Prepared {
-        rows: LeadRows::Full(page.rows),
-        returned,
-        total,
-        files_total,
-        files_covered,
-        page_file_counts: file_counts,
-        limited_by: page.limited_by,
-        bytes_used: page.bytes,
-    })
-}
-
-/// One compact page over the requested mechanic, or over the whole catalogue
-/// when none was requested.
-fn compact(
-    tx: &Transaction<'_>,
-    selected: Option<&Mechanic>,
-    pattern: Option<&str>,
-    paging: Paging,
-    counts: &[MechanicCount],
-) -> Result<Prepared, ErrorData> {
-    let scope = leads_compact::scope(selected);
-    let page = leads_compact::rows_for(
-        tx,
-        &scope,
-        pattern,
-        paging.limit,
-        paging.offset,
-        paging.size.bytes,
-    )?;
-    let returned = page.rows.len();
-    let total = scope.iter().try_fold(0_i64, |sum, mechanic| {
-        count_of(counts, mechanic.id).map(|count| sum.saturating_add(count))
-    })?;
-    let files_total = leads_compact::files_total(tx, &scope, pattern)?;
-    let through = paging.offset.saturating_add(returned);
-    let complete = seen(through)? >= total;
-    let files_covered = if complete {
-        files_total
-    } else {
-        leads_compact::files_covered(tx, &scope, pattern, through)?
-    };
-    let file_counts = page_file_counts(page.rows.iter().map(|row| row.file.as_str()));
-    Ok(Prepared {
-        rows: LeadRows::Compact(page.rows),
-        returned,
-        total,
-        files_total,
-        files_covered,
-        page_file_counts: file_counts,
-        limited_by: page.limited_by,
-        bytes_used: page.bytes,
-    })
-}
-
-/// The counts-only reply: no mechanic requested in full mode, so there is no
-/// scope to page and every completeness field is trivially empty.
-fn counts_only(revision_id: &str, counts: Counts, paging: Paging) -> LeadsResponse {
-    LeadsResponse {
-        page: Page {
-            returned: 0,
-            total: Some(0),
-            complete: true,
-            next_offset: None,
-            cursor: None,
-            completeness: None,
-            page_bytes: paging.size.bytes,
-            bytes_used: 0,
-            limited_by: PageLimit::None,
-            revision_id: revision_id.to_owned(),
-        },
-        mechanic_counts: counts.mechanic_counts,
-        mechanics_invalid: counts.mechanics_invalid,
-        files_not_parsed: counts.files_not_parsed,
-        rows: LeadRows::Full(Vec::new()),
-        files_total: 0,
-        files_covered: 0,
-        page_file_counts: Vec::new(),
-        oversized_row: false,
-    }
-}
-
-/// Wraps a prepared page in the envelope, deriving `complete` and
-/// `next_offset` from what the page actually returned, and reporting a byte
-/// cut as the ceiling when the budget is the ceiling.
-fn envelope(
-    revision_id: &str,
-    counts: Counts,
-    prepared: Prepared,
-    paging: Paging,
-) -> Result<LeadsResponse, ErrorData> {
-    let through = paging.offset.saturating_add(prepared.returned);
-    let complete = seen(through)? >= prepared.total;
-    let limited_by = match prepared.limited_by {
-        PageLimit::PageBytes => paging.size.byte_cut(),
-        other => other,
-    };
-    Ok(LeadsResponse {
-        page: Page {
-            returned: prepared.returned,
-            total: Some(super::page::total_of(prepared.total)?),
-            complete,
-            next_offset: (!complete).then_some(through),
-            cursor: None,
-            completeness: None,
-            page_bytes: paging.size.bytes,
-            bytes_used: prepared.bytes_used,
-            limited_by,
-            revision_id: revision_id.to_owned(),
-        },
-        mechanic_counts: counts.mechanic_counts,
-        mechanics_invalid: counts.mechanics_invalid,
-        files_not_parsed: counts.files_not_parsed,
-        rows: prepared.rows,
-        files_total: prepared.files_total,
-        files_covered: prepared.files_covered,
-        page_file_counts: prepared.page_file_counts,
-        oversized_row: prepared.bytes_used > paging.size.bytes,
-    })
-}
-
-/// The counts-pass entry for `id`. The catalogue and the counts come from the
-/// same table, so a missing entry is a defect: the call fails rather than
-/// reporting `total = 0` and a `complete` page.
-fn entry_of<'a>(counts: &'a [MechanicCount], id: &str) -> Result<&'a MechanicCount, ErrorData> {
-    counts
-        .iter()
-        .find(|entry| entry.mechanic == id)
-        .ok_or_else(|| {
-            super::context::internal_error(
-                "reading leads counts",
-                format!("no count was recorded for mechanic `{id}`"),
-            )
-        })
-}
-
-/// The row count the counts pass recorded for `id`.
-pub(super) fn count_of(counts: &[MechanicCount], id: &str) -> Result<i64, ErrorData> {
-    entry_of(counts, id).map(|entry| entry.count)
-}
-
-/// The distinct-file count the counts pass recorded for `id`.
-pub(super) fn files_of(counts: &[MechanicCount], id: &str) -> Result<i64, ErrorData> {
-    entry_of(counts, id).map(|entry| entry.files)
-}
-
-/// `usize` rows as an `i64`; a count SQLite cannot hold fails the call.
-pub(super) fn seen(rows: usize) -> Result<i64, ErrorData> {
-    i64::try_from(rows)
-        .map_err(|error| super::context::internal_error("counting leads rows seen", error))
 }

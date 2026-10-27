@@ -11,12 +11,16 @@
 //! language; a capture is one hit, de-duplicated per node, so a node two
 //! patterns of one query both capture is counted once.
 //!
-//! A spent budget fails the call: a partial count would read as a complete
-//! one. Only the entries a call needs are scanned (`leads` naming a built-in
-//! scans none), so one slow entry cannot fail calls that never asked for it,
-//! and the failure names the entries that were running.
+//! A spent budget stops the scan: the result so far is returned as
+//! [`ScanEnd::Stopped`], naming the last file fully scanned, so a partial
+//! count is never mistaken for a complete one. A file the budget cut in the
+//! middle contributes no hit at all (its hits are held back until the file
+//! is done), so resuming after the reported file repeats nothing. Only the
+//! entries a call needs are scanned (`leads` naming a built-in scans none),
+//! so one slow entry cannot stop calls that never asked for it.
 
 use super::leads_covers::PARSED_FILES;
+use super::leads_query::MAX_DETAIL_CHARS;
 use super::mechanic_catalog::Registered;
 use crate::error_codes::{self, ErrorCode};
 use crate::parse::budget::{Parsed, parse_within};
@@ -37,7 +41,8 @@ pub(super) struct Hit<'a> {
     pub(super) file: &'a str,
     /// One-based start line of the captured node.
     pub(super) line: i64,
-    /// The captured node's source text.
+    /// The captured node's source text, clipped to `MAX_DETAIL_CHARS` plus
+    /// one character (enough for a consumer to tell it was clipped).
     pub(super) text: &'a str,
 }
 
@@ -47,35 +52,47 @@ pub(super) struct Tally {
     pub(super) count: i64,
     /// Distinct files with at least one hit.
     pub(super) files: i64,
-    /// Those files in path order, kept only when asked for (a compact
-    /// whole-surface page needs them to union file denominators).
-    pub(super) file_list: Vec<String>,
     last_file: Option<String>,
 }
 
 impl Tally {
     /// Counts one hit in `file`; hits arrive file-contiguous, in path order.
-    pub(super) fn record(&mut self, file: &str, keep_files: bool) {
+    pub(super) fn record(&mut self, file: &str) {
         self.count = self.count.saturating_add(1);
         if self.last_file.as_deref() != Some(file) {
             self.files = self.files.saturating_add(1);
             self.last_file = Some(file.to_owned());
-            if keep_files {
-                self.file_list.push(file.to_owned());
-            }
         }
     }
 }
 
-/// What a hit callback tells the scan: keep going, or stop every scan now.
-pub(super) type Flow = Result<ControlFlow<()>, ErrorData>;
+/// Where a scan the budget stopped got to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Stop {
+    /// The last file fully scanned in the language that was running; hits of
+    /// the file the budget cut are not reported.
+    pub(super) resume_after_file: Option<String>,
+    /// Files fully scanned, over every language of the scan.
+    pub(super) files_scanned: u64,
+    /// Files the scan selects, over every language of the scan.
+    pub(super) files_total: u64,
+}
 
-/// The error a spent budget fails the call with, naming the entries that
-/// were running (`ids` are `[a-z0-9_]` by the catalogue's id rule).
-/// Operational, like a spent sync budget, and permanent for the same scan:
-/// the code's remedy names `mechanic remove`, a narrower `pattern` and the
-/// knob rather than a retry.
-fn budget_error(ids: &[&str]) -> ErrorData {
+/// How a scan ended.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ScanEnd {
+    /// Every selected file was read.
+    Finished,
+    /// The call deadline stopped the scan.
+    Stopped(Stop),
+}
+
+/// The error a scan that cannot report a partial result fails the call with,
+/// naming the entries that were running (`ids` are `[a-z0-9_]` by the
+/// catalogue's id rule). Operational, like a spent sync budget, and permanent
+/// for the same scan: the code's remedy names `mechanic remove`, a narrower
+/// `pattern` and the knob rather than a retry.
+pub(super) fn budget_error(ids: &[&str]) -> ErrorData {
     ErrorData::internal_error(
         format!(
             "registered mechanic `{}` ran out of the execution time budget \
@@ -87,22 +104,23 @@ fn budget_error(ids: &[&str]) -> ErrorData {
 }
 
 /// Runs the entries of `custom` listed in `selected` over their languages'
-/// files under `glob`, calling `on_hit` per distinct captured
-/// node: for one entry, in path then position order. `on_hit` returning
-/// `Break` ends the whole scan early and successfully.
+/// files under `glob`, calling `on_hit` per distinct captured node: for one
+/// entry, in path then position order. The hits of one file reach `on_hit`
+/// only once the file is fully scanned.
 ///
 /// # Errors
 ///
-/// Fails on a database read error, a grammar that no longer loads, or a
-/// spent budget; an error from `on_hit` is returned as is.
+/// Fails on a database read error or a grammar that no longer loads; an
+/// error from `on_hit` is returned as is. A spent budget is not an error: it
+/// ends the scan as [`ScanEnd::Stopped`].
 pub(super) fn scan(
     tx: &Transaction<'_>,
     custom: &[Registered],
     selected: &[usize],
     glob: Option<&str>,
     deadline: Option<Instant>,
-    on_hit: &mut dyn FnMut(Hit<'_>) -> Flow,
-) -> Result<(), ErrorData> {
+    on_hit: &mut dyn FnMut(Hit<'_>) -> Result<(), ErrorData>,
+) -> Result<ScanEnd, ErrorData> {
     let mut languages: Vec<&str> = Vec::new();
     for index in selected {
         if let Some(registered) = custom.get(*index)
@@ -111,14 +129,15 @@ pub(super) fn scan(
             languages.push(&registered.entry.language);
         }
     }
-    for language in languages {
+    let mut scanned = 0_u64;
+    for language in &languages {
         let entries: Vec<usize> = selected
             .iter()
             .copied()
             .filter(|index| {
                 custom
                     .get(*index)
-                    .is_some_and(|registered| registered.entry.language == language)
+                    .is_some_and(|registered| registered.entry.language == *language)
             })
             .collect();
         let scan = LanguageScan {
@@ -126,11 +145,61 @@ pub(super) fn scan(
             entries: &entries,
             deadline,
         };
-        if scan.run(tx, language, glob, on_hit)?.is_break() {
-            break;
+        if let Some(Halted { after }) = scan.run(tx, language, glob, &mut scanned, on_hit)? {
+            return Ok(ScanEnd::Stopped(Stop {
+                resume_after_file: after,
+                files_scanned: scanned,
+                files_total: count_files(tx, &languages, glob)?,
+            }));
         }
     }
-    Ok(())
+    Ok(ScanEnd::Finished)
+}
+
+/// The files a scan of `languages` reads: indexed, grammar ran, content kept.
+fn file_filter(glob: Option<&str>) -> String {
+    let filter = if glob.is_some() {
+        " AND path GLOB ?2"
+    } else {
+        ""
+    };
+    format!("language = ?1 AND {PARSED_FILES} AND content IS NOT NULL{filter}")
+}
+
+/// How many files the scan of `languages` selects under `glob`.
+fn count_files(
+    tx: &Transaction<'_>,
+    languages: &[&str],
+    glob: Option<&str>,
+) -> Result<u64, ErrorData> {
+    let sql = format!("SELECT count(*) FROM files WHERE {}", file_filter(glob));
+    let mut total = 0_u64;
+    for language in languages {
+        let count: i64 = tx
+            .query_row(
+                &sql,
+                params_from_iter(std::iter::once(*language).chain(glob)),
+                |row| row.get(0),
+            )
+            .map_err(|error| super::context::internal_error("counting the files to scan", error))?;
+        let count = u64::try_from(count)
+            .map_err(|error| super::context::internal_error("counting the files to scan", error))?;
+        total = total.saturating_add(count);
+    }
+    Ok(total)
+}
+
+/// Where the deadline stopped one language's scan.
+struct Halted {
+    /// The last file fully scanned, `None` when not even one was.
+    after: Option<String>,
+}
+
+/// One hit held back until its file is done.
+struct Held {
+    entry: usize,
+    line: i64,
+    text: String,
 }
 
 /// The entries of one language and the call's deadline.
@@ -141,13 +210,17 @@ struct LanguageScan<'a> {
 }
 
 impl LanguageScan<'_> {
+    /// Scans the language's files in path order. `None` means every file was
+    /// read; `Some` means the deadline stopped the scan. `scanned` counts the
+    /// files fully scanned.
     fn run(
         &self,
         tx: &Transaction<'_>,
         language: &str,
         glob: Option<&str>,
-        on_hit: &mut dyn FnMut(Hit<'_>) -> Flow,
-    ) -> Result<ControlFlow<()>, ErrorData> {
+        scanned: &mut u64,
+        on_hit: &mut dyn FnMut(Hit<'_>) -> Result<(), ErrorData>,
+    ) -> Result<Option<Halted>, ErrorData> {
         let grammar = tree_sitter_language_pack::get_language(language).map_err(|error| {
             super::context::internal_error("loading a registered mechanic's grammar", error)
         })?;
@@ -155,14 +228,9 @@ impl LanguageScan<'_> {
         parser
             .set_language(&grammar)
             .map_err(|error| super::context::internal_error("setting a mechanic grammar", error))?;
-        let filter = if glob.is_some() {
-            " AND path GLOB ?2"
-        } else {
-            ""
-        };
         let sql = format!(
-            "SELECT path, content FROM files WHERE language = ?1 AND {PARSED_FILES} \
-             AND content IS NOT NULL{filter} ORDER BY path"
+            "SELECT path, content FROM files WHERE {} ORDER BY path",
+            file_filter(glob)
         );
         let mut statement = tx.prepare(&sql).map_err(|error| {
             super::context::internal_error("preparing the mechanic scan", error)
@@ -171,6 +239,7 @@ impl LanguageScan<'_> {
         let mut rows = statement
             .query(params_from_iter(binds))
             .map_err(|error| super::context::internal_error("starting the mechanic scan", error))?;
+        let mut last_done: Option<String> = None;
         while let Some(row) = rows
             .next()
             .map_err(|error| super::context::internal_error("reading the mechanic scan", error))?
@@ -181,29 +250,51 @@ impl LanguageScan<'_> {
             let content: String = row.get(1).map_err(|error| {
                 super::context::internal_error("reading scanned content", error)
             })?;
-            let tree = self.parse(&mut parser, &content)?;
-            for entry in self.entries {
-                if self
-                    .scan_tree(*entry, &path, &content, &tree, on_hit)?
-                    .is_break()
-                {
-                    return Ok(ControlFlow::Break(()));
-                }
+            let Some(held) = self.scan_file(&mut parser, &content)? else {
+                return Ok(Some(Halted { after: last_done }));
+            };
+            for hit in &held {
+                on_hit(Hit {
+                    entry: hit.entry,
+                    file: &path,
+                    line: hit.line,
+                    text: &hit.text,
+                })?;
+            }
+            *scanned = scanned.saturating_add(1);
+            last_done = Some(path);
+        }
+        Ok(None)
+    }
+
+    /// Parses one file and runs every entry over it. `None` when the deadline
+    /// cut the file, in which case none of its hits are returned.
+    fn scan_file(
+        &self,
+        parser: &mut Parser,
+        content: &str,
+    ) -> Result<Option<Vec<Held>>, ErrorData> {
+        let Some(tree) = self.parse(parser, content)? else {
+            return Ok(None);
+        };
+        let mut held = Vec::new();
+        for entry in self.entries {
+            if !self.scan_tree(*entry, content, &tree, &mut held)? {
+                return Ok(None);
             }
         }
-        Ok(ControlFlow::Continue(()))
+        Ok(Some(held))
     }
 
     /// Parses `content` under the deadline with `structure`'s budgeted
-    /// parse; a cancelled parse fails the call naming this language's
-    /// entries, since the parse is shared by all of them.
-    fn parse(&self, parser: &mut Parser, content: &str) -> Result<Tree, ErrorData> {
+    /// parse; `None` when the deadline cancelled it.
+    fn parse(&self, parser: &mut Parser, content: &str) -> Result<Option<Tree>, ErrorData> {
         if self.past_deadline() {
-            return Err(budget_error(&self.ids()));
+            return Ok(None);
         }
         match parse_within(parser, content, || self.past_deadline()) {
-            Parsed::Tree(tree) => Ok(tree),
-            Parsed::Cancelled => Err(budget_error(&self.ids())),
+            Parsed::Tree(tree) => Ok(Some(tree)),
+            Parsed::Cancelled => Ok(None),
             Parsed::NoTree => Err(super::context::internal_error(
                 "parsing a file for a registered mechanic",
                 "the parser returned no syntax tree",
@@ -211,30 +302,20 @@ impl LanguageScan<'_> {
         }
     }
 
-    /// The ids of this language's entries, in catalogue order.
-    fn ids(&self) -> Vec<&str> {
-        self.entries
-            .iter()
-            .filter_map(|index| self.custom.get(*index))
-            .map(|registered| registered.entry.id.as_str())
-            .collect()
-    }
-
     fn past_deadline(&self) -> bool {
         self.deadline
             .is_some_and(|deadline| Instant::now() >= deadline)
     }
 
-    /// Runs one entry's query over one tree, reporting each distinct
-    /// captured node once.
+    /// Runs one entry's query over one tree, holding each distinct captured
+    /// node once. `false` when the deadline cut the query.
     fn scan_tree(
         &self,
         entry: usize,
-        path: &str,
         content: &str,
         tree: &Tree,
-        on_hit: &mut dyn FnMut(Hit<'_>) -> Flow,
-    ) -> Result<ControlFlow<()>, ErrorData> {
+        held: &mut Vec<Held>,
+    ) -> Result<bool, ErrorData> {
         let registered = self.custom.get(entry).ok_or_else(|| {
             super::context::internal_error("running mechanics", "an entry index is out of range")
         })?;
@@ -257,7 +338,6 @@ impl LanguageScan<'_> {
             options,
         );
         let mut seen = HashSet::new();
-        let mut flow = ControlFlow::Continue(());
         while let Some((found, capture_index)) = captures.next() {
             let capture = found.captures.get(*capture_index).ok_or_else(|| {
                 super::context::internal_error("reading a hit", "a capture index is out of range")
@@ -275,20 +355,13 @@ impl LanguageScan<'_> {
                     "the capture is not on a char boundary",
                 )
             })?;
-            flow = on_hit(Hit {
+            held.push(Held {
                 entry,
-                file: path,
                 line,
-                text,
-            })?;
-            if flow.is_break() {
-                break;
-            }
+                text: text.chars().take(MAX_DETAIL_CHARS + 1).collect(),
+            });
         }
         drop(captures);
-        if timed_out {
-            return Err(budget_error(&[registered.entry.id.as_str()]));
-        }
-        Ok(flow)
+        Ok(!timed_out)
     }
 }

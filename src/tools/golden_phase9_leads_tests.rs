@@ -2,20 +2,22 @@
 use super::golden_phase9_support::{check_case, path_of, rust_project};
 use crate::progress::NoopProgressSink;
 use crate::sync::SourceSyncManager;
-use crate::tools::{LeadMode, LeadsRequest, MechanicAction, MechanicRequest, leads, mechanic};
+use crate::tools::{
+    LeadMode, LeadsRequest, LegacyPaging, MechanicAction, MechanicRequest, leads, mechanic,
+};
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::{Value, json};
 
 fn leads_request(project: &tempfile::TempDir, mechanic: Option<&str>) -> LeadsRequest {
     LeadsRequest {
-        path: path_of(project),
+        path: Some(path_of(project)),
         mechanic: mechanic.map(str::to_owned),
         pattern: None,
         limit: None,
-        offset: None,
-        expected_revision: None,
+        cursor: None,
         mode: LeadMode::Full,
         page_bytes: None,
+        legacy_paging: LegacyPaging::default(),
     }
 }
 
@@ -26,10 +28,10 @@ fn run_leads(request: &LeadsRequest, manager: &SourceSyncManager) -> Value {
             mechanic: request.mechanic.clone(),
             pattern: request.pattern.clone(),
             limit: request.limit,
-            offset: request.offset,
-            expected_revision: request.expected_revision.clone(),
+            cursor: request.cursor.clone(),
             mode: request.mode,
             page_bytes: request.page_bytes,
+            legacy_paging: LegacyPaging::default(),
         }),
         &NoopProgressSink,
         manager,
@@ -47,7 +49,7 @@ fn leads_case(
 ) -> Value {
     let response = run_leads(request, manager);
     let echoed = json!({
-        "mechanic": request.mechanic, "limit": request.limit, "offset": request.offset,
+        "mechanic": request.mechanic, "limit": request.limit, "cursor": request.cursor,
         "compact": request.mode == LeadMode::Compact,
     });
     check_case(name, project, &echoed, &response);
@@ -70,8 +72,8 @@ fn golden_phase9_leads_counts_rows_pages_and_compact() {
     let page_one = leads_case("leads_rows_page1", &project, &first, &manager);
     let mut second = leads_request(&project, Some("unwrap_calls"));
     second.limit = Some(5);
-    second.offset = page_one["page"]["next_offset"].as_u64().map(|n| n as usize);
-    second.expected_revision = page_one["page"]["revision_id"].as_str().map(str::to_owned);
+    second.path = None;
+    second.cursor = page_one["page"]["cursor"].as_str().map(str::to_owned);
     leads_case("leads_rows_page2", &project, &second, &manager);
     let mut compact = leads_request(&project, None);
     compact.mode = LeadMode::Compact;

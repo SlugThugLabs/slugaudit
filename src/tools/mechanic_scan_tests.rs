@@ -1,13 +1,15 @@
 //! Which registered entries a `leads` call scans, and how a spent scan
 //! budget fails: a call naming a built-in runs no registered scan, a call
-//! naming one entry counts only that one, and a spent budget is an
-//! operational error naming the entry and carrying `mechanic_budget_exhausted`.
+//! naming one entry counts only that one, and a spent budget is a
+//! partial result (or, when rows cannot be reported, an operational error
+//! naming the entry and carrying `mechanic_budget_exhausted`).
 use super::tests::{
     EVAL_QUERY, add, call, leads_request, path_of, python_project, run_leads, sources,
 };
 use super::*;
 use crate::progress::NoopProgressSink;
 use crate::tools::LeadMode;
+use crate::tools::page::{Completeness, PageLimit};
 
 /// The catalogue and limits for a call whose registered-mechanic budget is
 /// already spent: any registered entry it scans fails it.
@@ -23,7 +25,7 @@ fn spent_budget(
 }
 
 #[test]
-fn a_registered_scan_past_its_budget_fails_the_call_naming_the_entry() {
+fn a_registered_scan_past_its_budget_is_a_partial_result_naming_how_far_it_got() {
     let project = python_project();
     let path = path_of(&project);
     let manager = sync::SourceSyncManager::default();
@@ -33,33 +35,27 @@ fn a_registered_scan_past_its_budget_fails_the_call_naming_the_entry() {
     let (limits, catalog) = spent_budget(&manager, &path);
     let request = leads_request(&path, None, LeadMode::Full);
 
-    let error = crate::tools::leads::leads_with_catalog(
+    let response = crate::tools::leads::leads_with_catalog(
         &request,
         &limits,
         &catalog,
         &NoopProgressSink,
         &manager,
     )
-    .expect_err("a spent budget is an error, never a partial count");
+    .expect("a spent budget is a partial result, never a silent complete count");
 
     assert_eq!(
-        error.code,
-        rmcp::model::ErrorCode::INTERNAL_ERROR,
-        "a spent budget is operational, not a contract error: {error:?}"
+        response.page.completeness,
+        Some(Completeness::Partial {
+            limited_by: PageLimit::TimeBudget,
+            resume_after_file: None,
+            files_scanned: 0,
+            files_total: 3,
+        })
     );
     assert!(
-        error.message.contains("`py_eval`")
-            && error.message.contains("max_structure_execution_time"),
-        "{}",
-        error.message
-    );
-    let data = error.data.expect("the budget carries a code");
-    assert_eq!(data["code"], "mechanic_budget_exhausted");
-    assert!(
-        data["remedy"]
-            .as_str()
-            .is_some_and(|remedy| remedy.contains("mechanic action remove")),
-        "{data}"
+        response.page.complete,
+        "no rows follow: the page is the whole result"
     );
 }
 
@@ -227,6 +223,9 @@ fn inserting_past_the_budget_evicts_the_oldest_entry_and_health_reports_it() {
     let path = path_of(&project);
     call(&sizing, add(&path, "first", "python", EVAL_QUERY)).expect("add");
     let one_entry = cache_stats(&sizing).bytes;
+    // One manager per project at a time: its result store owns the project's
+    // results directory.
+    drop(sizing);
     let manager = sync::SourceSyncManager::with_mechanic_cache_budget(one_entry + one_entry / 2);
 
     call(&manager, add(&path, "first", "python", EVAL_QUERY)).expect("add");
@@ -262,41 +261,54 @@ fn an_entry_larger_than_the_whole_budget_is_skipped_counted_and_still_answered()
     assert_eq!(health["skipped_too_large"], 2, "{health}");
 }
 
+/// Every page of `py_eval` in `mode`, cursors blanked (they name the
+/// manager's own stored result).
+fn py_eval_pages(
+    manager: &sync::SourceSyncManager,
+    path: &str,
+    mode: LeadMode,
+) -> Vec<serde_json::Value> {
+    let mut pages = Vec::new();
+    let mut cursor = None;
+    loop {
+        let mut request = leads_request(path, Some("py_eval"), mode);
+        request.limit = Some(3);
+        request.cursor.clone_from(&cursor);
+        let page = run_leads(manager, request);
+        cursor.clone_from(&page.page.cursor);
+        let mut value = serde_json::to_value(&page).expect("serialises");
+        value["page"]["cursor"] = serde_json::Value::Null;
+        pages.push(value);
+        if cursor.is_none() {
+            return pages;
+        }
+    }
+}
+
 #[test]
 fn paging_from_the_cache_equals_paging_from_a_fresh_scan() {
     let project = python_project();
     let path = path_of(&project);
+    // One manager per project at a time (its result store owns the project's
+    // results directory), so the two are used one after the other.
     let cached = sync::SourceSyncManager::default();
-    let fresh = sync::SourceSyncManager::with_mechanic_cache_budget(0);
     call(&cached, add(&path, "py_eval", "python", EVAL_QUERY)).expect("add");
-    call(&fresh, add(&path, "py_eval", "python", EVAL_QUERY)).expect("add");
-
-    for mode in [LeadMode::Full, LeadMode::Compact] {
-        let mut offset = None;
-        loop {
-            let page = |manager: &sync::SourceSyncManager| {
-                let mut request = leads_request(&path, Some("py_eval"), mode);
-                request.limit = Some(3);
-                request.offset = offset;
-                run_leads(manager, request)
-            };
-            let from_cache = page(&cached);
-            let from_scan = page(&fresh);
-            assert_eq!(
-                serde_json::to_value(&from_cache).expect("serialises"),
-                serde_json::to_value(&from_scan).expect("serialises"),
-                "the page at offset {offset:?} in {mode:?}"
-            );
-            offset = from_cache.page.next_offset;
-            if offset.is_none() {
-                break;
-            }
-        }
-    }
+    let from_cache: Vec<_> = [LeadMode::Full, LeadMode::Compact]
+        .map(|mode| py_eval_pages(&cached, &path, mode))
+        .into();
     assert!(
         cache_stats(&cached).hits >= 2,
         "the cached manager used its cache"
     );
+    drop(cached);
+    let fresh = sync::SourceSyncManager::with_mechanic_cache_budget(0);
+    call(&fresh, add(&path, "py_eval", "python", EVAL_QUERY)).expect("add");
+    let from_scan: Vec<_> = [LeadMode::Full, LeadMode::Compact]
+        .map(|mode| py_eval_pages(&fresh, &path, mode))
+        .into();
+
+    assert_eq!(from_cache, from_scan);
+    assert!(from_cache.iter().all(|pages| pages.len() >= 2), "it paged");
     assert_eq!(cache_stats(&fresh).entries, 0, "the other held nothing");
 }
 
@@ -310,18 +322,22 @@ fn a_scan_cut_by_the_time_budget_is_not_cached() {
     let (limits, catalog) = spent_budget(&manager, &path);
     let request = leads_request(&path, Some("py_eval"), LeadMode::Full);
 
-    let error = crate::tools::leads::leads_with_catalog(
+    let response = crate::tools::leads::leads_with_catalog(
         &request,
         &limits,
         &catalog,
         &NoopProgressSink,
         &manager,
     )
-    .expect_err("the new revision needs a scan and the budget is spent");
+    .expect("the new revision needs a scan and the budget is spent: a partial result");
 
-    assert_eq!(
-        error.data.expect("a code")["code"],
-        "mechanic_budget_exhausted"
+    assert!(
+        matches!(
+            response.page.completeness,
+            Some(Completeness::Partial { .. })
+        ),
+        "{:?}",
+        response.page.completeness
     );
     assert_eq!(cache_stats(&manager).entries, 0, "nothing partial was kept");
 }
@@ -443,6 +459,7 @@ fn many_uncached_entries_in_one_call_over_a_tiny_budget_are_all_counted_exactly(
     call(&sizing, add(&path, "sizing", "python", EVAL_QUERY)).expect("add");
     let one_entry = cache_stats(&sizing).bytes;
     let budget = one_entry + one_entry / 2;
+    drop(sizing);
     let manager = sync::SourceSyncManager::with_mechanic_cache_budget(budget);
     for id in ["e1", "e2", "e3", "e4", "e5"] {
         call(&manager, add(&path, id, "python", EVAL_QUERY)).expect("add");
@@ -466,3 +483,6 @@ fn many_uncached_entries_in_one_call_over_a_tiny_budget_are_all_counted_exactly(
         "entries past the pass budget were counted, not cached"
     );
 }
+
+#[path = "mechanic_scan_stop_tests.rs"]
+mod stop_tests;
