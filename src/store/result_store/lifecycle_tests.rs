@@ -326,15 +326,17 @@ fn result_store_dropping_the_store_removes_its_lock_file() {
     assert!(listing(dir.path()).is_empty());
 }
 
-#[test]
-fn result_store_writers_and_pagers_on_many_threads_finish_with_consistent_totals() {
-    let fx = fixture(1 << 30);
+/// A deadlock in the store must fail the test, not hang the suite.
+const THREADS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Seeds, then runs writers and pagers together; returns the seeded and
+/// the concurrently written handles.
+fn run_threads(fx: &Fixture) -> (Vec<ResultHandle>, Vec<Vec<ResultHandle>>) {
     let seeded: Vec<ResultHandle> = (0..4)
         .map(|_| write_rows(&fx.store, 500, 20).expect("seed"))
         .collect();
     let store = &fx.store;
-
-    let written: Vec<Vec<ResultHandle>> = std::thread::scope(|scope| {
+    let written = std::thread::scope(|scope| {
         let writers: Vec<_> = (0..4)
             .map(|_| {
                 scope.spawn(move || {
@@ -363,6 +365,24 @@ fn result_store_writers_and_pagers_on_many_threads_finish_with_consistent_totals
             .map(|writer| writer.join().expect("writer thread"))
             .collect()
     });
+    (seeded, written)
+}
+
+#[test]
+fn result_store_writers_and_pagers_on_many_threads_finish_with_consistent_totals() {
+    let fx = std::sync::Arc::new(fixture(1 << 30));
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let worker = std::sync::Arc::clone(&fx);
+    std::thread::spawn(move || {
+        // The receiver is gone only after the deadline already failed the test.
+        if sender.send(run_threads(&worker)).is_err() {
+            tracing::warn!("the thread test gave up before its workers finished");
+        }
+    });
+
+    let (seeded, written) = receiver
+        .recv_timeout(THREADS_DEADLINE)
+        .expect("writers and pagers finished before the deadline (a deadlock or a panic)");
 
     let all: Vec<&ResultHandle> = seeded.iter().chain(written.iter().flatten()).collect();
     let stats = fx.store.stats();
