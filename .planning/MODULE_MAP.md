@@ -65,6 +65,7 @@ src/
 │   ├── query_clip.rs         clipping an oversized first row's TEXT/BLOB cells, with substr continuations
 │   ├── query_clip_tests.rs   clipping walks (5 MB text, blob, units) and line functions through query
 │   ├── query_error_tests.rs  sql_error on SQLite failures; refusals and value caps carry no code
+│   ├── golden_phase9_tests.rs  Phase 9 golden response fixtures (tests/golden/phase9), compared with paging masked
 │   ├── structure.rs          tree-sitter pattern match: contract, validation, targets
 │   ├── structure_exec.rs     query execution under match cap + time budget
 │   ├── structure_page.rs     byte paging of matches and the multi-file memory-window cursor

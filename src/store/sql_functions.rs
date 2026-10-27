@@ -61,7 +61,21 @@ pub(super) fn register(connection: &Connection) -> Result<()> {
         }
         Ok(Some(slice_lines(text, start, end).to_owned()))
     })?;
+    #[cfg(test)]
+    register_golden_nan(connection)?;
     Ok(())
+}
+
+/// Test-only `golden_nan()`: returns a REAL NaN, the one route the Phase 9
+/// golden test has to ask whether a NaN can reach a query result at all.
+#[cfg(test)]
+fn register_golden_nan(connection: &Connection) -> Result<()> {
+    connection.create_scalar_function(
+        "golden_nan",
+        0,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |_| Ok(f64::NAN),
+    )
 }
 
 fn user_error(message: String) -> Error {

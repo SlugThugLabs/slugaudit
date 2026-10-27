@@ -50,6 +50,10 @@ pub(crate) mod test_support;
 #[path = "redaction_tests.rs"]
 mod redaction_tests;
 
+#[cfg(test)]
+#[path = "golden_phase9_tests.rs"]
+mod golden_phase9_tests;
+
 pub use context::ensure_synced;
 pub use finding::{FindingRequest, FindingResponse, finding};
 pub use finding_read::{FindingReadEntry, FindingReadRequest, FindingReadResponse, finding_read};

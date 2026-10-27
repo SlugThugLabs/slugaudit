@@ -1,0 +1,30 @@
+{
+  "case": "query_numeric_text",
+  "request": {
+    "page_bytes": null,
+    "sql": "SELECT '007' AS a, '1e3' AS b, '-0' AS c, ' 5' AS d"
+  },
+  "response": {
+    "clipped_cells": [],
+    "non_finite_cells": [],
+    "page": {
+      "bytes_used": 39,
+      "complete": true,
+      "limited_by": "none",
+      "next_offset": null,
+      "page_bytes": 65536,
+      "returned": 1,
+      "revision_id": "<REVISION_ID>",
+      "total": 1
+    },
+    "rows": [
+      {
+        "a": "007",
+        "b": "1e3",
+        "c": "-0",
+        "d": " 5"
+      }
+    ],
+    "total_unavailable": null
+  }
+}

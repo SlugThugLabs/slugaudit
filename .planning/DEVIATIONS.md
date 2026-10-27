@@ -613,4 +613,14 @@ Oldest first: append each new entry at the end of the file. Format: **what** / *
 - **What:** (1) A startup-sweep failure is logged once, counted, and exposed in `StoreStats.sweep`; `open` still succeeds, because a sweep problem must not disable paging. (2) `push` inserts each row immediately inside the one transaction instead of buffering 1,000 rows; "batch" is the checkpoint every 1,000 rows (or 16 MiB of payload) where the size check and the test fault seam run. (3) Admission plans the reclaim set first and removes nothing when the result still would not fit (`Full`), instead of reclaiming and then refusing. (4) An aborted write closes the connection of its already-unlinked file rather than issuing `ROLLBACK`, which is undefined under `journal_mode=OFF`. (5) Transient on-disk bytes while writes are in flight are bounded by (concurrent writers x budget), because each writer self-aborts once its own file exceeds the whole budget; the sum of admitted bytes is always within the budget. (6) The store removes its own lock file on drop; the new limits `max_result_store_bytes` and `result_active_grace_secs` are `u64` and derive from the profile's `max_query_response_bytes` (x4) at profile construction, not from an env-overridden response ceiling.
 - **Why:** (1) fail visible, not fail closed on a cleanup problem; (2) buffering rows of up to `max_query_value_bytes` each would hold gigabytes in memory; (3) a refusal should not destroy results for nothing; (4) correctness under the pragma; (5) the budget cannot bound disk used by unadmitted writes without serialising writers; (6) tidy exit, and a response-ceiling override should not silently resize the store.
 - **Where:** `src/store/result_store/{owner,writer,registry,store}.rs`, `src/model/{limits,profile}.rs`.
+## 9.0: NaN cannot reach a query result, so the NaN fixture records NULLs
+- **What:** `query_nan_expressions` records NULL cells and an empty `non_finite_cells`; no REAL NaN case exists. A `cfg(test)` scalar function `golden_nan()` was added to `src/store/sql_functions.rs` to prove it: even a UDF returning `f64::NAN` reaches the result as NULL.
+- **Why:** SQLite turns NaN into NULL when a result is set, and the bundled build has no math functions. The brief asked for the route to be recorded.
+- **Where:** `src/store/sql_functions.rs` (cfg(test) only), `tests/golden/phase9/README.md`.
+- **Reversible:** yes.
+
+## 9.0: golden masks only `next_offset`-style paging keys
+- **What:** the comparison masks `offset`, `next_offset`, `expected_revision`, `cursor` by key name; `next_start_after_file` and `page.limited_by`/`bytes_used` are compared.
+- **Why:** these are the only paging-only fields present in today's responses; the rest describe content. 9.3 extends the mask if it changes more.
+- **Where:** `src/tools/golden_phase9_tests.rs`, `tests/golden/phase9/README.md`.
 - **Reversible:** yes.
