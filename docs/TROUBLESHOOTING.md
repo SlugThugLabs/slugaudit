@@ -404,7 +404,10 @@ selects a preset. The wall-clock budgets are:
 Every field has a `SLUGAUDIT_<FIELD>` override, for example
 `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS`, `SLUGAUDIT_MAX_FILE_BYTES`,
 `SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES`. The full list is the field documentation
-in `src/model/limits.rs`. Only explicitly set variables override a default;
+in `src/model/limits.rs`. The result store that backs paged results is bounded by
+`SLUGAUDIT_MAX_RESULT_STORE_BYTES` (4 x the profile's response ceiling by default: 1 GiB on
+`audit`, 128 MiB on `lean`) and protects an unfinished result for
+`SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS` (900) after its last page. Only explicitly set variables override a default;
 an unset or unparseable value leaves the default in place (a set-but-invalid
 override is reported in a warning).
 

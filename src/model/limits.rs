@@ -171,6 +171,23 @@ pub struct ResourceLimits {
     /// partial, and the per-call stat sweep remains the freshness guarantee
     /// for the unwatched subtrees. Env: `SLUGAUDIT_MAX_WATCH_DEPTH` (usize).
     pub max_watch_depth: usize,
+    /// Total on-disk bytes of paged results the result store keeps. A new
+    /// result that does not fit reclaims delivered results, then idle ones,
+    /// never active ones; one that still does not fit is refused with
+    /// `result_store_full`, and a single result above the whole budget with
+    /// `result_too_large`. Defaults to 4 times `max_query_response_bytes` of
+    /// the profile (1 GiB on `audit`, 128 MiB on `lean`); a `0` override is
+    /// refused with a warning and the default stays.
+    /// Env: `SLUGAUDIT_MAX_RESULT_STORE_BYTES` (u64); project `config.json`
+    /// key `max_result_store_bytes`.
+    pub max_result_store_bytes: u64,
+    /// Seconds after its last served page that an unfinished paged result
+    /// stays protected from reclaim (900 in every profile). The grace never
+    /// deletes anything by itself, and continuing a result renews it. A `0`
+    /// override is refused with a warning and the default stays.
+    /// Env: `SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS` (seconds, u64); project
+    /// `config.json` key `result_active_grace_secs`.
+    pub result_active_grace_secs: u64,
     /// Per-file bounds applied when normalizing evidence into rows.
     pub evidence: EvidenceLimits,
 }
@@ -205,6 +222,7 @@ impl ResourceLimits {
         apply_query_overrides(&mut limits);
         apply_structure_overrides(&mut limits);
         apply_sync_and_watch_overrides(&mut limits);
+        apply_result_store_overrides(&mut limits);
         limits.clamp_parse_to_file_bytes();
         limits
     }
@@ -283,6 +301,16 @@ fn apply_sync_and_watch_overrides(limits: &mut ResourceLimits) {
     }
     if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_WATCH_DEPTH") {
         limits.max_watch_depth = val;
+    }
+}
+
+/// Applies the result store budget and grace overrides.
+fn apply_result_store_overrides(limits: &mut ResourceLimits) {
+    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_RESULT_STORE_BYTES") {
+        limits.max_result_store_bytes = val;
+    }
+    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS") {
+        limits.result_active_grace_secs = val;
     }
 }
 

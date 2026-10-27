@@ -62,6 +62,14 @@ pub struct ProjectConfig {
     /// refused with a warning.
     #[serde(default)]
     pub default_page_bytes: Option<usize>,
+    /// Total bytes the result store keeps for paged results; `0` is refused
+    /// with a warning.
+    #[serde(default)]
+    pub max_result_store_bytes: Option<u64>,
+    /// Seconds an unfinished paged result stays protected from reclaim after
+    /// its last page; `0` is refused with a warning.
+    #[serde(default)]
+    pub result_active_grace_secs: Option<u64>,
     /// The versioned section of auditor-persisted mechanics. Kept raw here
     /// so a malformed section never invalidates the limits above; it is read
     /// and reported entry by entry by `mechanics_config::load_persisted`.
@@ -169,6 +177,18 @@ impl ProjectConfig {
             ResourceLimits::config_nonzero("config default_page_bytes", self.default_page_bytes)
         {
             limits.default_page_bytes = page_bytes;
+        }
+        if let Some(store_bytes) = ResourceLimits::config_nonzero(
+            "config max_result_store_bytes",
+            self.max_result_store_bytes,
+        ) {
+            limits.max_result_store_bytes = store_bytes;
+        }
+        if let Some(grace_secs) = ResourceLimits::config_nonzero(
+            "config result_active_grace_secs",
+            self.result_active_grace_secs,
+        ) {
+            limits.result_active_grace_secs = grace_secs;
         }
         limits.clamp_parse_to_file_bytes();
         limits

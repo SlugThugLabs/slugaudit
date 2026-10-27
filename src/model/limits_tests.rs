@@ -267,3 +267,20 @@ fn the_max_structure_query_bytes_env_var_overrides_the_16_kib_default() {
         assert_eq!(ResourceLimits::from_env().max_structure_query_bytes, 300);
     });
 }
+
+#[test]
+fn the_result_store_env_vars_override_the_profile_defaults() {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    temp_env::with_vars(
+        [
+            ("SLUGAUDIT_MAX_RESULT_STORE_BYTES", Some("123456")),
+            ("SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS", Some("42")),
+        ],
+        || {
+            let limits = ResourceLimits::from_env();
+
+            assert_eq!(limits.max_result_store_bytes, 123_456);
+            assert_eq!(limits.result_active_grace_secs, 42);
+        },
+    );
+}

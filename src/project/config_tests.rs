@@ -196,3 +196,17 @@ fn a_non_numeric_max_parse_bytes_is_a_parse_error() {
 
     assert!(matches!(error, ConfigError::Parse { .. }), "{error}");
 }
+
+#[test]
+fn a_configured_result_store_budget_and_grace_override_the_profile_defaults() {
+    let config = ProjectConfig {
+        max_result_store_bytes: Some(777),
+        result_active_grace_secs: Some(33),
+        ..Default::default()
+    };
+
+    let applied = config.apply_to_limits(ResourceLimits::default());
+
+    assert_eq!(applied.max_result_store_bytes, 777);
+    assert_eq!(applied.result_active_grace_secs, 33);
+}

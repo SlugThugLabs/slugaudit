@@ -211,6 +211,26 @@ src/
 │   ├── discard.rs            discard an unusable database only if it is still unusable under the write lock
 │   ├── discard_tests.rs      lock-checked discard outcomes
 │   ├── netfs.rs              network-filesystem rejection
+│   ├── result_store/         immutable paged results: one unlinked SQLite file per result, registry, cursors
+│   │   ├── admission_tests.rs      delivered/idle reclaim order, active never reclaimed, Full, TooLarge, budget invariant
+│   │   ├── cell.rs                 Cell storage classes, NonFinite marks, StoredRow, Take, Materialize trait
+│   │   ├── cursor.rs               ResultId and the strict v1 cursor codec
+│   │   ├── cursor_tests.rs         cursor round trip, malformed variants, foreign nonce, expired, ordinal bound
+│   │   ├── error.rs                typed ResultStoreError (source kept) and its wire-code mapping note
+│   │   ├── fault.rs                test-only fault seam: full disk, failure between batches, incomplete meta
+│   │   ├── fidelity_tests.rs       storage-class matrix, NaN and infinity marks, typed rows
+│   │   ├── harness_tests.rs        shared fixtures: temp store, injected clock, descriptor and directory inspection
+│   │   ├── lifecycle_tests.rs      self-abort, mid-write failure, full disk, process abort, sweep, threads
+│   │   ├── mod.rs                  module docs, layout and invariants, re-exports
+│   │   ├── owner.rs                results directory, owner lock and the startup sweep
+│   │   ├── paging_tests.rs         page walks at batch boundaries, grace renewal, delivered, incomplete state
+│   │   ├── platform.rs             Unix-only file helpers (private dir/file, lock file, same-inode check)
+│   │   ├── reader.rs               read_page, read_cursor and read_typed over a stored result
+│   │   ├── registry.rs             registry entries, classes, admission and reclaim planning
+│   │   ├── result_file.rs          create-open-unlink a result file, pragmas read back, schema, size measure
+│   │   ├── stats.rs                StoreStats snapshot
+│   │   ├── store.rs                ResultStore: open, clock, cursor resolution, admission logging
+│   │   ├── writer.rs               ResultWriter: batches in one transaction, meta last, size self-abort
 │   ├── sql_functions.rs      line_count / line_range scalar SQL functions registered on every connection
 │   ├── sql_functions_tests.rs line-function edge cases
 │   ├── migrations.rs         schema versioning (CURRENT_SCHEMA_VERSION)

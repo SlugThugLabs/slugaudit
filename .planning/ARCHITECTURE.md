@@ -208,7 +208,7 @@ SlugAudit is organized into cohesive subsystems under `src/`. For the exhaustive
 
 - **`tools/`** — MCP tool handlers and orchestration (`report`, `query`, `structure`, `leads`, `finding`, `finding_read`, `project_control`, `health`). Thin boundary contracts delegating to verified storage transactions.
 - **`sync/`** — Indexing engine: discovery, sampling, hashing, reconciliation, publish (compare-and-swap), revisions, and stat sweep.
-- **`store/`** — SQLite persistence boundary: connection configuration, schema migrations, read-only and read-write connection guards.
+- **`store/`** — SQLite persistence boundary: connection configuration, schema migrations, read-only and read-write connection guards, and the immutable result store (`store/result_store/`).
 - **`graph/`** — Dependency and import resolution across multiple language ecosystems (Rust, Python, JS/TS, C#, etc.).
 - **`evidence/`** — Evidence normalization from parse trees into indexed structural facts.
 - **`parse/`** — Tree-sitter language pack boundary and language detection.
@@ -573,7 +573,8 @@ before this ceiling: a 50 MB Rust file took 185 s and 7.5 GB RSS to parse.
 `max_parse_wall_clock_ms` (above) bounds the time of a file under the ceiling.
 A `0` for any limit (every `SLUGAUDIT_<FIELD>` variable, and the `config.json`
 keys `max_file_bytes`, `max_parse_bytes`, `max_parse_wall_clock_ms`,
-`max_structure_query_bytes`, `max_total_import_bytes`, `default_page_bytes`) is
+`max_structure_query_bytes`, `max_total_import_bytes`, `default_page_bytes`,
+`max_result_store_bytes`, `result_active_grace_secs`) is
 refused with a warning naming the setting and the value already in place stays. A
 warning about one cause (a zero, or the `max_parse_bytes` clamp to
 `max_file_bytes`) is logged once per process per (setting, configured value),
@@ -604,6 +605,30 @@ transaction that reads `user_version` again under the lock, so the second
 process accepts the first one's schema. The corrupt/outdated discard
 (`discard_if_still_unusable`) takes the same write lock and looks again, and
 leaves a database another process already repaired.
+
+### Result store
+
+`store/result_store/` holds materialised, immutable paged results (library only
+until the tools adopt it; wire codes are mapped there). Layout under
+`<runtime dir>/results/`: `<session>.lock` (advisory lock held for the store's
+life, taken before any result file) and `<session>-<result>.db`, a private
+SQLite file per result that is unlinked right after it is opened, so the open
+descriptor is the only reference and a crash leaves nothing (a file seen on
+disk is at most one created in the instant before the unlink). Pragmas
+`journal_mode=OFF`, `synchronous=OFF`, `locking_mode=EXCLUSIVE`, read back at
+open. Rows are untyped columns `c0..cN` keyed by `ord`; a NaN is stored as
+NULL and marked in `nonfinite`.
+
+Invariants: a result is written in one transaction and addressable only after
+its `meta` (`state='complete'`, written last) is committed and the registry
+admitted it; the sum of admitted bytes never exceeds `max_result_store_bytes`;
+an active result (unfinished, served within `result_active_grace_secs`) is
+never reclaimed, delivered results go first, then idle ones, oldest first;
+a write above the whole budget aborts itself; the registry map lock is never
+held across SQL or file I/O. Cursors are `v1.<process-nonce>.<result>.<ord>`,
+decoded strictly. The startup sweep deletes the files of a session whose lock it
+can take and of a session with no lock file, never a live owner's or its own.
+Supported on Unix; elsewhere `open` returns `Unavailable`.
 
 The database holds only current state: `files`, `evidence`, and
 `dependency_edges` are replaced in place, never duplicated per revision, and
@@ -714,7 +739,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 98 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 104 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only

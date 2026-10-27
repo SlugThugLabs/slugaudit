@@ -400,3 +400,57 @@ fn a_zero_config_default_page_bytes_is_refused_with_one_warning_and_keeps_the_de
         "{logs}"
     );
 }
+
+#[test]
+fn a_zero_max_result_store_bytes_env_var_is_refused_with_one_warning_and_keeps_the_default() {
+    fresh_ledger();
+    let (limits, warnings, logs) = zero_env("SLUGAUDIT_MAX_RESULT_STORE_BYTES");
+
+    assert_eq!(limits.max_result_store_bytes, lean().max_result_store_bytes);
+    assert_eq!(warnings, 1, "{logs}");
+}
+
+#[test]
+fn a_zero_result_active_grace_secs_env_var_is_refused_with_one_warning_and_keeps_the_default() {
+    fresh_ledger();
+    let (limits, warnings, logs) = zero_env("SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS");
+
+    assert_eq!(limits.result_active_grace_secs, 900);
+    assert_eq!(warnings, 1, "{logs}");
+}
+
+#[test]
+fn a_zero_config_max_result_store_bytes_is_refused_with_one_warning_and_keeps_the_default() {
+    fresh_ledger();
+    let config = ProjectConfig {
+        max_result_store_bytes: Some(0),
+        ..Default::default()
+    };
+
+    let (limits, logs) = apply_twice_over_lean(&config);
+
+    assert_eq!(limits.max_result_store_bytes, lean().max_result_store_bytes);
+    assert_eq!(
+        lines_containing(&logs, "setting=\"config max_result_store_bytes\""),
+        1,
+        "{logs}"
+    );
+}
+
+#[test]
+fn a_zero_config_result_active_grace_secs_is_refused_with_one_warning_and_keeps_the_default() {
+    fresh_ledger();
+    let config = ProjectConfig {
+        result_active_grace_secs: Some(0),
+        ..Default::default()
+    };
+
+    let (limits, logs) = apply_twice_over_lean(&config);
+
+    assert_eq!(limits.result_active_grace_secs, 900);
+    assert_eq!(
+        lines_containing(&logs, "setting=\"config result_active_grace_secs\""),
+        1,
+        "{logs}"
+    );
+}

@@ -8,6 +8,7 @@ mod connection_guards;
 mod discard;
 mod migrations;
 mod netfs;
+mod result_store;
 mod sql_functions;
 
 #[cfg(test)]
@@ -32,6 +33,11 @@ pub(crate) fn is_rusqlite_corruption(error: &rusqlite::Error) -> bool {
 pub use connection::{StoreError, discard_corrupt_database, open_read_only, open_read_write};
 pub use discard::{DiscardError, DiscardOutcome, discard_if_still_unusable};
 pub use migrations::MigrationError;
+pub use result_store::{
+    Cell, ClassStats, Clock, Cursor, Materialize, NonFinite, PageRead, ResultClass, ResultHandle,
+    ResultId, ResultMeta, ResultSpec, ResultStore, ResultStoreError, ResultStoreLimits,
+    ResultWriter, StoreStats, StoredRow, SweepOutcome, Take, TypedPage,
+};
 
 /// The schema version a fresh database is brought to. Re-exported for tests
 /// outside this module so they assert against the constant instead of a

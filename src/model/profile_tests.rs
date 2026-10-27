@@ -183,3 +183,41 @@ fn every_profile_caps_a_structure_query_at_16_kib() {
         assert_eq!(limits.max_structure_query_bytes, 16 * 1024, "{profile:?}");
     }
 }
+
+#[test]
+fn every_profile_budgets_the_result_store_at_four_maximal_responses() {
+    for profile in [
+        AuditProfile::Lean,
+        AuditProfile::Audit,
+        AuditProfile::Adaptive,
+    ] {
+        let limits = limits_for_profile(profile);
+
+        assert_eq!(
+            limits.max_result_store_bytes,
+            4 * limits.max_query_response_bytes as u64,
+            "{profile:?}"
+        );
+    }
+    assert_eq!(
+        limits_for_profile(AuditProfile::Audit).max_result_store_bytes,
+        1024 * 1024 * 1024
+    );
+    assert_eq!(
+        limits_for_profile(AuditProfile::Lean).max_result_store_bytes,
+        128 * 1024 * 1024
+    );
+}
+
+#[test]
+fn every_profile_protects_an_unfinished_result_for_900_seconds() {
+    for profile in [
+        AuditProfile::Lean,
+        AuditProfile::Audit,
+        AuditProfile::Adaptive,
+    ] {
+        let limits = limits_for_profile(profile);
+
+        assert_eq!(limits.result_active_grace_secs, 900, "{profile:?}");
+    }
+}

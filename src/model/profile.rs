@@ -93,6 +93,19 @@ pub(crate) const DEFAULT_MAX_PARSE_WALL_CLOCK_MS: u64 = 5_000;
 /// instead; 16 KiB is far above any query a model writes by hand.
 pub(crate) const DEFAULT_MAX_STRUCTURE_QUERY_BYTES: usize = 16 * 1024;
 
+/// How many times `max_query_response_bytes` the result store may hold (see
+/// `ResourceLimits::max_result_store_bytes`): four maximal responses.
+const RESULT_STORE_BUDGET_FACTOR: u64 = 4;
+
+/// Seconds an unfinished paged result stays protected after its last page, in
+/// every profile (see `ResourceLimits::result_active_grace_secs`).
+pub(crate) const DEFAULT_RESULT_ACTIVE_GRACE_SECS: u64 = 900;
+
+/// The result store budget derived from a profile's response ceiling.
+fn result_store_budget(max_query_response_bytes: usize) -> u64 {
+    (max_query_response_bytes as u64).saturating_mul(RESULT_STORE_BUDGET_FACTOR)
+}
+
 /// Watch-scope walk caps. The walk enumerates the directories that carry a
 /// `notify` watch, so its size is bounded in both entries (one potential
 /// kernel watch descriptor and one entry in the scope's path set each) and
@@ -136,6 +149,8 @@ fn lean_limits() -> ResourceLimits {
         max_sync_wall_clock: Duration::from_secs(120),
         max_watch_entries: LEAN_MAX_WATCH_ENTRIES,
         max_watch_depth: LEAN_MAX_WATCH_DEPTH,
+        max_result_store_bytes: result_store_budget(32 * 1024 * 1024),
+        result_active_grace_secs: DEFAULT_RESULT_ACTIVE_GRACE_SECS,
         evidence: EvidenceLimits {
             max_items_per_file: 50_000,
             max_payload_bytes_per_item: 128 * 1024,
@@ -163,6 +178,8 @@ fn audit_limits() -> ResourceLimits {
         max_sync_wall_clock: Duration::from_secs(1200),
         max_watch_entries: AUDIT_MAX_WATCH_ENTRIES,
         max_watch_depth: AUDIT_MAX_WATCH_DEPTH,
+        max_result_store_bytes: result_store_budget(256 * 1024 * 1024),
+        result_active_grace_secs: DEFAULT_RESULT_ACTIVE_GRACE_SECS,
         evidence: EvidenceLimits {
             max_items_per_file: 200_000,
             max_payload_bytes_per_item: 512 * 1024,
@@ -196,6 +213,8 @@ fn adaptive_limits() -> ResourceLimits {
         max_sync_wall_clock: Duration::from_secs(1200),
         max_watch_entries: AUDIT_MAX_WATCH_ENTRIES,
         max_watch_depth: AUDIT_MAX_WATCH_DEPTH,
+        max_result_store_bytes: result_store_budget(max_file as usize),
+        result_active_grace_secs: DEFAULT_RESULT_ACTIVE_GRACE_SECS,
         evidence: EvidenceLimits {
             max_items_per_file: 200_000,
             max_payload_bytes_per_item: 512 * 1024,
