@@ -284,3 +284,34 @@ fn the_result_store_env_vars_override_the_profile_defaults() {
         },
     );
 }
+
+#[test]
+fn result_store_surface_budget_follows_the_overridden_response_ceiling() {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    temp_env::with_vars(
+        [
+            ("SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES", Some("1000")),
+            ("SLUGAUDIT_MAX_RESULT_STORE_BYTES", None),
+        ],
+        || {
+            let limits = ResourceLimits::from_env();
+
+            assert_eq!(limits.max_query_response_bytes, 1000);
+            assert_eq!(limits.max_result_store_bytes, 4000);
+        },
+    );
+}
+
+#[test]
+fn result_store_surface_own_budget_variable_beats_the_response_ceiling() {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    temp_env::with_vars(
+        [
+            ("SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES", Some("1000")),
+            ("SLUGAUDIT_MAX_RESULT_STORE_BYTES", Some("777")),
+        ],
+        || {
+            assert_eq!(ResourceLimits::from_env().max_result_store_bytes, 777);
+        },
+    );
+}

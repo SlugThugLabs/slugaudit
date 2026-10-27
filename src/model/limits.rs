@@ -104,7 +104,7 @@ pub struct ResourceLimits {
     pub max_query_response_bytes: usize,
     /// Default page size, in serialized JSON bytes, for one `query` or
     /// `leads` call that does not pass its own `page_bytes`. A page is cut at
-    /// this size on a row boundary and resumed with `next_offset`; a request's
+    /// this size on a row boundary and resumed with `page.cursor`; a request's
     /// `page_bytes` overrides it, and the effective page is always clamped to
     /// `max_query_response_bytes` (the hard ceiling), with the clamp reported
     /// in the response. An oversized row has its individual cells clipped and
@@ -175,9 +175,10 @@ pub struct ResourceLimits {
     /// result that does not fit reclaims delivered results, then idle ones,
     /// never active ones; one that still does not fit is refused with
     /// `result_store_full`, and a single result above the whole budget with
-    /// `result_too_large`. Defaults to 4 times `max_query_response_bytes` of
-    /// the profile (1 GiB on `audit`, 128 MiB on `lean`); a `0` override is
-    /// refused with a warning and the default stays.
+    /// `result_too_large`. Defaults to 4 times the effective
+    /// `max_query_response_bytes`, including its env override (1 GiB on
+    /// `audit`, 128 MiB on `lean`), unless this limit is set itself; a `0`
+    /// override is refused with a warning and the default stays.
     /// Env: `SLUGAUDIT_MAX_RESULT_STORE_BYTES` (u64); project `config.json`
     /// key `max_result_store_bytes`.
     pub max_result_store_bytes: u64,
@@ -222,6 +223,10 @@ impl ResourceLimits {
         apply_query_overrides(&mut limits);
         apply_structure_overrides(&mut limits);
         apply_sync_and_watch_overrides(&mut limits);
+        // The store budget follows the effective response ceiling (after the
+        // env override above) unless its own variable sets it below.
+        limits.max_result_store_bytes =
+            super::profile::result_store_budget(limits.max_query_response_bytes);
         apply_result_store_overrides(&mut limits);
         limits.clamp_parse_to_file_bytes();
         limits
