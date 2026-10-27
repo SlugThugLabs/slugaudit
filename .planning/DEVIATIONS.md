@@ -862,3 +862,44 @@ Oldest first: append each new entry at the end of the file. Format: **what** / *
 - **Why:** Latent bug: a continuation re-derived limits from the process, not from the request that made the result. The accept closure owns what it takes from the context (`accept_for` gets `&PageContext`, so the returned closure cannot borrow it); query clones the column names once per page.
 - **Where:** `src/tools/{paginate,leads_page,leads_stored,query_exec,query,structure,structure_stored,structure_exec,structure_page,finding_read,mechanic_list,page}.rs`, `src/store/result_store/reader.rs` (`read_typed` keeps the offered first row in its typed page instead of converting it twice).
 - **Reversible:** Yes, except the removed wire field `next_offset`. Stale mentions of `next_offset`/`offset`/`expected_revision` remain in `src/server.rs` INSTRUCTIONS, `src/server/handlers.rs` (leads, finding_read descriptions), `src/model/limits.rs` (`default_page_bytes` doc), `README.md` and `.planning/ARCHITECTURE.md`: left for 9.5 (surface and docs), which re-records `mcp_surface.json`.
+
+## 9.5: the store budget follows the effective response ceiling (reverses 9.1 point 6)
+- **What:** `ResourceLimits::from_env` recomputes `max_result_store_bytes` as 4 x the env-overridden `max_query_response_bytes` before `SLUGAUDIT_MAX_RESULT_STORE_BYTES` is applied. 9.1 had derived it at profile construction only. `config.json` cannot set the response ceiling, so only the env path needed it.
+- **Why:** the brief (item 4) reverses the 9.1 choice: a response-ceiling override should resize the store unless the store's own variable is set.
+- **Where:** `src/model/limits.rs`, `src/model/profile.rs` (`result_store_budget` is `pub(super)`).
+- **Reversible:** yes.
+
+## 9.5: no dead total-rows budget was left to remove
+- **What:** the query migration (9.3) had already removed the counting budget and `total_unavailable` from limits, profile, config and docs. Only the CHANGELOG sentence naming `total_unavailable` and the golden-test re-add helper remained; both are gone. The wire field was `total_unavailable`, not `total_rows_unavailable` as the brief spells it.
+- **Why:** nothing else to delete; grep over src, docs, README, ARCHITECTURE, config found no other trace.
+- **Where:** `CHANGELOG.md`, `src/tools/golden_phase9_{support,query_tests}.rs`.
+- **Reversible:** n/a.
+
+## 9.5: wrong-tool cursor counting through a new store method; no extra log
+- **What:** `ResultStore::refuse_foreign_tool()` increments `unknown_cursors` and returns `Unknown`; it does not log, because `continue_page` already logs the refusal ("logged once"). The no-store-yet case cannot be counted (there is no store).
+- **Why:** `unknown_cursor()` is `pub(super)` and logs "cursor refused: unknown" itself.
+- **Where:** `src/store/result_store/store.rs`, `src/tools/paginate.rs`.
+- **Reversible:** yes.
+
+## 9.5: stored project label derived from the runtime directory
+- **What:** `project` is `redacted_path(<runtime_dir>/../..)`, the project root's path id as the logs print it. `SyncedProject` carries no root, so the root is the runtime directory's grandparent (`<root>/.planning/slugaudit`).
+- **Why:** avoids widening `SyncedProject`. If the runtime layout ever changes, `project_label` fails with an internal error rather than storing a wrong label.
+- **Where:** `src/tools/paginate.rs`.
+- **Reversible:** yes.
+
+## 9.5: three edits outside the listed files
+- **What:** (1) `src/tools/project_control.rs`: the `revision_id` doc comment told callers to pass it back as `expected_revision`; it is a surface string and would have left a stale field in `mcp_surface.json`. (2) `.planning/MODULE_MAP.md`: new row for `health_result_store.rs`. (3) `src/store/connection_guards.rs` carries a line exception (205 code lines).
+- **Why:** surface consistency; the common rule for new files; the documented 200-300 annotation.
+- **Where:** as listed.
+- **Reversible:** yes.
+
+## 9.5: found, not changed (outside the owned list)
+- **What:** `error_codes::stale_page_payload` and its test are now dead outside tests (no caller after the 9.3 migrations). `stale_revision` itself is still used by the CAS paths. The Lead may delete the helper and its test.
+- **Where:** `src/error_codes.rs`.
+- **Reversible:** n/a.
+
+## 9.5: INSTRUCTIONS paging paragraph drops the `limited_by` value list and `bytes_used`/`returned`
+- **What:** the size test caps INSTRUCTIONS at 5,500 characters and the tree was already at 5,485; the rewritten paragraph names the fields a caller acts on (`total`, `complete`, `cursor`, `page_bytes`, `limited_by`) and leaves the value list to the schema. The budget was not raised.
+- **Why:** budget; the schema carries the enumeration.
+- **Where:** `src/server.rs`.
+- **Reversible:** yes.
