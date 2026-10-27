@@ -107,8 +107,7 @@ pub struct ImportReport {
     /// for them. A non-zero value means the import is incomplete; `report`'s
     /// `completeness` carries the per-reason breakdown after the import.
     pub skipped: usize,
-    /// The `rev-N` id of the revision this import committed. Pass it back
-    /// as `expected_revision` when resuming a paged read.
+    /// The `rev-N` id of the revision this import committed.
     pub revision_id: String,
 }
 

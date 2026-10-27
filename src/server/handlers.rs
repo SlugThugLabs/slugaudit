@@ -48,13 +48,12 @@ impl SlugAuditServer {
          count read; a language missing there is unchecked, not absent), then call again with one `mechanic` id to get \
          file/line rows, optionally narrowed with `pattern` (a path GLOB, e.g. `src/auth/*`; \
          without `*`/`?` it is a substring match). Every response carries the shared `page` \
-         (`returned`, `total`, `complete`, `next_offset`, `page_bytes`, `bytes_used`, `limited_by`, \
+         (`returned`, `total`, `complete`, `cursor`, `page_bytes`, `bytes_used`, `limited_by`, \
          `revision_id`) plus the file denominators `files_total`/`files_covered`; there is no row \
          cap, so a page is cut only by your `limit` (omit it for everything that fits) and by the \
          page byte size (64 KiB by default; `page_bytes` raises it up to the server ceiling). To \
-         page, pass `offset` = `page.next_offset` together with `expected_revision` = \
-         `page.revision_id`: a changed index is then refused with `stale_revision` \
-         instead of silently skipping or repeating rows. For `mechanic`/`file`/`line` triples \
+         page, call again with only `page.cursor`: the pages are one stored answer from the \
+         first call, so edits made meanwhile never skip or repeat rows. For `mechanic`/`file`/`line` triples \
          with no per-row text, pass `mode: compact`; with only `path` it then enumerates every \
          mechanic in one response under the same completeness fields — the cheap way to see the \
          whole surface."
@@ -182,8 +181,7 @@ impl SlugAuditServer {
          querying the findings table directly through `query`, which returns every session's \
          rows. Supply `path` (any path in the active project) to select the database, and \
          optionally `file` to filter to a specific file. Results are byte-cut pages under the \
-         shared `page`; resume with `offset` = `page.next_offset` and `expected_revision` = \
-         `page.revision_id`."
+         shared `page`; call again with only `page.cursor` for the next page."
     )]
     async fn finding_read(
         &self,

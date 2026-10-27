@@ -46,15 +46,16 @@ const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — sym
     by hand → `dependency_edges` in a recursive CTE; notes for later → `finding`. grep and reading a \
     file you already know stay right for a literal lookup.\n\n\
     LINE NUMBERS: 1-based and inclusive everywhere.\n\n\
-    PAGING: `leads`, `query`, `structure` and `finding_read` return one `page`: `returned`, `total` \
-    (null when uncountable), `complete`, `next_offset` (null when done), `page_bytes` (64 KiB \
-    default; pass more, up to the server ceiling), `bytes_used`, `limited_by` (`none`, `limit`, \
-    `page_bytes`, `ceiling`, `match_cap`, `scan_window`, `time_budget`; more `page_bytes` lifts \
-    neither `ceiling` nor `match_cap`) and `revision_id`. Pages are cut by bytes, never a row cap. \
-    Resume with `offset` = `page.next_offset` and `expected_revision` = `page.revision_id`; a \
-    changed index is refused with `stale_revision` (restart from offset 0) instead of skipping or \
-    repeating rows. `structure` has a second cursor: when `complete` is false and `next_offset` is \
-    null, repeat with `start_after_file` = `next_start_after_file` and `offset` 0.\n\n\
+    PAGING: `leads`, `query`, `structure`, `finding_read` and `mechanic list` return a `page` \
+    (`total`, `complete`, `cursor`, `page_bytes`, `limited_by`) cut by bytes; raise `page_bytes` \
+    (64 KiB) up to the server ceiling. A `page.cursor` means more: repeat the call with only \
+    that `cursor` for the next page of the same stored answer (no sync, unaffected by later \
+    edits); none means done. `offset` and `expected_revision` no longer exist. A `partial` \
+    `page.completeness` names `resume_after_file`: resuming is a NEW request \
+    (`structure`: `start_after_file`) that syncs. `unknown_cursor` (bad, foreign, or from before \
+    a restart) and `result_expired` (reclaimed): ask again without it. `result_store_full`: \
+    finish open reads or narrow. `result_too_large`: add LIMIT or filters. \
+    `result_store_unavailable`: paging cannot run here.\n\n\
     LEADS: with only `path`, every mechanic with its row count, `files`, and `covers` (the languages \
     it read; a missing language was not checked, so its zero means nothing). Your registered \
     mechanics come first, then built-ins: calls to unwrap, expect, panic/unreachable, \

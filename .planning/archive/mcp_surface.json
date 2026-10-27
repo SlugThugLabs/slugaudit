@@ -157,13 +157,13 @@
         "destructiveHint": false,
         "readOnlyHint": true
       },
-      "description": "Retrieve findings scoped to the current agent session — only returns findings written by this session, never another session's conclusions. Safer than querying the findings table directly through `query`, which returns every session's rows. Supply `path` (any path in the active project) to select the database, and optionally `file` to filter to a specific file. Results are byte-cut pages under the shared `page`; resume with `offset` = `page.next_offset` and `expected_revision` = `page.revision_id`.",
+      "description": "Retrieve findings scoped to the current agent session — only returns findings written by this session, never another session's conclusions. Safer than querying the findings table directly through `query`, which returns every session's rows. Supply `path` (any path in the active project) to select the database, and optionally `file` to filter to a specific file. Results are byte-cut pages under the shared `page`; call again with only `page.cursor` for the next page.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
-          "expected_revision": {
+          "cursor": {
             "default": null,
-            "description": "Set to the previous page's `page.revision_id`; if the index changed since, the call is refused with `stale_revision`.",
+            "description": "The previous page's `page.cursor`; continues that stored result and ignores `path` and `file`",
             "type": [
               "string",
               "null"
@@ -177,26 +177,73 @@
               "null"
             ]
           },
-          "offset": {
-            "default": 0,
-            "description": "Findings to skip when paging; use the response's page.next_offset",
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          },
           "path": {
-            "description": "Any path inside the active project",
-            "type": "string"
+            "default": null,
+            "description": "Any path inside the active project; required without a cursor",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
-        "required": [
-          "path"
-        ],
         "type": "object"
       },
       "name": "finding_read",
       "outputSchema": {
         "$defs": {
+          "Completeness": {
+            "description": "Whether the scan behind a stored result covered everything it set out to.\nIt is written once with the result, so every page of that result reports\nthe same value, however many calls the caller takes to read it.",
+            "oneOf": [
+              {
+                "const": "complete",
+                "description": "Every file or row the request selects was scanned.",
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The scan stopped early (`structure` and custom-mechanic scans, which\nrun under a file window and the call deadline). Continuing is a new\nrequest that syncs, starting after `resume_after_file`.",
+                "properties": {
+                  "partial": {
+                    "properties": {
+                      "files_scanned": {
+                        "description": "Files scanned before the scan stopped.",
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "files_total": {
+                        "description": "Files the request selects.",
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "limited_by": {
+                        "$ref": "#/$defs/PageLimit",
+                        "description": "The bound that stopped the scan (`scan_window` or `time_budget`)."
+                      },
+                      "resume_after_file": {
+                        "description": "The last file fully scanned; the new request resumes after it.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "limited_by",
+                      "files_scanned",
+                      "files_total"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "partial"
+                ],
+                "type": "object"
+              }
+            ]
+          },
           "FindingReadEntry": {
             "description": "One finding row, scoped to the current agent session. Every field is\nexactly what the `finding` tool stored — SlugAudit never generates\nany of this text.",
             "properties": {
@@ -266,7 +313,7 @@
             "type": "object"
           },
           "Page": {
-            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning. To page: while `complete` is false, repeat\nthe call with `offset` = `next_offset` and `expected_revision` =\n`revision_id`. `structure` alone has a second cursor: when `next_offset`\nis null and `complete` is false, use its `next_start_after_file`.",
+            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning. To page: while `cursor` is present, repeat\nthe call with only that `cursor` (plus `page_bytes`, and `limit` on\n`leads`, to resize the page); it names a result stored when the first call\nran, so the rows do not move, `revision_id` is that of the first call, and\nno `path` is needed. `cursor` is absent exactly when `complete` is true.\n`structure` alone has a second step after the last page: when `completeness`\nis `partial`, make a new request with `start_after_file` =\n`next_start_after_file`.",
             "properties": {
               "bytes_used": {
                 "description": "Serialized JSON bytes of this page's items. The first item is always\nreturned so paging advances, so this exceeds `page_bytes` only when\nthat item alone is larger: `leads` sets `oversized_row`, `query` clips\ncells (`clipped_cells`, `non_finite_cells`), `finding_read` sets the\nrow's `detail_clipped`; `structure` has no flag.",
@@ -278,18 +325,27 @@
                 "description": "True when nothing remains to page. For `structure` it also means no\nscan window remains (no `next_start_after_file`).",
                 "type": "boolean"
               },
+              "completeness": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Completeness"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Whether the scan behind the stored result covered everything; omitted\nwhen the tool reports no scan."
+              },
+              "cursor": {
+                "description": "The token for the next page, copied exactly into the next call's\n`cursor`. Omitted when nothing remains (`complete`). A cursor does not\nsurvive a server restart.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "limited_by": {
                 "$ref": "#/$defs/PageLimit",
                 "description": "What cut this page; `none` exactly when the result ended."
-              },
-              "next_offset": {
-                "description": "Always present; null when nothing remains to page (`complete`), and on\n`structure` also when only a new scan window remains. Otherwise pass it\nas `offset` on the next call.",
-                "format": "uint",
-                "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
               },
               "page_bytes": {
                 "description": "The byte budget that applied to this page's items, in serialized JSON\nbytes: the request's `page_bytes` or the server default\n(`default_page_bytes`, 64 KiB unless configured), after the clamp to\nthe ceiling `max_query_response_bytes`. `limited_by` = `ceiling` says\nthe clamp acted on a cut page.",
@@ -304,11 +360,11 @@
                 "type": "integer"
               },
               "revision_id": {
-                "description": "The index revision every part of this response was read from. Pass it\nas `expected_revision` when resuming.",
+                "description": "The index revision every part of this response was read from: that of\nthe call that made the result, on every page.",
                 "type": "string"
               },
               "total": {
-                "description": "Items the whole request selects, ignoring `offset` and the page cut;\nnever an estimate. Always present; null when the tool cannot count it\n(always on `structure`; on `query` when counting ran out of budget).\nWhat it counts is on each tool's `page` property.",
+                "description": "Items the whole request selects, ignoring the page cut;\nnever an estimate. Always present; null when the tool cannot count it\n(always on `structure`; on `query` when counting ran out of budget).\nWhat it counts is on each tool's `page` property.",
                 "format": "uint64",
                 "minimum": 0,
                 "type": [
@@ -347,22 +403,22 @@
               },
               {
                 "const": "ceiling",
-                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `next_offset`.",
+                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `cursor`.",
                 "type": "string"
               },
               {
                 "const": "match_cap",
-                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `next_offset` continues. A larger\n`page_bytes` does not lift it.",
+                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `cursor` continues. A larger\n`page_bytes` does not lift it.",
                 "type": "string"
               },
               {
                 "const": "scan_window",
-                "description": "`structure` only: the multi-file scan window ended before the\nmatching files did (`files_not_scanned` > 0). There is no\n`next_offset`; continue with `start_after_file` =\n`next_start_after_file` and `offset` 0.",
+                "description": "`structure` only: the multi-file scan window ended before the\nmatching files did (`files_not_scanned` > 0). Read the stored result to\nits end with `cursor`, then make a new request with `start_after_file`\n= `next_start_after_file`.",
                 "type": "string"
               },
               {
                 "const": "time_budget",
-                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. There is no `next_offset`; continue with\n`start_after_file` = `next_start_after_file` (that file) and `offset`\n0.",
+                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. Read the stored result to its end with\n`cursor`, then make a new request with `start_after_file` =\n`next_start_after_file` (that file).",
                 "type": "string"
               }
             ]
@@ -379,7 +435,7 @@
           },
           "page": {
             "$ref": "#/$defs/Page",
-            "description": "Paging for `findings`; `total` counts this session's findings under\nthe `file` filter. `page_bytes` is `default_page_bytes` clamped to the\nceiling (no request override). Page on with the same `file` filter."
+            "description": "Paging for `findings`; `total` counts this session's findings under\nthe `file` filter, as they were when the first page was read.\n`page_bytes` is `default_page_bytes` clamped to the ceiling (no request\noverride). Page on by repeating the call with `page.cursor`."
           }
         },
         "required": [
@@ -458,6 +514,14 @@
                 "additionalProperties": true,
                 "description": "Mechanic scan cache counters.",
                 "type": "object"
+              },
+              "result_store": {
+                "additionalProperties": true,
+                "description": "Paged-result store: results and bytes by class, budget, reclaims,\nrefusals, refused cursors and the startup sweep. Null until the first\npaged result is made in this process.",
+                "type": [
+                  "object",
+                  "null"
+                ]
               },
               "server": {
                 "additionalProperties": true,
@@ -560,7 +624,7 @@
           },
           "detail": {
             "$ref": "#/$defs/HealthDetail",
-            "description": "Operator detail, present only with `verbose: true`; absent otherwise.\nKeys: `watcher`, `database`, `database_read_failed`, `server`,\n`system_memory`, `mechanic_cache`. Their inner fields are\noperator-facing and listed in docs/TROUBLESHOOTING.md."
+            "description": "Operator detail, present only with `verbose: true`; absent otherwise.\nKeys: `watcher`, `database`, `database_read_failed`, `server`,\n`system_memory`, `mechanic_cache`, `result_store`. Their inner fields are\noperator-facing and listed in docs/TROUBLESHOOTING.md."
           },
           "phase": {
             "$ref": "#/$defs/HealthPhase",
@@ -597,7 +661,7 @@
         "destructiveHint": false,
         "readOnlyHint": true
       },
-      "description": "Want somewhere to start? Mechanical facts extracted from the index — call sites by callee name (unwrap, expect, panic, todo, unimplemented, assert), diagnostics, TODO/FIXME/HACK comment markers, and credential-shaped files. Nothing here is judged, ranked, scored, or ordered by importance: every item is a fact, and deciding which of them matter is entirely your call. Call with only `path` to get every mechanic with its row count, its distinct-file count (`files`) and `covers` (the languages that count read; a language missing there is unchecked, not absent), then call again with one `mechanic` id to get file/line rows, optionally narrowed with `pattern` (a path GLOB, e.g. `src/auth/*`; without `*`/`?` it is a substring match). Every response carries the shared `page` (`returned`, `total`, `complete`, `next_offset`, `page_bytes`, `bytes_used`, `limited_by`, `revision_id`) plus the file denominators `files_total`/`files_covered`; there is no row cap, so a page is cut only by your `limit` (omit it for everything that fits) and by the page byte size (64 KiB by default; `page_bytes` raises it up to the server ceiling). To page, pass `offset` = `page.next_offset` together with `expected_revision` = `page.revision_id`: a changed index is then refused with `stale_revision` instead of silently skipping or repeating rows. For `mechanic`/`file`/`line` triples with no per-row text, pass `mode: compact`; with only `path` it then enumerates every mechanic in one response under the same completeness fields — the cheap way to see the whole surface.",
+      "description": "Want somewhere to start? Mechanical facts extracted from the index — call sites by callee name (unwrap, expect, panic, todo, unimplemented, assert), diagnostics, TODO/FIXME/HACK comment markers, and credential-shaped files. Nothing here is judged, ranked, scored, or ordered by importance: every item is a fact, and deciding which of them matter is entirely your call. Call with only `path` to get every mechanic with its row count, its distinct-file count (`files`) and `covers` (the languages that count read; a language missing there is unchecked, not absent), then call again with one `mechanic` id to get file/line rows, optionally narrowed with `pattern` (a path GLOB, e.g. `src/auth/*`; without `*`/`?` it is a substring match). Every response carries the shared `page` (`returned`, `total`, `complete`, `cursor`, `page_bytes`, `bytes_used`, `limited_by`, `revision_id`) plus the file denominators `files_total`/`files_covered`; there is no row cap, so a page is cut only by your `limit` (omit it for everything that fits) and by the page byte size (64 KiB by default; `page_bytes` raises it up to the server ceiling). To page, call again with only `page.cursor`: the pages are one stored answer from the first call, so edits made meanwhile never skip or repeat rows. For `mechanic`/`file`/`line` triples with no per-row text, pass `mode: compact`; with only `path` it then enumerates every mechanic in one response under the same completeness fields — the cheap way to see the whole surface.",
       "inputSchema": {
         "$defs": {
           "LeadMode": {
@@ -618,9 +682,9 @@
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
-          "expected_revision": {
+          "cursor": {
             "default": null,
-            "description": "Set to the previous page's `page.revision_id`; if the index changed since, the call is refused with `stale_revision`.",
+            "description": "The previous page's `page.cursor`, copied exactly; omit for a new request",
             "type": [
               "string",
               "null"
@@ -648,16 +712,6 @@
             "$ref": "#/$defs/LeadMode",
             "description": "Row shape: `full` (default) carries `detail`; `compact` drops it"
           },
-          "offset": {
-            "default": null,
-            "description": "Rows to skip when paging",
-            "format": "uint",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
           "page_bytes": {
             "default": null,
             "description": "Page size in bytes of serialized rows; omit for the server default, clamped to the ceiling (reported)",
@@ -669,8 +723,12 @@
             ]
           },
           "path": {
-            "description": "Any path inside the active project, used to select the database",
-            "type": "string"
+            "default": null,
+            "description": "Any path inside the active project, used to select the database; required unless `cursor` is given",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "pattern": {
             "default": null,
@@ -681,9 +739,6 @@
             ]
           }
         },
-        "required": [
-          "path"
-        ],
         "type": "object"
       },
       "name": "leads",
@@ -712,6 +767,59 @@
               "line"
             ],
             "type": "object"
+          },
+          "Completeness": {
+            "description": "Whether the scan behind a stored result covered everything it set out to.\nIt is written once with the result, so every page of that result reports\nthe same value, however many calls the caller takes to read it.",
+            "oneOf": [
+              {
+                "const": "complete",
+                "description": "Every file or row the request selects was scanned.",
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The scan stopped early (`structure` and custom-mechanic scans, which\nrun under a file window and the call deadline). Continuing is a new\nrequest that syncs, starting after `resume_after_file`.",
+                "properties": {
+                  "partial": {
+                    "properties": {
+                      "files_scanned": {
+                        "description": "Files scanned before the scan stopped.",
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "files_total": {
+                        "description": "Files the request selects.",
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "limited_by": {
+                        "$ref": "#/$defs/PageLimit",
+                        "description": "The bound that stopped the scan (`scan_window` or `time_budget`)."
+                      },
+                      "resume_after_file": {
+                        "description": "The last file fully scanned; the new request resumes after it.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "limited_by",
+                      "files_scanned",
+                      "files_total"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "partial"
+                ],
+                "type": "object"
+              }
+            ]
           },
           "FileCount": {
             "description": "One file's share of a page, in first-appearance order.",
@@ -846,7 +954,7 @@
             ]
           },
           "Page": {
-            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning. To page: while `complete` is false, repeat\nthe call with `offset` = `next_offset` and `expected_revision` =\n`revision_id`. `structure` alone has a second cursor: when `next_offset`\nis null and `complete` is false, use its `next_start_after_file`.",
+            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning. To page: while `cursor` is present, repeat\nthe call with only that `cursor` (plus `page_bytes`, and `limit` on\n`leads`, to resize the page); it names a result stored when the first call\nran, so the rows do not move, `revision_id` is that of the first call, and\nno `path` is needed. `cursor` is absent exactly when `complete` is true.\n`structure` alone has a second step after the last page: when `completeness`\nis `partial`, make a new request with `start_after_file` =\n`next_start_after_file`.",
             "properties": {
               "bytes_used": {
                 "description": "Serialized JSON bytes of this page's items. The first item is always\nreturned so paging advances, so this exceeds `page_bytes` only when\nthat item alone is larger: `leads` sets `oversized_row`, `query` clips\ncells (`clipped_cells`, `non_finite_cells`), `finding_read` sets the\nrow's `detail_clipped`; `structure` has no flag.",
@@ -858,18 +966,27 @@
                 "description": "True when nothing remains to page. For `structure` it also means no\nscan window remains (no `next_start_after_file`).",
                 "type": "boolean"
               },
+              "completeness": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Completeness"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Whether the scan behind the stored result covered everything; omitted\nwhen the tool reports no scan."
+              },
+              "cursor": {
+                "description": "The token for the next page, copied exactly into the next call's\n`cursor`. Omitted when nothing remains (`complete`). A cursor does not\nsurvive a server restart.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "limited_by": {
                 "$ref": "#/$defs/PageLimit",
                 "description": "What cut this page; `none` exactly when the result ended."
-              },
-              "next_offset": {
-                "description": "Always present; null when nothing remains to page (`complete`), and on\n`structure` also when only a new scan window remains. Otherwise pass it\nas `offset` on the next call.",
-                "format": "uint",
-                "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
               },
               "page_bytes": {
                 "description": "The byte budget that applied to this page's items, in serialized JSON\nbytes: the request's `page_bytes` or the server default\n(`default_page_bytes`, 64 KiB unless configured), after the clamp to\nthe ceiling `max_query_response_bytes`. `limited_by` = `ceiling` says\nthe clamp acted on a cut page.",
@@ -884,11 +1001,11 @@
                 "type": "integer"
               },
               "revision_id": {
-                "description": "The index revision every part of this response was read from. Pass it\nas `expected_revision` when resuming.",
+                "description": "The index revision every part of this response was read from: that of\nthe call that made the result, on every page.",
                 "type": "string"
               },
               "total": {
-                "description": "Items the whole request selects, ignoring `offset` and the page cut;\nnever an estimate. Always present; null when the tool cannot count it\n(always on `structure`; on `query` when counting ran out of budget).\nWhat it counts is on each tool's `page` property.",
+                "description": "Items the whole request selects, ignoring the page cut;\nnever an estimate. Always present; null when the tool cannot count it\n(always on `structure`; on `query` when counting ran out of budget).\nWhat it counts is on each tool's `page` property.",
                 "format": "uint64",
                 "minimum": 0,
                 "type": [
@@ -927,22 +1044,22 @@
               },
               {
                 "const": "ceiling",
-                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `next_offset`.",
+                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `cursor`.",
                 "type": "string"
               },
               {
                 "const": "match_cap",
-                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `next_offset` continues. A larger\n`page_bytes` does not lift it.",
+                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `cursor` continues. A larger\n`page_bytes` does not lift it.",
                 "type": "string"
               },
               {
                 "const": "scan_window",
-                "description": "`structure` only: the multi-file scan window ended before the\nmatching files did (`files_not_scanned` > 0). There is no\n`next_offset`; continue with `start_after_file` =\n`next_start_after_file` and `offset` 0.",
+                "description": "`structure` only: the multi-file scan window ended before the\nmatching files did (`files_not_scanned` > 0). Read the stored result to\nits end with `cursor`, then make a new request with `start_after_file`\n= `next_start_after_file`.",
                 "type": "string"
               },
               {
                 "const": "time_budget",
-                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. There is no `next_offset`; continue with\n`start_after_file` = `next_start_after_file` (that file) and `offset`\n0.",
+                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. Read the stored result to its end with\n`cursor`, then make a new request with `start_after_file` =\n`next_start_after_file` (that file).",
                 "type": "string"
               }
             ]
@@ -951,7 +1068,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
           "files_covered": {
-            "description": "Distinct files represented in rows `0..offset + page.returned` of the\nscope. Cumulative for a sweep at one revision: rows are read in a\nfixed order — within a single mechanic, by path then line; for a\ncompact call with no mechanic, by the `mechanic_counts` order then\npath then line — so a file's rows for one mechanic are contiguous,\nbut a file with rows under several mechanics appears in several\ngroups and can span several compact pages. It is still counted once.\n`files_total - files_covered` is what is left.",
+            "description": "Distinct files represented in the rows of the scope up to the end of\nthis page. Cumulative for a sweep at one revision: rows are read in a\nfixed order — within a single mechanic, by path then line; for a\ncompact call with no mechanic, by the `mechanic_counts` order then\npath then line — so a file's rows for one mechanic are contiguous,\nbut a file with rows under several mechanics appears in several\ngroups and can span several compact pages. It is still counted once.\n`files_total - files_covered` is what is left.",
             "format": "int64",
             "type": "integer"
           },
@@ -966,7 +1083,7 @@
             "type": "integer"
           },
           "mechanic_counts": {
-            "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit`/`offset`, and carry no\nordering by importance: session entries first (oldest first), then\nproject_config entries (file order), then the built-ins in their fixed\ndeclaration order. A call naming one `mechanic` scans only that\nregistered entry (none for a built-in), so the other registered\nentries are not listed then; call with no `mechanic` to count them all.",
+            "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit` (unless `page.completeness`\nis `partial`: a registered mechanic's scan the call deadline stopped\ncounts only the files it read), and carry no\nordering by importance: session entries first (oldest first), then\nproject_config entries (file order), then the built-ins in their fixed\ndeclaration order. A call naming one `mechanic` scans only that\nregistered entry (none for a built-in), so the other registered\nentries are not listed then; call with no `mechanic` to count them all.",
             "items": {
               "$ref": "#/$defs/MechanicCount"
             },
@@ -1046,7 +1163,15 @@
         "properties": {
           "action": {
             "$ref": "#/$defs/MechanicAction",
-            "description": "`add`, `remove`, or `list`."
+            "description": "`add`, `remove`, or `list`. Ignored when `cursor` is given: a cursor\nonly ever continues a stored `list`, and never registers or removes\nanything."
+          },
+          "cursor": {
+            "default": null,
+            "description": "`list` only: the `page.cursor` of the previous page, copied exactly.\nIt continues the list as it was when the first page was read, without\na `path`; every other field except `page_bytes` is ignored. To page\nthe first count `add` returns, use that response's own `page.cursor`\nwith `leads`.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
             "default": null,
@@ -1094,7 +1219,7 @@
           },
           "page_bytes": {
             "default": null,
-            "description": "`add`: first page size in serialized JSON bytes, as `leads`'\n`page_bytes`.",
+            "description": "`add`: first page size in serialized JSON bytes, as `leads`'\n`page_bytes`. `list`: the size of each page of listings.",
             "format": "uint",
             "minimum": 0,
             "type": [
@@ -1103,8 +1228,12 @@
             ]
           },
           "path": {
-            "description": "Any path inside the active project.",
-            "type": "string"
+            "default": null,
+            "description": "Any path inside the active project. Required unless `cursor` is given.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "persist": {
             "default": false,
@@ -1121,7 +1250,6 @@
           }
         },
         "required": [
-          "path",
           "action"
         ],
         "type": "object"
@@ -1152,6 +1280,59 @@
               "line"
             ],
             "type": "object"
+          },
+          "Completeness": {
+            "description": "Whether the scan behind a stored result covered everything it set out to.\nIt is written once with the result, so every page of that result reports\nthe same value, however many calls the caller takes to read it.",
+            "oneOf": [
+              {
+                "const": "complete",
+                "description": "Every file or row the request selects was scanned.",
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The scan stopped early (`structure` and custom-mechanic scans, which\nrun under a file window and the call deadline). Continuing is a new\nrequest that syncs, starting after `resume_after_file`.",
+                "properties": {
+                  "partial": {
+                    "properties": {
+                      "files_scanned": {
+                        "description": "Files scanned before the scan stopped.",
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "files_total": {
+                        "description": "Files the request selects.",
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "limited_by": {
+                        "$ref": "#/$defs/PageLimit",
+                        "description": "The bound that stopped the scan (`scan_window` or `time_budget`)."
+                      },
+                      "resume_after_file": {
+                        "description": "The last file fully scanned; the new request resumes after it.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "limited_by",
+                      "files_scanned",
+                      "files_total"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "partial"
+                ],
+                "type": "object"
+              }
+            ]
           },
           "FileCount": {
             "description": "One file's share of a page, in first-appearance order.",
@@ -1258,7 +1439,7 @@
             "description": "One leads call: complete counts, the page's rows, and the paging/budget\ntruth that makes them quotable as-is.",
             "properties": {
               "files_covered": {
-                "description": "Distinct files represented in rows `0..offset + page.returned` of the\nscope. Cumulative for a sweep at one revision: rows are read in a\nfixed order — within a single mechanic, by path then line; for a\ncompact call with no mechanic, by the `mechanic_counts` order then\npath then line — so a file's rows for one mechanic are contiguous,\nbut a file with rows under several mechanics appears in several\ngroups and can span several compact pages. It is still counted once.\n`files_total - files_covered` is what is left.",
+                "description": "Distinct files represented in the rows of the scope up to the end of\nthis page. Cumulative for a sweep at one revision: rows are read in a\nfixed order — within a single mechanic, by path then line; for a\ncompact call with no mechanic, by the `mechanic_counts` order then\npath then line — so a file's rows for one mechanic are contiguous,\nbut a file with rows under several mechanics appears in several\ngroups and can span several compact pages. It is still counted once.\n`files_total - files_covered` is what is left.",
                 "format": "int64",
                 "type": "integer"
               },
@@ -1273,7 +1454,7 @@
                 "type": "integer"
               },
               "mechanic_counts": {
-                "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit`/`offset`, and carry no\nordering by importance: session entries first (oldest first), then\nproject_config entries (file order), then the built-ins in their fixed\ndeclaration order. A call naming one `mechanic` scans only that\nregistered entry (none for a built-in), so the other registered\nentries are not listed then; call with no `mechanic` to count them all.",
+                "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit` (unless `page.completeness`\nis `partial`: a registered mechanic's scan the call deadline stopped\ncounts only the files it read), and carry no\nordering by importance: session entries first (oldest first), then\nproject_config entries (file order), then the built-ins in their fixed\ndeclaration order. A call naming one `mechanic` scans only that\nregistered entry (none for a built-in), so the other registered\nentries are not listed then; call with no `mechanic` to count them all.",
                 "items": {
                   "$ref": "#/$defs/MechanicCount"
                 },
@@ -1443,7 +1624,7 @@
             ]
           },
           "Page": {
-            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning. To page: while `complete` is false, repeat\nthe call with `offset` = `next_offset` and `expected_revision` =\n`revision_id`. `structure` alone has a second cursor: when `next_offset`\nis null and `complete` is false, use its `next_start_after_file`.",
+            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning. To page: while `cursor` is present, repeat\nthe call with only that `cursor` (plus `page_bytes`, and `limit` on\n`leads`, to resize the page); it names a result stored when the first call\nran, so the rows do not move, `revision_id` is that of the first call, and\nno `path` is needed. `cursor` is absent exactly when `complete` is true.\n`structure` alone has a second step after the last page: when `completeness`\nis `partial`, make a new request with `start_after_file` =\n`next_start_after_file`.",
             "properties": {
               "bytes_used": {
                 "description": "Serialized JSON bytes of this page's items. The first item is always\nreturned so paging advances, so this exceeds `page_bytes` only when\nthat item alone is larger: `leads` sets `oversized_row`, `query` clips\ncells (`clipped_cells`, `non_finite_cells`), `finding_read` sets the\nrow's `detail_clipped`; `structure` has no flag.",
@@ -1455,18 +1636,27 @@
                 "description": "True when nothing remains to page. For `structure` it also means no\nscan window remains (no `next_start_after_file`).",
                 "type": "boolean"
               },
+              "completeness": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Completeness"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Whether the scan behind the stored result covered everything; omitted\nwhen the tool reports no scan."
+              },
+              "cursor": {
+                "description": "The token for the next page, copied exactly into the next call's\n`cursor`. Omitted when nothing remains (`complete`). A cursor does not\nsurvive a server restart.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "limited_by": {
                 "$ref": "#/$defs/PageLimit",
                 "description": "What cut this page; `none` exactly when the result ended."
-              },
-              "next_offset": {
-                "description": "Always present; null when nothing remains to page (`complete`), and on\n`structure` also when only a new scan window remains. Otherwise pass it\nas `offset` on the next call.",
-                "format": "uint",
-                "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
               },
               "page_bytes": {
                 "description": "The byte budget that applied to this page's items, in serialized JSON\nbytes: the request's `page_bytes` or the server default\n(`default_page_bytes`, 64 KiB unless configured), after the clamp to\nthe ceiling `max_query_response_bytes`. `limited_by` = `ceiling` says\nthe clamp acted on a cut page.",
@@ -1481,11 +1671,11 @@
                 "type": "integer"
               },
               "revision_id": {
-                "description": "The index revision every part of this response was read from. Pass it\nas `expected_revision` when resuming.",
+                "description": "The index revision every part of this response was read from: that of\nthe call that made the result, on every page.",
                 "type": "string"
               },
               "total": {
-                "description": "Items the whole request selects, ignoring `offset` and the page cut;\nnever an estimate. Always present; null when the tool cannot count it\n(always on `structure`; on `query` when counting ran out of budget).\nWhat it counts is on each tool's `page` property.",
+                "description": "Items the whole request selects, ignoring the page cut;\nnever an estimate. Always present; null when the tool cannot count it\n(always on `structure`; on `query` when counting ran out of budget).\nWhat it counts is on each tool's `page` property.",
                 "format": "uint64",
                 "minimum": 0,
                 "type": [
@@ -1524,22 +1714,22 @@
               },
               {
                 "const": "ceiling",
-                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `next_offset`.",
+                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `cursor`.",
                 "type": "string"
               },
               {
                 "const": "match_cap",
-                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `next_offset` continues. A larger\n`page_bytes` does not lift it.",
+                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `cursor` continues. A larger\n`page_bytes` does not lift it.",
                 "type": "string"
               },
               {
                 "const": "scan_window",
-                "description": "`structure` only: the multi-file scan window ended before the\nmatching files did (`files_not_scanned` > 0). There is no\n`next_offset`; continue with `start_after_file` =\n`next_start_after_file` and `offset` 0.",
+                "description": "`structure` only: the multi-file scan window ended before the\nmatching files did (`files_not_scanned` > 0). Read the stored result to\nits end with `cursor`, then make a new request with `start_after_file`\n= `next_start_after_file`.",
                 "type": "string"
               },
               {
                 "const": "time_budget",
-                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. There is no `next_offset`; continue with\n`start_after_file` = `next_start_after_file` (that file) and `offset`\n0.",
+                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. Read the stored result to its end with\n`cursor`, then make a new request with `start_after_file` =\n`next_start_after_file` (that file).",
                 "type": "string"
               }
             ]
@@ -1560,7 +1750,7 @@
                 "type": "null"
               }
             ],
-            "description": "`add` only: the response `leads` returns for `mechanic` = `id` at the\ncurrent revision — complete counts (`mechanic_counts`: the built-ins\nand the new entry with its `count`, `files` and `covers`), the first\npage of `rows` under the shared `page` contract (`page.total`,\n`page.next_offset`, `page.revision_id`), `files_total`,\n`files_covered` and `files_not_parsed`. As in `leads`, `files_total`\nis the number of files holding at least one row, not the files read\n(those are `covers` and the index): a query with no match has\n`page.total`, `files_total` and `files_covered` all `0`. Page on with\n`leads`, passing `page.next_offset` and `page.revision_id`."
+            "description": "`add` only: the response `leads` returns for `mechanic` = `id` at the\ncurrent revision — complete counts (`mechanic_counts`: the built-ins\nand the new entry with its `count`, `files` and `covers`), the first\npage of `rows` under the shared `page` contract (`page.total`,\n`page.cursor`, `page.revision_id`), `files_total`,\n`files_covered` and `files_not_parsed`. As in `leads`, `files_total`\nis the number of files holding at least one row, not the files read\n(those are `covers` and the index): a query with no match has\n`page.total`, `files_total` and `files_covered` all `0`. Page on with\n`leads`, passing `page.cursor`."
           },
           "id": {
             "description": "`add`/`remove`: the id the action applied to; `null` for a `remove`\nby `index` whose entry had no string id.",
@@ -1588,6 +1778,17 @@
             "format": "uint",
             "minimum": 0,
             "type": "integer"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`list` only: the shared paging block for `mechanics`. While\n`page.cursor` is present, repeat the call with only that `cursor`;\nevery page reports the `revision_id`, `invalid` and `mechanics`\norder of page one. `add` and `remove` return the whole catalogue and\nno `page`."
           },
           "source": {
             "anyOf": [
@@ -1733,7 +1934,7 @@
                 "type": "integer"
               },
               "revision_id": {
-                "description": "The `rev-N` id of the revision this import committed. Pass it back\nas `expected_revision` when resuming a paged read.",
+                "description": "The `rev-N` id of the revision this import committed.",
                 "type": "string"
               },
               "skipped": {
@@ -1810,24 +2011,17 @@
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
-          "expected_revision": {
+          "cursor": {
             "default": null,
-            "description": "Set to the previous page's `page.revision_id`; if the index changed\nsince, the call is refused with `stale_revision`.",
+            "description": "The previous page's `page.cursor`, copied exactly. It continues the\nstored result of the call that returned it, so `path` and `sql` are\nnot needed (and are ignored). Omit it to run a new query.",
             "type": [
               "string",
               "null"
             ]
           },
-          "offset": {
-            "default": 0,
-            "description": "Number of matching rows to skip when paging through a result.\nPass the previous response's `page.next_offset`; valid only while\n`page.revision_id` stays the same across pages.",
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          },
           "page_bytes": {
             "default": null,
-            "description": "Page size in serialized JSON bytes. Omit it for the server default\n(64 KiB unless configured otherwise; the response's `page.page_bytes`\nsays what applied). A larger value returns a larger page, up to the\nhard ceiling `max_query_response_bytes`: a value above the ceiling is\nclamped, and a page the ceiling cut reports `page.limited_by` =\n`ceiling`. Pages are\ncut on a row boundary; when the first row alone is larger than the page,\nits TEXT/BLOB cells are clipped to fit and listed in `clipped_cells`\nwith the `substr` expression that continues each one. Raise\n`page_bytes` to avoid clipping.",
+            "description": "Page size in serialized JSON bytes. Omit it for the server default\n(64 KiB unless configured otherwise; the response's `page.page_bytes`\nsays what applied). A larger value returns a larger page, up to the\nhard ceiling `max_query_response_bytes`: a value above the ceiling is\nclamped, and a page the ceiling cut reports `page.limited_by` =\n`ceiling`. Pages are\ncut on a row boundary; when the first row alone is larger than the page,\nits TEXT/BLOB cells are clipped to fit and listed in `clipped_cells`\nwith the `substr` expression that continues each one. Raise\n`page_bytes` to avoid clipping. May change between pages.",
             "format": "uint",
             "minimum": 0,
             "type": [
@@ -1836,18 +2030,19 @@
             ]
           },
           "path": {
-            "description": "Any path inside the active project.",
-            "type": "string"
+            "default": null,
+            "description": "Any path inside the active project. Required unless `cursor` is given.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "sql": {
-            "description": "Read-only SQL against the project's own database — arbitrary joins,\nCTEs, and window functions are fine. Only SELECT is accepted: the\nstatement is wrapped in a subquery, so writes and other statement\nforms (PRAGMA, EXPLAIN, VACUUM, ...) are rejected by the wrapper.\nThere is no keyword blocklist or table allowlist, and the connection\nitself is read-only as a second boundary. Its authorizer refuses\nPRAGMA, ATTACH and DETACH; of the `pragma_*` table-valued functions\nonly schema introspection works (`pragma_table_info`,\n`pragma_table_xinfo`, `pragma_table_list`, `pragma_index_list`,\n`pragma_index_info`, `pragma_index_xinfo`, `pragma_foreign_key_list`).",
+            "default": "",
+            "description": "Read-only SQL against the project's own database — arbitrary joins,\nCTEs, and window functions are fine. Only SELECT is accepted: the\nstatement is wrapped in a subquery, so writes and other statement\nforms (PRAGMA, EXPLAIN, VACUUM, ...) are rejected by the wrapper.\nThere is no keyword blocklist or table allowlist, and the connection\nitself is read-only as a second boundary. Its authorizer refuses\nPRAGMA, ATTACH and DETACH; of the `pragma_*` table-valued functions\nonly schema introspection works (`pragma_table_info`,\n`pragma_table_xinfo`, `pragma_table_list`, `pragma_index_list`,\n`pragma_index_info`, `pragma_index_xinfo`, `pragma_foreign_key_list`).\nRequired unless `cursor` is given; ignored with a `cursor`.",
             "type": "string"
           }
         },
-        "required": [
-          "path",
-          "sql"
-        ],
         "type": "object"
       },
       "name": "query",
@@ -1881,7 +2076,7 @@
                 "type": "integer"
               },
               "row": {
-                "description": "Zero-based index of the row in the whole result (`offset` plus its\nposition on the page), the same numbering `offset` uses.",
+                "description": "Zero-based index of the row in the whole result.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -1909,6 +2104,59 @@
             ],
             "type": "object"
           },
+          "Completeness": {
+            "description": "Whether the scan behind a stored result covered everything it set out to.\nIt is written once with the result, so every page of that result reports\nthe same value, however many calls the caller takes to read it.",
+            "oneOf": [
+              {
+                "const": "complete",
+                "description": "Every file or row the request selects was scanned.",
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The scan stopped early (`structure` and custom-mechanic scans, which\nrun under a file window and the call deadline). Continuing is a new\nrequest that syncs, starting after `resume_after_file`.",
+                "properties": {
+                  "partial": {
+                    "properties": {
+                      "files_scanned": {
+                        "description": "Files scanned before the scan stopped.",
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "files_total": {
+                        "description": "Files the request selects.",
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "limited_by": {
+                        "$ref": "#/$defs/PageLimit",
+                        "description": "The bound that stopped the scan (`scan_window` or `time_budget`)."
+                      },
+                      "resume_after_file": {
+                        "description": "The last file fully scanned; the new request resumes after it.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "limited_by",
+                      "files_scanned",
+                      "files_total"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "partial"
+                ],
+                "type": "object"
+              }
+            ]
+          },
           "NonFiniteCell": {
             "description": "One REAL cell whose value JSON cannot carry (an infinity; SQLite turns NaN\ninto NULL itself). JSON has no such number, so the cell is `null` in `rows`;\nthis entry says it was not SQL NULL and what it really was.",
             "properties": {
@@ -1917,7 +2165,7 @@
                 "type": "string"
               },
               "row": {
-                "description": "Zero-based index of the row in the whole result (`offset` plus its\nposition on the page), the same numbering `offset` uses.",
+                "description": "Zero-based index of the row in the whole result.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -1935,7 +2183,7 @@
             "type": "object"
           },
           "Page": {
-            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning. To page: while `complete` is false, repeat\nthe call with `offset` = `next_offset` and `expected_revision` =\n`revision_id`. `structure` alone has a second cursor: when `next_offset`\nis null and `complete` is false, use its `next_start_after_file`.",
+            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning. To page: while `cursor` is present, repeat\nthe call with only that `cursor` (plus `page_bytes`, and `limit` on\n`leads`, to resize the page); it names a result stored when the first call\nran, so the rows do not move, `revision_id` is that of the first call, and\nno `path` is needed. `cursor` is absent exactly when `complete` is true.\n`structure` alone has a second step after the last page: when `completeness`\nis `partial`, make a new request with `start_after_file` =\n`next_start_after_file`.",
             "properties": {
               "bytes_used": {
                 "description": "Serialized JSON bytes of this page's items. The first item is always\nreturned so paging advances, so this exceeds `page_bytes` only when\nthat item alone is larger: `leads` sets `oversized_row`, `query` clips\ncells (`clipped_cells`, `non_finite_cells`), `finding_read` sets the\nrow's `detail_clipped`; `structure` has no flag.",
@@ -1947,18 +2195,27 @@
                 "description": "True when nothing remains to page. For `structure` it also means no\nscan window remains (no `next_start_after_file`).",
                 "type": "boolean"
               },
+              "completeness": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Completeness"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Whether the scan behind the stored result covered everything; omitted\nwhen the tool reports no scan."
+              },
+              "cursor": {
+                "description": "The token for the next page, copied exactly into the next call's\n`cursor`. Omitted when nothing remains (`complete`). A cursor does not\nsurvive a server restart.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "limited_by": {
                 "$ref": "#/$defs/PageLimit",
                 "description": "What cut this page; `none` exactly when the result ended."
-              },
-              "next_offset": {
-                "description": "Always present; null when nothing remains to page (`complete`), and on\n`structure` also when only a new scan window remains. Otherwise pass it\nas `offset` on the next call.",
-                "format": "uint",
-                "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
               },
               "page_bytes": {
                 "description": "The byte budget that applied to this page's items, in serialized JSON\nbytes: the request's `page_bytes` or the server default\n(`default_page_bytes`, 64 KiB unless configured), after the clamp to\nthe ceiling `max_query_response_bytes`. `limited_by` = `ceiling` says\nthe clamp acted on a cut page.",
@@ -1973,11 +2230,11 @@
                 "type": "integer"
               },
               "revision_id": {
-                "description": "The index revision every part of this response was read from. Pass it\nas `expected_revision` when resuming.",
+                "description": "The index revision every part of this response was read from: that of\nthe call that made the result, on every page.",
                 "type": "string"
               },
               "total": {
-                "description": "Items the whole request selects, ignoring `offset` and the page cut;\nnever an estimate. Always present; null when the tool cannot count it\n(always on `structure`; on `query` when counting ran out of budget).\nWhat it counts is on each tool's `page` property.",
+                "description": "Items the whole request selects, ignoring the page cut;\nnever an estimate. Always present; null when the tool cannot count it\n(always on `structure`; on `query` when counting ran out of budget).\nWhat it counts is on each tool's `page` property.",
                 "format": "uint64",
                 "minimum": 0,
                 "type": [
@@ -2016,22 +2273,22 @@
               },
               {
                 "const": "ceiling",
-                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `next_offset`.",
+                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `cursor`.",
                 "type": "string"
               },
               {
                 "const": "match_cap",
-                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `next_offset` continues. A larger\n`page_bytes` does not lift it.",
+                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `cursor` continues. A larger\n`page_bytes` does not lift it.",
                 "type": "string"
               },
               {
                 "const": "scan_window",
-                "description": "`structure` only: the multi-file scan window ended before the\nmatching files did (`files_not_scanned` > 0). There is no\n`next_offset`; continue with `start_after_file` =\n`next_start_after_file` and `offset` 0.",
+                "description": "`structure` only: the multi-file scan window ended before the\nmatching files did (`files_not_scanned` > 0). Read the stored result to\nits end with `cursor`, then make a new request with `start_after_file`\n= `next_start_after_file`.",
                 "type": "string"
               },
               {
                 "const": "time_budget",
-                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. There is no `next_offset`; continue with\n`start_after_file` = `next_start_after_file` (that file) and `offset`\n0.",
+                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. Read the stored result to its end with\n`cursor`, then make a new request with `start_after_file` =\n`next_start_after_file` (that file).",
                 "type": "string"
               }
             ]
@@ -2055,19 +2312,12 @@
           },
           "page": {
             "$ref": "#/$defs/Page",
-            "description": "Paging for `rows`, cut by bytes on a row boundary. `total` is the exact\nrow count SQLite computes over the same statement; null only when\ncounting ran out of budget (`total_unavailable` says why)."
+            "description": "Paging for `rows`, cut by bytes on a row boundary. `total` is the exact\nrow count of the whole stored result."
           },
           "rows": {
             "description": "This page's rows, one JSON object per row with column names as keys,\nin the query's own row order.",
             "items": true,
             "type": "array"
-          },
-          "total_unavailable": {
-            "description": "Why `page.total` is null (the budget that stopped the count); null\nwhenever `page.total` is present.",
-            "type": [
-              "string",
-              "null"
-            ]
           }
         },
         "required": [
@@ -2626,9 +2876,9 @@
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
-          "expected_revision": {
+          "cursor": {
             "default": null,
-            "description": "Set to the previous page's `page.revision_id`; if the index changed\nsince, the call is refused with `stale_revision`.",
+            "description": "The `page.cursor` of a previous response, copied exactly. It\ncontinues that stored result: nothing is synced or re-scanned, and\n`path` and every other request-shaping parameter are ignored\n(`page_bytes` still applies).",
             "type": [
               "string",
               "null"
@@ -2658,13 +2908,6 @@
               "null"
             ]
           },
-          "offset": {
-            "default": 0,
-            "description": "Number of matches to skip when paging through a result; use the\nprevious response's `page.next_offset`. Valid only while\n`page.revision_id` is unchanged, and only together with the same\n`start_after_file`.",
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          },
           "page_bytes": {
             "default": null,
             "description": "Page size in serialized JSON bytes of `matches`. Omit it for the server\ndefault (64 KiB unless configured otherwise; the response's\n`page.page_bytes` says what applied). A value above the hard ceiling\n`max_query_response_bytes` is clamped, and a page the ceiling cut\nreports `page.limited_by` = `ceiling`. Pages are cut on a match\nboundary; the first\nmatch is always returned, so a single match larger than the page\narrives whole (its own `text_truncated` flag covers the 1 MB text cap).",
@@ -2676,7 +2919,8 @@
             ]
           },
           "path": {
-            "description": "Any path inside the active project.",
+            "default": "",
+            "description": "Any path inside the active project. Required without `cursor`;\nignored with one.",
             "type": "string"
           },
           "pattern": {
@@ -2693,7 +2937,7 @@
           },
           "start_after_file": {
             "default": null,
-            "description": "Multi-file queries only: scan only files whose path sorts strictly\nafter this one. Use the previous response's `next_start_after_file`\nwhen it reports `files_not_scanned`.",
+            "description": "Multi-file queries only: scan only files whose path sorts strictly\nafter this one. To scan the files a window-limited result did not\nreach, make a new request with `start_after_file` set to the result's\n`resume_after_file` (also reported as `next_start_after_file`); it\nsyncs and describes the current tree.",
             "type": [
               "string",
               "null"
@@ -2701,7 +2945,6 @@
           }
         },
         "required": [
-          "path",
           "query"
         ],
         "type": "object"
@@ -2709,8 +2952,61 @@
       "name": "structure",
       "outputSchema": {
         "$defs": {
+          "Completeness": {
+            "description": "Whether the scan behind a stored result covered everything it set out to.\nIt is written once with the result, so every page of that result reports\nthe same value, however many calls the caller takes to read it.",
+            "oneOf": [
+              {
+                "const": "complete",
+                "description": "Every file or row the request selects was scanned.",
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The scan stopped early (`structure` and custom-mechanic scans, which\nrun under a file window and the call deadline). Continuing is a new\nrequest that syncs, starting after `resume_after_file`.",
+                "properties": {
+                  "partial": {
+                    "properties": {
+                      "files_scanned": {
+                        "description": "Files scanned before the scan stopped.",
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "files_total": {
+                        "description": "Files the request selects.",
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "limited_by": {
+                        "$ref": "#/$defs/PageLimit",
+                        "description": "The bound that stopped the scan (`scan_window` or `time_budget`)."
+                      },
+                      "resume_after_file": {
+                        "description": "The last file fully scanned; the new request resumes after it.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "limited_by",
+                      "files_scanned",
+                      "files_total"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "partial"
+                ],
+                "type": "object"
+              }
+            ]
+          },
           "Page": {
-            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning. To page: while `complete` is false, repeat\nthe call with `offset` = `next_offset` and `expected_revision` =\n`revision_id`. `structure` alone has a second cursor: when `next_offset`\nis null and `complete` is false, use its `next_start_after_file`.",
+            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning. To page: while `cursor` is present, repeat\nthe call with only that `cursor` (plus `page_bytes`, and `limit` on\n`leads`, to resize the page); it names a result stored when the first call\nran, so the rows do not move, `revision_id` is that of the first call, and\nno `path` is needed. `cursor` is absent exactly when `complete` is true.\n`structure` alone has a second step after the last page: when `completeness`\nis `partial`, make a new request with `start_after_file` =\n`next_start_after_file`.",
             "properties": {
               "bytes_used": {
                 "description": "Serialized JSON bytes of this page's items. The first item is always\nreturned so paging advances, so this exceeds `page_bytes` only when\nthat item alone is larger: `leads` sets `oversized_row`, `query` clips\ncells (`clipped_cells`, `non_finite_cells`), `finding_read` sets the\nrow's `detail_clipped`; `structure` has no flag.",
@@ -2722,18 +3018,27 @@
                 "description": "True when nothing remains to page. For `structure` it also means no\nscan window remains (no `next_start_after_file`).",
                 "type": "boolean"
               },
+              "completeness": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Completeness"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Whether the scan behind the stored result covered everything; omitted\nwhen the tool reports no scan."
+              },
+              "cursor": {
+                "description": "The token for the next page, copied exactly into the next call's\n`cursor`. Omitted when nothing remains (`complete`). A cursor does not\nsurvive a server restart.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "limited_by": {
                 "$ref": "#/$defs/PageLimit",
                 "description": "What cut this page; `none` exactly when the result ended."
-              },
-              "next_offset": {
-                "description": "Always present; null when nothing remains to page (`complete`), and on\n`structure` also when only a new scan window remains. Otherwise pass it\nas `offset` on the next call.",
-                "format": "uint",
-                "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
               },
               "page_bytes": {
                 "description": "The byte budget that applied to this page's items, in serialized JSON\nbytes: the request's `page_bytes` or the server default\n(`default_page_bytes`, 64 KiB unless configured), after the clamp to\nthe ceiling `max_query_response_bytes`. `limited_by` = `ceiling` says\nthe clamp acted on a cut page.",
@@ -2748,11 +3053,11 @@
                 "type": "integer"
               },
               "revision_id": {
-                "description": "The index revision every part of this response was read from. Pass it\nas `expected_revision` when resuming.",
+                "description": "The index revision every part of this response was read from: that of\nthe call that made the result, on every page.",
                 "type": "string"
               },
               "total": {
-                "description": "Items the whole request selects, ignoring `offset` and the page cut;\nnever an estimate. Always present; null when the tool cannot count it\n(always on `structure`; on `query` when counting ran out of budget).\nWhat it counts is on each tool's `page` property.",
+                "description": "Items the whole request selects, ignoring the page cut;\nnever an estimate. Always present; null when the tool cannot count it\n(always on `structure`; on `query` when counting ran out of budget).\nWhat it counts is on each tool's `page` property.",
                 "format": "uint64",
                 "minimum": 0,
                 "type": [
@@ -2791,22 +3096,22 @@
               },
               {
                 "const": "ceiling",
-                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `next_offset`.",
+                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `cursor`.",
                 "type": "string"
               },
               {
                 "const": "match_cap",
-                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `next_offset` continues. A larger\n`page_bytes` does not lift it.",
+                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `cursor` continues. A larger\n`page_bytes` does not lift it.",
                 "type": "string"
               },
               {
                 "const": "scan_window",
-                "description": "`structure` only: the multi-file scan window ended before the\nmatching files did (`files_not_scanned` > 0). There is no\n`next_offset`; continue with `start_after_file` =\n`next_start_after_file` and `offset` 0.",
+                "description": "`structure` only: the multi-file scan window ended before the\nmatching files did (`files_not_scanned` > 0). Read the stored result to\nits end with `cursor`, then make a new request with `start_after_file`\n= `next_start_after_file`.",
                 "type": "string"
               },
               {
                 "const": "time_budget",
-                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. There is no `next_offset`; continue with\n`start_after_file` = `next_start_after_file` (that file) and `offset`\n0.",
+                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. Read the stored result to its end with\n`cursor`, then make a new request with `start_after_file` =\n`next_start_after_file` (that file).",
                 "type": "string"
               }
             ]
@@ -2891,7 +3196,7 @@
             "type": "integer"
           },
           "files_not_scanned": {
-            "description": "Multi-file only: matching files past the memory window that were not\nloaded into this call's scan window, so certainly not scanned. Zero\nmeans every matching file after `start_after_file` was loaded into the\nwindow — it does not mean every loaded file was scanned, because a page\ncut (`page.next_offset` present) can stop inside the window and leave\nlater loaded files contributing nothing to this page. When above 0\n`page.complete` is false: finish `page.next_offset` paging, then repeat\nwith `start_after_file` = `next_start_after_file` and offset 0.",
+            "description": "Multi-file only: matching files past the memory window that were not\nloaded into this call's scan window, so certainly not scanned. Zero\nmeans every matching file after `start_after_file` was loaded into the\nwindow. When above 0 the stored result is `partial` and\n`page.complete` is false: read it to the end with `page.cursor`, then\nmake a new request with `start_after_file` = `next_start_after_file`.",
             "format": "uint",
             "minimum": 0,
             "type": "integer"
@@ -2914,7 +3219,7 @@
             "type": "array"
           },
           "next_start_after_file": {
-            "description": "The second cursor: the `start_after_file` that starts the next scan\nwindow, with `offset` 0. Present when `files_not_scanned` > 0\n(`page.limited_by` = `scan_window` once `page.next_offset` is\nexhausted), or when `parse_timed_out_file` is set (then it is that\nfile, so the next window skips it; `page.limited_by` =\n`time_budget`).",
+            "description": "The `start_after_file` for the new request that scans past this\nresult (the result's `resume_after_file`). Present when\n`files_not_scanned` > 0 (`completeness.limited_by` = `scan_window`),\nor when `parse_timed_out_file` is set (then it is that file, so the\nnew request skips it; `completeness.limited_by` = `time_budget`).",
             "type": [
               "string",
               "null"
@@ -2922,10 +3227,10 @@
           },
           "page": {
             "$ref": "#/$defs/Page",
-            "description": "Paging for `matches`, with two cursors: `next_offset` continues inside\nthe scan window, `next_start_after_file` (beside this object) starts\nthe next. `complete` means neither remains. `total` is always null\n(counting needs the whole scan)."
+            "description": "Paging for `matches`. `cursor` pages through the stored result;\n`completeness` says whether the scan behind it covered everything\n(`partial` names `resume_after_file`). `complete` means no page and no\nscan window remains. `total` is always null (counting needs the whole\nscan)."
           },
           "parse_timed_out_file": {
-            "description": "Multi-file only: set when the execution time budget ran out while this\nfile was being parsed. The parse was cancelled, the scan stopped, and\n`matches` holds only what earlier files produced: the result is\nincomplete. Resume with `start_after_file` = `next_start_after_file`\n(this file) to continue past it. A single-file query whose parse runs\nout of time is refused with the execution-budget error instead.",
+            "description": "Multi-file only: set when the execution time budget ran out while this\nfile was being parsed. The parse was cancelled, the scan stopped, and\n`matches` holds only what earlier files produced: the result is\npartial. Make a new request with `start_after_file` =\n`next_start_after_file` (this file) to continue past it. A single-file\nquery whose parse runs out of time is refused with the\nexecution-budget error instead.",
             "type": [
               "string",
               "null"
