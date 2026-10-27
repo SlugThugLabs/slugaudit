@@ -804,3 +804,55 @@ Oldest first: append each new entry at the end of the file. Format: **what** / *
 - **Why:** The three gaps every 9.3 builder worked around; staged so the five tools compile and pass unchanged. The ceiling clamp stays with the tool (`page_size::resolve`), `paginate` has no limits, so the clamp test feeds the resolved value in.
 - **Where:** `src/store/result_store/{reader,store}.rs`, `src/tools/paginate.rs`, mechanical new fields in `src/tools/query_exec.rs`; tests in `paging_tests.rs`, `paginate_tests.rs`, new `paginate_late_tests.rs` (paginate_tests.rs would pass 500 lines; ARCHITECTURE.md count 116 -> 117). `paginate.rs` carries a line-exception annotation (280 code lines).
 - **Reversible:** Yes; the follow-up deletes `offer_first_row` and the legacy `paginate` pinning.
+
+## leads: page-one `limit` lives on every stored row, not in the extras
+- **What:** Stored rows carry a `limit` column (0 = none) instead of the former `bytes`/`prev_bytes` columns. The page-one `at_ceiling` flag is in `Extras`.
+- **Why:** `accept` runs before the extras are decoded, and `paginate_with` hands `accept_for` only the effective byte budget, so extras cannot reach the cut. With `offer_first_row` the first offered row carries the limit. A `limit` in the result's stored record (next to `page_bytes`) would be cleaner and would delete the column.
+- **Where:** `src/tools/leads_stored.rs`, `leads_page.rs`.
+- **Reversible:** Yes (storage layout only).
+
+## leads: row bytes measured in `accept`, compact vs full by the mechanic column
+- **What:** `accept` serializes each offered row in its response form to count bytes (`bytes_used` is the sum over taken rows). Compact is recognised by a non-empty `mechanic` (full rows leave it empty).
+- **Why:** The per-row size columns are gone; the extras (which say the mode) are not available inside `accept`. Registered and built-in mechanic ids are never empty.
+- **Where:** `src/tools/leads_stored.rs` (`response_bytes`), `leads_page.rs` (`accept`).
+- **Reversible:** Yes.
+
+## leads: a continuation still reads process limits for an explicit `page_bytes`
+- **What:** `leads()` still resolves `process_limits()` on a cursor call; they are used only to clamp an explicit `page_bytes` to the ceiling. Without `page_bytes` the stored budget (and stored ceiling flag) applies.
+- **Why:** The ceiling clamp stays with the tool (9.3-S decision); a cursor names no project.
+- **Where:** `src/tools/leads.rs`.
+- **Reversible:** Yes.
+
+## query: a continuation reads the stored column names with a registry lookup, not a peek read
+- **What:** `query_exec::stored_columns` decodes the cursor and reads `ResultStore::meta_of(..).columns` before `paginate_with` runs; the pre-pass sync/prepare, the peek page read, `QueryMeta` (extra is now `()`) and `result_columns` are gone. A new request syncs once and reads once; `Served.columns` is not used.
+- **Why:** `accept` must measure rows with the column names, and `paginate_with` hands `accept_for` only the budget, not the columns, so a continuation has no other way to know them before the read. The lookup reads no row and renews nothing.
+- **Where:** `src/tools/query_exec.rs`.
+- **Reversible:** Yes: if `accept_for` also received the stored columns the lookup disappears.
+
+## query: the first row is clipped inside the page read, so a clip failure leaves a stored, undelivered result
+- **What:** The first row is measured/clipped by `accept` (offer_first_row) instead of during `produce`; an error there now fails the call after the result was stored (it expires unread).
+- **Why:** The first row is no longer seen during materialisation. Duplicate column names and statement errors are still refused before anything is stored.
+- **Where:** `src/tools/query_value.rs`, `query_exec.rs`.
+- **Reversible:** Yes.
+
+## query: `limited_by: ceiling` on a continuation follows the applied budget
+- **What:** `limited_by` is `ceiling` when the budget that applied (stored or requested) is >= the process ceiling.
+- **Why:** A continuation without `page_bytes` inherits page one's budget, so the request-resolved `PageSize` no longer describes the cut.
+- **Where:** `src/tools/query.rs`.
+- **Reversible:** Yes.
+
+## structure, finding_read, mechanic: a continuation still reads process limits for caps
+- **What:** The stored page budget replaces the default budget on a continuation, but `structure` still uses `process_limits()` on a continuation for the ceiling (clamping an explicit `page_bytes`) and `max_structure_matches`; `mechanic list` uses them only to clamp an explicit `page_bytes`. `finding_read` reads none (the ceiling flag is stored in its extra, `FindingExtra.at_ceiling`; `mechanic list` stores `ListExtra.at_ceiling` likewise).
+- **Why:** `accept_for` runs before the stored extras are read, so the match cap and the clamp cannot come from them without a larger change to `paginate_with`.
+- **Where:** `src/tools/structure.rs`, `src/tools/mechanic_list.rs`, `src/tools/finding_read{,_rows}.rs`.
+- **Reversible:** Yes (store the cap and ceiling with the budget in `paginate_with`).
+
+## finding_read: golden case finding_read_offset1 pinned the old default-budget continuation
+- **What:** The golden test builds page two from a 300-byte page one and expects page two under the 65536 default (two rows). With the stored budget page two is one row at 300 bytes.
+- **Where:** `src/tools/golden_phase9_finding_read_tests.rs`, `tests/golden/phase9/finding_read_offset1.json`.
+
+## finding_read offset1 golden compared at content level
+- What: the test case `finding_read_offset1` reads all pages by cursor after page one and asserts the concatenated findings equal the fixture's `findings` array; the fixture's `page` block is not compared.
+- Why: a cursor continuation keeps page one's stored 300-byte budget, so page two holds one row; the fixture pins the pre-cursor default-budget page (two rows, page_bytes 65536).
+- Where: src/tools/golden_phase9_finding_read_tests.rs (`paged_finding_read_matches_the_golden_apart_from_paging_fields`). Fixtures untouched. Decided by the Lead.
+- Reversible: yes, restore check_case for that case if the fixture is re-recorded.
