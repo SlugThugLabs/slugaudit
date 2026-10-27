@@ -7,24 +7,22 @@
 //! response shapes, validation order, statement validation and error text)
 //! and this one owns what runs under the progress handler.
 
-use super::query_value::{Collected, PageBuilder, cell_from, read_row, values_of};
+use super::query_value::{Collected, PageBuilder, cell_from, read_row};
 
 use super::context::internal_error;
 use super::page::{Completeness, Page};
-use super::page_size::PageSize;
-use super::paginate::{PageRequest, PageSpec, Produced, RowSink, Served, paginate};
+use super::paginate::{PageRequest, PageSpec, Produced, RowSink, paginate_with};
 use super::query::{
     ABORT_NONE, ABORT_STEP_BUDGET, ABORT_WALL_CLOCK, describe_error, refuse_wrapped,
     single_statement_body,
 };
+use crate::error_codes::store_error;
 use crate::model::{ResourceLimits, SQLITE_MAX_VALUE_BYTES};
-use crate::progress::ProgressSink;
-use crate::store::Take;
+use crate::store::{ResultStoreError, StoredRow};
 use crate::sync::SourceSyncManager;
 use rmcp::ErrorData;
 use rusqlite::Transaction;
 use rusqlite::limits::Limit;
-use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -131,24 +129,6 @@ fn clear_budget(tx: &Transaction<'_>) {
     tx.progress_handler(0, None::<fn() -> bool>);
 }
 
-/// The tool-level extras stored with a `query` result and returned on every
-/// page: the column names, which a continuation needs to key its rows.
-#[derive(Serialize, Deserialize)]
-struct QueryMeta {
-    columns: Vec<String>,
-}
-
-/// The producer handed to a continuation, which never produces.
-fn never_produces<E>(
-    _: &Transaction<'_>,
-    _: &mut RowSink<'_, '_>,
-) -> Result<Produced<E>, ErrorData> {
-    Err(internal_error(
-        "continuing a stored query result",
-        "a continuation must not produce rows",
-    ))
-}
-
 /// The one statement shape every query runs as. The user SQL is wrapped on
 /// its own line so a trailing `-- line comment` terminates at the newline
 /// rather than swallowing the closing `)`, which would otherwise produce a
@@ -158,31 +138,16 @@ fn wrapped_sql(body: &str) -> String {
     format!("SELECT * FROM (\n{body}\n) LIMIT -1 OFFSET 0")
 }
 
-/// Proves `trimmed` is one statement that runs as the wrapper's subquery and
-/// returns its result column names, so the result can be created before the
-/// first row exists. No row is read.
-fn result_columns(
-    tx: &Transaction<'_>,
-    trimmed: &str,
-    limits: &ResourceLimits,
-) -> Result<Vec<String>, ErrorData> {
-    apply_engine_limits(tx, limits)?;
-    let abort_reason = Arc::new(AtomicU8::new(ABORT_NONE));
-    let body = single_statement_body(tx, trimmed, &abort_reason)?;
-    let statement = tx
-        .prepare(&wrapped_sql(&body))
-        .map_err(|error| refuse_wrapped(&error, &abort_reason))?;
-    Ok(statement
-        .column_names()
-        .into_iter()
-        .map(str::to_owned)
-        .collect())
-}
-
-/// Serves one page of `trimmed`'s result: a new request materialises every
-/// row into the result store under the VM-step and wall-clock budgets and
-/// serves page one; a cursor serves the stored page. Either way the page is
-/// cut at `page.bytes` serialized JSON bytes, the oversized first row clipped.
+/// Serves one page of `trimmed`'s result: a new request syncs once,
+/// materialises every row into the result store under the VM-step and
+/// wall-clock budgets and serves page one; a cursor serves the stored page.
+/// Either way the page is cut at `page.bytes` serialized JSON bytes, the
+/// oversized first row clipped.
+///
+/// `page_bytes` is the budget of a new request. `requested_page_bytes` is
+/// what the request itself asked for, already clamped to the ceiling: a
+/// continuation without one uses the budget page one used, so the page size
+/// does not change when the caller leaves it out.
 ///
 /// A budget that runs out fails the whole call: no rows are served and no
 /// result is stored.
@@ -191,92 +156,55 @@ pub(super) fn run_query(
     request: PageRequest<'_>,
     trimmed: &str,
     limits: &ResourceLimits,
-    page: PageSize,
+    page_bytes: usize,
+    requested_page_bytes: Option<usize>,
 ) -> Result<(Collected, Page), ErrorData> {
-    match request {
-        PageRequest::Fresh { path, sink } => {
-            fresh_page(manager, path, sink, trimmed, limits, page.bytes)
-        }
-        PageRequest::Cursor(token) => continuation_page(manager, token, page.bytes),
+    let builder = RefCell::new(PageBuilder::new());
+    if let PageRequest::Cursor(token) = request {
+        // The cut needs the column names to measure a row; a new request
+        // learns them from its statement inside `produce`.
+        builder
+            .borrow_mut()
+            .set_names(stored_columns(manager, token)?);
     }
-}
-
-fn fresh_page(
-    manager: &SourceSyncManager,
-    path: &str,
-    sink: &dyn ProgressSink,
-    trimmed: &str,
-    limits: &ResourceLimits,
-    page_bytes: usize,
-) -> Result<(Collected, Page), ErrorData> {
-    // The result's column count must be known before its first row, and the
-    // statement is validated before any store space is claimed for it.
-    let synced = super::context::ensure_synced(path, sink, manager)?;
-    let columns =
-        super::context::with_verified_read(&synced, |tx| result_columns(tx, trimmed, limits))?;
-    let builder = RefCell::new(PageBuilder::new(columns.clone(), page_bytes));
-    let spec = PageSpec {
-        tool: "query",
-        columns: columns.clone(),
-        page_bytes,
-        requested_page_bytes: None,
-        offer_first_row: false,
-    };
-    let served = paginate(
-        manager,
-        &spec,
-        PageRequest::Fresh { path, sink },
-        |tx, rows| {
-            stream_rows(tx, trimmed, limits, &builder, rows)?;
-            Ok(Produced {
-                completeness: Completeness::Complete,
-                extra: QueryMeta { columns },
-            })
-        },
-        |row| builder.borrow_mut().accept(row),
-    )?;
-    Ok((builder.into_inner().finish(served.rows.len())?, served.page))
-}
-
-/// Serves a stored page. The store never offers the first row of a page to
-/// the cut, so it is read first (together with the column names stored with
-/// the result) to start the byte count from it.
-fn continuation_page(
-    manager: &SourceSyncManager,
-    token: &str,
-    page_bytes: usize,
-) -> Result<(Collected, Page), ErrorData> {
+    // The columns come from the prepared statement inside `produce`.
     let spec = PageSpec {
         tool: "query",
         columns: Vec::new(),
         page_bytes,
-        requested_page_bytes: None,
-        offer_first_row: false,
+        requested_page_bytes,
+        offer_first_row: true,
     };
-    let first: Served<QueryMeta> = paginate(
+    let served = paginate_with(
         manager,
         &spec,
-        PageRequest::Cursor(token),
-        never_produces,
-        |_| Take::No,
-    )?;
-    let mut builder = PageBuilder::new(first.meta.columns, page_bytes);
-    let [first_row] = first.rows.as_slice() else {
-        return Err(internal_error(
-            "continuing a stored query result",
-            "the first row of a page was not returned",
-        ));
-    };
-    builder.take_first(&values_of(first_row), first_row.ord)?;
-    let builder = RefCell::new(builder);
-    let served: Served<QueryMeta> = paginate(
-        manager,
-        &spec,
-        PageRequest::Cursor(token),
-        never_produces,
-        |row| builder.borrow_mut().accept(row),
+        request,
+        |tx, rows| {
+            stream_rows(tx, trimmed, limits, &builder, rows)?;
+            Ok(Produced {
+                completeness: Completeness::Complete,
+                extra: (),
+            })
+        },
+        |budget| {
+            builder.borrow_mut().set_budget(budget);
+            |row: &StoredRow| builder.borrow_mut().accept(row)
+        },
     )?;
     Ok((builder.into_inner().finish(served.rows.len())?, served.page))
+}
+
+/// The column names stored with the result `token` continues. A registry
+/// lookup only: it reads no row and renews nothing. An unknown, expired or
+/// foreign cursor is refused by [`paginate_with`] as for every tool; one that
+/// cannot be decoded fails here with the same wire code.
+fn stored_columns(manager: &SourceSyncManager, token: &str) -> Result<Vec<String>, ErrorData> {
+    let Some(store) = manager.result_stores().current() else {
+        return Err(store_error(&ResultStoreError::Unknown));
+    };
+    let cursor = store.decode_cursor(token).map_err(|e| store_error(&e))?;
+    let meta = store.meta_of(cursor.result).map_err(|e| store_error(&e))?;
+    Ok(meta.columns.clone())
 }
 
 /// Runs the wrapped `SELECT` inside the verified read transaction and pushes
@@ -307,16 +235,20 @@ fn push_all(
     let mut statement = tx
         .prepare(&wrapped_sql(body))
         .map_err(|error| refuse_wrapped(&error, abort_reason))?;
+    let names: Vec<String> = statement
+        .column_names()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    rows.set_columns(names.clone())?;
+    builder.borrow_mut().set_names(names);
     let value_cap = limits.max_query_value_bytes;
     let column_count = statement.column_count();
     let mapped = statement
         .query_map([], move |row| read_row(row, column_count, value_cap))
         .map_err(|error| describe_error(&error, abort_reason))?;
-    for (index, row) in mapped.enumerate() {
+    for row in mapped {
         let values = row.map_err(|error| describe_error(&error, abort_reason))?;
-        if index == 0 {
-            builder.borrow_mut().take_first(&values, 0)?;
-        }
         let cells: Vec<_> = values.into_iter().map(cell_from).collect();
         rows.push_cells(&cells)?;
     }

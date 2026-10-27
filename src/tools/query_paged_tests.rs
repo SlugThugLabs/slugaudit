@@ -328,3 +328,102 @@ fn paged_query_total_is_exact_on_every_page() {
     }
     assert_eq!(rows_of(&pages).len(), 500);
 }
+
+/// Writes the project-config `default_page_bytes` that `resolve_limits` reads
+/// (`process_limits` is a `OnceLock`, so no env var can set it per test).
+fn write_default_page_bytes(project: &tempfile::TempDir, page_bytes: usize) {
+    let config = project
+        .path()
+        .join(".planning")
+        .join("slugaudit")
+        .join("config.json");
+    fs::write(config, format!("{{\"default_page_bytes\": {page_bytes}}}"))
+        .expect("write project config");
+}
+
+/// Calls the public tool entry (project limits for a new request, process
+/// limits for a continuation) with no `page_bytes`.
+fn call_without_page_bytes(
+    manager: &SourceSyncManager,
+    path: Option<String>,
+    sql: &str,
+    cursor: Option<String>,
+    sink: &dyn crate::progress::ProgressSink,
+) -> Result<QueryResponse, ErrorData> {
+    query(
+        &Parameters(QueryRequest {
+            path,
+            sql: sql.to_owned(),
+            cursor,
+            legacy_paging: LegacyPaging::default(),
+            page_bytes: None,
+        }),
+        sink,
+        manager,
+    )
+    .map(|Json(response)| response)
+}
+
+#[test]
+fn paged_query_continuation_keeps_the_page_budget_of_page_one() {
+    let project = listing_project();
+    write_default_page_bytes(&project, SMALL_PAGE);
+    let manager = SourceSyncManager::default();
+    let path = project.path().to_string_lossy().into_owned();
+    let noop = crate::progress::NoopProgressSink;
+
+    let first =
+        call_without_page_bytes(&manager, Some(path), LISTING, None, &noop).expect("page one");
+    let second = call_without_page_bytes(&manager, None, "", first.page.cursor.clone(), &noop)
+        .expect("page two");
+
+    assert_eq!(first.page.page_bytes, SMALL_PAGE);
+    assert!(
+        first.page.cursor.is_some(),
+        "the configured budget must page"
+    );
+    assert_eq!(
+        second.page.page_bytes, SMALL_PAGE,
+        "the continuation inherits page one's budget"
+    );
+    assert_eq!(second.rows.len(), first.rows.len());
+    assert!(second.page.cursor.is_some(), "still more pages follow");
+}
+
+/// Counts how many times the sync layer began an `ensure_current`.
+#[derive(Default)]
+struct SyncCounter(std::sync::atomic::AtomicUsize);
+
+impl crate::progress::ProgressSink for SyncCounter {
+    fn emit(&self, event: crate::progress::ProgressEvent) {
+        if event
+            == (crate::progress::ProgressEvent::Started {
+                phase: "ensuring_current",
+            })
+        {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+#[test]
+fn paged_query_new_request_syncs_once() {
+    let project = listing_project();
+    write_default_page_bytes(&project, SMALL_PAGE);
+    let manager = SourceSyncManager::default();
+    let path = project.path().to_string_lossy().into_owned();
+    let counter = SyncCounter::default();
+
+    let first = call_without_page_bytes(&manager, Some(path), LISTING, None, &counter)
+        .expect("a new request");
+    let after_first = counter.0.load(std::sync::atomic::Ordering::SeqCst);
+    call_without_page_bytes(&manager, None, "", first.page.cursor, &counter)
+        .expect("a continuation");
+
+    assert_eq!(after_first, 1, "a new request syncs exactly once");
+    assert_eq!(
+        counter.0.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a continuation syncs nothing"
+    );
+}

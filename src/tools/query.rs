@@ -1,6 +1,6 @@
 // slugaudit-line-exception: approved-by=slugthug; reason=The query tool contract in one place: request/response shapes, validation order, statement validation and every refusal message, including the PRAGMA/authorizer refusals.
 use super::page::{LegacyPaging, Page, PageLimit};
-use super::page_size;
+use super::page_size::{self, PageSize};
 use super::paginate::page_request;
 use super::query_clip::ClippedCell;
 use super::query_exec::run_query;
@@ -121,8 +121,10 @@ pub fn query(
     sink: &dyn crate::progress::ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<QueryResponse>, ErrorData> {
-    // A continuation names no project, so it runs under the process limits;
-    // a new request under its project's. Without either, `page_request`
+    // A continuation names no project, so it only has the process limits (for
+    // the ceiling an explicit `page_bytes` is clamped to; its default budget
+    // is the one stored with the result); a new request runs under its
+    // project's. Without either, `page_request`
     // refuses the call below.
     let limits = match (&request.0.cursor, &request.0.path) {
         (None, Some(path)) => super::resolve_limits(path)?,
@@ -157,12 +159,21 @@ fn query_with_limits(
     let paging = page_request(cursor.as_deref(), path.as_deref(), sink)?;
     let continuation = cursor.is_some();
 
-    let (collected, stored_page) = run_query(manager, paging, trimmed, limits, page)?;
+    // Only a budget the request asked for overrides the one page one used.
+    let requested = page_bytes.map(|_| page.bytes);
+    let (collected, stored_page) =
+        run_query(manager, paging, trimmed, limits, page.bytes, requested)?;
     let complete = stored_page.complete;
+    // The budget that applied (a continuation may inherit page one's) cuts at
+    // the ceiling exactly when it is the ceiling.
+    let applied = PageSize {
+        bytes: stored_page.page_bytes,
+        at_ceiling: stored_page.page_bytes >= limits.max_query_response_bytes,
+    };
     let limited_by = if complete {
         PageLimit::None
     } else {
-        page.byte_cut()
+        applied.byte_cut()
     };
 
     // Row count and the page cut, never the SQL text or the rows themselves.
@@ -175,7 +186,7 @@ fn query_with_limits(
         limited_by = ?limited_by,
         clipped_cells = collected.clipped.len(),
         non_finite_cells = collected.non_finite.len(),
-        page_bytes = page.bytes,
+        page_bytes = stored_page.page_bytes,
         "query executed"
     );
     Ok(Json(QueryResponse {
