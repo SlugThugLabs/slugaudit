@@ -77,123 +77,56 @@ fn long_match_text_is_truncated_and_flagged() {
     );
 }
 
-fn many_functions(count: usize) -> String {
+pub(super) fn many_functions(count: usize) -> String {
     (0..count)
         .map(|index| format!("pub fn f{index:02}() {{}}\n"))
         .collect()
 }
 
-fn page_request(
+pub(super) fn page_request(
     project: &tempfile::TempDir,
-    offset: usize,
+    cursor: Option<&str>,
     page_bytes: Option<usize>,
 ) -> Parameters<StructureRequest> {
     Parameters(StructureRequest {
         path: project.path().to_string_lossy().into_owned(),
         file: Some("lib.rs".to_owned()),
         query: "(function_item name: (identifier) @name)".to_owned(),
-        offset,
+        cursor: cursor.map(str::to_owned),
         page_bytes,
         ..Default::default()
     })
 }
 
-fn run_with(
+pub(super) fn run_with(
     request: &Parameters<StructureRequest>,
     limits: &ResourceLimits,
     window_bytes: usize,
+) -> StructureResponse {
+    run_with_manager(
+        request,
+        limits,
+        window_bytes,
+        &crate::sync::SourceSyncManager::default(),
+    )
+}
+
+/// Like [`run_with`], on a manager the caller keeps so a cursor resolves.
+pub(super) fn run_with_manager(
+    request: &Parameters<StructureRequest>,
+    limits: &ResourceLimits,
+    window_bytes: usize,
+    manager: &crate::sync::SourceSyncManager,
 ) -> StructureResponse {
     structure_with_limits(
         request,
         limits,
         window_bytes,
         &crate::progress::NoopProgressSink,
-        &crate::sync::SourceSyncManager::default(),
+        manager,
     )
     .map(|Json(response)| response)
     .expect("structure call succeeds")
-}
-
-#[test]
-fn a_page_cut_by_bytes_continues_through_next_offset_to_every_match() {
-    let project = activated_project("lib.rs", many_functions(30).as_bytes());
-    let limits = ResourceLimits::default();
-    let mut names = Vec::new();
-    let mut offset = 0;
-    let mut pages = 0;
-
-    loop {
-        let response = run_with(
-            &page_request(&project, offset, Some(900)),
-            &limits,
-            usize::MAX,
-        );
-        pages += 1;
-        names.extend(response.matches.iter().map(|m| m.text.clone()));
-        assert_eq!(!response.page.complete, response.page.next_offset.is_some());
-        assert_eq!(response.page.returned, response.matches.len());
-        assert_eq!(response.page.total, None, "structure never counts ahead");
-        match response.page.next_offset {
-            Some(next) => offset = next,
-            None => break,
-        }
-    }
-
-    let expected: Vec<String> = (0..30).map(|index| format!("f{index:02}")).collect();
-    assert_eq!(names, expected);
-    assert!(pages > 1, "a 900-byte page must not hold 30 matches");
-}
-
-#[test]
-fn a_page_bytes_override_changes_the_page_and_is_echoed() {
-    let project = activated_project("lib.rs", many_functions(30).as_bytes());
-    let limits = ResourceLimits::default();
-
-    let small = run_with(&page_request(&project, 0, Some(900)), &limits, usize::MAX);
-    let default = run_with(&page_request(&project, 0, None), &limits, usize::MAX);
-
-    assert_eq!(small.page.page_bytes, 900);
-    assert_eq!(default.page.page_bytes, limits.default_page_bytes);
-    assert!(small.matches.len() < default.matches.len());
-    assert_eq!(default.matches.len(), 30);
-    assert!(default.page.complete && default.page.next_offset.is_none());
-    assert_eq!(default.page.limited_by, PageLimit::None);
-    assert_eq!(small.page.limited_by, PageLimit::PageBytes);
-    assert!(small.page.bytes_used <= 900);
-}
-
-#[test]
-fn a_page_bytes_above_the_ceiling_is_clamped_and_a_cut_reports_the_ceiling() {
-    let project = activated_project("lib.rs", many_functions(100).as_bytes());
-    let limits = ResourceLimits {
-        max_query_response_bytes: 4_096,
-        ..ResourceLimits::default()
-    };
-
-    let response = run_with(
-        &page_request(&project, 0, Some(10_000_000)),
-        &limits,
-        usize::MAX,
-    );
-
-    assert_eq!(response.page.page_bytes, 4_096);
-    assert_eq!(response.page.limited_by, PageLimit::Ceiling);
-    assert!(!response.page.complete);
-}
-
-#[test]
-fn a_match_count_exactly_at_the_cap_is_not_reported_as_cut() {
-    let project = activated_project("lib.rs", many_functions(4).as_bytes());
-    let limits = ResourceLimits {
-        max_structure_matches: 4,
-        ..ResourceLimits::default()
-    };
-
-    let response = run_with(&page_request(&project, 0, None), &limits, usize::MAX);
-
-    assert_eq!(response.matches.len(), 4);
-    assert!(response.page.complete && response.page.next_offset.is_none());
-    assert_eq!(response.page.limited_by, PageLimit::None);
 }
 
 #[test]
@@ -201,7 +134,7 @@ fn a_zero_page_bytes_is_refused_rather_than_substituted() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
 
     let result = structure(
-        &page_request(&project, 0, Some(0)),
+        &page_request(&project, None, Some(0)),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
     );
@@ -212,7 +145,7 @@ fn a_zero_page_bytes_is_refused_rather_than_substituted() {
 #[test]
 fn start_after_file_with_a_single_file_query_is_refused() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let mut request = page_request(&project, 0, None);
+    let mut request = page_request(&project, None, None);
     request.0.start_after_file = Some("a.rs".to_owned());
 
     let result = structure(
@@ -262,7 +195,7 @@ fn files_past_the_memory_window_are_reported_and_a_continuation_reaches_them() {
                 assert!(response.files_not_scanned > 0 && response.bytes_not_scanned > 0);
                 assert!(!response.page.complete, "a window remains");
                 assert_eq!(response.page.limited_by, PageLimit::ScanWindow);
-                assert_eq!(response.page.next_offset, None);
+                assert_eq!(response.page.cursor, None);
                 start_after = Some(next);
             }
             None => {
@@ -296,44 +229,58 @@ fn a_window_that_ends_exactly_at_the_last_file_reports_nothing_unscanned() {
     assert_eq!(response.matches.len(), 1);
 }
 
-fn multi_file_request(project: &tempfile::TempDir, offset: usize) -> Parameters<StructureRequest> {
+fn multi_file_request(
+    project: &tempfile::TempDir,
+    cursor: Option<&str>,
+) -> Parameters<StructureRequest> {
     Parameters(StructureRequest {
         path: project.path().to_string_lossy().into_owned(),
         language: Some("rust".to_owned()),
         query: "(function_item name: (identifier) @name)".to_owned(),
-        offset,
+        cursor: cursor.map(str::to_owned),
         ..Default::default()
     })
 }
 
 /// A page cut inside a multi-file scan window leaves `files_not_scanned` at
-/// 0 even though later loaded files were not scanned by this call. The cut is
-/// signaled by `page.next_offset` and `page.limited_by` — `files_not_scanned` only counts
-/// files the memory window left unloaded — and the next page resumes into the
-/// later file.
+/// 0 even though later loaded files are not on this page. The cut is
+/// signaled by `page.cursor` and `page.limited_by` — `files_not_scanned` only
+/// counts files the memory window left unloaded — and the next page continues
+/// into the later file.
 #[test]
-fn a_page_cut_inside_a_multi_file_window_is_signaled_by_next_offset_not_files_not_scanned() {
+fn a_page_cut_inside_a_multi_file_window_is_signaled_by_the_cursor_not_files_not_scanned() {
     let project = activated_project("a.rs", b"pub fn alpha() {}\n");
     std::fs::write(project.path().join("b.rs"), b"pub fn beta() {}\n").expect("write b.rs");
     let limits = ResourceLimits {
         max_structure_matches: 1,
         ..ResourceLimits::default()
     };
+    let manager = crate::sync::SourceSyncManager::default();
 
-    let first = run_with(&multi_file_request(&project, 0), &limits, usize::MAX);
+    let first = run_with_manager(
+        &multi_file_request(&project, None),
+        &limits,
+        usize::MAX,
+        &manager,
+    );
 
     assert_eq!(
         first.page.limited_by,
         PageLimit::MatchCap,
         "the page stopped at the match cap inside a.rs"
     );
-    assert_eq!(first.page.next_offset, Some(1));
+    assert!(first.page.cursor.is_some());
     assert_eq!(first.files_not_scanned, 0);
     assert_eq!(first.next_start_after_file, None);
     assert_eq!(first.matches.len(), 1);
     assert_eq!(first.matches[0].file, "a.rs");
 
-    let second = run_with(&multi_file_request(&project, 1), &limits, usize::MAX);
+    let second = run_with_manager(
+        &multi_file_request(&project, first.page.cursor.as_deref()),
+        &limits,
+        usize::MAX,
+        &manager,
+    );
 
     assert!(second.page.complete);
     assert_eq!(second.matches.len(), 1);
@@ -397,21 +344,6 @@ fn an_oversized_start_after_file_is_refused_with_its_cap() {
 }
 
 #[test]
-fn an_oversized_expected_revision_is_refused_with_its_cap() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let mut request = single_file_request(&project);
-    request.expected_revision = Some("x".repeat(257));
-
-    let error = refusal(request);
-
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert_eq!(
-        error.message.as_ref(),
-        "expected_revision exceeds 256 bytes"
-    );
-}
-
-#[test]
 fn an_oversized_file_filter_is_refused_by_name() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let mut request = single_file_request(&project);
@@ -453,7 +385,7 @@ fn an_unrepresentable_execution_budget_means_no_deadline_not_a_panic() {
         ..ResourceLimits::default()
     };
 
-    let response = run_with(&page_request(&project, 0, None), &limits, usize::MAX);
+    let response = run_with(&page_request(&project, None, None), &limits, usize::MAX);
 
     assert_eq!(response.matches.len(), 1);
 }

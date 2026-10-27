@@ -1,5 +1,6 @@
 use super::*;
 use crate::tools::PageLimit;
+use crate::tools::context::ensure_synced;
 use rmcp::handler::server::wrapper::Parameters;
 use std::fs;
 
@@ -321,45 +322,6 @@ fn a_structure_query_against_a_binary_file_carries_the_file_not_indexed_code() {
     let error = result.expect_err("a binary file has no indexed content");
     let data = error.data.expect("a binary file carries a payload");
     assert_eq!(data["code"], "file_not_indexed", "{}", error.message);
-}
-
-#[test]
-fn a_stale_expected_revision_refuses_a_structure_page() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let query = "(function_item name: (identifier) @name)";
-    let first = ask(&project, "lib.rs", query).expect("the first page succeeds");
-
-    fs::write(
-        project.path().join("lib.rs"),
-        b"pub fn a() {}\npub fn b() {}\n",
-    )
-    .expect("modify fixture");
-    let result = structure(
-        &Parameters(StructureRequest {
-            path: project.path().to_string_lossy().into_owned(),
-            file: Some("lib.rs".to_owned()),
-            query: query.to_owned(),
-            expected_revision: Some(first.page.revision_id.clone()),
-            ..Default::default()
-        }),
-        &crate::progress::NoopProgressSink,
-        &crate::sync::SourceSyncManager::default(),
-    );
-
-    let error = result
-        .err()
-        .expect("a page pinned to a superseded revision is refused");
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    let data = error.data.expect("the refusal carries a payload");
-    assert_eq!(data["code"], "stale_revision");
-    assert!(
-        error.message.contains(&format!(
-            "expected_revision `{}` is not the current revision",
-            first.page.revision_id
-        )),
-        "got: {}",
-        error.message
-    );
 }
 
 #[test]
