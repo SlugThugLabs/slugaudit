@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 const RECORD_ENV: &str = "GOLDEN_PHASE9_RECORD";
 const REVISION: &str = "<REVISION_ID>";
 const PROJECT: &str = "<PROJECT>";
-/// Paging fields removed at comparison, wherever they appear in a response,
-/// so a response with or without them compares equal.
+/// Paging fields removed at comparison (see [`mask_paging`] for where), so a
+/// response with or without them compares equal.
 const PAGING_KEYS: [&str; 6] = [
     "offset",
     "next_offset",
@@ -62,15 +62,23 @@ pub(super) fn normalise(value: &mut Value, project: &str) {
     }
 }
 
-/// Removes every paging field so a comparison ignores them.
+/// Removes the paging fields so a comparison ignores them: at the top level
+/// of the response and inside every `page` object, found by walking nested
+/// objects only. Arrays are never entered, so a result row whose column is
+/// aliased `cursor` or `offset` keeps its data.
 pub(super) fn mask_paging(value: &mut Value) {
-    match value {
-        Value::Array(items) => items.iter_mut().for_each(mask_paging),
-        Value::Object(map) => {
-            map.retain(|key, _| !PAGING_KEYS.contains(&key.as_str()));
-            map.values_mut().for_each(mask_paging);
-        }
-        _ => {}
+    mask_object(value, true);
+}
+
+fn mask_object(value: &mut Value, paging_scope: bool) {
+    let Value::Object(map) = value else {
+        return;
+    };
+    if paging_scope {
+        map.retain(|key, _| !PAGING_KEYS.contains(&key.as_str()));
+    }
+    for (key, item) in map.iter_mut() {
+        mask_object(item, key == "page");
     }
 }
 

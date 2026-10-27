@@ -427,3 +427,57 @@ fn paged_query_new_request_syncs_once() {
         "a continuation syncs nothing"
     );
 }
+
+/// The NaN restore branch of `values_of` (a NULL cell carrying the `nonfinite`
+/// NaN mark becomes a REAL NaN again) cannot be reached from SQL in this
+/// bundled build: SQLite turns a NaN into NULL before the cell is stored, so
+/// the query path never writes a mark. The mark is therefore planted through
+/// the store API, and the tool layer must still list the cell as `NaN` while
+/// rendering it as JSON `null`; an unmarked NULL beside it stays plain NULL.
+#[test]
+fn paged_query_marked_nan_cell_is_restored_and_listed_as_non_finite() {
+    use crate::store::{Cell, ResultSpec};
+    use crate::tools::query_value::{NonFiniteCell, PageBuilder};
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let manager = SourceSyncManager::default();
+    let store = manager
+        .result_stores()
+        .for_dir(&project.path().join(".planning").join("slugaudit"))
+        .expect("open the result store");
+    let names = vec!["id".to_owned(), "nan".to_owned(), "plain".to_owned()];
+    let mut writer = store
+        .begin(ResultSpec {
+            tool: "query".to_owned(),
+            project: "proj".to_owned(),
+            revision_id: "rev-1".to_owned(),
+            columns: names.clone(),
+        })
+        .expect("begin the result");
+    writer
+        .push(&[Cell::Int(1), Cell::Real(f64::NAN), Cell::Null])
+        .expect("push the NaN row");
+    let handle = writer
+        .finish(&json!({"kind": "complete"}))
+        .expect("finish the result");
+    let mut builder = PageBuilder::new();
+    builder.set_names(names);
+    builder.set_budget(65_536);
+
+    let page = store
+        .read_page(handle.id, 0, |row| builder.accept(row))
+        .expect("read the page");
+    let collected = builder.finish(page.rows.len()).expect("build the page");
+
+    assert_eq!(
+        collected.rows,
+        [json!({ "id": 1, "nan": null, "plain": null })]
+    );
+    assert_eq!(
+        collected.non_finite,
+        [NonFiniteCell {
+            row: 0,
+            column: "nan".to_owned(),
+            value: "NaN"
+        }]
+    );
+}

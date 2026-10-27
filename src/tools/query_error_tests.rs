@@ -92,6 +92,7 @@ fn a_value_over_the_per_value_cap_carries_no_sql_error_code() {
         ..ResourceLimits::default()
     };
 
+    let manager = crate::sync::SourceSyncManager::default();
     let error = query_with_limits(
         &Parameters(QueryRequest {
             path: Some(project.path().to_string_lossy().into_owned()),
@@ -102,11 +103,25 @@ fn a_value_over_the_per_value_cap_carries_no_sql_error_code() {
         }),
         &limits,
         &crate::progress::NoopProgressSink,
-        &crate::sync::SourceSyncManager::default(),
+        &manager,
     )
     .err()
     .expect("an oversized value fails");
 
     assert!(error.message.contains("per-value cap"), "{}", error.message);
     assert_eq!(error.data, None, "the cap names its own fix; it is not SQL");
+    let store = manager
+        .result_stores()
+        .current()
+        .expect("the store opened for the attempt");
+    let stats = store.stats();
+    assert_eq!(
+        (
+            stats.active.results,
+            stats.idle.results,
+            stats.delivered.results
+        ),
+        (0, 0, 0),
+        "no partial result is left behind"
+    );
 }

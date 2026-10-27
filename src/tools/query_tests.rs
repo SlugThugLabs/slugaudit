@@ -428,16 +428,39 @@ fn a_pathological_query_is_aborted_by_the_wall_clock_budget() {
         max_query_wall_clock: Duration::from_nanos(1),
         ..ResourceLimits::default()
     };
-    let result = ask_with_limits(
-        &project,
-        "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5000) SELECT x FROM cnt",
+    let manager = crate::sync::SourceSyncManager::default();
+    let result = query_with_limits(
+        &Parameters(QueryRequest {
+            path: Some(project.path().to_string_lossy().into_owned()),
+            sql: "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5000) SELECT x FROM cnt".to_owned(),
+            cursor: None,
+            legacy_paging: LegacyPaging::default(),
+            page_bytes: None,
+        }),
         &limits,
-    );
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .map(|Json(response)| response);
     let error = result.expect_err("runaway query is aborted, not run to completion");
     assert!(
         error.message.contains("time budget"),
         "unexpected message: {}",
         error.message
+    );
+    let store = manager
+        .result_stores()
+        .current()
+        .expect("the store opened for the attempt");
+    let stats = store.stats();
+    assert_eq!(
+        (
+            stats.active.results,
+            stats.idle.results,
+            stats.delivered.results
+        ),
+        (0, 0, 0),
+        "no partial result is left behind"
     );
 }
 

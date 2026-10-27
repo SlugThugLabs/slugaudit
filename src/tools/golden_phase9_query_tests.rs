@@ -1,5 +1,5 @@
 //! Phase 9 golden responses for `query`; see `golden_phase9_support`.
-use super::golden_phase9_support::{check_case, path_of, rust_project};
+use super::golden_phase9_support::{check_case, mask_paging, path_of, rust_project};
 use crate::progress::NoopProgressSink;
 use crate::sync::SourceSyncManager;
 use crate::tools::{LegacyPaging, QueryRequest, query};
@@ -150,4 +150,25 @@ fn golden_phase9_query_multi_page() {
         &json!({ "sql": sql, "page_bytes": 1000, "page": 2 }),
         &two,
     );
+}
+
+#[test]
+fn golden_phase9_mask_paging_keeps_result_columns_aliased_like_paging_keys() {
+    let project = rust_project();
+    let manager = SourceSyncManager::default();
+    let mut response = run_query(
+        &project,
+        &manager,
+        "SELECT 'c' AS cursor, 7 AS offset, 8 AS next_offset",
+        None,
+    );
+
+    mask_paging(&mut response);
+
+    assert_eq!(
+        response["rows"],
+        json!([{ "cursor": "c", "offset": 7, "next_offset": 8 }])
+    );
+    assert!(response["page"].get("cursor").is_none(), "{response}");
+    assert!(response["page"].get("next_offset").is_none(), "{response}");
 }
