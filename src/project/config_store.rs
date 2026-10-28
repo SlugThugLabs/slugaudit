@@ -184,7 +184,7 @@ fn update_with<E: From<ConfigWriteError>>(
     let mut object = read_object(&target)?;
     change(&mut object)?;
     // `{:#}` is the pretty `Display` of a `Value`, which cannot fail.
-    let encoded = format!("{:#}", Value::Object(object));
+    let encoded = format!("{:#}\n", Value::Object(object));
     let limit = crate::util::MAX_FOREIGN_TEXT_BYTES;
     if !u64::try_from(encoded.len()).is_ok_and(|bytes| bytes <= limit) {
         return Err(ConfigWriteError::TooLarge {

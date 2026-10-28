@@ -52,7 +52,7 @@ fn update_raw_creates_a_missing_config_holding_only_the_changed_key() {
 
     ProjectConfig::update_raw(project.path(), set("profile", Value::from("lean"))).expect("update");
 
-    assert_eq!(read_config(&project), "{\n  \"profile\": \"lean\"\n}");
+    assert_eq!(read_config(&project), "{\n  \"profile\": \"lean\"\n}\n");
     assert!(strays(&project).is_empty(), "{:?}", strays(&project));
 }
 
@@ -167,7 +167,7 @@ fn a_failure_between_the_temp_write_and_the_rename_leaves_the_old_file_and_no_te
     .expect_err("the rename never happened");
 
     assert_eq!(
-        staged, "{\n  \"profile\": \"lean\"\n}",
+        staged, "{\n  \"profile\": \"lean\"\n}\n",
         "the temp file was complete"
     );
     assert!(
@@ -328,7 +328,7 @@ fn an_update_waits_for_a_lock_that_is_released_within_the_wait() {
         started.elapsed() >= Duration::from_millis(150),
         "it waited for the holder"
     );
-    assert_eq!(read_config(&project), "{\n  \"profile\": \"lean\"\n}");
+    assert_eq!(read_config(&project), "{\n  \"profile\": \"lean\"\n}\n");
 }
 
 #[test]
