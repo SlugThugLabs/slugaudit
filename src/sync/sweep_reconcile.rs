@@ -47,19 +47,18 @@ pub(super) fn sweep_tree(
 }
 
 /// Logs a sweep walker or ignore-file failure with the static category and
-/// the redacted path id, matching the watch-scope walker's fields.
-/// `ignore::Error` formats a path into `Display` for `WithPath`/`Loop`, so
-/// the error itself is never formatted. This is diagnostic context at debug
+/// the real path and the error's `Display` as the cause. This is diagnostic context at debug
 /// level: the single warn for the failure is [`mark_sweep_failed`]'s
 /// operation line, so one failure never produces two warn lines. Returns the
 /// category for the typed sweep failure.
 pub(super) fn log_walk_failure(error: &ignore::Error) -> &'static str {
     let kind = ignore_error_kind(error);
-    let path_id = ignore_error_path(error).map(redacted_path);
+    let path = ignore_error_path(error).map(|path| path.display().to_string());
     tracing::debug!(
         operation = "stat_sweep_walk",
         error_kind = kind,
-        path_id = ?path_id,
+        path = ?path,
+        error = %error,
         "sweep could not read a directory entry or apply an ignore file; failing the \
          sweep so no row is deleted under an unverified subtree",
     );

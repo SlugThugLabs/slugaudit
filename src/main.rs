@@ -118,9 +118,16 @@ struct LogSettings {
     rejected: Vec<String>,
 }
 
+/// The filter used when `RUST_LOG` is unset or rejected: dependencies are
+/// capped at warn, this crate keeps its per-call info lines, and rmcp's
+/// `response error` warn (its `Debug` dump of an `ErrorData`) is capped at
+/// error because `server_runner::log_completion` already logs each tool
+/// failure once.
+const DEFAULT_LOG_FILTER: &str = "warn,slugaudit_mcp_rust=info,rmcp=error";
+
 /// Resolves `RUST_LOG` and `SLUGAUDIT_LOG_FORMAT`. An unset variable takes its
 /// default silently; a set one that is invalid or not UTF-8 falls back to the
-/// default (`info`, plain text) and is recorded in `rejected` rather than
+/// default ([`DEFAULT_LOG_FILTER`], plain text) and is recorded in `rejected` rather than
 /// dropped, so the operator learns why the setting did not apply.
 fn log_settings(
     rust_log: Result<String, std::env::VarError>,
@@ -130,17 +137,17 @@ fn log_settings(
     let filter = match rust_log {
         Ok(directives) => EnvFilter::try_new(&directives).unwrap_or_else(|error| {
             rejected.push(format!(
-                "RUST_LOG was rejected and the filter is `info`: {error}"
+                "RUST_LOG was rejected and the filter is `{DEFAULT_LOG_FILTER}`: {error}"
             ));
-            EnvFilter::new("info")
+            EnvFilter::new(DEFAULT_LOG_FILTER)
         }),
-        Err(std::env::VarError::NotPresent) => EnvFilter::new("info"),
+        Err(std::env::VarError::NotPresent) => EnvFilter::new(DEFAULT_LOG_FILTER),
         // `VarError`'s Display quotes the raw environment value, so the
         // rejection is reported as a static message; the value itself is
         // never logged.
         Err(std::env::VarError::NotUnicode(_)) => {
             rejected.push("RUST_LOG is not valid Unicode; ignoring it".to_owned());
-            EnvFilter::new("info")
+            EnvFilter::new(DEFAULT_LOG_FILTER)
         }
     };
     let json = match format {
@@ -188,77 +195,5 @@ fn init_logging() {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unset_log_variables_take_their_defaults_without_a_complaint() {
-        let settings = log_settings(
-            Err(std::env::VarError::NotPresent),
-            Err(std::env::VarError::NotPresent),
-        );
-
-        assert!(!settings.json);
-        assert!(settings.rejected.is_empty());
-    }
-
-    #[test]
-    fn an_invalid_rust_log_is_reported_not_dropped() {
-        let settings = log_settings(
-            Ok("slugaudit=trace,,=bogus[".to_owned()),
-            Err(std::env::VarError::NotPresent),
-        );
-
-        assert_eq!(settings.rejected.len(), 1, "{:?}", settings.rejected);
-        assert!(settings.rejected[0].contains("RUST_LOG"));
-    }
-
-    #[test]
-    fn a_valid_rust_log_and_json_format_are_honored_silently() {
-        let settings = log_settings(Ok("debug".to_owned()), Ok("JSON".to_owned()));
-
-        assert!(settings.json);
-        assert!(settings.rejected.is_empty());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_non_utf8_log_format_is_reported_not_treated_as_plain() {
-        use std::os::unix::ffi::OsStringExt as _;
-        let bad = std::ffi::OsString::from_vec(b"SLUGAUDIT_LEAK_MARKER\xff".to_vec());
-
-        let settings = log_settings(
-            Err(std::env::VarError::NotPresent),
-            Err(std::env::VarError::NotUnicode(bad)),
-        );
-
-        assert!(!settings.json);
-        assert_eq!(settings.rejected.len(), 1);
-        assert!(settings.rejected[0].contains("SLUGAUDIT_LOG_FORMAT"));
-        assert!(
-            !settings.rejected[0].contains("SLUGAUDIT_LEAK_MARKER"),
-            "the raw environment value must not reach the log: {:?}",
-            settings.rejected[0]
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_non_utf8_rust_log_is_reported_without_echoing_its_value() {
-        use std::os::unix::ffi::OsStringExt as _;
-        let bad = std::ffi::OsString::from_vec(b"RUST_LOG_LEAK_MARKER\xff".to_vec());
-
-        let settings = log_settings(
-            Err(std::env::VarError::NotUnicode(bad)),
-            Err(std::env::VarError::NotPresent),
-        );
-
-        assert_eq!(settings.rejected.len(), 1);
-        assert!(settings.rejected[0].contains("RUST_LOG"));
-        assert!(
-            !settings.rejected[0].contains("RUST_LOG_LEAK_MARKER"),
-            "the raw environment value must not reach the log: {:?}",
-            settings.rejected[0]
-        );
-    }
-}
+#[path = "main_tests.rs"]
+mod tests;

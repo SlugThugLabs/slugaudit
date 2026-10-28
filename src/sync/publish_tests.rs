@@ -382,10 +382,10 @@ fn a_sampling_skip_logs_the_redacted_path_not_the_absolute_skip_message() {
     );
 }
 
-/// A failed publish logs its category and a redacted path id, never the
-/// error's Display: `SampleError::Read` embeds an absolute path there.
+/// A failed publish logs its category, the real path and the error's
+/// `Display`, so the OS cause (`gone`) and the file are in the log.
 #[test]
-fn a_failed_publish_logs_the_redacted_path_and_category_not_the_error_display() {
+fn honest_log_a_failed_publish_logs_the_real_path_and_io_cause() {
     let root = std::path::Path::new("/tmp/once-probe-project");
     let absolute = std::path::Path::new("/home/private-user/secret-repo/src/lib.rs");
     let result: Result<PublishReport, PublishError> =
@@ -399,13 +399,38 @@ fn a_failed_publish_logs_the_redacted_path_and_category_not_the_error_display() 
     assert!(logs.contains("publish failed"), "got: {logs}");
     assert!(logs.contains("error_kind=\"sample_read\""), "got: {logs}");
     assert!(
-        logs.contains(&crate::util::redacted_path(absolute)),
-        "the redacted path id must identify the file: {logs}"
+        logs.contains("path=/home/private-user/secret-repo/src/lib.rs"),
+        "the real path must identify the file: {logs}"
     );
     assert!(
-        !logs.contains("/home/private-user"),
-        "the raw path must not be logged: {logs}"
+        logs.contains("gone"),
+        "the underlying io cause must be logged: {logs}"
     );
+    assert_eq!(
+        logs.matches("publish failed").count(),
+        1,
+        "one failure is one record: {logs}"
+    );
+}
+
+/// A SQLite failure has no path; its message is the only diagnosis.
+#[test]
+fn honest_log_a_failed_publish_logs_the_sqlite_cause() {
+    let root = std::path::Path::new("/tmp/once-probe-project");
+    let result: Result<PublishReport, PublishError> =
+        Err(PublishError::Database(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            Some("SENTINEL_SQLITE_CAUSE".to_owned()),
+        )));
+
+    let (_, logs) = capture_warns(|| crate::sync::publish_log::log_outcome(root, &result, 0));
+
+    assert!(logs.contains("error_kind=\"database\""), "got: {logs}");
+    assert!(
+        logs.contains("SENTINEL_SQLITE_CAUSE"),
+        "the SQLite message must be logged: {logs}"
+    );
+    assert!(logs.contains("root=/tmp/once-probe-project"), "got: {logs}");
 }
 
 /// Skip collection now lives beside the diff that consumes it; these tests

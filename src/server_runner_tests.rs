@@ -415,10 +415,11 @@ fn tool_call_logging_never_emits_the_calls_argument_or_result() {
 
 /// A tool error's message routinely embeds user input — here the identifier
 /// in SQLite's `no such column: <identifier>`. The caller must receive it,
-/// but the completion line must carry only the static failure shape, or a
-/// path or SQL fragment reaches the log through `error.message`.
+/// and the completion line also logs it, exactly once, as `error`: error
+/// messages are logged by design (the redaction contract covers tool
+/// arguments, results and file content only).
 #[test]
-fn a_failed_tool_call_logs_the_static_error_class_but_never_the_message() {
+fn honest_log_a_failed_tool_call_logs_the_error_message_once() {
     let _session_guard =
         crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK, "session_test_lock");
     // Scoped to this test's own tool name so the one completion line it
@@ -484,8 +485,13 @@ fn a_failed_tool_call_logs_the_static_error_class_but_never_the_message() {
         "the SQL error class `sql_error` is logged: {line}"
     );
     assert!(
-        !logs.contains(SECRET),
-        "the error message leaked into the tool-call log:\n{logs}"
+        line.contains(SECRET),
+        "the completion line must carry the error message as the cause: {line}"
+    );
+    assert_eq!(
+        logs.lines().filter(|line| line.contains(SECRET)).count(),
+        1,
+        "the message must be logged on one line, not duplicated:\n{logs}"
     );
 }
 

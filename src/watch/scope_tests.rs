@@ -164,7 +164,7 @@ fn a_scope_walk_error_logs_no_raw_path() {
 /// path-free category. The notify backend attaches the raw path to the
 /// error, which `Display` would have written into the log.
 #[test]
-fn a_failed_scope_watch_logs_no_raw_path() {
+fn honest_log_a_failed_scope_watch_logs_its_cause_and_path() {
     let project = tempfile::tempdir().expect("project dir");
     let root = project.path().to_path_buf();
     let missing = root.join("missing-directory");
@@ -200,8 +200,8 @@ fn a_failed_scope_watch_logs_no_raw_path() {
         "the failure must carry the notify error category, captured: {logs}"
     );
     assert!(
-        !logs.contains(&raw_path),
-        "the raw directory path must not be logged, captured: {logs}"
+        logs.contains(&raw_path),
+        "the notify error's Display (cause and path) must be logged, captured: {logs}"
     );
 }
 
@@ -210,7 +210,7 @@ fn a_failed_scope_watch_logs_no_raw_path() {
 /// FSEvents backend treats removing an unknown path as a no-op.
 #[cfg(target_os = "linux")]
 #[test]
-fn a_failed_scope_unwatch_logs_no_raw_path() {
+fn honest_log_a_failed_scope_unwatch_logs_its_cause_and_path() {
     let project = tempfile::tempdir().expect("project dir");
     let root = project.path().to_path_buf();
     let never_watched = root.join("removed-directory");
@@ -253,8 +253,8 @@ fn a_failed_scope_unwatch_logs_no_raw_path() {
         "the failure must carry the notify error category, captured: {logs}"
     );
     assert!(
-        !logs.contains(&raw_path),
-        "the raw directory path must not be logged, captured: {logs}"
+        logs.contains(&raw_path),
+        "the notify error's Display (cause and path) must be logged, captured: {logs}"
     );
 }
 

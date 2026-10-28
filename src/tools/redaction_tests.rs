@@ -1,5 +1,7 @@
-//! C13 redaction contract: no tool-call logging path may emit SQL text,
-//! finding content, or source content into the logs.
+//! C13 redaction contract: no tool-call logging path may emit tool
+//! arguments, tool results, or file content (SQL text, finding content,
+//! indexed source) into the logs. Error messages are not covered: they are
+//! logged by design, once, by `server_runner::log_completion`.
 //!
 //! Every tool handler logs only structural metadata (revision id, counts,
 //! file paths, ids) and never the payloads an AI actually cares about —

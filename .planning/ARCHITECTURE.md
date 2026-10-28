@@ -302,8 +302,11 @@ completed"` at INFO on success and WARN on failure, carrying `outcome`
 deltas observed across the call. The counters cannot be reset and concurrent
 calls bump them too, so they are logged as deltas — never as absolutes or as
 this call's exclusive share; a delta can cover a sibling call running at the
-same time. Nothing else is logged: no tool arguments, no results (see the
-redaction contract in `tools/redaction_tests.rs`).
+same time. On failure the line also carries `error_class`, the machine
+`code`, and `error`, the `ErrorData` message: error messages are logged by
+design, once, here (the default log filter caps rmcp's own `response error`
+line, so a failure is never logged twice). Tool arguments and results are
+never logged (see the redaction contract in `tools/redaction_tests.rs`).
 
 A session's call sequence is recoverable by grepping one session id. With
 `SLUGAUDIT_LOG_FORMAT=json`:
@@ -697,9 +700,12 @@ SlugAudit is designed to assist with auditing codebases. `report` surfaces a
 `credential_pattern_file_count` so the agent is aware it is handling
 credential-shaped content rather than silently reading secrets
 (`src/tools/report.rs`), and `leads` can return the matching file paths. All
-query parameters, finding text, and source contents are kept out of log
-emissions (`src/tools/redaction_tests.rs`); the tool-call span logs only the
-tool name and timing/outcome.
+tool arguments (query parameters, finding text), tool results, and file
+contents are kept out of log emissions (`src/tools/redaction_tests.rs`). Error
+messages and the real paths they name are not covered: they are logged by
+design, once, at WARN, so a failure is diagnosable from the log alone. The
+default filter is `warn,slugaudit_mcp_rust=info,rmcp=error`; `RUST_LOG`
+overrides it.
 
 ## Process lifecycle
 
@@ -755,7 +761,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 121 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 122 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only

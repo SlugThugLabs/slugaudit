@@ -158,13 +158,14 @@ async fn acquire_and_run<T: Send + 'static>(
 /// success stays INFO, and `outcome` makes the single marker greppable for
 /// the sequence log.
 ///
-/// A failure line carries only static, non-user data: the JSON-RPC error
-/// class (`error_class`), the closed-set machine code from `ErrorData.data`
-/// when the producer attached one (`code`, `"none"` otherwise), and the
-/// counters. `ErrorData::message` is deliberately never logged — producers
-/// embed project paths and SQL fragments in it (e.g.
-/// `tools::structure_source`, `tools::finding`, `tools::query_exec`) — but
-/// it still reaches the caller unchanged.
+/// A failure line carries the JSON-RPC error class (`error_class`), the
+/// closed-set machine code from `ErrorData.data` when the producer attached
+/// one (`code`, `"none"` otherwise), the counters, and `error`, the
+/// `ErrorData::message` (the cause the caller also receives). Error messages
+/// are logged by design, once, here; the rmcp `response error` line is
+/// capped by the default filter so a failure is never logged twice. The
+/// redaction contract covers tool arguments, results and file content, not
+/// error messages.
 fn log_completion(
     span: &tracing::Span,
     counters_before: crate::tools::ToolCounters,
@@ -178,12 +179,9 @@ fn log_completion(
     // lifetime — concurrent calls' bumps are included, which is why it is
     // logged as a delta and never as an absolute or as this call's share.
     let counters_after = crate::tools::ToolCounters::record_call(error.is_none(), elapsed_ms);
-    let calls_delta = counters_after
-        .call_count
-        .saturating_sub(counters_before.call_count);
-    let errors_delta = counters_after
-        .error_count
-        .saturating_sub(counters_before.error_count);
+    let delta = |after: u64, before: u64| after.saturating_sub(before);
+    let calls_delta = delta(counters_after.call_count, counters_before.call_count);
+    let errors_delta = delta(counters_after.error_count, counters_before.error_count);
     let _guard = span.enter();
     match error {
         None => tracing::info!(
@@ -198,6 +196,7 @@ fn log_completion(
             outcome = "error",
             error_class = error.code.0,
             code = machine_code(error).unwrap_or("none"),
+            error = %error.message,
             calls_delta,
             errors_delta,
             "tool call completed",
@@ -207,7 +206,7 @@ fn log_completion(
 
 /// The machine-readable failure code a producer attached to `ErrorData.data`
 /// (`error_codes::payload`), if any. The set is closed and static, so the
-/// value is safe to log; the human message beside it is not.
+/// value is safe to use as a stable key.
 fn machine_code(error: &ErrorData) -> Option<&str> {
     error.data.as_ref()?.get("code")?.as_str()
 }

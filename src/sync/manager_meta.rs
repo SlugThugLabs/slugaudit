@@ -14,7 +14,6 @@ use crate::error_codes::{self, ErrorCode};
 use crate::parse;
 use crate::project;
 use crate::store;
-use crate::util::redacted_path;
 use rmcp::ErrorData;
 use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
@@ -212,19 +211,21 @@ pub(crate) fn map_publish_error(
     error: publish::PublishError,
     warn_message: &str,
 ) -> ErrorData {
-    // Correlate by category and redacted path id, never by `Display`, whose
-    // text embeds absolute or project-relative paths.
+    // Category, real path and the error's `Display` (the cause) are logged
+    // so the failure can be diagnosed from the log alone.
     let (error_kind, path) = publish_log::failure_fields(&error);
     match path {
         Some(path) => tracing::debug!(
-            root_id = %redacted_path(root),
+            root = %root.display(),
             error_kind,
-            path_id = %redacted_path(path),
+            path = %path.display(),
+            error = %error,
             "{warn_message}"
         ),
         None => tracing::debug!(
-            root_id = %redacted_path(root),
+            root = %root.display(),
             error_kind,
+            error = %error,
             "{warn_message}"
         ),
     }

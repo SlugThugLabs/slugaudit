@@ -132,9 +132,9 @@ fn a_database_open_failure_warning_logs_no_raw_path() {
 
 /// R12: a dirty path that cannot be read reaches the reconcile log as
 /// `HashError::Read { path: <absolute> }`, which `Display` formats. The
-/// record must carry a static kind and a redacted path id instead.
+/// record carries the static kind, the real path and the OS cause.
 #[test]
-fn a_dirty_file_read_failure_logs_a_redacted_kind_not_display() {
+fn honest_log_a_dirty_file_read_failure_logs_the_real_path_and_cause() {
     let manager = SourceSyncManager::with_watcher();
     let project = create_project();
     write_file(&project, "lib.rs", b"pub fn a() {}\n");
@@ -147,8 +147,6 @@ fn a_dirty_file_read_failure_logs_a_redacted_kind_not_display() {
     let state = manager.active_watch_state().expect("registered state");
     state.mark_dirty("blocker/child.rs".to_owned());
     let absolute = project.path().join("blocker/child.rs");
-    let expected_id = crate::util::redacted_path(&absolute);
-    let raw_root = project.path().to_string_lossy().to_string();
 
     let (result, logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("capture liveness control for reconcile_drain");
@@ -170,24 +168,20 @@ fn a_dirty_file_read_failure_logs_a_redacted_kind_not_display() {
         "the record must carry the static error category:\n{logs}"
     );
     assert!(
-        records[0].contains(&format!("path_id=Some(\"{expected_id}\")")),
-        "the file must be named by its redacted id:\n{logs}"
+        records[0].contains(&format!("path=Some(\"{}\")", absolute.display())),
+        "the file must be named by its real path:\n{logs}"
     );
     assert!(
-        !logs.contains("blocker/child.rs") && !logs.contains(&raw_root),
-        "neither the relative nor the absolute path may be logged:\n{logs}"
-    );
-    assert!(
-        !logs.contains("Not a directory") && !logs.contains("failed to read"),
-        "the error Display must not be logged:\n{logs}"
+        records[0].contains("Not a directory"),
+        "the OS cause must be logged:\n{logs}"
     );
 }
 
-/// R12: `ReconcileError::TimeBudgetExceeded` embeds a pre-formatted note
-/// naming the path being processed. The record must carry a static kind and
-/// a redacted id, never the note.
+/// `ReconcileError::TimeBudgetExceeded` embeds a pre-formatted note naming
+/// the path being processed. The record carries the static kind, the real
+/// root and the note.
 #[test]
-fn a_reconcile_budget_failure_logs_a_redacted_kind_not_display() {
+fn honest_log_a_reconcile_budget_failure_logs_the_root_and_note() {
     let root = std::path::Path::new("/home/private-user/secret-repo");
     let note = "while processing src/private-name.rs";
     let error =
@@ -195,7 +189,6 @@ fn a_reconcile_budget_failure_logs_a_redacted_kind_not_display() {
             path: format!(" {note}"),
             elapsed_ms: 42,
         });
-    let expected_id = crate::util::redacted_log_id(note);
 
     let ((), logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("capture liveness control for reconcile_budget");
@@ -218,13 +211,11 @@ fn a_reconcile_budget_failure_logs_a_redacted_kind_not_display() {
         "the record must carry the static error category:\n{logs}"
     );
     assert!(
-        records[0].contains(&format!("path_id=Some(\"{expected_id}\")")),
-        "the pending file must be named by a redacted id:\n{logs}"
+        records[0].contains(&format!("path=Some(\"{note}\")")),
+        "the pending file note must be logged:\n{logs}"
     );
     assert!(
-        !logs.contains("src/private-name.rs")
-            && !logs.contains("while processing")
-            && !logs.contains("private-user"),
-        "the budget note and root path must not be logged:\n{logs}"
+        records[0].contains("root=/home/private-user/secret-repo"),
+        "the real root must be logged:\n{logs}"
     );
 }
