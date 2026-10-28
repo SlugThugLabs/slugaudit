@@ -29,6 +29,10 @@
       "description": "Session-gated finding query \u2014 returns only the current agent session's findings."
     },
     {
+      "name": "finding_sessions",
+      "description": "List earlier sessions' findings (kept, marked stale, hidden from finding_read) and adopt one into the current session."
+    },
+    {
       "name": "project_control",
       "description": "Enable or disable a project \u2014 creates the activation marker and runs the first import, or purges the project database."
     },

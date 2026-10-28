@@ -111,9 +111,12 @@ fn read_scope_sections(connection: &Transaction<'_>) -> Result<ScopeSections, ru
 /// resolution, edge totals, diagnostics, unmodeled import syntax, and
 /// credential-shaped paths.
 fn read_graph_sections(connection: &Transaction<'_>) -> Result<GraphSections, rusqlite::Error> {
-    let open_finding_count = scalar_count(
-        connection,
-        "SELECT count(*) FROM findings WHERE status = 'current'",
+    // Only this session's findings: earlier sessions' rows are stale or
+    // another live session's, and `finding_read` would not return them.
+    let open_finding_count: i64 = connection.query_row(
+        "SELECT count(*) FROM findings WHERE status = 'current' AND session_id = ?1",
+        [super::context::session_id().to_string()],
+        |row| row.get(0),
     )?;
     let import_resolution = grouped_import_resolution(connection)?;
     // The same edges counted by direction — the zero-decision entry point

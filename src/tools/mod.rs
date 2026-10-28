@@ -13,6 +13,7 @@ pub(crate) mod context;
 mod finding;
 mod finding_insert;
 mod finding_read;
+mod finding_sessions;
 mod health;
 mod health_phase;
 mod health_result_store;
@@ -82,6 +83,10 @@ pub use context::{
 };
 pub use finding::{FindingRequest, FindingResponse, finding};
 pub use finding_read::{FindingReadEntry, FindingReadRequest, FindingReadResponse, finding_read};
+pub use finding_sessions::{
+    FindingSessionsAction, FindingSessionsRequest, FindingSessionsResponse, PriorSession,
+    finding_sessions,
+};
 pub use health::{HealthRequest, HealthResponse, health};
 pub use leads::{
     CompactLeadRow, FileCount, LeadMode, LeadRow, LeadRows, LeadsRequest, LeadsResponse,

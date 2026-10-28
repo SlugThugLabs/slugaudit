@@ -449,6 +449,118 @@
     {
       "annotations": {
         "destructiveHint": false,
+        "readOnlyHint": false
+      },
+      "description": "A restart starts a new session: `finding_read` shows only this session's findings, and earlier sessions' findings are kept but marked stale. Supply `path` (any path in the active project) and `action`. `list` returns earlier sessions with `session_id`, `started_at_unix` (their first finding) and `findings`. `adopt` with a `session_id` from `list` makes that session's findings yours, so `finding_read` returns them; each reads `current` if its file is unchanged, else `stale`. Adopt only when you are continuing that audit; nothing is ever deleted.",
+      "inputSchema": {
+        "$defs": {
+          "FindingSessionsAction": {
+            "description": "What to do with earlier sessions' findings.",
+            "oneOf": [
+              {
+                "const": "list",
+                "description": "List earlier sessions that still have findings in the database.",
+                "type": "string"
+              },
+              {
+                "const": "adopt",
+                "description": "Re-tag one earlier session's findings to the current session.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "action": {
+            "$ref": "#/$defs/FindingSessionsAction",
+            "description": "`list` earlier sessions, or `adopt` one by `session_id`"
+          },
+          "path": {
+            "description": "Any path inside the active project, used to select the database",
+            "type": "string"
+          },
+          "session_id": {
+            "default": null,
+            "description": "Session id from `list`; required for `adopt`, refused for `list`",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "finding_sessions",
+      "outputSchema": {
+        "$defs": {
+          "PriorSession": {
+            "description": "One earlier session that still has findings in the database.",
+            "properties": {
+              "findings": {
+                "description": "How many findings the session still has, current or stale.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "session_id": {
+                "description": "The session's id, exactly as stored on its findings.",
+                "type": "string"
+              },
+              "started_at_unix": {
+                "description": "Unix seconds of the session's earliest finding; the findings table\nstores no separate session start.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "session_id",
+              "started_at_unix",
+              "findings"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "adopted": {
+            "description": "For `adopt`: how many findings now belong to the current session; null\nfor `list`. Adopted findings read `current` when their file still\nhas the content hash they were written against, else `stale`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sessions": {
+            "description": "For `list`: earlier sessions, newest first, at most 100; empty for\n`adopt`.",
+            "items": {
+              "$ref": "#/$defs/PriorSession"
+            },
+            "type": "array"
+          },
+          "total_sessions": {
+            "description": "For `list`: the exact number of earlier sessions, which may exceed\n`sessions.len()`; 0 for `adopt`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sessions",
+          "total_sessions"
+        ],
+        "type": "object"
+      },
+      "title": "List or adopt earlier sessions' findings"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
         "readOnlyHint": true
       },
       "description": "What state the server is in and what to do next: `phase`, `remedy` (the call to make when no project is served), `watcher.health`, and `database.revision_id` / `database.file_count`. Read-only: never syncs, never mutates, and answers a path that is not an enabled project with `phase: disabled` instead of an error. Pass `path` for a project's database state; without it only the registered project's watcher is reported. `verbose: true` adds `detail`, the operator view (unreconciled watcher counts, parser pack version, skipped files, process counters, host memory, the mechanic scan cache).",

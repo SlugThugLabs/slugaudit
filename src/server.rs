@@ -89,8 +89,8 @@ const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — sym
     AsciiDoc, Org, plain-text and ignore-list files are `language = 'prose'`: stored, never parsed.\n\n\
     OTHER TOOLS: `report` is the project snapshot. `structure` runs a Tree-sitter query (at least \
     one capture) on one `file` or a whole `language`. `finding` records a conclusion you reviewed, \
-    bound to the file's content hash (stale once it changes), visible only to this session; \
-    `finding_read` reads them. `project_control` `on` enables and indexes a project, `off` disables \
+    bound to the file hash (stale on change), session-scoped; `finding_read` \
+    reads them, `finding_sessions` adopts earlier ones. `project_control` `on` enables and indexes a project, `off` disables \
     it. `health` reports phase and next action; `verbose: true` adds detail.\n\n\
     FLOW: report → leads → mechanic add for shapes you decide matter → query/structure → read source \
     only where evidence points → finding.\n\n\

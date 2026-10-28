@@ -120,9 +120,12 @@ diagnostics, session findings.
 - Runtime data lives in `<project>/.planning/slugaudit/project.db` (+ sidecars):
   disposable derived data, excluded from discovery, gitignored via
   `/.planning/slugaudit/` (`.gitignore`). Findings are session-scoped and prior
-  sessions' rows are purged on the first sync of each process/session, once per
-  project database (`src/sync/manager_meta.rs::purge_prior_session_findings`,
-  gated by the manager's purge-done state); later tool calls never repeat it.
+  sessions' rows are marked `stale` (never deleted) on the first sync of each
+  process/session, once per project database
+  (`src/sync/manager_meta.rs::mark_prior_session_findings_stale`, gated by the
+  manager's `prior_sessions_staled` state); later tool calls never repeat it.
+  `finding_read` and `report` count only the current session; `finding_sessions`
+  lists and adopts earlier sessions.
 
 `src/server.rs`'s `INSTRUCTIONS` constant is the primary usage doc and ships
 inside the binary; keep it and this file consistent when the surface changes.

@@ -11,14 +11,13 @@ use rusqlite::Connection;
 /// Acquires the shared [`SESSION_TEST_LOCK`] and runs `f`. Every test
 /// here both writes findings (stamped with the process-global
 /// `session_id()`) and reads them back scoped by that same id; it also
-/// calls `finding_read`, whose `ensure_synced` runs the session-scoped
-/// purge (`DELETE FROM findings WHERE session_id != ?`). Without the
+/// calls `finding_read`, whose `ensure_synced` runs the session-start
+/// transition (marking other sessions' findings stale). Without the
 /// lock, a sibling session-flipping test (one calling
 /// `override_session_id_for_test`) could flip the global between this
-/// test's write and read — making the read come back empty — or
-/// trigger the purge against this test's rows. Holding the shared lock
-/// for the whole write→sync→read cycle keeps the session stable and
-/// keeps the purge from ever targeting these rows.
+/// test's write and read, making the read come back empty or marking
+/// this test's rows stale. Holding the shared lock for the whole
+/// write→sync→read cycle keeps the session stable.
 pub(super) fn with_stable_session<T>(f: impl FnOnce() -> T) -> T {
     let _guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     f()
@@ -121,7 +120,7 @@ fn finding_persists_and_is_readable() {
         assert!(finding.id > 0);
 
         // Open read-only to verify the row is in the DB before going
-        // through finding_read (which calls ensure_synced and purge).
+        // through finding_read (which calls ensure_synced and the session-start marking).
         let conn = store::open_read_only(&db_path(&project)).expect("open db");
         let count: i64 = conn
             .query_row("SELECT count(*) FROM findings", [], |r| r.get(0))
