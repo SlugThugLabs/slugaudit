@@ -41,6 +41,8 @@ src/
 ├── update_fetch.rs           network + version helpers for self-update
 ├── connect.rs                register/remove this binary with a target agent
 ├── connect/                  submodule directory of the file module above
+│   ├── config_atomic.rs      atomic mode-preserving replacement of a client config
+│   ├── config_atomic_tests.rs mode preservation and key order of config writes
 │   ├── config_file.rs        JSON config probe/merge/remove for register and disconnect
 │   ├── config_file_tests.rs  removal truthfulness, atomic mode/symlink, typed I/O failures
 │   └── registry_types.rs     client model types (Strategy, ConfigShape, Evidence, Dialect)

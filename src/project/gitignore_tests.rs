@@ -279,3 +279,18 @@ fn a_dangling_gitignore_symlink_is_reported_rather_than_replaced() {
         "the write does not create the missing target"
     );
 }
+
+#[test]
+fn gitignore_write_syncs_the_parent_and_lands_the_content() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let destination = dir.path().join(".gitignore");
+
+    write_gitignore_atomically(&destination, b"a\n", b".planning/slugaudit/\n")
+        .expect("write and sync the directory");
+
+    assert_eq!(
+        fs::read(&destination).expect("read back"),
+        b"a\n.planning/slugaudit/\n"
+    );
+    assert_eq!(temp_leftovers(dir.path()), 0);
+}

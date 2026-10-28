@@ -200,6 +200,21 @@ fn write_gitignore_atomically(
         remove_abandoned_temp(&temp);
         return Err(error);
     }
+    // Commit the rename itself, as the project config writer does.
+    sync_directory(directory)
+}
+
+/// Commits the rename: on Unix a directory is opened and `fsync`ed like a
+/// file.
+#[cfg(unix)]
+fn sync_directory(directory: &Path) -> std::io::Result<()> {
+    std::fs::File::open(directory).and_then(|handle| handle.sync_all())
+}
+
+/// Windows cannot open a directory as a `File` without extra flags; the
+/// rename itself is still atomic.
+#[cfg(not(unix))]
+fn sync_directory(_directory: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
