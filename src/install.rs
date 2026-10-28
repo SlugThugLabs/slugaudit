@@ -71,6 +71,18 @@ pub enum InstallError {
     /// `$SHELL` is set but not valid UTF-8, so no shell config can be chosen.
     #[error("$SHELL is not valid UTF-8, so the shell config to edit cannot be chosen")]
     ShellNotUnicode,
+    /// `$SHELL` is unset or names a shell this tool does not know, so no
+    /// shell config is edited.
+    #[error(
+        "$SHELL is unset or unrecognized ({shell:?}), so no shell config was edited; \
+         add this line to your shell's startup file: {line}"
+    )]
+    UnknownShell {
+        /// The `$SHELL` value, empty when unset.
+        shell: String,
+        /// The exact POSIX-shell line to add by hand.
+        line: String,
+    },
     /// Publishing the staged binary (copy, permissions or atomic rename)
     /// failed.
     #[error(transparent)]
@@ -109,9 +121,10 @@ pub const PREVIOUS_BINARY_NAME: &str = "slugaudit.prev";
 ///
 /// Called **before** the replacement rename. That preserves the existing
 /// property that a crash during replacement leaves the current binary intact,
-/// and it means the retained copy is a complete file rather than one caught
-/// mid-write. The copy keeps the source's permission bits, so reverting needs
-/// no separate `chmod`.
+/// and it means the retained copy is a complete file. The copy is written to a
+/// temporary file, synced, then renamed over `slugaudit.prev`, so a failure
+/// part-way leaves any existing retained copy untouched. It keeps the source's
+/// permission bits, so reverting needs no separate `chmod`.
 pub(crate) fn retain_previous_binary(target: &Path) -> Result<Option<PathBuf>, std::io::Error> {
     if !target.try_exists()? {
         return Ok(None);
@@ -120,7 +133,24 @@ pub(crate) fn retain_previous_binary(target: &Path) -> Result<Option<PathBuf>, s
         return Ok(None);
     };
     let previous = directory.join(PREVIOUS_BINARY_NAME);
-    std::fs::copy(target, &previous)?;
+    let temporary = directory.join(format!(
+        ".{PREVIOUS_BINARY_NAME}.{}.tmp",
+        std::process::id()
+    ));
+    let staged = std::fs::copy(target, &temporary).and_then(|_| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&temporary)?
+            .sync_all()?;
+        std::fs::rename(&temporary, &previous)
+    });
+    if let Err(error) = staged {
+        crate::install_place::remove_leftover(
+            &temporary,
+            "could not remove staged previous binary",
+        );
+        return Err(error);
+    }
     Ok(Some(previous))
 }
 
