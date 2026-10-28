@@ -1,7 +1,7 @@
 //! Network + version helpers for self-update, kept in their own module so
-//! `update.rs` stays under the small-file rule cap. Nothing here touches the
-//! filesystem; it only builds URLs, parses the GitHub releases API, and
-//! compares versions — all unit-testable without a network call.
+//! `update.rs` stays under the small-file rule cap. It builds URLs, parses the GitHub releases API, and
+//! compares versions — all unit-testable without a network call. The one
+//! file it touches is a partial download it removes on failure.
 
 use super::UpdateError;
 use std::path::Path;
@@ -52,17 +52,18 @@ impl LatestRelease {
 
         let mut release = Self::from_tag(tag);
         if let Some(assets) = json.get("assets").and_then(|a| a.as_array()) {
-            for asset in assets {
-                let name = asset.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                let url = asset.get("browser_download_url").and_then(|u| u.as_str());
-                if name == ASSET
-                    && let Some(u) = url
-                {
-                    release.asset_url = u.to_string();
-                } else if name == "SHA256SUMS"
-                    && let Some(u) = url
-                {
-                    release.checksums_url = u.to_string();
+            for (index, asset) in assets.iter().enumerate() {
+                let field = |key: &str| asset.get(key).and_then(|v| v.as_str());
+                let (Some(name), Some(url)) = (field("name"), field("browser_download_url")) else {
+                    return Err(UpdateError::Json(format!(
+                        "release asset entry {index} is missing a string `name` or \
+                         `browser_download_url`"
+                    )));
+                };
+                if name == ASSET {
+                    release.asset_url = url.to_string();
+                } else if name == "SHA256SUMS" {
+                    release.checksums_url = url.to_string();
                 }
             }
         }
@@ -116,12 +117,15 @@ pub(crate) fn download(url: &str, dest: &Path, action: &'static str) -> Result<(
         .arg(dest)
         .output()
         .map_err(|error| {
+            crate::install_place::remove_leftover(dest, "could not remove partial download");
             wrap(UpdateError::ToolSpawn {
                 tool: "curl",
                 source: error,
             })
         })?;
     if !output.status.success() {
+        // curl may have left a partial file at `dest`.
+        crate::install_place::remove_leftover(dest, "could not remove partial download");
         return Err(wrap(UpdateError::Network(
             String::from_utf8_lossy(&output.stderr).trim().to_string(),
         )));

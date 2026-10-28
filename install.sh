@@ -10,6 +10,17 @@ TARGET_PATH="${INSTALL_DIR}/${BINARY_NAME}"
 PREVIOUS_PATH="${TARGET_PATH}.prev"
 GITHUB_REPO="SlugThugLabs/slugaudit"
 
+# Temp dir for downloads and cargo builds; removed on every exit path.
+TMP_DIR=""
+cleanup() {
+    if [ -n "${TMP_DIR}" ]; then
+        rm -rf "${TMP_DIR}"
+    fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # Retains the binary being replaced as "${TARGET_PATH}.prev", so a version that
 # turns out to be worse than the one it replaced can be restored with a copy.
 # Fails closed: installing silently without a retained copy would leave the
@@ -29,7 +40,7 @@ retain_previous() {
 }
 
 # Print banner
-echo -e "\033[36m"
+printf '\033[36m\n'
 cat << 'BANNER'
   ____  _             _             _ _ _   
  / ___|| |_   _  __ _/ \  _   _  __| (_) |_ 
@@ -38,8 +49,8 @@ cat << 'BANNER'
  |____/|_|\__,_|\__, /_/   \_\__,_|\__,_|_|\__|
                 |___/                          
 BANNER
-echo -e "\033[0m"
-echo "🐌 SlugAudit Installer: Codebase Intelligence over MCP"
+printf '\033[0m\n'
+echo "SlugAudit Installer: Codebase Intelligence over MCP"
 echo "--------------------------------------------------------"
 
 # Detect OS and Architecture
@@ -69,7 +80,6 @@ elif [ "${OS}" = "Linux" ] && [ "${ARCH}" = "x86_64" ]; then
         wget -qO "${TMP_FILE}" "${DOWNLOAD_URL}"
         wget -qO "${TMP_SUMS}" "${CHECKSUM_URL}"
     else
-        rm -rf "${TMP_DIR}"
         echo "Error: curl or wget is required to download SlugAudit." >&2
         exit 1
     fi
@@ -77,28 +87,27 @@ elif [ "${OS}" = "Linux" ] && [ "${ARCH}" = "x86_64" ]; then
     echo "==> Verifying SHA256 checksum..."
     if command -v sha256sum >/dev/null 2>&1; then
         (cd "${TMP_DIR}" && sha256sum --check --ignore-missing SHA256SUMS >/dev/null 2>&1) || {
-            rm -rf "${TMP_DIR}"
             echo "Error: SHA256 checksum verification failed." >&2
             exit 1
         }
     elif command -v shasum >/dev/null 2>&1; then
         (cd "${TMP_DIR}" && shasum -a 256 --check --ignore-missing SHA256SUMS >/dev/null 2>&1) || {
-            rm -rf "${TMP_DIR}"
             echo "Error: SHA256 checksum verification failed." >&2
             exit 1
         }
     else
-        rm -rf "${TMP_DIR}"
         echo "Error: sha256sum or shasum is required to verify the downloaded binary." >&2
         exit 1
     fi
 
     retain_previous
     install -m 0755 "${TMP_FILE}" "${TARGET_PATH}"
-    rm -rf "${TMP_DIR}"
 elif command -v cargo >/dev/null 2>&1; then
     echo "==> Installing via cargo..."
-    cargo install --git "https://github.com/${GITHUB_REPO}.git" --bin slugaudit
+    TMP_DIR="$(mktemp -d)"
+    cargo install --git "https://github.com/${GITHUB_REPO}.git" --bin slugaudit --root "${TMP_DIR}"
+    retain_previous
+    install -m 0755 "${TMP_DIR}/bin/slugaudit" "${TARGET_PATH}"
 else
     echo "Error: Pre-built binary currently available for Linux x86_64."
     echo "To build on ${OS} (${ARCH}), install Rust (https://rustup.rs) and run: cargo install --git https://github.com/${GITHUB_REPO}.git"
@@ -106,7 +115,7 @@ else
 fi
 
 echo ""
-echo "✅ SlugAudit successfully installed to: ${TARGET_PATH}"
+echo "SlugAudit successfully installed to: ${TARGET_PATH}"
 echo ""
 if [ -f "${PREVIOUS_PATH}" ]; then
     echo "The version this replaced is kept at: ${PREVIOUS_PATH}"

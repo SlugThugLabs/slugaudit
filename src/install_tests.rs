@@ -63,6 +63,26 @@ fn a_retained_binary_keeps_the_permissions_of_the_binary_it_replaced() {
     assert_eq!(mode, 0o755, "restoring it must not need a chmod");
 }
 
+/// A copy that fails part-way must leave the last good `.prev` untouched and
+/// no temporary file behind.
+#[test]
+fn retain_previous_failure_keeps_the_old_copy_and_leaves_no_temp() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let target = directory.path().join("slugaudit");
+    std::fs::create_dir(&target).expect("a directory cannot be copied as a file");
+    let previous = directory.path().join(PREVIOUS_BINARY_NAME);
+    std::fs::write(&previous, b"last good").expect("seed prev");
+
+    retain_previous_binary(&target).expect_err("copying a directory fails");
+
+    assert_eq!(std::fs::read(&previous).expect("read prev"), b"last good");
+    let names: Vec<_> = std::fs::read_dir(directory.path())
+        .expect("list")
+        .map(|e| e.expect("entry").file_name())
+        .collect();
+    assert_eq!(names.len(), 2, "only target and prev remain: {names:?}");
+}
+
 /// A first install displaces nothing, so it retains nothing and creates no
 /// stray file.
 #[test]

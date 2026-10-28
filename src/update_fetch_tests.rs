@@ -275,3 +275,47 @@ fn download_reports_a_failing_curl_as_network() {
         "the failing download went to the fake, not the network: {argv}"
     );
 }
+
+#[test]
+fn update_fetch_malformed_asset_entry_names_its_index() {
+    let json = serde_json::json!({
+        "tag_name": "v1.0.3",
+        "assets": [
+            {"name": "SHA256SUMS", "browser_download_url": "https://x/SHA256SUMS"},
+            {"name": "slugaudit-x86_64-unknown-linux-gnu"}
+        ]
+    });
+
+    let Err(UpdateError::Json(message)) = LatestRelease::from_json(&json) else {
+        panic!("expected a Json error for the malformed entry");
+    };
+
+    assert!(message.contains("asset entry 1"), "{message}");
+}
+
+#[test]
+fn update_fetch_failed_download_removes_the_partial_file() {
+    let bin = tempfile::tempdir().expect("temp dir");
+    let script = bin.path().join("curl");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nfor a; do last=\"$a\"; done\nprintf partial > \"$last\"\nexit 22\n",
+    )
+    .expect("write fake curl");
+    make_executable(&script);
+    let destination = bin.path().join("asset");
+
+    let result = with_replaced_path(bin.path(), || {
+        download(
+            "https://example.invalid/asset",
+            &destination,
+            "download binary to",
+        )
+    });
+
+    assert!(
+        matches!(result, Err(UpdateError::Download { .. })),
+        "{result:?}"
+    );
+    assert!(!destination.exists(), "the partial file must be removed");
+}
