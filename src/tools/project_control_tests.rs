@@ -421,7 +421,7 @@ fn on_action_with_profile_writes_config_json() {
     assert!(cfg_file.exists(), "config.json should be written");
     let content = fs::read_to_string(cfg_file).expect("read config");
     assert_eq!(
-        content, "{\n  \"profile\": \"audit\"\n}",
+        content, "{\n  \"profile\": \"audit\"\n}\n",
         "the profile config keeps the pretty-printed shape and the exact profile name"
     );
 }
