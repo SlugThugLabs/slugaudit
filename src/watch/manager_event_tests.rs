@@ -435,7 +435,7 @@ fn a_scope_that_is_no_longer_truncated_moves_partial_back_to_healthy() {
 /// `about [paths]`, so formatting it would put the absolute project path in
 /// the log despite the redacted id.
 #[test]
-fn a_failed_project_watch_logs_no_raw_path() {
+fn honest_log_a_failed_project_watch_logs_its_cause_and_path() {
     let project = temp_project();
     let missing = project.path().join("missing-root");
     let raw_path = missing.to_string_lossy().to_string();
@@ -460,16 +460,15 @@ fn a_failed_project_watch_logs_no_raw_path() {
         "the failure must carry the notify error category, captured: {logs}"
     );
     assert!(
-        !logs.contains(&raw_path),
-        "the raw project path must not be logged, captured: {logs}"
+        logs.contains(&raw_path),
+        "the notify error's Display (cause and path) must be logged, captured: {logs}"
     );
 }
 
-/// R12: the shared watcher-failure log never formats `notify::Error`, which
-/// appends `about [paths]` in its `Display`; it records the category and how
-/// many paths the error carried instead.
+/// The shared watcher-failure log records the category, how many paths the
+/// error carried, and the error's `Display` (which appends `about [paths]`).
 #[test]
-fn a_watcher_failure_log_line_carries_no_embedded_paths() {
+fn honest_log_a_watcher_failure_log_line_carries_the_error_and_its_paths() {
     let raw = Path::new("/home/private-project/src");
     let error = notify::Error::new(notify::ErrorKind::WatchNotFound).add_path(raw.to_path_buf());
 
@@ -495,8 +494,8 @@ fn a_watcher_failure_log_line_carries_no_embedded_paths() {
         "the failure must report how many paths the error carried, captured: {logs}"
     );
     assert!(
-        !logs.contains("/home/private-project/src"),
-        "a path embedded in the notify error must not reach the log, captured: {logs}"
+        logs.contains("/home/private-project/src"),
+        "the notify error's Display must reach the log, captured: {logs}"
     );
 }
 
@@ -548,7 +547,7 @@ fn a_poisoned_manager_mutex_is_recovered_with_structured_context() {
 /// error, which `Display` would have written into the log.
 #[cfg(target_os = "linux")]
 #[test]
-fn a_failed_project_unwatch_logs_no_raw_path() {
+fn honest_log_a_failed_project_unwatch_logs_its_cause_and_path() {
     let project = temp_project();
     let missing = project.path().join("never-watched");
     let raw_path = missing.to_string_lossy().to_string();
@@ -572,8 +571,8 @@ fn a_failed_project_unwatch_logs_no_raw_path() {
         "the failure must carry the notify error category, captured: {logs}"
     );
     assert!(
-        !logs.contains(&raw_path),
-        "the raw project path must not be logged, captured: {logs}"
+        logs.contains(&raw_path),
+        "the notify error's Display (cause and path) must be logged, captured: {logs}"
     );
 }
 

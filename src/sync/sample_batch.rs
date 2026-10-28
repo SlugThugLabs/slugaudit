@@ -319,10 +319,9 @@ impl Batch<'_> {
 /// instead of silently unwrapped.
 ///
 /// A later worker's distinct failure is still logged once at `warn` — with
-/// a static operation, the error's category, and only a redacted path id —
-/// so it is not silently discarded just because the first failure wins the
-/// return value. Its raw `Display` never enters the log: several variants
-/// embed a path.
+/// a static operation, the error's category, the real path and the error's
+/// `Display` — so it is not silently discarded just because the first
+/// failure wins the return value.
 fn record_error(slot: &Mutex<Option<PublishError>>, error: PublishError) {
     let mut guard = lock_or_recover(slot, "sample_batch_error_slot");
     if guard.is_none() {

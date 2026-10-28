@@ -29,18 +29,20 @@ pub(super) fn log_outcome(
             let (error_kind, path) = failure_fields(error);
             match path {
                 Some(path) => tracing::warn!(
-                    root_id = %crate::util::redacted_path(root),
+                    root = %root.display(),
                     operation = "publish",
                     retries,
                     error_kind,
-                    path_id = %crate::util::redacted_path(path),
+                    path = %path.display(),
+                    error = %error,
                     "publish failed"
                 ),
                 None => tracing::warn!(
-                    root_id = %crate::util::redacted_path(root),
+                    root = %root.display(),
                     operation = "publish",
                     retries,
                     error_kind,
+                    error = %error,
                     "publish failed"
                 ),
             }
@@ -51,11 +53,8 @@ pub(super) fn log_outcome(
 /// The static failure category for a publish error, plus the path the
 /// variant carries when it has one.
 ///
-/// Log sites correlate a failure through these fields instead of the
-/// error's `Display`: `SampleError::Read`/`TooLarge` and
-/// `DiscoveryError::Read` embed an absolute path in their text, and
-/// `ChangedDuringSample`/`InvalidParserRun`/`SamplingResultLost` embed a
-/// project-relative one, all of which the path-logging rule redacts.
+/// Log sites emit these alongside the error's `Display` so a failure can be
+/// filtered by category and by the file it names.
 pub(super) fn failure_fields(error: &PublishError) -> (&'static str, Option<&Path>) {
     match error {
         PublishError::Discovery(error) => discovery_failure_fields(error),
