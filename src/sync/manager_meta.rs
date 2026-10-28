@@ -3,8 +3,8 @@
 //! Split out from `manager.rs` so the sync orchestrator's hot path is
 //! shorter than the small-file rule cap. These helpers are not part
 //! of the orchestrator's runtime concerns — they mediate the project's
-//! SQLite metadata row, the session-scoped cleanup of prior
-//! agent's findings, and the revision lookup that always succeeds or
+//! SQLite metadata row, the session-start marking of prior
+//! agents' findings stale, and the revision lookup that always succeeds or
 //! always returns `None`, respectively.
 
 use super::SyncedProject;
@@ -20,37 +20,38 @@ use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-/// Deletes every `findings` row whose `session_id` does not match
-/// `current_session_id`. This is the cross-session poisoning defense: a
-/// fresh `slugaudit-mcp` process sees the prior session's reasoning
-/// conclusions wiped at its session-start sync, so a new agent (new chat,
-/// new model, new reasoning context) is not silently inheriting the audit
-/// conclusions of whoever was here last.
+/// Marks every `findings` row whose `session_id` does not match
+/// `current_session_id` as `stale` and returns how many rows changed. Rows
+/// are never deleted: a restart or a second session on the same project
+/// must not destroy another session's recorded conclusions. A new audit
+/// starts with a clean default view because `finding_read` selects only the
+/// current session's rows; a continuing session resumes deliberately through
+/// the `finding_sessions` tool (`list`, then `adopt`).
 ///
 /// The caller decides *when* this runs, and must run it only once per
-/// process/session per project database: a live MCP session shares the
-/// database with other live sessions, so repeating the purge on every
-/// tool call would delete their findings mid-session with no response
-/// carrying that deletion. `SourceSyncManager` owns that once-per-session
-/// guard; this function is the single SQL statement it gates.
+/// process/session per project database: repeating it on every tool call
+/// would re-stale the findings a live peer session keeps writing.
+/// `SourceSyncManager` owns that once-per-session guard; this function is the
+/// single SQL statement it gates.
 ///
-/// Side-effect-free against an empty `findings` table; against a large
-/// table the cleanup is bounded to the index-assisted `DELETE` whose
-/// cost matches a `DELETE WHERE session_id = ?` — both run on the
-/// existing `idx_findings_session` index.
-pub(crate) fn purge_prior_session_findings(
+/// Idempotent and bounded: rows already `stale` are skipped, and the scan
+/// runs on the existing `idx_findings_session` index.
+pub(crate) fn mark_prior_session_findings_stale(
     connection: &mut Connection,
     current_session_id: Uuid,
-) -> Result<(), ErrorData> {
+) -> Result<usize, ErrorData> {
     connection
         .execute(
-            "DELETE FROM findings WHERE session_id != ?1",
+            "UPDATE findings SET status = 'stale' \
+             WHERE session_id != ?1 AND status != 'stale'",
             rusqlite::params![current_session_id.to_string()],
         )
         .map_err(|error| {
-            ErrorData::internal_error(format!("purging prior-session findings: {error}"), None)
-        })?;
-    Ok(())
+            ErrorData::internal_error(
+                format!("marking prior-session findings stale: {error}"),
+                None,
+            )
+        })
 }
 
 /// Returns the `revision_id` of the current revision, or `None` if no
@@ -128,12 +129,11 @@ impl From<ProjectMetaError> for ErrorData {
 /// doesn't already exist, then verifies the stored `root_path` still
 /// matches the canonical root this process resolved on later syncs.
 ///
-/// This function is metadata-only. The session-scoped findings purge is
+/// This function is metadata-only. Marking prior sessions' findings stale is
 /// the caller's session-start transition: `SourceSyncManager` runs
-/// [`purge_prior_session_findings`] once per project database per
-/// process/session, then calls this on every sync. Keeping the purge out
-/// of here is what stops a second tool call from deleting another live
-/// session's findings.
+/// [`mark_prior_session_findings_stale`] once per project database per
+/// process/session, then calls this on every sync. Keeping that out of here
+/// is what stops a second tool call from re-staling a live peer's findings.
 ///
 /// The `INSERT OR IGNORE` is safe across concurrent first syncs because
 /// the row is keyed on `id = 1`, a fixed constant. The subsequent

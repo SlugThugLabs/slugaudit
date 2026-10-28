@@ -106,6 +106,8 @@ src/
 │   ├── finding.rs            the single write tool: request/response contract and caps
 │   ├── finding_insert.rs     validation + session-scoped insert-or-refresh of a finding
 │   ├── finding_read.rs       session-gated finding query
+│   ├── finding_sessions.rs   list and adopt earlier sessions' findings
+│   ├── finding_sessions_tests.rs prior-session visibility, list and adopt
 │   ├── finding_read_rows.rs  finding_read row selection and conversion for the result store
 │   ├── finding_read_paged_tests.rs finding_read paged through the result store
 │   ├── project_control.rs    enable/disable a project: contract and handlers

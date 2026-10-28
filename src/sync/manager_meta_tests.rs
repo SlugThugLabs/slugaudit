@@ -1,8 +1,8 @@
 //! Tests for the metadata helpers split out of `manager.rs`.
 
 use super::{
-    current_revision_id, ensure_project_row, map_publish_error, publish_from_scratch, publish_full,
-    purge_prior_session_findings,
+    current_revision_id, ensure_project_row, map_publish_error, mark_prior_session_findings_stale,
+    publish_from_scratch, publish_full,
 };
 use crate::progress::NoopProgressSink;
 use crate::store;
@@ -91,19 +91,18 @@ fn incompatible_version_is_a_stale_database_labelled_for_recovery() {
     );
 }
 
-/// Drives `purge_prior_session_findings` directly with two distinct
-/// session UUIDs against a hand-seeded findings table, simulating two
-/// separate agent processes. The first session's rows must be deleted;
-/// the second session's rows must remain untouched. This is the
-/// cross-session poisoning defense's correctness surface — no other
-/// test exercises the live SESSION_ID flow without going through
-/// `finding()`, which would couple the test to the schema panel.
+/// Drives `mark_prior_session_findings_stale` directly with distinct session
+/// UUIDs against a hand-seeded findings table, simulating separate agent
+/// processes. Prior sessions' rows are kept and marked stale, the current
+/// session's row is untouched, and a second run changes nothing.
 #[test]
-fn purge_deletes_only_prior_session_rows() {
+fn marking_stales_only_prior_session_rows_and_deletes_nothing() {
     let (_dir, mut connection) = open_temp_db();
+    let current = "33333333-3333-3333-3333-333333333333";
     for (path, session) in [
         ("old.rs", "11111111-1111-1111-1111-111111111111"),
         ("shared.rs", "22222222-2222-2222-2222-222222222222"),
+        ("mine.rs", current),
     ] {
         connection
             .execute(
@@ -115,61 +114,34 @@ fn purge_deletes_only_prior_session_rows() {
             )
             .expect("seed finding");
     }
+    let session = Uuid::parse_str(current).expect("current uuid");
 
-    // A second agent boots with its own UUID and runs the purge.
-    purge_prior_session_findings(
-        &mut connection,
-        Uuid::parse_str("33333333-3333-3333-3333-333333333333").expect("new uuid"),
-    )
-    .expect("purge");
+    let marked = mark_prior_session_findings_stale(&mut connection, session).expect("mark");
+    let again = mark_prior_session_findings_stale(&mut connection, session).expect("re-mark");
 
-    let remaining: Vec<String> = connection
-        .prepare("SELECT session_id FROM findings ORDER BY path")
+    let rows: Vec<(String, String)> = connection
+        .prepare("SELECT path, status FROM findings ORDER BY path")
         .expect("select")
-        .query_map([], |row| row.get(0))
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
         .expect("query")
         .map(|value| value.expect("row"))
         .collect();
-    // The "1111" row was tagged with a session other than the new
-    // "3333" session, so the cleanup MUST drop it. The "2222" row was
-    // also tagged as "not me", so it MUST drop too — only rows stamped
-    // with the CURRENT session survive.
-    assert!(
-        remaining.is_empty(),
-        "every legacy row is from a prior session and must be gone: {remaining:?}"
+    assert_eq!(marked, 2);
+    assert_eq!(again, 0, "an already-stale row is not touched again");
+    assert_eq!(
+        rows,
+        vec![
+            ("mine.rs".to_owned(), "current".to_owned()),
+            ("old.rs".to_owned(), "stale".to_owned()),
+            ("shared.rs".to_owned(), "stale".to_owned()),
+        ]
     );
-
-    // A second run with a session that DOES own a row is a no-op
-    // (no rows deleted) — the test pins that the cleanup is exact,
-    // not over-broad.
-    connection
-        .execute(
-            "INSERT INTO findings (path, source_hash, line_start, line_end, \
-             severity, category, title, description, created_at_unix, \
-             evidence_revision, status, session_id) \
-             VALUES ('alive.rs', 'h', 1, 1, 'low', 'c', 't', 'd', 0, 'r', 'current', ?1)",
-            rusqlite::params![
-                Uuid::parse_str("44444444-4444-4444-4444-444444444444")
-                    .expect("alive uuid")
-                    .to_string()
-            ],
-        )
-        .expect("insert alive");
-    purge_prior_session_findings(
-        &mut connection,
-        Uuid::parse_str("44444444-4444-4444-4444-444444444444").expect("alive uuid"),
-    )
-    .expect("no-op purge");
-    let count: i64 = connection
-        .query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
-        .expect("count");
-    assert_eq!(count, 1, "alive row must survive a matching-session purge");
 }
 
-/// `ensure_project_row` is metadata-only: the findings purge belongs to
+/// `ensure_project_row` is metadata-only: marking prior sessions stale belongs to
 /// the session-start transition owned by `SourceSyncManager`, not to the
-/// per-sync metadata row. If this function purged, every tool call would
-/// delete a concurrent live session's findings.
+/// per-sync metadata row. If this function marked, every tool call would
+/// re-stale a concurrent live session's findings.
 #[test]
 fn ensure_project_row_leaves_findings_to_the_session_start_transition() {
     let _session_guard =
@@ -264,26 +236,26 @@ fn publish_failures_classify_into_the_documented_error_codes() {
     );
 }
 
-/// A damaged `findings` table must surface the purge failure as its own
+/// A damaged `findings` table must surface the marking failure as its own
 /// `ErrorData`, with the SQLite cause preserved, rather than being folded
 /// into one of the later metadata arms.
 #[test]
-fn a_failed_prior_session_purge_surfaces_the_purge_error() {
+fn a_failed_prior_session_marking_surfaces_its_error() {
     let (_dir, mut connection) = open_temp_db();
     connection
         .execute_batch("DROP TABLE findings")
         .expect("drop the findings table");
 
-    let error = purge_prior_session_findings(
+    let error = mark_prior_session_findings_stale(
         &mut connection,
         Uuid::parse_str("77777777-7777-7777-7777-777777777777").expect("uuid"),
     )
-    .expect_err("the purge must fail on a damaged schema");
+    .expect_err("the marking must fail on a damaged schema");
 
     assert!(
         error
             .message
-            .starts_with("purging prior-session findings: "),
+            .starts_with("marking prior-session findings stale: "),
         "got: {}",
         error.message
     );
@@ -295,7 +267,7 @@ fn a_failed_prior_session_purge_surfaces_the_purge_error() {
 }
 
 /// A failed metadata INSERT must be reported as the recording arm, not
-/// misattributed to the purge or the verification read.
+/// misattributed to the marking or the verification read.
 #[test]
 fn a_failed_metadata_write_surfaces_the_recording_error() {
     let (_dir, mut connection) = open_temp_db();

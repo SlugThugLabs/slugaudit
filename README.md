@@ -125,6 +125,7 @@ The server exposes 8 MCP tools, registered in `src/server.rs`:
 | `structure` | Tree-sitter AST queries in one file or across a language, returning matched nodes with line spans and snippets. |
 | `finding` | Persists a conclusion the agent has reviewed, bound to the file's current content hash — it goes stale when that file changes. The judgment is the agent's; SlugAudit never generates it. |
 | `finding_read` | Findings written by the current session only, never another session's conclusions. |
+| `finding_sessions` | A restart is a new session: earlier sessions' findings are kept, marked stale and hidden from `finding_read`. `list` shows them (session id, first-finding time, count); `adopt` re-tags one session's findings to the current session. Nothing is deleted. |
 | `project_control` | Enable (`on`) or disable (`off`) a project, optionally setting its profile; `off` purges the database. |
 | `health` | Phase and next action (`remedy`), watcher health, current revision and file count. `verbose: true` adds the operator detail: unreconciled event counts, parser-pack version, skipped files, tool-call counters, host memory, the mechanic scan cache. |
 

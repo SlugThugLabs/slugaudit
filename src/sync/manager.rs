@@ -97,15 +97,15 @@ pub struct SourceSyncManager {
     /// every tool call is paying a full-publish cost — see the
     /// full-publish runbook in `docs/TROUBLESHOOTING.md`.
     consecutive_full_publishes: std::sync::Arc<AtomicU64>,
-    /// Project databases whose prior-session findings purge has already
-    /// run in this process, mapped to the session UUID that ran it. This
-    /// is the "purge done" guard for the session-start transition: the
-    /// purge must not repeat on every tool call, or one live MCP session
-    /// would delete another live session's findings mid-session. Keyed by
+    /// Project databases whose prior-session findings have already been
+    /// marked stale in this process, mapped to the session UUID that did it.
+    /// This is the guard for the session-start transition: the marking must
+    /// not repeat on every tool call, or it would re-stale a live peer
+    /// session's findings as it writes them. Keyed by
     /// database path because one manager can serve several projects, and
     /// valued by session so a (test-only) session change re-arms it.
     /// Clones share the state.
-    session_findings_purged: Arc<Mutex<HashMap<PathBuf, Uuid>>>,
+    prior_sessions_staled: Arc<Mutex<HashMap<PathBuf, Uuid>>>,
     /// The mechanics the auditor registered for this server's session (the
     /// `mechanic` tool), and whether the one-time `report` mechanics note
     /// was delivered. Held here because the manager is the per-server state
@@ -138,7 +138,7 @@ impl SourceSyncManager {
             last_sync_unix_seconds: std::sync::Arc::new(AtomicI64::new(0)),
             last_sync_duration_ms: std::sync::Arc::new(AtomicU64::new(0)),
             consecutive_full_publishes: std::sync::Arc::new(AtomicU64::new(0)),
-            session_findings_purged: Arc::new(Mutex::new(HashMap::new())),
+            prior_sessions_staled: Arc::new(Mutex::new(HashMap::new())),
             session_mechanics: crate::project::SessionMechanics::default(),
             mechanic_scan_cache: crate::project::MechanicScanCache::default(),
             result_stores: super::result_stores::ResultStoreSlot::default(),

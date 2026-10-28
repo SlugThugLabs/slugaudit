@@ -196,6 +196,29 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        title = "List or adopt earlier sessions' findings",
+        annotations(read_only_hint = false, destructive_hint = false),
+        description = "A restart starts a new session: `finding_read` shows only this session's \
+         findings, and earlier sessions' findings are kept but marked stale. Supply `path` (any \
+         path in the active project) and `action`. `list` returns earlier sessions with \
+         `session_id`, `started_at_unix` (their first finding) and `findings`. `adopt` with a \
+         `session_id` from `list` makes that session's findings yours, so `finding_read` returns \
+         them; each reads `current` if its file is unchanged, else `stale`. Adopt only when you \
+         are continuing that audit; nothing is ever deleted."
+    )]
+    async fn finding_sessions(
+        &self,
+        meta: RequestMetaObject,
+        peer: Peer<RoleServer>,
+        request: Parameters<tools::FindingSessionsRequest>,
+    ) -> Result<Json<tools::FindingSessionsResponse>, ErrorData> {
+        self.dispatch(meta, peer, "finding_sessions", move |sink, manager| {
+            tools::finding_sessions(&request, sink.as_ref(), &manager)
+        })
+        .await
+    }
+
+    #[tool(
         title = "Enable or disable a project",
         annotations(read_only_hint = false, destructive_hint = true),
         description = "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable \

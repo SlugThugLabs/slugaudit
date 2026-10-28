@@ -35,7 +35,7 @@ a tone-of-voice choice:
 - `leads` returns unranked counts and rows derived at read time
   (`src/tools/leads.rs`).
 
-The server exposes nine tools (`src/server.rs`):
+The server exposes ten tools (`src/server.rs`):
 
 - **`report`** — automatic snapshot of the current revision: file/language
   counts, parser failures, evidence-kind counts, import-resolution buckets,
@@ -88,6 +88,8 @@ The server exposes nine tools (`src/server.rs`):
 - **`finding`** — the single write tool. Persists agent-authored conclusions
   bound to a file's current `content_hash`.
 - **`finding_read`** — returns findings scoped to the calling agent session.
+- **`finding_sessions`** — `list` earlier sessions' kept (stale) findings and
+  `adopt` one into the current session.
 - **`mechanic`** — the auditor registers (`add`), removes and lists its own
   mechanics: a Tree-sitter query with exactly one capture over one language.
   See *Mechanics* below.
@@ -179,7 +181,7 @@ session's `INSTRUCTIONS`. They are embedded at compile time via `include_str!`
 and are pull-based — nothing is pushed into a connecting agent's context.
 
 Every tool also carries a `title`, MCP `annotations` (`readOnlyHint` false for
-`finding`/`mechanic`/`project_control`, `destructiveHint` true only for
+`finding`/`finding_sessions`/`mechanic`/`project_control`, `destructiveHint` true only for
 `project_control`, whose `off` action purges the database), and an
 `outputSchema` derived from its response type. `check_mcp_surface` snapshots
 `tools/list` + `resources/list` into `.planning/archive/mcp_surface.json` and
@@ -220,7 +222,7 @@ narrow:
 
 SlugAudit is organized into cohesive subsystems under `src/`. For the exhaustive file-by-file manifest, see [.planning/MODULE_MAP.md](MODULE_MAP.md).
 
-- **`tools/`** — MCP tool handlers and orchestration (`report`, `query`, `structure`, `leads`, `finding`, `finding_read`, `project_control`, `health`). Thin boundary contracts delegating to verified storage transactions.
+- **`tools/`** — MCP tool handlers and orchestration (`report`, `query`, `structure`, `leads`, `finding`, `finding_read`, `finding_sessions`, `project_control`, `health`). Thin boundary contracts delegating to verified storage transactions.
 - **`sync/`** — Indexing engine: discovery, sampling, hashing, reconciliation, publish (compare-and-swap), revisions, and stat sweep.
 - **`store/`** — SQLite persistence boundary: connection configuration, schema migrations, read-only and read-write connection guards, and the immutable result store (`store/result_store/`).
 - **`graph/`** — Dependency and import resolution across multiple language ecosystems (Rust, Python, JS/TS, C#, etc.).
@@ -258,7 +260,7 @@ Caller                             SlugAudit server
       │                              <!-- mcp://progress: ensuring_current -->
       ├─ project::resolve_project    walk parents for `.planning/slugaudit`
       ├─ store::open_read_write      symlink/NFS/permission guards; WAL; schema
-      ├─ session-start purge         once per database/process: DELETE findings from other sessions
+      ├─ session-start stale-mark    once per database/process: UPDATE other sessions' findings to stale
       ├─ ensure_project_row          INSERT OR IGNORE the singleton row; verify the stored root
       ├─ watch_manager.watch         register or reuse the project's WatchState
       └─ sync_by_health branch
@@ -753,7 +755,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 119 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 120 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only
@@ -842,7 +844,8 @@ the architecture so the next reviewer does not re-litigate it from scratch.
   reasoning session, not a durable fact. A different agent must not silently
   inherit another session's conclusions; evidence persists because it is
   reproducible from source, findings do not (`sync/manager_meta.rs::
-  purge_prior_session_findings`, invariant 9).
+  mark_prior_session_findings_stale`, invariant 9). Earlier sessions' rows are
+  kept, not deleted; `finding_sessions` lists and adopts them.
 - **Findings are bound to a content hash, not a line range alone.** The hash
   is what makes auto-invalidation reliable when a file changes; the line range
   is a hint for the reader.
@@ -892,13 +895,14 @@ something else loudly.
    compile error, not a corrupted stream.
 9. **Findings are scoped to the agent session that wrote them.** Every finding
    row carries the active `session_id` (a UUID generated once per process);
-   `purge_prior_session_findings` runs once per project database at the
-   process/session's first sync, deleting rows from any other session. The
-   `SourceSyncManager` guard keys on the database path and the session UUID,
-   so later tool calls in the same process never repeat the purge — sibling
-   MCP sessions share the database, and a repeated purge would delete a live
-   peer's findings mid-session. A new agent starts with a clean finding set
-   rather than silently inheriting another's conclusions.
+   `mark_prior_session_findings_stale` runs once per project database at the
+   process/session's first sync, marking rows from any other session `stale`
+   and deleting nothing; the count is logged once. The `SourceSyncManager`
+   guard keys on the database path and the session UUID, so later tool calls
+   in the same process never repeat it. `finding_read` and `report` count only
+   the current session, so a new agent starts with a clean view rather than
+   silently inheriting another's conclusions; a continuing agent resumes with
+   `finding_sessions` (`list`, then `adopt`).
 10. **The database is disposable derived data.** Every row in `files`,
     `evidence`, `dependency_edges`, and `revisions` is computed from project
     source and can be regenerated: `rm -rf .planning/slugaudit` followed by any

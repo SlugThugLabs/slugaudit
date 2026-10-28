@@ -7,7 +7,7 @@
 //! transitions and incremental reconciliation live in `manager_health.rs`.
 
 use super::super::manager_meta::{
-    ProjectMetaError, ensure_project_row, publish_from_scratch, purge_prior_session_findings,
+    ProjectMetaError, ensure_project_row, mark_prior_session_findings_stale, publish_from_scratch,
 };
 use super::{SourceSyncManager, SyncedProject};
 use crate::error_codes::{self, ErrorCode};
@@ -196,7 +196,7 @@ impl SourceSyncManager {
         start: std::time::Instant,
         sink: &dyn ProgressSink,
     ) -> Result<Result<rusqlite::Connection, SyncedProject>, ErrorData> {
-        self.purge_prior_session_findings_once(database_path, &mut connection)?;
+        self.mark_prior_sessions_stale_once(database_path, &mut connection)?;
         if let Err(metadata_error) = ensure_project_row(&mut connection, root.as_path()) {
             match metadata_error {
                 ProjectMetaError::RootMismatch { stored_root } => {
@@ -235,35 +235,36 @@ impl SourceSyncManager {
         Ok(Ok(connection))
     }
 
-    /// Purges findings left by other agent sessions exactly once per
-    /// project database in this process/session.
+    /// Marks findings left by other agent sessions `stale` exactly once per
+    /// project database in this process/session. Nothing is deleted.
     ///
     /// `ensure_current` runs on every tool call, but a live MCP process may
-    /// be only one of several sessions sharing the project database. Purging
-    /// on every call would delete another live session's findings
-    /// mid-session, and no response carries that deletion. The guard is
-    /// keyed by database path (one manager can serve several projects) and
-    /// records the session UUID the purge ran for, so the documented
-    /// cross-session defense still fires on this process's first sync of
-    /// each project and a test-only session change re-arms it.
+    /// be only one of several sessions sharing the project database. Marking
+    /// on every call would re-stale a live peer's findings as it writes them.
+    /// The guard is keyed by database path (one manager can serve several
+    /// projects) and records the session UUID the marking ran for, so a
+    /// test-only session change re-arms it. The number of rows marked is
+    /// logged once at info.
     ///
-    /// A failed purge aborts the call with its own error and leaves the
-    /// guard unarmed, so the next sync retries the session-start
-    /// transition instead of serving a database that still holds prior
-    /// sessions' findings.
-    fn purge_prior_session_findings_once(
+    /// A failed update aborts the call with its own error and leaves the
+    /// guard unarmed, so the next sync retries the session-start transition.
+    fn mark_prior_sessions_stale_once(
         &self,
         database_path: &Path,
         connection: &mut rusqlite::Connection,
     ) -> Result<(), ErrorData> {
         let current_session_id = crate::util::session_id();
-        let mut purged =
-            crate::util::lock_or_recover(&self.session_findings_purged, "session_findings_purged");
-        if purged.get(database_path).copied() == Some(current_session_id) {
+        let mut marked =
+            crate::util::lock_or_recover(&self.prior_sessions_staled, "prior_sessions_staled");
+        if marked.get(database_path).copied() == Some(current_session_id) {
             return Ok(());
         }
-        purge_prior_session_findings(connection, current_session_id)?;
-        purged.insert(database_path.to_path_buf(), current_session_id);
+        let staled = mark_prior_session_findings_stale(connection, current_session_id)?;
+        tracing::info!(
+            staled,
+            "prior-session findings marked stale at session start"
+        );
+        marked.insert(database_path.to_path_buf(), current_session_id);
         Ok(())
     }
 
