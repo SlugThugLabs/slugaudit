@@ -74,7 +74,8 @@ migration step.
   stored but not parsed) and `SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS` (per-file parse
   allowance, default 5000 ms; a timed-out file is counted and the sync
   continues). `SLUGAUDIT_MAX_WATCH_DEPTH` and `SLUGAUDIT_MAX_WATCH_ENTRIES` bound
-  the watcher's scope. Every overridable limit refuses 0 with one warning.
+  the watcher's scope. Every overridable limit refuses 0: from an environment
+  variable it stops startup, from `config.json` it is ignored with one warning.
 - Machine-readable error payloads (`data.code` and a static `remedy`) on the
   failures a caller can act on, including `stale_revision`, `sql_error` (from
   `query`) and `unknown_language` (from `structure`).
@@ -94,6 +95,18 @@ migration step.
 - Release artifacts: an SBOM, third-party notices and a signed build-provenance
   attestation, with a rebuild-and-compare check; see `docs/RELEASING.md`.
 - `[profile.release]` with `strip = true`, `lto = "thin"` and `codegen-units = 1`.
+- `finding_sessions` tool: `list` shows the sessions that have findings in the
+  database and `adopt` brings an earlier session's findings back into the
+  current session, but only when the finding's `source_hash` still matches the
+  file.
+- `database_discard` field on the response of the call that discarded a corrupt
+  or incompatible database: `findings_discarded` (counted before removal; `null`
+  when the database was unreadable, never a fabricated 0) and the `cause`. The
+  same call logs one WARN.
+- `slugaudit` exits with status 2 on usage errors, accepts `-v`, exits 0 on
+  SIGTERM and SIGINT, and exits 0 with one log line when stdin closes before
+  `initialize`.
+- `NO_COLOR` and `TERM=dumb` are honoured by the CLI output.
 
 ### Changed
 
@@ -185,6 +198,40 @@ migration step.
   1.53.3, `criterion` 0.8, `thiserror` 2.0.21, `uuid` 1.28, `which` 8.0.6.
 - `unwrap` and `expect` are denied outside tests (`clippy::unwrap_used`,
   `clippy::expect_used`).
+- **Breaking:** a project is active if and only if
+  `.planning/slugaudit/project.db` exists as a regular file; the directory alone
+  no longer activates it. `project_control` `off` now deletes `project.db`, its
+  `-wal`, `-shm` and `-journal` sidecars, the `results/` directory and the lock
+  file, keeps `config.json` and any other file, and removes
+  `.planning/slugaudit/` only when it is then empty. The response lists what was
+  removed (`removed`) and that `config.json` was kept (`config_kept`). After
+  `off`, every tool call returns `project_not_enabled` instead of rebuilding the
+  database; `on` after `off` restores the persisted mechanics from
+  `config.json`. A call already in flight when `off` runs also returns
+  `project_not_enabled` and does not recreate the database; the one remaining
+  window is documented in `.planning/ARCHITECTURE.md`.
+- Findings from earlier sessions are marked `stale` on the first sync of each
+  process instead of being deleted; `finding_read` and `report` count only the
+  current session.
+- The default log filter is `warn,slugaudit_mcp_rust=info,rmcp=error`, so
+  dependency chatter no longer reaches stderr. Failures log the real path and
+  the source error once.
+- **Breaking (startup):** an invalid `SLUGAUDIT_*` limit variable, a limit
+  variable set to `0`, an invalid or non-UTF-8 `RUST_LOG`, and a non-UTF-8
+  `SLUGAUDIT_LOG_FORMAT` now stop startup with exit 1 naming the variable, where
+  they used to warn and continue with defaults. A malformed project
+  `config.json` fails the call that reads it. Without a detectable system memory
+  size an explicit profile is required, and `health` reports `system_memory` as
+  `null`. A `0` in `config.json` is still ignored with one warning.
+- `slugaudit install` and `slugaudit menu` reject extra arguments with a usage
+  error.
+- `config.json` rewrites keep key order, the file mode and a trailing newline.
+- `install.sh` and `slugaudit update` hardening: the shell profile edit refuses
+  an unknown `$SHELL`, the previous binary is kept atomically as `.prev`,
+  `install.sh` quotes and traps cleanly and its cargo fallback installs to the
+  chosen target path, a malformed release asset entry is an error, and a partial
+  download is removed.
+- Progress notifications are sent on the server's runtime handle.
 
 ### Removed
 
@@ -227,6 +274,12 @@ migration step.
   sync, watch, install, connect, update and logging are logged or propagated.
 - Dev gates (`check_*`) fail closed when an input is unreadable, a root is empty
   or a report is stale, instead of printing PASS.
+- A call carrying a `progressToken` (seen with `query` and `project_control`) no
+  longer fails with `-32603` "a scoped thread panicked" when its sync runs on a
+  worker thread.
+- The log-and-continue fallback in `process_limits()` is gone: a limit
+  environment that was not validated at startup is now an error, not a silent
+  default.
 
 ### Security
 
@@ -248,6 +301,8 @@ migration step.
 - `rustls-webpki` and `webpki-roots` were updated for RUSTSEC-2026-0382.
 - Tool inputs are bounded and operational logs are redacted; `slugaudit update`
   fetches over HTTPS only.
+- The install and update paths refuse to continue on a malformed asset entry or
+  an unknown shell, and a gitignore edit syncs its parent directory.
 
 ### Known issues
 
