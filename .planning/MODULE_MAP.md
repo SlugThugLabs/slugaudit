@@ -126,6 +126,9 @@ src/
 │   ├── result_store_proof_replacement_tests.rs open results survive each database replacement and a WAL truncate
 │   ├── manager_orchestration.rs  ensure_current: resolve, open/recover, recovery logs, rebuild tail
 │   ├── manager_health.rs     sync_by_health: the WatcherHealth dispatch
+│   ├── manager_healthy.rs    Healthy/Partial branch: skip-or-sweep decision, walk, drain, apply
+│   ├── full_sweep_gate.rs    30 s backstop bounding how long a quiet Healthy watcher skips the sweep
+│   ├── full_sweep_gate_tests.rs skip, watcher-change, backstop, transition and failed-sweep pins
 │   ├── manager_health_support.rs  event barrier, post-sync revision read, sweep-error mapping
 │   ├── manager_meta.rs       metadata row, session purge, publish_from_scratch
 │   ├── discard_notice.rs     DatabaseDiscard: the finding count reported when a database is discarded

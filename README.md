@@ -24,7 +24,9 @@ task, not a verdict the tool renders.
   agent can act on them without re-reading the tree.
 - **Freshness without re-verification.** The index is re-synchronized before every
   tool call, so an answer describes the files on disk (not unsaved editor buffers) and
-  the agent never has to double-check whether its view is current.
+  the agent never has to double-check whether its view is current. Changes the file
+  watcher reports are applied before the answer; anything it fails to report is caught
+  by a full-tree sweep at most 30 seconds later.
 - **Caps are reported in the response.** `leads`, `query`, `structure` and
   `finding_read` share one `page` object (`returned`, `total`, `complete`,
   `cursor`, `page_bytes`, `bytes_used`, `limited_by`, `revision_id`, `completeness`): it

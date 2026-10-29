@@ -72,3 +72,22 @@ pub(crate) fn stored_paths(connection: &Connection) -> Vec<String> {
         .collect::<Result<_, _>>()
         .expect("collect")
 }
+
+/// A manually advanced monotonic clock.
+#[derive(Clone)]
+pub(crate) struct TestClock(std::sync::Arc<std::sync::Mutex<std::time::Instant>>);
+
+impl TestClock {
+    pub(crate) fn new() -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(
+            std::time::Instant::now(),
+        )))
+    }
+    pub(crate) fn advance(&self, by: std::time::Duration) {
+        *self.0.lock().expect("clock lock") += by;
+    }
+    pub(crate) fn reader(&self) -> std::sync::Arc<dyn Fn() -> std::time::Instant + Send + Sync> {
+        let inner = std::sync::Arc::clone(&self.0);
+        std::sync::Arc::new(move || *inner.lock().expect("clock lock"))
+    }
+}

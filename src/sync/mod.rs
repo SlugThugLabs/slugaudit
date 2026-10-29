@@ -8,6 +8,7 @@ mod analyze_seam;
 mod classify;
 mod discard_notice;
 mod discovery;
+mod full_sweep_gate;
 mod hash;
 mod hash_io;
 mod manager;
@@ -37,6 +38,8 @@ mod sweep_reconcile;
 pub use discard_notice::DatabaseDiscard;
 pub(crate) use discard_notice::count_findings;
 pub use discovery::{DiscoveredFile, DiscoveryError, FileKind, SkippedFile, discover};
+#[cfg(test)]
+pub(crate) use full_sweep_gate::FULL_RECONCILE_INTERVAL;
 pub use hash::{HashError, aggregate_manifest_hash, hash_bytes, hash_file};
 pub use manager::{SourceSyncManager, SyncedProject};
 pub(crate) use manager::{map_activation_error, map_process_limits_error};

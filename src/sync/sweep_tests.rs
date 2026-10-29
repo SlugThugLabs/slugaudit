@@ -593,7 +593,10 @@ fn the_healthy_sync_path_refreshes_the_persisted_non_utf8_set() {
     use crate::sync::SourceSyncManager;
     use std::os::unix::ffi::OsStringExt;
 
-    let manager = SourceSyncManager::with_watcher();
+    // The watcher need not report a non-UTF-8 name, so the sweep that sees it
+    // runs when the backstop interval elapses; the test clock jumps there.
+    let clock = crate::sync::test_support::TestClock::new();
+    let manager = SourceSyncManager::with_watcher_and_clock(clock.reader());
     let project = create_project();
     write(project.path(), "a.rs", b"fn a() {}\n");
     sync_project(&manager, &project);
@@ -613,11 +616,13 @@ fn the_healthy_sync_path_refreshes_the_persisted_non_utf8_set() {
         .join(std::ffi::OsString::from_vec(b"bad\xff.rs".to_vec()));
     std::fs::write(&bad, b"fn b() {}\n").expect("write non-utf8 file");
     std::thread::sleep(Duration::from_millis(200));
+    clock.advance(crate::sync::FULL_RECONCILE_INTERVAL);
     sync_project(&manager, &project);
     assert_eq!(stored_count(), 1, "the sweep sees the added file");
 
     std::fs::remove_file(&bad).expect("remove non-utf8 file");
     std::thread::sleep(Duration::from_millis(200));
+    clock.advance(crate::sync::FULL_RECONCILE_INTERVAL);
     sync_project(&manager, &project);
     assert_eq!(stored_count(), 0, "the sweep sees the removal");
 }

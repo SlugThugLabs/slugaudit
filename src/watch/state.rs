@@ -100,6 +100,16 @@ impl WatchState {
         lock_or_recover(&self.inner, "watch_state_inner").has_unreconciled_events()
     }
 
+    /// True when the watcher is `Healthy` and holds no unreconciled event,
+    /// decided under one lock acquisition so an event or a health change
+    /// cannot slip between the two checks. A caller that skips its stat
+    /// sweep on this answer misses only events that arrive after the
+    /// decision, which the next call sees.
+    pub fn is_healthy_and_quiet(&self) -> bool {
+        let guard = lock_or_recover(&self.inner, "watch_state_inner");
+        guard.health == WatcherHealth::Healthy && !guard.has_unreconciled_events()
+    }
+
     /// Returns a snapshot of the current state.
     pub fn snapshot(&self) -> ProjectWatchState {
         lock_or_recover(&self.inner, "watch_state_inner").clone()
@@ -109,6 +119,33 @@ impl WatchState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn healthy_and_quiet_requires_healthy_health_and_no_events() {
+        let state = WatchState::new();
+        assert!(state.is_healthy_and_quiet());
+
+        state.mark_dirty("a.rs".to_owned());
+        assert!(!state.is_healthy_and_quiet(), "a dirty path is not quiet");
+
+        let (seq, _, _) = state.snapshot_dirty();
+        assert!(
+            !state.is_healthy_and_quiet(),
+            "drained but unacknowledged events are not quiet"
+        );
+        state.acknowledge_through(seq);
+        assert!(state.is_healthy_and_quiet());
+
+        for health in [
+            WatcherHealth::Partial,
+            WatcherHealth::NeedsVerification,
+            WatcherHealth::Desynced,
+            WatcherHealth::Unavailable,
+        ] {
+            state.set_health(health);
+            assert!(!state.is_healthy_and_quiet(), "{health:?} is not Healthy");
+        }
+    }
 
     #[test]
     fn dirty_then_deleted_collapses_correctly() {

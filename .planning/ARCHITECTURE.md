@@ -335,7 +335,7 @@ metadata row, and dispatches on watcher health (`sync/manager_health.rs`):
 | Health | Action |
 |---|---|
 | `NeedsVerification`, `Desynced` | full publish, then drain events that arrived during it, then mark `Healthy` (or `Partial` when the watch scope is limited) |
-| `Healthy`, `Partial` | stat sweep; reconcile unreconciled events if any; apply the sweep's findings |
+| `Healthy`, `Partial` | stat sweep; reconcile unreconciled events if any; apply the sweep's findings. A `Healthy` watcher with no unreconciled events whose last full sweep is under `FULL_RECONCILE_INTERVAL` (30 s) old, with unchanged ignore rules, skips the sweep and returns the current revision (`sync/full_sweep_gate.rs`) |
 | `Unavailable` | full publish every call |
 
 `Partial` means the watcher is active but its scope walk stopped at a documented
@@ -452,8 +452,9 @@ Freshness has two layers, and the ordering matters:
   loop. A dropped event is harmless because the next call re-verifies. The
   watcher's error arm marks every project `Desynced`, which forces a full
   publish on the next call.
-- **The stat sweep is the guarantee** (`sync/sweep.rs`). On every `Healthy`
-  or `Partial` call the project is walked with the same walker discovery uses, and every
+- **The stat sweep is the guarantee** (`sync/sweep.rs`). On every `Partial`
+  call, and on a `Healthy` call that has pending watcher events or is due for the
+  backstop (below), the project is walked with the same walker discovery uses, and every
   file is `stat`ed — one `stat`, no read. A file whose stored
   `modified_unix_seconds` and `byte_len` both match is proven unchanged;
   everything else (stat mismatch, new on disk, or present in the database but
@@ -465,6 +466,20 @@ Freshness has two layers, and the ordering matters:
     A failed sweep fails closed: it sets the watcher `Desynced` and the call
     errors, because a partial sweep that silently skipped the rest of the tree
     would serve exactly the staleness the sweep exists to prevent.
+
+**Freshness bound with a healthy watcher.** A `Healthy` watcher with an empty
+event queue skips the walk (`sync/full_sweep_gate.rs`). Health and the queue are
+read under one lock, so an event is either pending (the call sweeps and drains it)
+or arrives after the decision (the next call sees it). The skip is bounded by
+`FULL_RECONCILE_INTERVAL` (30 s, monotonic clock, injectable in tests): a full
+sweep runs on the first call after start, after the watcher left `Healthy` (the
+re-verification restarts the window), when the project's ignore rules changed,
+and on the first call once the interval has passed since the last *completed*
+full sweep. A failed sweep never restarts the window. So the contract is: the
+answer reflects every change the watcher reported before the call, and any change
+it never reported within 30 s of the last full sweep. A call made before the OS has
+delivered a just-written file's event can miss it until the next call or the
+backstop.
 
 **Accepted blind spot.** A same-size in-place edit that lands in the same
 wall-clock second as the stored stat *and* produces no watcher event is not
@@ -780,7 +795,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 133 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 134 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only
@@ -842,6 +857,7 @@ the architecture so the next reviewer does not re-litigate it from scratch.
   constructors, counters, watcher registration and public observability;
   `manager_orchestration.rs` owns the outer `ensure_current` workflow — project
   resolution, database recovery, the shared rebuild tail — and `manager_health.rs`
+  (with its `manager_healthy.rs` sibling for the Healthy/Partial branch)
   owns the `WatcherHealth` state machine and incremental barrier reconciliation,
   because those paths share health transitions, counters, progress signalling and
   freshness invariants. Both are `mod` declarations inside `manager.rs` rather than

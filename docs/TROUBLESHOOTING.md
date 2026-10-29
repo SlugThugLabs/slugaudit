@@ -305,7 +305,7 @@ errors, total milliseconds, last sync time/duration, and
 
 | Watcher health | Behavior |
 |---|---|
-| `Healthy` | Stat sweep, then reconcile unreconciled events if any. |
+| `Healthy` | If the watcher has no unreconciled events and the last full-tree sweep started less than 30 seconds ago (`FULL_RECONCILE_INTERVAL`) with the same ignore rules, the sweep is skipped and the current revision is returned. Otherwise: stat sweep, then reconcile unreconciled events if any. |
 | `Partial` | Same, but the watch scope stopped at a documented cap. The stat sweep remains the freshness guarantee for unwatched subtrees. |
 | `NeedsVerification` / `Desynced` | Full publish, drain events that arrived during it, then `Healthy`/`Partial`. |
 | `Unavailable` | Full publish on every call. |
@@ -337,9 +337,20 @@ the rule to the project's own ignore files if you want it honored. One rule
 set is shared by the full and incremental paths, so they cannot disagree about
 what the index contains.
 
-The watcher is an optimization; the per-call stat sweep is the guarantee. A
-dropped watcher event is harmless because the next call re-verifies from disk.
-The documented blind spot is a same-size in-place edit in the same wall-clock
+The watcher is a hint; the stat sweep is the guarantee, and on a `Healthy`
+watcher it runs on a bound rather than on every call. A call with an empty
+event queue skips the whole-tree walk, and a full sweep runs on the first call
+after start, on any call after the watcher left `Healthy` (a full
+verification), when the ignore rules changed, and on the first call once 30
+seconds (monotonic) have passed since the last completed full sweep. A failed
+sweep never counts as completed. So the freshness bound is: an answer reflects
+every change the watcher reported by the time of the call, and any change it
+did not report (a dropped event, or a file name that is not valid UTF-8, which
+the event path may not represent) within 30 seconds of the last full sweep. A call
+made within milliseconds of a write, before the operating system has delivered
+the event, can also miss it until the next call or the 30 second sweep.
+`Partial` and `Unavailable` watchers still sweep or publish on every call. The
+documented blind spot is a same-size in-place edit in the same wall-clock
 second with no watcher event.
 
 ## Logs

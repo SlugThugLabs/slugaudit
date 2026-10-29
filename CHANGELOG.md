@@ -11,6 +11,14 @@ The newest entry MUST match the version in `Cargo.toml`.
 
 ### Fixed
 
+- Tool calls no longer walk and stat the whole project tree when the file
+  watcher is healthy and has no pending events. The sweep still runs on the
+  first call after start, after the watcher leaves healthy, when the ignore
+  rules change, for a partially watched tree, and on the first call 30 seconds
+  after the last completed full sweep, so a change the watcher never reports
+  (a dropped event, for example) is picked up within 30 seconds. A
+  call made within milliseconds of a write, before the event is delivered, may
+  not see it until the next call.
 - `connect` and the interactive menu no longer run client CLIs (`<client> mcp
   list`) to check whether SlugAudit is registered; that is read from the
   client's config file only. Clients with no known config file (agy, amp, q) are

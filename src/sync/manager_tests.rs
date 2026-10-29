@@ -542,7 +542,10 @@ fn a_full_verification_of_an_untruncated_watch_scope_ends_healthy() {
 /// verify.
 #[test]
 fn a_failed_stat_sweep_on_the_healthy_path_surfaces_the_exact_error() {
-    let manager = SourceSyncManager::with_watcher();
+    // The sweep only runs once the backstop interval has elapsed, so the
+    // test clock jumps past it before the second call.
+    let clock = crate::sync::test_support::TestClock::new();
+    let manager = SourceSyncManager::with_watcher_and_clock(clock.reader());
     let project = create_project();
     write_file(&project, "lib.rs", b"pub fn a() {}\n");
     let synced = sync_project(&manager, &project);
@@ -551,6 +554,7 @@ fn a_failed_stat_sweep_on_the_healthy_path_surfaces_the_exact_error() {
         .expect("the synced project is registered");
     assert_eq!(state.health(), crate::watch::WatcherHealth::Healthy);
 
+    clock.advance(crate::sync::FULL_RECONCILE_INTERVAL);
     {
         let connection = crate::store::open_read_write(&synced.database_path).expect("open db");
         connection

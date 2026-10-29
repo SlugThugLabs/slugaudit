@@ -9,6 +9,8 @@
 
 #[path = "manager_health.rs"]
 mod health;
+#[path = "manager_healthy.rs"]
+mod healthy;
 #[path = "manager_orchestration.rs"]
 mod orchestration;
 
@@ -124,6 +126,9 @@ pub struct SourceSyncManager {
     /// The lazily opened result store for paged results; see
     /// `result_stores`. Per-server state like the fields above.
     result_stores: super::result_stores::ResultStoreSlot,
+    /// Backstop bounding how long a Healthy, quiet watcher is trusted
+    /// without a full-tree sweep; see `full_sweep_gate`.
+    full_sweep_gate: super::full_sweep_gate::FullSweepGate,
 }
 
 impl SourceSyncManager {
@@ -147,6 +152,7 @@ impl SourceSyncManager {
             session_mechanics: crate::project::SessionMechanics::default(),
             mechanic_scan_cache: crate::project::MechanicScanCache::default(),
             result_stores: super::result_stores::ResultStoreSlot::default(),
+            full_sweep_gate: super::full_sweep_gate::FullSweepGate::default(),
         }
     }
 
@@ -344,3 +350,7 @@ mod log_tests;
 #[cfg(test)]
 #[path = "manager_off_race_tests.rs"]
 mod off_race_tests;
+
+#[cfg(test)]
+#[path = "full_sweep_gate_tests.rs"]
+mod full_sweep_gate_tests;
