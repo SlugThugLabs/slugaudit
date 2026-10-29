@@ -79,7 +79,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Ok(ServeEnd::Signalled(name)) => {
             cli::err(format_args!("slugaudit: received {name}; shutting down\n"))?;
-            Ok(())
+            // Returning would make the runtime drop wait on the blocking
+            // stdin reader until the host closes stdin; stderr is unbuffered,
+            // so exit now with status 0.
+            std::process::exit(0);
         }
         Err(error) => {
             cli::err(format_args!("Error: {error}\n"))?;
