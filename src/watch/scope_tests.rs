@@ -199,9 +199,17 @@ fn honest_log_a_failed_scope_watch_logs_its_cause_and_path() {
         logs.contains("error_kind=\"path_not_found\""),
         "the failure must carry the notify error category, captured: {logs}"
     );
+    let record = logs
+        .lines()
+        .find(|line| line.contains("operation=scope_watch"))
+        .unwrap_or_else(|| panic!("the failure record must exist, captured: {logs}"));
     assert!(
-        logs.contains(&raw_path),
-        "the notify error's Display (cause and path) must be logged, captured: {logs}"
+        record.contains(&format!(" path={raw_path} ")),
+        "the record must carry the real path in its own `path=` field, captured: {logs}"
+    );
+    assert!(
+        !record.contains("root_id=") && !record.contains("dir_id="),
+        "the record must not carry a redacted id, captured: {logs}"
     );
 }
 
@@ -252,9 +260,17 @@ fn honest_log_a_failed_scope_unwatch_logs_its_cause_and_path() {
         logs.contains("error_kind=\"watch_not_found\""),
         "the failure must carry the notify error category, captured: {logs}"
     );
+    let record = logs
+        .lines()
+        .find(|line| line.contains("operation=scope_unwatch"))
+        .unwrap_or_else(|| panic!("the failure record must exist, captured: {logs}"));
     assert!(
-        logs.contains(&raw_path),
-        "the notify error's Display (cause and path) must be logged, captured: {logs}"
+        record.contains(&format!(" path={raw_path} ")),
+        "the record must carry the real path in its own `path=` field, captured: {logs}"
+    );
+    assert!(
+        !record.contains("root_id=") && !record.contains("dir_id="),
+        "the record must not carry a redacted id, captured: {logs}"
     );
 }
 

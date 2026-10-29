@@ -29,7 +29,7 @@ pub(super) fn revision_after_sync(
     current_revision_id(connection)
         .map_err(|error| {
             tracing::warn!(
-                database_id = %crate::util::redacted_path(database_path),
+                path = %database_path.display(),
                 error = %error,
                 "failed to read the current revision",
             );
@@ -37,7 +37,7 @@ pub(super) fn revision_after_sync(
         })?
         .ok_or_else(|| {
             tracing::warn!(
-                database_id = %crate::util::redacted_path(database_path),
+                path = %database_path.display(),
                 "no current revision found after sync",
             );
             ErrorData::internal_error(

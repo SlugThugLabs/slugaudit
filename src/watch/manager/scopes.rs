@@ -55,7 +55,11 @@ impl WatchManager {
                         tracing::info!(root_id = %redacted_path(&canonical), "watching project");
                     }
                     Err(error) => {
-                        log_notify_failure("watch_project", &redacted_path(&canonical), &error);
+                        log_notify_failure(
+                            "watch_project",
+                            &canonical.display().to_string(),
+                            &error,
+                        );
                         state.set_health(WatcherHealth::Unavailable);
                     }
                 }

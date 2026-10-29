@@ -23,12 +23,13 @@ pub(super) fn notify_error_kind(error: &notify::Error) -> &'static str {
     }
 }
 
-/// Logs a failed watcher operation with the redacted identity of its subject
-/// (`root_id`/`dir_id`), the error category, and the number of paths the
-/// error carried. Shared by the manager and the scope so every watcher
-/// failure has one shape; the error's `Display` is logged as the cause.
-pub(super) fn log_notify_failure(op: &'static str, root_id: &str, error: &notify::Error) {
-    tracing::warn!(operation = %op, root_id = %root_id, error_kind = notify_error_kind(error), path_count = error.paths.len(), error = %error, "filesystem watcher operation failed");
+/// Logs a failed watcher operation with the real `path` of its subject, the
+/// error category, and the number of paths the error carried. `path` is the
+/// literal `"unscoped"` when the failure is not tied to one directory (the
+/// watcher itself or its event loop). Shared by the manager and the scope so
+/// every watcher failure has one shape; the error's `Display` is the cause.
+pub(super) fn log_notify_failure(op: &'static str, path: &str, error: &notify::Error) {
+    tracing::warn!(operation = %op, path = %path, error_kind = notify_error_kind(error), path_count = error.paths.len(), error = %error, "filesystem watcher operation failed");
 }
 
 /// The `ignore::Error` variant as a static, path-free category. `Display`

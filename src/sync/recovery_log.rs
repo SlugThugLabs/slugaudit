@@ -29,15 +29,6 @@ pub(super) enum DatabaseRecovery<'a> {
     },
 }
 
-/// `text` with every raw occurrence of `path` replaced by its redacted id:
-/// dependency errors can embed the database path, which logs must not carry.
-pub(crate) fn scrub_path(text: &str, path: &Path) -> String {
-    text.replace(
-        path.to_string_lossy().as_ref(),
-        &crate::util::redacted_path(path),
-    )
-}
-
 /// The one WARN for a recovery event. Discarding variants also carry the
 /// number of findings lost (`None` = unknown) and, when the count failed, the
 /// source error of that failure.
@@ -45,8 +36,9 @@ pub(super) fn log_database_recovery(database_path: &Path, recovery: DatabaseReco
     match recovery {
         DatabaseRecovery::OpenFailed { error } => tracing::warn!(
             operation = "open_project_database",
-            database_id = %crate::util::redacted_path(database_path),
+            path = %database_path.display(),
             error_kind = store_error_kind(error),
+            error = %error,
             "failed to open project database for sync",
         ),
         DatabaseRecovery::OpenCorrupt {
@@ -55,11 +47,11 @@ pub(super) fn log_database_recovery(database_path: &Path, recovery: DatabaseReco
             count_error,
         } => tracing::warn!(
             operation = "open_project_database",
-            database_id = %crate::util::redacted_path(database_path),
+            path = %database_path.display(),
             error_kind = store_error_kind(error),
-            error = %scrub_path(&error.to_string(), database_path),
+            error = %error,
             findings_discarded = ?discard.findings_discarded,
-            count_error = count_error.map(|error| scrub_path(&error.to_string(), database_path)),
+            count_error = count_error.map(|error| error.to_string()),
             "database is corrupt or outdated; discarding and re-publishing from scratch",
         ),
         DatabaseRecovery::RootMismatch {
@@ -68,11 +60,11 @@ pub(super) fn log_database_recovery(database_path: &Path, recovery: DatabaseReco
             count_error,
         } => tracing::warn!(
             operation = "verify_project_database",
-            database_id = %crate::util::redacted_path(database_path),
+            path = %database_path.display(),
             error_kind = "root_mismatch",
             stored_root_id = %crate::util::redacted_path(Path::new(stored_root)),
             findings_discarded = ?discard.findings_discarded,
-            count_error = count_error.map(|error| scrub_path(&error.to_string(), database_path)),
+            count_error = count_error.map(|error| error.to_string()),
             "project database is stale; discarding and rebuilding from source",
         ),
         DatabaseRecovery::IncompatibleVersion {
@@ -82,12 +74,12 @@ pub(super) fn log_database_recovery(database_path: &Path, recovery: DatabaseReco
             count_error,
         } => tracing::warn!(
             operation = "verify_project_database",
-            database_id = %crate::util::redacted_path(database_path),
+            path = %database_path.display(),
             error_kind = "incompatible_version",
             contract_version,
             schema_version,
             findings_discarded = ?discard.findings_discarded,
-            count_error = count_error.map(|error| scrub_path(&error.to_string(), database_path)),
+            count_error = count_error.map(|error| error.to_string()),
             "project database is stale; discarding and rebuilding from source",
         ),
     }

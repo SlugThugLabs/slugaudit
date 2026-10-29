@@ -164,7 +164,7 @@ operator action:
 
 - **Corruption / not a database** — `open_or_rebuild` logs
   `database is corrupt or outdated; discarding and re-publishing from
-  scratch` (the path is a redacted id) and rebuilds from source.
+  scratch` (the record carries the real database path and the source error) and rebuilds from source.
 - **Unsupported schema version** — a database whose `PRAGMA user_version` is
   neither fresh (`0`) nor current (`CURRENT_SCHEMA_VERSION`, currently `11`) is
   treated as corruption and discarded. There is no migration path; the schema
@@ -371,7 +371,10 @@ grep -F "session_id=<uuid>" audit.log | grep -F 'tool call completed'
 ```
 
 Redaction: a correlation log line carries a BLAKE3-derived path id
-(`util::redacted_path`), never a raw path. SQL text, finding titles and
+(`util::redacted_path`), not a raw path. The exceptions are the database
+recovery and filesystem watcher WARNs, which name the real database or
+watched path (`path=`) and the source error so an operator can act on them.
+SQL text, finding titles and
 descriptions, indexed source content, and environment values never enter logs.
 A few one-shot diagnostics whose purpose is to name the file just operated on
 (for example a leftover staged-binary path) may print a raw path. Error codes

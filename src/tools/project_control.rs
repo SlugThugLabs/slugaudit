@@ -306,12 +306,10 @@ fn enable(
             );
             tracing::warn!(
                 operation = "enable_project",
-                database_id = %crate::util::redacted_path(&db_path),
-                error = %sync::scrub_path(&error.to_string(), &db_path),
+                path = %db_path.display(),
+                error = %error,
                 findings_discarded = ?notice.findings_discarded,
-                count_error = count_error
-                    .as_ref()
-                    .map(|error| sync::scrub_path(&error.to_string(), &db_path)),
+                count_error = count_error.as_ref().map(ToString::to_string),
                 "database is corrupt or outdated; discarding and re-importing from scratch",
             );
             discard = Some(notice);
@@ -395,3 +393,7 @@ mod tests;
 #[cfg(test)]
 #[path = "project_control_symlink_tests.rs"]
 mod symlink_tests;
+
+#[cfg(test)]
+#[path = "project_control_log_tests.rs"]
+mod log_tests;

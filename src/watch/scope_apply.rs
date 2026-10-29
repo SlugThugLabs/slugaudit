@@ -64,7 +64,7 @@ pub(super) fn apply_scope_locked(
         // the scope no longer includes.
         for dir in &removed_watches {
             if let Err(error) = watcher.unwatch(dir) {
-                log_notify_failure("scope_unwatch", &redacted_path(dir), &error);
+                log_notify_failure("scope_unwatch", &dir.display().to_string(), &error);
             }
         }
         // A failed watch means changes under that directory go unnoticed
@@ -74,7 +74,7 @@ pub(super) fn apply_scope_locked(
         // whole subtree notify would otherwise walk (ignored trees included).
         for dir in &new_watches {
             if let Err(error) = watcher.watch(dir, RecursiveMode::NonRecursive) {
-                log_notify_failure("scope_watch", &redacted_path(dir), &error);
+                log_notify_failure("scope_watch", &dir.display().to_string(), &error);
             }
         }
     }

@@ -20,7 +20,7 @@ use super::scope::{self, WatchScope};
 use super::state::WatchState;
 use crate::ignore_rules::IgnoreRules;
 use crate::model::ResourceLimits;
-use crate::util::{lock_or_recover, redacted_path};
+use crate::util::lock_or_recover;
 #[cfg(test)]
 use notify::EventKind;
 use notify::{Config, Event, RecommendedWatcher, Watcher};
@@ -161,7 +161,7 @@ impl WatchManager {
         if let Some(ref mut watcher) = guard.watcher
             && let Err(error) = watcher.unwatch(&canonical)
         {
-            log_notify_failure("unwatch_project", &redacted_path(&canonical), &error);
+            log_notify_failure("unwatch_project", &canonical.display().to_string(), &error);
         }
 
         guard.projects.remove(&canonical);

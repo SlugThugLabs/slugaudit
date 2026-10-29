@@ -41,7 +41,6 @@ pub use manager::{SourceSyncManager, SyncedProject};
 pub(crate) use manager::{map_activation_error, map_process_limits_error};
 pub use manifest::{ChangeStatus, FileChange, compare};
 pub use publish::{PublishError, PublishReport, publish};
-pub(crate) use recovery_log::scrub_path;
 pub use result_stores::ResultStoreSlot;
 pub use revision::{FileRecord, RevisionError};
 

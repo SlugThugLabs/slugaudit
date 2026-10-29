@@ -1,7 +1,7 @@
 //! Log-redaction tests for the manager's sync-failure records: database
 //! open/verify failures and reconcile failures must carry static categories
-//! and redacted ids, never the `Display` text of the underlying error (which
-//! embeds absolute paths, stored roots, or ignore-style notes).
+//! and the real database or project path (the P4 real-path policy); only a
+//! stored root from another machine or location is named by a redacted id.
 
 use crate::sync::SourceSyncManager;
 use crate::sync::test_support::{create_project, sync_project, write_file};
@@ -15,9 +15,10 @@ fn sync_failure_records<'a>(logs: &'a str, operation: &str) -> Vec<&'a str> {
 
 /// R12: the stale-metadata warning used to format a reason string that
 /// embeds the *previous* absolute project root (the move/copy/unzip
-/// scenario). The record must carry a static kind and a redacted id.
+/// scenario). The record must carry a static kind, the real database path,
+/// and the old root only as a redacted id.
 #[test]
-fn a_stale_project_root_warning_logs_no_raw_previous_root() {
+fn a_stale_project_root_discard_warn_logs_real_path() {
     let manager = SourceSyncManager::new();
     let project = create_project();
     write_file(&project, "lib.rs", b"pub fn a() {}\n");
@@ -41,7 +42,7 @@ fn a_stale_project_root_warning_logs_no_raw_previous_root() {
             )
             .expect("rewrite stored root");
     }
-    let expected_database_id = crate::util::redacted_path(&database);
+    let expected_path = database.display().to_string();
     let expected_root_id = crate::util::redacted_path(std::path::Path::new(&stale_root));
 
     let (_synced, logs) = crate::store::test_capture::capture_warns(|| {
@@ -60,8 +61,8 @@ fn a_stale_project_root_warning_logs_no_raw_previous_root() {
         "the record must carry the static reason category:\n{logs}"
     );
     assert!(
-        records[0].contains(&format!("database_id={expected_database_id}")),
-        "the database must be named by its redacted id:\n{logs}"
+        records[0].contains(&format!("path={expected_path}")),
+        "the discard WARN must carry the real database path:\n{logs}"
     );
     assert!(
         records[0].contains(&format!("stored_root_id={expected_root_id}")),
@@ -71,17 +72,13 @@ fn a_stale_project_root_warning_logs_no_raw_previous_root() {
         !logs.contains(&stale_root) && !logs.contains("copied-from-elsewhere"),
         "the previous absolute root must not be logged:\n{logs}"
     );
-    assert!(
-        !logs.contains(project.path().to_string_lossy().as_ref()),
-        "the current absolute root must not be logged:\n{logs}"
-    );
 }
 
 /// R12: the open-failure warning used to format `StoreError`, whose
 /// dependency errors can embed the database path. The record must carry a
-/// static kind and a redacted id.
+/// static kind and the real database path.
 #[test]
-fn a_database_open_failure_warning_logs_no_raw_path() {
+fn a_database_open_failure_warn_logs_real_path() {
     let manager = SourceSyncManager::new();
     let project = create_project();
     let database = project.path().join(".planning/slugaudit/project.db");
@@ -96,8 +93,7 @@ fn a_database_open_failure_warning_logs_no_raw_path() {
         fs::set_permissions(&database, fs::Permissions::from_mode(0o600))
             .expect("restrict the database directory to owner-only");
     }
-    let raw_database = database.to_string_lossy().to_string();
-    let expected_id = crate::util::redacted_path(&database);
+    let expected_path = database.display().to_string();
 
     let (result, logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("capture liveness control for open_project_database");
@@ -119,16 +115,8 @@ fn a_database_open_failure_warning_logs_no_raw_path() {
         "the record must carry the static error category:\n{logs}"
     );
     assert!(
-        records[0].contains(&format!("database_id={expected_id}")),
-        "the database must be named by its redacted id:\n{logs}"
-    );
-    assert!(
-        !logs.contains(&raw_database),
-        "the absolute database path must not be logged:\n{logs}"
-    );
-    assert!(
-        !logs.contains(project.path().to_string_lossy().as_ref()),
-        "the project root must not be logged:\n{logs}"
+        records[0].contains(&format!("path={expected_path}")),
+        "the WARN must carry the real database path:\n{logs}"
     );
 }
 
@@ -219,5 +207,132 @@ fn honest_log_a_reconcile_budget_failure_logs_the_root_and_note() {
     assert!(
         records[0].contains("root=/home/private-user/secret-repo"),
         "the real root must be logged:\n{logs}"
+    );
+}
+
+/// An `OpenCorrupt` recovery record: the real database path, the source
+/// error text and the unknown-count error all reach the WARN.
+#[test]
+fn an_open_corrupt_recovery_warn_logs_real_path_and_source_error() {
+    use crate::sync::recovery_log::{DatabaseRecovery, log_database_recovery};
+    let database = std::path::Path::new("/home/private-user/secret-repo/project.db");
+    let error = crate::store::StoreError::Symlink;
+    let (discard, count_error) = crate::sync::DatabaseDiscard::assess(
+        Err(rusqlite::Error::InvalidQuery),
+        "corrupt".to_owned(),
+    );
+
+    let ((), logs) = crate::store::test_capture::capture_warns(|| {
+        log_database_recovery(
+            database,
+            DatabaseRecovery::OpenCorrupt {
+                error: &error,
+                discard: &discard,
+                count_error: count_error.as_ref(),
+            },
+        );
+    });
+
+    let records = sync_failure_records(&logs, "open_project_database");
+    assert_eq!(records.len(), 1, "one recovery is one record:\n{logs}");
+    assert!(
+        records[0].contains(&format!("path={}", database.display())),
+        "the record must carry the real database path:\n{logs}"
+    );
+    assert!(
+        records[0].contains("error_kind=\"symlink\"")
+            && records[0].contains(&format!("error={error}")),
+        "the record must carry the category and the source error:\n{logs}"
+    );
+    assert!(
+        records[0].contains("findings_discarded=None")
+            && records[0].contains(&format!(
+                "count_error=\"{}\"",
+                rusqlite::Error::InvalidQuery
+            )),
+        "the record must carry the unknown count and its error:\n{logs}"
+    );
+    assert!(
+        !records[0].contains("database_id="),
+        "the redacted database id is gone:\n{logs}"
+    );
+}
+
+/// An `IncompatibleVersion` recovery record carries the real database path,
+/// both versions and the discard count.
+#[test]
+fn an_incompatible_version_recovery_warn_logs_real_path_and_versions() {
+    use crate::sync::recovery_log::{DatabaseRecovery, log_database_recovery};
+    let database = std::path::Path::new("/home/private-user/secret-repo/project.db");
+    let (discard, count_error) = crate::sync::DatabaseDiscard::assess(Ok(3), "old".to_owned());
+
+    let ((), logs) = crate::store::test_capture::capture_warns(|| {
+        log_database_recovery(
+            database,
+            DatabaseRecovery::IncompatibleVersion {
+                contract_version: 7,
+                schema_version: 9,
+                discard: &discard,
+                count_error: count_error.as_ref(),
+            },
+        );
+    });
+
+    let records = sync_failure_records(&logs, "verify_project_database");
+    assert_eq!(records.len(), 1, "one recovery is one record:\n{logs}");
+    assert!(
+        records[0].contains(&format!("path={}", database.display())),
+        "the record must carry the real database path:\n{logs}"
+    );
+    assert!(
+        records[0].contains("error_kind=\"incompatible_version\"")
+            && records[0].contains("contract_version=7")
+            && records[0].contains("schema_version=9")
+            && records[0].contains("findings_discarded=Some(3)"),
+        "the record must carry the category, versions and count:\n{logs}"
+    );
+    assert!(
+        !records[0].contains("database_id="),
+        "the redacted database id is gone:\n{logs}"
+    );
+}
+
+/// The open-failure (non-discarding) record also carries the source error.
+#[test]
+fn an_open_failed_recovery_warn_logs_the_source_error() {
+    use crate::sync::recovery_log::{DatabaseRecovery, log_database_recovery};
+    let database = std::path::Path::new("/home/private-user/secret-repo/project.db");
+    let error = crate::store::StoreError::Symlink;
+
+    let ((), logs) = crate::store::test_capture::capture_warns(|| {
+        log_database_recovery(database, DatabaseRecovery::OpenFailed { error: &error });
+    });
+
+    let records = sync_failure_records(&logs, "open_project_database");
+    assert_eq!(records.len(), 1, "one failure is one record:\n{logs}");
+    assert!(
+        records[0].contains(&format!("error={error}")),
+        "the record must carry the source error:\n{logs}"
+    );
+}
+
+/// A database with no revision row makes `revision_after_sync` WARN with the
+/// real database path (and return the internal error).
+#[test]
+fn a_missing_revision_warn_logs_the_real_database_path() {
+    let directory = tempfile::tempdir().expect("db dir");
+    let database = directory.path().join("project.db");
+    let connection = crate::store::open_read_write(&database).expect("open db");
+
+    let (result, logs) = crate::store::test_capture::capture_warns(|| {
+        crate::sync::manager_health_support::revision_after_sync(&connection, &database)
+    });
+
+    assert!(result.is_err(), "no revision must surface as an error");
+    assert!(
+        logs.contains("no current revision found after sync")
+            && logs.contains(&format!("path={}", database.display()))
+            && !logs.contains("database_id="),
+        "the WARN must carry the real database path:\n{logs}"
     );
 }
