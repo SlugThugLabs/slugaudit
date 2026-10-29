@@ -9,7 +9,7 @@ The newest entry MUST match the version in `Cargo.toml`.
 
 <!-- Entries for the next release go here. -->
 
-## [1.1.0] - 2026-10-26
+## [1.1.0] - 2026-10-28
 
 Covers the changes since `v1.0.10`. `Cargo.toml` records
 `version = "1.1.0"`. The MCP wire surface changed more than in any earlier
