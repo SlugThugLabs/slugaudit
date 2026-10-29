@@ -37,7 +37,7 @@ const MAX_RESOURCE_URI_BYTES: usize = 8 * 1024;
 const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — symbols, imports, exports, call sites, comments, \
     parser diagnostics, file text — that you query instead of reading files: where a symbol is \
     defined, every call site of a callee, which files import which, per-file counts and repo-wide \
-    denominators. Each call re-syncs from disk (not editor buffers) first.\n\n\
+    denominators. Reflects disk, not editor buffers; tree re-verified within 30 s.\n\n\
     FIRST-WIN RULE: about to open more than ~3 files to answer one structural question (where is X \
     defined, who calls Y, what does Z import)? Query instead. On an enabled project start with \
     `report`, then `leads` with only `path`: two calls, no source reads.\n\n\

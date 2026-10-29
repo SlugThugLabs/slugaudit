@@ -22,11 +22,11 @@ task, not a verdict the tool renders.
   matter is the agent's job, not the tool's.
 - **Facts with coordinates.** Evidence rows carry a file path and a line span, so an
   agent can act on them without re-reading the tree.
-- **Freshness without re-verification.** The index is re-synchronized before every
-  tool call, so an answer describes the files on disk (not unsaved editor buffers) and
-  the agent never has to double-check whether its view is current. Changes the file
-  watcher reports are applied before the answer; anything it fails to report is caught
-  by a full-tree sweep at most 30 seconds later.
+- **Freshness without re-verification.** A healthy, quiet file watcher is trusted, and
+  the whole tree is fully re-verified within 30 seconds. An answer therefore reflects
+  every change the watcher reported plus anything else that changed within that window
+  (files on disk, not unsaved editor buffers), so the agent does not have to
+  double-check whether its view is current.
 - **Caps are reported in the response.** `leads`, `query`, `structure` and
   `finding_read` share one `page` object (`returned`, `total`, `complete`,
   `cursor`, `page_bytes`, `bytes_used`, `limited_by`, `revision_id`, `completeness`): it

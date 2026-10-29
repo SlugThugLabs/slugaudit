@@ -11,6 +11,9 @@ The newest entry MUST match the version in `Cargo.toml`.
 
 ### Fixed
 
+- Freshness wording in the README and the server instructions no longer claims a
+  re-sync before every tool call: a healthy watcher is trusted and the whole tree
+  is fully re-verified within 30 seconds.
 - Operator-facing WARN, INFO and DEBUG logs from sync, watch, project config,
   ignore rules, install, probe and the structure tool now name the real path
   or project root (`path=`, `root=`) instead of a hashed `path_id`, `root_id`
