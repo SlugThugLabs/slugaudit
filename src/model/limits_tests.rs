@@ -92,10 +92,11 @@ fn multiple_overrides_compose() {
             assert_eq!(limits.max_file_bytes, 1_048_576);
             assert_eq!(limits.max_query_vm_steps, 5_000_000);
             assert_eq!(limits.max_sync_wall_clock, Duration::from_secs(30));
-            // Unset fields stay at defaults
+            // Unset fields stay at the host-resolved baseline `from_env` uses.
+            let baseline = base_limits(None, detect_system_memory).expect("host memory");
             assert_eq!(
                 limits.max_query_response_bytes,
-                ResourceLimits::default().max_query_response_bytes
+                baseline.max_query_response_bytes
             );
         },
     );
