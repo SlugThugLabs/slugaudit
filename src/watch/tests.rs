@@ -65,7 +65,7 @@ fn watch_manager_tracks_file_modifications() {
     write_file(&project, "lib.rs", b"fn main() {}\n");
 
     let manager = WatchManager::with_watcher();
-    let state = manager.watch(project.path());
+    let state = manager.watch(project.path(), &Default::default());
     if state.health() == WatcherHealth::Unavailable {
         return;
     }
@@ -88,7 +88,7 @@ fn watch_manager_tracks_file_deletion() {
     write_file(&project, "lib.rs", b"fn main() {}\n");
 
     let manager = WatchManager::with_watcher();
-    let state = manager.watch(project.path());
+    let state = manager.watch(project.path(), &Default::default());
     if state.health() == WatcherHealth::Unavailable {
         return;
     }
@@ -109,7 +109,7 @@ fn watch_manager_ignores_slugaudit_activation_dir() {
     write_file(&project, "lib.rs", b"fn main() {}\n");
 
     let manager = WatchManager::with_watcher();
-    let state = manager.watch(project.path());
+    let state = manager.watch(project.path(), &Default::default());
     if state.health() == WatcherHealth::Unavailable {
         return;
     }

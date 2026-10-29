@@ -183,14 +183,10 @@ fn reported(result: Result<(), impl std::error::Error + 'static>) -> CommandOutc
     }
 }
 
-/// Logging choices read from the environment, plus every setting the
-/// environment carried that could not be honored.
+/// Logging choices read from the environment.
 struct LogSettings {
     filter: EnvFilter,
     json: bool,
-    /// One message per rejected setting. They are logged once the subscriber
-    /// is installed, because nothing can be logged before it.
-    rejected: Vec<String>,
 }
 
 /// The filter used when `RUST_LOG` is unset: dependencies are
@@ -204,18 +200,19 @@ const DEFAULT_LOG_FILTER: &str = "warn,slugaudit_mcp_rust=info,rmcp=error";
 const RUST_LOG_EXPECTED: &str =
     "tracing filter directives such as `info` or `slugaudit_mcp_rust=debug`";
 
+/// What a valid `SLUGAUDIT_LOG_FORMAT` is, for the startup error.
+const LOG_FORMAT_EXPECTED: &str = "`json` or `text`";
+
 /// Resolves `RUST_LOG` and `SLUGAUDIT_LOG_FORMAT`. An unset variable takes its
 /// default ([`DEFAULT_LOG_FILTER`], plain text) silently. A set `RUST_LOG`
 /// that is invalid or not UTF-8 is an error naming the variable (never its
 /// value, which the filter parser's message may quote), so the server does
 /// not run with a different filter than the operator asked for. A non-UTF-8
-/// `SLUGAUDIT_LOG_FORMAT` is recorded in `rejected` and logged once the
-/// subscriber is installed.
+/// `SLUGAUDIT_LOG_FORMAT` is the same kind of error.
 fn log_settings(
     rust_log: Result<String, std::env::VarError>,
     format: Result<String, std::env::VarError>,
 ) -> Result<LogSettings, EnvConfigError> {
-    let mut rejected = Vec::new();
     let filter = match rust_log {
         Ok(directives) => EnvFilter::try_new(&directives).map_err(|_| EnvConfigError::Invalid {
             variable: "RUST_LOG".to_owned(),
@@ -236,15 +233,13 @@ fn log_settings(
         Err(std::env::VarError::NotPresent) => false,
         // As above: never interpolate the value-carrying `VarError` Display.
         Err(std::env::VarError::NotUnicode(_)) => {
-            rejected.push("SLUGAUDIT_LOG_FORMAT is not valid Unicode; using text".to_owned());
-            false
+            return Err(EnvConfigError::NotUnicode {
+                variable: "SLUGAUDIT_LOG_FORMAT".to_owned(),
+                expected: LOG_FORMAT_EXPECTED.to_owned(),
+            });
         }
     };
-    Ok(LogSettings {
-        filter,
-        json,
-        rejected,
-    })
+    Ok(LogSettings { filter, json })
 }
 
 /// Installs the process-wide stderr tracing subscriber, before any command is
@@ -255,7 +250,8 @@ fn log_settings(
 ///
 /// # Errors
 ///
-/// Returns [`EnvConfigError`] for a set-but-invalid `RUST_LOG`.
+/// Returns [`EnvConfigError`] for a set-but-invalid `RUST_LOG` or a non-UTF-8
+/// `SLUGAUDIT_LOG_FORMAT`.
 fn init_logging() -> Result<(), EnvConfigError> {
     let settings = log_settings(
         std::env::var("RUST_LOG"),
@@ -273,9 +269,6 @@ fn init_logging() -> Result<(), EnvConfigError> {
             .with_ansi(false)
             .with_env_filter(settings.filter)
             .init();
-    }
-    for message in &settings.rejected {
-        tracing::warn!("{message}");
     }
     Ok(())
 }

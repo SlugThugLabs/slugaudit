@@ -198,9 +198,18 @@ pub(super) fn project_root(path: &str) -> Result<std::path::PathBuf, ErrorData> 
         .map_err(crate::sync::map_activation_error)
 }
 
+/// The process-wide limits, or the tool error for an environment that is
+/// invalid and was never validated at startup (a library embedder; the shipped
+/// binary validates before serving).
+pub(super) fn process_limits_for_tool() -> Result<ResourceLimits, ErrorData> {
+    process_limits()
+        .copied()
+        .map_err(crate::sync::map_process_limits_error)
+}
+
 /// The process limits with `root`'s project config applied.
 pub(super) fn limits_for_root(root: &std::path::Path) -> Result<ResourceLimits, ErrorData> {
-    crate::project::ProjectConfig::limits_for(root, *process_limits()).map_err(|error| {
+    crate::project::ProjectConfig::limits_for(root, process_limits_for_tool()?).map_err(|error| {
         tracing::error!(%error, "project limits could not be derived");
         ErrorData::invalid_params(
             format!("project config is unusable: {error}; fix or remove the file and retry"),

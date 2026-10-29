@@ -49,12 +49,12 @@ pub(crate) const SQLITE_MAX_VALUE_BYTES: u64 = 1_000_000_000;
 /// e.g. `SLUGAUDIT_MAX_FILE_BYTES=134217728` doubles the per-file size cap.
 /// Duration fields accept a number of seconds (whole seconds only).
 /// Only explicitly-set variables override; defaults are never altered. A
-/// variable that is set but cannot be read or parsed logs a warning naming
-/// the variable, and the default applies. Single-value overrides are
+/// variable that is set but cannot be read or parsed stops startup with an
+/// error naming the variable. Single-value overrides are
 /// clamped to `SQLITE_MAX_VALUE_BYTES` with a warning, because SQLite
-/// cannot store a larger value. A `0` for any of these variables is refused
-/// with a warning naming the variable (once per process) and the value
-/// already in place stays: no limit here means "off" at zero.
+/// cannot store a larger value. A `0` for any of these variables is an
+/// error naming the variable and stops startup: no limit here means "off" at
+/// zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceLimits {
     /// Largest single file that will be fully read into memory for hashing
@@ -72,7 +72,7 @@ pub struct ResourceLimits {
     /// memory and time, which grow with input size (a 50 MB Rust file took
     /// 185 s and 7.5 GB RSS before this cap). 2 MiB in every profile. Clamped
     /// to `max_file_bytes`, with a warning, when an override sets it higher.
-    /// A `0` override is refused with a warning and the default stays.
+    /// A `0` override is an error.
     /// Env: `SLUGAUDIT_MAX_PARSE_BYTES` (u64); project `config.json` key
     /// `max_parse_bytes`.
     pub max_parse_bytes: u64,
@@ -88,7 +88,7 @@ pub struct ResourceLimits {
     /// sync budget runs out first, the sync fails as before. A cut file with
     /// unchanged content is not re-parsed on later syncs (like any unchanged
     /// file); editing it parses it again. 5000 (5 s) in every profile; a `0`
-    /// override is refused with a warning and the default stays.
+    /// override is an error.
     /// Env: `SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS` (milliseconds, u64); project
     /// `config.json` key `max_parse_wall_clock_ms`.
     pub max_parse_wall_clock_ms: u64,
@@ -134,7 +134,7 @@ pub struct ResourceLimits {
     /// `Query::new` has no deadline of its own, so a longer query is refused
     /// with `invalid_params` (stating its size and this limit, never its
     /// text) before it is compiled. 16 KiB in every profile; a `0` override is
-    /// refused with a warning and the default stays.
+    /// an error.
     /// Env: `SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES` (usize); project
     /// `config.json` key `max_structure_query_bytes`.
     pub max_structure_query_bytes: usize,
@@ -181,14 +181,14 @@ pub struct ResourceLimits {
     /// `result_too_large`. Defaults to 4 times the effective
     /// `max_query_response_bytes`, including its env override (1 GiB on
     /// `audit`, 128 MiB on `lean`), unless this limit is set itself; a `0`
-    /// override is refused with a warning and the default stays.
+    /// override is an error.
     /// Env: `SLUGAUDIT_MAX_RESULT_STORE_BYTES` (u64); project `config.json`
     /// key `max_result_store_bytes`.
     pub max_result_store_bytes: u64,
     /// Seconds after its last served page that an unfinished paged result
     /// stays protected from reclaim (900 in every profile). The grace never
     /// deletes anything by itself, and continuing a result renews it. A `0`
-    /// override is refused with a warning and the default stays.
+    /// override is an error.
     /// Env: `SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS` (seconds, u64); project
     /// `config.json` key `result_active_grace_secs`.
     pub result_active_grace_secs: u64,
@@ -205,32 +205,40 @@ pub struct ResourceLimits {
 ///
 /// Returns [`EnvConfigError`] naming the offending variable.
 pub fn init_process_limits() -> Result<&'static ResourceLimits, EnvConfigError> {
-    if let Some(limits) = LIMITS.get() {
+    install_limits(&LIMITS)
+}
+
+/// Returns what `cell` holds, or validates the environment and installs the
+/// result. An invalid environment installs nothing, so every later call
+/// validates again instead of finding a fallback.
+fn install_limits(cell: &OnceLock<ResourceLimits>) -> Result<&ResourceLimits, EnvConfigError> {
+    if let Some(limits) = cell.get() {
         return Ok(limits);
     }
     let limits = ResourceLimits::from_env()?;
-    Ok(LIMITS.get_or_init(|| limits))
+    Ok(cell.get_or_init(|| limits))
 }
 
 static LIMITS: OnceLock<ResourceLimits> = OnceLock::new();
 
 /// Returns the process-wide resource limits: those [`init_process_limits`]
-/// installed at startup. Reached without that call (library embedding,
-/// tests) the environment is validated here; an invalid one is logged as an
-/// error and the test-only [`Default`] limits apply, because this accessor
-/// cannot fail. The shipped binary validates before serving, so it never
-/// takes that path.
-/// Tests continue to use `ResourceLimits::default()` directly for
-/// deterministic behavior independent of the test runner's environment.
-#[must_use]
-pub fn process_limits() -> &'static ResourceLimits {
-    LIMITS.get_or_init(|| match ResourceLimits::from_env() {
-        Ok(limits) => limits,
-        Err(error) => {
-            tracing::error!(%error, "process limits environment is invalid and was not validated at startup; using the default limits");
-            ResourceLimits::default()
-        }
-    })
+/// installed at startup. The shipped binary validates before serving, so it
+/// always finds them installed. Reached without that call (library
+/// embedding, tests) the environment is validated here and, when valid,
+/// installed; when invalid the error is returned and nothing is installed,
+/// so the next call validates again. It never continues with other limits
+/// and never ends the process: the caller decides how the failure reaches
+/// its own caller (tool calls report it as an internal error).
+///
+/// Tests that need deterministic limits build them explicitly (for example
+/// `ResourceLimits::default()`) instead of calling this.
+///
+/// # Errors
+///
+/// Returns [`EnvConfigError`] naming the offending variable when the limits
+/// were not installed and the environment is invalid.
+pub fn process_limits() -> Result<&'static ResourceLimits, EnvConfigError> {
+    init_process_limits()
 }
 
 impl ResourceLimits {
@@ -371,14 +379,20 @@ fn clamp_sqlite_value(name: &str, value: u64) -> u64 {
     }
 }
 
+/// Host memory the [`Default`] limits are sized for: a fixed 16 GiB host, so
+/// the baseline is the same on every machine and never depends on detection.
+const DEFAULT_BASELINE_MEMORY: SystemMemoryInfo = SystemMemoryInfo {
+    total_bytes: 16 * 1024 * 1024 * 1024,
+    available_bytes: 16 * 1024 * 1024 * 1024,
+};
+
+/// The deterministic Adaptive-profile baseline for a fixed 16 GiB host,
+/// whatever the machine's real memory or `SLUGAUDIT_*` environment. Production
+/// limits come from [`init_process_limits`]; this is the constant tests and
+/// struct-update syntax build on.
 impl Default for ResourceLimits {
     fn default() -> Self {
-        super::profile::limits_for_profile(super::profile::AuditProfile::Adaptive).unwrap_or_else(
-            |error| {
-                tracing::error!(%error, "default limits cannot be sized from host memory; using the lean profile (production startup rejects this)");
-                super::profile::lean_limits()
-            },
-        )
+        super::profile::adaptive_limits(DEFAULT_BASELINE_MEMORY)
     }
 }
 

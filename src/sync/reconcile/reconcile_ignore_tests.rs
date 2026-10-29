@@ -18,7 +18,7 @@ fn gitignored_dirty_paths_are_not_indexed() {
     write(project.path(), "target/gen.rs", b"fn gen() {}\n");
     write(project.path(), "src/lib.rs", b"fn lib() {}\n");
 
-    let scope = crate::watch::WatchScope::compute(project.path());
+    let scope = crate::watch::WatchScope::compute(project.path(), &Default::default());
     let rules = crate::ignore_rules::IgnoreRules::build(project.path(), &scope.ignore_files);
     let dirty = ["target/gen.rs", "src/lib.rs"]
         .iter()

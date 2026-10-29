@@ -19,6 +19,7 @@ use super::errors::log_notify_failure;
 use super::scope::{self, WatchScope};
 use super::state::WatchState;
 use crate::ignore_rules::IgnoreRules;
+use crate::model::ResourceLimits;
 use crate::util::{lock_or_recover, redacted_path};
 #[cfg(test)]
 use notify::EventKind;
@@ -142,9 +143,9 @@ impl WatchManager {
     /// Start watching `root`. Returns the `WatchState` for the project.
     /// If the watcher is unavailable, returns a state with `Unavailable`
     /// health. Computes the watch scope immediately — under the process-wide
-    /// watch limits — and prunes watches on ignored/excluded directories.
-    pub fn watch(&self, root: &Path) -> WatchState {
-        let limits = crate::model::process_limits();
+    /// watch limits in `limits` — and prunes watches on ignored/excluded
+    /// directories.
+    pub fn watch(&self, root: &Path, limits: &ResourceLimits) -> WatchState {
         self.watch_with_scope_limits(root, limits.max_watch_entries, limits.max_watch_depth)
     }
 
@@ -217,8 +218,7 @@ impl WatchManager {
     /// `notify`'s `unwatch` blocks on the event loop, so it must never
     /// run on the notify callback thread. The sync layer calls this
     /// before reconciling.
-    pub fn refresh_scope(&self, root: &Path) {
-        let limits = crate::model::process_limits();
+    pub fn refresh_scope(&self, root: &Path, limits: &ResourceLimits) {
         self.refresh_scope_with_limits(root, limits.max_watch_entries, limits.max_watch_depth);
     }
 

@@ -1,6 +1,7 @@
-//! Hygiene for limit overrides (environment and project config): a zero that
-//! would silently disable work is refused, and a warning about one cause is
-//! logged once per process rather than once per load.
+//! Hygiene for limit overrides: a zero in an environment variable is a
+//! startup error; a zero in the project config is ignored with a warning.
+//! A warning about one cause is logged once per process rather than once per
+//! load.
 //!
 //! The limits are rebuilt from the project config on every tool call and
 //! every sync, so a warning issued at each build repeats for one unchanged
@@ -51,8 +52,8 @@ fn first_report(setting: &'static str, value: u64) -> bool {
 /// Passes `value` through unless it is zero. Zero is meaningless for the
 /// limits this guards (it would make every file oversize, every parse time
 /// out, every query too long), so it is refused with a warning naming
-/// `setting` (an environment variable or a `config.json` key), once per
-/// process, and the caller keeps the value already in place.
+/// `setting` (a `config.json` key), once per process, and the caller keeps the
+/// value already in place.
 pub(super) fn refuse_zero<T: Default + PartialEq>(setting: &'static str, value: T) -> Option<T> {
     if value != T::default() {
         return Some(value);
@@ -66,16 +67,20 @@ pub(super) fn refuse_zero<T: Default + PartialEq>(setting: &'static str, value: 
     None
 }
 
-/// [`parse_override`] for a limit where zero is meaningless: a `0` is refused
-/// with a warning naming the variable (once per process), and the value
-/// already in place stays.
+/// [`parse_override`] for a limit where zero is meaningless: a `0` is an
+/// error naming the variable (never a value), so startup fails closed rather
+/// than running with a limit the operator did not ask for.
 pub(super) fn nonzero_override<T>(name: &'static str) -> Result<Option<T>, EnvConfigError>
 where
     T: std::str::FromStr + Default + PartialEq,
     T::Err: std::fmt::Display,
 {
-    Ok(parse_override::<T>(name)?
-        .and_then(|value| super::limit_overrides::refuse_zero(name, value)))
+    match parse_override::<T>(name)? {
+        Some(value) if value == T::default() => Err(EnvConfigError::Zero {
+            variable: name.to_owned(),
+        }),
+        other => Ok(other),
+    }
 }
 
 /// Parses one `SLUGAUDIT_<FIELD>` override.

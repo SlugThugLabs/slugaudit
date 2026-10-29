@@ -23,9 +23,12 @@ fn from_env_uses_defaults_when_no_vars_are_set() {
     let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
     temp_env::with_var_unset("SLUGAUDIT_MAX_FILE_BYTES", || {
         let limits = ResourceLimits::from_env().expect("valid env");
+        // Unset variables leave the Adaptive profile for this host, which is
+        // the fixed 16 GiB `Default` only on a host of that size.
+        let host = crate::model::detect_system_memory().expect("this host reports its memory");
         assert_eq!(
             limits.max_file_bytes,
-            ResourceLimits::default().max_file_bytes
+            crate::model::profile::adaptive_limits(host).max_file_bytes
         );
     });
 }
@@ -388,4 +391,68 @@ fn fail_closed_an_explicit_profile_runs_without_detectable_memory() {
     .expect("lean needs no detection");
 
     assert_eq!(limits.max_file_bytes, 32 * 1024 * 1024);
+}
+
+#[test]
+fn fail_closed_an_uninstalled_limits_cell_with_an_invalid_env_returns_the_error_and_installs_nothing()
+ {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    let cell = OnceLock::new();
+    temp_env::with_vars(
+        [
+            ("SLUGAUDIT_PROFILE", Some("lean")),
+            ("SLUGAUDIT_MAX_PARSE_BYTES", Some("0")),
+        ],
+        || {
+            let error = install_limits(&cell).expect_err("a zero limit must not install");
+
+            assert!(
+                matches!(&error, EnvConfigError::Zero { variable } if variable == "SLUGAUDIT_MAX_PARSE_BYTES"),
+                "{error:?}"
+            );
+            assert!(cell.get().is_none(), "an invalid env must install nothing");
+        },
+    );
+}
+
+#[test]
+fn an_uninstalled_limits_cell_with_a_valid_env_installs_once_and_keeps_the_first_value() {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    let cell = OnceLock::new();
+    let first = temp_env::with_vars(
+        [
+            ("SLUGAUDIT_PROFILE", Some("lean")),
+            ("SLUGAUDIT_MAX_PARSE_BYTES", Some("4096")),
+        ],
+        || install_limits(&cell).map(|limits| limits.max_parse_bytes),
+    )
+    .expect("valid env installs");
+    assert_eq!(first, 4096);
+
+    // The environment is not read again once the limits are installed.
+    let second = temp_env::with_var("SLUGAUDIT_MAX_PARSE_BYTES", Some("0"), || {
+        install_limits(&cell).map(|limits| limits.max_parse_bytes)
+    })
+    .expect("installed limits are returned without re-reading the env");
+    assert_eq!(second, 4096);
+}
+
+#[test]
+fn the_default_limits_ignore_the_environment_and_the_host_memory() {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    let baseline = ResourceLimits::default();
+
+    let under_env = temp_env::with_vars(
+        [
+            ("SLUGAUDIT_PROFILE", Some("lean")),
+            ("SLUGAUDIT_MAX_FILE_BYTES", Some("1")),
+        ],
+        ResourceLimits::default,
+    );
+
+    assert_eq!(under_env, baseline);
+    assert_eq!(
+        baseline,
+        crate::model::profile::adaptive_limits(DEFAULT_BASELINE_MEMORY),
+    );
 }

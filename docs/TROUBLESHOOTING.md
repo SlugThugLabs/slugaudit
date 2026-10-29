@@ -339,11 +339,13 @@ second with no watcher event.
 ## Logs
 
 - Logs go to **stderr** only. stdout is the JSON-RPC transport in serve mode.
-- `RUST_LOG` sets the filter; the default is `info`. An invalid or non-UTF-8
-  value falls back to `info` and is reported as a warning, not silently
-  dropped.
-- `SLUGAUDIT_LOG_FORMAT=json` switches to one-line JSON events; anything else
-  (or unset) uses plain text with ANSI disabled.
+- `RUST_LOG` sets the filter; unset, the default keeps this crate at `info`
+  and its dependencies at `warn`. An invalid or non-UTF-8 value stops startup
+  with an error naming `RUST_LOG` (never its value); fix or unset it.
+- `SLUGAUDIT_LOG_FORMAT=json` (any letter case) switches to one-line JSON
+  events; unset or any other UTF-8 value (such as `text`) uses plain text with
+  ANSI disabled. A non-UTF-8 value stops startup with an error naming the
+  variable.
 - Logging is initialized before command dispatch, so CLI warnings
   (`probe`, `install`, `update`) reach the subscriber.
 

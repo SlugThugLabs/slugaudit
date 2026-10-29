@@ -171,7 +171,9 @@ fn sync_synthetic_project(files: usize, directories: usize) {
     // The budget the sync itself will enforce: whatever `process_limits()`
     // resolved (env overrides included). The profile default is printed
     // alongside it so a maintainer can see whether an override was in play.
-    let budget = process_limits().max_sync_wall_clock;
+    let budget = process_limits()
+        .expect("process limits")
+        .max_sync_wall_clock;
     let profile_default = limits_for_profile(AuditProfile::default())
         .expect("profile limits")
         .max_sync_wall_clock;

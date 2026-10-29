@@ -1,6 +1,6 @@
 // slugaudit-line-exception: approved-by=slugthug; reason=Recombined filesystem discovery walk and entry collection into cohesive module.
 use crate::ignore_rules::{indexable_walker, is_excluded_path};
-use crate::model::process_limits;
+use crate::model::ResourceLimits;
 use crate::util::Deadline;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -254,6 +254,10 @@ pub(crate) fn sniff_kind(path: &Path) -> Result<FileKind, DiscoveryError> {
 /// failing the whole walk, so a single bad file can't make an entire
 /// project unqueryable.
 ///
+/// The walk runs under the default sync wall-clock budget
+/// ([`ResourceLimits::default`]); callers that hold the effective limits use
+/// [`discover_with_deadline`].
+///
 /// # Errors
 ///
 /// Returns an error if the walk cannot list a directory (or the root), or
@@ -261,7 +265,10 @@ pub(crate) fn sniff_kind(path: &Path) -> Result<FileKind, DiscoveryError> {
 /// publish would read the missing paths as deleted — so discovery fails
 /// closed instead.
 pub fn discover(root: &Path) -> Result<(Vec<DiscoveredFile>, Vec<SkippedFile>), DiscoveryError> {
-    discover_with_deadline(root, &Deadline::after(process_limits().max_sync_wall_clock))
+    discover_with_deadline(
+        root,
+        &Deadline::after(ResourceLimits::default().max_sync_wall_clock),
+    )
 }
 
 /// [`discover`] under an explicit wall-clock [`Deadline`], checked once per

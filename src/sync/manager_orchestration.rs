@@ -13,6 +13,7 @@ use super::super::manager_meta::{
 use super::super::recovery_log::{DatabaseRecovery, log_database_recovery};
 use super::{SourceSyncManager, SyncedProject};
 use crate::error_codes::{self, ErrorCode};
+use crate::model::process_limits;
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::project;
 use crate::store;
@@ -235,8 +236,9 @@ impl SourceSyncManager {
         start: std::time::Instant,
         sink: &dyn ProgressSink,
     ) -> Result<SyncedProject, ErrorData> {
-        let state = self.watch_manager.watch(root.as_path());
-        self.watch_manager.refresh_scope(root.as_path());
+        let limits = process_limits().map_err(map_process_limits_error)?;
+        let state = self.watch_manager.watch(root.as_path(), limits);
+        self.watch_manager.refresh_scope(root.as_path(), limits);
         let revision_id = self.sync_by_health(root, &state, connection, &database_path, sink)?;
 
         let duration_ms = elapsed_ms(start);
@@ -296,4 +298,24 @@ pub(crate) fn map_activation_error(error: project::ActivationError) -> ErrorData
         None
     };
     ErrorData::invalid_params(error.to_string(), data)
+}
+
+impl SourceSyncManager {
+    /// [`SourceSyncManager::refresh_watch_scope`] with the error shaped for a
+    /// tool call.
+    pub(super) fn refresh_watch_scope_for_tool(&self, root: &Path) -> Result<(), ErrorData> {
+        self.refresh_watch_scope(root)
+            .map_err(map_process_limits_error)
+    }
+}
+
+/// The tool error for process limits that were never installed and whose
+/// `SLUGAUDIT_*` environment is invalid (a library embedder; the shipped
+/// binary validates before serving). Logged once here, with the source error.
+pub(crate) fn map_process_limits_error(error: crate::model::EnvConfigError) -> ErrorData {
+    tracing::error!(%error, "process limits environment is invalid");
+    ErrorData::internal_error(
+        format!("the SLUGAUDIT_* environment is invalid: {error}; fix it and restart the server"),
+        None,
+    )
 }

@@ -11,7 +11,6 @@ fn unset_log_variables_take_their_defaults_without_a_complaint() {
     .expect("valid settings");
 
     assert!(!settings.json);
-    assert!(settings.rejected.is_empty());
 }
 
 #[test]
@@ -36,29 +35,25 @@ fn a_valid_rust_log_and_json_format_are_honored_silently() {
         log_settings(Ok("debug".to_owned()), Ok("JSON".to_owned())).expect("valid settings");
 
     assert!(settings.json);
-    assert!(settings.rejected.is_empty());
 }
 
 #[cfg(unix)]
 #[test]
-fn a_non_utf8_log_format_is_reported_not_treated_as_plain() {
+fn fail_closed_a_non_utf8_log_format_is_an_error_without_echoing_its_value() {
     use std::os::unix::ffi::OsStringExt as _;
     let bad = std::ffi::OsString::from_vec(b"SLUGAUDIT_LEAK_MARKER\xff".to_vec());
 
-    let settings = log_settings(
+    let result = log_settings(
         Err(std::env::VarError::NotPresent),
         Err(std::env::VarError::NotUnicode(bad)),
-    )
-    .expect("valid settings");
-
-    assert!(!settings.json);
-    assert_eq!(settings.rejected.len(), 1);
-    assert!(settings.rejected[0].contains("SLUGAUDIT_LOG_FORMAT"));
-    assert!(
-        !settings.rejected[0].contains("SLUGAUDIT_LEAK_MARKER"),
-        "the raw environment value must not reach the log: {:?}",
-        settings.rejected[0]
     );
+
+    let Err(error) = result else {
+        panic!("a non-UTF-8 SLUGAUDIT_LOG_FORMAT must fail startup");
+    };
+    let message = error.to_string();
+    assert!(message.contains("SLUGAUDIT_LOG_FORMAT"), "{message}");
+    assert!(!message.contains("SLUGAUDIT_LEAK_MARKER"), "{message}");
 }
 
 #[cfg(unix)]
@@ -104,7 +99,6 @@ fn honest_log_default_filter_keeps_our_info_and_drops_rmcp_info() {
         Err(std::env::VarError::NotPresent),
     )
     .expect("valid settings");
-    assert!(settings.rejected.is_empty());
     let sink = Sink(std::sync::Arc::default());
     let writer = sink.clone();
     let subscriber = tracing_subscriber::fmt()

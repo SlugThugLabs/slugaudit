@@ -7,7 +7,7 @@ use super::query_exec::run_query;
 use super::query_value::{NonFiniteCell, ensure_unique_column_names};
 
 use crate::error_codes::{self, ErrorCode};
-use crate::model::{ResourceLimits, process_limits};
+use crate::model::ResourceLimits;
 use crate::sync;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -128,7 +128,7 @@ pub fn query(
     // refuses the call below.
     let limits = match (&request.0.cursor, &request.0.path) {
         (None, Some(path)) => super::resolve_limits(path)?,
-        _ => *process_limits(),
+        _ => super::process_limits_for_tool()?,
     };
     query_with_limits(request, &limits, sink, manager)
 }

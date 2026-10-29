@@ -11,7 +11,6 @@ use super::{
     InvalidMechanic, MechanicAction, MechanicListing, MechanicRequest, MechanicResponse,
     MechanicSource, mechanic_catalog,
 };
-use crate::model::process_limits;
 use crate::progress::ProgressSink;
 use crate::store::{Cell, Materialize, ResultStoreError, StoredRow, Take};
 use crate::sync::SourceSyncManager;
@@ -129,7 +128,7 @@ pub(super) fn list(
         // The stored budget serves a continuation; the process limits only
         // clamp an explicit `page_bytes`, as no project is named.
         PageRequest::Cursor(_) => {
-            let limits = *process_limits();
+            let limits = crate::tools::process_limits_for_tool()?;
             let size = request
                 .page_bytes
                 .map(|bytes| page_size::resolve(Some(bytes), &limits))

@@ -8,12 +8,12 @@
 //! and a redacted path id.
 
 use super::*;
-use crate::model::process_limits;
+use crate::model::ResourceLimits;
 use crate::sync::test_support::{setup_project, stored_paths, write};
 use crate::util::Deadline;
 
 fn generous_deadline() -> Deadline {
-    Deadline::after(process_limits().max_sync_wall_clock)
+    Deadline::after(ResourceLimits::default().max_sync_wall_clock)
 }
 
 /// A path the walker will fail to list even when the process runs as root:

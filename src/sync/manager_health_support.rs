@@ -166,6 +166,7 @@ fn reconcile_error_details(error: &ReconcileError) -> (&'static str, Option<Stri
     match error {
         ReconcileError::Discovery(error) => discovery_error_details(error),
         ReconcileError::Limits(_) => ("project_limits", None),
+        ReconcileError::ProcessLimits(_) => ("process_limits", None),
         ReconcileError::Database(_) => ("database", None),
         ReconcileError::Hash(error) => match error {
             HashError::Read { path, .. } => ("hash_read", Some(path.display().to_string())),

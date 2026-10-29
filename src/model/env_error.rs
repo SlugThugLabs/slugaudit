@@ -24,6 +24,15 @@ pub enum EnvConfigError {
         /// Description of what is valid.
         expected: String,
     },
+    /// The variable is set to `0`, which is not a usable value for a limit
+    /// (it would make every file oversize, every parse time out, and so on).
+    #[error(
+        "{variable} is set to 0, which is not a usable limit; set a positive value or unset it"
+    )]
+    Zero {
+        /// Name of the variable.
+        variable: String,
+    },
     /// The Adaptive profile sizes limits from host memory, which could not
     /// be detected, so a profile that needs no detection must be chosen.
     #[error(

@@ -36,7 +36,7 @@ impl ReconcileOptions {
         // Full publishes apply the project config before sampling. Reconcile
         // must derive its limits the same way or an edit can be accepted or
         // skipped solely according to which freshness path happened to run.
-        let limits = crate::project::ProjectConfig::limits_for(root, *process_limits())?;
+        let limits = crate::project::ProjectConfig::limits_for(root, *process_limits()?)?;
         let deadline = Deadline::after(limits.max_sync_wall_clock);
         Ok(Self {
             limits,

@@ -18,6 +18,10 @@ pub enum ReconcileError {
     /// present but unreadable or malformed.
     #[error(transparent)]
     Limits(#[from] crate::project::ProjectLimitsError),
+    /// The process-wide limits were never installed and the `SLUGAUDIT_*`
+    /// environment is invalid.
+    #[error(transparent)]
+    ProcessLimits(#[from] crate::model::EnvConfigError),
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
     #[error(transparent)]

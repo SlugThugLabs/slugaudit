@@ -306,7 +306,7 @@ pub fn leads(
     request.0.legacy_paging.refuse()?;
     let limits = match (&request.0.cursor, &request.0.path) {
         // A continuation names no project: the process limits apply.
-        (Some(_), _) => *crate::model::process_limits(),
+        (Some(_), _) => super::process_limits_for_tool()?,
         (None, Some(path)) => super::resolve_limits(path)?,
         (None, None) => return Err(missing_path()),
     };

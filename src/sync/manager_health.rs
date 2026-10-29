@@ -86,7 +86,7 @@ impl SourceSyncManager {
         // walk runs outside the manager lock); make sure the drain below has
         // the project's ignore rules instead of a transient `None`. A no-op
         // when the scope is already current.
-        self.watch_manager.refresh_scope(root.as_path());
+        self.refresh_watch_scope_for_tool(root.as_path())?;
         super::super::manager_meta::publish_full(
             connection,
             root.as_path(),
@@ -157,7 +157,7 @@ impl SourceSyncManager {
         // An ignore file may have changed since the last pass: recompute
         // the scope and the event-filtering rules before the reconcile
         // reads them. A no-op when nothing changed.
-        self.watch_manager.refresh_scope(root.as_path());
+        self.refresh_watch_scope_for_tool(root.as_path())?;
         // One deadline spans the whole Healthy operation — the sweep
         // walk, the event-driven reconcile, and applying the sweep's
         // findings — so no step silently starts a fresh clock.
@@ -270,7 +270,8 @@ impl SourceSyncManager {
         // An ignore file may have changed since the last pass: recompute
         // the watch scope and the event-filtering rules before deciding
         // what to reconcile. A no-op when nothing changed.
-        self.watch_manager.refresh_scope(root);
+        self.refresh_watch_scope(root)
+            .map_err(super::reconcile::ReconcileError::ProcessLimits)?;
         // One deadline for the whole barrier operation — every iteration
         // and every per-path reconcile inside it — so a pathological
         // event producer can't stall a tool call indefinitely. The

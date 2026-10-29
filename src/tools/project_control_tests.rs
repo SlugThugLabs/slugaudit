@@ -154,7 +154,7 @@ fn off_action_disables_the_project_and_purges_the_database() {
 fn off_action_unwatches_project_in_sync_manager() {
     let (project, path) = temp_project_with_source();
     let manager = sync::SourceSyncManager::new();
-    manager.activate(project.path());
+    manager.activate(project.path()).expect("activate");
     assert!(manager.active_watch_state().is_some());
 
     project_control(

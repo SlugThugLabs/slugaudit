@@ -38,7 +38,7 @@ fn assert_capture_live(logs: &str) {
 /// Builds rules the way production does: scope walk first (collects the
 /// ignore files), then `IgnoreRules::build`.
 fn rules_for(root: &Path) -> IgnoreRules {
-    let scope = WatchScope::compute(root);
+    let scope = WatchScope::compute(root, &Default::default());
     IgnoreRules::build(root, &scope.ignore_files)
 }
 

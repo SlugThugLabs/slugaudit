@@ -545,7 +545,7 @@ fn a_failed_post_verification_drain_surfaces_the_exact_error() {
     drop(manager1);
 
     let manager2 = SourceSyncManager::with_watcher();
-    let state = manager2.activate(project.path());
+    let state = manager2.activate(project.path()).expect("activate");
     // Abort only the reconcile's insert. The full publish below has
     // nothing to publish (the disk state still matches the stored
     // revision), so it never touches `files`; the drain does.

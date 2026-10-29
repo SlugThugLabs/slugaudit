@@ -14,8 +14,9 @@ mod orchestration;
 
 use super::discard_notice::DatabaseDiscard;
 use super::reconcile;
+use crate::model::process_limits;
 use crate::watch::{WatchManager, WatchState};
-pub(crate) use orchestration::map_activation_error;
+pub(crate) use orchestration::{map_activation_error, map_process_limits_error};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -238,8 +239,22 @@ impl SourceSyncManager {
     }
 
     /// Start watching `root`. Returns the `WatchState` for the project.
-    pub fn activate(&self, root: &Path) -> WatchState {
-        self.watch_manager.watch(root)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EnvConfigError`](crate::model::EnvConfigError) when the
+    /// process limits were never installed and the environment is invalid.
+    pub fn activate(&self, root: &Path) -> Result<WatchState, crate::model::EnvConfigError> {
+        Ok(self.watch_manager.watch(root, process_limits()?))
+    }
+
+    /// Recomputes `root`'s watch scope under the process limits.
+    pub(super) fn refresh_watch_scope(
+        &self,
+        root: &Path,
+    ) -> Result<(), crate::model::EnvConfigError> {
+        self.watch_manager.refresh_scope(root, process_limits()?);
+        Ok(())
     }
 
     /// Stop watching `root` and unregisters its state.

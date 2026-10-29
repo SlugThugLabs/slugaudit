@@ -93,7 +93,7 @@ fn global_only_state_reports_watcher_fields_when_a_project_is_registered() {
 fn global_only_state_with_a_healthy_watcher_reports_an_unknown_phase() {
     let (project, _path) = activated_temp_project();
     let manager = SourceSyncManager::new();
-    let state = manager.activate(project.path());
+    let state = manager.activate(project.path()).expect("activate");
     state.set_health(WatcherHealth::Healthy);
 
     let fields = super::compute_global_only_state(&manager);
@@ -117,7 +117,7 @@ fn global_only_state_with_a_healthy_watcher_reports_an_unknown_phase() {
 fn global_only_state_with_pending_events_reports_restoring() {
     let (project, _path) = activated_temp_project();
     let manager = SourceSyncManager::new();
-    let state = manager.activate(project.path());
+    let state = manager.activate(project.path()).expect("activate");
     state.set_health(WatcherHealth::Healthy);
     state.mark_dirty("lib.rs".to_owned());
 
@@ -435,7 +435,7 @@ fn a_failed_database_query_is_logged_and_reported_as_absent() {
 fn an_unreadable_database_after_a_successful_sync_reports_unknown_not_importing() {
     let (project, path) = activated_temp_project();
     let manager = synced_manager(&project, &path);
-    let state = manager.activate(project.path());
+    let state = manager.activate(project.path()).expect("activate");
     state.set_health(WatcherHealth::Healthy);
     let database = project.path().join(".planning/slugaudit/project.db");
     fs::write(&database, b"this is not a sqlite database").expect("corrupt the database");

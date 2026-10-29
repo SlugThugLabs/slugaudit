@@ -41,6 +41,10 @@ pub enum PublishError {
     /// present but unreadable or malformed.
     #[error(transparent)]
     Limits(#[from] crate::project::ProjectLimitsError),
+    /// The process-wide limits were never installed and the `SLUGAUDIT_*`
+    /// environment is invalid.
+    #[error(transparent)]
+    ProcessLimits(#[from] crate::model::EnvConfigError),
     /// Writing the revision failed, including the CAS stale-baseline verdict.
     #[error(transparent)]
     Revision(#[from] revision::RevisionError),
@@ -134,6 +138,7 @@ impl PublishError {
             PublishError::Discovery(_) => "discovery",
             PublishError::Sample(_) => "sample",
             PublishError::Limits(_) => "project_limits",
+            PublishError::ProcessLimits(_) => "process_limits",
             PublishError::Revision(_) => "revision",
             PublishError::Database(_) => "database",
             PublishError::ImportTooLarge { .. } => "import_too_large",

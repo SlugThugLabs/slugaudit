@@ -183,7 +183,7 @@ and its variable are documented in `src/model/limits.rs`. `query` and `leads` re
 searchable but not parsed; `leads` reports them in `files_not_parsed` and `report` in its completeness
 block. A file whose parse takes longer than `SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS` (5000 by default, or
 `max_parse_wall_clock_ms` in `config.json`) is stored without structure and counted the same way; the
-sync goes on, and the file is parsed again only when it changes. Paged results are kept in a bounded store (`SLUGAUDIT_MAX_RESULT_STORE_BYTES`, or `max_result_store_bytes` in `config.json`; 4 times the response ceiling by default) and an unfinished result stays protected from reclaim for `SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS` (900 by default, or `result_active_grace_secs`) after its last page. An unset or unparseable override is ignored, leaving the default in place; a `0` is refused the same way, with a warning.
+sync goes on, and the file is parsed again only when it changes. Paged results are kept in a bounded store (`SLUGAUDIT_MAX_RESULT_STORE_BYTES`, or `max_result_store_bytes` in `config.json`; 4 times the response ceiling by default) and an unfinished result stays protected from reclaim for `SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS` (900 by default, or `result_active_grace_secs`) after its last page. An unset `SLUGAUDIT_*` limit variable leaves the default in place; one that is set but cannot be parsed, is not valid Unicode, or is `0` stops startup with an error naming the variable (never its value). A `0` for a limit in `config.json` is ignored with one warning and the current value applies.
 
 Logging goes to `stderr`; `stdout` carries JSON-RPC only. Set
 `SLUGAUDIT_LOG_FORMAT=json` for one-line JSON log events.

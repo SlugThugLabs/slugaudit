@@ -55,9 +55,16 @@ impl ResultStoreSlot {
         // Release the previous store (and its owner lock) before opening the
         // next one.
         *slot = None;
-        let limits = self
-            .limits
-            .unwrap_or_else(|| ResultStoreLimits::from(process_limits()));
+        let limits = match self.limits {
+            Some(limits) => limits,
+            None => ResultStoreLimits::from(process_limits().map_err(|error| {
+                tracing::error!(%error, "process limits environment is invalid");
+                ResultStoreError::Unavailable {
+                    context: "the process limits are invalid",
+                    source: Box::new(error),
+                }
+            })?),
+        };
         let store = Arc::new(ResultStore::open(
             runtime_dir,
             crate::util::session_id(),

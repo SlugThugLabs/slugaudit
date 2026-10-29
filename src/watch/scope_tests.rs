@@ -18,7 +18,7 @@ fn scope_covers_the_indexable_directories_only() {
     fs::write(root.join(".gitignore"), "target/\n").expect("gitignore");
     fs::write(root.join("src/lib.rs"), "fn lib() {}\n").expect("lib file");
 
-    let scope = WatchScope::compute(root);
+    let scope = WatchScope::compute(root, &Default::default());
     assert!(
         scope.watch_dirs.contains(&root.to_path_buf()),
         "root is always watched"
@@ -44,7 +44,7 @@ fn scope_covers_the_indexable_directories_only() {
 fn a_scope_with_no_ignore_files_and_no_subdirs_watches_only_the_root() {
     let project = tempfile::tempdir().expect("project dir");
     let root = project.path();
-    let scope = WatchScope::compute(root);
+    let scope = WatchScope::compute(root, &Default::default());
     assert_eq!(scope.watch_dirs.len(), 1);
     assert!(scope.watch_dirs.contains(&root.to_path_buf()));
     assert!(scope.ignore_files.is_empty());
@@ -59,7 +59,7 @@ fn nested_gitignores_are_collected_for_the_matcher() {
     fs::write(root.join("a/b/.ignore"), "y\n").expect("nested ignore");
     fs::write(root.join("a/b/.gitignore"), "z\n").expect("nested gitignore");
 
-    let scope = WatchScope::compute(root);
+    let scope = WatchScope::compute(root, &Default::default());
     assert!(scope.ignore_files.contains(&root.join(".gitignore")));
     assert!(scope.ignore_files.contains(&root.join("a/b/.ignore")));
     assert!(scope.ignore_files.contains(&root.join("a/b/.gitignore")));

@@ -32,7 +32,7 @@ fn event_with(kind: EventKind, path: &Path) -> Event {
 fn modify_event_marks_the_matching_project_path_dirty() {
     let project = temp_project();
     let manager = WatchManager::new();
-    let state = manager.watch(project.path());
+    let state = manager.watch(project.path(), &Default::default());
 
     let path = project.path().join("src").join("lib.rs");
     manager.handle_event(event_with(EventKind::Modify(ModifyKind::Any), &path));
@@ -45,7 +45,7 @@ fn modify_event_marks_the_matching_project_path_dirty() {
 fn create_event_marks_the_path_dirty() {
     let project = temp_project();
     let manager = WatchManager::new();
-    let state = manager.watch(project.path());
+    let state = manager.watch(project.path(), &Default::default());
 
     let path = project.path().join("new.rs");
     manager.handle_event(event_with(EventKind::Create(CreateKind::File), &path));
@@ -59,7 +59,7 @@ fn create_event_marks_the_path_dirty() {
 fn remove_event_marks_the_path_deleted() {
     let project = temp_project();
     let manager = WatchManager::new();
-    let state = manager.watch(project.path());
+    let state = manager.watch(project.path(), &Default::default());
 
     let path = project.path().join("lib.rs");
     manager.handle_event(event_with(EventKind::Remove(RemoveKind::File), &path));
@@ -73,7 +73,7 @@ fn remove_event_marks_the_path_deleted() {
 fn access_events_are_ignored() {
     let project = temp_project();
     let manager = WatchManager::new();
-    let state = manager.watch(project.path());
+    let state = manager.watch(project.path(), &Default::default());
 
     let path = project.path().join("lib.rs");
     manager.handle_event(event_with(EventKind::Access(AccessKind::Any), &path));
@@ -87,7 +87,7 @@ fn access_events_are_ignored() {
 fn excluded_paths_are_not_recorded() {
     let project = temp_project();
     let manager = WatchManager::new();
-    let state = manager.watch(project.path());
+    let state = manager.watch(project.path(), &Default::default());
 
     for relative in [
         ".planning/slugaudit/project.db",
@@ -113,7 +113,7 @@ fn excluded_paths_are_not_recorded() {
 fn events_outside_the_project_are_ignored() {
     let project = temp_project();
     let manager = WatchManager::new();
-    let state = manager.watch(project.path());
+    let state = manager.watch(project.path(), &Default::default());
 
     let outside = tempfile::tempdir().expect("outside dir");
     manager.handle_event(event_with(
@@ -133,8 +133,8 @@ fn watch_is_idempotent_and_returns_the_same_state() {
     let project = temp_project();
     let manager = WatchManager::new();
 
-    let first = manager.watch(project.path());
-    let second = manager.watch(project.path());
+    let first = manager.watch(project.path(), &Default::default());
+    let second = manager.watch(project.path(), &Default::default());
 
     first.mark_dirty("lib.rs".to_owned());
     assert!(
@@ -148,7 +148,7 @@ fn watch_is_idempotent_and_returns_the_same_state() {
 fn unwatch_removes_the_state() {
     let project = temp_project();
     let manager = WatchManager::new();
-    manager.watch(project.path());
+    manager.watch(project.path(), &Default::default());
     assert_eq!(manager.iter().len(), 1);
 
     manager.unwatch(project.path());
@@ -164,7 +164,7 @@ fn gitignored_paths_are_not_recorded() {
     std::fs::write(project.path().join("target/gen.rs"), "fn gen() {}\n").expect("target file");
     std::fs::write(project.path().join("lib.rs"), "fn lib() {}\n").expect("lib file");
     let manager = WatchManager::new();
-    let state = manager.watch(project.path());
+    let state = manager.watch(project.path(), &Default::default());
 
     manager.handle_event(event_with(
         EventKind::Modify(ModifyKind::Any),
@@ -192,7 +192,7 @@ fn ignore_file_events_trigger_a_scope_refresh() {
     std::fs::create_dir_all(project.path().join("src")).expect("src dir");
     std::fs::write(project.path().join("src/lib.rs"), "fn lib() {}\n").expect("lib file");
     let manager = WatchManager::new();
-    let state = manager.watch(project.path());
+    let state = manager.watch(project.path(), &Default::default());
 
     // The file is indexable today.
     manager.handle_event(event_with(
@@ -215,7 +215,7 @@ fn ignore_file_events_trigger_a_scope_refresh() {
         EventKind::Modify(ModifyKind::Any),
         &project.path().join(".gitignore"),
     ));
-    manager.refresh_scope(project.path());
+    manager.refresh_scope(project.path(), &Default::default());
     assert_eq!(
         state.health(),
         WatcherHealth::NeedsVerification,
@@ -238,7 +238,7 @@ fn ignore_file_events_trigger_a_scope_refresh() {
 fn deleted_project_roots_are_pruned_on_the_next_event() {
     let project = temp_project();
     let manager = WatchManager::new();
-    manager.watch(project.path());
+    manager.watch(project.path(), &Default::default());
     assert_eq!(manager.iter().len(), 1);
 
     // The project root disappears; the next event prunes its stale entry.
@@ -259,7 +259,7 @@ fn deleted_project_roots_are_pruned_on_the_next_event() {
 fn an_event_arriving_while_the_lock_is_held_is_applied_by_the_next_watch_call() {
     let project = temp_project();
     let manager = WatchManager::new();
-    let state = manager.watch(project.path());
+    let state = manager.watch(project.path(), &Default::default());
 
     let held = manager.inner.lock().expect("hold the manager lock");
     let path = project.path().join("src").join("lib.rs");
@@ -269,7 +269,7 @@ fn an_event_arriving_while_the_lock_is_held_is_applied_by_the_next_watch_call() 
         state.snapshot().dirty_paths.is_empty(),
         "the notify thread must not block, so the event waits"
     );
-    manager.watch(project.path());
+    manager.watch(project.path(), &Default::default());
 
     assert!(
         state.snapshot().dirty_paths.contains("src/lib.rs"),
@@ -281,7 +281,7 @@ fn an_event_arriving_while_the_lock_is_held_is_applied_by_the_next_watch_call() 
 fn deferred_events_are_applied_in_arrival_order_before_a_later_live_event() {
     let project = temp_project();
     let manager = WatchManager::new();
-    let state = manager.watch(project.path());
+    let state = manager.watch(project.path(), &Default::default());
     let path = project.path().join("lib.rs");
 
     let held = manager.inner.lock().expect("hold the manager lock");
@@ -300,7 +300,7 @@ fn deferred_events_are_applied_in_arrival_order_before_a_later_live_event() {
 fn overflowing_the_deferred_queue_desyncs_the_project_instead_of_losing_events_silently() {
     let project = temp_project();
     let manager = WatchManager::new();
-    let state = manager.watch(project.path());
+    let state = manager.watch(project.path(), &Default::default());
     state.set_health(WatcherHealth::Healthy);
     let path = project.path().join("lib.rs");
 
@@ -309,7 +309,7 @@ fn overflowing_the_deferred_queue_desyncs_the_project_instead_of_losing_events_s
         manager.handle_event(event_with(EventKind::Modify(ModifyKind::Any), &path));
     }
     drop(held);
-    manager.watch(project.path());
+    manager.watch(project.path(), &Default::default());
 
     assert_eq!(
         state.health(),
@@ -326,12 +326,12 @@ fn overflowing_the_deferred_queue_desyncs_the_project_instead_of_losing_events_s
 fn a_created_directory_marks_the_scope_for_refresh() {
     let project = temp_project();
     let manager = WatchManager::new();
-    manager.watch(project.path());
+    manager.watch(project.path(), &Default::default());
     let created = project.path().join("new-dir");
     std::fs::create_dir(&created).expect("create new directory");
 
     manager.handle_event(event_with(EventKind::Create(CreateKind::Folder), &created));
-    manager.refresh_scope(project.path());
+    manager.refresh_scope(project.path(), &Default::default());
 
     let canonical = crate::util::canonical_or_self(project.path());
     let guard = manager.inner.lock().expect("manager lock");
@@ -353,7 +353,7 @@ fn a_created_directory_marks_the_scope_for_refresh() {
 fn a_created_file_does_not_mark_the_scope_for_refresh() {
     let project = temp_project();
     let manager = WatchManager::new();
-    manager.watch(project.path());
+    manager.watch(project.path(), &Default::default());
     let created = project.path().join("lib.rs");
     std::fs::write(&created, "fn lib() {}\n").expect("create file");
 
@@ -394,7 +394,7 @@ fn mark_scope_for_refresh(manager: &WatchManager, project: &tempfile::TempDir) {
 fn a_truncated_scope_moves_a_healthy_project_to_partial() {
     let project = root_only_scope_project();
     let manager = WatchManager::new();
-    let state = manager.watch(project.path());
+    let state = manager.watch(project.path(), &Default::default());
     state.set_health(WatcherHealth::Healthy);
 
     mark_scope_for_refresh(&manager, &project);
@@ -443,7 +443,7 @@ fn honest_log_a_failed_project_watch_logs_its_cause_and_path() {
 
     let (state, logs) = capture_warns(|| {
         tracing::warn!("capture liveness control for watch_project");
-        manager.watch(&missing)
+        manager.watch(&missing, &Default::default())
     });
 
     assert_eq!(state.health(), WatcherHealth::Unavailable);
@@ -506,7 +506,7 @@ fn honest_log_a_watcher_failure_log_line_carries_the_error_and_its_paths() {
 fn a_poisoned_manager_mutex_is_recovered_with_structured_context() {
     let project = temp_project();
     let manager = WatchManager::new();
-    manager.watch(project.path());
+    manager.watch(project.path(), &Default::default());
 
     let poisoner = manager.clone();
     let handle = std::thread::spawn(move || {
@@ -596,7 +596,7 @@ fn the_scope_walk_runs_without_holding_the_manager_lock() {
         probe_in_hook.store(manager_in_hook.inner.try_lock().is_ok(), Ordering::SeqCst);
     }));
 
-    manager.watch(project.path());
+    manager.watch(project.path(), &Default::default());
 
     assert!(
         probe.load(Ordering::SeqCst),

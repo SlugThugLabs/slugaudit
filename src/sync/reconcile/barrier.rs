@@ -8,7 +8,7 @@ use super::{MAX_BARRIER_LOOPS, ReconcileError};
 #[cfg(test)]
 use super::{ReconcileOptions, ReconcileReport};
 #[cfg(test)]
-use crate::model::process_limits;
+use crate::model::ResourceLimits;
 use crate::util::Deadline;
 use crate::watch::WatchState;
 #[cfg(test)]
@@ -41,7 +41,7 @@ pub(crate) fn sync_with_barrier(
 ) -> Result<(), ReconcileError> {
     sync_with_barrier_with_deadline(
         state,
-        &Deadline::after(process_limits().max_sync_wall_clock),
+        &Deadline::after(ResourceLimits::default().max_sync_wall_clock),
         reconcile_fn,
     )
 }

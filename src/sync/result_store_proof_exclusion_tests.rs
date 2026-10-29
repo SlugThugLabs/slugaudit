@@ -5,7 +5,7 @@
 //! through the manager's slot, plus a stray `.db`) and drives the real code.
 
 use super::ResultStoreSlot;
-use crate::model::process_limits;
+use crate::model::ResourceLimits;
 use crate::progress::NoopProgressSink;
 use crate::store::open_read_only;
 use crate::sync::SourceSyncManager;
@@ -84,7 +84,7 @@ fn result_store_proof_results_dir_and_lock_file_are_not_discovered() {
 fn result_store_proof_stat_sweep_ignores_results_dir() {
     let (project, _db_dir, connection, _revision) = setup_project();
     let (_slot, _planted) = plant_store_files(project.path());
-    let deadline = Deadline::after(process_limits().max_sync_wall_clock);
+    let deadline = Deadline::after(ResourceLimits::default().max_sync_wall_clock);
 
     let report = sweep(&connection, project.path(), &deadline).expect("sweep succeeds");
 
@@ -123,7 +123,7 @@ fn result_store_proof_watcher_scope_excludes_results_dir() {
     std::fs::create_dir_all(project.path().join(".planning/slugaudit")).expect("activation dir");
     write(project.path(), "lib.rs", b"pub fn a() {}\n");
     let (_slot, _planted) = plant_store_files(project.path());
-    let scope = WatchScope::compute(project.path());
+    let scope = WatchScope::compute(project.path(), &Default::default());
     let results_dir: PathBuf = project.path().join(RESULTS);
     assert!(
         scope
@@ -136,7 +136,7 @@ fn result_store_proof_watcher_scope_excludes_results_dir() {
     assert!(!scope.watch_dirs.contains(&results_dir));
 
     let watcher = WatchManager::with_watcher();
-    let state = watcher.watch(project.path());
+    let state = watcher.watch(project.path(), &Default::default());
     if state.health() == WatcherHealth::Unavailable {
         return;
     }
@@ -175,7 +175,7 @@ fn result_store_proof_reconcile_ignores_results_dir() {
     let mut dirty: HashSet<String> = planted.iter().cloned().collect();
     dirty.insert("c.rs".to_owned());
     let on_disk: HashSet<String> = ["a.rs", "b.rs", "c.rs"].map(str::to_owned).into();
-    let limits = *process_limits();
+    let limits = ResourceLimits::default();
     let options = ReconcileOptions {
         limits,
         deadline: Deadline::after(limits.max_sync_wall_clock),

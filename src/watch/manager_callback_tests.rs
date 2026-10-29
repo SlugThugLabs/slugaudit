@@ -29,7 +29,7 @@ fn temp_project() -> tempfile::TempDir {
 fn a_watcher_error_returns_without_the_manager_lock_and_is_applied_on_the_next_drain() {
     let project = temp_project();
     let manager = WatchManager::new();
-    let state = manager.watch(project.path());
+    let state = manager.watch(project.path(), &Default::default());
     state.set_health(WatcherHealth::Healthy);
 
     let (locked_tx, locked_rx) = std::sync::mpsc::channel();

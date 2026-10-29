@@ -82,11 +82,10 @@ pub struct WatchScope {
 }
 
 impl WatchScope {
-    /// Computes the scope with the process-wide watch limits
+    /// Computes the scope with the watch limits in `limits`
     /// (`max_watch_entries` / `max_watch_depth`). If the root can't be
     /// walked at all, the returned scope contains only the root itself.
-    pub fn compute(root: &Path) -> WatchScope {
-        let limits = crate::model::process_limits();
+    pub fn compute(root: &Path, limits: &crate::model::ResourceLimits) -> WatchScope {
         Self::compute_with_limits(root, limits.max_watch_entries, limits.max_watch_depth)
     }
 

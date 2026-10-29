@@ -61,6 +61,7 @@ pub(super) fn failure_fields(error: &PublishError) -> (&'static str, Option<&Pat
         PublishError::Sample(error) => sample_failure_fields(error),
         PublishError::Revision(error) => revision_failure_fields(error),
         PublishError::Limits(_) => ("project_limits", None),
+        PublishError::ProcessLimits(_) => ("process_limits", None),
         PublishError::Database(_) => ("database", None),
         PublishError::ImportTooLarge { .. } => ("import_too_large", None),
         PublishError::ChangedDuringSample { path } => {

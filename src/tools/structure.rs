@@ -7,7 +7,7 @@ use super::page_size;
 use super::paginate::{PageSpec, page_request, paginate};
 use super::structure_exec::produce;
 use super::structure_page::structure_response;
-use crate::model::{ResourceLimits, process_limits};
+use crate::model::ResourceLimits;
 use crate::store::StoredRow;
 use crate::sync;
 use rmcp::ErrorData;
@@ -171,7 +171,7 @@ pub fn structure(
     let limits = if request.0.cursor.is_none() && !request_path.is_empty() {
         super::resolve_limits(request_path)?
     } else {
-        *process_limits()
+        super::process_limits_for_tool()?
     };
     structure_with_limits(request, &limits, MAX_MULTI_FILE_TOTAL_BYTES, sink, manager)
 }

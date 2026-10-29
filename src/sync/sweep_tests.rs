@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::sweep;
-use crate::model::process_limits;
+use crate::model::ResourceLimits;
 use crate::store::open_read_only;
 use crate::sync::reconcile::{ReconcileOptions, reconcile_dirty_paths_with_deadline};
 use crate::sync::test_support::{create_project, setup_project, stored_paths, sync_project, write};
@@ -48,12 +48,12 @@ fn store_current_stats(connection: &rusqlite::Connection, root: &Path, paths: &[
 }
 
 fn sweep_report(connection: &rusqlite::Connection, root: &Path) -> super::SweepReport {
-    let deadline = Deadline::after(process_limits().max_sync_wall_clock);
+    let deadline = Deadline::after(ResourceLimits::default().max_sync_wall_clock);
     sweep(connection, root, &deadline).expect("sweep succeeds")
 }
 
 fn reconcile_sweep(connection: &mut rusqlite::Connection, root: &Path, report: super::SweepReport) {
-    let limits = *process_limits();
+    let limits = ResourceLimits::default();
     let options = ReconcileOptions {
         limits,
         deadline: Deadline::after(limits.max_sync_wall_clock),
@@ -362,7 +362,6 @@ fn healthy_sweep_resolves_an_import_against_the_walked_on_disk_set() {
 /// `Healthy`.
 #[test]
 fn healthy_sweep_apply_resolves_an_import_to_a_discovered_but_skipped_file() {
-    use crate::model::ResourceLimits;
     use crate::store::open_read_write;
     use crate::sync::SourceSyncManager;
     use crate::watch::WatcherHealth;
@@ -507,7 +506,7 @@ fn a_failed_sweep_apply_names_the_apply_operation_and_marks_the_watcher_desynced
     use crate::watch::{WatchState, WatcherHealth};
 
     let (project, _db_dir, mut connection, _revision) = setup_project();
-    let limits = *process_limits();
+    let limits = ResourceLimits::default();
     let options = ReconcileOptions {
         limits,
         deadline: Deadline::after(Duration::ZERO),
