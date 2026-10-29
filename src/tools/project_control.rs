@@ -285,9 +285,11 @@ fn enable(
             tracing::warn!(
                 operation = "enable_project",
                 database_id = %crate::util::redacted_path(&db_path),
-                error = %error,
+                error = %sync::scrub_path(&error.to_string(), &db_path),
                 findings_discarded = ?notice.findings_discarded,
-                count_error = count_error.as_ref().map(tracing::field::display),
+                count_error = count_error
+                    .as_ref()
+                    .map(|error| sync::scrub_path(&error.to_string(), &db_path)),
                 "database is corrupt or outdated; discarding and re-importing from scratch",
             );
             discard = Some(notice);
