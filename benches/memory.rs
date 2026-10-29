@@ -17,7 +17,6 @@
 mod common;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use std::fs;
 #[cfg(target_os = "linux")]
 use std::io::BufRead;
 
@@ -54,7 +53,6 @@ fn peak_rss_kib() -> Result<Option<u64>, String> {
 
 fn bench_memory(c: &mut Criterion) {
     let project = tempfile::tempdir().expect("project dir");
-    fs::create_dir_all(project.path().join(".planning").join("slugaudit")).expect("activation dir");
     common::generate_fixture(project.path(), common::LARGE).log("memory");
 
     // Open the just-built database, do one full publish, sample peak RSS

@@ -15,6 +15,7 @@
 //! `.planning/slugaudit/` activation marker every real project has.
 
 use std::fs;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 /// Large fixture size: 200 files (the primary baseline workload).
@@ -72,7 +73,16 @@ pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
     let mut mix = Mix(0xC0FF_EE00_DEAD_BEEF);
     let mut total_bytes = 0_u64;
 
-    fs::create_dir_all(root.join(".planning").join("slugaudit")).expect("activation dir");
+    let activation = root.join(".planning").join("slugaudit");
+    fs::create_dir_all(&activation).expect("activation dir");
+    // A project is active only when `project.db` exists as a regular file.
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(activation.join("project.db"))
+        .expect("database marker");
     fs::create_dir_all(root.join("src/rust")).expect("rust dir");
     fs::create_dir_all(root.join("src/python")).expect("python dir");
     fs::create_dir_all(root.join("src/js")).expect("js dir");
