@@ -15,25 +15,25 @@ fn loads_valid_config_and_applies_overrides() {
     let loaded = ProjectConfig::load(dir.path()).expect("load should succeed");
     assert!(loaded.is_some());
 
-    let cfg = ProjectConfig::load_or_default(dir.path());
+    let cfg = ProjectConfig::load_or_default(dir.path()).expect("config loads");
     assert_eq!(cfg.profile, Some(AuditProfile::Audit));
     assert_eq!(cfg.max_file_bytes, Some(536_870_912));
 
     let base = ResourceLimits::default();
-    let applied = cfg.apply_to_limits(base);
+    let applied = cfg.apply_to_limits(base).expect("limits apply");
     assert_eq!(applied.max_file_bytes, 536_870_912);
     assert_eq!(applied.max_total_import_bytes, 32 * 1024 * 1024 * 1024);
 }
 
 #[test]
-fn loads_default_when_missing_or_invalid() {
+fn fail_closed_missing_config_is_the_default_but_present_ones_are_read() {
     let dir = tempfile::tempdir().expect("tempdir");
     assert!(
         ProjectConfig::load(dir.path())
             .expect("load missing")
             .is_none()
     );
-    let cfg = ProjectConfig::load_or_default(dir.path());
+    let cfg = ProjectConfig::load_or_default(dir.path()).expect("config loads");
     assert!(cfg.profile.is_none());
     assert!(cfg.max_file_bytes.is_none());
 
@@ -48,14 +48,13 @@ fn loads_default_when_missing_or_invalid() {
         ConfigError::Io { .. } => panic!("expected Parse error, got Io"),
     }
 
-    let cfg_invalid = ProjectConfig::load_or_default(dir.path());
-    assert!(cfg_invalid.profile.is_none());
-
     let custom = ProjectConfig {
         max_total_import_bytes: Some(1024),
         ..Default::default()
     };
-    let applied = custom.apply_to_limits(ResourceLimits::default());
+    let applied = custom
+        .apply_to_limits(ResourceLimits::default())
+        .expect("limits apply");
     assert_eq!(applied.max_total_import_bytes, 1024);
 }
 
@@ -70,8 +69,10 @@ fn a_configured_default_page_size_overrides_the_profile_default() {
     )
     .expect("write");
 
-    let cfg = ProjectConfig::load_or_default(dir.path());
-    let applied = cfg.apply_to_limits(ResourceLimits::default());
+    let cfg = ProjectConfig::load_or_default(dir.path()).expect("config loads");
+    let applied = cfg
+        .apply_to_limits(ResourceLimits::default())
+        .expect("limits apply");
 
     assert_eq!(applied.default_page_bytes, 4_096);
     assert_eq!(applied.max_query_response_bytes, 32 * 1024 * 1024);
@@ -98,17 +99,55 @@ fn an_uninspectable_config_path_is_an_io_error_not_no_config() {
     assert!(matches!(error, ConfigError::Io { .. }), "{error}");
 }
 
-/// R6: an I/O failure (here a directory at the config path) is not a
-/// parse failure, and the log must send the operator to the right fix.
 #[test]
-fn an_unreadable_config_is_not_reported_as_malformed() {
+fn fail_closed_malformed_config_fails_the_load_naming_the_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let conf_dir = dir.path().join(".planning").join("slugaudit");
+    std::fs::create_dir_all(&conf_dir).expect("create dir");
+    let conf_file = conf_dir.join("config.json");
+    std::fs::write(&conf_file, "invalid json").expect("write");
+
+    let error = ProjectConfig::load_or_default(dir.path()).expect_err("malformed must fail");
+
+    assert!(matches!(error, ConfigError::Parse { .. }), "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains(conf_file.to_str().expect("utf-8")),
+        "{error}"
+    );
+}
+
+/// An I/O failure (here a directory at the config path) fails the load as
+/// an I/O error, not as "malformed", so the operator is sent to the right fix.
+#[test]
+fn fail_closed_unreadable_config_is_an_io_error_naming_the_file() {
     let directory = tempfile::tempdir().expect("tempdir");
     let config = directory.path().join(".planning/slugaudit/config.json");
-    std::fs::create_dir_all(config).expect("dir");
-    let (_, logs) = capture_warns(|| ProjectConfig::load_or_default(directory.path()));
+    std::fs::create_dir_all(&config).expect("dir");
+
+    let error = ProjectConfig::load_or_default(directory.path()).expect_err("unreadable must fail");
+
+    assert!(matches!(error, ConfigError::Io { .. }), "{error}");
     assert!(
-        logs.contains("could not be read") && !logs.contains("malformed"),
-        "{logs}"
+        error.to_string().contains(config.to_str().expect("utf-8")),
+        "{error}"
+    );
+}
+
+#[test]
+fn fail_closed_limits_for_a_malformed_config_is_an_error_not_defaults() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let conf_dir = dir.path().join(".planning").join("slugaudit");
+    std::fs::create_dir_all(&conf_dir).expect("create dir");
+    std::fs::write(conf_dir.join("config.json"), "{").expect("write");
+
+    let error = ProjectConfig::limits_for(dir.path(), ResourceLimits::default())
+        .expect_err("malformed must fail");
+
+    assert!(
+        matches!(error, ProjectLimitsError::Config(ConfigError::Parse { .. })),
+        "{error}"
     );
 }
 
@@ -119,7 +158,9 @@ fn a_config_file_above_sqlite_max_is_clamped() {
         ..Default::default()
     };
 
-    let applied = config.apply_to_limits(ResourceLimits::default());
+    let applied = config
+        .apply_to_limits(ResourceLimits::default())
+        .expect("limits apply");
 
     assert_eq!(
         applied.max_file_bytes,
@@ -135,7 +176,9 @@ fn a_configured_max_parse_bytes_overrides_the_profile_default() {
         ..Default::default()
     };
 
-    let applied = config.apply_to_limits(ResourceLimits::default());
+    let applied = config
+        .apply_to_limits(ResourceLimits::default())
+        .expect("limits apply");
 
     assert_eq!(applied.max_parse_bytes, 4_096);
 }
@@ -148,7 +191,11 @@ fn a_configured_max_parse_bytes_above_max_file_bytes_is_clamped_and_reported() {
         ..Default::default()
     };
 
-    let (applied, logs) = capture_warns(|| config.apply_to_limits(ResourceLimits::default()));
+    let (applied, logs) = capture_warns(|| {
+        config
+            .apply_to_limits(ResourceLimits::default())
+            .expect("limits apply")
+    });
 
     assert_eq!(applied.max_parse_bytes, 10_000);
     assert!(
@@ -164,7 +211,9 @@ fn a_configured_max_parse_wall_clock_ms_overrides_the_profile_default() {
         ..Default::default()
     };
 
-    let applied = config.apply_to_limits(ResourceLimits::default());
+    let applied = config
+        .apply_to_limits(ResourceLimits::default())
+        .expect("limits apply");
 
     assert_eq!(applied.max_parse_wall_clock_ms, 250);
 }
@@ -176,7 +225,9 @@ fn a_configured_max_structure_query_bytes_overrides_the_profile_default() {
         ..Default::default()
     };
 
-    let applied = config.apply_to_limits(ResourceLimits::default());
+    let applied = config
+        .apply_to_limits(ResourceLimits::default())
+        .expect("limits apply");
 
     assert_eq!(applied.max_structure_query_bytes, 512);
 }
@@ -205,7 +256,9 @@ fn a_configured_result_store_budget_and_grace_override_the_profile_defaults() {
         ..Default::default()
     };
 
-    let applied = config.apply_to_limits(ResourceLimits::default());
+    let applied = config
+        .apply_to_limits(ResourceLimits::default())
+        .expect("limits apply");
 
     assert_eq!(applied.max_result_store_bytes, 777);
     assert_eq!(applied.result_active_grace_secs, 33);

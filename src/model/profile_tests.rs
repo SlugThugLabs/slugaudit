@@ -18,7 +18,7 @@ fn profiles_provide_positive_limits() {
         AuditProfile::Audit,
         AuditProfile::Adaptive,
     ] {
-        let limits = limits_for_profile(profile);
+        let limits = limits_for_profile(profile).expect("profile limits");
         assert!(limits.max_file_bytes > 0);
         assert!(limits.max_total_import_bytes >= limits.max_file_bytes);
         assert!(limits.max_query_response_bytes > 0);
@@ -26,89 +26,87 @@ fn profiles_provide_positive_limits() {
 }
 
 #[test]
-fn a_set_but_unknown_profile_warns_and_selects_nothing() {
+fn fail_closed_a_set_but_unknown_profile_is_an_error_naming_the_variable_not_the_value() {
     let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
 
     temp_env::with_var("SLUGAUDIT_PROFILE", Some("audut"), || {
-        let (profile, logs) = crate::store::test_capture::capture_warns(profile_from_env);
-        assert!(profile.is_none(), "the default profile applies");
-        assert!(
-            logs.contains("not a known profile"),
-            "a discarded operator setting must be visible, or a typo'd \
-             profile silently does nothing:\n{logs}"
+        let error = profile_from_env().expect_err("a typo'd profile must fail startup");
+
+        assert_eq!(
+            error.to_string(),
+            "SLUGAUDIT_PROFILE is set but is not valid; expected one of `lean`, `audit`, `adaptive`"
         );
     });
 }
 
 #[test]
-fn a_non_unicode_profile_warns_without_logging_its_value() {
+fn fail_closed_a_non_unicode_profile_is_an_error_without_its_value() {
     use std::os::unix::ffi::OsStringExt;
     let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
     let value = std::ffi::OsString::from_vec(b"secret-\xff-profile".to_vec());
 
     temp_env::with_var("SLUGAUDIT_PROFILE", Some(value), || {
-        let (profile, logs) = crate::store::test_capture::capture_warns(profile_from_env);
+        let error = profile_from_env().expect_err("a non-unicode profile must fail startup");
 
-        assert!(profile.is_none(), "the default profile applies");
-        assert!(logs.contains("could not be read"), "{logs}");
-        assert!(logs.contains("not valid unicode"), "{logs}");
+        let message = error.to_string();
         assert!(
-            !logs.contains("secret-"),
-            "the value must not be logged:\n{logs}"
+            message.starts_with("SLUGAUDIT_PROFILE is set but is not valid Unicode"),
+            "{message}"
         );
+        assert!(!message.contains("secret-"), "{message}");
     });
 }
 
 #[test]
-fn an_unset_profile_selects_nothing_without_warning() {
+fn an_unset_profile_selects_nothing() {
     let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
 
     temp_env::with_var_unset("SLUGAUDIT_PROFILE", || {
-        let (profile, logs) = crate::store::test_capture::capture_warns(|| {
-            tracing::warn!("control-line-probe-profile-unset");
-            profile_from_env()
-        });
-        assert!(profile.is_none());
-        assert!(
-            logs.contains("control-line-probe-profile-unset"),
-            "capture liveness control"
-        );
-        assert!(
-            !logs.contains("profile override"),
-            "an operator who set nothing must not be warned at:\n{logs}"
-        );
+        assert_eq!(profile_from_env().expect("unset is valid"), None);
     });
 }
 
 #[test]
-fn a_known_profile_resolves_without_warning() {
+fn a_known_profile_resolves() {
     let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
 
     temp_env::with_var("SLUGAUDIT_PROFILE", Some("lean"), || {
-        let (profile, logs) = crate::store::test_capture::capture_warns(|| {
-            tracing::warn!("control-line-probe-profile-known");
-            profile_from_env()
-        });
-        assert_eq!(profile, Some(AuditProfile::Lean));
-        assert!(
-            logs.contains("control-line-probe-profile-known"),
-            "capture liveness control"
-        );
-        assert!(
-            !logs.contains("profile override"),
-            "a valid profile must not warn:\n{logs}"
-        );
+        assert_eq!(profile_from_env().expect("valid"), Some(AuditProfile::Lean));
     });
+}
+
+fn undetectable() -> Result<SystemMemoryInfo, MemoryDetectError> {
+    super::super::system_ram::detect_from_for_test()
+}
+
+#[test]
+fn fail_closed_adaptive_without_detectable_memory_is_an_error() {
+    let error = limits_for_profile_with(AuditProfile::Adaptive, undetectable)
+        .expect_err("adaptive must not be sized off a guessed machine");
+
+    assert!(
+        error
+            .to_string()
+            .starts_with("system memory could not be detected"),
+        "{error}"
+    );
+}
+
+#[test]
+fn fail_closed_explicit_lean_and_audit_need_no_memory_detection() {
+    for profile in [AuditProfile::Lean, AuditProfile::Audit] {
+        limits_for_profile_with(profile, undetectable).expect("no detection needed");
+    }
 }
 
 #[test]
 fn watch_scope_caps_are_bounded_per_profile() {
-    let lean = limits_for_profile(AuditProfile::Lean);
+    let lean = limits_for_profile(AuditProfile::Lean).expect("profile limits");
     assert_eq!(lean.max_watch_entries, 50_000);
     assert_eq!(lean.max_watch_depth, 32);
 
     for profile in [AuditProfile::Audit, AuditProfile::Adaptive] {
-        let limits = limits_for_profile(profile);
+        let limits = limits_for_profile(profile).expect("profile limits");
         assert_eq!(limits.max_watch_entries, 200_000, "{profile:?}");
         assert_eq!(limits.max_watch_depth, 64, "{profile:?}");
     }
@@ -116,7 +114,7 @@ fn watch_scope_caps_are_bounded_per_profile() {
 
 #[test]
 fn adaptive_file_and_query_caps_never_exceed_sqlite_max() {
-    let limits = limits_for_profile(AuditProfile::Adaptive);
+    let limits = limits_for_profile(AuditProfile::Adaptive).expect("profile limits");
 
     assert!(limits.max_file_bytes <= SQLITE_MAX_VALUE_BYTES);
     assert!(limits.max_query_value_bytes <= SQLITE_MAX_VALUE_BYTES as usize);
@@ -129,7 +127,7 @@ fn every_profile_defaults_to_a_64_kib_page_under_its_ceiling() {
         AuditProfile::Audit,
         AuditProfile::Adaptive,
     ] {
-        let limits = limits_for_profile(profile);
+        let limits = limits_for_profile(profile).expect("profile limits");
 
         assert_eq!(limits.default_page_bytes, 65_536, "{profile:?}");
         assert!(limits.default_page_bytes <= limits.max_query_response_bytes);
@@ -143,7 +141,7 @@ fn every_profile_parses_at_most_2_mib_per_file_below_its_file_cap() {
         AuditProfile::Audit,
         AuditProfile::Adaptive,
     ] {
-        let limits = limits_for_profile(profile);
+        let limits = limits_for_profile(profile).expect("profile limits");
 
         assert_eq!(limits.max_parse_bytes, 2 * 1024 * 1024, "{profile:?}");
         assert!(
@@ -160,7 +158,7 @@ fn every_profile_gives_one_file_5_seconds_of_parse_time_below_the_sync_budget() 
         AuditProfile::Audit,
         AuditProfile::Adaptive,
     ] {
-        let limits = limits_for_profile(profile);
+        let limits = limits_for_profile(profile).expect("profile limits");
 
         assert_eq!(limits.max_parse_wall_clock_ms, 5_000, "{profile:?}");
         assert!(
@@ -178,7 +176,7 @@ fn every_profile_caps_a_structure_query_at_16_kib() {
         AuditProfile::Audit,
         AuditProfile::Adaptive,
     ] {
-        let limits = limits_for_profile(profile);
+        let limits = limits_for_profile(profile).expect("profile limits");
 
         assert_eq!(limits.max_structure_query_bytes, 16 * 1024, "{profile:?}");
     }
@@ -191,7 +189,7 @@ fn every_profile_budgets_the_result_store_at_four_maximal_responses() {
         AuditProfile::Audit,
         AuditProfile::Adaptive,
     ] {
-        let limits = limits_for_profile(profile);
+        let limits = limits_for_profile(profile).expect("profile limits");
 
         assert_eq!(
             limits.max_result_store_bytes,
@@ -200,11 +198,15 @@ fn every_profile_budgets_the_result_store_at_four_maximal_responses() {
         );
     }
     assert_eq!(
-        limits_for_profile(AuditProfile::Audit).max_result_store_bytes,
+        limits_for_profile(AuditProfile::Audit)
+            .expect("profile limits")
+            .max_result_store_bytes,
         1024 * 1024 * 1024
     );
     assert_eq!(
-        limits_for_profile(AuditProfile::Lean).max_result_store_bytes,
+        limits_for_profile(AuditProfile::Lean)
+            .expect("profile limits")
+            .max_result_store_bytes,
         128 * 1024 * 1024
     );
 }
@@ -216,7 +218,7 @@ fn every_profile_protects_an_unfinished_result_for_900_seconds() {
         AuditProfile::Audit,
         AuditProfile::Adaptive,
     ] {
-        let limits = limits_for_profile(profile);
+        let limits = limits_for_profile(profile).expect("profile limits");
 
         assert_eq!(limits.result_active_grace_secs, 900, "{profile:?}");
     }

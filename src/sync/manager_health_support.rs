@@ -142,6 +142,16 @@ pub(super) fn log_sync_failure(
     );
 }
 
+/// The `invalid_params` error for a sync whose project limits could not be
+/// derived (its `config.json` is present but unreadable or malformed).
+pub(super) fn limits_error(error: ReconcileError) -> ErrorData {
+    tracing::error!(%error, "project limits could not be derived");
+    ErrorData::invalid_params(
+        format!("project config is unusable: {error}; fix or remove the file and retry"),
+        None,
+    )
+}
+
 /// The static category and the path (when named) for a sync failure.
 fn sync_error_details(error: &SyncError) -> (&'static str, Option<String>) {
     match error {
@@ -155,6 +165,7 @@ fn sync_error_details(error: &SyncError) -> (&'static str, Option<String>) {
 fn reconcile_error_details(error: &ReconcileError) -> (&'static str, Option<String>) {
     match error {
         ReconcileError::Discovery(error) => discovery_error_details(error),
+        ReconcileError::Limits(_) => ("project_limits", None),
         ReconcileError::Database(_) => ("database", None),
         ReconcileError::Hash(error) => match error {
             HashError::Read { path, .. } => ("hash_read", Some(path.display().to_string())),

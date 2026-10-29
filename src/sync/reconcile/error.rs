@@ -14,6 +14,10 @@ use thiserror::Error;
 pub enum ReconcileError {
     #[error(transparent)]
     Discovery(#[from] DiscoveryError),
+    /// The project's limits could not be derived: its `config.json` is
+    /// present but unreadable or malformed.
+    #[error(transparent)]
+    Limits(#[from] crate::project::ProjectLimitsError),
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
     #[error(transparent)]

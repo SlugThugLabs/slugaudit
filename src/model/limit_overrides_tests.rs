@@ -13,8 +13,8 @@ fn lines_containing(logs: &str, needle: &str) -> usize {
 /// Loads the limits from the environment twice under one capture.
 fn load_twice() -> (ResourceLimits, String) {
     capture_warns(|| {
-        let first = ResourceLimits::from_env();
-        let second = ResourceLimits::from_env();
+        let first = ResourceLimits::from_env().expect("valid env");
+        let second = ResourceLimits::from_env().expect("valid env");
         assert_eq!(first, second, "the same environment builds the same limits");
         second
     })
@@ -71,8 +71,12 @@ fn a_zero_max_structure_query_bytes_env_var_is_refused_with_one_warning_and_keep
 /// Applies `config` to the defaults twice under one capture.
 fn apply_twice(config: &ProjectConfig) -> (ResourceLimits, String) {
     capture_warns(|| {
-        let first = config.apply_to_limits(ResourceLimits::default());
-        let second = config.apply_to_limits(ResourceLimits::default());
+        let first = config
+            .apply_to_limits(ResourceLimits::default())
+            .expect("limits apply");
+        let second = config
+            .apply_to_limits(ResourceLimits::default())
+            .expect("limits apply");
         assert_eq!(first, second);
         second
     })
@@ -144,7 +148,7 @@ fn a_zero_config_value_keeps_what_the_environment_already_set() {
         ..ResourceLimits::default()
     };
 
-    let applied = config.apply_to_limits(from_env);
+    let applied = config.apply_to_limits(from_env).expect("limits apply");
 
     assert_eq!(applied.max_parse_bytes, 123_456);
 }
@@ -196,7 +200,7 @@ fn a_clamp_with_a_changed_configured_value_is_reported_again() {
 // adaptive default scales with host memory) and compare against it.
 
 fn lean() -> ResourceLimits {
-    crate::model::limits_for_profile(crate::model::AuditProfile::Lean)
+    crate::model::limits_for_profile(crate::model::AuditProfile::Lean).expect("lean limits")
 }
 
 /// Builds the limits twice with `variable` set to `0` over the lean profile.
@@ -340,8 +344,8 @@ fn a_zero_max_watch_depth_env_var_is_refused_with_one_warning_and_keeps_the_defa
 /// Applies `config` over the lean profile twice under one capture.
 fn apply_twice_over_lean(config: &ProjectConfig) -> (ResourceLimits, String) {
     capture_warns(|| {
-        let first = config.apply_to_limits(lean());
-        let second = config.apply_to_limits(lean());
+        let first = config.apply_to_limits(lean()).expect("limits apply");
+        let second = config.apply_to_limits(lean()).expect("limits apply");
         assert_eq!(first, second);
         second
     })

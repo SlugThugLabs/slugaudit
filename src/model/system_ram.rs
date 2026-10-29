@@ -3,9 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Host memory as measured at startup (or the conservative fallback,
-/// reported by `detect_system_memory` when it could not be measured).
-/// Surfaced in the `health` response because it sizes the Adaptive
+/// Host memory as measured by `detect_system_memory`. Surfaced in the `health` response because it sizes the Adaptive
 /// profile's import budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SystemMemoryInfo {
@@ -15,19 +13,37 @@ pub struct SystemMemoryInfo {
     pub available_bytes: u64,
 }
 
+/// Host memory could not be measured by any supported source.
+#[derive(Debug, thiserror::Error)]
+#[error("system memory could not be detected: {causes}")]
+pub struct MemoryDetectError {
+    /// One entry per source tried, with why it failed.
+    causes: String,
+}
+
 /// Detects host physical and available memory.
 ///
 /// Tries `/proc/meminfo` (Linux) and `sysctl hw.memsize` (macOS) in turn.
-/// When neither yields a value, the conservative 8 GiB / 4 GiB floor is
-/// returned — small enough to be safe on any host, and **warned**, because
-/// sizing the Adaptive profile off a guessed value is exactly the kind of
-/// silent operator-visible effect this project reports rather than swallows.
-#[must_use]
-pub fn detect_system_memory() -> SystemMemoryInfo {
+/// When neither yields a value this fails closed with every cause: the
+/// Adaptive profile is never sized off a guessed machine, and the caller
+/// (startup, `health`) reports the memory as undetected. The `/proc` parse
+/// is kept rather than `sysconf`/`statfs` because no `libc` dependency
+/// exists and adding one is outside this change.
+///
+/// # Errors
+///
+/// Returns [`MemoryDetectError`] when no source yields a value.
+pub fn detect_system_memory() -> Result<SystemMemoryInfo, MemoryDetectError> {
+    detect_from(std::fs::read_to_string("/proc/meminfo"))
+}
+
+/// [`detect_system_memory`] with the `/proc/meminfo` read supplied, so the
+/// failure path is testable on a host where the file exists.
+fn detect_from(meminfo: std::io::Result<String>) -> Result<SystemMemoryInfo, MemoryDetectError> {
     let mut causes: Vec<String> = Vec::new();
-    match std::fs::read_to_string("/proc/meminfo") {
+    match meminfo {
         Ok(content) => match parse_proc_meminfo(&content) {
-            Ok(info) => return info,
+            Ok(info) => return Ok(info),
             Err(reason) => causes.push(format!("/proc/meminfo: {reason}")),
         },
         Err(error) => causes.push(format!("/proc/meminfo: {error}")),
@@ -37,23 +53,26 @@ pub fn detect_system_memory() -> SystemMemoryInfo {
     {
         match sysctl_memsize() {
             Ok(total) => {
-                return SystemMemoryInfo {
+                return Ok(SystemMemoryInfo {
                     total_bytes: total,
                     available_bytes: total / 2,
-                };
+                });
             }
             Err(reason) => causes.push(format!("sysctl hw.memsize: {reason}")),
         }
     }
 
-    tracing::warn!(
-        causes = %causes.join("; "),
-        "could not detect system memory; sizing the adaptive profile from the conservative 8 GiB default"
-    );
-    SystemMemoryInfo {
-        total_bytes: 8 * 1024 * 1024 * 1024,
-        available_bytes: 4 * 1024 * 1024 * 1024,
-    }
+    Err(MemoryDetectError {
+        causes: causes.join("; "),
+    })
+}
+
+/// A detection failure for tests of the callers' fail-closed paths.
+#[cfg(test)]
+pub(super) fn detect_from_for_test() -> Result<SystemMemoryInfo, MemoryDetectError> {
+    Err(MemoryDetectError {
+        causes: "test: no memory source".to_owned(),
+    })
 }
 
 /// Runs `sysctl -n hw.memsize`, returning the failure cause as text.
@@ -169,9 +188,22 @@ mod tests {
 
     #[test]
     fn detect_returns_positive_memory() {
-        let info = detect_system_memory();
+        let info = detect_system_memory().expect("this host reports its memory");
         assert!(info.total_bytes > 0);
         assert!(info.available_bytes > 0);
         assert!(info.available_bytes <= info.total_bytes);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn fail_closed_undetectable_memory_is_an_error_naming_the_cause() {
+        let unreadable = std::io::Error::new(std::io::ErrorKind::NotFound, "no meminfo here");
+
+        let error = detect_from(Err(unreadable)).expect_err("no source yields a value");
+
+        assert_eq!(
+            error.to_string(),
+            "system memory could not be detected: /proc/meminfo: no meminfo here"
+        );
     }
 }

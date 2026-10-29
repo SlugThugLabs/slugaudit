@@ -367,7 +367,7 @@ pub fn report(
     })?;
     let root = super::project_root(&request.0.path)?;
     let session = manager.session_mechanics();
-    let catalog = mechanic_catalog::load(&root, session, &super::limits_for_root(&root));
+    let catalog = mechanic_catalog::load(&root, session, &super::limits_for_root(&root)?);
     response.mechanics_invalid = catalog.invalid.len();
     response.mechanics = ReportMechanics {
         note: None,

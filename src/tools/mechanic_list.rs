@@ -122,7 +122,7 @@ pub(super) fn list(
     let (root, limits, size) = match &which {
         PageRequest::Fresh { path, .. } => {
             let root = crate::tools::project_root(path)?;
-            let limits = crate::tools::limits_for_root(&root);
+            let limits = crate::tools::limits_for_root(&root)?;
             let size = page_size::resolve(request.page_bytes, &limits)?;
             (Some(root), limits, Some(size))
         }
