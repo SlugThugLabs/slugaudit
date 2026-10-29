@@ -62,7 +62,7 @@ pub(super) fn log_database_recovery(database_path: &Path, recovery: DatabaseReco
             operation = "verify_project_database",
             path = %database_path.display(),
             error_kind = "root_mismatch",
-            stored_root_id = %crate::util::redacted_path(Path::new(stored_root)),
+            stored_root = %stored_root,
             findings_discarded = ?discard.findings_discarded,
             count_error = count_error.map(|error| error.to_string()),
             "project database is stale; discarding and rebuilding from source",

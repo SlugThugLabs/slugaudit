@@ -1,7 +1,7 @@
 //! Log-redaction tests for the manager's sync-failure records: database
 //! open/verify failures and reconcile failures must carry static categories
-//! and the real database or project path (the P4 real-path policy); only a
-//! stored root from another machine or location is named by a redacted id.
+//! and the real database or project path (the real-path logging policy,
+//! 2026-10-29), including a stored root from another machine or location.
 
 use crate::sync::SourceSyncManager;
 use crate::sync::test_support::{create_project, sync_project, write_file};
@@ -16,7 +16,7 @@ fn sync_failure_records<'a>(logs: &'a str, operation: &str) -> Vec<&'a str> {
 /// R12: the stale-metadata warning used to format a reason string that
 /// embeds the *previous* absolute project root (the move/copy/unzip
 /// scenario). The record must carry a static kind, the real database path,
-/// and the old root only as a redacted id.
+/// and the old root as a real path.
 #[test]
 fn a_stale_project_root_discard_warn_logs_real_path() {
     let manager = SourceSyncManager::new();
@@ -43,7 +43,6 @@ fn a_stale_project_root_discard_warn_logs_real_path() {
             .expect("rewrite stored root");
     }
     let expected_path = database.display().to_string();
-    let expected_root_id = crate::util::redacted_path(std::path::Path::new(&stale_root));
 
     let (_synced, logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("capture liveness control for verify_project_database");
@@ -65,12 +64,8 @@ fn a_stale_project_root_discard_warn_logs_real_path() {
         "the discard WARN must carry the real database path:\n{logs}"
     );
     assert!(
-        records[0].contains(&format!("stored_root_id={expected_root_id}")),
-        "the old root must be named by its redacted id:\n{logs}"
-    );
-    assert!(
-        !logs.contains(&stale_root) && !logs.contains("copied-from-elsewhere"),
-        "the previous absolute root must not be logged:\n{logs}"
+        records[0].contains(&format!("stored_root={stale_root}")),
+        "the old root must be logged as a real path:\n{logs}"
     );
 }
 
