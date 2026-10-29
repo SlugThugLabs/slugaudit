@@ -9,6 +9,13 @@ The newest entry MUST match the version in `Cargo.toml`.
 
 <!-- Entries for the next release go here. -->
 
+### Fixed
+
+- `--help`/`-h` anywhere in a subcommand's arguments now prints that
+  subcommand's usage and exits 0 without running it. Previously `update --help`
+  performed a binary update, `serve --help` started the server, and
+  `connect --help` treated the flag as an agent name.
+
 ## [1.1.0] - 2026-10-28
 
 Covers the changes since `v1.0.10`. `Cargo.toml` records

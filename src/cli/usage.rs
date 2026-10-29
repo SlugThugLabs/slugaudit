@@ -89,3 +89,121 @@ pub(super) fn render_usage(style: &Style) -> String {
     }
     out
 }
+
+/// A subcommand that has its own `--help` text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Topic {
+    /// `slugaudit serve`.
+    Serve,
+    /// `slugaudit connect`.
+    Connect,
+    /// `slugaudit disconnect` (alias `remove`).
+    Disconnect,
+    /// `slugaudit install`.
+    Install,
+    /// `slugaudit menu`.
+    Menu,
+    /// `slugaudit update`.
+    Update,
+}
+
+impl Topic {
+    /// The topic for a subcommand name, or `None` for a name without one.
+    pub(super) fn for_command(name: &str) -> Option<Self> {
+        match name {
+            "serve" => Some(Self::Serve),
+            "connect" => Some(Self::Connect),
+            "disconnect" | "remove" => Some(Self::Disconnect),
+            "install" => Some(Self::Install),
+            "menu" => Some(Self::Menu),
+            "update" => Some(Self::Update),
+            _ => None,
+        }
+    }
+
+    /// The usage text for this subcommand.
+    const fn text(self) -> &'static str {
+        match self {
+            Self::Serve => {
+                "\
+USAGE:
+    slugaudit serve
+
+Run the MCP server over stdio. This is also what `slugaudit` does with no
+arguments. It blocks until the host closes the pipe.
+
+OPTIONS:
+    -h, --help      Show this message.
+"
+            }
+            Self::Connect => {
+                "\
+USAGE:
+    slugaudit connect [AGENT]
+
+Register SlugAudit as the `slugaudit` MCP server in an AI agent or editor.
+With an agent name (e.g. `agy`, `claude`, `gemini`, `cursor`) it connects
+directly; without one it shows the detected installed agents.
+
+OPTIONS:
+    -h, --help      Show this message.
+"
+            }
+            Self::Disconnect => {
+                "\
+USAGE:
+    slugaudit disconnect [AGENT]
+    slugaudit remove [AGENT]
+
+Remove the SlugAudit registration from an AI agent or editor. With an agent
+name it disconnects directly; without one it lists connected agents.
+
+OPTIONS:
+    -h, --help      Show this message.
+"
+            }
+            Self::Install => {
+                "\
+USAGE:
+    slugaudit install
+
+Copy this binary to ~/.slugthug/slugaudit/slugaudit so agents can launch a
+stable path that survives rebuilds.
+
+OPTIONS:
+    -h, --help      Show this message.
+"
+            }
+            Self::Menu => {
+                "\
+USAGE:
+    slugaudit menu
+
+Open the interactive setup menu: install the binary, connect to an AI agent,
+get a config snippet for another MCP client, or run the server for testing.
+
+OPTIONS:
+    -h, --help      Show this message.
+"
+            }
+            Self::Update => {
+                "\
+USAGE:
+    slugaudit update
+
+Check the latest GitHub release and, if newer than the running binary,
+download it, verify its sha256 checksum, and replace this binary in place.
+
+OPTIONS:
+    -h, --help      Show this message.
+"
+            }
+        }
+    }
+}
+
+/// The usage text for one subcommand, printed for `<subcommand> --help`.
+#[must_use]
+pub fn topic_usage(topic: Topic) -> &'static str {
+    topic.text()
+}

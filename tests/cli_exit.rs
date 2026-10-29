@@ -112,3 +112,42 @@ fn cli_exit_sigterm_to_a_serving_process_exits_0() {
     assert!(stderr.contains("received SIGTERM"), "{stderr}");
     drop(stdin);
 }
+
+#[test]
+fn every_subcommand_help_prints_its_usage_and_exits_0_without_running_it() {
+    let home = tempfile::tempdir().expect("temp home");
+    let empty_path = tempfile::tempdir().expect("empty PATH dir");
+    for name in [
+        "serve",
+        "connect",
+        "disconnect",
+        "remove",
+        "install",
+        "menu",
+        "update",
+    ] {
+        for args in [
+            vec![name, "--help"],
+            vec![name, "x", "--help"],
+            vec![name, "-h"],
+        ] {
+            let output = slugaudit(&args)
+                .env("HOME", home.path())
+                .env("SLUGTHUG_HOME", home.path())
+                .env("SLUGTHUG_CONFIG_HOME", home.path())
+                .env("PATH", empty_path.path())
+                .stdin(Stdio::null())
+                .output()
+                .expect("run slugaudit");
+            let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
+            assert_eq!(output.status.code(), Some(0), "{args:?}");
+            assert!(
+                stdout.starts_with("USAGE:\n    slugaudit "),
+                "{args:?}: {stdout}"
+            );
+            assert!(output.stderr.is_empty(), "{args:?}");
+        }
+    }
+    let leftovers = std::fs::read_dir(home.path()).expect("read home").count();
+    assert_eq!(leftovers, 0, "help must not touch the home directory");
+}

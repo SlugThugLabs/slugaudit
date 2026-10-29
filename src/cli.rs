@@ -11,7 +11,7 @@ mod usage;
 
 use thiserror::Error;
 
-pub use usage::usage;
+pub use usage::{Topic, topic_usage, usage};
 
 // Read by `cli_tests` through `use super::*`; nothing in a non-test build
 // reads the unstyled text or the fixed-style renderer.
@@ -47,6 +47,9 @@ pub enum Command {
     Version,
     /// Print help and usage instructions.
     Help,
+    /// Print one subcommand's usage; requested by `--help`/`-h` anywhere in
+    /// that subcommand's arguments. Never runs the subcommand.
+    CommandHelp(Topic),
 }
 
 /// Parses command-line arguments into a high-level [`Command`].
@@ -57,6 +60,17 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
     let Some(first) = args.next() else {
         return Ok(Command::Serve);
     };
+    // Help is decided before any per-command argument handling so that no
+    // position of `--help`/`-h` can reach a command with side effects.
+    let rest: Vec<String> = args.collect();
+    if let Some(topic) = Topic::for_command(first.as_str())
+        && rest
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
+    {
+        return Ok(Command::CommandHelp(topic));
+    }
+    let args = rest.into_iter();
     match first.as_str() {
         "serve" => Ok(Command::Serve),
         "help" => Ok(Command::Help),

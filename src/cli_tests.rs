@@ -409,3 +409,59 @@ fn cli_exit_disconnect_and_remove_with_an_extra_argument_are_usage_errors() {
         );
     }
 }
+
+fn parse(args: &[&str]) -> Result<Command, String> {
+    parse_args(args.iter().map(|arg| (*arg).to_owned()))
+}
+
+#[test]
+fn every_subcommand_help_flag_in_any_position_parses_to_that_subcommands_help() {
+    let cases = [
+        ("serve", Topic::Serve),
+        ("connect", Topic::Connect),
+        ("disconnect", Topic::Disconnect),
+        ("remove", Topic::Disconnect),
+        ("install", Topic::Install),
+        ("menu", Topic::Menu),
+        ("update", Topic::Update),
+    ];
+    for (name, topic) in cases {
+        for flag in ["--help", "-h"] {
+            for args in [
+                vec![name, flag],
+                vec![name, "x", flag],
+                vec![name, flag, "x"],
+            ] {
+                assert_eq!(
+                    parse(&args).expect("help parses"),
+                    Command::CommandHelp(topic),
+                    "{args:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn update_help_never_parses_to_the_update_command() {
+    for args in [["update", "--help"], ["update", "-h"]] {
+        assert_ne!(parse(&args).expect("help parses"), Command::Update);
+    }
+}
+
+#[test]
+fn every_subcommand_has_its_own_usage_naming_that_subcommand() {
+    for (topic, needle) in [
+        (Topic::Serve, "slugaudit serve"),
+        (Topic::Connect, "slugaudit connect [AGENT]"),
+        (Topic::Disconnect, "slugaudit disconnect [AGENT]"),
+        (Topic::Install, "slugaudit install"),
+        (Topic::Menu, "slugaudit menu"),
+        (Topic::Update, "slugaudit update"),
+    ] {
+        let text = topic_usage(topic);
+        assert!(text.starts_with("USAGE:\n"), "{text}");
+        assert!(text.contains(needle), "{needle}: {text}");
+        assert!(text.contains("-h, --help"), "{text}");
+    }
+}

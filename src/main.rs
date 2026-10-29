@@ -162,6 +162,9 @@ fn run_command(command: Command) -> CommandOutcome {
         Command::Install => reported(install::run_install()),
         Command::Update => reported(update::run_update()),
         Command::Help => reported(cli::out(format_args!("{}", cli::usage()))),
+        Command::CommandHelp(topic) => {
+            reported(cli::out(format_args!("{}", cli::topic_usage(topic))))
+        }
         Command::Version => reported(cli::out(format_args!(
             "slugaudit {}\n",
             env!("CARGO_PKG_VERSION")
