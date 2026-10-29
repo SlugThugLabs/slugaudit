@@ -2,13 +2,13 @@
 //! over stdio when the command is `serve` (the default with no arguments).
 //!
 //! Arguments are parsed before logging is installed, so a parse error is
-//! reported directly and exits 1. Logs go to stderr only — stdout is the
+//! reported directly and exits 2 (usage). Runtime failures exit 1. Logs go to stderr only — stdout is the
 //! JSON-RPC transport — and `SLUGAUDIT_LOG_FORMAT=json` selects a JSON
 //! formatter.
 
 #![forbid(unsafe_code)]
 
-use rmcp::{ServiceExt, transport::stdio};
+use rmcp::{ServiceExt, service::ServerInitializeError, transport::stdio};
 use slugaudit_mcp_rust::cli::{self, Command};
 use slugaudit_mcp_rust::connect;
 use slugaudit_mcp_rust::install;
@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(cmd) => cmd,
         Err(error) => {
             cli::err(format_args!("Error: {error}\n"))?;
-            std::process::exit(1);
+            std::process::exit(2);
         }
     };
     // The subscriber is installed before dispatch: CLI commands log too
@@ -57,7 +57,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
         CommandOutcome::Propagated(error) if cli::is_broken_pipe(error.as_ref()) => return Ok(()),
-        CommandOutcome::Propagated(error) => return Err(error),
+        CommandOutcome::Propagated(error) => {
+            cli::err(format_args!("Error: {error}\n"))?;
+            std::process::exit(1);
+        }
     }
     // A set-but-invalid SLUGAUDIT_* variable, or an Adaptive profile on a host
     // whose memory cannot be detected, stops the server here rather than
@@ -66,12 +69,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli::err(format_args!("Error: {error}\n"))?;
         std::process::exit(1);
     }
-    SlugAuditServer::new()
-        .serve(stdio())
-        .await?
-        .waiting()
-        .await?;
-    Ok(())
+    match serve_until_done().await {
+        Ok(ServeEnd::Finished) => Ok(()),
+        Ok(ServeEnd::InputClosedEarly) => {
+            cli::err(format_args!(
+                "slugaudit: input closed before initialize; exiting\n"
+            ))?;
+            Ok(())
+        }
+        Ok(ServeEnd::Signalled(name)) => {
+            cli::err(format_args!("slugaudit: received {name}; shutting down\n"))?;
+            Ok(())
+        }
+        Err(error) => {
+            cli::err(format_args!("Error: {error}\n"))?;
+            std::process::exit(1);
+        }
+    }
+}
+
+/// How serving the MCP session ended without a failure.
+enum ServeEnd {
+    /// The host closed stdin after the session ran.
+    Finished,
+    /// Stdin closed before the client sent `initialize`.
+    InputClosedEarly,
+    /// SIGTERM or SIGINT (Ctrl-C) asked the process to stop.
+    Signalled(&'static str),
+}
+
+/// Serves MCP over stdio until the session ends or a termination signal
+/// arrives. Dropping the session future on a signal cancels the running
+/// service, so in-flight work is drained by the runtime shutdown.
+async fn serve_until_done() -> Result<ServeEnd, Box<dyn std::error::Error>> {
+    let session = async {
+        match SlugAuditServer::new().serve(stdio()).await {
+            Ok(running) => {
+                running.waiting().await?;
+                Ok(ServeEnd::Finished)
+            }
+            Err(ServerInitializeError::ConnectionClosed(_)) => Ok(ServeEnd::InputClosedEarly),
+            Err(error) => Err(error.into()),
+        }
+    };
+    tokio::select! {
+        outcome = session => outcome,
+        signal = termination_signal() => Ok(ServeEnd::Signalled(signal?)),
+    }
+}
+
+/// Resolves with the name of the first termination signal received.
+#[cfg(unix)]
+async fn termination_signal() -> std::io::Result<&'static str> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut terminate = signal(SignalKind::terminate())?;
+    tokio::select! {
+        _ = terminate.recv() => Ok("SIGTERM"),
+        interrupt = tokio::signal::ctrl_c() => interrupt.map(|()| "SIGINT"),
+    }
+}
+
+/// Resolves when Ctrl-C is received (the only portable signal).
+#[cfg(not(unix))]
+async fn termination_signal() -> std::io::Result<&'static str> {
+    tokio::signal::ctrl_c().await.map(|()| "Ctrl-C")
 }
 
 /// What `main` should do after running one CLI command.

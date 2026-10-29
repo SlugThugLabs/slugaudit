@@ -75,7 +75,7 @@ schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "signal", "sync", "time"] }
 tree-sitter = "0.26"
 tree-sitter-language-pack = "=1.18.0"
 tracing = "0.1"
