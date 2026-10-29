@@ -36,7 +36,6 @@ mod sweep;
 mod sweep_reconcile;
 
 pub use discard_notice::DatabaseDiscard;
-pub(crate) use discard_notice::count_findings;
 pub use discovery::{DiscoveredFile, DiscoveryError, FileKind, SkippedFile, discover};
 #[cfg(test)]
 pub(crate) use full_sweep_gate::FULL_RECONCILE_INTERVAL;

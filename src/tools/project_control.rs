@@ -62,11 +62,6 @@ pub struct ProjectControlResponse {
     #[schemars(default)]
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub config_kept: bool,
-    /// Present only for `"off"`: the number of findings (any status) in the
-    /// project database at the moment it was deleted, counted under the
-    /// database lock. Zero when there was no database or it held none.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub findings_discarded: Option<u64>,
     /// Present when action was `"on"` and an initial import ran.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub import: Option<ImportReport>,
@@ -329,7 +324,6 @@ fn enable(
         path: root.as_path().to_string_lossy().to_string(),
         removed: Vec::new(),
         config_kept: false,
-        findings_discarded: None,
         import: Some(ImportReport {
             added: report.added,
             modified: report.modified,
@@ -382,7 +376,6 @@ fn disable(
             .map(|path| path.to_string_lossy().to_string())
             .collect(),
         config_kept: report.config_kept,
-        findings_discarded: Some(report.findings_discarded),
         import: None,
         gitignore: None,
         database_discard: None,
@@ -400,10 +393,6 @@ mod tests;
 #[cfg(test)]
 #[path = "project_control_symlink_tests.rs"]
 mod symlink_tests;
-
-#[cfg(test)]
-#[path = "project_control_off_tests.rs"]
-mod off_tests;
 
 #[cfg(test)]
 #[path = "project_control_log_tests.rs"]

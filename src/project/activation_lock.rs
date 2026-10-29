@@ -6,33 +6,6 @@ use super::database_path::database_path;
 use super::root::ProjectRoot;
 use crate::store::{StoreError, open_existing_read_write};
 use rusqlite::Connection;
-use std::path::Path;
-
-/// Findings in the locked database, counted on the lock's own connection so
-/// no publish can add one between the count and the removal. No connection
-/// means no database, hence zero.
-pub(super) fn locked_findings_count(lock: Option<&Connection>) -> Result<u64, ActivationError> {
-    lock.map_or(Ok(0), |connection| {
-        crate::sync::count_findings(connection).map_err(ActivationError::FindingsCount)
-    })
-}
-
-/// Removes one owned path without following a symlink: a directory is removed
-/// recursively (`remove_dir_all` never follows symlinks inside it), anything
-/// else, a symlink included, is unlinked itself. Returns whether it existed.
-pub(super) fn remove_owned(path: &Path) -> Result<bool, ActivationError> {
-    let metadata = match path.symlink_metadata() {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(ActivationError::Io(error)),
-    };
-    if metadata.file_type().is_dir() {
-        std::fs::remove_dir_all(path)?;
-    } else {
-        std::fs::remove_file(path)?;
-    }
-    Ok(true)
-}
 
 /// Acquires an exclusive database connection before removal. The connection
 /// remains alive through `remove_dir_all`, so a concurrent SQLite session

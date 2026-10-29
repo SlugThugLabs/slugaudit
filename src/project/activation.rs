@@ -5,7 +5,7 @@ pub(super) use super::gitignore::GITIGNORE_FILE;
 #[cfg(test)]
 use crate::util::MAX_FOREIGN_TEXT_BYTES;
 
-use super::activation_lock::{acquire_database_lock, locked_findings_count, remove_owned};
+use super::activation_lock::acquire_database_lock;
 use super::database_path::{DATABASE_FILENAME, database_path};
 use super::root::{ProjectRoot, RootError};
 use std::path::{Path, PathBuf};
@@ -44,10 +44,6 @@ pub enum ActivationError {
          database ({0}). Wait for other SlugAudit tool calls to finish and retry."
     )]
     DatabaseBusy(#[source] rusqlite::Error),
-    /// The findings in the database could not be counted before it was
-    /// removed, so disabling was refused rather than report a wrong count.
-    #[error("could not count the findings in the project database before removing it: {0}")]
-    FindingsCount(#[source] rusqlite::Error),
     /// Another connection still holds the database open, so its write-ahead
     /// log could not be checkpointed.
     #[error(
@@ -262,10 +258,23 @@ pub struct DisableReport {
     pub removed: Vec<PathBuf>,
     /// True when `config.json` was present and therefore kept.
     pub config_kept: bool,
-    /// Rows in `findings` (any status) in the database that was removed,
-    /// counted under the database lock before removal. Zero when there was
-    /// no database.
-    pub findings_discarded: u64,
+}
+
+/// Removes one owned path without following a symlink: a directory is removed
+/// recursively (`remove_dir_all` never follows symlinks inside it), anything
+/// else, a symlink included, is unlinked itself. Returns whether it existed.
+fn remove_owned(path: &Path) -> Result<bool, ActivationError> {
+    let metadata = match path.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(ActivationError::Io(error)),
+    };
+    if metadata.file_type().is_dir() {
+        std::fs::remove_dir_all(path)?;
+    } else {
+        std::fs::remove_file(path)?;
+    }
+    Ok(true)
 }
 
 /// Turns SlugAudit "off" for `root` by removing only what SlugAudit created
@@ -297,11 +306,7 @@ pub fn disable(root: &ProjectRoot) -> Result<DisableReport, ActivationError> {
         return Ok(DisableReport::default());
     }
     let database_lock = acquire_database_lock(root)?;
-    let findings_discarded = locked_findings_count(database_lock.as_ref())?;
-    let mut report = DisableReport {
-        findings_discarded,
-        ..DisableReport::default()
-    };
+    let mut report = DisableReport::default();
     for name in OWNED_FILES {
         let path = activation.join(name);
         if remove_owned(&path)? {
