@@ -11,6 +11,22 @@ commit, a path, or a command where possible.
 
 ---
 
+## 2026-10-28 — Activation marker is the `project.db` file, not the `slugaudit` directory
+
+- **What:** A project is active only when `.planning/slugaudit/project.db` exists as a regular file. The directory `.planning/slugaudit/` no longer marks activation.
+- **Why:** `project_control off` keeps `config.json` (owner decision), so the directory survives `off`. With a directory marker the project would still read as active and the next call would silently rebuild the database. A file marker lets `off` delete the database and leave the config.
+- **Where:** `src/project/activation.rs` (`find_project_root`).
+- **Reversible:** Yes, it is a predicate change. The `off` semantics (keep `config.json`) would then require deleting the directory.
+
+## 2026-10-28 — Naming: `.slugthug` dotdir and `config.json` stay; "STL" rejected
+
+- **What:** The `.slugthug` dotdir and the `config.json` filename stay as they are. The name "STL" was rejected.
+- **Why:** "STL" collides with existing names (the 3D-model file format and the C++ standard template library).
+- **Where:** `~/.slugthug/` and `config.json` under the per-project and global config locations.
+- **Reversible:** Yes, but a rename needs a migration for existing config files and directories.
+
+---
+
 ## 2026-10-23 — Recombine artificial seams into cohesive modules under the RIGHT standard
 
 - **What:** Recombined 8 splintered files created solely to avoid the 200-code-line gate back into their cohesive parent modules:

@@ -44,11 +44,12 @@ restored from the deleted 2026-10-18 planning paths:
 The durable copies are the source of record. A later claim that cites a
 `/tmp` path instead of one of these files is not durable.
 
-## Current state (2026-10-26)
+## Current state (2026-10-28)
 
-- Branch `fix/deep-dive-2026-10-25` (not merged, not pushed, not tagged) carries Phase 8 Waves A, B and C on top of `8e3a0b6`: crate `slugaudit-mcp-rust` **1.1.0** (`CHANGELOG.md` `[1.1.0]`), 9 tools (adds `mechanic`), one shared `page` contract, 1-based lines, schema version 11, `[profile.release]` strip + thin LTO + codegen-units 1 (release binary 18.7 MB -> 12.4 MB).
-- Gate at `f43dc9b`: 12/12 README *Development* gates, 1,507 tests passed, 0 failed, coverage 93.28%; release-binary stdio end-to-end 12/12. `f973bc6` (test-only flake fix) follows; the final gate re-ran green at `d8cf8e4` (recorded in the Phase 8 header).
-- Branch `wave-c-c4` and worktree `/home/slugaudit-wt/c4` (C4, integrated as `ef3b98c`) and branch `wave-a-lane-y` are kept for the owner to delete.
+- `main` carries Phase 8 Waves A, B and C and the wave-1 remediation (P1, P3, P4, P5, P6/6b, P7, P8), merged as `4a70544` (pushed; not tagged). Crate `slugaudit-mcp-rust` **1.1.0** (`CHANGELOG.md` `[1.1.0]`), 9 tools (adds `mechanic`), one shared `page` contract, 1-based lines, schema version 11, `[profile.release]` strip + thin LTO + codegen-units 1 (release binary 18.7 MB -> 12.4 MB).
+- Gate at `f43dc9b` (Phase 8 close): 12/12 README *Development* gates, 1,507 tests passed, 0 failed, coverage 93.28%; release-binary stdio end-to-end 12/12. `f973bc6` (test-only flake fix) follows; the final gate re-ran green at `d8cf8e4` (recorded in the Phase 8 header). Wave-1 evidence and outcome: `.planning/archive/remediation_2026-10-28_wave1.md`.
+- Wave 2 (2026-10-28): activation marker + rem2 branches; outcome in `.planning/archive/remediation_2026-10-28_wave2.md`.
+- Branch `wave-c-c4` and worktree `/home/slugaudit-wt/c4` (C4, integrated as `ef3b98c`) and branch `wave-a-lane-y` were kept for the owner to delete (2026-10-26); state: **still open** until the wave-2 housekeeping report says otherwise.
 
 ### Previous state (2026-10-19)
 
@@ -425,6 +426,8 @@ does not rediscover them from scratch.
 
 ## Phase 8 — 2026-10-25 deep-dive remediation and auditor-owned mechanics
 
+State (2026-10-28): **wave 1 landed** (P1, P3, P4, P5, P6/6b, P7, P8; merged as `4a70544` on `main`, pushed; report `.planning/archive/remediation_2026-10-28_wave1.md`). Wave 2 (2026-10-28): activation marker + rem2 branches; outcome in `.planning/archive/remediation_2026-10-28_wave2.md`.
+
 State: **Wave A landed** (2026-10-25, `7dc6410..35aabea`, gate green at `35aabea` (12/12 README *Development* gates, 1317 tests, 93.96% coverage); Wave B and Wave C landed 2026-10-26 (Wave C: C1-C6, see below), gate green at `345618f` (12/12 README *Development* gates, all test blocks 0 failed, 93.35% coverage; release-binary stdio end-to-end 8/8); Wave C gate green at `d8cf8e4` (12/12 README *Development* gates, all test blocks 0 failed, 93.29% coverage, zero-limit tests 10/10 runs clean; release-binary 1.1.0 stdio end-to-end 12/12 at `f43dc9b`)). Authored 2026-10-25 by the architect from the deep dive;
 Lead executes on branch `fix/deep-dive-2026-10-25`, one commit per item, no
 push). Evidence: `.planning/archive/audit_2026-10-25_deep_dive.md` (defects
@@ -571,9 +574,24 @@ as mechanics it registers for the session or persists to the project config.
 
 ### Recorded, not scheduled (D9)
 
+- **Global config.** State: **not scheduled**. A global config at `~/.slugthug/slugaudit/config.json`. Precedence: built-in < global < per-repo `config.json` < `SLUGAUDIT_*` env; each layer overrides only the keys it sets. Includes a global `mechanics` section, which adds a fourth source value for where a mechanic came from.
+- **Per-repo mechanics file.** State: **not scheduled**. Possibly split per-repo mechanics out of `config.json` into their own file.
+- **Deferred wave-1 evidence findings.** State: **not scheduled**; evidence in `.planning/archive/remediation_2026-10-28_wave1.md` (Evidence table; scripts `scratchpad/evidence/E1..E5`):
+  - H1, healthy-watcher tree walk per call (E1): `health` ~0.1 ms without a path and 2, 6, 52 ms at 5k/10k/100k with a path; `query`/`finding_read` with no changes 0.5-2 s p50 (748/713/1345 ms at 5k/10k/100k), weak scaling; cause unprofiled, inconclusive.
+  - M2, CAS race under concurrency (E2): 0 Busy in 100 attempts, but 95 of 520 calls failed with JSON-RPC -32603 "concurrent publish won the race ... retry the call", up to 8.6 s.
+  - M4, stdout stall (E3): pipe full at 2 s, completions stuck at 74 of 1476, RSS +0.5 MB/s; recovered after the reader resumed. The run only hit the panic error path (`query` with a progressToken panics at `src/server_runner.rs:311`, a separate defect from the report). State: **resolved**, fixed by `17835d9` (progress notifications spawn on the captured runtime handle), reproduced on `4a70544` and confirmed gone (4 stdio variants) on the fix.
+  - M5, stdout stall (E4): stalls at call 143 (`health`, ~437 B/call) with the default filter, or call 381 (unknown tool); debug stalls during startup; draining releases it. Confirmed.
+  - Related (E5, M12): `config.json` keys are re-sorted alphabetically on rewrite with no trailing newline (observed before P8); the "order preserved" claim was wrong.
 - **Stored-content cap review.** State: **not scheduled** (architect 2026-10-25: a Wave C profile decision). `query`'s `SQLITE_LIMIT_LENGTH` is max(`max_query_value_bytes`, 3 x `max_file_bytes`), so the zeroblob/hex/replace amplifier is bounded but can reach ~1.5 GB (estimated) on the audit profile; the real fix is a lower default for stored content.
 - **Wave C residue.** State: **still open**, small: the stale-row discard (`verify_metadata_or_rebuild`) and `project_control` recovery still unlink without C4's lock; a `user_version` 0 database corrupt past page 1 is now reopened rather than discarded (reasoned, untested); the warn-once ledger is thread-local under `cfg(test)` (`f973bc6`) because `tools::mechanic::persist_tests` builds limits from env without `TEST_ENV_LOCK` — that test should take the lock; the language-pack alias table can drift in one direction.
 - **Wave B residue.** State: **still open**, small: two servers opening a fresh project database at once can fail one with `database is locked` at connection configure (2 of 7 trials; fits the per-project sync lock above); the parse-under-deadline loop exists three times (`structure_exec::parse_within`, `evidence/calls/query_calls.rs`, the pack-timeout path); `config.json.<pid>.<n>.tmp` files left by a crash are never swept; a custom mechanic re-parses its language's files on every `leads` call that selects it; the alias table can still drift in the pack-adds-an-alias direction.
+- **`rem2/LG` (real database/watcher paths in recovery and notify WARNs).** State: **still open**, left out of 1.1.0 after two failed reviews. Branch `rem2/LG` (commits `e2cafbc` + `9071645`) is complete except `src/tools/health.rs:283,294,305`, which still logs `database_id = redacted_path(..)` (3-line fix plus a capture test); everything else in it reviewed OK.
+- **CLI trailing arguments.** State: **not scheduled**. `install` and `menu` now reject extra arguments (`17835d9`'s sibling `83b32de`); `serve`, `help`, `update`, `version` and `--help` still silently ignore trailing arguments (`src/cli.rs` ~63-73).
+- **`ResourceLimits::discover()`.** State: **not scheduled**. At `src/sync/discovery.rs` ~268 it uses `ResourceLimits::default()` and ignores `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS`; only tests call it. Fix: drop `pub` or take a limits argument.
+- **Tool-level limits-error test.** State: **not scheduled**. No test checks that a tool call returns the internal error when limits are uninstalled and the env is invalid (the `map_process_limits_error` / `process_limits_for_tool` wiring is untested).
+- **`project_control off` on a corrupt `project.db`.** State: **still open**, needs an owner decision: `off` fails because `activation_lock` opens the database to lock it. Should `off` unlink an unopenable database?
+- **Rebuild-path residual window.** State: **still open**. An `off` landing after the sync path's own discard and before `publish_from_scratch`'s creating open can recreate `project.db` (documented in ARCHITECTURE.md, activation section). The fix needs one lock across discard plus create.
+- **`config.lock` unlinked by `off`.** State: **not scheduled**. `off` unlinks `config.lock` while another process may hold its flock (documented).
 
 - Watcher removal in favour of the sweep plus a re-hash of files whose stored
   mtime is within 2 s of now, behind a per-project in-process sync lock.
