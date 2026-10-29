@@ -212,5 +212,9 @@ pub fn detected_agents(home: Option<&Path>) -> Vec<AgentDef> {
 mod registry_tests;
 
 #[cfg(test)]
+#[path = "connect_registry_report_tests.rs"]
+mod registry_report_tests;
+
+#[cfg(test)]
 #[path = "connect_enumeration_tests.rs"]
 mod enumeration_tests;
