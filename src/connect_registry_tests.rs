@@ -483,6 +483,58 @@ fn a_well_formed_client_config_with_the_entry_is_registered_silently() {
 }
 
 #[test]
+fn non_json_client_configs_are_detected_without_a_format_warning() {
+    for (id, body) in [
+        (
+            "codex",
+            "[mcp_servers.slugaudit]\ncommand = \"/bin/slugaudit\"\n",
+        ),
+        (
+            "grok",
+            "[mcp_servers.slugaudit]\ncommand = \"/bin/slugaudit\"\n",
+        ),
+        (
+            "hermes",
+            "mcp_servers:\n  slugaudit:\n    command: /bin/slugaudit\n",
+        ),
+        (
+            "goose",
+            "extensions:\n  slugaudit:\n    cmd: /bin/slugaudit\n",
+        ),
+    ] {
+        let home = tempfile::tempdir().expect("temp dir");
+        let agent = find_agent(id).expect("agent is registered");
+        let config = agent.config.resolve(home.path()).expect("config path");
+        std::fs::create_dir_all(config.parent().expect("config parent")).expect("mkdir");
+        std::fs::write(&config, body).expect("write config");
+
+        let (connected, logs) = crate::store::test_capture::capture_warns(|| {
+            tracing::warn!("control-line-probe-non-json");
+            agent.config_has_slugaudit(home.path())
+        });
+
+        assert!(connected, "{id}: the entry must be detected");
+        assert!(logs.contains("control-line-probe-non-json"), "{id}: {logs}");
+        assert!(!logs.contains("not valid JSON"), "{id}: {logs}");
+    }
+}
+
+#[test]
+fn a_malformed_json_config_for_a_json_client_is_not_connected_and_warns() {
+    let home = tempfile::tempdir().expect("temp dir");
+    let cursor = find_agent("cursor").expect("cursor is registered");
+    let config = cursor.config.resolve(home.path()).expect("config path");
+    std::fs::create_dir_all(config.parent().expect("config parent")).expect("mkdir");
+    std::fs::write(&config, "{ not json").expect("write config");
+
+    let (connected, logs) =
+        crate::store::test_capture::capture_warns(|| cursor.config_has_slugaudit(home.path()));
+
+    assert!(!connected);
+    assert!(logs.contains("not valid JSON"), "{logs}");
+}
+
+#[test]
 fn an_unreadable_goose_config_is_not_connected_and_says_why() {
     let home = tempfile::tempdir().expect("temp dir");
     let goose = find_agent("goose").expect("goose is registered");

@@ -11,6 +11,9 @@ The newest entry MUST match the version in `Cargo.toml`.
 
 ### Fixed
 
+- The interactive connect menu no longer prints "not valid JSON" warnings for
+  clients whose config is TOML or YAML (codex, grok, hermes); those configs are
+  now detected by a text scan with no format warning.
 - Store-open and sync-sweep WARN logs now name the real path and the full OS
   error instead of a hashed path id and an error kind, so a failed open can be
   diagnosed from the log alone.

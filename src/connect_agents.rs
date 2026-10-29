@@ -145,9 +145,15 @@ impl AgentDef {
         let Some(path) = self.config.resolve(home) else {
             return false;
         };
-        if self.shape == ConfigShape::GooseExtensions {
-            // Goose reads YAML; only a textual scan is safe for the written
-            // JSON-as-YAML (and it also catches a hand-written block entry).
+        if matches!(
+            self.shape,
+            ConfigShape::GooseExtensions | ConfigShape::Unknown
+        ) {
+            // Goose reads YAML; hermes (YAML), codex and grok (TOML) have no
+            // JSON shape at all. Only a textual scan is safe for these (it
+            // also catches the JSON-as-YAML we write and a hand-written block
+            // entry), and a non-JSON file is expected here, so no parse and
+            // no format warning.
             return crate::connect::config_file::readable_config_or_warn(&path)
                 .is_some_and(|c| c.contains("slugaudit"));
         }
