@@ -349,7 +349,7 @@ fn an_insecure_permissions_rejection_emits_a_warning_for_auditing() {
 }
 
 /// C12: when the network-filesystem check itself fails (inspection
-/// command unavailable, mountinfo unreadable, unsupported platform), the
+/// directory unreadable, fstatfs failure, unsupported platform), the
 /// error must surface the underlying cause AND a non-admin fallback
 /// message — an operator must be able to tell "the check failed" from
 /// "this is on NFS" and must not read it as a permissions problem.
@@ -684,12 +684,11 @@ fn an_uninspectable_database_path_fails_instead_of_skipping_the_symlink_guard() 
     ));
 }
 
-/// R6: the remedy names what the code actually does — `/proc/self/mountinfo`
-/// on Linux and `/sbin/mount` on macOS — not commands it never runs.
+/// R6: the remedy names what the code actually does — an `fstatfs` call on
+/// the database directory — not commands or mount tables it never reads.
 #[test]
 fn the_network_filesystem_check_error_names_the_real_inspection_path() {
     let message = StoreError::NetworkFilesystemCheck(std::io::Error::other("x")).to_string();
-    assert!(message.contains("/proc/self/mountinfo"), "{message}");
-    assert!(message.contains("/sbin/mount"), "{message}");
+    assert!(message.contains("fstatfs"), "{message}");
     assert!(!message.contains("fsutil"), "{message}");
 }

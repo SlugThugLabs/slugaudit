@@ -73,9 +73,8 @@ pub enum StoreError {
         "could not verify whether the database is on a network filesystem \
          (inspection failed: {0}); refusing to open rather than risk SQLite \
          corruption on a network mount — move the project to a local \
-         filesystem. On Linux the check reads /proc/self/mountinfo; on macOS \
-         it runs /sbin/mount. This is not a permissions problem an individual \
-         user can work around"
+         filesystem. The check calls fstatfs on the database directory. This \
+         is not a permissions problem an individual user can work around"
     )]
     NetworkFilesystemCheck(#[source] std::io::Error),
 }

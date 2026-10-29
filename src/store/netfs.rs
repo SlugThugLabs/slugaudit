@@ -19,10 +19,10 @@ use std::path::Path;
 /// timeout compounds the problem by masking the underlying issue as a
 /// transient contention rather than a fundamental incompatibility.
 ///
-/// On Linux, the filesystem type is determined from `/proc/self/mountinfo`.
-/// macOS parses the `mount` table the same way. Other platforms are
-/// unsupported by the product and fail closed rather than silently accepting
-/// an unknown mount.
+/// The filesystem is identified with `fstatfs` on the database's directory
+/// (Linux `f_type` magic numbers, macOS `f_fstypename`); no mount table is
+/// read. Other platforms are unsupported by the product and fail closed
+/// rather than silently accepting an unknown mount.
 /// Emits the operational warning that a network-filesystem rejection
 /// happened. Split out so tests can verify the warning site fires
 /// without standing up a real NFS mount — the verdict determination
@@ -34,10 +34,9 @@ use std::path::Path;
 /// `path` argument and assert the emitted event format without making
 /// the function part of the external API.
 pub(super) fn log_rejected_network_filesystem(path: &Path) {
-    // The mountinfo / `stat -f` / `fsutil` round-trip already returns
-    // its own error variant on the boundary cases (file vanished,
-    // command unavailable, …); this is the *positive* "yep, this is
-    // on NFS" verdict. Logged with the path so an operator enabling a
+    // The `fstatfs` probe already returns its own error variant on the
+    // boundary cases (directory vanished, syscall failed, …); this is the
+    // *positive* "yep, this is on NFS" verdict. Logged with the path so an operator enabling a
     // project on `/team-share/foo` (via `project_control`) can tell which
     // filesystem the server diagnosed, not just that the open failed.
     tracing::warn!(
@@ -61,10 +60,10 @@ pub(super) fn log_rejected_network_filesystem(path: &Path) {
 /// timeout compounds the problem by masking the underlying issue as a
 /// transient contention rather than a fundamental incompatibility.
 ///
-/// On Linux, the filesystem type is determined from `/proc/self/mountinfo`.
-/// macOS parses the `mount` table the same way. Other platforms are
-/// unsupported by the product and fail closed rather than silently accepting
-/// an unknown mount.
+/// The filesystem is identified with `fstatfs` on the database's directory
+/// (Linux `f_type` magic numbers, macOS `f_fstypename`); no mount table is
+/// read. Other platforms are unsupported by the product and fail closed
+/// rather than silently accepting an unknown mount.
 pub(super) fn reject_network_filesystem(path: &Path) -> Result<(), StoreError> {
     reject_if_network(path, is_on_network_filesystem(path)?)
 }
@@ -81,218 +80,121 @@ fn reject_if_network(path: &Path, on_network: bool) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// The mount table is matched as text, so a non-UTF-8 database path cannot be
-/// checked; the check fails closed rather than reporting the path as local.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn non_utf8_path_error() -> StoreError {
-    StoreError::NetworkFilesystemCheck(std::io::Error::other(
-        "the database path is not valid UTF-8, so its filesystem cannot be inspected",
-    ))
+/// Linux `statfs` magic numbers (`linux/magic.h`) of network and cluster
+/// filesystems on which SQLite WAL locking is unreliable: NFS, SMB, CIFS,
+/// SMB2, NCP, Coda, AFS (both the legacy and kAFS magics), Ceph, Lustre and
+/// 9P. Generic FUSE (`0x65735546`) is deliberately absent: the kernel reports
+/// the same magic for `sshfs` and for local FUSE filesystems such as
+/// `gocryptfs`, so FUSE cannot be classified without false positives, and
+/// blocking a legitimate local open is strictly worse than missing a mount.
+#[cfg(any(target_os = "linux", test))]
+const LINUX_NETWORK_MAGICS: &[u32] = &[
+    0x0000_6969, // NFS_SUPER_MAGIC
+    0x0000_517B, // SMB_SUPER_MAGIC
+    0xFF53_4D42, // CIFS_MAGIC_NUMBER
+    0xFE53_4D42, // SMB2_MAGIC_NUMBER
+    0x0000_564C, // NCP_SUPER_MAGIC
+    0x7375_7245, // CODA_SUPER_MAGIC
+    0x5346_414F, // AFS_SUPER_MAGIC
+    0x6B41_4653, // AFS_FS_MAGIC (kAFS)
+    0x00C3_6400, // CEPH_SUPER_MAGIC
+    0x0BD0_0BD0, // LL_SUPER_MAGIC (Lustre)
+    0x0102_1997, // V9FS_MAGIC (9P)
+];
+
+/// Pure classifier: whether a Linux `statfs` `f_type` magic is a network
+/// filesystem.
+#[cfg(any(target_os = "linux", test))]
+fn is_network_filesystem_magic(magic: u32) -> bool {
+    LINUX_NETWORK_MAGICS.contains(&magic)
 }
 
-#[cfg(target_os = "linux")]
-fn is_on_network_filesystem(path: &Path) -> Result<bool, StoreError> {
-    let content = std::fs::read_to_string("/proc/self/mountinfo")
-        .map_err(StoreError::NetworkFilesystemCheck)?;
-
-    let Some(path_str) = path.to_str() else {
-        return Err(non_utf8_path_error());
-    };
-
-    Ok(is_mountpoint_network_filesystem(&content, path_str))
-}
-
-/// Decodes the `\NNN` octal escapes the kernel writes into mountinfo
-/// fields (space `\040`, tab `\011`, newline `\012`, backslash `\134`).
-/// Without this a mount point containing such a character never matches
-/// its real path and a network mount would go undetected. A backslash not
-/// followed by exactly three octal digits (or encoding a byte above 0x7f,
-/// which would not be valid UTF-8 on its own) is kept literally.
-#[cfg(target_os = "linux")]
-fn decode_mountinfo_escapes(field: &str) -> std::borrow::Cow<'_, str> {
-    if !field.contains('\\') {
-        return std::borrow::Cow::Borrowed(field);
-    }
-    let bytes = field.as_bytes();
-    let mut decoded = String::with_capacity(field.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        let escaped = bytes
-            .get(index + 1..index + 4)
-            .filter(|_| bytes[index] == b'\\')
-            .filter(|digits| digits.iter().all(|digit| (b'0'..=b'7').contains(digit)))
-            .map(|digits| {
-                digits
-                    .iter()
-                    .fold(0_u32, |acc, digit| acc * 8 + u32::from(digit - b'0'))
-            })
-            .filter(|value| *value <= 0x7f)
-            .and_then(char::from_u32);
-        if let Some(character) = escaped {
-            decoded.push(character);
-            index += 4;
-        } else {
-            // Copy one whole UTF-8 character, not one byte.
-            let width = field[index..].chars().next().map_or(1, char::len_utf8);
-            decoded.push_str(&field[index..index + width]);
-            index += width;
-        }
-    }
-    std::borrow::Cow::Owned(decoded)
-}
-
-/// Given the raw contents of `/proc/self/mountinfo` and a target path,
-/// returns true if the most specific mount point covering the path is a
-/// known network filesystem. Extracted as a pure function so the parsing
-/// logic can be unit-tested without an actual `/proc` mount table.
-#[cfg(target_os = "linux")]
-fn is_mountpoint_network_filesystem(mountinfo: &str, path_str: &str) -> bool {
-    let mut best_fs_type: Option<&str> = None;
-    let mut best_mount_len: usize = 0;
-
-    for line in mountinfo.lines() {
-        let Some(dash_idx) = line.find(" - ") else {
-            continue;
-        };
-        let after_dash = &line[dash_idx + 3..];
-        let Some(fs_type) = after_dash.split_whitespace().next() else {
-            continue;
-        };
-
-        let before_dash = &line[..dash_idx];
-        let mut fields = before_dash.split_whitespace();
-        // Skip: mount ID, parent ID, major:minor, root
-        let mount_point = decode_mountinfo_escapes(fields.nth(4).unwrap_or(""));
-        let mount_point = mount_point.as_ref();
-
-        // Path-boundary match: the path must be the mount point itself or
-        // fall under it as a child (`/mnt/nfs/x`), not merely share a
-        // string prefix (`/mnt/nfs2/x` is a *different* mount). A bare
-        // `starts_with` would falsely reject a local path whose name
-        // begins with a network mount point — and per this module's own
-        // invariant, blocking a legitimate local open is strictly worse
-        // than missing an NFS mount.
-        // A root mount (`/`) covers every path, but `strip_prefix("/")`
-        // drops the leading slash the boundary check below requires, so
-        // an NFS-root host would otherwise be classified local. Handle
-        // root explicitly rather than deriving its coverage from a
-        // prefix tail it cannot produce.
-        let under_mount = mount_point == "/"
-            || path_str
-                .strip_prefix(mount_point)
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
-        if under_mount && mount_point.len() > best_mount_len {
-            best_mount_len = mount_point.len();
-            best_fs_type = Some(fs_type);
-        }
-    }
-
-    let Some(fs_type) = best_fs_type else {
-        return false;
-    };
-    matches!(
-        fs_type,
-        "nfs"
-            | "nfs4"
-            | "cifs"
-            | "smb"
-            | "smb3"
-            | "ncp"
-            | "ncpfs"
-            | "fuse.sshfs"
-            | "ceph"
-            | "fuse.ceph"
-            | "glusterfs"
-            | "fuse.glusterfs"
-            | "lustre"
-            | "afs"
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn is_on_network_filesystem(path: &Path) -> Result<bool, StoreError> {
-    // `mount` lists every mount with its filesystem type, and works before
-    // the database file exists — the first open creates it, so inspecting
-    // the path itself (`stat`) would fail on every fresh project. BSD
-    // `stat -f %T` also reports the *file* type, not the filesystem type.
-    let output = std::process::Command::new("/sbin/mount")
-        .output()
-        .map_err(StoreError::NetworkFilesystemCheck)?;
-    if !output.status.success() {
-        return Err(StoreError::NetworkFilesystemCheck(std::io::Error::other(
-            "filesystem inspection command failed",
-        )));
-    }
-    let table = String::from_utf8_lossy(&output.stdout);
-    let resolved = resolve_existing_ancestor(path);
-    let Some(path_str) = resolved.to_str() else {
-        return Err(non_utf8_path_error());
-    };
-    Ok(is_mount_table_network_filesystem(&table, path_str))
-}
-
-/// Canonicalizes the nearest existing ancestor of `path` and re-appends the
-/// missing tail, so `/var/folders/...` matches its real mount under
-/// `/private/var`. Falls back to the path as given.
-#[cfg(target_os = "macos")]
-fn resolve_existing_ancestor(path: &Path) -> std::path::PathBuf {
-    let mut tail = Vec::new();
-    let mut current = path;
-    loop {
-        match current.canonicalize() {
-            Ok(real) => return tail.iter().rev().fold(real, |acc, part| acc.join(part)),
-            Err(error) => {
-                tracing::trace!(
-                    path_id = %crate::util::redacted_path(current),
-                    error = %error,
-                    "ancestor canonicalize failed; checking parent"
-                );
-            }
-        }
-        match (current.parent(), current.file_name()) {
-            (Some(parent), Some(name)) => {
-                tail.push(name.to_os_string());
-                current = parent;
-            }
-            _ => return path.to_path_buf(),
-        }
-    }
-}
-
-/// Given macOS `mount` output (`<device> on <mount point> (<fstype>, ...)`)
-/// and a target path, returns true if the most specific mount point
-/// covering the path is a network filesystem. Pure, so it is tested on
-/// every platform.
+/// Pure classifier: whether a macOS/BSD `f_fstypename` is a network
+/// filesystem.
 #[cfg(any(target_os = "macos", test))]
-fn is_mount_table_network_filesystem(table: &str, path_str: &str) -> bool {
-    let mut best: Option<(usize, &str)> = None;
-    for line in table.lines() {
-        let Some((_, rest)) = line.split_once(" on ") else {
-            continue;
+fn is_network_filesystem_type_name(name: &str) -> bool {
+    matches!(name, "nfs" | "smbfs" | "afpfs" | "webdav" | "cifs" | "ftp")
+}
+
+/// Keeps the low 32 bits of a `statfs` `f_type`. The kernel's `f_type` is a
+/// signed word on some targets, where a magic such as CIFS's `0xFF534D42`
+/// is reported sign-extended or truncated depending on the word width.
+#[cfg(target_os = "linux")]
+fn magic_from_f_type(f_type: impl Into<i128>) -> std::io::Result<u32> {
+    u32::try_from(f_type.into() & 0xFFFF_FFFF)
+        .map_err(|error| std::io::Error::other(format!("statfs f_type out of range: {error}")))
+}
+
+/// What `fstatfs` says about the filesystem holding a database directory.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn fstatfs_is_network(directory: &std::fs::File) -> std::io::Result<bool> {
+    let stat = rustix::fs::fstatfs(directory)?;
+    #[cfg(target_os = "linux")]
+    {
+        Ok(is_network_filesystem_magic(magic_from_f_type(stat.f_type)?))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let name: Vec<u8> = stat
+            .f_fstypename
+            .iter()
+            .map(|byte| byte.to_ne_bytes()[0])
+            .take_while(|byte| *byte != 0)
+            .collect();
+        let name = std::str::from_utf8(&name)
+            .map_err(|error| std::io::Error::other(format!("f_fstypename: {error}")))?;
+        Ok(is_network_filesystem_type_name(name))
+    }
+}
+
+/// Opens the nearest existing ancestor directory of `path`. The database
+/// file may not exist yet (the first open creates it) and its directory may
+/// not either, but whichever directory will hold it lives on the filesystem
+/// of its nearest existing ancestor. Only "not found" moves to the next
+/// ancestor; every other error fails closed.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn open_nearest_existing_directory(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut last_error = None;
+    for ancestor in path.ancestors().skip(1) {
+        let candidate = if ancestor.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            ancestor
         };
-        let Some(paren) = rest.rfind(" (") else {
-            continue;
-        };
-        let mount_point = &rest[..paren];
-        let fs_type = rest[paren + 2..]
-            .split([',', ')'])
-            .next()
-            .unwrap_or("")
-            .trim();
-        let under_mount = mount_point == "/"
-            || path_str
-                .strip_prefix(mount_point)
-                .is_some_and(|tail| tail.is_empty() || tail.starts_with('/'));
-        if under_mount && best.is_none_or(|(len, _)| mount_point.len() > len) {
-            best = Some((mount_point.len(), fs_type));
+        match std::fs::File::open(candidate) {
+            Ok(directory) => return Ok(directory),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => last_error = Some(error),
+            Err(error) => return Err(error),
         }
     }
-    best.is_some_and(|(_, fs_type)| {
-        matches!(
-            fs_type,
-            "nfs" | "smbfs" | "afpfs" | "webdav" | "cifs" | "ftp"
-        )
-    })
+    Err(last_error
+        .unwrap_or_else(|| std::io::Error::other("the database path has no directory to inspect")))
+}
+
+/// Probes the filesystem under `path` with `probe` (production: `fstatfs`).
+/// Any failure to open the directory or run the probe fails closed with the
+/// source error preserved, and is logged once here.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn is_network_with(
+    path: &Path,
+    probe: impl FnOnce(&std::fs::File) -> std::io::Result<bool>,
+) -> Result<bool, StoreError> {
+    open_nearest_existing_directory(path)
+        .and_then(|directory| probe(&directory))
+        .map_err(|error| {
+            tracing::warn!(
+                target: "slugaudit::store",
+                path = %path.display(),
+                error = %error,
+                "could not determine the filesystem type of the database path"
+            );
+            StoreError::NetworkFilesystemCheck(error)
+        })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn is_on_network_filesystem(path: &Path) -> Result<bool, StoreError> {
+    is_network_with(path, fstatfs_is_network)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

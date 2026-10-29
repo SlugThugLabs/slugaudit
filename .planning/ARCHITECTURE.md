@@ -561,8 +561,10 @@ enforced atomically:
   a symlink is rejected by SQLite itself, with a pre-check for a clearer error
   in the common case.
 - **Network filesystems.** `store/netfs.rs` refuses a database on NFS/CIFS/SMB
-  (detected via `/proc/self/mountinfo` on Linux, the native inspection command
-  on macOS; unknown platforms fail closed), because WAL locking is unreliable
+  (detected with a safe `rustix::fs::fstatfs` call on the database's directory:
+  `f_type` magic numbers on Linux, `f_fstypename` on macOS; no mount table is
+  read; generic FUSE cannot be told apart from sshfs and is not classified;
+  unknown platforms and a failing `fstatfs` fail closed), because WAL locking is unreliable
   across those protocols.
 - **Permissions.** A newly created database file is created owner-only in one
   syscall; an existing file readable or writable by group or other is

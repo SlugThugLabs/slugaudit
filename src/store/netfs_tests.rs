@@ -17,214 +17,6 @@ fn a_local_filesystem_database_is_not_mistaken_for_network_filesystem() {
     );
 }
 
-/// The mountinfo parser must pick the most specific (longest) mount
-/// point that covers the path, not just the first match. A path under
-/// `/mnt/nfs/project` should match the `nfs` mount, not the root `/`
-/// ext4 mount.
-#[cfg(target_os = "linux")]
-#[test]
-fn mountinfo_parser_picks_the_most_specific_mount_point() {
-    let mountinfo = "\
-26 23 0:24 / /sys rw,nosuid,nodev shared:7 - sysfs sysfs rw
-27 23 0:25 / /proc rw,nosuid,nodev shared:8 - proc proc rw
-1 23 259:1 / / rw shared:1 - ext4 /dev/sda1 rw
-100 1 0:100 / /mnt/nfs rw,relatime shared:50 - nfs server:/export rw
-101 100 0:101 /project /mnt/nfs/project rw,relatime shared:51 - nfs server:/export/project rw
-";
-    // Path under the most specific NFS mount.
-    assert!(is_mountpoint_network_filesystem(
-        mountinfo,
-        "/mnt/nfs/project/lib.rs"
-    ));
-    // Path under root (ext4) — not a network filesystem.
-    assert!(!is_mountpoint_network_filesystem(
-        mountinfo,
-        "/home/user/project/lib.rs"
-    ));
-    // Path under /sys — not a network filesystem.
-    assert!(!is_mountpoint_network_filesystem(
-        mountinfo,
-        "/sys/class/net"
-    ));
-}
-
-/// A network filesystem mounted at `/` covers every path under it. The
-/// mount-point boundary check must treat `/` as matching every absolute
-/// path: `strip_prefix("/")` leaves a tail without its leading slash, so
-/// a prefix-tail check alone would classify an NFS-root host as local and
-/// let `open_read_write` enable WAL on NFS.
-#[cfg(target_os = "linux")]
-#[test]
-fn mountinfo_parser_detects_a_network_filesystem_mounted_at_root() {
-    let mountinfo = "\
-1 0 0:1 / / rw shared:1 - nfs4 server:/export rw
-2 1 259:1 / /home/user/local rw shared:2 - ext4 /dev/sda2 rw
-";
-    assert!(
-        is_mountpoint_network_filesystem(
-            mountinfo,
-            "/home/user/project/.planning/slugaudit/project.db"
-        ),
-        "a path under an NFS root must be classified as network"
-    );
-    // A more specific local mount still wins over the network root.
-    assert!(
-        !is_mountpoint_network_filesystem(mountinfo, "/home/user/local/project.db"),
-        "a local mount below a network root must cover its own descendants"
-    );
-}
-
-/// A local filesystem mounted at `/` must stay local, including for the
-/// database path that lives directly under it.
-#[cfg(target_os = "linux")]
-#[test]
-fn mountinfo_parser_keeps_a_local_root_local() {
-    let mountinfo = "1 0 0:1 / / rw shared:1 - ext4 /dev/sda1 rw\n";
-    assert!(!is_mountpoint_network_filesystem(
-        mountinfo,
-        "/home/user/project/.planning/slugaudit/project.db"
-    ));
-    assert!(!is_mountpoint_network_filesystem(mountinfo, "/"));
-}
-
-/// The root special case must not replace the path-boundary matching for
-/// non-root mounts: a network mount below a local root still matches its
-/// descendants and still rejects a sibling that only shares a prefix.
-#[cfg(target_os = "linux")]
-#[test]
-fn mountinfo_parser_still_matches_non_root_network_mounts_by_path_boundary() {
-    let mountinfo = "\
-1 0 0:1 / / rw shared:1 - ext4 /dev/sda1 rw
-100 1 0:100 / /mnt/nfs rw,relatime shared:50 - nfs server:/export rw
-";
-    assert!(is_mountpoint_network_filesystem(
-        mountinfo,
-        "/mnt/nfs/project/lib.rs"
-    ));
-    assert!(!is_mountpoint_network_filesystem(
-        mountinfo,
-        "/mnt/nfs2/project/lib.rs"
-    ));
-}
-
-/// The mountinfo parser must recognize all the common network
-/// filesystem type names, not just `nfs`.
-#[cfg(target_os = "linux")]
-#[test]
-fn mountinfo_parser_recognizes_cifs_and_smb_as_network_filesystems() {
-    for fs_type in ["nfs", "nfs4", "cifs", "smb", "smb3"] {
-        let mountinfo = format!("1 0 0:1 / /mnt/share rw - {} server:/share rw", fs_type);
-        assert!(
-            is_mountpoint_network_filesystem(&mountinfo, "/mnt/share/file.txt"),
-            "{} should be detected as a network filesystem",
-            fs_type
-        );
-    }
-}
-
-/// A path that merely *begins with* a network mount point string but
-/// is not actually under it — `/home/user2` vs an NFS mount at
-/// `/home/user` — must not be rejected as a network filesystem. A
-/// bare `starts_with` prefix check would false-positive here, and
-/// blocking a legitimate local open is strictly worse than missing
-/// an NFS mount.
-#[cfg(target_os = "linux")]
-#[test]
-fn mountinfo_parser_respects_path_boundaries_not_string_prefixes() {
-    let mountinfo = "\
-1 0 0:1 / /home/user rw - nfs server:/export rw
-";
-    // `/home/user2` is a sibling directory with its own (presumably
-    // local) mount — it must not match the `/home/user` NFS mount.
-    assert!(!is_mountpoint_network_filesystem(
-        mountinfo,
-        "/home/user2/project/lib.rs"
-    ));
-    // The mount point itself and real children under it still match.
-    assert!(is_mountpoint_network_filesystem(
-        mountinfo,
-        "/home/user/project/lib.rs"
-    ));
-    assert!(is_mountpoint_network_filesystem(mountinfo, "/home/user"));
-}
-
-/// A mountinfo line with optional fields (the `shared:NN` tokens and
-/// others before the ` - ` separator) must still parse correctly —
-/// the ` - ` is the reliable anchor, not field position from the start.
-#[cfg(target_os = "linux")]
-#[test]
-fn mountinfo_parser_handles_optional_fields_before_the_dash_separator() {
-    let mountinfo =
-        "52 23 0:44 / /home/user rw,relatime shared:32 master:1 - nfs4 server:/data rw,vers=4.2";
-    assert!(is_mountpoint_network_filesystem(
-        mountinfo,
-        "/home/user/project/lib.rs"
-    ));
-}
-
-/// The kernel escapes space, tab, newline and backslash in mount points as
-/// `\040`, `\011`, `\012`, `\134`; matching must happen on the decoded path.
-#[cfg(target_os = "linux")]
-#[test]
-fn mountinfo_octal_escapes_in_mount_points_are_decoded_before_matching() {
-    let mountinfo = "\
-30 1 0:25 / /mnt/my\\040share rw - cifs //srv/share rw
-31 1 0:26 / /mnt/tab\\011dir rw - nfs4 srv:/x rw
-32 1 0:27 / /mnt/back\\134slash rw - nfs srv:/y rw
-33 1 0:28 / /mnt/new\\012line rw - nfs srv:/z rw
-";
-
-    assert!(is_mountpoint_network_filesystem(
-        mountinfo,
-        "/mnt/my share/project.db"
-    ));
-    assert!(is_mountpoint_network_filesystem(
-        mountinfo,
-        "/mnt/tab\tdir/project.db"
-    ));
-    assert!(is_mountpoint_network_filesystem(
-        mountinfo,
-        "/mnt/back\\slash/project.db"
-    ));
-    assert!(is_mountpoint_network_filesystem(
-        mountinfo,
-        "/mnt/new\nline/project.db"
-    ));
-    assert!(!is_mountpoint_network_filesystem(
-        mountinfo,
-        "/mnt/my/project.db"
-    ));
-}
-
-/// An escape that is not a full three-digit octal sequence is kept
-/// literally rather than dropped or guessed at.
-#[cfg(target_os = "linux")]
-#[test]
-fn mountinfo_malformed_octal_escapes_are_kept_literally() {
-    let mountinfo = "30 1 0:25 / /mnt/a\\04 rw - nfs srv:/x rw\n";
-
-    assert!(is_mountpoint_network_filesystem(mountinfo, "/mnt/a\\04/f"));
-}
-
-/// Malformed mountinfo lines (missing the ` - ` separator, missing
-/// fields, empty lines) must be skipped gracefully rather than
-/// panicking or misidentifying the filesystem.
-#[cfg(target_os = "linux")]
-#[test]
-fn mountinfo_parser_skips_malformed_lines_without_panicking() {
-    let mountinfo = "\
-not a valid line at all
-1 0 0:1 / / rw - ext4 /dev/sda1 rw
-another bad line
-missing dash separator / rw ext4
-";
-    // Should not panic; should identify / as ext4 (not network).
-    assert!(!is_mountpoint_network_filesystem(
-        mountinfo,
-        "/home/user/file.txt"
-    ));
-}
-
 /// Verifies that rejecting an open against an NFS mount emits a
 /// `tracing::warn!` event tagged with the path and a machine-readable
 /// reason so an operator can find which mount triggered the failure
@@ -326,71 +118,118 @@ fn a_local_filesystem_open_does_not_emit_the_network_filesystem_warning() {
     );
 }
 
-const MACOS_MOUNT_TABLE: &str = "\
-/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)
-/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled, nobrowse)
-map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)
-//user@nas/share on /Volumes/share (smbfs, nodev, nosuid, mounted by user)
-nas:/export on /Volumes/share/nfs (nfs, nodev, nosuid)
-";
-
 #[test]
-fn the_macos_mount_table_treats_a_local_apfs_path_as_local() {
-    assert!(!is_mount_table_network_filesystem(
-        MACOS_MOUNT_TABLE,
-        "/System/Volumes/Data/Users/dev/project/.planning/slugaudit/project.db"
-    ));
-    assert!(!is_mount_table_network_filesystem(
-        MACOS_MOUNT_TABLE,
-        "/private/var/folders/n6/T/project.db"
-    ));
-}
-
-#[test]
-fn the_macos_mount_table_recognizes_smbfs_and_the_most_specific_nfs_mount() {
-    assert!(is_mount_table_network_filesystem(
-        MACOS_MOUNT_TABLE,
-        "/Volumes/share/project.db"
-    ));
-    assert!(is_mount_table_network_filesystem(
-        MACOS_MOUNT_TABLE,
-        "/Volumes/share/nfs/project.db"
-    ));
-}
-
-#[test]
-fn the_macos_mount_table_respects_path_boundaries_and_skips_malformed_lines() {
-    let table = format!("{MACOS_MOUNT_TABLE}garbage line\non without parens\n");
-    assert!(!is_mount_table_network_filesystem(
-        &table,
-        "/Volumes/share2/project.db"
-    ));
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn a_non_utf8_database_path_fails_the_network_filesystem_check_closed() {
-    use std::os::unix::ffi::OsStrExt;
-    let path = Path::new(std::ffi::OsStr::from_bytes(b"/tmp/\xff/project.db"));
-
-    let error = is_on_network_filesystem(path).expect_err("must fail closed");
-
-    assert!(matches!(error, StoreError::NetworkFilesystemCheck(_)));
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn mountinfo_parser_recognizes_remote_fuse_and_cluster_filesystems_but_not_fusectl() {
-    for fs_type in ["fuse.sshfs", "ceph", "glusterfs", "lustre", "afs"] {
-        let mountinfo = format!("1 0 0:1 / /mnt/remote rw - {fs_type} host:/x rw");
+fn every_known_network_magic_is_classified_as_network() {
+    for magic in [
+        0x6969_u32,
+        0x517B,
+        0xFF53_4D42,
+        0xFE53_4D42,
+        0x564C,
+        0x7375_7245,
+        0x5346_414F,
+        0x6B41_4653,
+        0x00C3_6400,
+        0x0BD0_0BD0,
+        0x0102_1997,
+    ] {
         assert!(
-            is_mountpoint_network_filesystem(&mountinfo, "/mnt/remote/file"),
-            "{fs_type} should be detected as a network filesystem"
+            is_network_filesystem_magic(magic),
+            "{magic:#x} must be network"
         );
     }
-    let fusectl = "1 0 0:1 / /sys/fs/fuse/connections rw - fusectl none rw";
-    assert!(!is_mountpoint_network_filesystem(
-        fusectl,
-        "/sys/fs/fuse/connections/x"
-    ));
+}
+
+#[test]
+fn local_and_fuse_magics_are_not_classified_as_network() {
+    // ext4, tmpfs, btrfs, xfs, overlayfs, generic FUSE, fusectl, procfs.
+    for magic in [
+        0xEF53_u32,
+        0x0102_1994,
+        0x9123_683E,
+        0x5846_5342,
+        0x794C_7630,
+        0x6573_5546,
+        0x6573_5543,
+        0x9FA0,
+    ] {
+        assert!(
+            !is_network_filesystem_magic(magic),
+            "{magic:#x} must be local"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn f_type_is_reduced_to_its_low_32_bits_whatever_its_sign() {
+    assert_eq!(
+        magic_from_f_type(0xFF53_4D42_i64).expect("positive"),
+        0xFF53_4D42
+    );
+    assert_eq!(
+        magic_from_f_type(0xFF53_4D42_u32 as i32).expect("negative"),
+        0xFF53_4D42
+    );
+    assert_eq!(
+        magic_from_f_type((-1_i64 << 32) | 0x6969).expect("sign extended"),
+        0x6969
+    );
+}
+
+#[test]
+fn macos_type_names_classify_network_and_local_filesystems() {
+    for name in ["nfs", "smbfs", "afpfs", "webdav", "cifs", "ftp"] {
+        assert!(is_network_filesystem_type_name(name), "{name}");
+    }
+    for name in ["apfs", "hfs", "msdos", "exfat", "tmpfs", ""] {
+        assert!(!is_network_filesystem_type_name(name), "{name}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_local_tempdir_is_detected_as_local_by_fstatfs() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let verdict = is_on_network_filesystem(&directory.path().join("project.db"));
+    assert!(matches!(verdict, Ok(false)), "got: {verdict:?}");
+}
+
+/// The database file and even its directory may not exist yet; the nearest
+/// existing ancestor decides, and detection never reads a mount table.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_not_yet_created_directory_is_judged_by_its_nearest_existing_ancestor() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("a").join("b").join("project.db");
+    let verdict = is_on_network_filesystem(&path);
+    assert!(matches!(verdict, Ok(false)), "got: {verdict:?}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_non_utf8_database_path_is_inspected_rather_than_refused() {
+    use std::os::unix::ffi::OsStrExt;
+    let path = Path::new(std::ffi::OsStr::from_bytes(b"/tmp/\xff/project.db"));
+    let verdict = is_on_network_filesystem(path);
+    assert!(matches!(verdict, Ok(false)), "got: {verdict:?}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_fstatfs_failure_fails_closed_with_the_source_error_and_a_log() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("project.db");
+    let (result, logs) =
+        capture_warns(|| is_network_with(&path, |_| Err(std::io::Error::from_raw_os_error(5))));
+    match result {
+        Err(StoreError::NetworkFilesystemCheck(source)) => {
+            assert_eq!(source.raw_os_error(), Some(5));
+        }
+        other => panic!("expected NetworkFilesystemCheck, got: {other:?}"),
+    }
+    assert!(
+        logs.contains("could not determine the filesystem type"),
+        "the failure must be logged once, captured logs: {logs}"
+    );
 }

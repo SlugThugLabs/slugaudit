@@ -11,6 +11,12 @@ The newest entry MUST match the version in `Cargo.toml`.
 
 ### Fixed
 
+- Network-filesystem detection for the database now uses a safe `fstatfs` call
+  on the database directory instead of parsing `/proc/self/mountinfo` or running
+  `/sbin/mount`, so it works where `/proc` is unreadable and for non-UTF-8
+  paths. It fails closed only if `fstatfs` itself fails. Generic FUSE mounts
+  (including sshfs) share one filesystem magic with local FUSE and are no
+  longer classified as network.
 - Freshness wording in the README and the server instructions no longer claims a
   re-sync before every tool call: a healthy watcher is trusted and the whole tree
   is fully re-verified within 30 seconds.
