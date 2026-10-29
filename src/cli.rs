@@ -60,16 +60,35 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
     match first.as_str() {
         "serve" => Ok(Command::Serve),
         "help" => Ok(Command::Help),
-        "connect" => Ok(Command::Connect { agent: args.next() }),
-        "disconnect" | "remove" => Ok(Command::Disconnect { agent: args.next() }),
+        "connect" => Ok(Command::Connect {
+            agent: single_agent("connect", args)?,
+        }),
+        "disconnect" | "remove" => Ok(Command::Disconnect {
+            agent: single_agent(first.as_str(), args)?,
+        }),
         "install" => Ok(Command::Install),
         "menu" => Ok(Command::Menu),
         "update" => Ok(Command::Update),
-        "version" | "--version" | "-V" => Ok(Command::Version),
+        "version" | "--version" | "-V" | "-v" => Ok(Command::Version),
         "--help" | "-h" => Ok(Command::Help),
         other => Err(format!(
             "unknown command {other:?}; expected one of: serve, connect, disconnect, install, update, menu, version, help"
         )),
+    }
+}
+
+/// Takes the optional agent name for `connect`/`disconnect`; a second
+/// argument is a usage error rather than being silently ignored.
+fn single_agent(
+    command: &str,
+    mut args: impl Iterator<Item = String>,
+) -> Result<Option<String>, String> {
+    let agent = args.next();
+    match args.next() {
+        Some(extra) => Err(format!(
+            "`{command}` takes at most one agent name; unexpected argument {extra:?}"
+        )),
+        None => Ok(agent),
     }
 }
 

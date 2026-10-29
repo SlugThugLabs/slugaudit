@@ -560,8 +560,11 @@ surface; it is not a runtime file a client reads.
 
 ## Exit codes and error reporting
 
-- CLI commands exit `0` on success; a reported CLI failure prints
-  `Error: <reason>` to stderr and exits `1`.
+- Exit codes: `0` ok, `1` runtime failure, `2` usage error (unknown command or
+  flag, extra arguments). A reported failure prints `Error: <reason>` to stderr.
+- In serve mode, SIGTERM or SIGINT prints one line to stderr and exits `0`;
+  closing stdin before the client sends `initialize` also prints one line and
+  exits `0`.
 - CLI output is written fallibly. A **closed pipe** (`BrokenPipe`, for example
   `slugaudit menu | head -c 10`) exits `0` with no error log: the reader went
   away, not the command. Any other write failure (for example
@@ -569,7 +572,7 @@ surface; it is not a runtime file a client reads.
 - In serve mode there is no process-level error for a failed tool call: the
   call returns an MCP error response, and the process exits when the host
   closes stdin (end of the session).
-- Invalid arguments to a CLI command print the usage error and exit `1`;
+- Invalid arguments to a CLI command print the usage error and exit `2`;
   unknown tool/request shapes are contract errors (`invalid_params`), while
   operational failures are internal errors whose message says the failure is
   often transient.

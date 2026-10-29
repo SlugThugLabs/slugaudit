@@ -21,7 +21,7 @@ USAGE:
     slugaudit connect [AGENT]        Connect to an AI agent or editor
     slugaudit disconnect [AGENT]     Disconnect from an AI agent or editor
     slugaudit update                 Fetch the latest release and replace this binary
-    slugaudit version                Print version (also --version, -V)
+    slugaudit version                Print version (also --version, -V, -v)
     slugaudit help                   Show this message (also --help, -h)
 
 COMMANDS:
@@ -46,7 +46,7 @@ COMMANDS:
                   running binary, download it and atomically replace this
                   binary in place. Uses curl; verifies the sha256 checksum
                   before touching the current executable.
-    version       Print the version. Also --version, -V.
+    version       Print the version. Also --version, -V, -v.
     help          Show this message. Also --help, -h.
 
 OPTIONS:
