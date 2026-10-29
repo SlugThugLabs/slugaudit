@@ -1,7 +1,8 @@
 //! Resource limit profiles (Lean, Audit, Adaptive).
 
+use super::env_error::EnvConfigError;
 use super::limits::{EvidenceLimits, ResourceLimits, SQLITE_MAX_VALUE_BYTES};
-use super::system_ram::detect_system_memory;
+use super::system_ram::{MemoryDetectError, SystemMemoryInfo, detect_system_memory};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -34,39 +35,34 @@ impl AuditProfile {
     }
 }
 
-/// Resolves `SLUGAUDIT_PROFILE`, reporting why a set value is discarded.
+/// What a valid `SLUGAUDIT_PROFILE` is, for the startup error.
+const PROFILE_EXPECTED: &str = "one of `lean`, `audit`, `adaptive`";
+
+/// Resolves `SLUGAUDIT_PROFILE`.
 ///
-/// An unset variable means the operator chose no profile — the default
-/// applies and nothing needs saying. A variable that IS set but is not a
-/// known profile (or cannot be read) is operator intent that would
-/// otherwise vanish silently, so it warns — the same rule
-/// `process_limits` applies to the numeric overrides, and the same rule
-/// AGENTS.md non-negotiable #3 states: reported, or it is a bug.
-#[must_use]
-pub(crate) fn profile_from_env() -> Option<AuditProfile> {
+/// An unset variable means the operator chose no profile: `Ok(None)` and the
+/// default applies. A variable that IS set but is not a known profile (or is
+/// not Unicode) is operator intent that cannot be honored, so it is an
+/// error naming the variable (never the value) and startup fails closed.
+///
+/// # Errors
+///
+/// Returns [`EnvConfigError`] for a set-but-invalid value.
+pub(crate) fn profile_from_env() -> Result<Option<AuditProfile>, EnvConfigError> {
     match std::env::var("SLUGAUDIT_PROFILE") {
-        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotPresent) => Ok(None),
         // `VarError::NotUnicode`'s Display prints the raw value, which may be
-        // sensitive, so the variable name and the failure kind are logged
-        // instead of the error itself.
-        Err(std::env::VarError::NotUnicode(_)) => {
-            tracing::warn!(
-                variable = "SLUGAUDIT_PROFILE",
-                error = "value is not valid unicode",
-                "profile override could not be read; using the default profile",
-            );
-            None
-        }
-        Ok(raw) => match AuditProfile::parse_str(&raw) {
-            Some(profile) => Some(profile),
-            None => {
-                tracing::warn!(
-                    variable = "SLUGAUDIT_PROFILE",
-                    "profile override is not a known profile; using the default profile",
-                );
-                None
-            }
-        },
+        // sensitive, so only the variable name is reported.
+        Err(std::env::VarError::NotUnicode(_)) => Err(EnvConfigError::NotUnicode {
+            variable: "SLUGAUDIT_PROFILE".to_owned(),
+            expected: PROFILE_EXPECTED.to_owned(),
+        }),
+        Ok(raw) => AuditProfile::parse_str(&raw)
+            .map(Some)
+            .ok_or_else(|| EnvConfigError::Invalid {
+                variable: "SLUGAUDIT_PROFILE".to_owned(),
+                expected: PROFILE_EXPECTED.to_owned(),
+            }),
     }
 }
 
@@ -119,19 +115,31 @@ const LEAN_MAX_WATCH_DEPTH: usize = 32;
 const AUDIT_MAX_WATCH_ENTRIES: usize = 200_000;
 const AUDIT_MAX_WATCH_DEPTH: usize = 64;
 
-#[must_use]
 /// The complete limit set for one profile. `Adaptive` scales the import
 /// budget from detected host memory.
-pub fn limits_for_profile(profile: AuditProfile) -> ResourceLimits {
+///
+/// # Errors
+///
+/// Returns [`MemoryDetectError`] for `Adaptive` when host memory cannot be
+/// detected; `Lean` and `Audit` need no detection.
+pub fn limits_for_profile(profile: AuditProfile) -> Result<ResourceLimits, MemoryDetectError> {
+    limits_for_profile_with(profile, detect_system_memory)
+}
+
+/// [`limits_for_profile`] with the memory detector supplied.
+pub(crate) fn limits_for_profile_with(
+    profile: AuditProfile,
+    detect: impl FnOnce() -> Result<SystemMemoryInfo, MemoryDetectError>,
+) -> Result<ResourceLimits, MemoryDetectError> {
     match profile {
-        AuditProfile::Lean => lean_limits(),
-        AuditProfile::Audit => audit_limits(),
-        AuditProfile::Adaptive => adaptive_limits(),
+        AuditProfile::Lean => Ok(lean_limits()),
+        AuditProfile::Audit => Ok(audit_limits()),
+        AuditProfile::Adaptive => Ok(adaptive_limits(detect()?)),
     }
 }
 
 /// Conservative laptop budgets: fast to satisfy, bounded in every dimension.
-fn lean_limits() -> ResourceLimits {
+pub(super) fn lean_limits() -> ResourceLimits {
     ResourceLimits {
         max_file_bytes: 32 * 1024 * 1024,
         max_parse_bytes: DEFAULT_MAX_PARSE_BYTES,
@@ -189,8 +197,7 @@ fn audit_limits() -> ResourceLimits {
 }
 
 /// Budgets scaled from detected host memory.
-fn adaptive_limits() -> ResourceLimits {
-    let ram = detect_system_memory();
+fn adaptive_limits(ram: SystemMemoryInfo) -> ResourceLimits {
     let import_budget = (ram.available_bytes / 2).max(4 * 1024 * 1024 * 1024);
     // SQLite cannot store a value larger than `SQLITE_MAX_LENGTH`;
     // clamping here keeps a per-file skip from becoming a failed

@@ -1,6 +1,8 @@
 //! In-repo project configuration (`.planning/slugaudit/config.json`).
 
-use crate::model::{AuditProfile, ResourceLimits, SQLITE_MAX_VALUE_BYTES, limits_for_profile};
+use crate::model::{
+    AuditProfile, MemoryDetectError, ResourceLimits, SQLITE_MAX_VALUE_BYTES, limits_for_profile,
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -24,6 +26,20 @@ pub enum ConfigError {
         /// Underlying JSON parse error.
         source: serde_json::Error,
     },
+}
+
+/// Why the limits for a project could not be derived.
+#[derive(Debug, Error)]
+pub enum ProjectLimitsError {
+    /// The project config is present but unreadable or malformed.
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    /// The configured `adaptive` profile needs host memory that could not be
+    /// detected; choose `lean` or `audit`.
+    #[error(
+        "config profile 'adaptive' cannot be sized ({0}); set the profile to 'lean' or 'audit'"
+    )]
+    Memory(#[from] MemoryDetectError),
 }
 
 /// Optional per-project configuration overrides. An unknown key is a parse
@@ -108,34 +124,47 @@ impl ProjectConfig {
         Ok(Some(cfg))
     }
 
-    /// Loads project config if present and valid; falls back to default on error or absence.
+    /// Loads the project config; a missing file is the default config.
     /// First removes the temp files an interrupted update left beside it
     /// (`config_cleanup.rs`); that cleanup never fails the load.
-    #[must_use]
-    pub fn load_or_default(project_root: &Path) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// A config file that is present but unreadable (including a directory
+    /// at the path or the size cap) or malformed is an error carrying its
+    /// path and cause, so the call fails instead of running with limits the
+    /// file did not say.
+    pub fn load_or_default(project_root: &Path) -> Result<Self, ConfigError> {
         super::config_cleanup::remove_stale_temps(project_root);
-        match Self::load(project_root) {
-            Ok(Some(cfg)) => cfg,
-            Ok(None) => Self::default(),
-            // An I/O failure (unreadable file, a directory at the path, the
-            // size cap) is not a parse failure; reporting it as "malformed"
-            // would send the operator to the wrong fix.
-            Err(ConfigError::Io { source, .. }) => {
-                tracing::warn!(root_id = %crate::util::redacted_path(project_root), error_kind = "io", error = %source, "ignoring project config that could not be read; falling back to default");
-                Self::default()
-            }
-            Err(ConfigError::Parse { source, .. }) => {
-                tracing::warn!(root_id = %crate::util::redacted_path(project_root), error_kind = "parse", error = %source, "ignoring malformed project config; falling back to default");
-                Self::default()
-            }
-        }
+        Ok(Self::load(project_root)?.unwrap_or_default())
+    }
+
+    /// The process `base` limits with `project_root`'s config applied: what
+    /// every tool call and sync derives its budget from.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProjectLimitsError`] when the config is present but
+    /// unreadable or malformed, or its `adaptive` profile cannot be sized.
+    pub fn limits_for(
+        project_root: &Path,
+        base: ResourceLimits,
+    ) -> Result<ResourceLimits, ProjectLimitsError> {
+        Ok(Self::load_or_default(project_root)?.apply_to_limits(base)?)
     }
 
     /// Overrides fields in `limits` with any explicitly specified options.
-    #[must_use]
-    pub fn apply_to_limits(&self, mut limits: ResourceLimits) -> ResourceLimits {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryDetectError`] when the configured profile is
+    /// `adaptive` and the host memory cannot be detected.
+    pub fn apply_to_limits(
+        &self,
+        mut limits: ResourceLimits,
+    ) -> Result<ResourceLimits, MemoryDetectError> {
         if let Some(profile) = self.profile {
-            limits = limits_for_profile(profile);
+            limits = limits_for_profile(profile)?;
         }
         if let Some(file_bytes) =
             ResourceLimits::config_nonzero("config max_file_bytes", self.max_file_bytes)
@@ -191,7 +220,7 @@ impl ProjectConfig {
             limits.result_active_grace_secs = grace_secs;
         }
         limits.clamp_parse_to_file_bytes();
-        limits
+        Ok(limits)
     }
 }
 

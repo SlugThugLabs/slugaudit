@@ -126,7 +126,7 @@ pub(crate) fn reconcile_dirty_paths(
     deleted: HashSet<String>,
     expected_revision: Option<&str>,
 ) -> Result<ReconcileReport, ReconcileError> {
-    let options = ReconcileOptions::for_sync(root, None);
+    let options = ReconcileOptions::for_sync(root, None)?;
     super::pipeline::reconcile_dirty_paths_with_deadline(
         connection,
         root,

@@ -179,11 +179,11 @@ pub(crate) const PARSER_FAILURE_PREDICATE: &str = "file_kind = 'indexed' \
 /// so a fallback would only run request validation against limits the
 /// project does not use, and would drop the resolution error unlogged. The
 /// error is the same `invalid_params` (with `project_not_enabled` when the
-/// project was never enabled) that `ensure_synced` returns. A malformed
-/// project config is a documented, logged recovery inside
-/// `ProjectConfig::load_or_default`.
+/// project was never enabled) that `ensure_synced` returns. A present but
+/// unreadable or malformed project config fails the call with an
+/// `invalid_params` naming the file.
 pub(super) fn resolve_limits(path: &str) -> Result<ResourceLimits, ErrorData> {
-    Ok(limits_for_root(&project_root(path)?))
+    limits_for_root(&project_root(path)?)
 }
 
 /// The active project root `path` lies in, with the same error
@@ -195,8 +195,14 @@ pub(super) fn project_root(path: &str) -> Result<std::path::PathBuf, ErrorData> 
 }
 
 /// The process limits with `root`'s project config applied.
-pub(super) fn limits_for_root(root: &std::path::Path) -> ResourceLimits {
-    crate::project::ProjectConfig::load_or_default(root).apply_to_limits(*process_limits())
+pub(super) fn limits_for_root(root: &std::path::Path) -> Result<ResourceLimits, ErrorData> {
+    crate::project::ProjectConfig::limits_for(root, *process_limits()).map_err(|error| {
+        tracing::error!(%error, "project limits could not be derived");
+        ErrorData::invalid_params(
+            format!("project config is unusable: {error}; fix or remove the file and retry"),
+            None,
+        )
+    })
 }
 
 #[cfg(test)]
@@ -227,6 +233,24 @@ mod tests {
             .expect("an active project resolves");
 
         assert!(limits.max_file_bytes > 0);
+    }
+
+    #[test]
+    fn fail_closed_a_malformed_project_config_fails_the_call_naming_the_file() {
+        let project = test_support::activated_project("a.rs", b"fn a() {}");
+        let config = project.path().join(".planning/slugaudit/config.json");
+        std::fs::create_dir_all(config.parent().expect("config dir")).expect("create dir");
+        std::fs::write(&config, "{ not json").expect("write config");
+
+        let error = resolve_limits(project.path().to_str().expect("utf-8 path"))
+            .expect_err("a malformed config must fail the call, not fall back to defaults");
+
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            error.message.contains(config.to_str().expect("utf-8 path")),
+            "{}",
+            error.message
+        );
     }
 
     /// Runs the shared fragment — the literal SQL text, not a Rust copy of

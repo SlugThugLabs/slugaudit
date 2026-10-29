@@ -149,7 +149,7 @@ fn loading_the_project_config_removes_a_stale_temp_file() {
     let stale = activation_dir(&project).join("config.json.900005.1.tmp");
     fs::write(&stale, "{}").expect("write stale temp");
 
-    let config = ProjectConfig::load_or_default(project.path());
+    let config = ProjectConfig::load_or_default(project.path()).expect("config loads");
 
     assert_eq!(config.profile, Some(AuditProfile::Lean));
     assert!(!stale.exists(), "the load cleans up after a crashed update");

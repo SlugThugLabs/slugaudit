@@ -20,7 +20,7 @@ pub use activation::{
     ActivationError, GitignoreOutcome, activation_dir, disable, enable, ensure_gitignore,
     find_project_root, resolve_project,
 };
-pub use config::{ConfigError, ProjectConfig};
+pub use config::{ConfigError, ProjectConfig, ProjectLimitsError};
 pub use config_store::ConfigWriteError;
 pub use database_path::database_path;
 pub use mechanic_scan_cache::{

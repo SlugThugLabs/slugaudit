@@ -1,3 +1,6 @@
+use super::env_error::EnvConfigError;
+use super::limit_overrides::nonzero_override;
+use super::system_ram::{MemoryDetectError, SystemMemoryInfo, detect_system_memory};
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -193,130 +196,160 @@ pub struct ResourceLimits {
     pub evidence: EvidenceLimits,
 }
 
-/// Returns the process-wide resource limits, computed once from env vars
-/// on first call. Subsequent calls return the same cached value.
-/// Callers that currently use `ResourceLimits::default()` should switch
-/// to this so operators can tune limits at startup without recompiling.
+/// Validates the environment and installs the process-wide resource limits.
+/// The server entry point calls this before serving, so a set-but-invalid
+/// `SLUGAUDIT_*` variable (or undetectable memory without an explicit
+/// profile) stops startup instead of running with other limits.
+///
+/// # Errors
+///
+/// Returns [`EnvConfigError`] naming the offending variable.
+pub fn init_process_limits() -> Result<&'static ResourceLimits, EnvConfigError> {
+    if let Some(limits) = LIMITS.get() {
+        return Ok(limits);
+    }
+    let limits = ResourceLimits::from_env()?;
+    Ok(LIMITS.get_or_init(|| limits))
+}
+
+static LIMITS: OnceLock<ResourceLimits> = OnceLock::new();
+
+/// Returns the process-wide resource limits: those [`init_process_limits`]
+/// installed at startup. Reached without that call (library embedding,
+/// tests) the environment is validated here; an invalid one is logged as an
+/// error and the test-only [`Default`] limits apply, because this accessor
+/// cannot fail. The shipped binary validates before serving, so it never
+/// takes that path.
 /// Tests continue to use `ResourceLimits::default()` directly for
 /// deterministic behavior independent of the test runner's environment.
 #[must_use]
 pub fn process_limits() -> &'static ResourceLimits {
-    static LIMITS: OnceLock<ResourceLimits> = OnceLock::new();
-    LIMITS.get_or_init(ResourceLimits::from_env)
+    LIMITS.get_or_init(|| match ResourceLimits::from_env() {
+        Ok(limits) => limits,
+        Err(error) => {
+            tracing::error!(%error, "process limits environment is invalid and was not validated at startup; using the default limits");
+            ResourceLimits::default()
+        }
+    })
 }
 
 impl ResourceLimits {
-    /// Creates limits by taking the compile-time default and overriding
-    /// any fields that have a corresponding `SLUGAUDIT_*` env var set.
-    /// Unset variables leave the default unchanged, so a typo in a
-    /// variable name is harmless — the old limit applies. A variable that
-    /// is set but cannot be read or parsed logs a warning naming it, and
-    /// the default applies; an operator's intended override is never
-    /// discarded silently. Duration fields are parsed as whole seconds.
+    /// Creates limits by taking the profile baseline and overriding any
+    /// fields that have a corresponding `SLUGAUDIT_*` env var set. Unset
+    /// variables leave the default unchanged, so a typo in a variable
+    /// *name* is harmless; a variable that is set but cannot be read or
+    /// parsed fails with an error naming it (never its value). Duration
+    /// fields are parsed as whole seconds.
     ///
-    /// Internal to [`process_limits`], the production entry point that
-    /// caches the result; this is not public API.
-    #[must_use]
-    pub(super) fn from_env() -> Self {
-        let mut limits = base_limits();
-        apply_import_overrides(&mut limits);
-        apply_query_overrides(&mut limits);
-        apply_structure_overrides(&mut limits);
-        apply_sync_and_watch_overrides(&mut limits);
+    /// # Errors
+    ///
+    /// Returns [`EnvConfigError`] for a set-but-invalid variable or an
+    /// Adaptive profile on a host whose memory cannot be detected.
+    pub(super) fn from_env() -> Result<Self, EnvConfigError> {
+        let mut limits = base_limits(super::profile::profile_from_env()?, detect_system_memory)?;
+        apply_import_overrides(&mut limits)?;
+        apply_query_overrides(&mut limits)?;
+        apply_structure_overrides(&mut limits)?;
+        apply_sync_and_watch_overrides(&mut limits)?;
         // The store budget follows the effective response ceiling (after the
         // env override above) unless its own variable sets it below.
         limits.max_result_store_bytes =
             super::profile::result_store_budget(limits.max_query_response_bytes);
-        apply_result_store_overrides(&mut limits);
+        apply_result_store_overrides(&mut limits)?;
         limits.clamp_parse_to_file_bytes();
-        limits
+        Ok(limits)
     }
 }
 
-/// The profile-or-default baseline the overrides are applied to.
-///
-/// A set-but-invalid `SLUGAUDIT_PROFILE` warns inside `profile_from_env`
-/// rather than silently falling back, matching the numeric overrides.
-fn base_limits() -> ResourceLimits {
-    match super::profile::profile_from_env() {
-        Some(profile) => super::profile::limits_for_profile(profile),
-        None => ResourceLimits::default(),
-    }
+/// The baseline the overrides are applied to: the chosen profile, or
+/// Adaptive when none is set. Adaptive needs the host memory, so when that
+/// cannot be detected the operator must choose a profile explicitly.
+pub(super) fn base_limits(
+    profile: Option<super::profile::AuditProfile>,
+    detect: impl FnOnce() -> Result<SystemMemoryInfo, MemoryDetectError>,
+) -> Result<ResourceLimits, EnvConfigError> {
+    super::profile::limits_for_profile_with(profile.unwrap_or_default(), detect)
+        .map_err(|source| EnvConfigError::MemoryUndetectable { source })
 }
 
 /// Applies the file and publish work-budget overrides.
-fn apply_import_overrides(limits: &mut ResourceLimits) {
-    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_FILE_BYTES") {
+fn apply_import_overrides(limits: &mut ResourceLimits) -> Result<(), EnvConfigError> {
+    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_FILE_BYTES")? {
         limits.max_file_bytes = clamp_sqlite_value("SLUGAUDIT_MAX_FILE_BYTES", val);
     }
-    if let Some(val) = nonzero_override("SLUGAUDIT_MAX_PARSE_BYTES") {
+    if let Some(val) = nonzero_override("SLUGAUDIT_MAX_PARSE_BYTES")? {
         limits.max_parse_bytes = val;
     }
-    if let Some(val) = nonzero_override("SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS") {
+    if let Some(val) = nonzero_override("SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS")? {
         limits.max_parse_wall_clock_ms = val;
     }
-    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES") {
+    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES")? {
         limits.max_total_import_bytes = val;
     }
+    Ok(())
 }
 
 /// Applies the page, SQL, VM-step, wall-clock, and value-cap overrides.
-fn apply_query_overrides(limits: &mut ResourceLimits) {
-    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES") {
+fn apply_query_overrides(limits: &mut ResourceLimits) -> Result<(), EnvConfigError> {
+    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES")? {
         limits.max_query_response_bytes = val;
     }
-    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_DEFAULT_PAGE_BYTES") {
+    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_DEFAULT_PAGE_BYTES")? {
         limits.default_page_bytes = val;
     }
-    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_QUERY_SQL_BYTES") {
+    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_QUERY_SQL_BYTES")? {
         limits.max_query_sql_bytes = val;
     }
-    if let Some(val) = nonzero_override::<u32>("SLUGAUDIT_MAX_QUERY_VM_STEPS") {
+    if let Some(val) = nonzero_override::<u32>("SLUGAUDIT_MAX_QUERY_VM_STEPS")? {
         limits.max_query_vm_steps = val;
     }
-    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_QUERY_WALL_CLOCK_SECS") {
+    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_QUERY_WALL_CLOCK_SECS")? {
         limits.max_query_wall_clock = Duration::from_secs(val);
     }
-    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_QUERY_VALUE_BYTES") {
+    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_QUERY_VALUE_BYTES")? {
         limits.max_query_value_bytes =
             clamp_sqlite_value("SLUGAUDIT_MAX_QUERY_VALUE_BYTES", val as u64) as usize;
     }
+    Ok(())
 }
 
 /// Applies the Tree-sitter `structure` overrides.
-fn apply_structure_overrides(limits: &mut ResourceLimits) {
-    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES") {
+fn apply_structure_overrides(limits: &mut ResourceLimits) -> Result<(), EnvConfigError> {
+    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES")? {
         limits.max_structure_query_bytes = val;
     }
-    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_STRUCTURE_MATCHES") {
+    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_STRUCTURE_MATCHES")? {
         limits.max_structure_matches = val;
     }
-    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_STRUCTURE_EXECUTION_TIME_SECS") {
+    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_STRUCTURE_EXECUTION_TIME_SECS")? {
         limits.max_structure_execution_time = Duration::from_secs(val);
     }
+    Ok(())
 }
 
 /// Applies the sync budget and watch-scope walk overrides.
-fn apply_sync_and_watch_overrides(limits: &mut ResourceLimits) {
-    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS") {
+fn apply_sync_and_watch_overrides(limits: &mut ResourceLimits) -> Result<(), EnvConfigError> {
+    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS")? {
         limits.max_sync_wall_clock = Duration::from_secs(val);
     }
-    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_WATCH_ENTRIES") {
+    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_WATCH_ENTRIES")? {
         limits.max_watch_entries = val;
     }
-    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_WATCH_DEPTH") {
+    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_WATCH_DEPTH")? {
         limits.max_watch_depth = val;
     }
+    Ok(())
 }
 
 /// Applies the result store budget and grace overrides.
-fn apply_result_store_overrides(limits: &mut ResourceLimits) {
-    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_RESULT_STORE_BYTES") {
+fn apply_result_store_overrides(limits: &mut ResourceLimits) -> Result<(), EnvConfigError> {
+    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_RESULT_STORE_BYTES")? {
         limits.max_result_store_bytes = val;
     }
-    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS") {
+    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS")? {
         limits.result_active_grace_secs = val;
     }
+    Ok(())
 }
 
 /// Clamps one single-value limit to what the bundled SQLite can store.
@@ -338,62 +371,14 @@ fn clamp_sqlite_value(name: &str, value: u64) -> u64 {
     }
 }
 
-/// [`parse_override`] for a limit where zero is meaningless: a `0` is refused
-/// with a warning naming the variable (once per process), and the value
-/// already in place stays.
-fn nonzero_override<T>(name: &'static str) -> Option<T>
-where
-    T: std::str::FromStr + Default + PartialEq,
-    T::Err: std::fmt::Display,
-{
-    super::limit_overrides::refuse_zero(name, parse_override::<T>(name)?)
-}
-
-/// Parses one `SLUGAUDIT_<FIELD>` override.
-///
-/// An unset variable is not a failure — the caller keeps the default, and
-/// that is the documented meaning of "only explicitly-set variables
-/// override". A variable that IS set but does not parse is a different case,
-/// and it used to be indistinguishable from unset: the operator's intended
-/// limit was silently discarded. That is now logged. The fallback itself is
-/// unchanged and deliberate; what changed is that it can be seen.
-fn parse_override<T>(name: &str) -> Option<T>
-where
-    T: std::str::FromStr,
-    T::Err: std::fmt::Display,
-{
-    let raw = match std::env::var(name) {
-        Ok(raw) => raw,
-        // NotPresent is the documented "no override" case.
-        Err(std::env::VarError::NotPresent) => return None,
-        // A variable the operator set that could not be read is not the same
-        // thing and is reported. `NotUnicode`'s Display prints the raw value,
-        // which may be sensitive, so the failure kind is logged instead.
-        Err(std::env::VarError::NotUnicode(_)) => {
-            tracing::warn!(
-                variable = name,
-                error = "value is not valid unicode",
-                "could not read a limit override; using the default"
-            );
-            return None;
-        }
-    };
-    match raw.parse::<T>() {
-        Ok(value) => Some(value),
-        Err(error) => {
-            tracing::warn!(
-                variable = name,
-                error = %error,
-                "limit override is not a valid value and was ignored; the default applies",
-            );
-            None
-        }
-    }
-}
-
 impl Default for ResourceLimits {
     fn default() -> Self {
-        super::profile::limits_for_profile(super::profile::AuditProfile::Adaptive)
+        super::profile::limits_for_profile(super::profile::AuditProfile::Adaptive).unwrap_or_else(
+            |error| {
+                tracing::error!(%error, "default limits cannot be sized from host memory; using the lean profile (production startup rejects this)");
+                super::profile::lean_limits()
+            },
+        )
     }
 }
 

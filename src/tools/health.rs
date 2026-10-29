@@ -32,8 +32,9 @@
 //!    watcher. Instrumentation; nothing here drives `phase` or `remedy`.
 //!
 //! `phase` and `remedy` summarize the first two groups.
-//! `detail.system_memory` is host state, reported because it sizes the
-//! adaptive import budget, `detail.mechanic_cache` the registered-mechanic
+//! `detail.system_memory` is host state as detected (null, with
+//! `detail.system_memory_error`, when detection failed), reported because it
+//! sizes the adaptive import budget, `detail.mechanic_cache` the registered-mechanic
 //! scan cache, and `detail.result_store` the paged-result store.
 
 use crate::store;
@@ -139,9 +140,13 @@ pub struct HealthDetail {
     /// Server process counters since start.
     #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub server: ServerCounters,
-    /// Host physical and available memory.
-    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
-    pub system_memory: crate::model::SystemMemoryInfo,
+    /// Host physical and available memory as detected; null when detection
+    /// failed (`system_memory_error` says why), in which case the limits come
+    /// from an explicitly chosen profile, not from the host.
+    #[schemars(with = "Option<serde_json::Map<String, serde_json::Value>>")]
+    pub system_memory: Option<crate::model::SystemMemoryInfo>,
+    /// Why host memory could not be detected; null when it was.
+    pub system_memory_error: Option<String>,
     /// Mechanic scan cache counters.
     #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub mechanic_cache: MechanicCacheState,
@@ -447,22 +452,29 @@ pub fn health(
         Some(p) => compute_project_state(p, manager)?,
         None => compute_global_only_state(manager),
     };
-    let detail = verbose.then(|| HealthDetail {
-        watcher: fields.watcher.as_ref().map(|watcher| WatcherDetail {
-            pending_dirty: watcher.pending_dirty,
-            pending_deleted: watcher.pending_deleted,
-            sequence: watcher.sequence,
-            last_verified_sequence: watcher.last_verified_sequence,
-        }),
-        database: fields.database.as_ref().map(|database| DatabaseDetail {
-            parser_pack_version: database.parser_pack_version.clone(),
-            skipped_file_count: database.skipped_file_count,
-        }),
-        database_read_failed: fields.database_read_failed,
-        server: server_counters(manager),
-        system_memory: crate::model::detect_system_memory(),
-        mechanic_cache: MechanicCacheState::snapshot(manager),
-        result_store: super::health_result_store::snapshot(manager),
+    let detail = verbose.then(|| {
+        let (system_memory, system_memory_error) = match crate::model::detect_system_memory() {
+            Ok(info) => (Some(info), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
+        HealthDetail {
+            watcher: fields.watcher.as_ref().map(|watcher| WatcherDetail {
+                pending_dirty: watcher.pending_dirty,
+                pending_deleted: watcher.pending_deleted,
+                sequence: watcher.sequence,
+                last_verified_sequence: watcher.last_verified_sequence,
+            }),
+            database: fields.database.as_ref().map(|database| DatabaseDetail {
+                parser_pack_version: database.parser_pack_version.clone(),
+                skipped_file_count: database.skipped_file_count,
+            }),
+            database_read_failed: fields.database_read_failed,
+            server: server_counters(manager),
+            system_memory,
+            system_memory_error,
+            mechanic_cache: MechanicCacheState::snapshot(manager),
+            result_store: super::health_result_store::snapshot(manager),
+        }
     });
 
     Ok(Json(HealthResponse {

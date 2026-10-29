@@ -216,7 +216,7 @@ pub fn mechanic(
         ErrorData::invalid_params("path is required when no cursor is given", None)
     })?;
     let root = super::project_root(path)?;
-    let limits = super::limits_for_root(&root);
+    let limits = super::limits_for_root(&root)?;
     let (id, source, first_count) = match request.action {
         MechanicAction::List => return list::list(request, sink, manager).map(Json),
         MechanicAction::Add => {

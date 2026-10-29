@@ -13,6 +13,7 @@ use slugaudit_mcp_rust::cli::{self, Command};
 use slugaudit_mcp_rust::connect;
 use slugaudit_mcp_rust::install;
 use slugaudit_mcp_rust::menu;
+use slugaudit_mcp_rust::model::{EnvConfigError, init_process_limits};
 use slugaudit_mcp_rust::server::SlugAuditServer;
 use slugaudit_mcp_rust::update;
 use tracing_subscriber::EnvFilter;
@@ -40,7 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // reached no subscriber and was dropped. Serve mode keeps its subscriber
     // because the same initialization serves both paths; installing it twice
     // would panic, so this is the only call.
-    init_logging();
+    if let Err(error) = init_logging() {
+        cli::err(format_args!("Error: {error}\n"))?;
+        std::process::exit(1);
+    }
     // `std::process::exit` is deliberate here and confined to `main` (the
     // one place the denied `clippy::exit` lint permits it): the four
     // side-effecting CLI commands report `Error: {reason}` and exit 1.
@@ -54,6 +58,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         CommandOutcome::Propagated(error) if cli::is_broken_pipe(error.as_ref()) => return Ok(()),
         CommandOutcome::Propagated(error) => return Err(error),
+    }
+    // A set-but-invalid SLUGAUDIT_* variable, or an Adaptive profile on a host
+    // whose memory cannot be detected, stops the server here rather than
+    // running with limits the operator did not ask for.
+    if let Err(error) = init_process_limits() {
+        cli::err(format_args!("Error: {error}\n"))?;
+        std::process::exit(1);
     }
     SlugAuditServer::new()
         .serve(stdio())
@@ -118,36 +129,42 @@ struct LogSettings {
     rejected: Vec<String>,
 }
 
-/// The filter used when `RUST_LOG` is unset or rejected: dependencies are
+/// The filter used when `RUST_LOG` is unset: dependencies are
 /// capped at warn, this crate keeps its per-call info lines, and rmcp's
 /// `response error` warn (its `Debug` dump of an `ErrorData`) is capped at
 /// error because `server_runner::log_completion` already logs each tool
 /// failure once.
 const DEFAULT_LOG_FILTER: &str = "warn,slugaudit_mcp_rust=info,rmcp=error";
 
+/// What a valid `RUST_LOG` is, for the startup error.
+const RUST_LOG_EXPECTED: &str =
+    "tracing filter directives such as `info` or `slugaudit_mcp_rust=debug`";
+
 /// Resolves `RUST_LOG` and `SLUGAUDIT_LOG_FORMAT`. An unset variable takes its
-/// default silently; a set one that is invalid or not UTF-8 falls back to the
-/// default ([`DEFAULT_LOG_FILTER`], plain text) and is recorded in `rejected` rather than
-/// dropped, so the operator learns why the setting did not apply.
+/// default ([`DEFAULT_LOG_FILTER`], plain text) silently. A set `RUST_LOG`
+/// that is invalid or not UTF-8 is an error naming the variable (never its
+/// value, which the filter parser's message may quote), so the server does
+/// not run with a different filter than the operator asked for. A non-UTF-8
+/// `SLUGAUDIT_LOG_FORMAT` is recorded in `rejected` and logged once the
+/// subscriber is installed.
 fn log_settings(
     rust_log: Result<String, std::env::VarError>,
     format: Result<String, std::env::VarError>,
-) -> LogSettings {
+) -> Result<LogSettings, EnvConfigError> {
     let mut rejected = Vec::new();
     let filter = match rust_log {
-        Ok(directives) => EnvFilter::try_new(&directives).unwrap_or_else(|error| {
-            rejected.push(format!(
-                "RUST_LOG was rejected and the filter is `{DEFAULT_LOG_FILTER}`: {error}"
-            ));
-            EnvFilter::new(DEFAULT_LOG_FILTER)
-        }),
+        Ok(directives) => EnvFilter::try_new(&directives).map_err(|_| EnvConfigError::Invalid {
+            variable: "RUST_LOG".to_owned(),
+            expected: RUST_LOG_EXPECTED.to_owned(),
+        })?,
         Err(std::env::VarError::NotPresent) => EnvFilter::new(DEFAULT_LOG_FILTER),
-        // `VarError`'s Display quotes the raw environment value, so the
-        // rejection is reported as a static message; the value itself is
-        // never logged.
+        // `VarError`'s Display quotes the raw environment value, so only the
+        // variable name is reported.
         Err(std::env::VarError::NotUnicode(_)) => {
-            rejected.push("RUST_LOG is not valid Unicode; ignoring it".to_owned());
-            EnvFilter::new(DEFAULT_LOG_FILTER)
+            return Err(EnvConfigError::NotUnicode {
+                variable: "RUST_LOG".to_owned(),
+                expected: RUST_LOG_EXPECTED.to_owned(),
+            });
         }
     };
     let json = match format {
@@ -159,11 +176,11 @@ fn log_settings(
             false
         }
     };
-    LogSettings {
+    Ok(LogSettings {
         filter,
         json,
         rejected,
-    }
+    })
 }
 
 /// Installs the process-wide stderr tracing subscriber, before any command is
@@ -171,11 +188,15 @@ fn log_settings(
 /// only — stdout is the JSON-RPC transport. `SLUGAUDIT_LOG_FORMAT=json`
 /// switches the formatter to JSON; anything else stays the plain writer
 /// with ANSI off (stderr may be a captured file, not a terminal).
-fn init_logging() {
+///
+/// # Errors
+///
+/// Returns [`EnvConfigError`] for a set-but-invalid `RUST_LOG`.
+fn init_logging() -> Result<(), EnvConfigError> {
     let settings = log_settings(
         std::env::var("RUST_LOG"),
         std::env::var("SLUGAUDIT_LOG_FORMAT"),
-    );
+    )?;
     if settings.json {
         tracing_subscriber::fmt()
             .json()
@@ -192,6 +213,7 @@ fn init_logging() {
     for message in &settings.rejected {
         tracing::warn!("{message}");
     }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -533,8 +533,19 @@ fn health_with_verbose_adds_the_operator_detail_beside_the_default_fields() {
             "result_store",
             "server",
             "system_memory",
+            "system_memory_error",
             "watcher"
         ]
+    );
+    assert!(
+        detail["system_memory"]["total_bytes"]
+            .as_u64()
+            .is_some_and(|bytes| bytes > 0),
+        "detected memory is reported as detected: {detail}"
+    );
+    assert!(
+        detail["system_memory_error"].is_null(),
+        "no detection error when memory was detected: {detail}"
     );
     assert_eq!(
         keys(&detail["watcher"]),

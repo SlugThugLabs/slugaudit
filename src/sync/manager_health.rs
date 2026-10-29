@@ -4,7 +4,7 @@
 //! reconcile. It is a child of `manager`, so it can coordinate the manager's
 //! private counters and watcher state without exposing implementation fields.
 use super::super::manager_health_support::{
-    log_sync_failure, reconcile_events, revision_after_sync, sweep_error_to_sync,
+    limits_error, log_sync_failure, reconcile_events, revision_after_sync, sweep_error_to_sync,
 };
 use super::super::reconcile::ReconcileOptions;
 use super::{SourceSyncManager, SyncError};
@@ -164,7 +164,8 @@ impl SourceSyncManager {
         let options = ReconcileOptions::for_sync(
             root.as_path(),
             self.watch_manager.rules_for(root.as_path()),
-        );
+        )
+        .map_err(limits_error)?;
         // Walk exactly once: the report's `on_disk` serves the
         // event-driven reconcile below, and its candidates/deletions
         // are applied after it. A failed walk is as fatal as in the
@@ -275,7 +276,7 @@ impl SourceSyncManager {
         // event producer can't stall a tool call indefinitely. The
         // project's ignore rules make the incremental path index exactly
         // what a full publish would index.
-        let options = ReconcileOptions::for_sync(root, self.watch_manager.rules_for(root));
+        let options = ReconcileOptions::for_sync(root, self.watch_manager.rules_for(root))?;
         // Edge resolution must treat every path that exists as existing —
         // not just indexed rows. A file sampling skipped (oversize,
         // unreadable) has no `files` row, so resolving its importers

@@ -9,7 +9,7 @@
 //! already reported; a setting whose value changes is a new cause and warns
 //! again.
 
-use super::ResourceLimits;
+use super::{EnvConfigError, ResourceLimits};
 #[cfg(not(test))]
 use crate::util::lock_or_recover;
 use std::collections::BTreeSet;
@@ -64,6 +64,50 @@ pub(super) fn refuse_zero<T: Default + PartialEq>(setting: &'static str, value: 
         );
     }
     None
+}
+
+/// [`parse_override`] for a limit where zero is meaningless: a `0` is refused
+/// with a warning naming the variable (once per process), and the value
+/// already in place stays.
+pub(super) fn nonzero_override<T>(name: &'static str) -> Result<Option<T>, EnvConfigError>
+where
+    T: std::str::FromStr + Default + PartialEq,
+    T::Err: std::fmt::Display,
+{
+    Ok(parse_override::<T>(name)?
+        .and_then(|value| super::limit_overrides::refuse_zero(name, value)))
+}
+
+/// Parses one `SLUGAUDIT_<FIELD>` override.
+///
+/// An unset variable is not a failure: `Ok(None)`, the caller keeps the
+/// default ("only explicitly-set variables override"). A variable that IS
+/// set but cannot be read or parsed is operator intent that cannot be
+/// honored, so it is an error naming the variable and what is valid, never
+/// the value (`NotUnicode`'s Display prints the raw value, which may be
+/// sensitive).
+fn parse_override<T>(name: &str) -> Result<Option<T>, EnvConfigError>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let expected = || format!("a value of type {}", std::any::type_name::<T>());
+    let raw = match std::env::var(name) {
+        Ok(raw) => raw,
+        Err(std::env::VarError::NotPresent) => return Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(EnvConfigError::NotUnicode {
+                variable: name.to_owned(),
+                expected: expected(),
+            });
+        }
+    };
+    raw.parse::<T>()
+        .map(Some)
+        .map_err(|error| EnvConfigError::Invalid {
+            variable: name.to_owned(),
+            expected: format!("{} ({error})", expected()),
+        })
 }
 
 impl ResourceLimits {
