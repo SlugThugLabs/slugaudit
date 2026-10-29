@@ -5,7 +5,7 @@
 | R1 --help on every subcommand | landed | 188873b |
 | R2 project_control off | owner ruling: deletion intended. Count added in a214880, then REVERTED; `off` is back to pre-wave behavior (destructive_hint was already true) | a214880, revert 2d777f8 |
 | R3 backup on discard | HELD by owner (not implemented) | - |
-| R4 mountinfo unreadable | BLOCKED: statfs needs `unsafe` but `unsafe_code = "forbid"` (Cargo.toml:99, src/lib.rs:15, src/main.rs:9); awaiting owner ruling (lift forbid / rustix / stopgap) | - |
+| R4 mountinfo unreadable | landed via safe rustix::fs::fstatfs (rustix 1.1.4 already in tree, no libc, forbid(unsafe_code) kept). Generic FUSE (sshfs) no longer detected; 9P now refused; macOS f_fstypename path uncompiled | 6b25967 |
 | R5 real path + error in store/sweep WARNs | landed (other `redacted_path` sites, ~20, untouched by scope) | ce305dd |
 | R6 no WARN for non-JSON configs | landed | c32247f |
 | R7 menu re-prompt without banner | landed | 31d6030 |
@@ -30,3 +30,8 @@ Release smoke: `update|connect|serve --help` print usage, rc 0, HOME left empty;
 Left redacted: src/tools/paginate.rs:279 (stored result value, not a log); src/store/netfs.rs:246 (R4 rework); src/sync/recovery_log.rs:65 (root from untrusted DB column). redacted_path/redacted_log_id remain because of these.
 ## Gate on 653953b
 fmt, all check bins, check, clippy -D warnings rc=0; 1581 lib tests pass; coverage 92.71% (gate 83); perf PASS; cargo deny ok (0 warnings, no dependency added). Smoke: update --help prints usage rc 0; off tests pass. No-mountinfo smoke not run (R4 blocked).
+
+## Final closers
+recovery_log.rs:65 logs the real stored root (a2e4c3b); PLAN.md policy + R8 1.1.1 note (ec66e78). Remaining redacted: paginate.rs:279 only (redacted_path/redacted_log_id kept for it).
+## Final gate on ec66e78
+fmt, check bins, check, clippy -D warnings rc=0; 1574 lib tests pass; coverage 92.66% (gate 83); perf PASS; cargo deny ok, 0 warnings, single rustix. Smoke (release binary, `unshare -m` with tmpfs over /proc, SLUGAUDIT_PROFILE=lean): initialize, tools/list, project_control on (import 2 files), off (disabled, project.db removed) all succeed; update --help prints usage rc 0. Note: without SLUGAUDIT_PROFILE the server refuses to start with no /proc/meminfo (separate deliberate adaptive-profile guard).
