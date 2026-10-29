@@ -792,9 +792,9 @@ These are deliberate. Reversing one needs a new entry in
 - Findings are session-scoped and bound to a content hash.
 - stdio is the only transport; no network listener, health endpoint, or
   metrics endpoint.
-- The path-logging policy (2026-10-16): correlation logs carry
-  BLAKE3-derived path ids; raw paths are allowed only in one-shot diagnostics
-  beside the file being operated on.
+- The path-logging policy (2026-10-29): operator-facing diagnostics log real
+  paths (the local operator owns the machine). `redacted_path` is retired
+  except the flagged tool-result value in `src/tools/paginate.rs`.
 - `tree-sitter-language-pack` runtime grammar downloads are the accepted
   grammar-distribution path; the 2026-10-18 static bundle was reverted on
   2026-10-19.
@@ -862,3 +862,6 @@ historical evidence copies, not canonical docs, and are not read by the gate.
 - 5.1 `/sbin/mount` (netfs.rs, cfg(macos)): the 1.1.0 release ships Linux x86_64 only; the macOS mount code is never reached by the shipped binary. Fix with the statfs detection (needs a `libc` dependency) in the phase that ships macOS.
 - 5.2 Linux-x86_64-only self-update asset: `update` refusing a non-Linux host is correct, since there is no macOS/ARM asset to fetch; the only wart is the message. The asset name goes dynamic when those platforms ship.
 Recorded as a decision, not an oversight. Owner may overrule.
+
+## 1.1.1 follow-up: R8 pending-events path
+The R8 pending-events path could later stat only the changed paths instead of a full tree walk (`src/sync/manager_healthy.rs`, `full_sweep_gate.rs`).

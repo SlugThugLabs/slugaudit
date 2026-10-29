@@ -381,10 +381,8 @@ grep -F '"session_id":"<uuid>"' audit.jsonl \
 grep -F "session_id=<uuid>" audit.log | grep -F 'tool call completed'
 ```
 
-Redaction: a correlation log line carries a BLAKE3-derived path id
-(`util::redacted_path`), not a raw path. The exceptions are the database
-recovery, health database and filesystem watcher WARNs, which name the real database or
-watched path (`path=`) and the source error so an operator can act on them.
+Paths: operator-facing log lines name the real path (`path=`) and the source
+error so an operator can act on them; the local operator owns the machine.
 SQL text, finding titles and
 descriptions, indexed source content, and environment values never enter logs.
 A few one-shot diagnostics whose purpose is to name the file just operated on
