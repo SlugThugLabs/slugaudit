@@ -59,14 +59,14 @@ fuzz_target!(|data: &[u8]| {
 
     // A refusal is the expected outcome for most hostile inputs and is not
     // the target's subject; what a success must satisfy is the paging
-    // contract: `page.complete` is false exactly when `page.next_offset` is
+    // contract: `page.complete` is false exactly when `page.cursor` is
     // present. (No row or byte ceiling is asserted: the first row is always
     // kept, even over the byte budget.)
     if let Ok(Json(response)) = query(&request, &NoopProgressSink, &fixture.manager) {
         assert_eq!(
             !response.page.complete,
-            response.page.next_offset.is_some(),
-            "page.complete and page.next_offset disagree"
+            response.page.cursor.is_some(),
+            "page.complete and page.cursor disagree"
         );
     }
 });
