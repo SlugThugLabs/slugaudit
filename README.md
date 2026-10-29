@@ -10,6 +10,12 @@ SlugAudit is built for AI agents, not for humans. It is an index of a project's 
 parsed structure, symbols, imports, call sites, comments, and diagnostics — that an
 agent queries over MCP.
 
+An agent reaches for it mid-task — an audit, a debugging pass, any question it would
+otherwise answer by re-reading files — to spend its context budget on judgment rather
+than on reconstructing facts a query can return. What matters is the agent's call: it
+registers its own signals (see `mechanic`). The "Audit" in the name is the agent's
+task, not a verdict the tool renders.
+
 - **Evidence, not judgment.** SlugAudit performs no risk detection, assigns no
   severity, ranks nothing, and draws no conclusions. Every judgment — what is buggy,
   how severe, what to fix — belongs to the calling agent. Sorting out which facts
