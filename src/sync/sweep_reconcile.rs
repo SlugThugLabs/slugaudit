@@ -83,7 +83,7 @@ pub(super) fn walked_relative_path(
             // if it did, the entry is omitted and its stored row (if any)
             // would be classed deleted, so say so with the cause.
             tracing::warn!(
-                path_id = %redacted_path(absolute_path),
+                path = %absolute_path.display(),
                 error = %error,
                 "sweep walked a path outside the project root; it is left out of the comparison",
             );

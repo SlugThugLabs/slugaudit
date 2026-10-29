@@ -7,19 +7,23 @@ use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
 #[test]
-fn an_uninspectable_database_path_warning_redacts_the_path() {
+fn an_uninspectable_database_path_warning_names_the_path_and_the_os_error() {
     let path = Path::new("/tmp").join("a".repeat(300)).join("project.db");
     let (result, logs) = capture_warns(|| {
         tracing::warn!("lstat_control");
         reject_symlink(&path)
     });
     assert!(matches!(result, Err(StoreError::Inspect(_))) && logs.contains("lstat_control"));
-    assert!(logs.contains("path_id="), "{logs}");
-    assert!(!logs.contains(path.to_string_lossy().as_ref()), "{logs}");
+    let Err(StoreError::Inspect(source)) = &result else {
+        panic!("expected an inspect error, got {result:?}");
+    };
+    assert!(logs.contains(path.to_string_lossy().as_ref()), "{logs}");
+    assert!(logs.contains(&source.to_string()), "{logs}");
+    assert!(!logs.contains("path_id="), "{logs}");
 }
 
 #[test]
-fn a_canonicalize_fallback_warning_redacts_the_path() {
+fn a_canonicalize_fallback_warning_names_the_path_and_the_os_error() {
     let directory = tempfile::tempdir().expect("temp dir");
     let path = directory.path().join("missing-parent").join("project.db");
     let (result, logs) = capture_warns(|| {
@@ -28,8 +32,15 @@ fn a_canonicalize_fallback_warning_redacts_the_path() {
     });
     assert!(matches!(&result, Err(StoreError::Open(_))), "{result:?}");
     assert!(logs.contains("canonicalize_control"), "{logs}");
-    assert!(logs.contains("path_id="), "{logs}");
-    assert!(!logs.contains(path.to_string_lossy().as_ref()), "{logs}");
+    let os_error = directory
+        .path()
+        .join("missing-parent")
+        .canonicalize()
+        .expect_err("the parent does not exist")
+        .to_string();
+    assert!(logs.contains(path.to_string_lossy().as_ref()), "{logs}");
+    assert!(logs.contains(&os_error), "{logs}");
+    assert!(!logs.contains("path_id="), "{logs}");
 }
 
 #[cfg(unix)]

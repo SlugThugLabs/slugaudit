@@ -343,9 +343,9 @@ fn a_publish_whose_baseline_read_fails_is_the_database_variant() {
 
 /// A sampling skip's report reason is `SampleError::TooLarge`'s Display,
 /// which embeds the absolute path. The warn line must correlate the file
-/// through the redacted path id and the static reason kind only.
+/// through the real path and the static reason kind.
 #[test]
-fn a_sampling_skip_logs_the_redacted_path_not_the_absolute_skip_message() {
+fn a_sampling_skip_logs_the_real_path_and_the_static_reason_kind() {
     let project = tempfile::tempdir().expect("project dir");
     let huge = project.path().join("huge.rs");
     std::fs::write(&huge, vec![b'x'; 100_000]).expect("write oversized file");
@@ -369,12 +369,8 @@ fn a_sampling_skip_logs_the_redacted_path_not_the_absolute_skip_message() {
     result.expect("an oversized file is skipped, not fatal");
     let raw = huge.to_string_lossy();
     assert!(
-        !logs.contains(raw.as_ref()),
-        "the absolute path must not be logged: {logs}"
-    );
-    assert!(
-        logs.contains(&crate::util::redacted_path(&huge)),
-        "the redacted path id must identify the skipped file: {logs}"
+        logs.contains(raw.as_ref()),
+        "the real path must identify the skipped file: {logs}"
     );
     assert!(
         logs.contains("reason_kind=\"oversize\""),

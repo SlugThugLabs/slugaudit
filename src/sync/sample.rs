@@ -151,7 +151,7 @@ pub(super) fn skipped_record(
         ),
         Err(error) => {
             tracing::warn!(
-                path_id = %util::redacted_path(absolute_path),
+                path = %absolute_path.display(),
                 requested_reason = reason,
                 error = %error,
                 "stat failed for a skipped file; recording its size as unknown"

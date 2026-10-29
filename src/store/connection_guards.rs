@@ -43,8 +43,8 @@ pub(super) fn reject_symlink(path: &Path) -> Result<(), StoreError> {
         Err(error) => {
             tracing::warn!(
                 target: "slugaudit::store",
-                path_id = %crate::util::redacted_path(path),
-                error_kind = ?error.kind(),
+                path = %path.display(),
+                error = %error,
                 "could not inspect the database path; refusing to open"
             );
             return Err(StoreError::Inspect(error));
@@ -84,8 +84,8 @@ pub(super) fn resolve_parent_dir(path: &Path) -> std::path::PathBuf {
                 Err(error) => {
                     tracing::warn!(
                         target: "slugaudit::store",
-                        path_id = %crate::util::redacted_path(path),
-                        error_kind = ?error.kind(),
+                        path = %path.display(),
+                        error = %error,
                         "database parent directory could not be canonicalized; using the path as given"
                     );
                     path.to_path_buf()

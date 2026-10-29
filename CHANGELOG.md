@@ -11,6 +11,9 @@ The newest entry MUST match the version in `Cargo.toml`.
 
 ### Fixed
 
+- Store-open and sync-sweep WARN logs now name the real path and the full OS
+  error instead of a hashed path id and an error kind, so a failed open can be
+  diagnosed from the log alone.
 - `project_control` with `action: "off"` now reports `findings_discarded`, the
   number of findings in the project database it deleted (0 when there was none).
   If the count cannot be read, the call fails and the project stays enabled.

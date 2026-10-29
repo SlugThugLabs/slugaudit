@@ -264,7 +264,7 @@ fn walked_file(
         }
         Err(error) => {
             tracing::warn!(
-                path_id = %crate::util::redacted_path(absolute_path),
+                path = %absolute_path.display(),
                 error = %error,
                 "sweep could not stat a file it walked; its stored row is kept unverified",
             );
