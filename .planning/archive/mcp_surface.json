@@ -2232,6 +2232,15 @@
             "description": "True when `\"off\"` found a `config.json` and kept it.",
             "type": "boolean"
           },
+          "findings_discarded": {
+            "description": "Present only for `\"off\"`: the number of findings (any status) in the\nproject database at the moment it was deleted, counted under the\ndatabase lock. Zero when there was no database or it held none.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
           "import": {
             "description": "Present when action was `\"on\"` and an initial import ran.",
             "anyOf": [

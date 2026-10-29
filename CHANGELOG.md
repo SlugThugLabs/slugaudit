@@ -11,6 +11,9 @@ The newest entry MUST match the version in `Cargo.toml`.
 
 ### Fixed
 
+- `project_control` with `action: "off"` now reports `findings_discarded`, the
+  number of findings in the project database it deleted (0 when there was none).
+  If the count cannot be read, the call fails and the project stays enabled.
 - `--help`/`-h` anywhere in a subcommand's arguments now prints that
   subcommand's usage and exits 0 without running it. Previously `update --help`
   performed a binary update, `serve --help` started the server, and
