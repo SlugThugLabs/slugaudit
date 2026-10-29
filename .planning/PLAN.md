@@ -609,6 +609,7 @@ as mechanics it registers for the session or persists to the project config.
 - Instrumenting the founding metric (call chains per session) is not in the
   code; the server log already carries `session_id`/`call_id` per call, so a
   log-derived measure is possible without a code change. State: **not scheduled**.
+- Redacted project-database WARNs remain in `src/store/connection_guards.rs:46` (could not inspect the database path: `path_id` + `error_kind`, no source error) and :87 (database parent directory could not be canonicalized: `path_id` + `error_kind`); `src/store/connection_guard_tests.rs:10,22` pin the redaction. The neighbouring symlink and permission WARNs in the same file already log the raw path. Align them with the real-path policy (and log the source error) or document the exception. State: **not scheduled**.
 
 ## Phase 9 — Immutable paged results (the result store)
 
