@@ -8,6 +8,7 @@
 //! the closure `with_verified_read` already accepts rather than needing any
 //! new test-only hook.
 use super::*;
+use crate::error_codes::{self, ErrorCode};
 use crate::{parse, store, sync};
 use std::fs;
 use std::sync::mpsc;
@@ -138,4 +139,29 @@ fn a_read_in_progress_never_observes_a_concurrent_publishs_change() {
     })
     .expect("fresh read succeeds");
     assert_eq!(fresh_count, 2_i64);
+}
+
+/// `off` landing between the sync and the write must read as "project off",
+/// not as a transient internal error the caller is told to retry.
+#[test]
+fn an_off_between_the_sync_and_a_verified_write_reports_project_not_enabled() {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+    let synced = ensure_synced_no_progress(
+        &project.path().to_string_lossy(),
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .expect("initial sync");
+    let root = crate::project::ProjectRoot::resolve(project.path()).expect("resolve root");
+    crate::project::disable(&root).expect("off after the sync");
+
+    let error = with_verified_write(&synced, |_| Ok(())).expect_err("a write after off must fail");
+
+    assert_eq!(
+        error.message,
+        "SlugAudit is not enabled for this project or any parent directory"
+    );
+    assert_eq!(
+        error.data,
+        error_codes::payload(ErrorCode::ProjectNotEnabled)
+    );
 }

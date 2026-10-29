@@ -57,13 +57,14 @@ fn a_file_that_is_not_a_database_is_discarded() {
 }
 
 #[test]
-fn a_database_another_process_already_removed_reports_discarded() {
+fn a_database_another_process_already_removed_reports_gone() {
     let directory = tempfile::tempdir().expect("temp dir");
     let path = directory.path().join("project.db");
 
     let outcome = discard_if_still_unusable(&path).expect("discard");
 
-    assert_eq!(outcome, DiscardOutcome::Discarded);
+    assert_eq!(outcome, DiscardOutcome::Gone);
+    assert!(!path.exists());
 }
 
 #[test]

@@ -22,6 +22,10 @@ pub enum DiscardOutcome {
     /// The database is now empty or at the current schema version, so another
     /// process already repaired it; nothing was removed.
     AlreadyCurrent,
+    /// No database file exists at discard time: it was removed since the open
+    /// failed (for example by `project_control off`). Nothing was removed and
+    /// the caller must not rebuild.
+    Gone,
 }
 
 #[derive(Debug, Error)]
@@ -47,16 +51,25 @@ pub enum DiscardError {
 ///
 /// Returns [`DiscardError`] if the lock cannot be taken within the busy
 /// timeout, the version cannot be read for a non-corruption reason, or a file
-/// cannot be removed.
+/// cannot be removed. A file that does not exist is [`DiscardOutcome::Gone`],
+/// not an error.
 pub fn discard_if_still_unusable(path: &Path) -> Result<DiscardOutcome, DiscardError> {
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
     let mut connection = match Connection::open_with_flags(path, flags) {
         Ok(connection) => connection,
-        // The file is already gone: someone else discarded it.
         Err(error) if error.sqlite_error_code() == Some(rusqlite::ErrorCode::CannotOpen) => {
-            return remove(path);
+            // Already gone (someone else discarded it, or `off` removed it):
+            // report that instead of "discarding" nothing. Anything else that
+            // cannot be opened is still removed.
+            return match path.symlink_metadata() {
+                Ok(_) => remove(path),
+                Err(inspect) if inspect.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(DiscardOutcome::Gone)
+                }
+                Err(inspect) => Err(DiscardError::Remove(inspect)),
+            };
         }
         Err(error) => return Err(DiscardError::Lock(error)),
     };

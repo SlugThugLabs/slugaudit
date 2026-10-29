@@ -22,8 +22,15 @@ pub(crate) fn with_verified_write<T>(
     synced: &SyncedProject,
     f: impl FnOnce(&Transaction<'_>) -> Result<T, ErrorData>,
 ) -> Result<T, ErrorData> {
-    let mut connection = store::open_existing_read_write(&synced.database_path)
-        .map_err(|error| internal_error("opening the project database for write", error))?;
+    let mut connection =
+        store::open_existing_read_write(&synced.database_path).map_err(|error| match error {
+            // `off` removed the database after the sync: the project is off,
+            // not in a transient failure worth retrying.
+            store::StoreError::Missing => {
+                sync::map_activation_error(crate::project::ActivationError::NotActive)
+            }
+            error => internal_error("opening the project database for write", error),
+        })?;
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| internal_error("starting a write transaction", error))?;

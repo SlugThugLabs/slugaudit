@@ -695,7 +695,14 @@ any other file, and removes the directory only if empty, so `off` then `on`
 restores the persisted mechanics. The sync path opens an existing `project.db`
 and never creates it (`store::open_existing_read_write`): a call that passed the
 activation check just before `off` fails with `NotActive` rather than recreating
-the database. Only `on` and the corrupt-database rebuild create the file. `off`
+the database. Only `on` and the two rebuild paths (corrupt or outdated database,
+and stale metadata) create the file. A rebuild whose database file is already
+gone when it goes to discard it (`off` landed after the failed open or the
+metadata mismatch) fails with `NotActive` instead of rebuilding. One window
+remains open: if `off` lands after the rebuild's own discard and before
+`publish_from_scratch` creates the file, either rebuild path (stale-metadata or
+corrupt) may recreate `project.db` for a project that is now off. Closing it
+would need one lock held across discard and create, which is not done. `off`
 unlinks `config.lock` while another process may hold a `flock` on it; that
 process then locks an unlinked inode (a known, accepted window). The marker's purpose is **discoverability and scope** — "which
 project am I operating on?" — not authorization. The agent already has

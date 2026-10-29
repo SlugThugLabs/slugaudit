@@ -63,3 +63,82 @@ fn an_off_landing_after_the_activation_check_leaves_the_project_off() {
         "a later call does not rebuild it either"
     );
 }
+
+/// Arms `remove_database` for the window after `ensure_current` decided to
+/// discard the database and before it does, then asserts the call fails as not-enabled and
+/// that nothing recreated `project.db`.
+fn assert_off_before_discard_leaves_project_off(
+    project: &tempfile::TempDir,
+    manager: &SourceSyncManager,
+    remove_database: impl FnOnce() + Send + 'static,
+) {
+    let database = project.path().join(".planning/slugaudit/project.db");
+    // The discard window is keyed by the activation directory.
+    race_hook::set(database.parent().expect("activation dir"), remove_database);
+
+    let error = manager
+        .ensure_current(&project.path().to_string_lossy(), &NoopProgressSink)
+        .err()
+        .expect("a call that lost the race to off must fail");
+
+    assert_eq!(
+        error.message,
+        "SlugAudit is not enabled for this project or any parent directory"
+    );
+    assert_eq!(
+        error.data,
+        error_codes::payload(ErrorCode::ProjectNotEnabled)
+    );
+    assert!(
+        !database.exists(),
+        "the in-flight call must not rebuild project.db after off removed it"
+    );
+}
+
+#[test]
+fn an_off_landing_between_a_corrupt_open_and_its_discard_leaves_the_project_off() {
+    let manager = SourceSyncManager::new();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+    sync_project(&manager, &project);
+    let database = project.path().join(".planning/slugaudit/project.db");
+    std::fs::write(&database, vec![0x5a_u8; 4096]).expect("corrupt the database");
+
+    let doomed = database.clone();
+    assert_off_before_discard_leaves_project_off(&project, &SourceSyncManager::new(), move || {
+        // `off` cannot lock a file that is not a database, so the corrupt
+        // file is removed directly: the state `off` leaves behind.
+        for suffix in ["", "-wal", "-shm"] {
+            let mut name = doomed.as_os_str().to_os_string();
+            name.push(suffix);
+            match std::fs::remove_file(std::path::PathBuf::from(name)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("removing the corrupt database: {error}"),
+            }
+        }
+    });
+}
+
+#[test]
+fn an_off_landing_between_a_stale_root_check_and_its_discard_leaves_the_project_off() {
+    let manager = SourceSyncManager::new();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+    sync_project(&manager, &project);
+    let database = project.path().join(".planning/slugaudit/project.db");
+    let connection = rusqlite::Connection::open(&database).expect("open database");
+    connection
+        .execute(
+            "UPDATE project SET root_path = '/somewhere/else' WHERE id = 1",
+            [],
+        )
+        .expect("make the stored root stale");
+    drop(connection);
+
+    let hook_root = project.path().to_path_buf();
+    assert_off_before_discard_leaves_project_off(&project, &SourceSyncManager::new(), move || {
+        let root = crate::project::ProjectRoot::resolve(&hook_root).expect("resolve root");
+        crate::project::disable(&root).expect("off inside the discard window");
+    });
+}

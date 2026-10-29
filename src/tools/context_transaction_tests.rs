@@ -46,22 +46,16 @@ fn verified_read_fails_cleanly_when_the_database_is_missing() {
 }
 
 #[test]
-fn verified_write_fails_cleanly_when_the_database_is_missing() {
+fn verified_write_reports_project_not_enabled_when_the_database_is_missing() {
     let result = with_verified_write(&missing_handle(), |_tx| Ok(()));
-    let error =
-        result.expect_err("a write against a missing database must fail cleanly, not panic");
-    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert!(
-        error
-            .message
-            .starts_with("opening the project database for write:"),
-        "the error must name the failed write open, got: {}",
-        error.message
+    let error = result.expect_err("a write against a missing database must fail cleanly");
+    assert_eq!(
+        error.message,
+        "SlugAudit is not enabled for this project or any parent directory"
     );
-    assert!(
-        error.message.contains("retry the call"),
-        "the error must carry the retry hint, got: {}",
-        error.message
+    assert_eq!(
+        error.data,
+        crate::error_codes::payload(crate::error_codes::ErrorCode::ProjectNotEnabled)
     );
 }
 

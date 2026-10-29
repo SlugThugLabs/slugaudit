@@ -108,6 +108,9 @@ impl SourceSyncManager {
                         count_error: count_error.as_ref(),
                     },
                 );
+                // Test-only seam: `project_control off` removing the corrupt
+                // file between the failed open and the discard.
+                super::super::race_hook::fire(discard_hook_key(database_path));
                 // Re-checked under the database lock: a second session may
                 // have repaired the file since this open failed.
                 let outcome = store::discard_if_still_unusable(database_path).map_err(|err| {
@@ -116,6 +119,12 @@ impl SourceSyncManager {
                         None,
                     )
                 })?;
+                if outcome == store::DiscardOutcome::Gone {
+                    sink.emit(ProgressEvent::Completed {
+                        phase: "ensuring_current",
+                    });
+                    return Err(map_activation_error(project::ActivationError::NotActive));
+                }
                 if outcome == store::DiscardOutcome::AlreadyCurrent {
                     return store::open_existing_read_write(database_path)
                         .map(Ok)
@@ -199,6 +208,25 @@ impl SourceSyncManager {
                 ProjectMetaError::Other(_) => {}
             }
             drop(connection);
+            // Test-only seam: `off` removing the database between the
+            // metadata mismatch and the discard.
+            super::super::race_hook::fire(discard_hook_key(database_path));
+            // A database `off` already removed must stay removed.
+            match database_path.symlink_metadata() {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    sink.emit(ProgressEvent::Completed {
+                        phase: "ensuring_current",
+                    });
+                    return Err(map_activation_error(project::ActivationError::NotActive));
+                }
+                Err(error) => {
+                    return Err(ErrorData::internal_error(
+                        format!("inspecting the stale project database: {error}"),
+                        None,
+                    ));
+                }
+            }
             store::discard_corrupt_database(database_path).map_err(|discard| {
                 ErrorData::internal_error(
                     format!("discarding the stale project database: {discard}"),
@@ -335,4 +363,13 @@ pub(crate) fn map_process_limits_error(error: crate::model::EnvConfigError) -> E
         format!("the SLUGAUDIT_* environment is invalid: {error}; fix it and restart the server"),
         None,
     )
+}
+
+/// Race-hook key for the window between a failed open or metadata check and
+/// the discard that follows it: the activation directory, which exists until
+/// `off` and is distinct from the database-path key of the window before the
+/// open. A path that does not exist would log a canonicalization warning on
+/// every call, so the key must name something present.
+fn discard_hook_key(database_path: &Path) -> &Path {
+    database_path.parent().unwrap_or(database_path)
 }
