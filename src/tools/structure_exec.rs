@@ -1,30 +1,39 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=one query execution: the budgeted parse and the budgeted capture cursor share one deadline and one Run state
 //! Executing a compiled structure query: parsing each file, running the
 //! capture cursor under the match cap and the wall-clock budget, and mapping
-//! captured nodes back to source coordinates.
+//! captured nodes back to source coordinates. The parse runs under the same
+//! budget as the cursor, through tree-sitter's parse progress callback.
 
+use super::paginate::{Produced, RowSink};
 use super::query_exec::deadline_after;
-use super::structure::StructureMatch;
+use super::structure::StructureRequest;
+use super::structure::stored::{CutFacts, StoredMatch, StructureExtra};
 use super::structure_page::{
-    OutputMode, Paging, RunOutput, capture_at, capture_to_match, require_captures,
+    OutputMode, RunOutput, capture_at, completeness_of, extra_of, node_to_match, require_captures,
 };
+use super::structure_source::{WindowBounds, load_targets};
 use crate::model::{LineIndex, ResourceLimits};
+use crate::parse::budget::{Parsed, parse_within};
 use rmcp::ErrorData;
+use rusqlite::Transaction;
 use std::ops::ControlFlow;
 use std::time::Instant;
 use tree_sitter::{
     Parser, Query, QueryCursor, QueryCursorOptions, QueryCursorState, StreamingIterator, Tree,
 };
 
-/// Runs `query` over `files`, returning one page of matches. `truncated` is
-/// true only when a further match was actually seen past the page. A spent
-/// execution budget is an error, never a silently partial result.
+/// Runs `query` over `files`, streaming every match into `sink` in scan order.
+/// A spent execution budget is an error, never a silently partial result; the
+/// one early stop is a multi-file parse the budget cancelled, reported by
+/// `parse_timed_out_file`. Page cuts are applied later, when a stored page is
+/// read.
 pub(super) fn run_query(
     query: &Query,
     language: &tree_sitter::Language,
     files: &[(String, String)],
     limits: &ResourceLimits,
     mode: &OutputMode,
-    paging: &Paging,
+    sink: &mut RowSink<'_, '_>,
 ) -> Result<RunOutput, ErrorData> {
     require_captures(query)?;
     let mut parser = Parser::new();
@@ -34,17 +43,15 @@ pub(super) fn run_query(
     let mut run = Run {
         query,
         mode,
-        max_matches: limits.max_structure_matches,
+        sink,
         deadline: deadline_after(limits.max_structure_execution_time),
         timed_out: false,
         cursor: QueryCursor::new(),
-        matches: Vec::new(),
-        skip: paging.offset,
-        page_bytes: paging.page_bytes,
-        matches_bytes: 0,
+        files_scanned: 0,
         unparsed_files: Vec::new(),
+        parse_timed_out_file: None,
     };
-    let truncated = run.scan_files(&mut parser, files)?;
+    run.scan_files(&mut parser, files)?;
     if run.timed_out {
         return Err(ErrorData::invalid_params(
             "structure query exceeded its execution time budget",
@@ -52,61 +59,79 @@ pub(super) fn run_query(
         ));
     }
     Ok(RunOutput {
-        matches: run.matches,
-        truncated,
-        matches_bytes: run.matches_bytes,
+        files_scanned: run.files_scanned,
         unparsed_files: run.unparsed_files,
+        parse_timed_out_file: run.parse_timed_out_file,
     })
 }
 
 /// One query execution's budget and accumulated output.
-struct Run<'q> {
+struct Run<'q, 'w, 's> {
     query: &'q Query,
     mode: &'q OutputMode,
-    max_matches: usize,
+    sink: &'q mut RowSink<'w, 's>,
     /// `None` when the configured budget is too large to be an `Instant`:
     /// no wall-clock deadline (see [`deadline_after`]).
     deadline: Option<Instant>,
     timed_out: bool,
     cursor: QueryCursor,
-    matches: Vec<StructureMatch>,
-    skip: usize,
-    page_bytes: usize,
-    matches_bytes: usize,
+    /// Files finished before the scan stopped.
+    files_scanned: usize,
     unparsed_files: Vec<String>,
+    /// Multi-file: the file whose parse the deadline cancelled.
+    parse_timed_out_file: Option<String>,
 }
 
-impl Run<'_> {
-    /// Scans files in order until they run out, a further match is seen past
-    /// a full page, or the deadline passes. Returns whether such a further
-    /// match exists.
+impl Run<'_, '_, '_> {
+    /// Scans files in order until they run out or the deadline passes. A
+    /// parse the deadline cancels ends a multi-file scan with what earlier
+    /// files produced, flagged by `parse_timed_out_file`; for a single file
+    /// there is nothing to return, so it is the budget error.
     fn scan_files(
         &mut self,
         parser: &mut Parser,
         files: &[(String, String)],
-    ) -> Result<bool, ErrorData> {
+    ) -> Result<(), ErrorData> {
+        let deadline = self.deadline;
         for (file_path, content) in files {
             if self.out_of_budget() {
-                return Ok(true);
+                return Ok(());
             }
-            let Some(tree) = parser.parse(content, None) else {
-                if self.mode.single_file {
+            let spent = || deadline.is_some_and(|deadline| Instant::now() >= deadline);
+            let tree = match parse_within(parser, content, spent) {
+                Parsed::Tree(tree) => tree,
+                Parsed::Cancelled if self.mode.single_file => {
+                    self.timed_out = true;
+                    return Ok(());
+                }
+                Parsed::Cancelled => {
+                    tracing::warn!(
+                        file_id = %crate::util::redacted_path(std::path::Path::new(file_path)),
+                        content_bytes = content.len(),
+                        "structure: parse cancelled at the execution budget; returning the matches so far",
+                    );
+                    self.parse_timed_out_file = Some(file_path.clone());
+                    return Ok(());
+                }
+                Parsed::NoTree if self.mode.single_file => {
                     return Err(ErrorData::internal_error(
                         "parser returned no syntax tree",
                         None,
                     ));
                 }
-                self.unparsed_files.push(file_path.clone());
-                continue;
+                Parsed::NoTree => {
+                    self.unparsed_files.push(file_path.clone());
+                    self.files_scanned += 1;
+                    continue;
+                }
             };
-            if self.scan_tree(file_path, content, &tree)? {
-                return Ok(true);
-            }
+            self.scan_tree(file_path, content, &tree)?;
             if self.timed_out {
                 break;
             }
+            self.files_scanned += 1;
         }
-        Ok(false)
+        Ok(())
     }
 
     /// Whether another file may be scanned; records a passed deadline.
@@ -121,14 +146,8 @@ impl Run<'_> {
         false
     }
 
-    /// Skips `offset` captures, then collects until the match cap or the page
-    /// byte budget is full. Returns whether a capture was seen past the page.
-    fn scan_tree(
-        &mut self,
-        file_path: &str,
-        content: &str,
-        tree: &Tree,
-    ) -> Result<bool, ErrorData> {
+    /// Stores every capture of one file.
+    fn scan_tree(&mut self, file_path: &str, content: &str, tree: &Tree) -> Result<(), ErrorData> {
         let deadline = self.deadline;
         let mut timed_out = false;
         let mut check_deadline = |_state: &QueryCursorState| -> ControlFlow<()> {
@@ -149,36 +168,67 @@ impl Run<'_> {
         );
         // One index per file: columns are O(log lines), not line length.
         let lines = LineIndex::new(content);
-        let mut more_remain = false;
         while let Some((query_match, capture_index)) = captures.next() {
-            if self.skip > 0 {
-                self.skip -= 1;
-                continue;
-            }
-            if self.matches.len() >= self.max_matches {
-                more_remain = true;
-                break;
-            }
             let capture = capture_at(query_match, *capture_index)?;
-            let (found, found_bytes) = capture_to_match(
+            let found = node_to_match(
                 file_path,
+                capture.node,
                 content,
                 &lines,
-                capture,
                 capture_names.get(capture.index as usize).copied(),
                 self.mode.full_text,
-            )?;
-            if !self.matches.is_empty()
-                && self.matches_bytes.saturating_add(found_bytes) > self.page_bytes
-            {
-                more_remain = true;
-                break;
-            }
-            self.matches_bytes = self.matches_bytes.saturating_add(found_bytes);
-            self.matches.push(found);
+            );
+            self.sink.push(&StoredMatch { found })?;
         }
         drop(captures);
         self.timed_out |= timed_out;
-        Ok(more_remain)
+        Ok(())
     }
+}
+
+/// Loads the target files, runs the query, and streams every match into the
+/// store, all inside the verified read transaction so the window and the
+/// scan describe one revision.
+pub(super) fn produce(
+    tx: &Transaction<'_>,
+    rows: &mut RowSink<'_, '_>,
+    request: &StructureRequest,
+    limits: &ResourceLimits,
+    window_bytes: usize,
+    cut: CutFacts,
+) -> Result<Produced<StructureExtra>, ErrorData> {
+    let bounds = WindowBounds {
+        window_bytes,
+        max_parse_bytes: limits.max_parse_bytes,
+    };
+    let (target_language, window) = load_targets(tx, request, bounds)?;
+    let (ts_language, compiled_query) = compile_query(&target_language, &request.query)?;
+    let single_file = request.file.is_some();
+    let mode = OutputMode {
+        full_text: request.full_text.unwrap_or(single_file),
+        single_file,
+    };
+    let run = run_query(
+        &compiled_query,
+        &ts_language,
+        &window.files,
+        limits,
+        &mode,
+        rows,
+    )?;
+    let completeness = completeness_of(&window, &run);
+    Ok(Produced {
+        completeness,
+        extra: extra_of(target_language, window, run, cut),
+    })
+}
+
+/// Compiles the requested grammar and query, mapping failures to contract
+/// errors.
+fn compile_query(language: &str, text: &str) -> Result<(tree_sitter::Language, Query), ErrorData> {
+    let ts_language = tree_sitter_language_pack::get_language(language)
+        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+    let compiled_query = Query::new(&ts_language, text)
+        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+    Ok((ts_language, compiled_query))
 }

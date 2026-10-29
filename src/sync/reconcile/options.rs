@@ -24,17 +24,24 @@ pub(crate) struct ReconcileOptions {
 impl ReconcileOptions {
     /// Options for a production sync pass: the standard resource budget
     /// and deadline, plus the project's current ignore rules.
-    pub(crate) fn for_sync(root: &Path, rules: Option<Arc<IgnoreRules>>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Fails when the project's `config.json` is present but unreadable or
+    /// malformed, rather than syncing under limits the file did not say.
+    pub(crate) fn for_sync(
+        root: &Path,
+        rules: Option<Arc<IgnoreRules>>,
+    ) -> Result<Self, super::ReconcileError> {
         // Full publishes apply the project config before sampling. Reconcile
         // must derive its limits the same way or an edit can be accepted or
         // skipped solely according to which freshness path happened to run.
-        let limits =
-            crate::project::ProjectConfig::load_or_default(root).apply_to_limits(*process_limits());
+        let limits = crate::project::ProjectConfig::limits_for(root, *process_limits())?;
         let deadline = Deadline::after(limits.max_sync_wall_clock);
-        Self {
+        Ok(Self {
             limits,
             deadline,
             rules,
-        }
+        })
     }
 }

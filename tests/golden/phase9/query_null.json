@@ -1,0 +1,29 @@
+{
+  "case": "query_null",
+  "request": {
+    "page_bytes": null,
+    "sql": "SELECT NULL AS n, 1 AS one, 0.5 AS half"
+  },
+  "response": {
+    "clipped_cells": [],
+    "non_finite_cells": [],
+    "page": {
+      "bytes_used": 29,
+      "complete": true,
+      "limited_by": "none",
+      "next_offset": null,
+      "page_bytes": 65536,
+      "returned": 1,
+      "revision_id": "<REVISION_ID>",
+      "total": 1
+    },
+    "rows": [
+      {
+        "half": 0.5,
+        "n": null,
+        "one": 1
+      }
+    ],
+    "total_unavailable": null
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "case": "mechanic_list",
+  "request": "list",
+  "response": {
+    "action": "list",
+    "first_count": null,
+    "id": null,
+    "invalid": [],
+    "mechanics": [
+      {
+        "id": "println_calls",
+        "language": "rust",
+        "note": "println macro calls",
+        "query": "(macro_invocation macro: (identifier) @m (#eq? @m \"println\"))",
+        "source": "session"
+      },
+      {
+        "id": "unwrap_calls",
+        "language": null,
+        "note": null,
+        "query": null,
+        "source": "builtin"
+      },
+      {
+        "id": "expect_calls",
+        "language": null,
+        "note": null,
+        "query": null,
+        "source": "builtin"
+      },
+      {
+        "id": "panic_calls",
+        "language": null,
+        "note": null,
+        "query": null,
+        "source": "builtin"
+      },
+      {
+        "id": "todo_calls",
+        "language": null,
+        "note": null,
+        "query": null,
+        "source": "builtin"
+      },
+      {
+        "id": "assert_calls",
+        "language": null,
+        "note": null,
+        "query": null,
+        "source": "builtin"
+      },
+      {
+        "id": "diagnostics",
+        "language": null,
+        "note": null,
+        "query": null,
+        "source": "builtin"
+      },
+      {
+        "id": "comment_markers",
+        "language": null,
+        "note": null,
+        "query": null,
+        "source": "builtin"
+      },
+      {
+        "id": "credential_files",
+        "language": null,
+        "note": null,
+        "query": null,
+        "source": "builtin"
+      }
+    ],
+    "mechanics_invalid": 0,
+    "source": null
+  }
+}

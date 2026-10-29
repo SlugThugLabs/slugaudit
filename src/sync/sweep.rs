@@ -186,14 +186,20 @@ type StoredSignature = (Option<i64>, Option<i64>);
 /// `(mtime, byte_len)` per stored path — the two signals a stat can
 /// disprove without reading the file. A NULL `byte_len` (unknown size, a
 /// `stat_failed` skipped row) never equals a real size, so that path is
-/// always a candidate for re-examination.
+/// always a candidate for re-examination. A `LoadFailed` row (its grammar
+/// could not be fetched or loaded) reports a NULL size for the same reason
+/// while a retry is due (see `fetch_gate::load_failed_retry_due`): its
+/// content is unchanged, but the parse must be retried. During the fetch
+/// cool-down it is compared like any unchanged file.
 fn stored_signatures(
     connection: &Connection,
 ) -> Result<HashMap<String, StoredSignature>, rusqlite::Error> {
-    let mut statement =
-        connection.prepare("SELECT path, modified_unix_seconds, byte_len FROM files")?;
+    let mut statement = connection.prepare(
+        "SELECT path, modified_unix_seconds, \
+         CASE WHEN ?1 AND parser_availability = 'LoadFailed' THEN NULL ELSE byte_len END FROM files",
+    )?;
     let stored = statement
-        .query_map([], |row| {
+        .query_map([crate::parse::fetch_gate::load_failed_retry_due()], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 (row.get::<_, Option<i64>>(1)?, row.get::<_, Option<i64>>(2)?),

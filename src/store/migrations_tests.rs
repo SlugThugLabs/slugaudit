@@ -179,3 +179,69 @@ fn pragma_user_version_round_trips_via_optional() {
         .ok();
     assert_eq!(version, Some(CURRENT_SCHEMA_VERSION));
 }
+
+/// A WAL database file plus a second connection holding its write lock, so
+/// `ensure_current_schema` has to wait at its IMMEDIATE transaction.
+fn wal_database_with_writer(path: &std::path::Path) -> Connection {
+    let writer = Connection::open(path).expect("writer");
+    writer
+        .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))
+        .expect("wal");
+    writer
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("hold the write lock");
+    writer
+}
+
+#[test]
+fn schema_init_waits_for_a_concurrent_creator_and_keeps_its_schema() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("project.db");
+    let writer = wal_database_with_writer(&path);
+    let mut connection = Connection::open(&path).expect("second process");
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        writer
+            .execute_batch(SCHEMA_DDL)
+            .expect("first creator's schema");
+        writer
+            .pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)
+            .expect("first creator's version");
+        writer.execute_batch("COMMIT").expect("commit");
+    });
+
+    let result = ensure_current_schema(&mut connection);
+    releaser.join().expect("creator thread");
+
+    result.expect("second process accepts the first one's schema");
+}
+
+#[test]
+fn schema_init_does_not_overwrite_a_foreign_version_set_while_it_waited() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("project.db");
+    let writer = wal_database_with_writer(&path);
+    let mut connection = Connection::open(&path).expect("second process");
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        writer
+            .pragma_update(None, "user_version", 99)
+            .expect("foreign version");
+        writer.execute_batch("COMMIT").expect("commit");
+    });
+
+    let result = ensure_current_schema(&mut connection);
+    releaser.join().expect("creator thread");
+
+    assert!(
+        matches!(
+            result,
+            Err(MigrationError::UnsupportedVersion { found: 99, .. })
+        ),
+        "{result:?}"
+    );
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("version");
+    assert_eq!(version, 99);
+}

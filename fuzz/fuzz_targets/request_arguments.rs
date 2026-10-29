@@ -18,12 +18,12 @@
 //! repository's would be a false finding.
 //!
 //! What the repository does own on that path is the decode of
-//! `params.arguments` into the eight tool request types: the `serde`-derived
+//! `params.arguments` into the nine tool request types: the `serde`-derived
 //! `Deserialize` impls in `src/tools/*.rs`, with the contract they carry
 //! (`#[serde(default)]` on optional fields, `Option` fields that must tolerate
 //! absence, `rename_all = "snake_case"` sets, `ProjectControlAction`'s
-//! `"on"`/`"off"` renames, `usize` fields, and `LeadMode`'s closed variant
-//! set). rmcp's tool router calls exactly this decode, so a panic or a hang
+//! `"on"`/`"off"` renames, `usize` fields, and the closed variant sets of
+//! `LeadMode` and `MechanicAction`). rmcp's tool router calls exactly this decode, so a panic or a hang
 //! here is a panic or a hang in every tool call. That is the boundary fuzzed
 //! below.
 //!
@@ -36,13 +36,13 @@
 
 use libfuzzer_sys::fuzz_target;
 use slugaudit_mcp_rust::tools::{
-    FindingReadRequest, FindingRequest, HealthRequest, LeadsRequest, ProjectControlRequest,
-    QueryRequest, ReportRequest, StructureRequest,
+    FindingReadRequest, FindingRequest, HealthRequest, LeadsRequest, MechanicRequest,
+    ProjectControlRequest, QueryRequest, ReportRequest, StructureRequest,
 };
 
-/// The eight tool request types, i.e. the `arguments` object of every
+/// The nine tool request types, i.e. the `arguments` object of every
 /// `tools/call` the server accepts.
-const KINDS: usize = 8;
+const KINDS: usize = 9;
 
 /// `query`'s and `structure`'s instance limits are the only per-field bounds
 /// the decode itself does not apply, and neither is a decode concern: a
@@ -78,6 +78,7 @@ fn decode(kind: usize, body: &[u8]) {
         4 => decode_as!(FindingReadRequest),
         5 => decode_as!(ReportRequest),
         6 => decode_as!(HealthRequest),
+        7 => decode_as!(MechanicRequest),
         _ => decode_as!(ProjectControlRequest),
     }
 }

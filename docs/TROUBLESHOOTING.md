@@ -10,10 +10,13 @@ Start with the `health` tool. It is read-only, never triggers a sync, and
 answers even when every other call fails. Its arguments are:
 
 ```json
-{"path": "/absolute/path/inside/the/project"}
+{"path": "/absolute/path/inside/the/project", "verbose": true}
 ```
 
 Omit `path` for the watcher state of the project this server has registered.
+`verbose` (default `false`) adds the operator detail this runbook refers to
+under `detail`; without it the answer is only `phase`, `remedy`,
+`watcher.health` and `database.revision_id`/`file_count`.
 A path that is not an enabled project returns `phase: "disabled"` with a
 `remedy` instead of an error.
 
@@ -163,7 +166,7 @@ operator action:
   `database is corrupt or outdated; discarding and re-publishing from
   scratch` (the path is a redacted id) and rebuilds from source.
 - **Unsupported schema version** — a database whose `PRAGMA user_version` is
-  neither fresh (`0`) nor current (`CURRENT_SCHEMA_VERSION`, currently `8`) is
+  neither fresh (`0`) nor current (`CURRENT_SCHEMA_VERSION`, currently `11`) is
   treated as corruption and discarded. There is no migration path; the schema
   is discard-and-rebuild. The 7 → 8 bump added the derived
   `unrepresentable_paths` table, so an existing version-7 database rebuilds
@@ -211,8 +214,8 @@ so `added + modified + unchanged` is the discovered file set; `modified` and
 revision. `skipped` is a **count** of discovered files with no stored content
 (oversize, unreadable, or a non-UTF-8 path), not a list; a non-zero value means
 the import is incomplete, and `report.completeness` carries the per-reason
-breakdown. Pass `revision_id` back as `expected_revision` when resuming a paged
-read.
+breakdown. A paged read is continued with the `cursor` from `page.cursor`, not with
+the revision (see *Paged results and the result store*).
 
 ### Open-time refusals
 
@@ -233,9 +236,11 @@ than as a lock-permission error.
 
 ## Health phases
 
-`health` returns `phase`, `remedy`, and three groups (`watcher`, `database`,
-`server`). Each group is present or `null` as a unit; absence is never a
-placeholder inside a group.
+`health` returns `phase`, `remedy`, and two groups (`watcher` with its
+`health`, `database` with `revision_id` and `file_count`); `verbose: true`
+adds `detail` with the rest of both groups, `database_read_failed`, the
+`server` counters, `system_memory`, `mechanic_cache` and `result_store`. Each group is present
+or `null` as a unit; absence is never a placeholder inside a group.
 
 | Phase | Meaning | What to do |
 |---|---|---|
@@ -246,8 +251,21 @@ placeholder inside a group.
 | `unavailable` | The watcher could not be initialized. Every call full-publishes. | Check platform support and filesystem; the stat sweep still serves reads. |
 | `no_active_project` | No path was supplied and this server has no registered project, or a supplied path has no watcher and no published revision. | Call `project_control {"action":"on", …}` or pass the project path. |
 | `indexed_unwatched` | The project has a published revision, but this server has no registered watcher for it. Evidence is readable; no watcher health is implied. | Normal after a fresh server start; the next state-bearing call registers a watcher. |
-| `unknown` | Either no `path` was supplied and the watcher is `Healthy` or `Partial` with no unreconciled events (there is no project root in this answer, so no revision can be checked), or a supplied project's database exists but could not be read (`database_read_failed` is true) while the watcher is `Healthy`, `Partial`, or not registered. Neither case claims the first sync failed. | Supply `path` for a pathless answer. For an unreadable database, see *An unreadable database* below. |
+| `unknown` | Either no `path` was supplied and the watcher is `Healthy` or `Partial` with no unreconciled events (there is no project root in this answer, so no revision can be checked), or a supplied project's database exists but could not be read (`detail.database_read_failed` is true) while the watcher is `Healthy`, `Partial`, or not registered. Neither case claims the first sync failed. | Supply `path` for a pathless answer. For an unreadable database, see *An unreadable database* below. |
 | `disabled` | The supplied path has no `.planning/slugaudit/` marker. This is a state, not an error. | The same `remedy` as `project_not_enabled`: enable the project. |
+
+With `verbose: true` the answer adds `detail`, typed in the code
+(`src/tools/health.rs`) rather than in the tool's output schema:
+
+| `detail` field | Meaning |
+| :--- | :--- |
+| `watcher` | `pending_dirty`, `pending_deleted` (unreconciled paths), `sequence`, `last_verified_sequence`; `null` exactly when `watcher` is. |
+| `database` | `parser_pack_version`, `skipped_file_count` (rows discovered but never read); `null` exactly when `database` is. |
+| `database_read_failed` | The database exists but could not be read; see *An unreadable database*. |
+| `server` | `tool_call_count`, `tool_call_error_count`, `tool_call_total_ms`, `last_sync_unix_seconds`, `last_sync_duration_ms`, `consecutive_full_publishes`. |
+| `system_memory` | `total_bytes`, `available_bytes`: what sized the adaptive import budget. |
+| `mechanic_cache` | `entries`, `bytes`, `budget`, `evictions`, `skipped_too_large`, `hits`, `misses` of the registered-mechanic scan cache. |
+| `result_store` | The paged-result store (see *Paged results and the result store*); `null` until the first paged result is made in this process. `active`, `idle`, `delivered` (each `results` and `bytes`), `budget_bytes`, `admitted_bytes`, `reclaimed_delivered`, `reclaimed_idle`, `refused_full`, `refused_too_large`, `unknown_cursors`, `expired_cursors`, and `sweep` (`removed_files`, `live_owners_skipped`, `errors`, `first_error`). |
 
 `unknown` exists precisely so the answer never claims the first sync failed
 (that would be `importing`) or that a revision exists (that would be
@@ -257,7 +275,8 @@ passing a path if database state is wanted.
 ### An unreadable database
 
 When the project database exists but could not be inspected, opened, or
-queried, `health` returns `database: null` with `database_read_failed: true`.
+queried, `health` returns `database: null` with `detail.database_read_failed:
+true` (ask with `verbose: true`).
 The phase is `unknown` when the watcher is `Healthy`, `Partial`, or not
 registered; the watcher-only phases (`unavailable`, `restoring`) still
 describe the watcher and stay truthful. The failure may be permissions,
@@ -272,7 +291,7 @@ mismatch are discarded and rebuilt; see *Automatic recovery*). If the
 condition persists, check the *Open-time refusals* above and restore local,
 owner-only, non-symlinked storage.
 
-`server` counters are instrumentation and drive no phase: total tool calls,
+`detail.server` counters are instrumentation and drive no phase: total tool calls,
 errors, total milliseconds, last sync time/duration, and
 `consecutive_full_publishes`.
 
@@ -285,7 +304,7 @@ errors, total milliseconds, last sync time/duration, and
 | `NeedsVerification` / `Desynced` | Full publish, drain events that arrived during it, then `Healthy`/`Partial`. |
 | `Unavailable` | Full publish on every call. |
 
-`server.consecutive_full_publishes` counting 1+ across repeated calls means the
+`detail.server.consecutive_full_publishes` counting 1+ across repeated calls means the
 watcher is not being trusted. On Linux, inotify watch exhaustion
 (`fs.inotify.max_user_watches`) still makes `notify` fail if the kernel limit
 is below the number of scoped directories; the manager then marks the project
@@ -362,7 +381,7 @@ A failing tool call may carry `ErrorData.data` as
 | `sync_budget_exhausted` | `max_sync_wall_clock` was spent during discovery, hashing, parsing, or publishing. On a tree too big for the budget this is permanent. | Raise `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS` (seconds), or run `SLUGAUDIT_PROFILE=audit` (1200 s) instead of `lean` (120 s). Retrying unchanged fails identically. |
 | `project_not_enabled` | No ancestor of the path has a `.planning/slugaudit` activation marker. | Call `project_control` with `{"action":"on","path":"<project directory>"}`. |
 | `stale_revision` | The revision this call pinned is no longer current (another publish won the CAS race, or a sampled file changed before the write). | Retry the call; the sync in front of it re-reads the index and pins the new revision. |
-| `stale_revision` (resumed page) | A paged `leads`/`query` read resumed at an offset after the revision changed. | Restart the sweep from offset 0. The same offset can skip or repeat rows because row order moved. |
+| `unknown_cursor`, `result_expired`, `result_store_full`, `result_too_large`, `result_store_unavailable`, `paging_parameter_removed` | Paging. | See *Paged results and the result store*. |
 | `unknown_mechanic` | `leads` was asked for a mechanic id not in the catalogue. | Call `leads` with only `path` to list every valid id with its count, then retry with one of them. |
 | `sql_too_large` | SQL passed to `query` exceeded `max_query_sql_bytes`. | Shorten the SQL, or raise `SLUGAUDIT_MAX_QUERY_SQL_BYTES` (bytes). |
 | `file_not_indexed` | The named file has no indexed source content: never discovered, skipped as oversize/unreadable, or binary. | Check what is indexed with `SELECT path FROM files WHERE path LIKE …`. A skipped file has no content to read; `report.completeness` says why it was skipped. |
@@ -370,6 +389,60 @@ A failing tool call may carry `ErrorData.data` as
 `health` is the deliberate exception: a path that is not an enabled project
 answers `phase: "disabled"` plus the same `project_not_enabled` remedy rather
 than failing.
+
+## Paged results and the result store
+
+`leads`, `query`, `structure`, `finding_read` and `mechanic list` page through a
+**stored result**. The first call (no `cursor`) syncs, reads its rows out of one
+consistent snapshot and writes them to the result store; every page, including
+the first, is served from that copy. `page.cursor` names the next page; repeat
+the call with only that `cursor`. A continuation does not sync and does not
+check the revision, so it returns the rows, totals and `revision_id` of the
+first page however the files changed since. A call without `cursor` is a new
+request and describes the tree as it is now. `offset` and `expected_revision`
+no longer exist.
+
+**Location.** One SQLite file per result under
+`<project>/.planning/slugaudit/results/`, named `<session-uuid>-<result-uuid>.db`.
+Each file is unlinked as soon as it is created (the open handle keeps it
+alive), so a live result is not visible in a directory listing. The directory
+is inside the runtime directory that discovery, the watcher and reconcile
+already exclude, and it holds `<session-uuid>.lock`, an advisory lock that marks
+a live server.
+
+**Cleanup.** A result disappears when the server exits, when it is reclaimed
+to make room, or when the store is dropped by a project switch. At startup a
+sweep removes `results/*.db` files whose owner lock it can take (a crashed or
+killed server); files of a server that is still running are left alone. The
+outcome is `detail.result_store.sweep` in `health`; a sweep problem is logged
+and counted but does not disable paging. Cursors do not survive a server
+restart. Safe to delete by hand: any file in `results/` while no server runs
+for the project.
+
+**Retention.** Unfinished results served within `result_active_grace_secs`
+(default 900) are *active* and are never reclaimed. Older unfinished results
+are *idle*; fully read results are *delivered* and are kept for a final-page
+retry. When a new result does not fit `max_result_store_bytes` (4 times
+`max_query_response_bytes` unless set itself), delivered results are reclaimed
+oldest first, then idle ones. Reading a result renews it. Both limits can be
+set by environment variable (`SLUGAUDIT_MAX_RESULT_STORE_BYTES`,
+`SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS`) or in `config.json`
+(`max_result_store_bytes`, `result_active_grace_secs`); `0` is refused with a
+warning.
+
+**Platform policy.** The store needs an unlinked file to stay readable, which
+Linux and macOS provide. On any other target it fails closed at open with
+`result_store_unavailable`. Only the paged tools are affected; tools that do not
+page (`report`, `health`, `finding`, `project_control`) keep working.
+
+| Code | Cause | Remedy |
+|---|---|---|
+| `unknown_cursor` | The cursor is malformed, was issued by another tool, belongs to a server that has since restarted, or points past the end of its result. | Copy the cursor exactly as returned, or repeat the request without one; a cursor does not survive a server restart. |
+| `result_expired` | The cursor is valid but its result was reclaimed to make room. | Repeat the request without a cursor. |
+| `result_store_full` | The new result does not fit the budget and everything that could be reclaimed has been; the rest are active reads. | Finish or abandon open paged reads, or narrow the request (`LIMIT`, filters). |
+| `result_too_large` | The one result is larger than the whole store budget. | Narrow the request: add `LIMIT` or filters; the whole result must fit the store budget. |
+| `result_store_unavailable` | The store cannot be used: an unsupported platform, or the disk is full or unwritable, or the `results/` directory cannot be created or locked. | See this section; free disk space or fix the directory permissions. Other tools keep working. |
+| `paging_parameter_removed` | The request carried `offset` or `expected_revision`. | Pass the cursor from the previous page's `page.cursor`, or omit it for a new request. |
 
 ## Sync budget, profiles, and limits
 
@@ -386,7 +459,10 @@ selects a preset. The wall-clock budgets are:
 Every field has a `SLUGAUDIT_<FIELD>` override, for example
 `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS`, `SLUGAUDIT_MAX_FILE_BYTES`,
 `SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES`. The full list is the field documentation
-in `src/model/limits.rs`. Only explicitly set variables override a default;
+in `src/model/limits.rs`. The result store that backs paged results is bounded by
+`SLUGAUDIT_MAX_RESULT_STORE_BYTES` (4 x the profile's response ceiling by default: 1 GiB on
+`audit`, 128 MiB on `lean`) and protects an unfinished result for
+`SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS` (900) after its last page. Only explicitly set variables override a default;
 an unset or unparseable value leaves the default in place (a set-but-invalid
 override is reported in a warning).
 
@@ -415,8 +491,8 @@ iterations; exceeding that marks the watcher `Desynced` and returns
 | Symptom | Meaning and action |
 |---|---|
 | `sql_too_large` | The SQL exceeds `max_query_sql_bytes` (lean 50,000; audit/adaptive 200,000 by default). Shorten it or raise the override. |
-| `page` / `truncated` / `next_offset` | The response was cut at `max_query_response_bytes` (or the requested `page_bytes`, capped by it) on a row boundary. Continue with `next_offset`, or request a larger `page_bytes`. A single row larger than the page is returned whole. |
-| `stale_revision` on a resumed page | The index moved between pages. Restart from offset 0; do not reuse the offset. |
+| `page.complete` / `page.cursor` / `page.limited_by` | The response was cut at `max_query_response_bytes` (or the requested `page_bytes`, capped by it) on a row boundary; `page.complete` is false, `page.cursor` is set and `page.limited_by` names the cap. Continue by repeating the call with only that `cursor`, or request a larger `page_bytes`. A single row larger than the page is returned whole. |
+| `page.completeness` is `partial` | `structure` (or a custom mechanic scan) stopped early at `page.completeness.limited_by` (`scan_window` or `time_budget`). The stored result is complete as far as it goes; to look further make a new request with `start_after_file` set to `resume_after_file`. That request syncs. |
 | `unknown_mechanic` | `leads` only accepts ids from its catalogue. List them with a counts-only call. |
 | `file_not_indexed` | `structure` and `finding` need indexed source content. A skipped or binary file has none. |
 | Query wall-clock or VM-step failure | `query` enforces an SQLite VM-step budget and a wall-clock budget through the progress handler; `structure` enforces a wall-clock budget through Tree-sitter's progress callback. Raise the corresponding override only if the query is legitimately that large. |
@@ -461,8 +537,9 @@ least one discovered file, and the reasons are in the same block.
 
 ## MCP surface and snapshot
 
-The tool surface is the contract: eight tools (`report`, `leads`, `query`,
-`structure`, `finding`, `finding_read`, `project_control`, `health`), their
+The tool surface is the contract: nine tools (`report`, `leads`, `query`,
+`structure`, `finding`, `finding_read`, `project_control`, `health`,
+`mechanic`), their
 titles, descriptions, input and output schemas, annotations, and the
 pull-based resources under `slugaudit://`. `check_mcp_surface` derives the
 live `tools/list` + `resources/list` from the server and compares it with
@@ -483,8 +560,11 @@ surface; it is not a runtime file a client reads.
 
 ## Exit codes and error reporting
 
-- CLI commands exit `0` on success; a reported CLI failure prints
-  `Error: <reason>` to stderr and exits `1`.
+- Exit codes: `0` ok, `1` runtime failure, `2` usage error (unknown command or
+  flag, extra arguments). A reported failure prints `Error: <reason>` to stderr.
+- In serve mode, SIGTERM or SIGINT prints one line to stderr and exits `0`;
+  closing stdin before the client sends `initialize` also prints one line and
+  exits `0`.
 - CLI output is written fallibly. A **closed pipe** (`BrokenPipe`, for example
   `slugaudit menu | head -c 10`) exits `0` with no error log: the reader went
   away, not the command. Any other write failure (for example
@@ -492,7 +572,7 @@ surface; it is not a runtime file a client reads.
 - In serve mode there is no process-level error for a failed tool call: the
   call returns an MCP error response, and the process exits when the host
   closes stdin (end of the session).
-- Invalid arguments to a CLI command print the usage error and exit `1`;
+- Invalid arguments to a CLI command print the usage error and exit `2`;
   unknown tool/request shapes are contract errors (`invalid_params`), while
   operational failures are internal errors whose message says the failure is
   often transient.

@@ -1,0 +1,59 @@
+{
+  "case": "finding_read_list",
+  "request": {
+    "offset": 0
+  },
+  "response": {
+    "findings": [
+      {
+        "category": "test",
+        "description": "first finding description",
+        "detail_clipped": false,
+        "id": 1,
+        "line_end": 2,
+        "line_start": 1,
+        "path": "mod0.rs",
+        "severity": "low",
+        "source_hash": "1864a27e7c81e798ed19861f98191b80006fd4962b720e87823787dd29326b7f",
+        "status": "current",
+        "title": "first"
+      },
+      {
+        "category": "test",
+        "description": "second finding description",
+        "detail_clipped": false,
+        "id": 2,
+        "line_end": 2,
+        "line_start": 1,
+        "path": "mod1.rs",
+        "severity": "low",
+        "source_hash": "1864a27e7c81e798ed19861f98191b80006fd4962b720e87823787dd29326b7f",
+        "status": "current",
+        "title": "second"
+      },
+      {
+        "category": "test",
+        "description": "third finding description",
+        "detail_clipped": false,
+        "id": 3,
+        "line_end": 2,
+        "line_start": 1,
+        "path": "mod2.rs",
+        "severity": "low",
+        "source_hash": "1864a27e7c81e798ed19861f98191b80006fd4962b720e87823787dd29326b7f",
+        "status": "current",
+        "title": "third"
+      }
+    ],
+    "page": {
+      "bytes_used": 809,
+      "complete": true,
+      "limited_by": "none",
+      "next_offset": null,
+      "page_bytes": 65536,
+      "returned": 3,
+      "revision_id": "<REVISION_ID>",
+      "total": 3
+    }
+  }
+}

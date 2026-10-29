@@ -425,11 +425,12 @@ fn outdated_database_is_automatically_deleted_and_recreated() {
     let synced_after = sync_project(&manager, &project);
     assert!(!synced_after.revision_id.is_empty());
 
-    let version: i64 = with_verified_read(&synced_after, |tx| {
-        tx.query_row("PRAGMA user_version", [], |row| row.get(0))
-            .map_err(db_error)
-    })
-    .expect("read version");
+    // The read-only connection denies PRAGMA by design (A1), so read the
+    // version through a raw connection, the same way it was stamped above.
+    let version: i64 = rusqlite::Connection::open(&synced_after.database_path)
+        .expect("raw open")
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("read version");
     assert_eq!(
         version, CURRENT_SCHEMA_VERSION,
         "recreated database must be at current schema version"

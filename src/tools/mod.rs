@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=the tools module root: one declaration and re-export list for every tool plus the per-tool golden test modules
 //! Tool handlers orchestrate: they resolve the active project, ensure it's
 //! synced, and format a response. They own no parsing, SQL, or storage
 //! logic themselves — that lives in `sync`, `store`, and `evidence`.
@@ -12,14 +13,25 @@ pub(crate) mod context;
 mod finding;
 mod finding_insert;
 mod finding_read;
+mod finding_sessions;
 mod health;
 mod health_phase;
+mod health_result_store;
 mod leads;
 mod leads_compact;
+mod leads_covers;
+mod leads_custom;
 mod leads_mechanics;
 mod leads_page;
 mod leads_query;
+mod mechanic;
+mod mechanic_catalog;
+mod mechanic_register;
+mod mechanic_scan;
+mod mechanic_scan_cached;
+mod page;
 mod page_size;
+mod paginate;
 mod project_control;
 mod query;
 mod query_clip;
@@ -39,17 +51,56 @@ mod tool_counters;
 pub(crate) mod test_support;
 
 #[cfg(test)]
+#[path = "discard_surface_tests.rs"]
+mod discard_surface_tests;
+
+#[cfg(test)]
 #[path = "redaction_tests.rs"]
 mod redaction_tests;
 
-pub use context::ensure_synced;
+#[cfg(test)]
+mod golden_phase9_support;
+
+#[cfg(test)]
+#[path = "golden_phase9_leads_tests.rs"]
+mod golden_phase9_leads_tests;
+
+#[cfg(test)]
+#[path = "golden_phase9_mechanic_tests.rs"]
+mod golden_phase9_mechanic_tests;
+
+#[cfg(test)]
+#[path = "golden_phase9_query_tests.rs"]
+mod golden_phase9_query_tests;
+
+#[cfg(test)]
+#[path = "golden_phase9_structure_tests.rs"]
+mod golden_phase9_structure_tests;
+
+#[cfg(test)]
+#[path = "golden_phase9_finding_read_tests.rs"]
+mod golden_phase9_finding_read_tests;
+
+pub use context::{
+    PageContext, PageRequest, PageSpec, Produced, RowSink, Served, decode_rows, ensure_synced,
+    page_request, paginate,
+};
 pub use finding::{FindingRequest, FindingResponse, finding};
 pub use finding_read::{FindingReadEntry, FindingReadRequest, FindingReadResponse, finding_read};
+pub use finding_sessions::{
+    FindingSessionsAction, FindingSessionsRequest, FindingSessionsResponse, PriorSession,
+    finding_sessions,
+};
 pub use health::{HealthRequest, HealthResponse, health};
 pub use leads::{
     CompactLeadRow, FileCount, LeadMode, LeadRow, LeadRows, LeadsRequest, LeadsResponse,
-    MechanicCount, MechanicCoverage, PageLimit, leads,
+    MechanicCount, leads,
 };
+pub use mechanic::{
+    InvalidMechanic, MechanicAction, MechanicListing, MechanicRequest, MechanicResponse,
+    MechanicSource, mechanic,
+};
+pub use page::{Completeness, LegacyPaging, Page, PageLimit};
 pub use project_control::{
     GitignoreReport, GitignoreStatus, ImportReport, ProjectControlAction, ProjectControlRequest,
     ProjectControlResponse, project_control,
@@ -58,7 +109,7 @@ pub use query::{QueryRequest, QueryResponse, query};
 pub use query_clip::ClippedCell;
 pub use query_value::NonFiniteCell;
 pub use report::DependencyEdgeTotals;
-pub use report::{ReportRequest, ReportResponse, report};
+pub use report::{ReportMechanics, ReportRequest, ReportResponse, report};
 pub use report_completeness::{
     CompletenessCount, CompletenessEnvelope, FileClassCount, FileKindCount, SkipReasonCount,
 };
@@ -112,6 +163,17 @@ pub(crate) const CREDENTIAL_PATH_PREDICATE: &str = "lower(path) LIKE '%.env' \
         OR lower(path) LIKE '%id\\_ed25519%' ESCAPE '\\') \
         AND lower(path) NOT LIKE '%.pub')";
 
+/// The `files` predicate for a parser-failure row, shared by every `report`
+/// count and list so they cannot disagree: an indexed file whose parser was
+/// unavailable or whose parse failed. Prose (`language = 'prose'`, see
+/// `parse::PROSE_LANGUAGE`) is excluded: it is deliberately never
+/// parsed, so it is not a failure. A file with no detected language
+/// (`language IS NULL`) still counts. The literal is checked against the
+/// constant by a unit test.
+pub(crate) const PARSER_FAILURE_PREDICATE: &str = "file_kind = 'indexed' \
+    AND language IS NOT 'prose' \
+    AND (parser_availability != 'Available' OR parse_outcome = 'Failed')";
+
 /// The process and project resource limits for `path`, resolved before the
 /// index is touched. Shared by `query`, `leads` and `structure`.
 ///
@@ -121,16 +183,30 @@ pub(crate) const CREDENTIAL_PATH_PREDICATE: &str = "lower(path) LIKE '%.env' \
 /// so a fallback would only run request validation against limits the
 /// project does not use, and would drop the resolution error unlogged. The
 /// error is the same `invalid_params` (with `project_not_enabled` when the
-/// project was never enabled) that `ensure_synced` returns. A malformed
-/// project config is a documented, logged recovery inside
-/// `ProjectConfig::load_or_default`.
+/// project was never enabled) that `ensure_synced` returns. A present but
+/// unreadable or malformed project config fails the call with an
+/// `invalid_params` naming the file.
 pub(super) fn resolve_limits(path: &str) -> Result<ResourceLimits, ErrorData> {
-    let root = crate::project::find_project_root(std::path::Path::new(path))
-        .map_err(crate::sync::map_activation_error)?;
-    Ok(
-        crate::project::ProjectConfig::load_or_default(root.as_path())
-            .apply_to_limits(*process_limits()),
-    )
+    limits_for_root(&project_root(path)?)
+}
+
+/// The active project root `path` lies in, with the same error
+/// `ensure_synced` returns for a path outside every enabled project.
+pub(super) fn project_root(path: &str) -> Result<std::path::PathBuf, ErrorData> {
+    crate::project::find_project_root(std::path::Path::new(path))
+        .map(|root| root.as_path().to_path_buf())
+        .map_err(crate::sync::map_activation_error)
+}
+
+/// The process limits with `root`'s project config applied.
+pub(super) fn limits_for_root(root: &std::path::Path) -> Result<ResourceLimits, ErrorData> {
+    crate::project::ProjectConfig::limits_for(root, *process_limits()).map_err(|error| {
+        tracing::error!(%error, "project limits could not be derived");
+        ErrorData::invalid_params(
+            format!("project config is unusable: {error}; fix or remove the file and retry"),
+            None,
+        )
+    })
 }
 
 #[cfg(test)]
@@ -161,6 +237,24 @@ mod tests {
             .expect("an active project resolves");
 
         assert!(limits.max_file_bytes > 0);
+    }
+
+    #[test]
+    fn fail_closed_a_malformed_project_config_fails_the_call_naming_the_file() {
+        let project = test_support::activated_project("a.rs", b"fn a() {}");
+        let config = project.path().join(".planning/slugaudit/config.json");
+        std::fs::create_dir_all(config.parent().expect("config dir")).expect("create dir");
+        std::fs::write(&config, "{ not json").expect("write config");
+
+        let error = resolve_limits(project.path().to_str().expect("utf-8 path"))
+            .expect_err("a malformed config must fail the call, not fall back to defaults");
+
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            error.message.contains(config.to_str().expect("utf-8 path")),
+            "{}",
+            error.message
+        );
     }
 
     /// Runs the shared fragment — the literal SQL text, not a Rust copy of

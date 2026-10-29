@@ -1,18 +1,25 @@
--- Map all functions, methods, and calls handling authentication or tokens.
--- Arms the AI agent with the entire security surface in under 2ms.
-SELECT 
-    f.path,
-    e.start_line,
-    e.kind,
-    e.payload
-FROM evidence e
-JOIN files f ON e.file_id = f.id
-WHERE e.kind IN ('Symbol', 'Call')
-  AND (
-    LOWER(e.payload) LIKE '%auth%'
-    OR LOWER(e.payload) LIKE '%token%'
-    OR LOWER(e.payload) LIKE '%session%'
-    OR LOWER(e.payload) LIKE '%secret%'
-    OR LOWER(e.payload) LIKE '%password%'
-  )
-ORDER BY f.path, e.start_line;
+-- Functions, methods and calls whose name mentions authentication, tokens,
+-- sessions, secrets or passwords. Names only: the symbol's `name` and the
+-- call's `callee_text` are read with json_extract, never by LIKE over the
+-- whole payload text, which would also match docs, annotations and the
+-- caller's own name. A name match is a place to look, not a finding.
+SELECT path, start_line, kind, name
+FROM (
+    SELECT
+        f.path,
+        e.start_line,
+        e.kind,
+        COALESCE(
+            json_extract(e.payload, '$.name'),
+            json_extract(e.payload, '$.callee_text')
+        ) AS name
+    FROM evidence e
+    JOIN files f ON e.file_id = f.id
+    WHERE e.kind IN ('Symbol', 'Call')
+)
+WHERE lower(name) LIKE '%auth%'
+   OR lower(name) LIKE '%token%'
+   OR lower(name) LIKE '%session%'
+   OR lower(name) LIKE '%secret%'
+   OR lower(name) LIKE '%password%'
+ORDER BY path, start_line;

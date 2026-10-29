@@ -1,7 +1,10 @@
-//! The inputs and outputs of one structure run: how matches are rendered,
-//! which slice of the ordered match stream is returned, and what came back.
+//! The inputs and outputs of one structure run: how matches are rendered, the
+//! stored layout of a match, the page cut applied while a stored page is read,
+//! and the response assembled from a served page.
 
-use super::page_size::PageSize;
+use super::page::{Completeness, Page, PageLimit};
+use super::paginate::{Served, decode_rows};
+use super::structure::stored::{CutFacts, PageCut, StoredMatch, StructureExtra};
 use super::structure::{StructureMatch, StructureResponse};
 use super::structure_source::{MAX_SNIPPET_BYTES, SourceWindow, truncate_snippet, truncate_text};
 use crate::model::{LineIndex, saturating_u32};
@@ -17,24 +20,14 @@ pub(super) struct OutputMode {
     pub(super) single_file: bool,
 }
 
-/// Which slice of the ordered match stream one call returns.
-pub(super) struct Paging {
-    /// Matches to skip before the first returned one.
-    pub(super) offset: usize,
-    /// Serialized JSON bytes of `matches` at which the page is cut (the first
-    /// match is always kept so every page makes progress).
-    pub(super) page_bytes: usize,
-}
-
-/// What one run produced.
+/// What one run produced besides the stored matches.
 pub(super) struct RunOutput {
-    pub(super) matches: Vec<StructureMatch>,
-    /// More matches exist past this page (page bytes or match cap).
-    pub(super) truncated: bool,
-    /// Serialized JSON bytes of `matches`.
-    pub(super) matches_bytes: usize,
+    /// Files the scan finished (parsed or found unparseable) before it stopped.
+    pub(super) files_scanned: usize,
     /// Multi-file only: files the parser produced no tree for.
     pub(super) unparsed_files: Vec<String>,
+    /// Multi-file only: the file whose parse the deadline cancelled.
+    pub(super) parse_timed_out_file: Option<String>,
 }
 
 /// A bare pattern with no `@capture` can never return a node; reject it
@@ -91,14 +84,21 @@ pub(super) fn node_to_match(
         node_kind: node.kind().to_owned(),
         start_byte: node.start_byte() as u64,
         end_byte: node.end_byte() as u64,
-        start_line: saturating_u32(node.start_position().row),
+        start_line: one_based_row(node.start_position().row),
         start_column: lines.column(node.start_byte()),
-        end_line: saturating_u32(node.end_position().row),
+        end_line: one_based_row(node.end_position().row),
         end_column: lines.column(node.end_byte()),
         text,
         text_truncated,
         extraction_failed: text_extraction_failed || capture_name.is_none(),
     }
+}
+
+/// The single zero-based to one-based line conversion for structure matches
+/// (tree-sitter rows are zero-based; the response is one-based, inclusive).
+/// An overflowing row is clamped and logged by `saturating_u32`.
+fn one_based_row(zero_based: usize) -> u32 {
+    saturating_u32(zero_based.saturating_add(1))
 }
 
 /// The capture at `index`, or the internal error for an index the match does
@@ -118,64 +118,107 @@ pub(super) fn capture_at<'tree>(
     })
 }
 
-/// Maps one capture back to a match and measures its serialized size.
-pub(super) fn capture_to_match(
-    file_path: &str,
-    content: &str,
-    lines: &LineIndex<'_>,
-    capture: QueryCapture<'_>,
-    capture_name: Option<&str>,
-    full_text: bool,
-) -> Result<(StructureMatch, usize), ErrorData> {
-    let found = node_to_match(
-        file_path,
-        capture.node,
-        content,
-        lines,
-        capture_name,
-        full_text,
-    );
-    let found_bytes = serde_json::to_vec(&found)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
-        .len();
-    Ok((found, found_bytes))
+/// How far the scan got, as stored with the result: `Partial` when the
+/// execution budget cancelled a parse (resume after that file, which would
+/// only time out again) or the memory window ended before the matching files
+/// did (resume after the last file examined).
+pub(super) fn completeness_of(window: &SourceWindow, run: &RunOutput) -> Completeness {
+    let files_total = window
+        .files
+        .len()
+        .saturating_add(window.files_over_parse_limit)
+        .saturating_add(window.files_not_scanned) as u64;
+    let files_scanned = run.files_scanned as u64;
+    if let Some(file) = &run.parse_timed_out_file {
+        return Completeness::Partial {
+            limited_by: PageLimit::TimeBudget,
+            resume_after_file: Some(file.clone()),
+            files_scanned,
+            files_total,
+        };
+    }
+    if window.files_not_scanned > 0 {
+        return Completeness::Partial {
+            limited_by: PageLimit::ScanWindow,
+            resume_after_file: window.next_start_after_file.clone(),
+            files_scanned,
+            files_total,
+        };
+    }
+    Completeness::Complete
 }
 
-/// Logs the run's facts and assembles the response, including the paging
-/// continuation for a cut page.
-pub(super) fn structure_response(
-    revision_id: String,
+/// The extras of a finished scan.
+pub(super) fn extra_of(
     language: String,
     window: SourceWindow,
     run: RunOutput,
-    page: PageSize,
-    offset: usize,
-) -> Json<StructureResponse> {
-    let next_offset = run
-        .truncated
-        .then_some(offset.saturating_add(run.matches.len()));
-    tracing::info!(
-        match_count = run.matches.len(),
-        truncated = run.truncated,
-        files_not_scanned = window.files_not_scanned,
-        unparsed = run.unparsed_files.len(),
-        page_bytes = page.bytes,
-        clamped = page.clamped_from.is_some(),
-        "structure executed"
-    );
-
-    Json(StructureResponse {
-        revision_id,
+    cut: CutFacts,
+) -> StructureExtra {
+    StructureExtra {
+        cut,
         language,
-        matches: run.matches,
-        truncated: run.truncated,
-        next_offset,
-        page_bytes: page.bytes,
-        page_bytes_clamped_from: page.clamped_from,
-        matches_bytes: run.matches_bytes,
         files_not_scanned: window.files_not_scanned,
         bytes_not_scanned: window.bytes_not_scanned,
-        next_start_after_file: window.next_start_after_file,
+        next_start_after_file: run
+            .parse_timed_out_file
+            .clone()
+            .or(window.next_start_after_file),
         unparsed_files: run.unparsed_files,
-    })
+        files_over_parse_limit: window.files_over_parse_limit,
+        parse_timed_out_file: run.parse_timed_out_file,
+    }
+}
+
+/// Logs the call's facts and assembles the response from a served page.
+/// `complete` is false whenever the stored scan was partial, even on the last
+/// page, so a caller never reads a window-limited result as exhaustive.
+pub(super) fn structure_response(
+    served: Served<StructureExtra>,
+    cut: &PageCut,
+) -> Result<Json<StructureResponse>, ErrorData> {
+    let stored = decode_rows::<StoredMatch>(&served.rows)?;
+    let bytes_used = cut.bytes_used();
+    let matches: Vec<StructureMatch> = stored.into_iter().map(|row| row.found).collect();
+    let extra = served.meta;
+    let more_pages = served.page.cursor.is_some();
+    let partial_limit = match &served.page.completeness {
+        Some(Completeness::Partial { limited_by, .. }) => Some(*limited_by),
+        _ => None,
+    };
+    let limited_by = if more_pages {
+        cut.limit()
+    } else {
+        partial_limit.unwrap_or(PageLimit::None)
+    };
+    tracing::info!(
+        match_count = matches.len(),
+        limited_by = ?limited_by,
+        files_not_scanned = extra.files_not_scanned,
+        unparsed = extra.unparsed_files.len(),
+        over_parse_limit = extra.files_over_parse_limit,
+        parse_timed_out = extra.parse_timed_out_file.is_some(),
+        page_bytes = served.page.page_bytes,
+        "structure executed"
+    );
+    let page = Page {
+        // Counting the matches of a window-limited scan would be a lie about
+        // the project; the stored count stays internal.
+        total: None,
+        complete: !more_pages && partial_limit.is_none(),
+        bytes_used,
+        limited_by,
+        ..served.page
+    };
+    Ok(Json(StructureResponse {
+        page,
+        language: extra.language,
+        matches,
+        files_not_scanned: extra.files_not_scanned,
+        bytes_not_scanned: extra.bytes_not_scanned,
+        next_start_after_file: extra.next_start_after_file,
+        unparsed_files: extra.unparsed_files,
+        files_over_parse_limit: extra.files_over_parse_limit,
+        parse_timed_out_file: extra.parse_timed_out_file,
+    }))
 }

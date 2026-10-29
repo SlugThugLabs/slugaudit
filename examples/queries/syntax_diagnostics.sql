@@ -1,10 +1,11 @@
--- Find syntax errors and parser diagnostics across all indexed files.
--- Lets AI auditors spot broken syntax without compiling or running external linters.
-SELECT 
+-- Syntax errors and parser diagnostics across every parsed file, read from
+-- the Diagnostic payload's `severity` and `message` keys.
+SELECT
     f.path,
     f.language,
     e.start_line,
-    e.payload AS diagnostic_message
+    json_extract(e.payload, '$.severity') AS severity,
+    json_extract(e.payload, '$.message') AS message
 FROM evidence e
 JOIN files f ON e.file_id = f.id
 WHERE e.kind = 'Diagnostic'

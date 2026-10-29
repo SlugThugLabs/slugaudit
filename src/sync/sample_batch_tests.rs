@@ -97,9 +97,8 @@ fn a_channel_result_with_an_out_of_range_index_fails_the_run() {
 }
 
 #[test]
-fn a_later_distinct_sampling_error_is_logged_without_leaking_its_path() {
+fn honest_log_a_later_distinct_sampling_error_is_logged_with_its_path_and_cause() {
     const SUPERSEDED_PATH: &str = "superseded-second-error-probe.rs";
-    let expected_path_id = crate::util::redacted_log_id(SUPERSEDED_PATH);
 
     let (returned, logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("control-line-superseded-error-probe");
@@ -130,7 +129,7 @@ fn a_later_distinct_sampling_error_is_logged_without_leaking_its_path() {
     );
     let logged: Vec<&str> = logs
         .lines()
-        .filter(|line| line.contains(&expected_path_id))
+        .filter(|line| line.contains(SUPERSEDED_PATH))
         .collect();
     assert_eq!(
         logged.len(),
@@ -143,7 +142,13 @@ fn a_later_distinct_sampling_error_is_logged_without_leaking_its_path() {
         logged[0]
     );
     assert!(
-        !logs.contains(SUPERSEDED_PATH),
-        "the raw path must not be logged: {logs}"
+        logged[0].contains(&format!("path=Some(\"{SUPERSEDED_PATH}\")")),
+        "the real path must be logged: {}",
+        logged[0]
+    );
+    assert!(
+        logged[0].contains("error=") && logged[0].contains("changed on disk after being sampled"),
+        "the error Display must be logged: {}",
+        logged[0]
     );
 }

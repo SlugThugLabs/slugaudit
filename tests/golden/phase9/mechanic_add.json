@@ -1,0 +1,209 @@
+{
+  "case": "mechanic_add",
+  "request": "println_calls",
+  "response": {
+    "action": "add",
+    "first_count": {
+      "files_covered": 2,
+      "files_not_parsed": 0,
+      "files_total": 3,
+      "mechanic_counts": [
+        {
+          "count": 3,
+          "covers": [
+            "rust"
+          ],
+          "files": 3,
+          "mechanic": "println_calls",
+          "note": "println macro calls",
+          "source": "session"
+        },
+        {
+          "count": 12,
+          "covers": [
+            "rust"
+          ],
+          "files": 3,
+          "mechanic": "unwrap_calls",
+          "note": null,
+          "source": "builtin"
+        },
+        {
+          "count": 3,
+          "covers": [
+            "rust"
+          ],
+          "files": 3,
+          "mechanic": "expect_calls",
+          "note": null,
+          "source": "builtin"
+        },
+        {
+          "count": 0,
+          "covers": [
+            "rust"
+          ],
+          "files": 0,
+          "mechanic": "panic_calls",
+          "note": null,
+          "source": "builtin"
+        },
+        {
+          "count": 0,
+          "covers": [
+            "rust"
+          ],
+          "files": 0,
+          "mechanic": "todo_calls",
+          "note": null,
+          "source": "builtin"
+        },
+        {
+          "count": 0,
+          "covers": [
+            "rust"
+          ],
+          "files": 0,
+          "mechanic": "assert_calls",
+          "note": null,
+          "source": "builtin"
+        },
+        {
+          "count": 0,
+          "covers": [
+            "rust"
+          ],
+          "files": 0,
+          "mechanic": "diagnostics",
+          "note": null,
+          "source": "builtin"
+        },
+        {
+          "count": 3,
+          "covers": [
+            "rust"
+          ],
+          "files": 3,
+          "mechanic": "comment_markers",
+          "note": null,
+          "source": "builtin"
+        },
+        {
+          "count": 0,
+          "covers": [
+            "rust"
+          ],
+          "files": 0,
+          "mechanic": "credential_files",
+          "note": null,
+          "source": "builtin"
+        }
+      ],
+      "mechanics_invalid": 0,
+      "oversized_row": false,
+      "page": {
+        "bytes_used": 138,
+        "complete": false,
+        "limited_by": "limit",
+        "next_offset": 2,
+        "page_bytes": 65536,
+        "returned": 2,
+        "revision_id": "<REVISION_ID>",
+        "total": 3
+      },
+      "page_file_counts": [
+        {
+          "count": 1,
+          "file": "mod0.rs"
+        },
+        {
+          "count": 1,
+          "file": "mod1.rs"
+        }
+      ],
+      "rows": [
+        {
+          "detail": "println",
+          "detail_clipped": false,
+          "file": "mod0.rs",
+          "line": 6
+        },
+        {
+          "detail": "println",
+          "detail_clipped": false,
+          "file": "mod1.rs",
+          "line": 6
+        }
+      ]
+    },
+    "id": "println_calls",
+    "invalid": [],
+    "mechanics": [
+      {
+        "id": "println_calls",
+        "language": "rust",
+        "note": "println macro calls",
+        "query": "(macro_invocation macro: (identifier) @m (#eq? @m \"println\"))",
+        "source": "session"
+      },
+      {
+        "id": "unwrap_calls",
+        "language": null,
+        "note": null,
+        "query": null,
+        "source": "builtin"
+      },
+      {
+        "id": "expect_calls",
+        "language": null,
+        "note": null,
+        "query": null,
+        "source": "builtin"
+      },
+      {
+        "id": "panic_calls",
+        "language": null,
+        "note": null,
+        "query": null,
+        "source": "builtin"
+      },
+      {
+        "id": "todo_calls",
+        "language": null,
+        "note": null,
+        "query": null,
+        "source": "builtin"
+      },
+      {
+        "id": "assert_calls",
+        "language": null,
+        "note": null,
+        "query": null,
+        "source": "builtin"
+      },
+      {
+        "id": "diagnostics",
+        "language": null,
+        "note": null,
+        "query": null,
+        "source": "builtin"
+      },
+      {
+        "id": "comment_markers",
+        "language": null,
+        "note": null,
+        "query": null,
+        "source": "builtin"
+      },
+      {
+        "id": "credential_files",
+        "language": null,
+        "note": null,
+        "query": null,
+        "source": "builtin"
+      }
+    ],
+    "mechanics_invalid": 0,
+    "source": "session"
+  }
+}

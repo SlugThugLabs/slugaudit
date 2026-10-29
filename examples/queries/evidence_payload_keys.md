@@ -4,8 +4,11 @@
 (`src/model/evidence.rs::EvidenceKind`). This is the key/type reference for
 every kind, so the shape does not have to be rediscovered by trial.
 
-Two rules:
+Three rules:
 
+- **Line numbers are 1-based, inclusive.** `evidence.start_line` and
+  `evidence.end_line` match what `cat -n` shows; they are `NULL` when the
+  evidence has no span.
 - **Read keys with `json_extract`** (`json_extract(e.payload, '$.name')`),
   never with `LIKE` on the payload text.
 - **Every key listed for a kind is always present.** A value the extractor
@@ -74,17 +77,20 @@ Pack structural items (`src/evidence/normalize_builders.rs::flatten_structure`).
 
 ## Call
 
-Rust files only — `Call` evidence has exactly one producer, the Rust walker
-in `src/evidence/calls.rs`. On a project with no Rust files the `Call` count
-is zero because nothing was checked, not because nothing is there.
+Rust, Python, JavaScript, TypeScript, TSX, Go, Java and C files only — the
+Rust walker in `src/evidence/calls.rs` (origin `RustCallWalker`, macro
+arguments included) and one embedded call query per other language
+(`examples/calls/<language>.scm`, origin `RawTree`). In any other language
+the `Call` count is zero because nothing was checked, not because nothing is
+there; `leads` lists the languages each count read in `covers`.
 
 | Key | JSON type | Value |
 | :-- | :-- | :-- |
-| `language` | string | always `"rust"` in this revision |
+| `language` | string | the file's language: `rust`, `python`, `javascript`, `typescript`, `tsx`, `go`, `java`, or `c` |
 | `callee_text` | string | callee as written, e.g. `self.conn.query_row` |
 | `callee_name` | string | last simple name of the callee, e.g. `query_row` |
-| `caller` | string \| null | enclosing function/method name; `null` at file scope |
-| `resolution` | string | `macro`, `qualified-syntactic`, or `unresolved-syntactic` — a syntax classification, not a compiler-grade call graph |
+| `caller` | string \| null | enclosing function/method name; `null` at file scope or inside an anonymous function (closure, lambda, arrow function) |
+| `resolution` | string | `macro`, `qualified-syntactic` (a Rust `::` path), or `unresolved-syntactic` — a syntax classification, not a compiler-grade call graph; non-Rust calls are always `unresolved-syntactic` |
 | `confidence` | string | `high` for the first two, `medium` for `unresolved-syntactic` |
 
 ## Example

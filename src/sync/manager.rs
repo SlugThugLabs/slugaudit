@@ -12,6 +12,7 @@ mod health;
 #[path = "manager_orchestration.rs"]
 mod orchestration;
 
+use super::discard_notice::DatabaseDiscard;
 use super::reconcile;
 use crate::watch::{WatchManager, WatchState};
 pub(crate) use orchestration::map_activation_error;
@@ -31,6 +32,9 @@ pub struct SyncedProject {
     pub database_path: PathBuf,
     /// The revision the database is current at.
     pub revision_id: String,
+    /// Set only on the call that discarded and rebuilt the project database
+    /// (corruption, version bump, root mismatch); `None` on every other call.
+    pub discard: Option<DatabaseDiscard>,
 }
 
 /// Errors produced by incremental reconciliation.
@@ -97,15 +101,28 @@ pub struct SourceSyncManager {
     /// every tool call is paying a full-publish cost — see the
     /// full-publish runbook in `docs/TROUBLESHOOTING.md`.
     consecutive_full_publishes: std::sync::Arc<AtomicU64>,
-    /// Project databases whose prior-session findings purge has already
-    /// run in this process, mapped to the session UUID that ran it. This
-    /// is the "purge done" guard for the session-start transition: the
-    /// purge must not repeat on every tool call, or one live MCP session
-    /// would delete another live session's findings mid-session. Keyed by
+    /// Project databases whose prior-session findings have already been
+    /// marked stale in this process, mapped to the session UUID that did it.
+    /// This is the guard for the session-start transition: the marking must
+    /// not repeat on every tool call, or it would re-stale a live peer
+    /// session's findings as it writes them. Keyed by
     /// database path because one manager can serve several projects, and
     /// valued by session so a (test-only) session change re-arms it.
     /// Clones share the state.
-    session_findings_purged: Arc<Mutex<HashMap<PathBuf, Uuid>>>,
+    prior_sessions_staled: Arc<Mutex<HashMap<PathBuf, Uuid>>>,
+    /// The mechanics the auditor registered for this server's session (the
+    /// `mechanic` tool), and whether the one-time `report` mechanics note
+    /// was delivered. Held here because the manager is the per-server state
+    /// every tool already receives; clones share it, and it dies with the
+    /// process.
+    session_mechanics: crate::project::SessionMechanics,
+    /// Complete scan results of the registered mechanics, per revision; see
+    /// `project::MechanicScanCache`. Held beside the session mechanics for
+    /// the same reason: per-server state every tool already receives.
+    mechanic_scan_cache: crate::project::MechanicScanCache,
+    /// The lazily opened result store for paged results; see
+    /// `result_stores`. Per-server state like the fields above.
+    result_stores: super::result_stores::ResultStoreSlot,
 }
 
 impl SourceSyncManager {
@@ -125,7 +142,43 @@ impl SourceSyncManager {
             last_sync_unix_seconds: std::sync::Arc::new(AtomicI64::new(0)),
             last_sync_duration_ms: std::sync::Arc::new(AtomicU64::new(0)),
             consecutive_full_publishes: std::sync::Arc::new(AtomicU64::new(0)),
-            session_findings_purged: Arc::new(Mutex::new(HashMap::new())),
+            prior_sessions_staled: Arc::new(Mutex::new(HashMap::new())),
+            session_mechanics: crate::project::SessionMechanics::default(),
+            mechanic_scan_cache: crate::project::MechanicScanCache::default(),
+            result_stores: super::result_stores::ResultStoreSlot::default(),
+        }
+    }
+
+    /// The result store slot; see the field.
+    pub fn result_stores(&self) -> &super::result_stores::ResultStoreSlot {
+        &self.result_stores
+    }
+
+    /// A manager whose result store obeys `limits`.
+    #[cfg(test)]
+    pub(crate) fn with_result_store_limits(limits: crate::store::ResultStoreLimits) -> Self {
+        Self {
+            result_stores: super::result_stores::ResultStoreSlot::with_limits(limits),
+            ..Self::default()
+        }
+    }
+
+    /// The mechanics registered for this server's session; see the field.
+    pub(crate) fn session_mechanics(&self) -> &crate::project::SessionMechanics {
+        &self.session_mechanics
+    }
+
+    /// The registered mechanics' scan cache; see the field.
+    pub(crate) fn mechanic_scan_cache(&self) -> &crate::project::MechanicScanCache {
+        &self.mechanic_scan_cache
+    }
+
+    /// A manager whose mechanic scan cache holds at most `budget` bytes.
+    #[cfg(test)]
+    pub(crate) fn with_mechanic_cache_budget(budget: usize) -> Self {
+        Self {
+            mechanic_scan_cache: crate::project::MechanicScanCache::with_budget(budget),
+            ..Self::default()
         }
     }
 

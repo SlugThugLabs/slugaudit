@@ -1,3 +1,4 @@
+use super::rows::each_session_finding;
 use super::*;
 use crate::store;
 use crate::sync;
@@ -10,28 +11,37 @@ use rusqlite::Connection;
 /// Acquires the shared [`SESSION_TEST_LOCK`] and runs `f`. Every test
 /// here both writes findings (stamped with the process-global
 /// `session_id()`) and reads them back scoped by that same id; it also
-/// calls `finding_read`, whose `ensure_synced` runs the session-scoped
-/// purge (`DELETE FROM findings WHERE session_id != ?`). Without the
+/// calls `finding_read`, whose `ensure_synced` runs the session-start
+/// transition (marking other sessions' findings stale). Without the
 /// lock, a sibling session-flipping test (one calling
 /// `override_session_id_for_test`) could flip the global between this
-/// test's write and read — making the read come back empty — or
-/// trigger the purge against this test's rows. Holding the shared lock
-/// for the whole write→sync→read cycle keeps the session stable and
-/// keeps the purge from ever targeting these rows.
-fn with_stable_session<T>(f: impl FnOnce() -> T) -> T {
+/// test's write and read, making the read come back empty or marking
+/// this test's rows stale. Holding the shared lock for the whole
+/// write→sync→read cycle keeps the session stable.
+pub(super) fn with_stable_session<T>(f: impl FnOnce() -> T) -> T {
     let _guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     f()
 }
 
-fn request(path: &str, file: Option<&str>) -> FindingReadRequest {
+pub(super) fn request(path: &str, file: Option<&str>) -> FindingReadRequest {
     FindingReadRequest {
-        path: path.to_owned(),
+        path: Some(path.to_owned()),
         file: file.map(str::to_owned),
-        offset: 0,
+        cursor: None,
+        legacy_paging: LegacyPaging::default(),
     }
 }
 
-fn db_path(project: &tempfile::TempDir) -> std::path::PathBuf {
+pub(super) fn cursor_request(token: &str) -> FindingReadRequest {
+    FindingReadRequest {
+        path: None,
+        file: None,
+        cursor: Some(token.to_owned()),
+        legacy_paging: LegacyPaging::default(),
+    }
+}
+
+pub(super) fn db_path(project: &tempfile::TempDir) -> std::path::PathBuf {
     project
         .path()
         .join(".planning")
@@ -39,7 +49,7 @@ fn db_path(project: &tempfile::TempDir) -> std::path::PathBuf {
         .join("project.db")
 }
 
-fn write_finding(
+pub(super) fn write_finding(
     project: &tempfile::TempDir,
     file: &str,
     title: &str,
@@ -48,7 +58,7 @@ fn write_finding(
     write_finding_with_description(project, file, title, "d", manager)
 }
 
-fn write_finding_with_description(
+pub(super) fn write_finding_with_description(
     project: &tempfile::TempDir,
     file: &str,
     title: &str,
@@ -75,7 +85,7 @@ fn write_finding_with_description(
 
 /// Writes the project-config key `resolve_limits` reads, so a test can set
 /// a page budget without an env var (`process_limits` is a `OnceLock`).
-fn write_default_page_bytes(project: &tempfile::TempDir, page_bytes: usize) {
+pub(super) fn write_default_page_bytes(project: &tempfile::TempDir, page_bytes: usize) {
     let config = db_path(project)
         .parent()
         .expect("database has a parent")
@@ -110,7 +120,7 @@ fn finding_persists_and_is_readable() {
         assert!(finding.id > 0);
 
         // Open read-only to verify the row is in the DB before going
-        // through finding_read (which calls ensure_synced and purge).
+        // through finding_read (which calls ensure_synced and the session-start marking).
         let conn = store::open_read_only(&db_path(&project)).expect("open db");
         let count: i64 = conn
             .query_row("SELECT count(*) FROM findings", [], |r| r.get(0))
@@ -195,9 +205,8 @@ fn an_oversized_read_path_or_file_is_a_typed_error() {
     let base = directory.path().to_string_lossy().into_owned();
 
     let oversized_path = FindingReadRequest {
-        path: "x".repeat(MAX_PATH_BYTES + 1),
-        file: None,
-        offset: 0,
+        path: Some("x".repeat(MAX_PATH_BYTES + 1)),
+        ..request("", None)
     };
     let Err(path_error) = finding_read(
         &Parameters(oversized_path),
@@ -213,9 +222,8 @@ fn an_oversized_read_path_or_file_is_a_typed_error() {
     assert_eq!(path_error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
 
     let oversized_file = FindingReadRequest {
-        path: base,
         file: Some("x".repeat(MAX_FILE_BYTES + 1)),
-        offset: 0,
+        ..request(&base, None)
     };
     let Err(file_error) = finding_read(
         &Parameters(oversized_file),
@@ -232,55 +240,11 @@ fn an_oversized_read_path_or_file_is_a_typed_error() {
 }
 
 #[test]
-fn finding_read_refuses_an_offset_past_the_supported_maximum() {
-    // SQLite reads an integer literal too large for i64 as a REAL, which
-    // would page from an unpredictable position instead of failing — the
-    // current session's rows would come back wrong with no error.
-    with_stable_session(|| {
-        let project = activated_project("lib.rs", b"fn main() {}\n");
-        let manager = sync::SourceSyncManager::default();
-        write_finding(&project, "lib.rs", "paging guard", &manager);
-
-        let at = |offset: usize| {
-            finding_read(
-                &Parameters(FindingReadRequest {
-                    path: project.path().to_string_lossy().into_owned(),
-                    file: None,
-                    offset,
-                }),
-                &crate::progress::NoopProgressSink,
-                &manager,
-            )
-            .map(|Json(response)| response)
-        };
-
-        let error = at(i64::MAX as usize + 1).expect_err("an out-of-range offset is refused");
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-        assert_eq!(
-            error.message,
-            format!(
-                "offset {} exceeds the maximum supported page offset ({}); \
-                 page from the start or from a returned next_offset",
-                i64::MAX as usize + 1,
-                i64::MAX
-            ),
-            "the guard names the offending value and the bound",
-        );
-
-        // The bound itself is still usable and yields no rows at all, not
-        // rows from a floating-point position.
-        let page = at(i64::MAX as usize).expect("the maximum offset is accepted");
-        assert!(page.findings.is_empty(), "no finding lives at that offset");
-        assert!(page.next_offset.is_none());
-    });
-}
-
-#[test]
 fn a_missing_findings_table_is_an_internal_error() {
     let mut connection = Connection::open_in_memory().expect("in-memory database");
     let tx = connection.transaction().expect("transaction");
 
-    let error = read_session_findings(&tx, "session", None, 0, 1_000)
+    let error = each_session_finding(&tx, ("session", None), |_| Ok(()))
         .expect_err("the statement cannot prepare against a missing table");
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
@@ -305,7 +269,7 @@ fn an_undecodable_finding_row_is_an_internal_error() {
         .expect("create test schema");
     let tx = connection.transaction().expect("transaction");
 
-    let error = read_session_findings(&tx, "session", None, 0, 10_000)
+    let error = each_session_finding(&tx, ("session", None), |_| Ok(()))
         .expect_err("a TEXT column holding an integer cannot decode into a String");
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
@@ -314,75 +278,6 @@ fn an_undecodable_finding_row_is_an_internal_error() {
         "{}",
         error.message
     );
-}
-
-/// A page is cut by serialized bytes, resumed by `next_offset`, and the
-/// pages together are exactly the stored rows: no row is lost to the budget
-/// and none is returned twice.
-#[test]
-fn finding_read_pages_by_byte_budget_without_losing_or_duplicating_rows() {
-    with_stable_session(|| {
-        let project = activated_project("lib.rs", b"fn main() {}\n");
-        let manager = sync::SourceSyncManager::default();
-        let description = "d".repeat(10_000);
-        let mut written = Vec::new();
-        for index in 0..5 {
-            let finding = write_finding_with_description(
-                &project,
-                "lib.rs",
-                &format!("finding {index}"),
-                &description,
-                &manager,
-            );
-            written.push(finding.id);
-        }
-        write_default_page_bytes(&project, 15_000);
-
-        let mut offset = 0usize;
-        let mut seen = Vec::new();
-        let mut pages = 0usize;
-        loop {
-            let response = finding_read(
-                &Parameters(FindingReadRequest {
-                    path: project.path().to_string_lossy().into_owned(),
-                    file: None,
-                    offset,
-                }),
-                &crate::progress::NoopProgressSink,
-                &manager,
-            )
-            .expect("page")
-            .0;
-            assert_eq!(response.page_bytes, 15_000, "the configured page applies");
-            assert!(
-                response.findings_bytes <= response.page_bytes,
-                "page {} spent {} bytes of a {} budget",
-                pages,
-                response.findings_bytes,
-                response.page_bytes
-            );
-            assert_eq!(response.findings.len(), 1, "one 10 KB row per 15 KB page");
-            assert!(
-                !response.findings[0].detail_clipped,
-                "a row that fits must not be clipped"
-            );
-            seen.extend(response.findings.iter().map(|entry| entry.id));
-            pages += 1;
-            match response.next_offset {
-                Some(next) => {
-                    assert!(next > offset, "a page must always make progress");
-                    offset = next;
-                }
-                None => break,
-            }
-        }
-
-        assert_eq!(pages, 5, "every row needs its own page");
-        assert_eq!(
-            seen, written,
-            "the pages must be the stored rows in id order, exactly once each"
-        );
-    });
 }
 
 /// A description too large for the budget is clipped on a character
@@ -418,11 +313,11 @@ fn an_oversized_description_is_clipped_on_a_char_boundary_and_flagged() {
             "the returned text must be a character-boundary prefix"
         );
         assert!(
-            response.findings_bytes <= response.page_bytes,
+            response.page.bytes_used <= response.page.page_bytes,
             "a clipped page must fit its budget: {} of {}",
-            response.findings_bytes,
-            response.page_bytes
+            response.page.bytes_used,
+            response.page.page_bytes
         );
-        assert!(response.next_offset.is_none(), "the scope was exhausted");
+        assert!(response.page.complete, "the scope was exhausted");
     });
 }

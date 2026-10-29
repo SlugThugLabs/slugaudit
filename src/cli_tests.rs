@@ -362,3 +362,33 @@ fn a_rejected_add_with_output_keeps_the_pointer_to_it() {
         other => panic!("expected AddFailed, got {other:?}"),
     }
 }
+
+#[test]
+fn cli_exit_lowercase_v_parses_as_version() {
+    assert_eq!(
+        parse_args(vec!["-v".to_owned()].into_iter()).expect("valid arguments parse"),
+        Command::Version
+    );
+}
+
+#[test]
+fn cli_exit_connect_with_an_extra_argument_is_a_usage_error() {
+    let err = parse_args(vec!["connect".to_owned(), "a".to_owned(), "b".to_owned()].into_iter())
+        .unwrap_err();
+    assert_eq!(
+        err,
+        "`connect` takes at most one agent name; unexpected argument \"b\""
+    );
+}
+
+#[test]
+fn cli_exit_disconnect_and_remove_with_an_extra_argument_are_usage_errors() {
+    for word in ["disconnect", "remove"] {
+        let err = parse_args(vec![word.to_owned(), "a".to_owned(), "b".to_owned()].into_iter())
+            .unwrap_err();
+        assert!(
+            err.starts_with(&format!("`{word}` takes at most one agent name")),
+            "{err}"
+        );
+    }
+}

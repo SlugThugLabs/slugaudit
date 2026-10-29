@@ -80,12 +80,12 @@ fn an_unapplied_ignore_file_fails_the_sweep_instead_of_dropping_its_rules() {
 }
 
 /// The diagnostic for a directory walk error carries the static
-/// `ignore::Error` category and a redacted path id, never the raw
-/// `Display`, whose `WithPath` form starts with the absolute path. It is
+/// `ignore::Error` category, the real path and the error's `Display` as the
+/// cause. It is
 /// emitted at debug level; the failure contract's operation line is the
 /// single warn.
 #[test]
-fn a_walk_error_is_logged_with_its_static_kind_and_a_redacted_path() {
+fn honest_log_a_walk_error_is_logged_with_its_kind_real_path_and_cause() {
     let root = std::path::PathBuf::from("/home/private-client/checkout");
     let secret_dir = root.join("secret-dir");
     let error = ignore::Error::WithPath {
@@ -128,13 +128,14 @@ fn a_walk_error_is_logged_with_its_static_kind_and_a_redacted_path() {
         walk_lines[0]
     );
     assert!(
-        walk_lines[0].contains("path_id=Some("),
-        "the log must carry a redacted path id: {}",
+        walk_lines[0].contains("path=Some(\"/home/private-client/checkout/secret-dir\")"),
+        "the log must carry the real path: {}",
         walk_lines[0]
     );
     assert!(
-        !logs.contains("private-client") && !logs.contains("secret-dir"),
-        "the absolute path must never reach the log: {logs}"
+        walk_lines[0].contains("permission denied"),
+        "the log must carry the underlying cause: {}",
+        walk_lines[0]
     );
 }
 

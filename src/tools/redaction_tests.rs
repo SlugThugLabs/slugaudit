@@ -1,5 +1,7 @@
-//! C13 redaction contract: no tool-call logging path may emit SQL text,
-//! finding content, or source content into the logs.
+//! C13 redaction contract: no tool-call logging path may emit tool
+//! arguments, tool results, or file content (SQL text, finding content,
+//! indexed source) into the logs. Error messages are not covered: they are
+//! logged by design, once, by `server_runner::log_completion`.
 //!
 //! Every tool handler logs only structural metadata (revision id, counts,
 //! file paths, ids) and never the payloads an AI actually cares about —
@@ -49,10 +51,10 @@ fn query_logging_never_emits_sql_text() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let sql = format!("SELECT '{SQL_SENTINEL}' AS marker FROM files");
     let request = QueryRequest {
-        path: project.path().to_string_lossy().into_owned(),
+        path: Some(project.path().to_string_lossy().into_owned()),
         sql,
-        offset: 0,
-        expected_revision: None,
+        cursor: None,
+        legacy_paging: Default::default(),
         page_bytes: None,
     };
     let (result, logs) = capture_at_level(

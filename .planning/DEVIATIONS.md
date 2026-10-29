@@ -5,7 +5,7 @@ reversed. Standing instruction from the owner (2026-09-30): work autonomously th
 commit often, and write down every call that was mine to make — especially anything that changed
 the plan, because the point is that nothing is discovered later as a surprise.
 
-Newest first. Format: **what** / **why** / **where** / **reversible?**
+Oldest first: append each new entry at the end of the file. Format: **what** / **why** / **where** / **reversible?**
 
 ---
 
@@ -226,3 +226,680 @@ Newest first. Format: **what** / **why** / **where** / **reversible?**
 - **Why:** the owner's recurring pain, in his words: something is discussed and thought to be in the
   plan, then a crash happens, and the next agent "goes huh?".
 - **Reversible:** yes (it is prose, but it is the mechanism that keeps this file honest).
+
+## A1: the read-only authorizer allowlists seven schema-introspection pragmas
+
+- **What:** the plan says "deny `AuthAction::Pragma`". The read-only connection's authorizer
+  (`guard_read_only`) denies every PRAGMA except `table_info`, `table_xinfo`, `table_list`,
+  `index_list`, `index_info`, `index_xinfo` and `foreign_key_list`, matched by name,
+  case-insensitively, with any value. The read-write connection is unchanged (ATTACH/DETACH only).
+- **Why:** a blanket deny breaks `pragma_table_info('files')`: SQLite's pragma virtual table
+  prepares `PRAGMA table_info='files'` on the same connection and the authorizer sees it like
+  caller SQL (verified 2026-10-25). The value cannot be the rule: the authorizer receives the same
+  `(name, value)` for `PRAGMA table_info(files)`, `PRAGMA table_info = files` and
+  `pragma_table_info('files')`. For the seven names the value is only a table/index name to look
+  up, so none can write, change a limit or memory setting, or touch the filesystem. The denial
+  fires in `sqlite3Pragma` before any prepare-time side effect (a denied `hard_heap_limit=1`
+  leaves the limit at 0). Lost to agents: `pragma_user_version`, `pragma_journal_mode` and every
+  other `pragma_*` function, plus `optimize`, `integrity_check`, `database_list`.
+- **Where:** `src/store/connection_guards.rs` (`INTROSPECTION_PRAGMAS`, `authorize`),
+  `src/store/connection.rs`, `src/tools/query.rs` (`QueryRequest.sql` doc, refusal messages).
+- **Reversible:** yes; shrink or grow the list, or empty it for a blanket deny.
+
+## A1: SQLite LENGTH bound is three bytes per file byte, set on the `query` call only
+
+- **What:** `SQLITE_LIMIT_LENGTH` = max(`max_query_value_bytes`, 3 x `max_file_bytes`), clamped to
+  SQLite's 1,000,000,000; `SQLITE_LIMIT_SQL_LENGTH` = `max_query_sql_bytes` + 64 (wrapper
+  overhead). Both are set in `query_exec::run_query` before the caller's SQL is prepared, not in
+  `store::open_read_only`.
+- **Why:** SQLite checks LENGTH when it reads a stored column, so the bound must cover every stored
+  value. The brief's suggested max(value, file) does not: a text file with invalid UTF-8 is stored
+  lossy-decoded (`String::from_utf8_lossy`, 3 bytes of U+FFFD per invalid byte), so a file at
+  `max_file_bytes` can be stored at up to 3x that and would become unreadable even through
+  `substr` (verified with a test, `a_stored_value_of_exactly_the_length_bound_is_still_readable_with_substr`).
+  The cost: under the Audit profile the bound is 768 MiB. The deep-dive amplifier fails at
+  `zeroblob()` under Lean (96 MiB); under Audit `zeroblob(250000000)` and its 500 MB `hex()` fit,
+  and the `replace` fails only when its output passes 768 MiB, an estimated peak near 1.5 GB
+  (arithmetic from SQLite's allocation path, not measured, to spare the shared host) against the
+  2.1 GB the deep dive saw. Bounded, but not small. Lowering it needs indexing to cap stored
+  content at `max_file_bytes` (owner decision). Set per call because the limits are per project
+  (`resolve_limits`) and only `query` runs caller SQL; `structure`, `report`, `leads`, `finding`
+  and `health` read stored content with fixed SQL and keep SQLite's default.
+  The SQL overhead keeps the engine from refusing a statement the tool's own size check accepted.
+- **Where:** `src/tools/query_exec.rs` (`engine_limits`, `apply_engine_limits`); `Cargo.toml`
+  (rusqlite `limits` feature; `Cargo.lock` unchanged).
+- **Reversible:** yes.
+
+## A1: a statement that compiles alone but not as a subquery is refused as "not a SELECT"
+
+- **What:** when the bare statement prepares and the wrapper `SELECT * FROM (...)` then fails with
+  a syntax error, `query` now says `sql was refused: query accepts a single read-only SELECT/WITH
+  statement, and this is another kind of statement ... (SQLite: <error>)`. An authorizer denial
+  (PRAGMA, ATTACH, DETACH, or a denied `pragma_*` function) says the same opening sentence and
+  lists the allowed introspection functions. Both stay `invalid_params` with no code. The
+  comments-only message is kept for SQL that holds no statement.
+- **Why:** the brief asks for a refusal that says what `query` accepts. No SQL is lexed: the
+  classification uses only what SQLite reports (the bare statement compiled, so a syntax error can
+  come only from the wrapping). The pinned message in
+  `read_only_non_select_statements_are_refused_by_the_wrapper` was updated to the new text.
+- **Where:** `src/tools/query.rs` (`refuse_wrapped`, `describe_error`), `src/tools/query_exec.rs`.
+- **Reversible:** yes.
+
+## Evidence lines converted at the SQL write boundary, not in normalize.rs
+- **What:** The zero-based to one-based line conversion happens once in `evidence::sql::to_row` (`one_based_line`, checked add; overflow stores the span as unavailable) and once in `tools::structure_page` (`one_based_row`). `model::span` and `normalize.rs` stay zero-based.
+- **Why:** `to_row` is the single function that turns a span into the stored row, so every evidence kind is converted exactly once and no producer can bypass it.
+- **Where:** `src/evidence/sql.rs`, `src/tools/structure_page.rs`, `CURRENT_SCHEMA_VERSION` 8 to 9.
+- **Reversible:** Yes; revert the two helpers and the schema version.
+
+## Symlinked `.gitignore` and `config.json` are now refused, not followed
+
+- **What:** `ensure_gitignore` and the `project_control on` profile write refuse any symlink (even to an in-project regular file) and any non-regular file at `.gitignore` / `.planning/slugaudit/config.json`. `.gitignore` is no longer canonicalised; the atomic replace renames over the path itself. A refused `config.json` returns `invalid_params`; a refused `.gitignore` is reported as `NotWritten`. `O_NOFOLLOW` is not used because `libc` is not a direct dependency, so the check/write TOCTOU window remains.
+- **Why:** Phase 8 A3 (defect D3): writing through a link could overwrite or re-inode a file outside the project. This reverses the previously pinned behaviour of writing through an in-project `.gitignore` symlink.
+- **Where:** `src/project/gitignore.rs`, `src/project/config.rs` (`ProjectConfig::write_raw`), `src/tools/project_control.rs`.
+- **Reversible:** yes, but re-allowing links reopens the escape.
+
+## A6: extraction gate stays `has_language`; download retry seam is a test-only thread-local
+- **What:** The brief asked to use the pack's `has_parser` where "a parser can be supplied now" is meant. `language_available` keeps `has_language` (the pack knows the language) and its doc comment now says so. Hermetic failure injection is a `#[cfg(test)]` thread-local (`analyze::forced_failure`) consulted by `run_extraction`, not a loader parameter. A `LoadFailed` file is re-attempted by three skip sites: the sweep (stored size reported as NULL so the stat never proves it unchanged), reconcile (`StoredState::retry` bypasses the hash-match skip) and publish (`add_load_failed_retries` marks it `Modified`, so it counts under `modified`). `Io` is classed as a load failure alongside `Download`, `ChecksumMismatch` and `CacheLock`.
+- **Why:** `has_parser` is true only for an already-downloaded grammar and never downloads, so gating on it would stop the lazy fetch ever happening (every uncached language would be `ContentOnly` forever). The pack's cache dir and manifest URL are process-global env vars read inside the pack plus a process-wide registered cache, so they cannot be pointed at an empty dir per test without racing other tests. The thread-local needs no production signature change and cannot leak across parallel tests. Retrying through the sweep is required because the sweep otherwise proves the file unchanged by stat and never nominates it.
+- **Where:** `src/parse/language.rs`, `src/sync/analyze.rs`, `src/sync/sweep.rs`, `src/sync/reconcile/{queries,pipeline}.rs`, `src/sync/publish_diff.rs`, tests in `src/sync/analyze_tests.rs`.
+- **Reversible:** Yes. Cost to know: while a host stays offline, every sweep and publish re-attempts each `LoadFailed` file (one failed fetch per file) and writes a new revision for it.
+
+## A6 amendment: grammar-fetch cool-down bounds the retry cost
+- **What:** Amends the A6 entry's cost note. A process-wide gate (`src/parse/fetch_gate.rs`, 10-minute `GRAMMAR_FETCH_COOLDOWN`, monotonic `Instant`, poisoned lock recovered via `lock_or_recover`) closes after a fetch-family failure (`Download`, `ChecksumMismatch`, `CacheLock`, `Io`). While closed, `analyze` does not call the pack for a grammar that `has_parser` says is not on the host (it records `LoadFailed` with a static cool-down reason, no per-file log), and `load_failed_retry_due()` is false, so the sweep, reconcile and publish diff treat stored `LoadFailed` rows like unchanged files (no retry, no new revision). Only fetch-family errors close the gate, not the other load failures (`DynamicLoad`, `LanguageNotFound`, ...), since those are specific to one grammar; those rows stay retry candidates whenever the gate is open. The pack's HTTP timeout is a private 60 s constant, so it cannot be lowered. Extraction (`run_extraction` and the `forced_failure` seam) moved to `src/sync/analyze_seam.rs` to keep `analyze.rs` under the size gate; the seam now also counts loader calls. Tests use a per-thread gate, clock and cached-grammar answer under `cfg(test)`.
+- **Why:** Measured on e79d74c: every tool call paid one failed fetch per `LoadFailed` file and published a revision, which broke `expected_revision` paging offline and cost about 5 x 61 s per call on a black-holed network.
+- **Where:** `src/parse/fetch_gate.rs`, `src/sync/analyze.rs`, `src/sync/analyze_seam.rs`, `src/sync/sweep.rs`, `src/sync/reconcile/queries.rs`, `src/sync/publish_diff.rs`, tests in `src/sync/analyze_tests.rs`.
+- **Reversible:** Yes. Cost to know: after the network returns, an already-failed file waits up to 10 minutes (or a restart) for its grammar; a non-fetch `LoadFailed` file (for example a corrupt cached library) still re-parses and publishes a revision on every sync while the gate is open.
+
+## Prose files are stored with language "prose" and never parsed
+- **What:** `detect_language` returns the single value `"prose"` for `.md .markdown .mdx .rst .adoc .asciidoc .org .txt .text` (case-insensitive), overriding the pack (`.txt` -> `vimdoc`). `analyze` records such files `Unavailable`/`NotAttempted`/`ContentOnly` with `language_detected = 1` and runs no grammar. Extensionless names (`README`, `LICENSE`) get no language from the pack today, so no detection was added. `.env`/dotenv is unchanged.
+- **Why:** Prose through a grammar produced only noise Diagnostic rows. `language = 'prose'` needs no schema change (`language` is free TEXT) and tells a model "deliberately not parsed" apart from `language IS NULL` (undetected) and a pack language with `LoadFailed`.
+- **Where:** `src/parse/language.rs`, `src/sync/analyze.rs`.
+- **Reversible:** Yes; drop the prose branch and the extension table.
+
+## A4: oversize-for-parse is a `Withheld` outcome stored in existing columns; no schema bump
+- **What:** A file whose content exceeds `max_parse_bytes` (default 2 MiB, all profiles) is stored with `parser_availability = 'Unavailable'`, `parse_outcome = 'NotAttempted'`, `extraction_completeness = 'ContentOnly'` and `parse_error_reason = 'oversize_for_parse'`. In the model this is a new `ParseOutcome::Withheld { reason }` variant whose SQL text is `NotAttempted`; the reason codes are `ParseOutcome::OVERSIZE_FOR_PARSE` / `PARSE_TIMEOUT`. A pack `ParseTimeout` is `Available` + `Failed { reason: "parse_timeout" }`. The check runs in `analyze` after prose and the pack-language check and before the fetch gate, so an oversize file never triggers a grammar download. No CHECK value or column was added, so `CURRENT_SCHEMA_VERSION` stays 9. `report.completeness` gains `oversize_for_parse_file_count` and `parse_timeout_file_count`; oversize and timed-out files also appear in the existing parser-failure list with their code. `leads.files_not_parsed` is one number (no per-reason breakdown; `report` has the reasons) computed with the shared `PARSER_FAILURE_PREDICATE` under the request's `pattern`, narrowed to `language IS NOT NULL` (see the entry below).
+- **Why:** `parse_error_reason` is free text and already the "why no tree" column `report` lists, and every predicate that counts parser failures (`availability != 'Available'`) picks the new rows up with no second predicate. `LoadFailed` was rejected because those rows are retried every sync; `skip_reason` was rejected because it means "no content stored". No bump: a pre-A4 database holds such files fully parsed, which is complete rather than wrong; it is re-classified when the file changes.
+- **Where:** `src/model/parser.rs`, `src/sync/analyze.rs`, `src/sync/sample.rs`, `src/store/schema.sql` (comment), `src/tools/report*.rs`, `src/tools/leads*.rs`.
+- **Reversible:** Yes. Cost to know: lowering `max_parse_bytes` does not re-classify an unchanged, already-parsed file (the content hash is unchanged), the same as for the other per-file limits.
+
+## A4: `structure` sizes each file before loading it and returns a partial on a parse timeout
+- **What:** The multi-file window reads `octet_length(content)` (SQLite 3.50.2 reads it from the record header, `OPFLAG_BYTELENARG`) before loading a file. A file over `min(max_parse_bytes, window)` is skipped unloaded and counted in the new `files_over_parse_limit`; a file that would overflow the window ends it. This replaces "the file that crosses the window is kept", so no single file exceeds the window. A single named file over `max_parse_bytes` is refused with `invalid_params`. Each parse runs under `Parser::parse_with_options` with a progress callback on the existing `max_structure_execution_time` deadline; a cancelled parse in a multi-file scan returns the earlier files' matches with `parse_timed_out_file` set and `next_start_after_file` pointing past it; a single-file cancel is the existing "exceeded its execution time budget" error. A deadline that passes between files, or inside the query cursor, is still that error, unchanged.
+- **Why:** Brief items 5 and 6. Keeping the existing error for the non-parse cases avoids changing behaviour the brief did not ask to change.
+- **Where:** `src/tools/structure_source.rs`, `src/tools/structure_exec.rs`, `src/tools/structure_page.rs`, `src/tools/structure.rs`.
+- **Reversible:** Yes.
+
+## A4: the sampler parse is bounded by the sync deadline through the pack's parse timeout
+- **What:** `analyze` takes the sync `Deadline` (the one `publish_with_limits` and `ReconcileOptions` create once per operation) and every parse of one file gets what is left of it: `process()` through `ProcessConfig::with_parse_timeout_ms`, the binding/import walker, the Rust call walker and each macro-body re-parse through the pack `Parser::set_parse_timeout_ms` (`evidence::parse_tree`). `Deadline::remaining_millis` rounds down and returns `None` under one millisecond, so `Some(0)` is never passed and an expired deadline never starts a parse. Before `process()`, an expired deadline is reported as `PackError::ParseTimeout { timeout_ms: 0 }` (the budget it had), so one variant carries every timeout to `analyze`. `parse_tree`'s `None` is classified by checking the deadline afterwards: `NoTree::TimedOut` only once it has passed, otherwise `NoTree::Failed` (the existing truncation path). The public `evidence::extract` keeps its signature (benches use it) and is unbounded.
+- **Why:** The plan names tree-sitter's `Parser::parse_with_options` + progress callback; the pack's parse timeout is that callback (pack 1.18.0 `parse.rs::run_parse` builds `ParseOptions::progress_callback` on an `Instant` deadline), and `process()` exposes no other hook, so this is the equivalent mechanism. One deadline for the whole file stops a file of many macros from getting a fresh full timeout per re-parse.
+- **Where:** `src/util/time.rs`, `src/evidence/mod.rs`, `src/evidence/normalize.rs`, `src/evidence/calls.rs`, `src/evidence/calls/macro_calls.rs`, `src/sync/analyze.rs`, `src/sync/analyze_seam.rs`, `src/sync/sample.rs`, `src/sync/publish_diff.rs`, `src/sync/reconcile/pipeline.rs`.
+- **Reversible:** Yes. Cost to know: the deadline is the whole sync's, so after a parse is cut the publish/reconcile fails closed with `TimeBudgetExceeded` at its next between-files check; a `parse_timeout` row is persisted only if the cut file was the last one and no later phase checks the deadline. The bound turns an unbounded parse into a bounded, reported sync failure; with `max_parse_bytes` at 2 MiB the generated Rust fixture analyzes in about 7 s in a debug build (1.5 MiB measured at 5.5 s), far below the 120 s / 1200 s sync budgets.
+
+## A4: a re-parse timeout after `process()` succeeded keeps the pack's evidence as `Partial`
+- **What:** When `process()` finished but a later walker re-parse (bindings/imports, Rust calls, a macro body) was cut at the deadline, the file is stored `Available` / `Failed` / `Partial` with `parse_error_reason = 'parse_timeout'` and the evidence extracted so far is kept; when `process()` itself was cut it is `ContentOnly` with no evidence.
+- **Why:** The pack's structure, imports, comments and diagnostics are real; dropping them (`ContentOnly`) would hide evidence the mechanics can use, while `Partial` plus the reason says honestly that call/binding evidence is missing. `Failed` puts the file in the shared parser-failure predicate, so it is counted in `files_not_parsed` and listed by `report`.
+- **Where:** `src/sync/analyze.rs` (`timeout_result`), `src/evidence/mod.rs` (`Extraction::timed_out`).
+- **Reversible:** Yes; pass an empty evidence list to `timeout_result` to make it `ContentOnly`.
+
+## A4: `files_not_parsed` excludes files with no detected language
+- **What:** `leads.files_not_parsed` counts the shared `PARSER_FAILURE_PREDICATE` narrowed to `language IS NOT NULL`: oversize, timed-out, load-failed, failed, and a detected language with no pack grammar. Files with no detected language (`.gitignore`, `LICENSE`) are not counted; `report` still lists them as parser failures.
+- **Why:** Lead decision: no mechanic could read such a file, and counting it made almost every project (any `.gitignore`) report a non-zero floor, which trains a model to ignore the field.
+- **Where:** `src/tools/leads_query.rs`, `src/tools/leads.rs` (doc comment = schema description, surface re-recorded).
+- **Reversible:** Yes; drop the `AND language IS NOT NULL` clause.
+
+## B0: a per-file parse allowance, `max_parse_wall_clock_ms`, below the sync budget
+- **What:** `ResourceLimits::max_parse_wall_clock_ms` (5000 in every profile; env `SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS`; config key of the same name). `analyze` takes it as a `Duration` and runs all parses of the file under `Deadline::capped(allowance)`: a new deadline of the allowance when that is sooner than what is left of the sync deadline, otherwise the sync deadline itself. The returned `BudgetBound` (`Unit` or `Operation`, ties go to `Operation`) says which one the file ran under; it is logged on the timeout and the file is recorded the same way either way (`parse_timeout`, ContentOnly or Partial as in A4). The difference is made by construction: a `Unit` deadline ends before the sync's, so the sync's own between-files check still has time and the sync goes on; an `Operation` deadline is the sync's, so the sync fails as before. `analyze.rs` was split: the `ParseResult` type and its constructors moved to `src/sync/analyze_results.rs`.
+- **Why:** A4 gave every file only the sync deadline, so a file under `max_parse_bytes` whose parse outlived it made the whole publish fail with `TimeBudgetExceeded` and (almost) never stored its `parse_timeout` row; every later call then failed until the file was edited. An unchanged `parse_timeout` file is not retried because `Failed` rows are not retry candidates (only `LoadFailed` are), the same as any unchanged file. This replaces the cost note of the entry "the sampler parse is bounded by the sync deadline": a persisted `parse_timeout` row no longer depends on the cut file being the last one.
+- **Where:** `src/util/time.rs`, `src/model/limits.rs`, `src/model/profile.rs`, `src/project/config.rs`, `src/sync/analyze.rs`, `src/sync/analyze_results.rs`, `src/sync/sample.rs`.
+- **Reversible:** Yes; pass the sync deadline unchanged to `run_extraction`.
+
+## B0: a bounded `process()` runs on its own short-lived thread (pack parser-cache poisoning)
+- **What:** `evidence::extract_within` runs the pack's `process()` on a scoped thread of its own whenever a deadline is given (`process_on_fresh_thread`); an unbounded call is unchanged. A panic in the pack on that thread is returned as `PackError::ParseFailed` (logged once without the payload); a failed thread spawn is `PackError::Config` with a static message.
+- **Why:** Found while testing the per-file allowance: tree-sitter-language-pack 1.18.0 keeps one `tree_sitter::Parser` per language per thread (`parse.rs` `PARSER_CACHE`) and `run_parse` never calls `reset()` after a progress-callback cancellation, so the cached parser resumes the cancelled document on its next use. The next file parsed on that thread was read against the wrong source and panicked inside the pack (`intel/intelligence.rs:106`, "start byte index 52 is out of bounds for string of length 45"). The same flaw was latent at A4: a sync-deadline cut on the long-lived reconcile thread poisoned its parser for later calls. The cache is thread-local, so ending the thread discards the parser. Cost: one thread spawn and one parser setup per bounded parse, small beside the parse. The walkers' `Parser` wrapper builds a fresh parser per parse and is not affected.
+- **Where:** `src/evidence/normalize.rs`, test in `src/evidence/normalize_tests.rs`.
+- **Reversible:** Yes, but only once the pack resets after a cancelled parse (upstream fix) or exposes a way to clear its cache.
+
+## B0: `structure` query text is bounded instead of giving `Query::new` a deadline
+- **What:** The existing `max_structure_query_bytes` limit (its env var and its refusal before `Query::new` already existed) now defaults to 16 KiB in every profile (was 32,000 lean and 128,000 audit/adaptive), gains the `config.json` key, and its refusal message states the size and the limit: `structure query is N bytes; the limit is M (max_structure_query_bytes)` (was `structure query exceeds M bytes`). The `query` field's doc comment (the schema description) documents it. `src/project/config.rs` tests moved to `src/project/config_tests.rs` to keep the file under the 300-line gate (the stale size exception was dropped; the file is 142 code lines).
+- **Why:** tree-sitter's `Query::new` takes no progress callback in this version, so a deadline cannot be applied; bounding the input is the only available bound on compile cost. 16 KiB is far above a hand-written query.
+- **Where:** `src/model/profile.rs`, `src/model/limits.rs`, `src/project/config.rs`, `src/project/config_tests.rs`, `src/tools/structure.rs`, `src/tools/structure_limit_tests.rs`.
+- **Reversible:** Yes. Cost to know: a client that sent a 16-128 KB query now needs to raise the limit.
+
+## B0: zero is refused for three limits, and override warnings are logged once per cause
+- **What:** `SLUGAUDIT_MAX_PARSE_BYTES`, `SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS`, `SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES` and the matching `config.json` keys refuse `0`: a warning names the setting (`SLUGAUDIT_...` or `config <key>`) and the value already in place (the profile default, or what the environment set when the config says 0) stays. A process-wide ledger (`model/limit_overrides.rs`, `Mutex<BTreeSet<(setting, value)>>` behind `util::lock_or_recover`) makes the zero warnings and the `max_parse_bytes` clamp warning appear once per (setting, configured value); a changed value warns again. `clamp_parse_to_file_bytes` moved there from `limits.rs` and `ResourceLimits::from_env` became `pub(super)` for its tests.
+- **Why:** `max_parse_bytes = 0` made every file `oversize_for_parse` without a word; the limits are rebuilt from the project config on every tool call and sync, so the clamp warning was logged three times for one cause.
+- **Where:** `src/model/limit_overrides.rs`, `src/model/limits.rs`, `src/project/config.rs`.
+- **Reversible:** Yes. Cost to know: the ledger is never cleared, so a setting reverted to a previously reported bad value in the same process is not reported a second time.
+
+## B0: `.gitignore`, `.ignore` and `.dockerignore` are stored as prose, not reported as parser failures
+- **What:** `detect_language` returns `"prose"` for files named exactly `.gitignore`, `.ignore` or `.dockerignore` (any directory), so `analyze` records them `Unavailable`/`NotAttempted`/`ContentOnly`, runs no grammar and writes no Diagnostic rows, and they count in `completeness.prose_files_not_parsed` instead of the parser-failure list. The class keeps the name `prose` (no new class name); `structure` with `language = "prose"` is refused for them like other prose.
+- **Why:** Investigation: the pack maps no language to these names (`.gitignore` has no extension for it to match; only a name like `x.gitignore` reaches its `gitignore` grammar), so they were stored `language IS NULL` and the parser-failure predicate counted them as "no parser". Since `project_control on` writes a `.gitignore`, every enabled project reported `parser_failure_count >= 1`. No grammar ever ran on them, so there were no Diagnostic rows to remove.
+- **Where:** `src/parse/language.rs`, `src/server.rs` (INSTRUCTIONS), tests in `src/parse/language.rs`, `src/sync/analyze_tests.rs`, `src/tools/report_prose_tests.rs`.
+- **Reversible:** Yes. Cost to know: an already-indexed, unchanged ignore file keeps its old `language IS NULL` row (the content hash is unchanged, so it is not re-analyzed) until it changes or the database is rebuilt, so an existing project still reports it as a parser failure for now. `.npmignore`, `.gitattributes` and similar are unchanged.
+
+## Ignore-file table widened and schema bumped to 10 (B0 follow-up)
+
+- **What:** `.npmignore`, `.prettierignore`, `.eslintignore` and `.gitattributes` join `.gitignore`/`.ignore`/`.dockerignore` as stored-not-parsed pattern lists; `CURRENT_SCHEMA_VERSION` 9 -> 10.
+- **Why:** the pack names no language for these, so they were `language IS NULL` and read as parser failures in `report`. The bump makes existing databases rebuild, so already-indexed ignore files (whose stored language is NULL and whose content hash is unchanged) are reclassified instead of lingering as failures. The database is disposable by design.
+- **Where:** `src/parse/language.rs` (`IGNORE_FILE_NAMES`), `src/store/migrations.rs`.
+- **Reversible:** yes.
+
+## B1: `covers` lists the languages a count actually read in this index, not a static capability list
+- **What:** `MechanicCount.covers` is now a sorted `Vec<String>`: the distinct `files.language` values under the request's `pattern` that the mechanic read. Call mechanics: files whose grammar ran (`file_kind = 'indexed'`, `parse_outcome IN ('Succeeded','SyntaxErrors')`) in a language of `evidence::call_languages()` (rust + every embedded call query, derived from the query table); diagnostics and comment markers: every such parsed file's language; `credential_files`: every file with a detected language. `MechanicCoverage` (`rust_only`/`all_languages`) is removed; the mechanic table carries a `Reads` selector instead.
+- **Why:** The brief asks all-language mechanics to "list every language they actually read". A static list would be the pack's ~300 grammar names on every count (and three times per compact enumeration); the index's own languages are bounded, and answer the question `covers` exists for: which of this project's languages a zero checked. A Ruby project now shows `covers: []` on call mechanics instead of an enum the caller has to interpret.
+- **Where:** `src/tools/leads_covers.rs` (new), `src/tools/leads.rs`, `src/tools/leads_mechanics.rs`, `src/tools/leads_query.rs`, `src/tools/mod.rs`; INSTRUCTIONS, the `leads` description, README, ARCHITECTURE, `.planning/archive/mcp_surface.json`.
+- **Reversible:** Yes. Cost to know: `covers` costs two `SELECT DISTINCT language` reads per `leads` call; a project's file with call-extractable language indexed by an older build (before this change) is reported covered although its stored evidence predates call extraction, until it changes or the database is rebuilt (see the schema-bump decision in the B1 report).
+
+## B1: Rust keeps its call walker; the seven new languages use embedded queries feeding one row builder
+- **What:** No `examples/calls/rust.scm`. Python, JavaScript, TypeScript, TSX, Go, Java and C run `examples/calls/<language>.scm` (one `@callee` capture each, compiled once per process in a `static` table) through `calls/query_calls.rs`; the Rust walker, its macro re-parse and the query path all build rows through `calls/site.rs::call_item`. Query rows use origin `RawTree` ("direct raw tree-sitter AST capture"); Rust rows keep `RustCallWalker`. Every node kind and field name in the brief matched the shipped grammars (pack 1.18.0) unchanged.
+- **Why:** The Rust walker re-parses macro token trees, which a query cannot reach, and emits a row for every call node, including callees no pattern names (`(f)()`, `f()()`: whole call text as callee); a single-capture query would drop those and change existing Rust counts. A query cannot run on the pack's `Tree` wrapper (it does not expose the `tree_sitter::Tree`), so the query path parses once more with its own parser under the same per-file deadline (progress callback), as the Rust walker already did. Calls whose callee is not a plain or member name (`f()()`, `(*fp)()`, Go `g[int](x)`) are not counted in the seven query languages. The query cursor starts no match deeper than `MAX_WALK_DEPTH`, as the walkers do; the bindings walker reports such a file partial.
+- **Where:** `src/evidence/calls.rs`, `src/evidence/calls/{site,call_queries,query_calls,macro_calls}.rs`, `src/evidence/mod.rs` (`range_span`), `src/evidence/normalize.rs`, `examples/calls/*.scm`.
+- **Reversible:** Yes.
+
+## B1: turbofish callees are named from their function part, and a qualified call inside a macro is `high` confidence
+- **What:** A `generic_function` callee (`foo::<u8>()`, `x.parse::<u32>()`) now yields `callee_name` `foo`/`parse` and `callee_text` `foo::<u8>`/`x.parse::<u32>`; its qualification ignores the turbofish `::` (so `foo::<u8>()` is `unresolved-syntactic`, `std::mem::size_of::<u8>()` stays `qualified-syntactic`). A `qualified-syntactic` call recovered from a macro body now reports confidence `high`, as the same call outside a macro always did and as `evidence_payload_keys.md` documents; it was `medium`.
+- **Why:** The turbofish fix is the brief's; the confidence change falls out of the one shared row builder and removes a disagreement between the two Rust producers and the published payload contract.
+- **Where:** `src/evidence/calls.rs`, `src/evidence/calls/macro_calls.rs`, `src/evidence/calls/site.rs`.
+- **Reversible:** Yes.
+
+## B1: schema version 11 so existing databases gain call evidence
+
+- **What:** `CURRENT_SCHEMA_VERSION` 10 -> 11 alongside B1's multi-language call evidence.
+- **Why:** unchanged files in an existing database are not re-analysed, so they would keep no Call rows while `covers` lists their language — a "checked, zero" claim for code that was never read. The bump forces the disposable database to rebuild.
+- **Where:** `src/store/migrations.rs`; stated version in `.planning/ARCHITECTURE.md` and `docs/TROUBLESHOOTING.md`.
+- **Reversible:** yes.
+
+## B2: session mechanics live on the per-server `SourceSyncManager`
+- **What:** `project::SessionMechanics` (the session entries plus the one-time report-note flag) is a field of `SourceSyncManager`, shared by its clones, created empty per manager; no static.
+- **Why:** the manager is the per-server state every tool handler already receives, so `leads` and `report` keep their public signatures; threading a new argument would have meant editing call sites in test files outside B2 (`redaction_tests.rs`, `finding_session_tests.rs`). One manager per server instance means a new server starts with no session entries and a fresh note.
+- **Where:** `src/sync/manager.rs`, `src/project/session_mechanics.rs`.
+- **Reversible:** yes.
+
+## B2: caps on registered mechanics
+- **What:** at most 64 session entries per server and 64 persisted entries per project (entries past 64 in `config.json` are reported invalid); id `[a-z0-9_]{1,64}`; note 1-1024 bytes, not blank; language 1-64 bytes; query at most `max_structure_query_bytes` (16 KiB default), the `structure` rule; every free-form field refused above 64 KiB before any rule runs; a persist whose resulting `config.json` would exceed the 1 MiB read cap is refused (it would otherwise be unreadable on the next call).
+- **Why:** the brief asks for bounded sizes and counts; 64 each keeps the per-call scan (every registered entry is counted on every `leads` call) bounded, and 64 x 16 KiB queries already approaches the read cap.
+- **Where:** `src/tools/mechanic_catalog.rs`, `src/tools/mechanic.rs`, `src/project/mechanics_config.rs`, `src/project/session_mechanics.rs`.
+- **Reversible:** yes.
+
+## B2: registered mechanics count by a read-time Tree-sitter scan, fail closed on the budget
+- **What:** a registered entry is not stored as evidence; each `leads` call (and `mechanic add`) parses the stored content of the files of its language that the built-in evidence mechanics read (indexed, grammar ran: `leads_covers::PARSED_FILES`), one file at a time in path order, once per language for all entries of that language, and counts each distinct captured node (de-duplicated by node id per file). Rows are cut by the same streaming rules as `fill_page`. One `max_structure_execution_time` deadline covers the scan per call; a spent deadline fails the call with `invalid_params` naming the knob instead of returning a partial count. `covers` is `[language]` when a parsed file of it is under the pattern, else `[]`; unparsed files are already in `files_not_parsed`.
+- **Why:** session entries cannot be written into the shared index (another session would see them) and the read-only connection cannot hold temp tables; counts must stay complete regardless of paging. Cost to know: every `leads` call re-parses the registered languages' files, so a large repo with many entries can hit the budget; the error tells the caller to narrow `pattern`, remove an entry or raise the budget. The parse-with-deadline helper is a copy of `structure_exec::parse_within` (private there, file not owned by B2).
+- **Where:** `src/tools/mechanic_scan.rs`, `src/tools/leads_custom.rs`, `src/tools/leads_page.rs`.
+- **Reversible:** yes.
+
+## B2: `mechanic add` counts the candidate before registering it
+- **What:** `add` validates and compiles the entry, refuses collisions, counts it through `leads` with the candidate inserted where it will be listed, then registers it (session push or `config.json` write) re-checking collisions and caps under the session lock. The response's `first_count` is the full `LeadsResponse` for `mechanic` = id (the shared count/paging shape); `mechanics` is the whole catalogue after the call.
+- **Why:** a count that fails (sync error, budget) must not leave an entry registered behind an error response; the lock re-check makes a racing `add` of the same id lose cleanly. Another process editing `config.json` between the check and the write is not guarded (same accepted race as A3's `write_raw`).
+- **Where:** `src/tools/mechanic_register.rs`.
+- **Reversible:** yes.
+
+## B2: `ProjectConfig` accepts a raw `mechanics` key; a broken section never costs the limits
+- **What:** `ProjectConfig` (which has `deny_unknown_fields`) gains `mechanics: Option<serde_json::Value>`; the section is parsed separately, entry by entry. A missing or future `version`, an unknown key in the section, or an unreadable/malformed `config.json` becomes one invalid record with `index: null`; `persist`/`remove` refuse to rewrite such a file or section, so nothing a newer server wrote is lost.
+- **Why:** without the key, persisting one mechanic would have made the whole config a parse error and silently dropped the project's profile and limits.
+- **Where:** `src/project/config.rs`, `src/project/mechanics_config.rs`.
+- **Reversible:** yes.
+
+## B2: `mechanics_invalid` on `leads` and `mechanic` too; session entries can be invalid
+- **What:** besides `report.mechanics_invalid`, every `leads` response and every `mechanic` response carry `mechanics_invalid` (and `mechanic` the `invalid` list). A session entry whose grammar no longer loads is reported invalid with `source: session` instead of failing every call. In a compact whole-surface page, registered entries' rows come first (catalogue order), then the built-ins'.
+- **Why:** an invalid persisted entry is absent from `mechanic_counts`; without the count on `leads` that absence would be silent there. The compact order follows the listing order the brief fixes.
+- **Where:** `src/tools/leads.rs`, `src/tools/leads_custom.rs`, `src/tools/mechanic.rs`, `src/tools/mechanic_catalog.rs`.
+- **Reversible:** yes.
+
+## B2b: one locked, atomic write path for config.json (`ProjectConfig::update_raw`)
+- **What:** `ProjectConfig::write_raw` is gone. Every writer (`project_control on` with `profile`, `mechanic` persist/remove) goes through `ProjectConfig::update_raw(root, |object| ..)` in the new `src/project/config_store.rs`: exclusive `File::try_lock` on the sibling `.planning/slugaudit/config.lock` polled every 20 ms for at most 5 s (then `ConfigWriteError::Locked`, an internal error), held for the whole read-modify-write; a missing `config.json` is an empty object; malformed JSON (`Malformed`) or a non-object (`NotAnObject`) is refused (`invalid_params`) and never overwritten; the result is size-checked against the 1 MiB read cap; the replace is a `create_new` temp file `config.json.<pid>.<seq>.tmp` in the same directory, `write_all`, the target's permissions copied, `sync_all`, a `symlink_metadata` re-check of `config.json` (still regular or absent), `rename`, then a directory `fsync`. The temp file is removed on every failure before the rename; a failed removal is logged once and the original error returned. `enable` now sets only `profile`; `mechanics_config` uses the same helper (no second read-modify-write). Supersedes the B2 entry's "not guarded" note and A3's accepted check-then-write race for this file.
+- **Why:** P1-1 (`on` with `profile` replaced the file and deleted persisted mechanics) and P1-2 (truncate-in-place `fs::write`, no serialisation across processes).
+- **Where:** `src/project/config_store.rs`, `src/project/config.rs`, `src/project/mechanics_config.rs`, `src/tools/project_control.rs`.
+- **Reversible:** yes.
+
+## B2b: the directory fsync after the rename fails the call (`NotDurable`)
+- **What:** on Unix the directory is opened and `sync_all`ed after the rename; an error is returned as `ConfigWriteError::NotDurable` (internal error) whose message says the file *was* updated but may not survive a crash. On non-Unix targets the directory sync is skipped (Windows cannot open a directory as a `File` without extra flags); the rename is still atomic.
+- **Why:** the brief forbids a best-effort sync that swallows errors; after the rename nothing can be rolled back, so the honest report is "applied, not durable", not "failed".
+- **Where:** `src/project/config_store.rs`.
+- **Reversible:** yes.
+
+## B2b: `config.lock` is opened without following links, checked by inode
+- **What:** a missing lock file is created with `create_new` (O_EXCL never follows a link, a dangling one included); an existing one must be a regular file by `symlink_metadata`, is opened read-write without create/truncate, and must then be the same directory entry (`dev`/`ino` of the open file equal those of a fresh `symlink_metadata`) or the update is refused as `NotRegularFile`. On non-Unix the post-open check is only "both are regular files". The lock file is never deleted (deleting it would let two holders lock different inodes). `libc`/`O_NOFOLLOW` was not added (no new dependency).
+- **Why:** A3's rule applied to the second file this path writes, without a dependency.
+- **Where:** `src/project/config_store.rs`.
+- **Reversible:** yes.
+
+## B2b: the crash-safety tests use a hook argument, not a cfg(test) seam
+- **What:** the private `update_with(root, wait, before_rename, change)` takes a `&mut dyn FnMut(&Path) -> io::Result<()>` run after the temp file is synced and before the re-check and rename; `update_raw` passes a no-op and a 5 s wait. Tests use it to fail that window (the old file stays, no temp file is left, the source error is kept), to swap `config.json` for a symlink there (refused, link target untouched), and to shorten the lock wait.
+- **Why:** tests run as root, so permission bits cannot make the temp path uncreatable; a hook keeps one production code path instead of a `cfg(test)` branch.
+- **Where:** `src/project/config_store.rs`, `src/project/config_store_tests.rs`.
+- **Reversible:** yes.
+
+## B2b: persist re-checks the id under the config lock
+- **What:** `persist_entry` refuses an id already present in `mechanics.entries` (`MechanicsWriteError::Duplicate`, `invalid_params`) inside the locked read-modify-write, besides the tool's earlier check.
+- **Why:** with two servers on one project, both could pass the unlocked check and persist the same id; the second would then be reported invalid on every load.
+- **Where:** `src/project/mechanics_config.rs`.
+- **Reversible:** yes.
+
+## B2b: `leads` scans only the registered entries a call needs
+- **What:** counts-only and the compact whole-surface page scan every registered entry; a call naming a registered entry scans only it; a call naming a built-in scans none. `mechanic_counts` then lists the built-ins plus only the scanned registered entries (an unscanned entry is omitted, not listed with a made-up 0); the field doc says so.
+- **Why:** P2-3: one slow entry made every `leads` call fail, including built-in pages. Listing unscanned entries with a count would be a false number; adding a nullable count would have changed the count type every caller reads.
+- **Where:** `src/tools/leads_page.rs`, `src/tools/leads_custom.rs`, `src/tools/mechanic_scan.rs`, `src/tools/leads.rs`.
+- **Reversible:** yes.
+
+## B2b: a spent registered-mechanic budget is `internal_error` + new code `mechanic_budget_exhausted`
+- **What:** the scan's budget error is now an internal error naming the running entry ids (the one whose cursor ran out, or every entry of the language whose shared parse ran out) with `{"code": "mechanic_budget_exhausted", "remedy": ..}`, the remedy naming `mechanic` action `remove`, a narrower `pattern`, and `SLUGAUDIT_MAX_STRUCTURE_EXECUTION_TIME_SECS`. Documented in ARCHITECTURE's code table. Supersedes the B2 entry's `invalid_params`.
+- **Why:** the brief asks for the operational budget mapping; `sync_budget_exhausted` names the sync knob, so it did not fit and a new code was needed.
+- **Where:** `src/error_codes.rs`, `src/tools/mechanic_scan.rs`, `.planning/ARCHITECTURE.md`.
+- **Reversible:** yes (a shipped code is stable once released).
+
+## B2b: `mechanic remove` by `index` is decided under the config lock with the catalogue rules
+- **What:** `remove` takes `index` (refused together with `id`, and on any action but `remove`). Under the config lock and the session lock, the persisted section as it is now is run through the same catalogue loader `report` uses (`mechanic_catalog::load_from`); the entry is removed only if that index is still listed invalid with source `project_config`, else `NotInvalid` (or `NoEntryAt`), `invalid_params`. A whole-section failure (`index: null`, e.g. a future `version`) is not removable this way and still needs a hand edit. Removing a built-in id now points at `index` in its message.
+- **Why:** P2-4; re-deciding under the lock means an index that shifted because another process removed an entry can never delete a valid entry.
+- **Where:** `src/tools/mechanic_register.rs`, `src/tools/mechanic.rs`, `src/tools/mechanic_catalog.rs`, `src/project/mechanics_config.rs`.
+- **Reversible:** yes.
+
+## B2b: `language` must be the exact stored name; pack aliases refused
+- **What:** `language` must be `[a-z0-9_]{1,64}` (all 371 pack names in 1.18.0 fit) and not one of the pack's six aliases (`bazel`, `gradle`, `ignorefile`, `lisp`, `makefile`, `shell`), which are refused naming the canonical name. The alias list is a copy of tree-sitter-language-pack 1.18.0's private `LANGUAGE_ALIASES`; a pack upgrade must re-check it.
+- **Why:** finding: `Python` was already refused (the pack lookup is case-sensitive, so "unknown language"), but `shell` compiled against `bash` while `files.language` stores `bash`, so it counted zero forever (verified by disabling the check: the add succeeded with count 0 and `covers: []`). The new message states the convention for both.
+- **Where:** `src/tools/mechanic_catalog.rs`.
+- **Reversible:** yes.
+
+## B2b: `first_count.files_total` of 0 for a mechanic with no match is correct
+- **What:** quinn's `py_exec` (persisted, no match) reporting `files_total: 0`, `files_covered: 0` while `py_eval` (session, matches) reported 1 is not a persist-path bug: `files_total` is the number of files holding at least one row, as for every built-in; the files read are `covers`. The field doc of `first_count` now states it; a test pins both cases.
+- **Where:** `src/tools/mechanic.rs`, `src/tools/mechanic_persist_tests.rs`.
+- **Reversible:** n/a.
+
+## B2b: `parse_within` shared, the copy deleted
+- **What:** `structure_exec::parse_within` and `Parsed` are `pub(super)`; `mechanic_scan` uses them, so a cancelled parse now also `reset()`s the parser. Supersedes the B2 entry's "copy" note.
+- **Where:** `src/tools/structure_exec.rs`, `src/tools/mechanic_scan.rs`.
+- **Reversible:** yes.
+
+## B2b: P2-6 key order in config.json is not preserved
+- **What:** a rewrite of `config.json` emits keys in `serde_json::Map`'s sorted order (no `preserve_order` feature); values and keys are kept, order and formatting are not. Accepted per the brief; Cargo features unchanged.
+- **Where:** `src/project/config_store.rs`.
+- **Reversible:** yes (enable `preserve_order`).
+
+## B2b: pack alias drift is checked in one direction only
+- **What:** `pack_alias_table_matches_the_language_pack` asserts every `PACK_ALIASES` entry is resolved by the pack (`has_language`), its canonical name is known, and no canonical name is itself an alias. The reverse (an alias the pack added that we lack) cannot be checked: the pack exposes no public alias enumeration (`LANGUAGE_ALIASES` and `resolve_alias` are private/`pub(crate)`; `available_languages` mixes aliases with canonical names and depends on the build's features). The comment at `PACK_ALIASES` names `registry.rs` `LANGUAGE_ALIASES` for re-check on every pack upgrade.
+- **Why:** reading the pack's private table from source text was ruled out; `has_language` is the only network-free public resolver (`get_language` may download).
+- **Where:** `src/tools/mechanic_catalog.rs` (`PACK_ALIASES` now `pub(super)`), `src/tools/mechanic_persist_tests.rs`.
+- **Reversible:** yes.
+
+## C6: sweep decisions (zero limits, stale temp files, one parse loop)
+- **What:** (1) Every env limit and the `config.json` keys `max_file_bytes`, `max_total_import_bytes`, `default_page_bytes` now refuse `0` through the B0 mechanism (one warning per setting per process, value in place stays). The two watch limits are included: no document says `0` disables them. (2) `ProjectConfig::load_or_default` removes `config.json.<pid>.<n>.tmp` left by a crashed update, one warning naming each; stale is decided by a non-blocking try of `config.lock` (a live writer holds it while its temp file exists), not by file age. A failure to scan, lock or delete is logged once and never fails the load. (3) `parse_within` and `Parsed` moved to `src/parse/budget.rs` and take a `spent` predicate, so `query_calls` uses the same loop as `structure` and the mechanic scans. `evidence::parse_tree` (the pack's `set_parse_timeout_ms`) and the three query-cursor progress loops are different mechanisms and were left.
+- **Why:** a zero limit silently turned a feature off or made every call fail; a crashed update left litter nobody reads or removes; the copied loop had to be kept in step with the original by hand. An age rule for temp files cannot promise a write is not in progress.
+- **Where:** `src/model/limits.rs`, `src/project/config.rs`, `src/project/config_cleanup.rs`, `src/parse/budget.rs`, `src/tools/structure_exec.rs`, `src/tools/mechanic_scan.rs`, `src/evidence/calls/query_calls.rs`.
+- **Reversible:** yes. The watch zero refusal is two lines in `apply_sync_and_watch_overrides` (back to `parse_override`).
+
+## C4: only the open-failure rebuild re-checks under the lock
+- **What:** `open_or_rebuild` discards through `store::discard_if_still_unusable`, which re-checks `user_version` under the write lock. The project-row mismatch discard in `verify_metadata_or_rebuild` and `tools/project_control.rs` recovery still use `discard_corrupt_database`: their database is at the current schema version by definition, so a version re-check cannot tell a repaired file from a stale one.
+- **Why:** the observed race (and the version-mismatch race) is on the open path; a row-level re-check needs a design decision, and `tools/**` is outside this item.
+- **Where:** `src/store/discard.rs`, `src/sync/manager_orchestration.rs`.
+- **Reversible:** yes.
+
+## C5: mechanic scan cache key, bound and health fields
+- **What:** (1) The cache key also carries the call's `pattern` glob and the project database path, beyond (revision, id, language, query, source): a `pattern` limits the files scanned, so a result is only valid for the glob it was computed under. (2) Default budget 32 MiB, the size of `max_query_response_bytes` in every profile; no better-justified number exists in the limits. The budget is by estimate (path + detail bytes + 64 per row, + 256 per entry plus key text). (3) Rows are retained only while a pass's estimate stays under the budget; an entry that outgrows it is counted in `skipped_too_large` and pages stream from the database as before. (4) `health.mechanic_cache` also reports `hits` and `misses` (a miss is one scan) so "no parse" is observable; `health` has no operator-detail split yet, so the object sits at top level and C2 should place it. (5) The cache lives in `src/project/mechanic_scan_cache.rs` (plain data, no `tools` types) and `SourceSyncManager` holds it, so `sync` does not depend on `tools`. (6) Cached detail text is clipped to the detail cap plus one character, as `leads` rows already are. (7) The existing spent-budget test now writes a file first, since `add` caches its first count.
+- **Why:** correctness for the glob; a bound so a huge-hit query cannot hold memory; layering.
+- **Where:** `src/project/mechanic_scan_cache.rs`, `src/sync/manager.rs`, `src/tools/mechanic_scan_cached.rs`, `src/tools/leads_page.rs`, `src/tools/leads_custom.rs`, `src/tools/health.rs`.
+- **Reversible:** yes; remove the cache scope from `leads_page::Scope`.
+
+## C5 follow-up: one retention budget per scan pass
+- **What:** The rows a scan pass retains for caching share one budget (the cache budget) across all entries of the pass, instead of one budget per missed entry. The entry whose row would take the pass past the budget drops its rows and releases their bytes; it is counted in `skipped_too_large` and answered exactly, just not cached. So `skipped_too_large` now also counts an entry that fit the budget alone but not beside the others in the same pass.
+- **Why:** per-entry budgets let a call selecting N uncached entries (64 session + 64 persisted) hold N x 32 MiB at once.
+- **Where:** `src/tools/mechanic_scan_cached.rs` (`Pass`).
+- **Reversible:** yes; give each entry its own counter again.
+
+## C1: one nested `page` object rather than flattened fields
+- **What:** The shared struct `tools::page::Page` is embedded as a nested field named `page` on `LeadsResponse`, `QueryResponse`, `StructureResponse` and `FindingReadResponse` (and so on `MechanicResponse.first_count`), not `#[serde(flatten)]`ed. Each response's top-level `revision_id` moved into `page.revision_id`.
+- **Why:** nesting makes the shared contract one `$defs/Page` entry that every output schema references, so the recorded surface proves the five schemas share it and a description cannot drift per tool; flattening inlines eight properties per tool, which is exactly the per-tool dialect D8 recorded.
+- **Where:** `src/tools/page.rs`, the four response types, `.planning/archive/mcp_surface.json`.
+- **Reversible:** yes, with another wire break: add `#[serde(flatten)]` on each `page` field.
+
+## C1: `total`, `limited_by` and the clamp
+- **What:** (1) `page.total` is `Option<i64>`: exact for `leads` and `finding_read` (a `count(*)` over the same session/file filter in the same transaction), exact or null for `query` (null only when the count spends its budget; the reason moved from `total_rows_unavailable` to `total_unavailable`), and always null for `structure`, which cannot count matches without running every page. (2) `limited_by` is one enum for all tools: `none`, `limit` (leads), `page_bytes`, `ceiling`, `match_cap` (structure's existing `max_structure_matches`), `scan_window` and `time_budget` (structure's memory window and cancelled parse). (3) `page_bytes_clamped_from` became `limited_by: ceiling` on a page the byte budget cut while that budget was the ceiling; `ceiling` is also reported when the request equals the ceiling exactly, since a larger request could not enlarge the page either. On a page the clamp did not cut, the requested size is no longer echoed. (4) `structure`'s `page.complete` is false while either cursor remains (`next_offset` or `next_start_after_file`), so `complete` means the same thing on every tool.
+- **Why:** the brief asks for one meaning per field and "do not fake" a total; the clamp only matters to a caller when it cut the page.
+- **Where:** `src/tools/page.rs`, `src/tools/page_size.rs`, `src/tools/query.rs`, `src/tools/structure_page.rs`, `src/tools/structure_exec.rs`, `src/tools/finding_read.rs`, `src/tools/leads_page.rs`.
+- **Reversible:** yes.
+
+## C1: `mechanic list` carries no page
+- **What:** `mechanic`'s output schema embeds `Page` through `first_count` (a `leads` response, the add count). The `list` result (`mechanics`, `invalid`) gets no `page`, because it is not paged: it has no `offset` input and returns the whole catalogue in one response, as it did before C1 (64 session and 64 persisted entries at most, plus any persisted entries that failed to load).
+- **Why:** a `page` on an unpaged list would have to invent a `page_bytes` no budget applied, which is a false field.
+- **Where:** `src/tools/mechanic.rs`.
+- **Reversible:** yes, if `list` ever gains paging.
+
+## C2: `health` operator detail is one opaque `detail` object behind `verbose`
+- **What:** `health` takes `verbose` (default false). The default answer is `phase`, `remedy`, `watcher` = `{health}` and `database` = `{revision_id, file_count}`, nothing else. `verbose: true` adds `detail` with the rest of both groups (`watcher`: pending counts and sequences; `database`: `parser_pack_version`, `skipped_file_count`), `database_read_failed`, `server`, `system_memory` and `mechanic_cache`; no field appears in both places. In the output schema `detail` is an untyped object whose description lists its keys; the fields are typed in `src/tools/health.rs` and tabled in `docs/TROUBLESHOOTING.md`. The health output schema went from 12,409 to 5,976 characters; what remains is mostly the `HealthPhase` and `WatcherHealth` enum docs, which the default answer needs.
+- **Why:** the directive asks for the five actionable fields by default and a schema that stays small; typing `detail` in the schema kept the schema at 11,910 characters, so most of the D8 cost would have stayed in every `tools/list`. `database_read_failed` moved behind `verbose` because `phase` is `unknown` in exactly that case, so a model already gets the actionable signal.
+- **Where:** `src/tools/health.rs`, `src/server/handlers.rs`, `docs/TROUBLESHOOTING.md`, `.planning/ARCHITECTURE.md`, `README.md`.
+- **Reversible:** yes (type `detail` in the schema by dropping the `schemars(with)` attribute).
+
+## C2: which `query` failures carry `sql_error`
+- **What:** `sql_error` is attached when SQLite itself failed to compile or run the statement (`rusqlite::Error::SqliteFailure` or `SqlInputError` reaching `describe_error` with no budget recorded): syntax errors, unknown tables or columns, function and type errors. Refusals of the statement's kind (PRAGMA/ATTACH/DETACH, a non-SELECT wrapped as a subquery, more than one statement, comments only), spent VM-step or wall-clock budgets, duplicate column names and an over-cap value keep their messages and carry no code, as they did.
+- **Why:** the brief says refusals keep their current codes (none); a budget or cap message already names its own fix, and labelling it an SQL error would send the caller to the schema instead.
+- **Where:** `src/tools/query.rs`, `src/error_codes.rs`.
+- **Reversible:** yes.
+
+## C2: `unknown_language` is checked against the index, for any language the project lacks
+- **What:** a project-wide `structure` call first checks that some indexed, non-prose file with content has the requested language (the scan's own filter). If none does, it is refused with `unknown_language`; the message lists the languages the index holds (`SELECT DISTINCT language` over the same filter) and does not echo the requested name; the remedy is static. This covers a name the pack does not know (`klingon`, previously the pack's "not in the download manifest" text), a real grammar the project does not contain (`python` on a Rust-only project, previously an "Invalid node type" query error or an empty result after a possible grammar download), and a wrong case (`Rust`). Single-file calls take the language from the index and are unchanged; prose keeps A5's refusal.
+- **Why:** the brief asks for the detected languages from the index; checking before the pack also avoids a grammar fetch for a language the project cannot match.
+- **Where:** `src/tools/structure_source.rs`, `src/error_codes.rs`; the old `an_unsupported_language_is_refused_with_the_pack_error` test pinned the replaced behaviour and is superseded by `structure_language_tests.rs`.
+- **Reversible:** yes.
+
+## C2: `blast_radius.sql` split by what each statement answers
+- **What:** the three statements became `blast_radius_outbound.sql` (per-file outbound counts by `resolution_kind`), `blast_radius_inbound.sql` (per-file inbound counts plus distinct importing files) and `blast_radius_closure.sql` (the transitive closure of one file in both directions in one statement, a `direction` column of `imports`/`imported_by`). The old first statement mixed both count directions with a UNION ALL; it is now two recipes, and the old two closure statements are now one. `auth_attack_surface.sql` and `syntax_diagnostics.sql` read payload keys with `json_extract` instead of `LIKE` over payload text, which contradicted INSTRUCTIONS the same way the cookbook README example did.
+- **Why:** the three file names the directive gives map to inbound counts, outbound counts and closure; each recipe must run unedited as one `query` call, which a new test checks for every `examples/queries/*.sql`.
+- **Where:** `examples/queries/`, `src/resources.rs`, `README.md`, `examples/queries/README.md`.
+- **Reversible:** yes.
+
+## C2: first `report` after `project_control on` — mechanism found, fix outside C2's files
+- **What:** the deep-dive failure ("revision changed concurrently (expected rev-N, now rev-N+1); retry the call") comes from `SourceSyncManager::verify_and_drain` (`src/sync/manager_health.rs`). The first state-bearing call after a server starts finds the watcher `NeedsVerification`, runs a full publish, then drains (sweep plus event reconcile) whatever changed meanwhile; when the drain publishes, the function still returns the full publish's revision id, so the same call's `with_verified_read` refuses its own sync with `stale_revision`. A write landing in the project during the first call's publish reproduces it every time (a test sink that writes a file on the publish's `Completed` event); on a quiet project the drain publishes nothing, which is why the Wave A spot-check and the C2 stdio run did not reproduce it. It was not fixed between c3fc7f8 and 0f6bd1c (no commit touches that return; the c3fc7f8 binary also passes the quiet sequence). C2 adds the quiet on -> report test; the one-line fix (return `revision_after_sync` after the drain, as the healthy path does) and its regression test are outside C2's files and were handed to the Lead as a patch.
+- **Why:** `src/sync/` is not in C2's owned files.
+- **Where:** `src/sync/manager_health.rs` (not changed), `src/tools/report_first_call_tests.rs`.
+- **Reversible:** n/a.
+
+## C2: health `detail` typed one level deep on purpose
+- **What:** the `health` output schema names `detail`'s six top-level keys (`watcher`, `database`, `database_read_failed`, `server`, `system_memory`, `mechanic_cache`) but leaves each object's inner fields free-form (`#[schemars(with = "Map<String, Value>")]`); the wire output is unchanged. Commit 9ed41f3 had typed every inner struct, which doubled the schema from 5,851 to 11,685 characters.
+- **Why:** C2's goal is a small schema holding only what a model acts on. `check_mcp_surface` still sees a key rename or removal; inner fields are operator-facing and documented in docs/TROUBLESHOOTING.md.
+- **Where:** `src/tools/health.rs`, `.planning/archive/mcp_surface.json`.
+- **Reversible:** yes.
+
+## C3 changelog is stated against 1.0.10, not against intermediate commits
+- **What:** The 1.1.0 changelog lists "Breaking:" changes only where the shape 1.0.10 shipped changed (for example `query`'s `truncated`/`next_offset`/`revision_id` now under `page`, flat `health` now grouped). Fields, resources and tools that were added and renamed between 1.0.10 and HEAD (`leads`, `mechanic`, the resources, `structure`/`finding_read` paging, the `covers` list, `blast_radius.sql`) are described as Added; the C1/C2 removal lists in the briefs were not copied verbatim because most of those fields never shipped.
+- **Why:** A user upgrading from 1.0.10 cannot be broken by a field that was never released; listing it would be false.
+- **Where:** `CHANGELOG.md` `## [1.1.0]`.
+- **Reversible:** yes, a documentation edit.
+
+## C3 version bump touched three files outside the brief's list
+- **What:** `AGENTS.md` and `docs/RELEASING.md` each named the crate version in prose ("version `1.0.10`", "currently `1.0.10`") and were updated; `tests/update_cli_tests.rs` used `v1.1.0` as the fake "newer release", so with the crate at 1.1.0 it reported "already up to date"; the fixture release is now `v1.2.0`.
+- **Why:** leaving them would ship a stale statement and a failing test; the RELEASING.md artifact names are unchanged.
+- **Where:** `AGENTS.md`, `docs/RELEASING.md`, `tests/update_cli_tests.rs`.
+- **Reversible:** yes.
+
+## Result store (9.1): sweep failures, writer batching, planned reclaim, abort without ROLLBACK
+- **What:** (1) A startup-sweep failure is logged once, counted, and exposed in `StoreStats.sweep`; `open` still succeeds, because a sweep problem must not disable paging. (2) `push` inserts each row immediately inside the one transaction instead of buffering 1,000 rows; "batch" is the checkpoint every 1,000 rows (or 16 MiB of payload) where the size check and the test fault seam run. (3) Admission plans the reclaim set first and removes nothing when the result still would not fit (`Full`), instead of reclaiming and then refusing. (4) An aborted write closes the connection of its already-unlinked file rather than issuing `ROLLBACK`, which is undefined under `journal_mode=OFF`. (5) Transient on-disk bytes while writes are in flight are bounded by (concurrent writers x budget), because each writer self-aborts once its own file exceeds the whole budget; the sum of admitted bytes is always within the budget. (6) The store removes its own lock file on drop; the new limits `max_result_store_bytes` and `result_active_grace_secs` are `u64` and derive from the profile's `max_query_response_bytes` (x4) at profile construction, not from an env-overridden response ceiling.
+- **Why:** (1) fail visible, not fail closed on a cleanup problem; (2) buffering rows of up to `max_query_value_bytes` each would hold gigabytes in memory; (3) a refusal should not destroy results for nothing; (4) correctness under the pragma; (5) the budget cannot bound disk used by unadmitted writes without serialising writers; (6) tidy exit, and a response-ceiling override should not silently resize the store.
+- **Where:** `src/store/result_store/{owner,writer,registry,store}.rs`, `src/model/{limits,profile}.rs`.
+## 9.0: NaN cannot reach a query result, so the NaN fixture records NULLs
+- **What:** `query_nan_expressions` records NULL cells and an empty `non_finite_cells`; no REAL NaN case exists. A `cfg(test)` scalar function `golden_nan()` was added to `src/store/sql_functions.rs` to prove it: even a UDF returning `f64::NAN` reaches the result as NULL.
+- **Why:** SQLite turns NaN into NULL when a result is set, and the bundled build has no math functions. The brief asked for the route to be recorded.
+- **Where:** `src/store/sql_functions.rs` (cfg(test) only), `tests/golden/phase9/README.md`.
+- **Reversible:** yes.
+
+## 9.0: golden masks only `next_offset`-style paging keys
+- **What:** the comparison masks `offset`, `next_offset`, `expected_revision`, `cursor` by key name; `next_start_after_file` and `page.limited_by`/`bytes_used` are compared.
+- **Why:** these are the only paging-only fields present in today's responses; the rest describe content. 9.3 extends the mask if it changes more.
+- **Where:** `src/tools/golden_phase9_tests.rs`, `tests/golden/phase9/README.md`.
+- **Reversible:** yes.
+
+## Result store (9.1b): lock file opened without libc
+- **What:** the owner-lock file is opened with `create_new`, and an existing one only when `symlink_metadata` reports a regular file and the opened handle has the same dev/ino. `O_NOFOLLOW` is not used.
+- **Why:** `libc` is not a direct dependency and the brief forbids adding one.
+- **Where:** `src/store/result_store/platform.rs`.
+- **Reversible:** yes.
+
+## 9.2: `next_offset` stays on `Page`; the new fields are omitted when empty
+- **What:** `Page` gains `cursor` and `completeness` as `Option`s with `skip_serializing_if`, and keeps `next_offset`. The five `Page { .. }` construction sites got `cursor: None, completeness: None` and nothing else. `Completeness` is `complete` | `partial{limited_by, resume_after_file, files_scanned, files_total}` and `PageLimit` gained `Deserialize` so it can be stored.
+- **Why:** removing `next_offset` would force all tools to migrate in one commit; omitting the new fields keeps unmigrated wire JSON byte-identical. A migrated tool serialises no `cursor` key on its last page until 9.3 decides otherwise.
+- **Where:** `src/tools/page.rs`, `src/tools/{finding_read,query,structure_page,leads_page}.rs` (mechanical field init only).
+- **Reversible:** yes; the last 9.3 migration removes `next_offset`.
+
+## 9.2: one result store slot on the manager, keyed by runtime directory
+- **What:** `SourceSyncManager` holds one `ResultStoreSlot` (new `src/sync/result_stores.rs`). A request for another runtime dir drops the current store and opens a new one; a continuation uses the current store and never opens one.
+- **Why:** a continuation carries no path, so it cannot name a directory; a map of stores would keep other projects' stores and budgets alive after `project_control`. The price: a cursor issued before a project switch reads as `unknown_cursor`.
+- **Where:** `src/sync/result_stores.rs`, `src/sync/manager.rs` (field, accessor, test constructor), `src/sync/mod.rs`.
+- **Reversible:** yes.
+
+## 9.2: paginate items are `pub`, and the page is built with byte fields the tool overwrites
+- **What:** `paginate`, its types, `ResultStoreSlot` and `store_error` are `pub` (re-exported through `tools`). `Served.page` carries `bytes_used: 0` and `limited_by` `page_bytes` (or `none` on the last page); the tool, which measured bytes in its `accept` closure, overwrites them. The `project` label stored in a result is the constant `default`.
+- **Why:** nothing calls `paginate` until 9.3, and the lint contract forbids `allow(dead_code)`; reachable `pub` API is the only warning-free form, as for `ensure_synced`. The byte accounting lives in the tool's `accept` closure, not in the store.
+- **Where:** `src/tools/paginate.rs`, `src/tools/context.rs`, `src/tools/mod.rs`, `src/error_codes.rs`.
+- **Reversible:** yes; narrow to `pub(crate)` once 9.3 uses them.
+
+## 9.2: the 9.1 fault seam is not reachable, so unavailable is tested through the real failure
+- **What:** `result_store_unavailable` is tested by blocking `<runtime>/results` with a regular file, which makes `ResultStore::open` fail for real. The `Fault` seam lives in a private module of the store and was not widened.
+- **Why:** the brief allows widening only where 9.1 already exposes it.
+- **Where:** `src/tools/paginate_tests.rs`.
+- **Reversible:** yes.
+
+## 9.2: a cursor of another tool is detected after the read
+- **What:** the tool check runs on the stored `meta.tool` after `read_page`, so a wrong-tool cursor still renews the result's last access and, on its final page, marks it delivered.
+- **Why:** the 9.1 API has no metadata lookup without a read; adding one is a store change the brief reserves to the lead. The effect is limited to reclaim priority of a result the caller already holds a valid cursor for.
+- **Where:** `src/tools/paginate.rs`.
+- **Reversible:** yes (add `ResultStore::meta_of(id)`).
+
+## 9.3-0: with a cursor, path and request-shaping parameters are ignored
+- **What:** `page_request` resolves a request with a cursor to `PageRequest::Cursor` even when `path` (or any other request-shaping parameter) is also sent; only `page_bytes` is honoured.
+- **Why:** a cursor names a stored result, so the original request already fixed everything else; refusing the extras would break callers that resend their full request.
+- **Where:** `src/tools/paginate.rs` (`page_request`).
+- **Reversible:** yes.
+
+## 9.3 finding_read: a continuation sizes its page from the process limits
+- **What:** `finding_read` has no `page_bytes` request field. A new request sizes its page from the project's resolved limits (`default_page_bytes` from `config.json`, as before); a continuation names no project (`path` is ignored), so it uses the process limits. A project that sets `default_page_bytes` in `config.json` therefore has page one cut at that budget and later pages at the process default; `page.page_bytes` reports the budget of the page it is on.
+- **Why:** the store does not expose the result's project directory to a tool, and a continuation must not resolve a path. Adding a `page_bytes` field was a surface change outside the brief.
+- **Where:** `src/tools/finding_read.rs` (`limits_for`).
+- **Reversible:** yes; add `page_bytes: Option<usize>` to the request (as `leads`/`query` have) or expose the project root from the stored result.
+
+## 9.3 finding_read: each stored row carries its predecessor's serialized size
+- **What:** the stored row has an extra column `prev_bytes` (serialized size of the row before it, 0 for the first).
+- **Why:** the store never offers the first row of a page to `accept`, so the byte cut could not count it and a page could exceed `page_bytes`. The first accepted-or-not row's size is read from the next row's `prev_bytes`.
+- **Where:** `src/tools/finding_read_rows.rs` (`StoredFinding`, `PageCut`).
+- **Reversible:** yes; if `paginate` ever offers the first row to `accept`, drop the column.
+
+## 9.3 finding_read: new file finding_read_rows.rs and finding_read_paged_tests.rs
+- **What:** `src/tools/finding_read_rows.rs` (production, declared by `#[path]` in finding_read.rs, carries a line exception) and `src/tools/finding_read_paged_tests.rs` (tests).
+- **Why:** finding_read.rs would have been 354 code lines; the split is along the stored-result responsibility. The old test file would have passed 500 lines.
+- **Where:** Lead must add `finding_read_rows.rs` to the module map in `.planning/MODULE_MAP.md` and raise the `*_tests.rs` count in `.planning/ARCHITECTURE.md` by 1.
+- **Reversible:** yes.
+
+## 9.3 finding_read: tests removed with the removed parameters
+- **What:** removed `finding_read_refuses_an_offset_past_the_supported_maximum`, `finding_read_pages_by_byte_budget_...`, both `..._expected_revision_...` pins and `an_oversized_finding_read_expected_revision_is_refused`; covered by the new `paged_finding_read_*` tests. The golden offset-1 case now reads page two by cursor after a 300-byte project page budget made page one a single row; the fixture is unchanged.
+- **Why:** the parameters no longer exist.
+- **Where:** `src/tools/finding_read_tests.rs`, `src/tools/golden_phase9_finding_read_tests.rs`.
+- **Reversible:** n/a.
+
+## 9.3 mechanic: add's first count is continued by the `leads` cursor, not a `mechanic` cursor
+- **What:** `mechanic add` keeps returning `first_count` (a `LeadsResponse`) from `leads_with_catalog`; its `page.cursor` (once the leads lane lands) is a `leads` cursor and is continued by calling `leads`. Only `list` stores a `mechanic` result. The registration runs once, on the request without a cursor; a request with a cursor is always a list continuation and never registers or removes, whatever `action` it names.
+- **Why:** the count is the leads engine's result (counts, rows, files); re-implementing it under tool `mechanic` would duplicate leads and would be refused by the wrong-tool cursor check anyway. `Page` docs already state "the `mechanic add` first count, which is a `leads` response". A leads continuation after the mechanic is removed still serves the stored result (it is a stored leads result).
+- **Where:** `src/tools/mechanic.rs`, `mechanic_register.rs`, `mechanic_list.rs`.
+- **Reversible:** yes.
+
+## 9.3 mechanic: `list` has a `page` block; the golden compares it without `page`
+- **What:** `MechanicResponse.page: Option<Page>` (skipped when None, so add/remove are unchanged); `list` fills it and is paged by `page_bytes` (no `limit`). The golden test asserts the block, then removes `page` before comparing to the unchanged `mechanic_list.json`.
+- **Why:** the fixture predates the cursor; `mask_paging` masks only the five paging keys, and a new top-level `page` object is not one of them. `golden_phase9_support.rs` is not mine.
+- **Where:** `src/tools/golden_phase9_mechanic_tests.rs`.
+- **Reversible:** yes (extend `PAGING_KEYS`/re-record at 9.5).
+
+## 9.3 mechanic: `path` optional and `cursor` added on every action; `list` now syncs
+- **What:** `path` is optional (required without a cursor), `cursor` is new, `action` stays required but is ignored with a cursor. `list` goes through `paginate`, so a fresh list now syncs the project (it did not before).
+- **Why:** the shared layer syncs on every fresh request; the stored rows then carry the page-one `revision_id`.
+- **Where:** `src/tools/mechanic.rs`, `mechanic_list.rs`.
+- **Reversible:** yes.
+
+## 9.3 mechanic: byte cut cannot count the first row
+- **What:** the store never offers a page's first row to `accept`, so the `page_bytes` cut counts only rows after the first; a page may exceed `page_bytes` by at most one listing (about 17 KiB worst case). `bytes_used` reports the true size.
+- **Why:** store API (`read_page`) contract; not changeable from this lane. Suggest offering the first row to `accept` (still always taking it) so every tool can count it.
+- **Where:** `src/tools/mechanic_list.rs`.
+- **Reversible:** yes.
+
+## structure: `complete` stays false on the last page of a partial result
+- **What:** For a window-limited or time-budget result the final page has no `cursor`, `page.complete` is false, `page.limited_by` is the completeness bound (`scan_window`/`time_budget`) and `page.completeness` is `partial`. Only a `complete` scan reports `complete: true`.
+- **Why:** Today's response reports `complete: false` there; reading it as exhaustive would hide unscanned files. `Page` docs for `structure` already say `complete` also means no scan window remains.
+- **Where:** `src/tools/structure_page.rs` (`structure_response`).
+- **Reversible:** Yes; one expression. Note `cursor` is then absent while `complete` is false (resume is a new request).
+
+## structure: `page.total` stays null
+- **What:** The stored row count is not reported as `total`; the response overrides it to null.
+- **Why:** The golden fixtures record null, and a count of a window-limited scan would misstate the project.
+- **Where:** `src/tools/structure_page.rs`.
+- **Reversible:** Yes.
+
+## structure: first row size is carried by the second row
+- **What:** Stored rows carry two extra columns, `json_bytes` and `prev_json_bytes`.
+- **Why:** The store never offers a page's first row to `accept`, so the byte budget could not include it; the second row of each page supplies the first row's size. A fix inside `paginate`/the reader (offer the first row too) would make this unnecessary.
+- **Where:** `src/tools/structure_stored.rs`, `structure_exec.rs`.
+- **Reversible:** Yes.
+
+## structure: `path` stays a `String` (default empty) rather than `Option<String>`
+- **What:** `path` is `#[serde(default)] String`; empty means absent (schema: not required).
+- **Why:** `src/tools/leads_line_tests.rs` (not in this lane) builds `StructureRequest { path: String, .. }`; `Option` would break its compile.
+- **Where:** `src/tools/structure.rs`.
+- **Reversible:** Yes: switch to `Option<String>` and add `Some(..)` in `leads_line_tests.rs`.
+
+## structure: continuation uses process limits; `resume_after_file` for a time-out is the timed-out file
+- **What:** A cursor call has no project to read config from, so `page_bytes` default/ceiling and the match cap come from `process_limits()`. For `time_budget`, `resume_after_file` is the file whose parse was cancelled (as `next_start_after_file` was before), not the last file fully scanned.
+- **Why:** Resuming after the last fully scanned file would re-parse the timed-out file and time out again with no progress.
+- **Where:** `src/tools/structure.rs`, `structure_page.rs`.
+- **Reversible:** Yes.
+
+## structure: the scan runs inside the verified read transaction
+- **What:** Window load, parse and match scan all run in the one read transaction `paginate` opens (previously the transaction ended before parsing).
+- **Why:** Rows must be pushed inside `produce`; this also makes window and scan share one revision. Cost: the snapshot is held up to `max_structure_execution_time`, which delays WAL truncation meanwhile.
+- **Where:** `src/tools/structure_exec.rs` (`produce`).
+- **Reversible:** Partly (would need a producer that takes the window pre-loaded).
+
+## query: columns are read in a validating pre-pass before the result is created
+- **What:** A new `query` call syncs and prepares the statement (read transaction) once to learn its column names, then `paginate` syncs again and materialises. The column names are also stored as the result's extra (`QueryMeta`), and a continuation first reads the page's first row through `paginate` (accept = `Take::No`) to get them and to seed the byte count, then reads the page with the real cut.
+- **Why:** `PageSpec.columns` is needed before the writer exists, but a query's columns are only known after SQLite prepares it. The store never offers a page's first row to `accept`, yet the byte cut must count it (golden `bytes_used` and page cuts are byte-identical to the old tool). Statement errors are now also refused before any store space is claimed.
+- **Where:** `src/tools/query_exec.rs` (`fresh_page`, `continuation_page`, `result_columns`), `src/tools/query_value.rs` (`PageBuilder`).
+- **Reversible:** Yes. If `paginate` offered the first row to `accept` (or `PageSpec.columns` could be supplied by `produce`), the pre-pass and the peek read disappear.
+
+## query: `total_unavailable` removed from the response
+- **What:** The field and its count pass are gone; `page.total` is the stored row count. The 9.0 fixtures still contain `"total_unavailable": null`, so the golden test helper puts that null back before comparing (fixtures untouched).
+- **Why:** The plan removes it; `golden_phase9_support::mask_paging` is not mine to extend.
+- **Where:** `src/tools/query.rs`, `src/tools/golden_phase9_query_tests.rs` (`restore_removed_field`).
+- **Reversible:** Yes; 9.5 can add `total_unavailable` to the masked keys and delete the helper (or re-record).
+
+## query: a continuation runs under the process limits
+- **What:** With a cursor there is no `path`, so `query` uses `process_limits()` for `page_bytes` resolution (default, ceiling) instead of the project's config.
+- **Why:** The cursor names no project; the stored result does not record the limits.
+- **Where:** `src/tools/query.rs` (`query`).
+- **Reversible:** Yes (store the effective limits in the result extra).
+
+## query: edits outside the owned list (compile- or semantics-forced)
+- **What:** `QueryRequest` literals updated in `src/server_runner_tests.rs`, `src/resources_tests.rs`, `src/tools/redaction_tests.rs`, `src/tools/leads_language_tests.rs`, `src/tools/leads_line_tests.rs`, `fuzz/fuzz_targets/query_sql.rs`. In `server_runner_tests.rs` the test that provoked `stale_revision` through `query` now provokes `unknown_cursor` with a sentinel cursor and is renamed `a_failed_tool_call_logs_the_machine_readable_code_but_not_the_cursor_token`.
+- **Why:** `offset`/`expected_revision` no longer exist on the request; `query` can no longer return `stale_revision` from a pin.
+- **Where:** the files above.
+- **Reversible:** No (follows from the removal).
+
+## leads continuation honours limit and page_bytes
+- **What:** A `leads` call with a `cursor` ignores `path`, `mechanic`, `pattern` and `mode` but still applies `limit` and `page_bytes` (and the process limits, since no project is named).
+- **Why:** Both only cut the page, they do not shape the result. The golden page 2 (limit 5 on the continuation) needs `limit` to be honoured; `page_bytes` was already decided in 9.3-0.
+- **Where:** `src/tools/leads.rs` (`leads`, `leads_with_catalog`), `src/tools/leads_page.rs` (`page`).
+- **Reversible:** Yes; ignore `limit` on a continuation and the golden page 2 changes.
+
+## Registered-mechanic scans stop as partial results on the call deadline only
+- **What:** A spent `max_structure_execution_time` no longer fails a `leads` call with `mechanic_budget_exhausted`. The scan stops, the rows of fully scanned files are the result, and `page.completeness` is `partial{limited_by: time_budget, resume_after_file, files_scanned, files_total}` on every page. There is no scan window for registered scans (they stream file by file), so `scan_window` is never reported by `leads`. `mechanic_budget_exhausted` remains only where rows cannot be reported: an entry too large for the scan cache budget whose second scan is also stopped.
+- **Why:** The directive asks for partial semantics; a stop in the middle of a file would otherwise repeat or lose hits on resume, so a file the deadline cuts contributes no hit (hits are held until the file is done). `resume_after_file` is the last file fully scanned in the language that was running; `files_scanned`/`files_total` span all languages of the scan. Counts of a stopped entry are floors. No new request parameter: resuming is a new call that rescans (narrow `pattern` or raise the knob), as documented on `path`/`mechanic`.
+- **Where:** `src/tools/mechanic_scan.rs` (`ScanEnd`, `Stop`), `mechanic_scan_cached.rs`, `leads_custom.rs`, `leads_page.rs`. The brief's test name `..._stopped_by_window_...` is `paged_leads_custom_scan_stopped_by_deadline_is_partial_on_every_page` (plus the engine test `a_scan_stopped_between_files_reports_the_last_file_it_finished`).
+- **Reversible:** Yes, but it changes a documented error into a partial result.
+
+## leads stores per-row sizes and a running file count
+- **What:** Each stored row carries `files_seen` (distinct files up to and including it), its own serialized size and the previous row's size. A counts-only call also stores an empty result.
+- **Why:** The store's `accept` closure is never offered the first row of a page, so the byte cut needs the first row's size from the second row; `files_covered` and `bytes_used` must be exact on a continuation that cannot see earlier rows. Going through `paginate` for counts-only keeps one path and one `revision_id` rule.
+- **Where:** `src/tools/leads_stored.rs`, `leads_page.rs`.
+- **Reversible:** Yes (storage layout only).
+
+## Bounded cursor input
+- **What:** A `cursor` over 1024 bytes is refused with `invalid_params` ("cursor exceeds 1024 bytes") before the store sees it.
+- **Why:** Every other free-form `leads` field has a byte cap; the real token is under 200 bytes.
+- **Where:** `src/tools/leads.rs` (`MAX_CURSOR_BYTES`).
+- **Reversible:** Yes.
+
+## Shared paging API: staged first-row flag, lazy writer, stored page budget
+- **What:** (1) `PageSpec.offer_first_row` (default false; `PageSpec::typed` sets false) makes the reader offer the first row of a page to `accept` with its verdict ignored; the store gained `ResultStore::read_page_with(id, from_ord, offer_first_row, accept)` and `read_page` is `read_page_with(.., false, ..)`, so tools are unchanged until the follow-up flips them. (2) `RowSink::set_columns` (once, before the first push, only when `PageSpec.columns` is empty) and `Served.columns`; the writer is created lazily inside `RowSink` because the SQLite schema and insert statement depend on the column count, so `ResultWriter` (writer.rs, not changed) is begun at `set_columns` rather than before `produce`. Misuse is a private typed `SinkError` mapped to an internal error. (3) The effective page budget is stored in the result's record (`Stored.page_bytes`); `paginate_with` (`pub(super)`, `accept_for: FnOnce(usize) -> A`) uses `PageSpec.requested_page_bytes` else the stored budget on a continuation. `paginate` keeps the old behaviour by pinning `requested_page_bytes = Some(spec.page_bytes)`. Also added `ResultStore::meta_of` so a continuation checks the tool and reads the budget in one registry lookup. `tool_of` is kept.
+- **Why:** The three gaps every 9.3 builder worked around; staged so the five tools compile and pass unchanged. The ceiling clamp stays with the tool (`page_size::resolve`), `paginate` has no limits, so the clamp test feeds the resolved value in.
+- **Where:** `src/store/result_store/{reader,store}.rs`, `src/tools/paginate.rs`, mechanical new fields in `src/tools/query_exec.rs`; tests in `paging_tests.rs`, `paginate_tests.rs`, new `paginate_late_tests.rs` (paginate_tests.rs would pass 500 lines; ARCHITECTURE.md count 116 -> 117). `paginate.rs` carries a line-exception annotation (280 code lines).
+- **Reversible:** Yes; the follow-up deletes `offer_first_row` and the legacy `paginate` pinning.
+
+## leads: page-one `limit` lives on every stored row, not in the extras
+- **What:** Stored rows carry a `limit` column (0 = none) instead of the former `bytes`/`prev_bytes` columns. The page-one `at_ceiling` flag is in `Extras`.
+- **Why:** `accept` runs before the extras are decoded, and `paginate_with` hands `accept_for` only the effective byte budget, so extras cannot reach the cut. With `offer_first_row` the first offered row carries the limit. A `limit` in the result's stored record (next to `page_bytes`) would be cleaner and would delete the column.
+- **Where:** `src/tools/leads_stored.rs`, `leads_page.rs`.
+- **Reversible:** Yes (storage layout only).
+
+## leads: row bytes measured in `accept`, compact vs full by the mechanic column
+- **What:** `accept` serializes each offered row in its response form to count bytes (`bytes_used` is the sum over taken rows). Compact is recognised by a non-empty `mechanic` (full rows leave it empty).
+- **Why:** The per-row size columns are gone; the extras (which say the mode) are not available inside `accept`. Registered and built-in mechanic ids are never empty.
+- **Where:** `src/tools/leads_stored.rs` (`response_bytes`), `leads_page.rs` (`accept`).
+- **Reversible:** Yes.
+
+## leads: a continuation still reads process limits for an explicit `page_bytes`
+- **What:** `leads()` still resolves `process_limits()` on a cursor call; they are used only to clamp an explicit `page_bytes` to the ceiling. Without `page_bytes` the stored budget (and stored ceiling flag) applies.
+- **Why:** The ceiling clamp stays with the tool (9.3-S decision); a cursor names no project.
+- **Where:** `src/tools/leads.rs`.
+- **Reversible:** Yes.
+
+## query: a continuation reads the stored column names with a registry lookup, not a peek read
+- **What:** `query_exec::stored_columns` decodes the cursor and reads `ResultStore::meta_of(..).columns` before `paginate_with` runs; the pre-pass sync/prepare, the peek page read, `QueryMeta` (extra is now `()`) and `result_columns` are gone. A new request syncs once and reads once; `Served.columns` is not used.
+- **Why:** `accept` must measure rows with the column names, and `paginate_with` hands `accept_for` only the budget, not the columns, so a continuation has no other way to know them before the read. The lookup reads no row and renews nothing.
+- **Where:** `src/tools/query_exec.rs`.
+- **Reversible:** Yes: if `accept_for` also received the stored columns the lookup disappears.
+
+## query: the first row is clipped inside the page read, so a clip failure leaves a stored, undelivered result
+- **What:** The first row is measured/clipped by `accept` (offer_first_row) instead of during `produce`; an error there now fails the call after the result was stored (it expires unread).
+- **Why:** The first row is no longer seen during materialisation. Duplicate column names and statement errors are still refused before anything is stored.
+- **Where:** `src/tools/query_value.rs`, `query_exec.rs`.
+- **Reversible:** Yes.
+
+## query: `limited_by: ceiling` on a continuation follows the applied budget
+- **What:** `limited_by` is `ceiling` when the budget that applied (stored or requested) is >= the process ceiling.
+- **Why:** A continuation without `page_bytes` inherits page one's budget, so the request-resolved `PageSize` no longer describes the cut.
+- **Where:** `src/tools/query.rs`.
+- **Reversible:** Yes.
+
+## structure, finding_read, mechanic: a continuation still reads process limits for caps
+- **What:** The stored page budget replaces the default budget on a continuation, but `structure` still uses `process_limits()` on a continuation for the ceiling (clamping an explicit `page_bytes`) and `max_structure_matches`; `mechanic list` uses them only to clamp an explicit `page_bytes`. `finding_read` reads none (the ceiling flag is stored in its extra, `FindingExtra.at_ceiling`; `mechanic list` stores `ListExtra.at_ceiling` likewise).
+- **Why:** `accept_for` runs before the stored extras are read, so the match cap and the clamp cannot come from them without a larger change to `paginate_with`.
+- **Where:** `src/tools/structure.rs`, `src/tools/mechanic_list.rs`, `src/tools/finding_read{,_rows}.rs`.
+- **Reversible:** Yes (store the cap and ceiling with the budget in `paginate_with`).
+
+## finding_read: golden case finding_read_offset1 pinned the old default-budget continuation
+- **What:** The golden test builds page two from a 300-byte page one and expects page two under the 65536 default (two rows). With the stored budget page two is one row at 300 bytes.
+- **Where:** `src/tools/golden_phase9_finding_read_tests.rs`, `tests/golden/phase9/finding_read_offset1.json`.
+
+## finding_read offset1 golden compared at content level
+- What: the test case `finding_read_offset1` reads all pages by cursor after page one and asserts the concatenated findings equal the fixture's `findings` array; the fixture's `page` block is not compared.
+- Why: a cursor continuation keeps page one's stored 300-byte budget, so page two holds one row; the fixture pins the pre-cursor default-budget page (two rows, page_bytes 65536).
+- Where: src/tools/golden_phase9_finding_read_tests.rs (`paged_finding_read_matches_the_golden_apart_from_paging_fields`). Fixtures untouched. Decided by the Lead.
+- Reversible: yes, restore check_case for that case if the fixture is re-recorded.
+
+## Paging migration finished: accept gets a PageContext, first row always offered, Page.next_offset removed
+- **What:** `paginate` (one entry; `paginate_with` and the pinning shim are gone) hands `accept_for` a `PageContext { page_bytes, columns, extra }` built identically for a new request and a continuation, so the earlier workarounds are deleted: leads' per-row `limit` column (the limit is now in `Extras`), query's `meta_of`/`stored_columns` lookup and its `RefCell` builder, and the process-limit reads for the match cap and ceiling on a structure continuation (stored in `StructureExtra.cut`; query stores `QueryExtra.at_ceiling`). A request's own explicit `page_bytes` is still clamped by the tool with the process limits. `PageSpec.offer_first_row` and `ResultStore::read_page_with` are gone: `read_page` always offers the first row (its verdict ignored). `Page.next_offset` is removed from the struct and the wire; the golden mask list keeps it. The earlier entries "leads: page-one `limit` lives on every stored row", "leads: row bytes measured in `accept`..." (mechanic-column detection stays), "query: a continuation reads the stored column names with a registry lookup" and "structure, finding_read, mechanic: a continuation still reads process limits for caps" are superseded by this.
+- **Why:** Latent bug: a continuation re-derived limits from the process, not from the request that made the result. The accept closure owns what it takes from the context (`accept_for` gets `&PageContext`, so the returned closure cannot borrow it); query clones the column names once per page.
+- **Where:** `src/tools/{paginate,leads_page,leads_stored,query_exec,query,structure,structure_stored,structure_exec,structure_page,finding_read,mechanic_list,page}.rs`, `src/store/result_store/reader.rs` (`read_typed` keeps the offered first row in its typed page instead of converting it twice).
+- **Reversible:** Yes, except the removed wire field `next_offset`. Stale mentions of `next_offset`/`offset`/`expected_revision` remain in `src/server.rs` INSTRUCTIONS, `src/server/handlers.rs` (leads, finding_read descriptions), `src/model/limits.rs` (`default_page_bytes` doc), `README.md` and `.planning/ARCHITECTURE.md`: left for 9.5 (surface and docs), which re-records `mcp_surface.json`.
+
+## 9.5: the store budget follows the effective response ceiling (reverses 9.1 point 6)
+- **What:** `ResourceLimits::from_env` recomputes `max_result_store_bytes` as 4 x the env-overridden `max_query_response_bytes` before `SLUGAUDIT_MAX_RESULT_STORE_BYTES` is applied. 9.1 had derived it at profile construction only. `config.json` cannot set the response ceiling, so only the env path needed it.
+- **Why:** the brief (item 4) reverses the 9.1 choice: a response-ceiling override should resize the store unless the store's own variable is set.
+- **Where:** `src/model/limits.rs`, `src/model/profile.rs` (`result_store_budget` is `pub(super)`).
+- **Reversible:** yes.
+
+## 9.5: no dead total-rows budget was left to remove
+- **What:** the query migration (9.3) had already removed the counting budget and `total_unavailable` from limits, profile, config and docs. Only the CHANGELOG sentence naming `total_unavailable` and the golden-test re-add helper remained; both are gone. The wire field was `total_unavailable`, not `total_rows_unavailable` as the brief spells it.
+- **Why:** nothing else to delete; grep over src, docs, README, ARCHITECTURE, config found no other trace.
+- **Where:** `CHANGELOG.md`, `src/tools/golden_phase9_{support,query_tests}.rs`.
+- **Reversible:** n/a.
+
+## 9.5: wrong-tool cursor counting through a new store method; no extra log
+- **What:** `ResultStore::refuse_foreign_tool()` increments `unknown_cursors` and returns `Unknown`; it does not log, because `continue_page` already logs the refusal ("logged once"). The no-store-yet case cannot be counted (there is no store).
+- **Why:** `unknown_cursor()` is `pub(super)` and logs "cursor refused: unknown" itself.
+- **Where:** `src/store/result_store/store.rs`, `src/tools/paginate.rs`.
+- **Reversible:** yes.
+
+## 9.5: stored project label derived from the runtime directory
+- **What:** `project` is `redacted_path(<runtime_dir>/../..)`, the project root's path id as the logs print it. `SyncedProject` carries no root, so the root is the runtime directory's grandparent (`<root>/.planning/slugaudit`).
+- **Why:** avoids widening `SyncedProject`. If the runtime layout ever changes, `project_label` fails with an internal error rather than storing a wrong label.
+- **Where:** `src/tools/paginate.rs`.
+- **Reversible:** yes.
+
+## 9.5: three edits outside the listed files
+- **What:** (1) `src/tools/project_control.rs`: the `revision_id` doc comment told callers to pass it back as `expected_revision`; it is a surface string and would have left a stale field in `mcp_surface.json`. (2) `.planning/MODULE_MAP.md`: new row for `health_result_store.rs`. (3) `src/store/connection_guards.rs` carries a line exception (205 code lines).
+- **Why:** surface consistency; the common rule for new files; the documented 200-300 annotation.
+- **Where:** as listed.
+- **Reversible:** yes.
+
+## 9.5: found, not changed (outside the owned list)
+- **What:** `error_codes::stale_page_payload` and its test are now dead outside tests (no caller after the 9.3 migrations). `stale_revision` itself is still used by the CAS paths. The Lead may delete the helper and its test.
+- **Where:** `src/error_codes.rs`.
+- **Reversible:** n/a.
+
+## 9.5: INSTRUCTIONS paging paragraph drops the `limited_by` value list and `bytes_used`/`returned`
+- **What:** the size test caps INSTRUCTIONS at 5,500 characters and the tree was already at 5,485; the rewritten paragraph names the fields a caller acts on (`total`, `complete`, `cursor`, `page_bytes`, `limited_by`) and leaves the value list to the schema. The budget was not raised.
+- **Why:** budget; the schema carries the enumeration.
+- **Where:** `src/server.rs`.
+- **Reversible:** yes.

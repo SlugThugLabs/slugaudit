@@ -17,19 +17,39 @@ fn big_text() -> String {
     text
 }
 
-fn ask_at(
-    project: &tempfile::TempDir,
+/// Continues a stored result by its cursor; the cursor alone names it.
+fn ask_cursor(
     manager: &SourceSyncManager,
-    sql: &str,
-    offset: usize,
+    cursor: Option<&str>,
     page_bytes: Option<usize>,
 ) -> Result<QueryResponse, ErrorData> {
     query_with_limits(
         &Parameters(QueryRequest {
-            path: project.path().to_string_lossy().into_owned(),
+            path: None,
+            sql: String::new(),
+            cursor: cursor.map(str::to_owned),
+            legacy_paging: LegacyPaging::default(),
+            page_bytes,
+        }),
+        &ResourceLimits::default(),
+        &crate::progress::NoopProgressSink,
+        manager,
+    )
+    .map(|Json(response)| response)
+}
+
+fn ask_at(
+    project: &tempfile::TempDir,
+    manager: &SourceSyncManager,
+    sql: &str,
+    page_bytes: Option<usize>,
+) -> Result<QueryResponse, ErrorData> {
+    query_with_limits(
+        &Parameters(QueryRequest {
+            path: Some(project.path().to_string_lossy().into_owned()),
             sql: sql.to_owned(),
-            offset,
-            expected_revision: None,
+            cursor: None,
+            legacy_paging: LegacyPaging::default(),
             page_bytes,
         }),
         &ResourceLimits::default(),
@@ -65,7 +85,7 @@ fn a_5mb_file_is_walked_with_substr_hints_and_reassembles_byte_for_byte() {
     let manager = SourceSyncManager::default();
     let select = format!("SELECT content FROM files WHERE path = '{BIG}'");
 
-    let first = ask_at(&project, &manager, &select, 0, None).expect("first page");
+    let first = ask_at(&project, &manager, &select, None).expect("first page");
 
     assert!(original.len() > 4_500_000 && original.matches('\n').count() == LINES);
     assert_eq!(first.clipped_cells.len(), 1);
@@ -73,7 +93,11 @@ fn a_5mb_file_is_walked_with_substr_hints_and_reassembles_byte_for_byte() {
     assert_eq!((cell.row, cell.column.as_str()), (0, "content"));
     assert_eq!((cell.kind, cell.unit), ("text", "characters"));
     assert_eq!(cell.total, original.chars().count());
-    assert!(first.rows_bytes <= first.page_bytes, "{}", first.rows_bytes);
+    assert!(
+        first.page.bytes_used <= first.page.page_bytes,
+        "{}",
+        first.page.bytes_used
+    );
     assert_eq!(cell.next_start, cell.returned + 1);
     assert_eq!(
         cell.continue_with,
@@ -96,7 +120,7 @@ fn a_5mb_file_is_walked_with_substr_hints_and_reassembles_byte_for_byte() {
         let sql = format!(
             "SELECT substr(content, {next_start}, 70000) AS content FROM files WHERE path = '{BIG}'"
         );
-        let page = ask_at(&project, &manager, &sql, 0, None).expect("walk page");
+        let page = ask_at(&project, &manager, &sql, None).expect("walk page");
         let piece = first_string(&page, "content");
         let taken = piece.chars().count();
         assert!(taken > 0, "every step must advance");
@@ -114,14 +138,14 @@ fn the_first_pages_own_hint_returns_the_whole_rest_of_the_cell() {
     let (project, original) = big_project();
     let manager = SourceSyncManager::default();
     let select = format!("SELECT content FROM files WHERE path = '{BIG}'");
-    let first = ask_at(&project, &manager, &select, 0, None).expect("first page");
+    let first = ask_at(&project, &manager, &select, None).expect("first page");
     let cell = &first.clipped_cells[0];
 
     let sql = format!(
         "SELECT {} AS content FROM files WHERE path = '{BIG}'",
         cell.continue_with
     );
-    let next = ask_at(&project, &manager, &sql, 0, Some(10_000_000)).expect("hinted page");
+    let next = ask_at(&project, &manager, &sql, Some(10_000_000)).expect("hinted page");
 
     let expected: String = original.chars().skip(cell.returned).collect();
     assert!(
@@ -143,11 +167,11 @@ fn raising_page_bytes_returns_the_whole_file_unclipped() {
     let manager = SourceSyncManager::default();
     let select = format!("SELECT content FROM files WHERE path = '{BIG}'");
 
-    let page = ask_at(&project, &manager, &select, 0, Some(20_000_000)).expect("large page");
+    let page = ask_at(&project, &manager, &select, Some(20_000_000)).expect("large page");
 
     assert!(page.clipped_cells.is_empty());
     assert_eq!(first_string(&page, "content"), original);
-    assert!(page.rows_bytes <= 20_000_000);
+    assert!(page.page.bytes_used <= 20_000_000);
 }
 
 #[test]
@@ -162,7 +186,7 @@ fn a_blob_is_clipped_in_bytes_walked_and_reassembled_exactly() {
         )
     };
 
-    let first = ask_at(&project, &manager, &blob(1), 0, None).expect("first blob page");
+    let first = ask_at(&project, &manager, &blob(1), None).expect("first blob page");
 
     let cell = &first.clipped_cells[0];
     assert_eq!(
@@ -170,10 +194,10 @@ fn a_blob_is_clipped_in_bytes_walked_and_reassembled_exactly() {
         ("blob", "bytes", head.len())
     );
     assert_eq!(first_string(&first, "b").len(), cell.returned * 2);
-    assert!(first.rows_bytes <= first.page_bytes);
+    assert!(first.page.bytes_used <= first.page.page_bytes);
     let mut rebuilt = unhex(&first_string(&first, "b"));
     while rebuilt.len() < head.len() {
-        let page = ask_at(&project, &manager, &blob(rebuilt.len() + 1), 0, None).expect("walk");
+        let page = ask_at(&project, &manager, &blob(rebuilt.len() + 1), None).expect("walk");
         let piece = unhex(&first_string(&page, "b"));
         assert!(!piece.is_empty());
         rebuilt.extend(piece);
@@ -188,7 +212,7 @@ fn clip_units_match_sqlite_length_and_substr_for_multibyte_text_and_blobs() {
     let text = "héllo 日本語 🦀 ünï \"q\" \\ \n end".repeat(20);
     let source = format!("SELECT '{text}' AS t, CAST('{text}' AS BLOB) AS b");
 
-    let page = ask_at(&project, &manager, &source, 0, Some(400)).expect("clipped page");
+    let page = ask_at(&project, &manager, &source, Some(400)).expect("clipped page");
 
     assert_eq!(page.clipped_cells.len(), 2);
     let (text_cell, blob_cell) = (&page.clipped_cells[0], &page.clipped_cells[1]);
@@ -196,7 +220,6 @@ fn clip_units_match_sqlite_length_and_substr_for_multibyte_text_and_blobs() {
         &project,
         &manager,
         &format!("SELECT length(t) AS t, length(b) AS b FROM ({source})"),
-        0,
         None,
     )
     .expect("lengths");
@@ -213,7 +236,6 @@ fn clip_units_match_sqlite_length_and_substr_for_multibyte_text_and_blobs() {
             n = text_cell.returned,
             m = blob_cell.returned
         ),
-        0,
         None,
     )
     .expect("prefix check");
@@ -222,7 +244,7 @@ fn clip_units_match_sqlite_length_and_substr_for_multibyte_text_and_blobs() {
         check.rows[0]["h"].as_str().expect("hex").to_lowercase(),
         first_string(&page, "b")
     );
-    assert!(page.rows_bytes <= 400, "{}", page.rows_bytes);
+    assert!(page.page.bytes_used <= 400, "{}", page.page.bytes_used);
 }
 
 #[test]
@@ -232,7 +254,7 @@ fn small_cells_stay_whole_and_the_room_is_shared_by_the_large_ones() {
     let sql = "SELECT hex(zeroblob(2000)) AS small, hex(zeroblob(100000)) AS big, \
                replace(hex(zeroblob(100000)), '0', '\"') AS quoted";
 
-    let page = ask_at(&project, &manager, sql, 0, Some(20_000)).expect("page");
+    let page = ask_at(&project, &manager, sql, Some(20_000)).expect("page");
 
     let columns: Vec<&str> = page
         .clipped_cells
@@ -242,14 +264,14 @@ fn small_cells_stay_whole_and_the_room_is_shared_by_the_large_ones() {
     assert_eq!(columns, ["big", "quoted"]);
     assert_eq!(first_string(&page, "small").len(), 4000);
     assert!(
-        page.rows_bytes <= 20_000,
+        page.page.bytes_used <= 20_000,
         "escapes counted: {}",
-        page.rows_bytes
+        page.page.bytes_used
     );
     assert!(
-        page.rows_bytes > 19_000,
+        page.page.bytes_used > 19_000,
         "room is used: {}",
-        page.rows_bytes
+        page.page.bytes_used
     );
 }
 
@@ -258,7 +280,7 @@ fn a_page_smaller_than_one_character_still_advances_by_one() {
     let project = activated_project(&[]);
     let manager = SourceSyncManager::default();
 
-    let page = ask_at(&project, &manager, "SELECT '日本語' AS t", 0, Some(1)).expect("page");
+    let page = ask_at(&project, &manager, "SELECT '日本語' AS t", Some(1)).expect("page");
 
     let cell = &page.clipped_cells[0];
     assert_eq!((cell.returned, cell.next_start, cell.total), (1, 2, 3));
@@ -271,20 +293,22 @@ fn the_clipped_row_index_is_absolute_and_later_rows_are_not_clipped() {
     let manager = SourceSyncManager::default();
     let rows = "SELECT n, hex(zeroblob(5000)) AS h FROM (SELECT 1 AS n UNION ALL SELECT 2 UNION ALL SELECT 3)";
 
-    let resumed = ask_at(&project, &manager, rows, 2, Some(100)).expect("offset page");
+    let first = ask_at(&project, &manager, rows, Some(100)).expect("first page");
+    let second = ask_cursor(&manager, first.page.cursor.as_deref(), Some(100)).expect("page two");
+    let resumed =
+        ask_cursor(&manager, second.page.cursor.as_deref(), Some(100)).expect("page three");
     let big_after_small = ask_at(
         &project,
         &manager,
         "SELECT 'a' AS t UNION ALL SELECT hex(zeroblob(5000))",
-        0,
         Some(100),
     )
     .expect("later row");
 
     assert_eq!(resumed.clipped_cells[0].row, 2);
     assert!(big_after_small.clipped_cells.is_empty());
-    assert!(big_after_small.truncated);
-    assert_eq!(big_after_small.next_offset, Some(1));
+    assert!(!big_after_small.page.complete);
+    assert!(big_after_small.page.cursor.is_some());
 }
 
 #[test]
@@ -297,7 +321,7 @@ fn line_functions_return_lines_of_the_big_file_through_query() {
     );
     let lines: Vec<&str> = original.split('\n').collect();
 
-    let page = ask_at(&project, &manager, &sql, 0, Some(1_000_000)).expect("line functions");
+    let page = ask_at(&project, &manager, &sql, Some(1_000_000)).expect("line functions");
 
     assert_eq!(page.rows[0]["n"], LINES);
     assert_eq!(first_string(&page, "r"), lines[39_999..40_200].join("\n"));
@@ -310,7 +334,7 @@ fn a_clipped_line_range_continues_with_the_same_hint_mechanism() {
     let manager = SourceSyncManager::default();
     let sql = format!("SELECT line_range(content, 1, 78000) AS r FROM files WHERE path = '{BIG}'");
 
-    let page = ask_at(&project, &manager, &sql, 0, None).expect("clipped range");
+    let page = ask_at(&project, &manager, &sql, None).expect("clipped range");
 
     let cell = &page.clipped_cells[0];
     assert_eq!(cell.column, "r");
@@ -325,7 +349,7 @@ fn a_bad_line_range_is_an_invalid_params_error() {
     let project = activated_project(&[]);
     let manager = SourceSyncManager::default();
 
-    let error = ask_at(&project, &manager, "SELECT line_range('a', 0, 1)", 0, None)
+    let error = ask_at(&project, &manager, "SELECT line_range('a', 0, 1)", None)
         .expect_err("start 0 is refused");
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
@@ -342,7 +366,7 @@ fn a_text_with_a_nul_is_continued_as_bytes_because_sqlite_text_functions_stop_at
     let manager = SourceSyncManager::default();
     let source = "SELECT 'ab' || char(0) || 'cdefghij' AS t";
 
-    let page = ask_at(&project, &manager, source, 0, Some(14)).expect("clipped page");
+    let page = ask_at(&project, &manager, source, Some(14)).expect("clipped page");
 
     let cell = &page.clipped_cells[0];
     assert_eq!((cell.kind, cell.unit, cell.total), ("text", "bytes", 11));
@@ -350,7 +374,6 @@ fn a_text_with_a_nul_is_continued_as_bytes_because_sqlite_text_functions_stop_at
         &project,
         &manager,
         &format!("SELECT hex({}) AS h FROM ({source})", cell.continue_with),
-        0,
         None,
     )
     .expect("continuation");
@@ -370,7 +393,7 @@ fn a_duplicate_column_name_is_refused_before_a_row_is_clipped() {
     // would otherwise have to be clipped never reaches the clipper.
     let sql = "SELECT zeroblob(5000) AS id, zeroblob(5000) AS id";
 
-    let error = ask_at(&project, &manager, sql, 0, Some(100))
+    let error = ask_at(&project, &manager, sql, Some(100))
         .expect_err("the row cannot carry two `id` columns");
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);

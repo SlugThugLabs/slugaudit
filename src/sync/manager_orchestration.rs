@@ -6,76 +6,18 @@
 //! synchronized connection to the watcher-health module. Watcher state
 //! transitions and incremental reconciliation live in `manager_health.rs`.
 
+use super::super::discard_notice::{DatabaseDiscard, count_findings, count_findings_at};
 use super::super::manager_meta::{
-    ProjectMetaError, ensure_project_row, publish_from_scratch, purge_prior_session_findings,
+    ProjectMetaError, ensure_project_row, mark_prior_session_findings_stale, publish_from_scratch,
 };
+use super::super::recovery_log::{DatabaseRecovery, log_database_recovery};
 use super::{SourceSyncManager, SyncedProject};
 use crate::error_codes::{self, ErrorCode};
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::project;
-use crate::store::{self, StoreError};
+use crate::store;
 use rmcp::ErrorData;
 use std::path::{Path, PathBuf};
-
-/// One database recovery event: a database that failed to open, or one whose
-/// metadata proves it belongs to another project root or another contract.
-enum DatabaseRecovery<'a> {
-    OpenFailed {
-        error: &'a StoreError,
-        message: &'static str,
-    },
-    RootMismatch {
-        stored_root: &'a str,
-    },
-    IncompatibleVersion {
-        contract_version: i64,
-        schema_version: i64,
-    },
-}
-
-fn log_database_recovery(database_path: &Path, recovery: DatabaseRecovery<'_>) {
-    match recovery {
-        DatabaseRecovery::OpenFailed { error, message } => tracing::warn!(
-            operation = "open_project_database",
-            database_id = %crate::util::redacted_path(database_path),
-            error_kind = store_error_kind(error),
-            "{}",
-            message,
-        ),
-        DatabaseRecovery::RootMismatch { stored_root } => tracing::warn!(
-            operation = "verify_project_database",
-            database_id = %crate::util::redacted_path(database_path),
-            error_kind = "root_mismatch",
-            stored_root_id = %crate::util::redacted_path(Path::new(stored_root)),
-            "project database is stale; discarding and rebuilding from source",
-        ),
-        DatabaseRecovery::IncompatibleVersion {
-            contract_version,
-            schema_version,
-        } => tracing::warn!(
-            operation = "verify_project_database",
-            database_id = %crate::util::redacted_path(database_path),
-            error_kind = "incompatible_version",
-            contract_version,
-            schema_version,
-            "project database is stale; discarding and rebuilding from source",
-        ),
-    }
-}
-
-fn store_error_kind(error: &StoreError) -> &'static str {
-    match error {
-        StoreError::Open(_) => "open",
-        StoreError::Configure(_) => "configure",
-        StoreError::Migration(_) => "migration",
-        StoreError::Symlink => "symlink",
-        StoreError::Inspect(_) => "inspect",
-        StoreError::WalUnavailable { .. } => "wal_unavailable",
-        StoreError::Permissions(_) => "permissions",
-        StoreError::NetworkFilesystem => "network_filesystem",
-        StoreError::NetworkFilesystemCheck(_) => "network_filesystem_check",
-    }
-}
 
 fn elapsed_ms(start: std::time::Instant) -> u64 {
     u64::try_from(start.elapsed().as_millis()).unwrap_or_else(|error| {
@@ -139,30 +81,43 @@ impl SourceSyncManager {
         match store::open_read_write(database_path) {
             Ok(connection) => Ok(Ok(connection)),
             Err(error) if error.is_corruption() => {
+                let (notice, count_error) = DatabaseDiscard::assess(
+                    count_findings_at(database_path),
+                    format!("the project database is corrupt or outdated: {error}"),
+                );
                 log_database_recovery(
                     database_path,
-                    DatabaseRecovery::OpenFailed {
+                    DatabaseRecovery::OpenCorrupt {
                         error: &error,
-                        message: "database is corrupt or outdated; \
-                                  discarding and re-publishing from scratch",
+                        discard: &notice,
+                        count_error: count_error.as_ref(),
                     },
                 );
-                store::discard_corrupt_database(database_path).map_err(|err| {
+                // Re-checked under the database lock: a second session may
+                // have repaired the file since this open failed.
+                let outcome = store::discard_if_still_unusable(database_path).map_err(|err| {
                     ErrorData::internal_error(
                         format!("discarding the corrupt or outdated project database: {err}"),
                         None,
                     )
                 })?;
-                self.rebuild_and_finish(root, database_path.to_path_buf(), start, sink)
+                if outcome == store::DiscardOutcome::AlreadyCurrent {
+                    return store::open_read_write(database_path)
+                        .map(Ok)
+                        .map_err(|error| {
+                            ErrorData::internal_error(
+                                format!("opening the project database for sync: {error}"),
+                                None,
+                            )
+                        });
+                }
+                self.rebuild_and_finish(root, database_path.to_path_buf(), start, sink, notice)
                     .map(Err)
             }
             Err(error) => {
                 log_database_recovery(
                     database_path,
-                    DatabaseRecovery::OpenFailed {
-                        error: &error,
-                        message: "failed to open project database for sync",
-                    },
+                    DatabaseRecovery::OpenFailed { error: &error },
                 );
                 sink.emit(ProgressEvent::Completed {
                     phase: "ensuring_current",
@@ -183,30 +138,47 @@ impl SourceSyncManager {
         start: std::time::Instant,
         sink: &dyn ProgressSink,
     ) -> Result<Result<rusqlite::Connection, SyncedProject>, ErrorData> {
-        self.purge_prior_session_findings_once(database_path, &mut connection)?;
+        self.mark_prior_sessions_stale_once(database_path, &mut connection)?;
         if let Err(metadata_error) = ensure_project_row(&mut connection, root.as_path()) {
-            match metadata_error {
-                ProjectMetaError::RootMismatch { stored_root } => {
-                    log_database_recovery(
-                        database_path,
-                        DatabaseRecovery::RootMismatch {
-                            stored_root: &stored_root,
-                        },
-                    );
+            let cause = match &metadata_error {
+                ProjectMetaError::RootMismatch { .. } => {
+                    "the project database was built for a different project root".to_owned()
                 }
                 ProjectMetaError::IncompatibleVersion {
                     contract_version,
                     schema_version,
-                } => {
-                    log_database_recovery(
-                        database_path,
-                        DatabaseRecovery::IncompatibleVersion {
-                            contract_version,
-                            schema_version,
-                        },
-                    );
+                } => format!(
+                    "the project database has an incompatible version \
+                     (contract_version {contract_version}, schema_version {schema_version})"
+                ),
+                ProjectMetaError::Other(_) => {
+                    return Err(ErrorData::from(metadata_error));
                 }
-                other @ ProjectMetaError::Other(_) => return Err(ErrorData::from(other)),
+            };
+            let (notice, count_error) = DatabaseDiscard::assess(count_findings(&connection), cause);
+            let count_error = count_error.as_ref();
+            match &metadata_error {
+                ProjectMetaError::RootMismatch { stored_root } => log_database_recovery(
+                    database_path,
+                    DatabaseRecovery::RootMismatch {
+                        stored_root,
+                        discard: &notice,
+                        count_error,
+                    },
+                ),
+                ProjectMetaError::IncompatibleVersion {
+                    contract_version,
+                    schema_version,
+                } => log_database_recovery(
+                    database_path,
+                    DatabaseRecovery::IncompatibleVersion {
+                        contract_version: *contract_version,
+                        schema_version: *schema_version,
+                        discard: &notice,
+                        count_error,
+                    },
+                ),
+                ProjectMetaError::Other(_) => {}
             }
             drop(connection);
             store::discard_corrupt_database(database_path).map_err(|discard| {
@@ -216,41 +188,42 @@ impl SourceSyncManager {
                 )
             })?;
             return self
-                .rebuild_and_finish(root, database_path.to_path_buf(), start, sink)
+                .rebuild_and_finish(root, database_path.to_path_buf(), start, sink, notice)
                 .map(Err);
         }
         Ok(Ok(connection))
     }
 
-    /// Purges findings left by other agent sessions exactly once per
-    /// project database in this process/session.
+    /// Marks findings left by other agent sessions `stale` exactly once per
+    /// project database in this process/session. Nothing is deleted.
     ///
     /// `ensure_current` runs on every tool call, but a live MCP process may
-    /// be only one of several sessions sharing the project database. Purging
-    /// on every call would delete another live session's findings
-    /// mid-session, and no response carries that deletion. The guard is
-    /// keyed by database path (one manager can serve several projects) and
-    /// records the session UUID the purge ran for, so the documented
-    /// cross-session defense still fires on this process's first sync of
-    /// each project and a test-only session change re-arms it.
+    /// be only one of several sessions sharing the project database. Marking
+    /// on every call would re-stale a live peer's findings as it writes them.
+    /// The guard is keyed by database path (one manager can serve several
+    /// projects) and records the session UUID the marking ran for, so a
+    /// test-only session change re-arms it. The number of rows marked is
+    /// logged once at info.
     ///
-    /// A failed purge aborts the call with its own error and leaves the
-    /// guard unarmed, so the next sync retries the session-start
-    /// transition instead of serving a database that still holds prior
-    /// sessions' findings.
-    fn purge_prior_session_findings_once(
+    /// A failed update aborts the call with its own error and leaves the
+    /// guard unarmed, so the next sync retries the session-start transition.
+    fn mark_prior_sessions_stale_once(
         &self,
         database_path: &Path,
         connection: &mut rusqlite::Connection,
     ) -> Result<(), ErrorData> {
         let current_session_id = crate::util::session_id();
-        let mut purged =
-            crate::util::lock_or_recover(&self.session_findings_purged, "session_findings_purged");
-        if purged.get(database_path).copied() == Some(current_session_id) {
+        let mut marked =
+            crate::util::lock_or_recover(&self.prior_sessions_staled, "prior_sessions_staled");
+        if marked.get(database_path).copied() == Some(current_session_id) {
             return Ok(());
         }
-        purge_prior_session_findings(connection, current_session_id)?;
-        purged.insert(database_path.to_path_buf(), current_session_id);
+        let staled = mark_prior_session_findings_stale(connection, current_session_id)?;
+        tracing::info!(
+            staled,
+            "prior-session findings marked stale at session start"
+        );
+        marked.insert(database_path.to_path_buf(), current_session_id);
         Ok(())
     }
 
@@ -280,6 +253,7 @@ impl SourceSyncManager {
         Ok(SyncedProject {
             database_path,
             revision_id,
+            discard: None,
         })
     }
 
@@ -293,8 +267,10 @@ impl SourceSyncManager {
         database_path: PathBuf,
         start: std::time::Instant,
         sink: &dyn ProgressSink,
+        discard: DatabaseDiscard,
     ) -> Result<SyncedProject, ErrorData> {
-        let synced = publish_from_scratch(root, database_path, sink)?;
+        let mut synced = publish_from_scratch(root, database_path, sink)?;
+        synced.discard = Some(discard);
         self.record_full_publish();
         let duration_ms = elapsed_ms(start);
         self.stamp_last_sync(duration_ms);

@@ -2,7 +2,7 @@
   "identifier": "slugthuglabs-slugaudit-mcp",
   "name": "SlugAudit MCP",
   "description": "Pre-parsed, searchable, always-in-sync evidence about a codebase \u2014 symbols, imports, dependency edges, source spans \u2014 so the AI queries a SQLite database instead of reading hundreds of flat files.",
-  "version": "1.0.10",
+  "version": "1.1.0",
   "tools": [
     {
       "name": "query",
@@ -27,6 +27,10 @@
     {
       "name": "finding_read",
       "description": "Session-gated finding query \u2014 returns only the current agent session's findings."
+    },
+    {
+      "name": "finding_sessions",
+      "description": "List earlier sessions' findings (kept, marked stale, hidden from finding_read) and adopt one into the current session."
     },
     {
       "name": "project_control",

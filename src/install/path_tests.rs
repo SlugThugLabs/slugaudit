@@ -44,7 +44,7 @@ fn path_config_maps_fish_shell_to_config_fish() {
 }
 
 #[test]
-fn path_config_defaults_to_bashrc_without_shell() {
+fn install_path_unset_shell_is_refused_with_the_line_to_add() {
     let _guard = TEST_ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("temp dir");
     temp_env::with_vars(
@@ -53,11 +53,72 @@ fn path_config_defaults_to_bashrc_without_shell() {
             ("SHELL", None::<&std::ffi::OsStr>),
         ],
         || {
-            let (config, line) =
-                path_config(Path::new("/x/slugthug/slugaudit")).expect("path config");
-            assert_eq!(config, temp.path().join(".bashrc"));
-            assert!(line.contains("/x/slugthug/slugaudit"));
+            let error = path_config(Path::new("/x/slugaudit")).expect_err("unset SHELL refused");
+            assert!(
+                matches!(error, InstallError::UnknownShell { .. }),
+                "{error}"
+            );
+            assert!(
+                error
+                    .to_string()
+                    .contains("export PATH=\"/x/slugaudit:$PATH\""),
+                "{error}"
+            );
         },
+    );
+}
+
+#[test]
+fn install_path_unknown_shell_writes_no_rc_file() {
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("temp dir");
+    temp_env::with_vars(
+        [
+            ("HOME", Some(temp.path().as_os_str())),
+            ("SHELL", Some(std::ffi::OsStr::new("/usr/bin/nushell"))),
+        ],
+        || {
+            let error = add_to_path(&temp.path().join("slugaudit")).expect_err("refused");
+            assert!(
+                matches!(error, InstallError::UnknownShell { .. }),
+                "{error}"
+            );
+            let entries = std::fs::read_dir(temp.path()).expect("read home").count();
+            assert_eq!(entries, 0, "no rc file or temp file may be created");
+        },
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn install_path_append_keeps_mode_and_leaves_no_temp_file() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("temp dir");
+    let config = temp.path().join(".bashrc");
+    std::fs::write(&config, "alias a=b").expect("seed rc");
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o640)).expect("chmod");
+    temp_env::with_vars(
+        [
+            ("HOME", Some(temp.path().as_os_str())),
+            ("SHELL", Some(std::ffi::OsStr::new("/bin/bash"))),
+        ],
+        || add_to_path(&temp.path().join("slugaudit")).expect("add"),
+    );
+    let mode = std::fs::metadata(&config)
+        .expect("stat")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o640);
+    let contents = std::fs::read_to_string(&config).expect("read rc");
+    assert!(
+        contents.starts_with("alias a=b\nexport PATH="),
+        "{contents}"
+    );
+    assert_eq!(
+        std::fs::read_dir(temp.path()).expect("read home").count(),
+        1
     );
 }
 

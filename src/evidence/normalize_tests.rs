@@ -329,12 +329,13 @@ fn binding_extraction_gracefully_degrades_for_an_unsupported_language() {
 fn a_walker_parser_failure_marks_the_extraction_truncated() {
     let lines = LineIndex::new("x");
 
-    let (items, truncated) =
-        extract_extra_walkers("no-such-language-for-walker-test", "x", &lines, true);
+    let extraction =
+        extract_extra_walkers("no-such-language-for-walker-test", "x", &lines, true, None);
 
-    assert!(items.is_empty());
+    assert!(extraction.items.is_empty());
+    assert!(!extraction.timed_out, "no deadline, so no timeout");
     assert!(
-        truncated,
+        extraction.truncated,
         "a failed parser setup must not read as a complete extraction"
     );
 }
@@ -468,4 +469,40 @@ fn a_json_file_nested_past_the_pack_bound_fits_the_production_stack() {
         depth_capped,
         "returning at all is the point; the walker cut is still reported"
     );
+}
+
+/// The pack caches one parser per language per thread, and a parse cancelled
+/// by the progress callback leaves that parser to resume the cancelled
+/// document on its next use (tree-sitter requires `reset()`, which the pack's
+/// `process()` does not call). A bounded extraction therefore must not run
+/// on a thread whose cached parser it can poison: the file parsed next on
+/// the same thread would be read against the wrong source (observed as a
+/// slice-out-of-bounds panic inside the pack).
+#[test]
+fn a_parse_cut_at_the_deadline_does_not_corrupt_the_next_parse_on_the_same_thread() {
+    let generous = Deadline::after(std::time::Duration::from_secs(600));
+    let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
+    let big = line.repeat(400 * 1024 / line.len());
+    extract_within("rust", "pub fn warm() {}\n", Some(&generous)).expect("warm the cached parser");
+
+    let cut = extract_within(
+        "rust",
+        &big,
+        Some(&Deadline::after(std::time::Duration::from_millis(20))),
+    );
+    let next = extract_within("rust", "pub fn after() {}\n", Some(&generous))
+        .expect("the next file parses normally");
+
+    assert!(
+        matches!(cut, Err(PackError::ParseTimeout { .. })),
+        "the large parse is cancelled by its 20 ms budget"
+    );
+    let names: Vec<&str> = next
+        .items
+        .iter()
+        .filter(|item| item.kind == EvidenceKind::Structure)
+        .filter_map(|item| item.payload["name"].as_str())
+        .collect();
+    assert_eq!(names, ["after"]);
+    assert!(!next.timed_out);
 }

@@ -1,5 +1,6 @@
 //! Registering or removing this binary as the `slugaudit` MCP server in an AI agent or editor.
 
+pub(crate) mod config_atomic;
 pub(crate) mod config_file;
 pub(crate) mod registry_types;
 

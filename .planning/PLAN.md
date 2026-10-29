@@ -44,7 +44,13 @@ restored from the deleted 2026-10-18 planning paths:
 The durable copies are the source of record. A later claim that cites a
 `/tmp` path instead of one of these files is not durable.
 
-## Current state (2026-10-19)
+## Current state (2026-10-26)
+
+- Branch `fix/deep-dive-2026-10-25` (not merged, not pushed, not tagged) carries Phase 8 Waves A, B and C on top of `8e3a0b6`: crate `slugaudit-mcp-rust` **1.1.0** (`CHANGELOG.md` `[1.1.0]`), 9 tools (adds `mechanic`), one shared `page` contract, 1-based lines, schema version 11, `[profile.release]` strip + thin LTO + codegen-units 1 (release binary 18.7 MB -> 12.4 MB).
+- Gate at `f43dc9b`: 12/12 README *Development* gates, 1,507 tests passed, 0 failed, coverage 93.28%; release-binary stdio end-to-end 12/12. `f973bc6` (test-only flake fix) follows; the final gate re-ran green at `d8cf8e4` (recorded in the Phase 8 header).
+- Branch `wave-c-c4` and worktree `/home/slugaudit-wt/c4` (C4, integrated as `ef3b98c`) and branch `wave-a-lane-y` are kept for the owner to delete.
+
+### Previous state (2026-10-19)
 
 - `main` at `2a65a85` after wave 5 (`66536c0..2a65a85`, the 56-fix set plus
   the integration fixes `730699f` and `2a65a85`). Wave 4 landed at `4b765e1`
@@ -416,6 +422,281 @@ does not rediscover them from scratch.
 | `check_performance` | **pass** (0.99x–1.02x, threshold 20%) |
 | `missing_docs` / `cargo doc --no-deps --lib` | **0 warnings** |
 | `cargo crap --min 0 --path src` | 0 production functions with CC > 15 |
+
+## Phase 8 — 2026-10-25 deep-dive remediation and auditor-owned mechanics
+
+State: **Wave A landed** (2026-10-25, `7dc6410..35aabea`, gate green at `35aabea` (12/12 README *Development* gates, 1317 tests, 93.96% coverage); Wave B and Wave C landed 2026-10-26 (Wave C: C1-C6, see below), gate green at `345618f` (12/12 README *Development* gates, all test blocks 0 failed, 93.35% coverage; release-binary stdio end-to-end 8/8); Wave C gate green at `d8cf8e4` (12/12 README *Development* gates, all test blocks 0 failed, 93.29% coverage, zero-limit tests 10/10 runs clean; release-binary 1.1.0 stdio end-to-end 12/12 at `f43dc9b`)). Authored 2026-10-25 by the architect from the deep dive;
+Lead executes on branch `fix/deep-dive-2026-10-25`, one commit per item, no
+push). Evidence: `.planning/archive/audit_2026-10-25_deep_dive.md` (defects
+D1–D9, `path:line` at `c3fc7f8`). Each item lists its Definition of Done; an
+item is **landed** only when its DoD check passes and the full gate list in
+*Development* (README) is green on the integrated tree.
+
+Product intent recorded this session (owner, 2026-10-25): the tool is for an
+LLM in a harness (Claude Code and peers) with cwd = the project; the database
+is throwaway and session-scoped so one model's view never clouds another's;
+the tool ships counting primitives, never a checklist, because a shipped
+checklist makes a model think "ran tool, audit done". What counts as a signal
+in a codebase is the auditor's decision, recorded by the auditor (the model)
+as mechanics it registers for the session or persists to the project config.
+
+### Wave A — safety and correctness (parallel; one owner per file set)
+
+- **A1 — PRAGMA at prepare time and engine limits (D1).** State: **landed** — `7dc6410` (+ `44626bb` guard tests moved and docs, `1052963` rebuild test reads `user_version` raw). Deviations: introspection-pragma allowlist keeps `pragma_table_info` working; `SQLITE_LIMIT_LENGTH` = max(`max_query_value_bytes`, 3 × `max_file_bytes`) per `query` call, so the amplifier is bounded but can still reach ~1.5 GB (estimated, not measured) on the audit profile — **still open** as a residual risk pending an owner decision on capping stored content.
+  Deny `AuthAction::Pragma` in the read-only connection's authorizer
+  (`src/store/connection_guards.rs`), keeping `pragma_table_info`/`pragma_*`
+  table-valued reads working or documenting their loss in INSTRUCTIONS; set
+  `SQLITE_LIMIT_LENGTH` (and `SQLITE_LIMIT_SQL_LENGTH`) on the read-only
+  connection from `max_query_value_bytes`; replace the misleading
+  "only comments" message for a refused non-SELECT. DoD: a test that runs
+  `PRAGMA hard_heap_limit=1` through `query`, asserts the refusal, then opens a
+  second connection and reads `PRAGMA hard_heap_limit` = 0 and a `report`
+  succeeds; a test that the `zeroblob/hex/replace` amplifier fails with a
+  bounded error instead of allocating.
+- **A2 — 1-based line numbers on every surface (D2).** State: **landed** — `a1427c2` (schema version 9; conversion in `evidence/sql.rs::to_row` and `structure_page.rs`). Release-binary repro: `leads` 3/4, `structure` 1–5, evidence rows agree with `cat -n`.
+  Keep `model::span` zero-based internally; convert once at the evidence
+  write boundary (`src/evidence/normalize.rs`) so `evidence.start_line/end_line`
+  are 1-based, and at the `structure` response builder; bump the schema
+  version so existing databases rebuild; document "all line numbers are
+  1-based, inclusive" in INSTRUCTIONS, `schema.sql` column comments and
+  `evidence_payload_keys.md`. DoD: an end-to-end test over a fixture file
+  asserts `leads`, `query` evidence rows, `structure`, `finding` echo and
+  `line_range()` all agree with `cat -n`; `check_mcp_surface --record` if a
+  description changed.
+- **A3 — symlink-safe writes (D3).** State: **landed** — `66d1ac3`. An in-project `.gitignore` symlink is now refused too (deviation). Untested: the `Io` → internal-error arm at the `project_control` boundary. Before writing
+  `config.json` or editing `.gitignore`, refuse when `symlink_metadata` of
+  the target is a symlink or a non-regular file, with a typed error and remedy;
+  no canonicalise-then-write. DoD: tests for `config.json -> outside` and
+  `.gitignore -> outside` assert the target is untouched and the error names
+  the path.
+- **A4 — parse bounded by size and time (D4).** State: **landed** — `800630d` (+ `35aabea`). 50 MB case: 1.74 s, 170 MB peak RSS, `files_not_parsed = 1`. The sampler uses the pack's parse timeout (wraps the progress callback) bound to the one sync deadline; `files_not_parsed` excludes `language IS NULL`. **Still open:** no per-file parse budget, so a pathological file under 2 MiB that outlives `max_sync_wall_clock` fails every sync until edited; `Query::new` has no deadline. Add
+  `max_parse_bytes` to `Limits`/profiles (default 2 MiB; env
+  `SLUGAUDIT_MAX_PARSE_BYTES`; config override) distinct from
+  `max_file_bytes`; a file above it is stored (subject to `max_file_bytes`)
+  with `extraction_completeness = ContentOnly` and a reason
+  `oversize_for_parse`, counted in `report.completeness`; every `leads` rows
+  and counts response carries `files_not_parsed`; the sampler's and
+  `structure`'s `parser.parse` run under tree-sitter's progress callback
+  bound to the call deadline; `structure` checks the window before pushing a
+  file. DoD: a 3 MiB generated Rust file indexes in < 2 s with
+  `files_not_parsed = 1` visible in `leads` and `report`; the 50 MB case from
+  the deep dive completes under 10 s with no SIGKILL.
+- **A5 — prose is stored, not parsed (D5).** State: **landed** — `9cf6141` + `5823049` (+ `8749608`). Prose is stored as `language = 'prose'`, excluded from `parser_failure_*`, counted in `completeness.prose_files_not_parsed`; `structure` refuses prose. Classify
+  Markdown, reStructuredText, plain text and similar prose as `prose`: content
+  stored, no grammar run, no `Diagnostic` rows; override the pack's `.txt`
+  → `vimdoc` mapping in `src/parse/language.rs`; structured config
+  (JSON/YAML/TOML) stays parsed. DoD: indexing a project with a Markdown file
+  containing an unterminated code fence yields 0 diagnostics; a YAML with a
+  tab-indent error yields 1.
+- **A6 — grammar download: honest and retried (D6).** State: **landed** — `e34e0ca` + `0ed7c30`. Deviation: `has_language` kept as the gate (`has_parser` never downloads); retries gated by a process-wide 10-minute fetch cool-down after the first version retried every call and published a revision per call offline. A black-holed network blocks the first call ~60 s (pack's fixed timeout).
+  Use `has_parser` where availability is meant; map the pack's download error
+  to `LoadFailed` so the file is re-attempted on the next sync even when its
+  hash is unchanged; document in README *Install* and in INSTRUCTIONS that
+  grammars are fetched lazily from the language pack's GitHub release on
+  first use, where they are cached, and what happens offline. DoD: a test
+  with the download forced to fail records `LoadFailed`, and a second sync
+  with it allowed parses the file; docs drift gate passes.
+
+### Wave B — value (after Wave A is integrated and green)
+
+- **B0 — Wave A residue (architect, 2026-10-25).** State: **landed** — `c4635d3` (config-write Io arm tested via a clean refactor), `d1f93c8` (per-file `max_parse_wall_clock_ms`, default 5000; a timed-out file is `parse_timeout`, counted, and the sync continues; each bounded parse runs on a short-lived thread because the pack reuses a cancelled parser per thread and then panicked — cost ~0.11 ms/file, 10k-file soak 5.1 s -> 6.3 s), `4525da2` (`max_structure_query_bytes` 16 KiB on every profile, refused before `Query::new`), `2f61367` (0 refused for the three parse/structure limits; override warnings once per cause), `e1d7939` + `1f13c6a` (ignore/attribute dotfiles stored as prose; schema 10). Untested: the pack-panic -> `ParseFailed` mapping (no hermetic trigger).
+
+- **B1 — call evidence for Python, JavaScript, TypeScript, TSX, Go, Java, C
+  (D7).** State: **landed** — `79b7c7d` (schema 11). Embedded `examples/calls/<language>.scm` queries for the seven languages; Rust keeps its walker (a query cannot reach macro token trees); turbofish fixed (83 rows renamed, +7 turbofish calls inside macro arguments that were silently dropped); `covers` = languages actually read. Built-in counts on this repository's own sources unchanged. Replace the Rust-only node matching with a
+  per-language table or embedded `.scm` call queries (one `@callee` capture),
+  keeping the shared span/confidence/detail logic and the Rust macro re-parse;
+  `covers` becomes the explicit set of languages a mechanic reads; fix the
+  Rust turbofish fall-through. DoD: one fixture per language with a known
+  call count, including decoys in comments and strings; `leads` on the Python
+  fixture returns the expected non-zero count with `covers` listing python.
+- **B2 — auditor-owned mechanics.** State: **landed** — `bc78af2` + `f4de900` (review BLOCK fixed: every `config.json` writer goes through one locked, atomic read-modify-write; `project_control on profile` no longer deletes persisted mechanics; built-in-only `leads` scans no custom entry; `mechanic remove {index}`; alias languages refused) + `345618f` (alias drift test, one direction only — the pack's alias table is private). New tool
+  `mechanic` with `add` / `remove` / `list`: an entry is `{id, language,
+  query, note}`; `query` is compiled on `add` and a bad one is refused with
+  the compile error; `add` returns the first count immediately (same fields
+  as a `leads` count). Session entries live in server memory and die with the
+  process; `persist: true` writes the entry to a versioned `mechanics`
+  section of `.planning/slugaudit/config.json`, re-read per call. `leads` and
+  `report` carry every entry with `source: builtin | project_config | session`
+  and the author's `note`, session entries listed first. Rules: an entry can
+  never remove, rename or override a built-in; ids must not collide; an
+  invalid persisted entry is listed in `report` with its error and counted
+  as `mechanics_invalid`, never dropped. The first `report` of a session
+  carries a short `mechanics` note stating the built-ins are counting
+  primitives, how to register, and the lifetime. DoD: tests for add/count/
+  remove, persist/reload, collision, invalid query, invalid persisted entry;
+  `check_mcp_surface --record`; INSTRUCTIONS and README updated.
+
+### Wave C — surface and release (after Wave B)
+
+- **C1 — one paging contract (D8).** State: **landed** — `3390516` + `c27212a` (fuzz target/docs) + `0f6bd1c` (Luna review fixes); quinn PASS (one `$defs/Page` in five schemas; stale resume refused on query and finding_read). Builder opus (before the 2026-10-26 routing correction). A shared page
+  struct (`returned`, `total`, `complete`, `next_offset`, `page_bytes`,
+  `bytes_used`, `limited_by`, `revision_id`) used by `leads`, `query`,
+  `structure`, `finding_read`; per-tool synonyms removed; `structure`'s
+  second cursor documented beside it. DoD: the four output schemas share the
+  struct; `check_mcp_surface --record`.
+- **C2 — instructions and errors (D8).** State: **landed** — `41043ad` (INSTRUCTIONS 12,561 -> 5,474 chars; `health` behind `verbose`; `sql_error` and `unknown_language` codes; recipes split and LIKE-on-payload removed; the first-report `stale_revision` was still live — `verify_and_drain` returned the publish's revision after its own drain published a newer one — fixed and pinned by `report_first_call_tests`) + `9ed41f3` / `3919f5f` (Luna: `detail` object-only, typed one level deep, FAILURES names the new codes; health schema 6,576 chars). Builder opus for 41043ad (dispatched before the routing correction), sonnet for the follow-ups. Cut
+  INSTRUCTIONS to about half: paging text once, judgment disclaimer once, no
+  motivational framing; list all eight evidence kinds in the `query`
+  description; shrink `health`'s schema to what a model acts on or mark it
+  operator-only; SQL errors carry `data.code` and `remedy`; an unknown
+  `structure` language says so; fix `examples/queries/README.md` `LIKE` on
+  payload and split `blast_radius.sql` into single-statement recipes; make the
+  first `report` after `project_control on` not fail with `stale_revision`
+  (sync once inside `on`, or let the following call adopt the new revision).
+  DoD: `check_mcp_surface --record`; the deep-dive stdio script
+  (`on` → `report`) succeeds first time.
+- **C3 — release readiness.** State: **landed** — `47a4924` (changelog + 1.1.0) + `152508b` (release profile; 18,693,064 -> 12,380,424 bytes; `check_performance` PASS) + `f43dc9b` (Luna: changelog corrected against what 1.0.10 actually shipped, Removed and Known-issues sections). `--version` prints `slugaudit 1.1.0`. Tagging and pushing remain the owner's call. Builder sonnet. `CHANGELOG.md` entries
+  for everything since 1.0.10; version `1.1.0`; README install paths agree
+  with the binary's `--help`; `[profile.release]` with `strip = true`;
+  `check_version_consistency` passes. Tagging and pushing are the owner's
+  call and are not part of this phase.
+
+- **C4 — concurrent fresh open (architect 2026-10-26).** State: **landed** — `ef3b98c` (cherry-pick of `fb5a88b`): busy_timeout before `journal_mode=WAL`, a bounded WAL retry, IMMEDIATE schema init re-checking `user_version`, and a locked re-check before discarding on the open-failure path; paired trials 8/20 failing -> 0/20 and 0/40; 4 processes 0/10. **Still open:** the stale-row discard (`sync/manager_orchestration.rs` `verify_metadata_or_rebuild`) and `project_control`'s recovery still unlink without the lock (narrow two-session window after an upgrade). Builder sonnet.
+- **C5 — mechanic scan cache.** State: **landed** — `e13e0cf` + `5dee1ae` (one retention budget per pass; cache tests moved out; key tests for pattern/project/edited entry). 2,000-file Python project: cached `leads` 0.065 s vs 0.156 s. Builder sonnet.
+- **C6 — sweep.** State: **landed** — `d6795df`: stale `config.json.*.tmp` removed on load (only when `config.lock` is free), every overridable limit refuses 0 with one warning, one shared `parse::budget::parse_within`, DEVIATIONS header now says oldest-first, B0 warn-once test race fixed. Edit list drafted by sonnet, sections 1–2 applied by a haiku junior (3.4 h, stopped correctly on the race), finished by sonnet.
+
+- **C7 — output-schema size (architect spot-check, 2026-10-26).** State: **still
+  open**. After Wave C the `tools/list` wire content is 104,818 chars (was
+  67,277 before Phase 8): output schemas are 82k of it (`report` 19.1k,
+  `mechanic` 16.6k, `leads` 12.8k, `query` 8.4k, `structure` 8.2k,
+  `finding_read` 6.6k, `health` 6.6k), with 414 `description` keys and the
+  shared `Page` def embedded once per tool. Descriptions plus input schemas are
+  20.9k chars (~5.2k tokens) and INSTRUCTIONS 5,485, so a client that forwards
+  only those pays about what it did before Phase 8 with one more tool; a client
+  that forwards `outputSchema` pays ~26k tokens per session. Target: type
+  nested response objects one level deep as `health` now does, drop
+  per-property descriptions that repeat the field name, and bring every output
+  schema under 4k chars. Sonnet builder, Luna review of the surface diff,
+  `check_mcp_surface --record`.
+
+### Recorded, not scheduled (D9)
+
+- **Stored-content cap review.** State: **not scheduled** (architect 2026-10-25: a Wave C profile decision). `query`'s `SQLITE_LIMIT_LENGTH` is max(`max_query_value_bytes`, 3 x `max_file_bytes`), so the zeroblob/hex/replace amplifier is bounded but can reach ~1.5 GB (estimated) on the audit profile; the real fix is a lower default for stored content.
+- **Wave C residue.** State: **still open**, small: the stale-row discard (`verify_metadata_or_rebuild`) and `project_control` recovery still unlink without C4's lock; a `user_version` 0 database corrupt past page 1 is now reopened rather than discarded (reasoned, untested); the warn-once ledger is thread-local under `cfg(test)` (`f973bc6`) because `tools::mechanic::persist_tests` builds limits from env without `TEST_ENV_LOCK` — that test should take the lock; the language-pack alias table can drift in one direction.
+- **Wave B residue.** State: **still open**, small: two servers opening a fresh project database at once can fail one with `database is locked` at connection configure (2 of 7 trials; fits the per-project sync lock above); the parse-under-deadline loop exists three times (`structure_exec::parse_within`, `evidence/calls/query_calls.rs`, the pack-timeout path); `config.json.<pid>.<n>.tmp` files left by a crash are never swept; a custom mechanic re-parses its language's files on every `leads` call that selects it; the alias table can still drift in the pack-adds-an-alias direction.
+
+- Watcher removal in favour of the sweep plus a re-hash of files whose stored
+  mtime is within 2 s of now, behind a per-project in-process sync lock.
+  State: **not scheduled** — design agreed in principle 2026-10-25; a large
+  refactor that waits for Waves A–C.
+- `touch_unchanged` writes outside `publish_revision`; `sync` returning
+  `rmcp::ErrorData`; `ignore_rules/build.rs` `.ok()` fail-open; `netfs.rs`
+  `unwrap_or("")`; "dropped" vs deferred events doc drift; FIFO swap race in
+  `capped_read.rs`. State: **still open**, small, suitable for a junior sweep
+  after Wave C.
+- Instrumenting the founding metric (call chains per session) is not in the
+  code; the server log already carries `session_id`/`call_id` per call, so a
+  log-derived measure is possible without a code change. State: **not scheduled**.
+
+## Phase 9 — Immutable paged results (the result store)
+
+State: **not started** (approved by the owner 2026-10-26; architect's design
+and evidence in `.planning/archive/design_2026-10-26_result_store.md`, which a
+builder reads before touching paging). Branch `fix/deep-dive-2026-10-25`, one
+commit per item, never push. Phase 9 is complete only when every acceptance
+check in 9.7 passes on the integrated tree; avoidable defects are fixed, not
+recorded as limitations.
+
+Contract (owner): new requests sync and describe the current tree; a paged
+result is one immutable answer and every page describes the revision page one
+was taken from; edits while reading never alter the result being read; no
+silent skip, repeat or revision mix; exhaustion and expiry are explicit; the
+agent copies one cursor and manages no revisions; the grace period never
+invalidates a report, it only governs reclaim eligibility under pressure, and
+continuing a result renews its protection.
+
+- **9.0 — Golden capture.** State: **landed** e85bb10 (22 fixtures, `tests/golden/phase9/generate.sh`, 14 passing tests; NaN is unreachable in the bundled build even through a `cfg(test)` function, SQLite stores it as NULL, so the NaN fixture records NULL cells and an empty `non_finite_cells`). Before any paging change,
+  capture per-tool response fixtures from `2ad7bc3` on the existing test
+  fixtures (`leads` counts and rows incl. compact, `query` incl. clipped,
+  non-finite and NUL-text cases, `structure` single-file and project-wide,
+  `finding_read`, `mechanic` add/list) into `tests/golden/phase9/`. DoD: the
+  fixtures are committed with the script that produced them; a test loads
+  them (it is allowed to fail until 9.3 lands and is marked so).
+- **9.1 — `store/result_store/`.** State: **landed** cdfc0ac, review fixes 9da1f03, test hardening 194cea4 (Victor and Quinn reviewed; non-unix stub not compiled, no Windows target installed; `max_result_store_bytes` is derived from the profile's response ceiling and does not follow an env override of `max_query_response_bytes`). File lifecycle
+  (create under `.planning/slugaudit/results/`, open, unlink, pragmas), owner
+  lock file, startup sweep, schema (`meta`, `rows` with untyped columns and the
+  `nonfinite` marker), the `Materialize` trait, batched writer (1,000 rows per
+  batch, meta last, registry after commit, rollback-and-remove on any error),
+  ordinal page reader with the existing byte cut, registry with
+  active/idle/delivered classes, admission (fit → admit; else reclaim
+  delivered oldest-first, then idle oldest-first, never active; else refuse),
+  cursor codec (`v1.<nonce>.<result>.<ord>`), stats, limits
+  `max_result_store_bytes` (4 × `max_query_response_bytes`) and
+  `result_active_grace_secs` (900) with env/profile/config entries documented
+  in `limits.rs`. Platform: Unix unlink-after-open; any other target fails
+  closed at open with `result_store_unavailable`. DoD (unit): fidelity matrix
+  round-trips every storage class and records NaN/±Inf in `nonfinite`; same
+  token twice → identical rows; disjoint pages cover the result exactly once;
+  admission order as specified and an active result is never reclaimed; an
+  idle result older than the grace period is still readable and becomes
+  active on continuation; a result over budget leaves no file; a failure
+  mid-write leaves no file and no registry entry; full-disk seam →
+  `result_store_unavailable`; abort mid-write leaves no file (process-spawn
+  test); a planted leftover is swept at startup while a locked one is not;
+  cross-thread insert/read through the per-result mutex.
+- **9.2 — Shared pagination layer.** State: **landed** d3119fc, wrong-tool precheck d5c7694. `Page` keeps `next_offset` until the last 9.3 migration removes it; `check_mcp_surface` fails on 25 `Page`/`Completeness` keys, expected until 9.3 records it. Follow-up for 9.5: a wrong-tool cursor does not increment the `unknown_cursors` stat. `tools/context.rs`
+  gains one `paginate` entry: without `cursor` it syncs, opens the verified
+  read transaction, materialises via the tool's `Materialize` producer and
+  serves page one; with `cursor` it serves the stored page with no sync and no
+  revision check. `tools/page.rs` gains `cursor`, `completeness`; loses
+  `next_offset`. Error codes `unknown_cursor`, `result_expired`,
+  `result_store_full`, `result_too_large`, `result_store_unavailable` with
+  remedies in `error_codes.rs`. DoD: unit tests for both branches and every
+  code; `check_source_limits` passes with a cohesive module, no artificial seam.
+- **9.3 — Tool migrations** (one builder per tool, disjoint files, after 9.2).
+  State: **not started**. `leads`: rows and `mechanic_counts` from one
+  transaction, `e.id` tie-breaker, custom scans may be `partial`. `query`:
+  all-or-nothing, remove the separate `count(*)`, `total_rows_unavailable`
+  and its budget; `total` exact. `structure`: partial semantics on the stored
+  result (`complete_scan`, `limited_by`, `resume_after_file`), resume is a
+  new request. `finding_read` and `mechanic`: cursor paging. `offset` and
+  `expected_revision` removed from all five. DoD per tool: golden equality
+  with 9.0 fixtures apart from the paging fields; the edit-between-pages test
+  (page one, edit so one row vanishes and one appears, read all pages, union
+  equals a full fetch taken at page one, `total` unchanged, then a fresh
+  request shows the edit).
+- **9.4 — Exclusion and database-replacement proofs.** State: **not started**.
+  Tests that `results/*.db` and the lock file are excluded from discovery, the
+  stat sweep, the watcher scope and reconcile (create them, run a full publish
+  and a sweep, assert no `files` row and no watcher event reaches reconcile);
+  tests that each of the four database-replacement paths (stale root,
+  incompatible version, corruption recovery, `project_control off`) runs while
+  a result is open and the continuation still completes; a publish and
+  `wal_checkpoint(TRUNCATE)` succeed with results open and the WAL truncates
+  to zero. DoD: all pass; `ARCHITECTURE.md` gains the invariants (immutable
+  paged result; continuation does not sync; nothing addressable before
+  commit; active results never reclaimed; result store and `project.db` hold
+  disjoint data).
+- **9.5 — Surface, docs, authorizer.** State: **not started**. INSTRUCTIONS
+  paging paragraph rewritten around `cursor`; store stats in `health` detail;
+  the read-only authorizer denies `CREATE TEMP TABLE`; `docs/TROUBLESHOOTING.md`
+  gains the result-store section (location, cleanup, platform policy, the
+  five codes); CHANGELOG under 1.1.0 (breaking: `offset`/`expected_revision`
+  removed, `cursor` added); `check_mcp_surface --record`; Luna reviews the
+  surface diff and the INSTRUCTIONS text. DoD: all gates; INSTRUCTIONS size
+  reported in the commit body.
+- **9.6 — Budget confirmation.** State: **not started**. On the 68k-line
+  project copy under `audit`, measure: materialisation time and file size for
+  `leads` all rows, `query` `SELECT path, content FROM files`, project-wide
+  `structure`; peak RSS with eight results open; confirm or adjust the
+  multiplier 4 and grace 900 s, recording the numbers in the design record.
+- **9.7 — Acceptance (phase gate).** State: **not started**. Full README gate
+  list via clerk; the stdio MCP end-to-end against a fresh release build via
+  quinn: `on` → `leads` page one → edit a file removing one match and adding
+  one → `leads` with cursor until `complete` (union equals a full fetch taken
+  at page one; totals unchanged) → `leads` without cursor shows the edit →
+  same cursor twice gives identical pages → final-page retry works → a token
+  from a restarted server gives `unknown_cursor` → `query` with NaN (via the
+  test-registered function if no SQL expression yields NaN in the bundled
+  build), +Inf, NUL text, blob and numeric-looking text pages identically to
+  the 9.0 golden → `structure` project-wide on a window-limited project
+  reports `complete_scan: false` and resumes as a new request → `health`
+  verbose shows store stats. Phase 9 is **landed** only when 9.0–9.7 are all
+  landed with commit hashes here.
+
+Recorded, not scheduled, from Phase 9: fold the mechanic scan cache into the
+result store (same mechanism keyed by revision); a `release` action for
+abandoned results if admission refusals are ever observed in practice.
 
 ## Remaining P1 debt (historical; superseded by wave 5)
 

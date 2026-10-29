@@ -4,7 +4,8 @@ use thiserror::Error;
 /// Zero-based line and character column position within a source file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Position {
-    /// Zero-based line index.
+    /// Zero-based line index. Converted to one-based exactly once, where the
+    /// span is written to the `evidence` table (`evidence::sql::to_row`).
     pub line: u32,
     /// A **character** offset from the start of the line (counting Unicode
     /// scalar values, i.e. `str::chars()`), not a byte offset. Tree-sitter's

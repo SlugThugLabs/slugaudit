@@ -48,7 +48,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         uri: "slugaudit://queries/auth_attack_surface.sql",
         name: "auth-attack-surface",
-        description: "Map functions, methods, and calls touching auth, tokens, or sessions.",
+        description: "Functions, methods and calls whose name mentions auth, tokens, sessions or secrets.",
         mime_type: "application/sql",
         content: include_str!("../examples/queries/auth_attack_surface.sql"),
     },
@@ -67,11 +67,25 @@ const CATALOG: &[CatalogEntry] = &[
         content: include_str!("../examples/queries/rust_functions.scm"),
     },
     CatalogEntry {
-        uri: "slugaudit://queries/blast_radius.sql",
-        name: "blast-radius",
-        description: "Per-file inbound/outbound dependency_edges counts and the transitive closure.",
+        uri: "slugaudit://queries/blast_radius_outbound.sql",
+        name: "blast-radius-outbound",
+        description: "Per-file outbound dependency_edges counts by resolution_kind.",
         mime_type: "application/sql",
-        content: include_str!("../examples/queries/blast_radius.sql"),
+        content: include_str!("../examples/queries/blast_radius_outbound.sql"),
+    },
+    CatalogEntry {
+        uri: "slugaudit://queries/blast_radius_inbound.sql",
+        name: "blast-radius-inbound",
+        description: "Per-file inbound dependency_edges counts and distinct importing files.",
+        mime_type: "application/sql",
+        content: include_str!("../examples/queries/blast_radius_inbound.sql"),
+    },
+    CatalogEntry {
+        uri: "slugaudit://queries/blast_radius_closure.sql",
+        name: "blast-radius-closure",
+        description: "Transitive import closure of one file, in both directions, over resolved edges.",
+        mime_type: "application/sql",
+        content: include_str!("../examples/queries/blast_radius_closure.sql"),
     },
     CatalogEntry {
         uri: "slugaudit://schema.sql",

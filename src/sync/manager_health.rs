@@ -4,7 +4,7 @@
 //! reconcile. It is a child of `manager`, so it can coordinate the manager's
 //! private counters and watcher state without exposing implementation fields.
 use super::super::manager_health_support::{
-    log_sync_failure, reconcile_events, revision_after_sync, sweep_error_to_sync,
+    limits_error, log_sync_failure, reconcile_events, revision_after_sync, sweep_error_to_sync,
 };
 use super::super::reconcile::ReconcileOptions;
 use super::{SourceSyncManager, SyncError};
@@ -37,7 +37,7 @@ impl SourceSyncManager {
         let health = state.health();
         match health {
             WatcherHealth::NeedsVerification | WatcherHealth::Desynced => {
-                self.verify_and_drain(root, state, connection, sink)
+                self.verify_and_drain(root, state, connection, database_path, sink)
             }
             WatcherHealth::Healthy | WatcherHealth::Partial => {
                 self.healthy_path(root, state, connection, database_path, sink)
@@ -74,6 +74,7 @@ impl SourceSyncManager {
         root: &project::ProjectRoot,
         state: &WatchState,
         connection: &mut Connection,
+        database_path: &Path,
         sink: &dyn ProgressSink,
     ) -> Result<String, ErrorData> {
         tracing::info!(
@@ -86,7 +87,7 @@ impl SourceSyncManager {
         // the project's ignore rules instead of a transient `None`. A no-op
         // when the scope is already current.
         self.watch_manager.refresh_scope(root.as_path());
-        let report = super::super::manager_meta::publish_full(
+        super::super::manager_meta::publish_full(
             connection,
             root.as_path(),
             sink,
@@ -134,7 +135,12 @@ impl SourceSyncManager {
         sink.emit(ProgressEvent::Completed {
             phase: "ensuring_current",
         });
-        Ok(report.revision_id)
+        // The drain above publishes again when it finds a change that landed
+        // during the full publish, so the publish's own revision can already
+        // be superseded: pin the call to the revision the database holds now,
+        // as the healthy path does, or the caller's verified read refuses its
+        // own sync with `stale_revision`.
+        revision_after_sync(connection, database_path)
     }
 
     /// Healthy path: walk exactly once, reconcile the watcher's events
@@ -158,7 +164,8 @@ impl SourceSyncManager {
         let options = ReconcileOptions::for_sync(
             root.as_path(),
             self.watch_manager.rules_for(root.as_path()),
-        );
+        )
+        .map_err(limits_error)?;
         // Walk exactly once: the report's `on_disk` serves the
         // event-driven reconcile below, and its candidates/deletions
         // are applied after it. A failed walk is as fatal as in the
@@ -269,7 +276,7 @@ impl SourceSyncManager {
         // event producer can't stall a tool call indefinitely. The
         // project's ignore rules make the incremental path index exactly
         // what a full publish would index.
-        let options = ReconcileOptions::for_sync(root, self.watch_manager.rules_for(root));
+        let options = ReconcileOptions::for_sync(root, self.watch_manager.rules_for(root))?;
         // Edge resolution must treat every path that exists as existing —
         // not just indexed rows. A file sampling skipped (oversize,
         // unreadable) has no `files` row, so resolving its importers

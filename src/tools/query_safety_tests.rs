@@ -10,6 +10,7 @@
 use super::*;
 use crate::tools::test_support::activated_project;
 use rmcp::handler::server::wrapper::Parameters;
+use std::time::Duration;
 
 /// The fixture every payload below attacks: one indexed `lib.rs`.
 fn project() -> tempfile::TempDir {
@@ -19,10 +20,10 @@ fn project() -> tempfile::TempDir {
 fn ask(project: &tempfile::TempDir, sql: &str) -> Result<QueryResponse, ErrorData> {
     query(
         &Parameters(QueryRequest {
-            path: project.path().to_string_lossy().into_owned(),
+            path: Some(project.path().to_string_lossy().into_owned()),
             sql: sql.to_owned(),
-            offset: 0,
-            expected_revision: None,
+            cursor: None,
+            legacy_paging: LegacyPaging::default(),
             page_bytes: None,
         }),
         &crate::progress::NoopProgressSink,
@@ -111,9 +112,7 @@ fn writes_through_a_scalar_or_exists_subquery_are_refused() {
 #[test]
 fn pragma_and_other_non_select_statements_smuggled_into_the_subquery_are_refused() {
     let project = project();
-    let knobs =
-        "SELECT (SELECT * FROM pragma_user_version) AS v, (SELECT * FROM pragma_journal_mode) AS m";
-    let before = ask(&project, knobs).expect("read the writable knobs");
+    let before = writable_knobs(&project);
 
     all_refused(
         &project,
@@ -147,11 +146,27 @@ fn pragma_and_other_non_select_statements_smuggled_into_the_subquery_are_refused
         "a refused VACUUM INTO still wrote a database file to /tmp"
     );
 
-    let after = ask(&project, knobs).expect("re-read the writable knobs");
     assert_eq!(
-        after.rows, before.rows,
+        writable_knobs(&project),
+        before,
         "a refused write-form PRAGMA still changed a knob"
     );
+}
+
+/// `user_version` and `journal_mode`, read on a plain connection without the
+/// read-only authorizer (which denies both pragmas, so the tool cannot read
+/// them any more). A first `query` syncs the project so the file exists.
+fn writable_knobs(project: &tempfile::TempDir) -> (i64, String) {
+    ask(project, "SELECT 1 AS synced").expect("sync the project");
+    let database = project.path().join(".planning/slugaudit/project.db");
+    let connection = rusqlite::Connection::open(database).expect("open without the authorizer");
+    connection
+        .query_row(
+            "SELECT (SELECT * FROM pragma_user_version), (SELECT * FROM pragma_journal_mode)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read the knobs")
 }
 
 /// `load_extension` is an ordinary `SELECT`, so the wrapper cannot refuse
@@ -280,27 +295,34 @@ fn legal_reads_of_the_schema_and_pragma_table_functions_are_allowed() {
 
 /// The request schema says only SELECT is accepted. `PRAGMA table_info` and
 /// `EXPLAIN SELECT 1` are read-only, but neither is a SELECT, so the wrapper
-/// refuses each before execution with the compile error SQLite reports for
-/// the wrapped statement.
+/// refuses each before execution, saying what `query` accepts and keeping
+/// the compile error SQLite reports for the wrapped statement.
 #[test]
 fn read_only_non_select_statements_are_refused_by_the_wrapper() {
     let project = project();
+    let refusal = "sql was refused: `query` accepts a single read-only SELECT/WITH statement, \
+                   and this is another kind of statement (PRAGMA, EXPLAIN, a write, DDL or a \
+                   transaction command), so it cannot run as a subquery (SQLite: ";
 
     for (sql, expected) in [
         (
             "PRAGMA table_info(files)",
-            "near \"(\": syntax error in SELECT * FROM (\nPRAGMA table_info(files)\n) \
-             LIMIT -1 OFFSET 0 at offset 33",
+            format!(
+                "{refusal}near \"(\": syntax error in SELECT * FROM (\nPRAGMA \
+                 table_info(files)\n) LIMIT -1 OFFSET 0 at offset 33)"
+            ),
         ),
         (
             "EXPLAIN SELECT 1",
-            "near \"SELECT\": syntax error in SELECT * FROM (\nEXPLAIN SELECT 1\n) \
-             LIMIT -1 OFFSET 0 at offset 24",
+            format!(
+                "{refusal}near \"SELECT\": syntax error in SELECT * FROM (\nEXPLAIN SELECT \
+                 1\n) LIMIT -1 OFFSET 0 at offset 24)"
+            ),
         ),
     ] {
         let error = refused(&project, sql, "a read-only non-SELECT statement");
         assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{sql}");
-        assert_eq!(error.message.as_ref(), expected, "{sql}");
+        assert_eq!(error.message.as_ref(), expected.as_str(), "{sql}");
         assert!(
             error.data.is_none(),
             "{sql}: a wrapper refusal carries no machine-readable code"
@@ -329,10 +351,10 @@ fn a_comments_only_statement_is_refused_rather_than_run_as_an_empty_query() {
 fn a_query_path_over_the_cap_is_refused_before_any_sync() {
     let error = query_with_limits(
         &Parameters(QueryRequest {
-            path: "x".repeat(32 * 1024 + 1),
+            path: Some("x".repeat(32 * 1024 + 1)),
             sql: "SELECT 1".to_owned(),
-            offset: 0,
-            expected_revision: None,
+            cursor: None,
+            legacy_paging: LegacyPaging::default(),
             page_bytes: None,
         }),
         &ResourceLimits::default(),
@@ -346,27 +368,243 @@ fn a_query_path_over_the_cap_is_refused_before_any_sync() {
     assert_eq!(error.message.as_ref(), "path exceeds 32768 bytes");
 }
 
+/// Demands the clear refusal: `invalid_params`, saying what `query`
+/// accepts, never the comments-only message.
+fn assert_refused_as_not_a_select(error: &ErrorData, sql: &str) {
+    let opening = "sql was refused: `query` accepts a single read-only SELECT/WITH statement";
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{sql}");
+    assert!(
+        error.message.starts_with(opening) && !error.message.contains("only comments"),
+        "{sql}: unexpected message: {}",
+        error.message
+    );
+}
+
+/// A process-wide pragma as a second, freshly opened connection reads it
+/// (`None` when it has no value).
+fn fresh_pragma(pragma: &str) -> Option<String> {
+    use rusqlite::OptionalExtension;
+    rusqlite::Connection::open_in_memory()
+        .expect("a freshly opened connection")
+        .query_row(&format!("PRAGMA {pragma}"), [], |row| {
+            row.get::<_, rusqlite::types::Value>(0)
+        })
+        .optional()
+        .expect("read the pragma")
+        .map(|value| format!("{value:?}"))
+}
+
+/// SQLite applies these pragmas while *preparing* the statement and each is
+/// process-wide: a refusal that came after the prepare would leave, for
+/// `hard_heap_limit=1`, every later database open in the process failing.
+/// A fresh connection reads each value unchanged and a `report` still runs.
 #[test]
-fn an_expected_revision_over_the_query_cap_is_refused_before_any_sync() {
-    let directory = tempfile::tempdir().expect("project dir");
-    let error = query_with_limits(
-        &Parameters(QueryRequest {
-            path: directory.path().to_string_lossy().into_owned(),
-            sql: "SELECT 1".to_owned(),
-            offset: 0,
-            expected_revision: Some("x".repeat(257)),
-            page_bytes: None,
+fn refused_prepare_time_pragmas_leave_process_wide_state_unchanged() {
+    let project = project();
+    let elsewhere = tempfile::tempdir().expect("a directory the pragma would point at");
+
+    for (pragma, setter) in [
+        ("hard_heap_limit", "PRAGMA hard_heap_limit=1".to_owned()),
+        (
+            "soft_heap_limit",
+            "PRAGMA soft_heap_limit=123456789".to_owned(),
+        ),
+        (
+            "temp_store_directory",
+            format!(
+                "PRAGMA temp_store_directory='{}'",
+                elsewhere.path().display()
+            ),
+        ),
+    ] {
+        let before = fresh_pragma(pragma);
+        let error = refused(&project, &setter, "a prepare-time PRAGMA");
+        assert_refused_as_not_a_select(&error, &setter);
+        assert_eq!(fresh_pragma(pragma), before, "{setter} took effect");
+    }
+
+    assert_eq!(
+        fresh_pragma("hard_heap_limit").as_deref(),
+        Some("Integer(0)")
+    );
+    let report = crate::tools::report::report(
+        &Parameters(crate::tools::report::ReportRequest {
+            path: project.path().to_string_lossy().into_owned(),
         }),
-        &ResourceLimits::default(),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
-    )
-    .err()
-    .expect("an oversized expected_revision must be refused");
-
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert_eq!(
-        error.message.as_ref(),
-        "expected_revision exceeds 256 bytes"
     );
+    assert!(
+        report.is_ok(),
+        "report after the refusals: {:?}",
+        report.err()
+    );
+}
+
+/// The schema-introspection `pragma_*` table functions pass the authorizer's
+/// allowlist and return the column rows; a setter-capable one is refused.
+#[test]
+fn pragma_table_info_returns_rows_while_other_pragma_functions_are_refused() {
+    let project = project();
+
+    let columns =
+        ask(&project, "SELECT * FROM pragma_table_info('files')").expect("introspection reads");
+    let knob = refused(
+        &project,
+        "SELECT * FROM pragma_user_version",
+        "a non-introspection pragma function",
+    );
+
+    assert!(
+        columns
+            .rows
+            .iter()
+            .any(|row| row["name"] == "path" && row["cid"].is_i64()),
+        "{:?}",
+        columns.rows
+    );
+    assert_refused_as_not_a_select(&knob, "pragma_user_version");
+    assert!(
+        knob.message.contains("pragma_table_info"),
+        "{}",
+        knob.message
+    );
+}
+
+/// `query` under `limits`, whose `max_file_bytes` and `max_query_value_bytes`
+/// are both `file_bytes`, and the value-length bound that gives.
+fn ask_bounded(
+    project: &tempfile::TempDir,
+    sql: &str,
+    file_bytes: usize,
+) -> (Result<QueryResponse, ErrorData>, i32) {
+    let limits = ResourceLimits {
+        max_file_bytes: file_bytes as u64,
+        max_query_value_bytes: file_bytes,
+        ..ResourceLimits::default()
+    };
+    let bound = crate::tools::query_exec::engine_limits(&limits)
+        .expect("engine limits")
+        .value_length;
+    let request = Parameters(QueryRequest {
+        path: Some(project.path().to_string_lossy().into_owned()),
+        sql: sql.to_owned(),
+        cursor: None,
+        legacy_paging: LegacyPaging::default(),
+        page_bytes: None,
+    });
+    let manager = crate::sync::SourceSyncManager::default();
+    let result = query_with_limits(
+        &request,
+        &limits,
+        &crate::progress::NoopProgressSink,
+        &manager,
+    );
+    (result.map(|Json(response)| response), bound)
+}
+
+/// The deep-dive amplifier peaked at 2.1 GB. Under a 3 MiB value-length bound
+/// it, and each step of the same chain just above the bound, fails quickly
+/// with SQLite's "too big" as `invalid_params`; the bound itself evaluates.
+#[test]
+fn the_zeroblob_hex_replace_amplifier_fails_fast_with_a_too_big_error() {
+    let project = project();
+    let bound = ask_bounded(&project, "SELECT 1 AS warm", 1024 * 1024).1;
+    let started = std::time::Instant::now();
+
+    for sql in [
+        "SELECT length(replace(replace(hex(zeroblob(250000000)),'0','00'),'00','000')) AS n"
+            .to_owned(),
+        format!("SELECT length(zeroblob({})) AS n", bound + 1),
+        format!("SELECT length(hex(zeroblob({}))) AS n", bound / 2 + 1),
+    ] {
+        let error = ask_bounded(&project, &sql, 1024 * 1024)
+            .0
+            .expect_err("over the bound");
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{sql}");
+        assert!(
+            error.message.contains("too big"),
+            "{sql}: {}",
+            error.message
+        );
+    }
+    let at_bound = ask_bounded(
+        &project,
+        &format!("SELECT length(zeroblob({bound})) AS n"),
+        1024 * 1024,
+    )
+    .0;
+
+    assert_eq!(
+        at_bound.expect("exactly the bound").rows[0]["n"],
+        i64::from(bound)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+/// SQLite checks the value-length bound when it reads a stored column too.
+/// A text file of invalid UTF-8 at `max_file_bytes` is stored lossy-decoded,
+/// three bytes of U+FFFD per input byte, which is exactly the bound: it must
+/// stay readable with `substr`, and one byte more must not.
+#[test]
+fn a_stored_value_of_exactly_the_length_bound_is_still_readable_with_substr() {
+    let file_bytes = 64 * 1024;
+    let project = activated_project("latin.txt", &vec![0xFF; file_bytes]);
+    let over = 3 * file_bytes + 1;
+    std::fs::write(project.path().join("over.txt"), "x".repeat(over)).expect("over fixture");
+    let read = |path: &str| {
+        let sql = format!(
+            "SELECT substr(content, 1, 1) AS head, length(CAST(content AS BLOB)) AS n \
+             FROM files WHERE path = '{path}'"
+        );
+        ask_bounded(&project, &sql, file_bytes)
+    };
+
+    let (at, bound) = read("latin.txt");
+    let (beyond, _) = read("over.txt");
+
+    assert_eq!(usize::try_from(bound).expect("bound"), 3 * file_bytes);
+    let expected = serde_json::json!({"head": "\u{FFFD}", "n": 3 * file_bytes});
+    assert_eq!(at.expect("the bound reads").rows, vec![expected]);
+    let error = beyond.expect_err("one byte over the bound");
+    assert!(error.message.contains("too big"), "{}", error.message);
+}
+
+/// The value bound is the larger of the query value cap and three bytes per
+/// file byte, clamped to SQLite's maximum; the SQL bound is the tool's SQL
+/// cap plus the wrapper overhead.
+#[test]
+fn engine_limits_cover_stored_values_and_the_wrapped_sql() {
+    use crate::tools::query_exec::{EngineLimits, engine_limits};
+    let with = |file: u64, value: usize, sql: usize| ResourceLimits {
+        max_file_bytes: file,
+        max_query_value_bytes: value,
+        max_query_sql_bytes: sql,
+        ..ResourceLimits::default()
+    };
+
+    for (limits, value_length, sql_length) in [
+        (with(1000, 1000, 100), 3000, 164),
+        (with(1000, 10, 100), 3000, 164),
+        (with(1000, 5000, 100), 5000, 164),
+        (
+            with(1_000_000_000, 1, 2_000_000_000),
+            1_000_000_000,
+            1_000_000_000,
+        ),
+    ] {
+        let expected = EngineLimits {
+            value_length,
+            sql_length,
+        };
+        assert_eq!(
+            engine_limits(&limits).expect("computable"),
+            expected,
+            "{limits:?}"
+        );
+    }
 }

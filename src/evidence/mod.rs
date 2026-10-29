@@ -83,14 +83,29 @@ pub(super) fn node_span(
     lines: &crate::model::LineIndex<'_>,
     context: &'static str,
 ) -> crate::model::SpanAvailability {
-    let start_byte = node.start_byte();
-    let end_byte = node.end_byte();
+    range_span(
+        (node.start_byte(), node.end_byte()),
+        (node.start_position().row, node.end_position().row),
+        lines,
+        context,
+    )
+}
+
+/// [`node_span`] from a node's raw `(start, end)` bytes and rows, for a
+/// producer holding a `tree_sitter::Node` rather than the pack's wrapper (the
+/// call queries in `calls/query_calls.rs`).
+pub(super) fn range_span(
+    (start_byte, end_byte): (usize, usize),
+    (start_row, end_row): (usize, usize),
+    lines: &crate::model::LineIndex<'_>,
+    context: &'static str,
+) -> crate::model::SpanAvailability {
     let start = crate::model::Position {
-        line: crate::model::saturating_u32(node.start_position().row),
+        line: crate::model::saturating_u32(start_row),
         column: lines.column(start_byte),
     };
     let end = crate::model::Position {
-        line: crate::model::saturating_u32(node.end_position().row),
+        line: crate::model::saturating_u32(end_row),
         column: lines.column(end_byte),
     };
     match crate::model::Span::new(start_byte as u64, end_byte as u64, start, end) {
@@ -115,29 +130,92 @@ pub(super) fn node_text(source: &str, start: usize, end: usize) -> Result<&str, 
     source.get(start..end).ok_or(TextRangeError { start, end })
 }
 
-/// Parses `source` as `language`. A parser that cannot be built or a parse
-/// that yields no tree is logged once and returned as `None`; the caller
-/// must then report its extraction as truncated (`ExtractionCompleteness::
-/// Partial`), never as complete.
-pub(super) fn parse_tree(language: &str, source: &str) -> Option<tree_sitter_language_pack::Tree> {
+/// What one bounded extraction produced, and how it was cut short.
+#[derive(Debug, Default)]
+pub(crate) struct Extraction {
+    /// The evidence extracted, in extraction order.
+    pub(crate) items: Vec<crate::model::EvidenceItem>,
+    /// A walk bound was hit, a node range did not slice the source, or a
+    /// walker's parse failed with time left: report `Partial`.
+    pub(crate) truncated: bool,
+    /// A re-parse after the pack's `process()` was cut at the deadline, so
+    /// the walker that needed it saw nothing: `items` holds what was
+    /// extracted before, and the file is recorded with `parse_timeout`.
+    pub(crate) timed_out: bool,
+}
+
+impl Extraction {
+    /// No items: the parse a walker needed produced no tree, for `why`.
+    pub(super) fn without_tree(why: NoTree) -> Self {
+        Self {
+            items: Vec::new(),
+            truncated: why == NoTree::Failed,
+            timed_out: why == NoTree::TimedOut,
+        }
+    }
+
+    /// Appends a later walker's items and keeps both cut-short flags.
+    pub(super) fn absorb(&mut self, other: Self) {
+        self.items.extend(other.items);
+        self.truncated |= other.truncated;
+        self.timed_out |= other.timed_out;
+    }
+}
+
+/// Why [`parse_tree`] returned no tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NoTree {
+    /// The call's deadline left less than a millisecond, so the parse was not
+    /// started, or the pack's parse timeout (its tree-sitter progress
+    /// callback) cancelled it at the deadline. The caller records the file
+    /// with the `parse_timeout` reason.
+    TimedOut,
+    /// The parser could not be built, or returned no tree while time was
+    /// left. Logged here; the caller reports its extraction as truncated
+    /// (`ExtractionCompleteness::Partial`), never as complete.
+    Failed,
+}
+
+/// Parses `source` as `language` within what is left of `deadline` (`None`:
+/// unbounded). Every re-parse of one file passes the same deadline, so the
+/// file's parses share one budget instead of each getting a fresh timeout.
+/// The pack's `Parser::parse` returns `None` for a timeout and for any other
+/// failure alike, so the two are told apart by checking the deadline after
+/// the call: a timeout is only reported once the deadline has passed.
+pub(super) fn parse_tree(
+    language: &str,
+    source: &str,
+    deadline: Option<&crate::util::Deadline>,
+) -> Result<tree_sitter_language_pack::Tree, NoTree> {
+    let budget_ms = match deadline {
+        Some(deadline) => Some(deadline.remaining_millis().ok_or(NoTree::TimedOut)?.get()),
+        None => None,
+    };
     let mut parser = match tree_sitter_language_pack::get_parser(language) {
         Ok(parser) => parser,
         Err(error) => {
             tracing::warn!(language, %error, "evidence walker could not build a parser; extraction is partial");
-            return None;
+            return Err(NoTree::Failed);
         }
     };
-    let tree = parser.parse(source);
-    if tree.is_none() {
-        tracing::warn!(
-            language,
-            "evidence walker parse produced no tree; extraction is partial"
-        );
+    parser.set_parse_timeout_ms(budget_ms);
+    if let Some(tree) = parser.parse(source) {
+        return Ok(tree);
     }
-    tree
+    if deadline.is_some_and(|deadline| deadline.remaining_millis().is_none()) {
+        // The pack logs the cancellation itself.
+        return Err(NoTree::TimedOut);
+    }
+    tracing::warn!(
+        language,
+        "evidence walker parse produced no tree; extraction is partial"
+    );
+    Err(NoTree::Failed)
 }
 
+pub(crate) use calls::call_languages;
 pub use normalize::extract;
+pub(crate) use normalize::extract_within;
 
 pub use sql::{EvidenceRow, to_row};
 
@@ -171,10 +249,34 @@ mod tests {
     #[test]
     fn a_parser_that_cannot_be_built_is_logged_and_reported_as_none() {
         let (tree, logs) = crate::store::test_capture::capture_warns(|| {
-            parse_tree("no-such-language-for-evidence-test", "x")
+            parse_tree("no-such-language-for-evidence-test", "x", None)
         });
 
-        assert!(tree.is_none());
+        assert_eq!(tree.err(), Some(NoTree::Failed));
         assert!(logs.contains("could not build a parser"), "{logs}");
+    }
+
+    #[test]
+    fn a_parse_under_a_spent_deadline_is_a_timeout_and_never_starts() {
+        let deadline = crate::util::Deadline::after(std::time::Duration::ZERO);
+
+        let (tree, logs) = crate::store::test_capture::capture_warns(|| {
+            parse_tree("no-such-language-for-evidence-test", "x", Some(&deadline))
+        });
+
+        assert_eq!(tree.err(), Some(NoTree::TimedOut));
+        assert!(
+            !logs.contains("could not build a parser"),
+            "the parser is never built: {logs}"
+        );
+    }
+
+    #[test]
+    fn a_parse_with_time_left_returns_its_tree() {
+        let deadline = crate::util::Deadline::after(std::time::Duration::from_secs(60));
+
+        let tree = parse_tree("rust", "fn a() {}", Some(&deadline)).expect("a tree");
+
+        assert_eq!(tree.root_node().kind(), "source_file");
     }
 }

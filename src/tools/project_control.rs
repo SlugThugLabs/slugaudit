@@ -54,6 +54,11 @@ pub struct ProjectControlResponse {
     /// `"off"`, which never touches that file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gitignore: Option<GitignoreReport>,
+    /// Present only when `"on"` found a corrupt or outdated project database
+    /// and discarded it: how many findings were lost (null = unknown, the
+    /// database was unreadable) and why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_discard: Option<sync::DatabaseDiscard>,
 }
 
 /// What enabling a project did about its root `.gitignore`.
@@ -107,8 +112,7 @@ pub struct ImportReport {
     /// for them. A non-zero value means the import is incomplete; `report`'s
     /// `completeness` carries the per-reason breakdown after the import.
     pub skipped: usize,
-    /// The `rev-N` id of the revision this import committed. Pass it back
-    /// as `expected_revision` when resuming a paged read.
+    /// The `rev-N` id of the revision this import committed.
     pub revision_id: String,
 }
 
@@ -136,6 +140,37 @@ fn gitignore_report(outcome: project::GitignoreOutcome) -> GitignoreReport {
 /// Wraps any error into a user-friendly `ErrorData` message.
 fn err(msg: impl Into<String>) -> ErrorData {
     ErrorData::internal_error(msg.into(), None)
+}
+
+/// Maps a failed profile-config update to the tool error. A file the caller
+/// must fix — a symlinked or non-regular `config.json`, one that is not a
+/// JSON object, or one that would outgrow the read cap — is `invalid_params`;
+/// an I/O failure, a lock held past the bounded wait, or a directory sync
+/// that failed after the replace is operational (`internal_error`).
+fn config_write_error(error: project::ConfigWriteError) -> ErrorData {
+    match &error {
+        project::ConfigWriteError::NotRegularFile { .. }
+        | project::ConfigWriteError::Malformed { .. }
+        | project::ConfigWriteError::NotAnObject { .. }
+        | project::ConfigWriteError::TooLarge { .. } => {
+            ErrorData::invalid_params(format!("write profile config: {error}"), None)
+        }
+        project::ConfigWriteError::Locked { .. }
+        | project::ConfigWriteError::Io { .. }
+        | project::ConfigWriteError::NotDurable { .. } => {
+            err(format!("write profile config: {error}"))
+        }
+    }
+}
+
+/// The name `config.json` stores for a profile — the serde name
+/// `ProjectConfig` reads back.
+fn profile_name(profile: crate::model::AuditProfile) -> &'static str {
+    match profile {
+        crate::model::AuditProfile::Lean => "lean",
+        crate::model::AuditProfile::Audit => "audit",
+        crate::model::AuditProfile::Adaptive => "adaptive",
+    }
 }
 
 /// Enables or disables SlugAudit for a project.
@@ -227,24 +262,39 @@ fn enable(
     // the initial import below fails, and it never fails this call.
     let gitignore = gitignore_report(project::ensure_gitignore(root));
     if let Some(profile) = profile_override {
-        let conf_path = root
-            .as_path()
-            .join(".planning")
-            .join("slugaudit")
-            .join("config.json");
-        let cfg = serde_json::json!({ "profile": profile });
-        // `{:#}` renders a `Value` through `Display` with the same pretty
-        // formatter `to_string_pretty` uses, but without a fallible call:
-        // serializing a `Value` cannot fail, so there is no error arm to
-        // leave untested.
-        let encoded = format!("{cfg:#}");
-        std::fs::write(&conf_path, encoded)
-            .map_err(|e| err(format!("write profile config {}: {e}", conf_path.display())))?;
+        // Sets `profile` only: every other key (limits, persisted mechanics)
+        // is kept by the shared locked, atomic read-modify-write.
+        project::ProjectConfig::update_raw(root.as_path(), |config| {
+            config.insert(
+                "profile".to_owned(),
+                serde_json::Value::from(profile_name(profile)),
+            );
+            Ok::<(), project::ConfigWriteError>(())
+        })
+        .map_err(config_write_error)?;
     }
     let db_path = project::database_path(root);
+    let mut discard = None;
     let mut connection = match store::open_read_write(&db_path) {
         Ok(conn) => conn,
-        Err(error) if error.is_corruption() => recover_corrupt_database(&db_path)?,
+        Err(error) if error.is_corruption() => {
+            let (notice, count_error) = sync::DatabaseDiscard::assess_file(
+                &db_path,
+                format!("the project database is corrupt or outdated: {error}"),
+            );
+            tracing::warn!(
+                operation = "enable_project",
+                database_id = %crate::util::redacted_path(&db_path),
+                error = %sync::scrub_path(&error.to_string(), &db_path),
+                findings_discarded = ?notice.findings_discarded,
+                count_error = count_error
+                    .as_ref()
+                    .map(|error| sync::scrub_path(&error.to_string(), &db_path)),
+                "database is corrupt or outdated; discarding and re-importing from scratch",
+            );
+            discard = Some(notice);
+            recover_corrupt_database(&db_path)?
+        }
         Err(e) => return Err(err(format!("database: {e}"))),
     };
     let report = sync::publish(&mut connection, root.as_path(), parse::PACK_VERSION, sink)
@@ -261,6 +311,7 @@ fn enable(
             revision_id: report.revision_id,
         }),
         gitignore: Some(gitignore),
+        database_discard: discard,
     }))
 }
 
@@ -292,6 +343,7 @@ fn disable(
             path: root.as_path().to_string_lossy().to_string(),
             import: None,
             gitignore: None,
+            database_discard: None,
         }));
     }
     if let Some(m) = manager {
@@ -303,8 +355,13 @@ fn disable(
         path: root.as_path().to_string_lossy().to_string(),
         import: None,
         gitignore: None,
+        database_discard: None,
     }))
 }
+
+#[cfg(test)]
+#[path = "project_control_config_tests.rs"]
+mod config_write_tests;
 
 #[cfg(test)]
 #[path = "project_control_tests.rs"]

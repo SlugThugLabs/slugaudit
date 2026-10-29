@@ -18,20 +18,12 @@ fn activated_project(files: &[(&str, &[u8])]) -> tempfile::TempDir {
 }
 
 fn ask(project: &tempfile::TempDir, sql: &str) -> Result<QueryResponse, ErrorData> {
-    ask_pinned(project, sql, None)
-}
-
-fn ask_pinned(
-    project: &tempfile::TempDir,
-    sql: &str,
-    expected_revision: Option<&str>,
-) -> Result<QueryResponse, ErrorData> {
     query(
         &Parameters(QueryRequest {
-            path: project.path().to_string_lossy().into_owned(),
+            path: Some(project.path().to_string_lossy().into_owned()),
             sql: sql.to_owned(),
-            offset: 0,
-            expected_revision: expected_revision.map(str::to_owned),
+            cursor: None,
+            legacy_paging: LegacyPaging::default(),
             page_bytes: None,
         }),
         &crate::progress::NoopProgressSink,
@@ -47,10 +39,10 @@ fn ask_with_limits(
 ) -> Result<QueryResponse, ErrorData> {
     query_with_limits(
         &Parameters(QueryRequest {
-            path: project.path().to_string_lossy().into_owned(),
+            path: Some(project.path().to_string_lossy().into_owned()),
             sql: sql.to_owned(),
-            offset: 0,
-            expected_revision: None,
+            cursor: None,
+            legacy_paging: LegacyPaging::default(),
             page_bytes: None,
         }),
         limits,
@@ -79,7 +71,7 @@ fn a_plain_select_returns_real_rows() {
     assert_eq!(response.rows.len(), 1);
     assert_eq!(response.rows[0]["path"], "lib.rs");
     assert_eq!(response.rows[0]["language"], "rust");
-    assert!(!response.truncated);
+    assert!(response.page.complete);
 }
 
 /// A trailing `-- line comment` must not swallow the `) LIMIT N` wrapper we
@@ -224,7 +216,7 @@ fn a_single_statement_with_semicolons_or_trailing_trivia_is_accepted() {
     ] {
         let response = ask(&project, sql).unwrap_or_else(|e| panic!("{sql}: {}", e.message));
         assert_eq!(response.rows.len(), 1, "{sql}");
-        assert!(!response.truncated, "{sql}");
+        assert!(response.page.complete, "{sql}");
     }
     let response = ask(&project, "SELECT ';' AS x").expect("string semicolon is fine");
     assert_eq!(response.rows[0]["x"], ";");
@@ -327,12 +319,12 @@ fn more_than_500_rows_come_back_in_one_page_when_the_byte_budget_allows() {
     let response = ask(&project, COUNT_TO_900).expect("recursive CTE query succeeds");
 
     assert_eq!(response.rows.len(), 900);
-    assert!(!response.truncated);
-    assert_eq!(response.next_offset, None);
+    assert!(response.page.complete);
+    assert_eq!(response.page.cursor, None);
 }
 
 #[test]
-fn a_page_is_cut_by_the_byte_budget_and_resumes_at_next_offset() {
+fn a_page_is_cut_by_the_byte_budget_and_carries_a_cursor() {
     let project = activated_project(&[]);
     let limits = ResourceLimits {
         max_query_response_bytes: 200,
@@ -341,9 +333,9 @@ fn a_page_is_cut_by_the_byte_budget_and_resumes_at_next_offset() {
 
     let first = ask_with_limits(&project, COUNT_TO_900, &limits).expect("first page");
 
-    assert!(first.truncated);
+    assert!(!first.page.complete);
     assert!(first.rows.len() > 1 && first.rows.len() < 900);
-    assert_eq!(first.next_offset, Some(first.rows.len()));
+    assert!(first.page.cursor.is_some());
     assert_eq!(first.rows[0]["x"], 1);
 }
 
@@ -356,7 +348,7 @@ fn an_agent_limit_and_offset_still_work_inside_the_subquery() {
 
     let xs: Vec<_> = response.rows.iter().map(|r| r["x"].clone()).collect();
     assert_eq!(xs, [11, 12, 13]);
-    assert!(!response.truncated);
+    assert!(response.page.complete);
 }
 
 #[test]
@@ -425,121 +417,6 @@ fn a_pathological_query_is_aborted_by_the_step_budget() {
     );
 }
 
-/// C9: paging contract — `next_offset` is only valid while the revision
-/// id does not change. A source edit between pages changes the revision,
-/// and the response's `revision_id` lets the AI detect that boundary
-/// (rows may shift order across a publish, so blindly continuing to page
-/// could skip or duplicate rows).
-#[test]
-fn paging_across_a_revision_change_is_detectable_via_revision_id() {
-    let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
-
-    // A small byte budget makes paging real (offset + next).
-    let limits = ResourceLimits {
-        max_query_response_bytes: 200,
-        ..ResourceLimits::default()
-    };
-    let sql = COUNT_TO_900;
-    let page_one = ask_with_limits(&project, sql, &limits).expect("page one succeeds");
-    assert!(page_one.truncated);
-    let next_offset = page_one.next_offset.expect("truncated query has next");
-    assert_eq!(next_offset, page_one.rows.len());
-
-    let page_two = ask(&project, sql).expect("page two succeeds");
-    assert_eq!(
-        page_two.revision_id, page_one.revision_id,
-        "no source change: same revision, so paging stays valid"
-    );
-
-    // A source edit lands a new revision. The next page reports the new
-    // revision id, which is exactly the boundary signal the contract
-    // promises — the AI restarts paging rather than trusting next_offset.
-    fs::write(
-        project.path().join("lib.rs"),
-        b"pub fn a() {}\npub fn b() {}\n",
-    )
-    .expect("modify fixture");
-    let page_three = ask(&project, sql).expect("page three succeeds");
-    assert_ne!(
-        page_three.revision_id, page_one.revision_id,
-        "a source change must produce a new revision, invalidating old offsets"
-    );
-}
-
-/// The enforced half of the same contract: a resumed page that names the
-/// revision it is resuming is *refused* when the index moved on, rather
-/// than served from a different ordering. `stale_revision` is the code, and
-/// the remedy restarts the sweep instead of retrying the same offset.
-#[test]
-fn a_stale_expected_revision_refuses_a_resumed_query_page() {
-    let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
-    let sql = "SELECT path FROM files";
-
-    let first = ask(&project, sql).expect("the first page succeeds");
-    let again = ask_pinned(&project, sql, Some(&first.revision_id))
-        .expect("an unchanged revision accepts the pin");
-    assert_eq!(again.revision_id, first.revision_id);
-
-    fs::write(
-        project.path().join("lib.rs"),
-        b"pub fn a() {}\npub fn b() {}\n",
-    )
-    .expect("modify fixture");
-    let error = ask_pinned(&project, sql, Some(&first.revision_id))
-        .expect_err("a page pinned to a superseded revision is refused");
-    let data = error.data.expect("the refusal carries a payload");
-    assert_eq!(data["code"], "stale_revision");
-    let remedy = data["remedy"].as_str().expect("remedy is a string");
-    assert!(
-        remedy.contains("offset 0"),
-        "the remedy restarts the sweep: {remedy}"
-    );
-    assert!(
-        error.message.contains(&first.revision_id),
-        "the message names the pin it refused: {}",
-        error.message
-    );
-
-    // An unpinned read still works and reports the revision the pin missed.
-    let fresh = ask(&project, sql).expect("an unpinned read succeeds");
-    assert_ne!(fresh.revision_id, first.revision_id);
-}
-
-#[test]
-fn an_offset_past_the_supported_maximum_is_refused_as_a_contract_error() {
-    // SQLite turns an integer literal too large for i64 into a REAL, so an
-    // unbounded offset would page from a floating-point position instead of
-    // failing - wrong rows, no error.
-    let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
-    let at = |offset: usize| {
-        query(
-            &Parameters(QueryRequest {
-                path: project.path().to_string_lossy().into_owned(),
-                sql: "SELECT path FROM files".to_owned(),
-                offset,
-                expected_revision: None,
-                page_bytes: None,
-            }),
-            &crate::progress::NoopProgressSink,
-            &crate::sync::SourceSyncManager::default(),
-        )
-        .map(|Json(response)| response)
-    };
-
-    let error = at(i64::MAX as usize + 1).expect_err("an unusable offset is refused");
-    assert!(
-        error
-            .message
-            .contains("exceeds the maximum supported page offset"),
-        "the message names the bound: {}",
-        error.message
-    );
-
-    // The bound itself is still a usable offset: an empty page, not an error.
-    let page = at(i64::MAX as usize).expect("the maximum offset is accepted");
-    assert!(page.rows.is_empty(), "no row lives at that offset");
-}
-
 #[test]
 fn a_pathological_query_is_aborted_by_the_wall_clock_budget() {
     let project = activated_project(&[]);
@@ -551,21 +428,44 @@ fn a_pathological_query_is_aborted_by_the_wall_clock_budget() {
         max_query_wall_clock: Duration::from_nanos(1),
         ..ResourceLimits::default()
     };
-    let result = ask_with_limits(
-        &project,
-        "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5000) SELECT x FROM cnt",
+    let manager = crate::sync::SourceSyncManager::default();
+    let result = query_with_limits(
+        &Parameters(QueryRequest {
+            path: Some(project.path().to_string_lossy().into_owned()),
+            sql: "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5000) SELECT x FROM cnt".to_owned(),
+            cursor: None,
+            legacy_paging: LegacyPaging::default(),
+            page_bytes: None,
+        }),
         &limits,
-    );
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .map(|Json(response)| response);
     let error = result.expect_err("runaway query is aborted, not run to completion");
     assert!(
         error.message.contains("time budget"),
         "unexpected message: {}",
         error.message
     );
+    let store = manager
+        .result_stores()
+        .current()
+        .expect("the store opened for the attempt");
+    let stats = store.stats();
+    assert_eq!(
+        (
+            stats.active.results,
+            stats.idle.results,
+            stats.delivered.results
+        ),
+        (0, 0, 0),
+        "no partial result is left behind"
+    );
 }
 
 #[test]
-fn results_exceeding_response_bytes_are_truncated() {
+fn results_exceeding_response_bytes_are_cut_into_pages() {
     let project = activated_project(&[]);
     let limits = ResourceLimits {
         max_query_response_bytes: 50,
@@ -577,7 +477,7 @@ fn results_exceeding_response_bytes_are_truncated() {
         &limits,
     )
     .expect("query succeeds");
-    assert!(response.truncated);
+    assert!(!response.page.complete);
     assert!(!response.rows.is_empty());
     assert!(response.rows.len() < 50);
 }

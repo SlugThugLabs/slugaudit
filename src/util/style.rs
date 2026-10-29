@@ -23,8 +23,19 @@ pub(crate) struct Style {
 impl Style {
     /// A `Style` that colors only if stdout is a terminal at call time.
     pub(crate) fn stdout() -> Self {
+        Self::detect(std::io::stdout().is_terminal(), |name| {
+            std::env::var_os(name)
+        })
+    }
+
+    /// Colour only on a terminal, and never when `NO_COLOR` is set non-empty
+    /// (no-color.org) or `TERM` is `dumb`. The environment lookup is injected
+    /// so tests never mutate the process environment.
+    fn detect(is_terminal: bool, var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Self {
+        let no_color = var("NO_COLOR").is_some_and(|value| !value.is_empty());
+        let dumb = var("TERM").is_some_and(|value| value == "dumb");
         Self {
-            enabled: std::io::stdout().is_terminal(),
+            enabled: is_terminal && !no_color && !dumb,
         }
     }
 
@@ -70,5 +81,45 @@ impl Style {
 
     pub(crate) fn yellow(&self, text: &str) -> String {
         self.wrap("33", text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| OsString::from(value))
+        }
+    }
+
+    #[test]
+    fn style_colours_a_terminal_with_a_clean_environment() {
+        assert!(Style::detect(true, env(&[("TERM", "xterm-256color")])).enabled());
+    }
+
+    #[test]
+    fn style_is_disabled_off_a_terminal() {
+        assert!(!Style::detect(false, env(&[])).enabled());
+    }
+
+    #[test]
+    fn style_is_disabled_by_a_non_empty_no_color() {
+        assert!(!Style::detect(true, env(&[("NO_COLOR", "1")])).enabled());
+    }
+
+    #[test]
+    fn style_ignores_an_empty_no_color() {
+        assert!(Style::detect(true, env(&[("NO_COLOR", "")])).enabled());
+    }
+
+    #[test]
+    fn style_is_disabled_by_term_dumb() {
+        assert!(!Style::detect(true, env(&[("TERM", "dumb")])).enabled());
     }
 }

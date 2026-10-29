@@ -19,6 +19,7 @@ use rmcp::handler::server::wrapper::Parameters;
 fn req(path: Option<&str>) -> Parameters<HealthRequest> {
     Parameters(HealthRequest {
         path: path.map(str::to_owned),
+        verbose: true,
     })
 }
 
@@ -169,14 +170,18 @@ fn health_no_path_response_carries_counter_consistency() {
         &crate::sync::SourceSyncManager::default(),
     )
     .expect("health should not fail on shape");
-    let inner = resp.0;
+    let server = resp
+        .0
+        .detail
+        .expect("a verbose answer carries detail")
+        .server;
     let snap_after = ToolCounters::snapshot();
     assert!(
-        inner.server.tool_call_count >= snap_before.call_count,
+        server.tool_call_count >= snap_before.call_count,
         "response counter can't precede the snapshot taken before the call"
     );
     assert!(
-        inner.server.tool_call_count <= snap_after.call_count,
+        server.tool_call_count <= snap_after.call_count,
         "response counter can't exceed the snapshot taken after"
     );
 }

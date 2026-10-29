@@ -1,5 +1,5 @@
 //! Proves the `findings` row is bound to the agent session that wrote
-//! it, and that a fresh session wipes the prior session's notes.
+//! it, and that a fresh session keeps the prior session's notes as stale rows.
 //! Pulled out of `finding_tests.rs` to keep that file under the
 //! 200-code-line soft cap while still exercising the cross-session
 //! poisoning defense end to end. It also holds the per-field text-cap
@@ -92,8 +92,8 @@ fn each_text_field_rejects_an_empty_value() {
 
 /// Read-only verification helper that does NOT run the session-scoped
 /// cleanup. `open_read_write` would re-enter `ensure_project_row` and
-/// the purge we are testing against, so a sibling parallel test
-/// overriding `SESSION_ID` mid-run could spuriously delete a row
+/// the session-start marking we are testing against, so a sibling parallel test
+/// overriding `SESSION_ID` mid-run could spuriously change a row
 /// we're trying to count. `Connection::open_with_flags`+`SQLITE_OPEN_READ_ONLY`
 /// is the closest existing primitive and avoids the cleanup path
 /// entirely — the schema is already at v2 (the test fixture's
@@ -115,6 +115,14 @@ fn count_findings(db_path: &std::path::Path) -> i64 {
     read_only_connection(db_path)
         .query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
         .expect("count findings")
+}
+
+fn status_of(db_path: &std::path::Path, id: i64) -> String {
+    read_only_connection(db_path)
+        .query_row("SELECT status FROM findings WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .expect("read the finding status")
 }
 
 fn database_path(project: &tempfile::TempDir) -> std::path::PathBuf {
@@ -146,7 +154,7 @@ fn seed_finding_for_session(db_path: &std::path::Path, path: &str, session: Uuid
 /// Every newly inserted finding row must carry the current process's
 /// session UUID. No row in the table may be un-tagged; the
 /// `default ''` fallback is only ever used by a legacy DB whose
-/// next `ensure_current` is the cleanup path.
+/// next `ensure_current` is the stale-marking path.
 #[test]
 fn finding_carries_the_current_session_id() {
     let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
@@ -187,12 +195,12 @@ fn finding_carries_the_current_session_id() {
 
 /// The cross-session poisoning defense's user-visible contract:
 /// replacing the active session UUID (as a fresh process would) and
-/// then triggering one more sync deletes every finding the prior
-/// session wrote, while a fresh finding under the new session is
-/// untouched. This is what stops a new AI agent from silently
+/// then triggering one more sync keeps every finding the prior
+/// session wrote but marks it stale, while a fresh finding under the new
+/// session is untouched. This is what stops a new AI agent from silently
 /// inheriting a prior session's audit conclusions.
 #[test]
-fn a_new_session_drops_prior_session_findings_but_keeps_its_own() {
+fn a_new_session_keeps_prior_session_findings_stale_beside_its_own() {
     let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     let project = activated_project("cross.rs", b"pub fn x() {}\n");
 
@@ -217,7 +225,7 @@ fn a_new_session_drops_prior_session_findings_but_keeps_its_own() {
     );
 
     // Simulate a fresh process boot: a totally new UUID plus a fresh
-    // manager, whose first sync runs the session-start purge.
+    // manager, whose first sync marks prior sessions stale.
     let next_session = Uuid::new_v4();
     assert_ne!(
         next_session, prior_session,
@@ -238,8 +246,13 @@ fn a_new_session_drops_prior_session_findings_but_keeps_its_own() {
 
     assert_eq!(
         count_findings(&db_path),
-        0,
-        "the prior session's finding must be gone after a new-session sync",
+        1,
+        "the prior session's finding must be kept after a new-session sync",
+    );
+    assert_eq!(
+        status_of(&db_path, prior_response.0.id),
+        "stale",
+        "the prior session's finding must be marked stale",
     );
 
     let next_response = finding(
@@ -251,8 +264,8 @@ fn a_new_session_drops_prior_session_findings_but_keeps_its_own() {
 
     assert_eq!(
         count_findings(&db_path),
-        1,
-        "the new session's own finding must remain",
+        2,
+        "the new session's own finding sits beside the stale prior one",
     );
     let stamped_next: String = read_only_connection(&db_path)
         .query_row(
@@ -272,27 +285,24 @@ fn a_new_session_drops_prior_session_findings_but_keeps_its_own() {
     );
     assert_ne!(
         prior_response.0.id, next_response.0.id,
-        "the prior row was deleted; the next row is a fresh id"
+        "the prior session's row is kept; the next row is a fresh id"
     );
 }
 
 /// Walks the document-modification / re-sync path through the same
-/// defense. The cleanup lives in `ensure_project_row`, which the
-/// production hot path reaches via the manager's `ensure_current`;
-/// using `ensure_synced_no_progress` (a `cfg(test)` shim around
-/// `ensure_synced` for tests) takes the same code path the tool
-/// handlers do, so a session change between two `ensure_synced`
-/// calls must drop the first session's finding on the second call.
-/// This pins that the modified-file / staleness-invalidating path
-/// also runs the cleanup — not just a no-op read tool trigger.
+/// transition: `ensure_synced_no_progress` takes the code path the tool
+/// handlers do, so a session change before a fresh manager's first
+/// `ensure_synced` must keep the first session's finding and mark it stale.
+/// This pins that the modified-file path also runs the transition and
+/// never deletes.
 #[test]
-fn a_resync_after_a_session_change_drops_prior_session_findings() {
+fn a_resync_after_a_session_change_keeps_prior_session_findings_stale() {
     let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     let project = activated_project("resync.rs", b"pub fn r() {}\n");
 
     let first_session = Uuid::new_v4();
     override_session_id_for_test(first_session);
-    finding(
+    let first = finding(
         &Parameters(base_request(&project, "resync.rs")),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
@@ -316,12 +326,10 @@ fn a_resync_after_a_session_change_drops_prior_session_findings() {
     assert_ne!(next_session, first_session);
     override_session_id_for_test(next_session);
 
-    // `ensure_synced_no_progress` is the production entry point
-    // without the progress-sink argument, exercised here with a fresh
-    // manager (the fresh process) to drive `ensure_current` →
-    // `purge_prior_session_findings_once` → `purge_prior_session_findings`
-    // under the new session. A direct `sync::publish` would NOT exercise
-    // this path because it never runs the session-start transition.
+    // A fresh manager (the fresh process) drives `ensure_current` →
+    // `mark_prior_sessions_stale_once` under the new session. A direct
+    // `sync::publish` would NOT exercise this path because it never runs
+    // the session-start transition.
     crate::tools::context::ensure_synced_no_progress(
         &project.path().to_string_lossy(),
         &crate::sync::SourceSyncManager::default(),
@@ -330,16 +338,17 @@ fn a_resync_after_a_session_change_drops_prior_session_findings() {
 
     assert_eq!(
         count_findings(&db_path),
-        0,
-        "ensure_synced during a new session must drop the prior session's findings"
+        1,
+        "ensure_synced during a new session must keep the prior session's finding"
     );
+    assert_eq!(status_of(&db_path, first.0.id), "stale");
 }
 
-/// The documented cross-session defense still fires at the process
-/// boundary: a fresh manager (a fresh MCP process) purges rows written
-/// by a prior session on its first sync of the project database.
+/// The cross-session defense still fires at the process boundary: a fresh
+/// manager (a fresh MCP process) marks rows written by a prior session stale
+/// on its first sync of the project database, without deleting them.
 #[test]
-fn a_fresh_process_first_sync_purges_prior_session_findings() {
+fn a_fresh_process_first_sync_marks_prior_session_findings_stale() {
     let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     let project = activated_project("fresh.rs", b"pub fn f() {}\n");
     let db_path = database_path(&project);
@@ -363,15 +372,18 @@ fn a_fresh_process_first_sync_purges_prior_session_findings() {
 
     assert_eq!(
         count_findings(&db_path),
-        0,
-        "a fresh process's first sync must purge the prior session's findings",
+        1,
+        "a fresh process's first sync must keep the prior session's findings",
     );
+    let status: String = read_only_connection(&db_path)
+        .query_row("SELECT status FROM findings", [], |row| row.get(0))
+        .expect("read the prior row's status");
+    assert_eq!(status, "stale");
 }
 
-/// A second sync in the same process must not purge rows another live
-/// session wrote between calls. Before the once-per-session guard, every
-/// tool call ran `DELETE ... WHERE session_id != me` and silently deleted
-/// the peer's findings mid-session.
+/// A second sync in the same process must not touch rows another live
+/// session wrote between calls. Without the once-per-session guard, every
+/// tool call would re-mark the peer's findings stale mid-session.
 #[test]
 fn a_second_sync_keeps_another_live_sessions_findings() {
     let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
@@ -395,6 +407,10 @@ fn a_second_sync_keeps_another_live_sessions_findings() {
         1,
         "a second sync must not delete another live session's finding",
     );
+    let peer_status: String = read_only_connection(&db_path)
+        .query_row("SELECT status FROM findings", [], |row| row.get(0))
+        .expect("read the peer row's status");
+    assert_eq!(peer_status, "current", "nor re-mark it stale");
     let surviving_session: String = read_only_connection(&db_path)
         .query_row("SELECT session_id FROM findings", [], |row| row.get(0))
         .expect("read the surviving session id");
@@ -405,8 +421,8 @@ fn a_second_sync_keeps_another_live_sessions_findings() {
     );
 }
 
-/// The current session's own findings survive its later syncs: the purge
-/// is a session-start transition, not a repeated cleanup that could race
+/// The current session's own findings survive its later syncs: the stale
+/// marking is a session-start transition, not a repeated cleanup that could race
 /// the session's own writes.
 #[test]
 fn a_second_sync_keeps_the_current_sessions_findings() {
@@ -450,9 +466,9 @@ fn a_second_sync_keeps_the_current_sessions_findings() {
 /// Dedupe is scoped to the writing session. A row that carries the same
 /// identity fields — same file and content hash, same line range, same
 /// category and title — but *another* session's `session_id` must never be
-/// adopted as this session's conclusion. The first sync normally purges such
-/// rows, so this drives `insert_finding` directly, after the sync, with a
-/// foreign-session row pre-seeded: exactly the state the purge guards against.
+/// adopted as this session's conclusion. The first sync marks such rows stale
+/// but keeps them, so this drives `insert_finding` directly, after the sync,
+/// with a foreign-session row pre-seeded.
 #[test]
 fn dedupe_is_scoped_to_the_writing_session() {
     let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");

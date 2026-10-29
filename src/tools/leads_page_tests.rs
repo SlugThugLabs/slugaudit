@@ -6,24 +6,23 @@ fn leads_page_bytes_sets_the_row_budget_and_pages_on_it() {
     let mut whole = request(project.path(), Some("unwrap_calls"));
     whole.page_bytes = Some(1_000_000);
     let whole = run(whole);
-    assert_eq!(whole.returned, 12);
-    let half = whole.rows_bytes / 2;
+    assert_eq!(whole.page.returned, 12);
+    let half = whole.page.bytes_used / 2;
 
     let mut paged = request(project.path(), Some("unwrap_calls"));
     paged.page_bytes = Some(half);
     let paged = run(paged);
 
-    assert_eq!(paged.row_budget_bytes, half);
+    assert_eq!(paged.page.page_bytes, half);
     assert!(
-        paged.returned > 0 && paged.returned < 12,
+        paged.page.returned > 0 && paged.page.returned < 12,
         "{}",
-        paged.returned
+        paged.page.returned
     );
-    assert!(paged.rows_bytes <= half);
-    assert_eq!(paged.limited_by, PageLimit::Bytes);
+    assert!(paged.page.bytes_used <= half);
+    assert_eq!(paged.page.limited_by, PageLimit::PageBytes);
     assert!(!paged.oversized_row);
-    assert_eq!(paged.page_bytes_clamped_from, None);
-    assert_eq!(paged.next_offset, Some(paged.returned));
+    assert!(paged.page.cursor.is_some());
 }
 
 #[test]
@@ -36,13 +35,17 @@ fn leads_default_page_is_the_configured_default_page_bytes() {
 
     let response = run_with_limits(request(project.path(), Some("unwrap_calls")), &limits);
 
-    assert_eq!(response.row_budget_bytes, 120);
-    assert_eq!(response.limited_by, PageLimit::Bytes);
-    assert_eq!(response.total, 12, "counts stay complete under paging");
+    assert_eq!(response.page.page_bytes, 120);
+    assert_eq!(response.page.limited_by, PageLimit::PageBytes);
+    assert_eq!(
+        response.page.total,
+        Some(12),
+        "counts stay complete under paging"
+    );
 }
 
 #[test]
-fn leads_page_bytes_above_the_ceiling_is_clamped_and_reported() {
+fn leads_page_bytes_above_the_ceiling_is_clamped_and_a_cut_reports_the_ceiling() {
     let project = unwrap_fixture(1, 2);
     let limits = ResourceLimits {
         max_query_response_bytes: 50,
@@ -53,8 +56,9 @@ fn leads_page_bytes_above_the_ceiling_is_clamped_and_reported() {
 
     let response = run_with_limits(asked, &limits);
 
-    assert_eq!(response.row_budget_bytes, 50);
-    assert_eq!(response.page_bytes_clamped_from, Some(10_000));
+    assert_eq!(response.page.page_bytes, 50);
+    assert_eq!(response.page.limited_by, PageLimit::Ceiling);
+    assert!(!response.page.complete);
 }
 
 #[test]
@@ -65,9 +69,9 @@ fn leads_flags_a_first_row_larger_than_the_page() {
 
     let response = run(asked);
 
-    assert_eq!(response.returned, 1, "one row per page minimum");
+    assert_eq!(response.page.returned, 1, "one row per page minimum");
     assert!(response.oversized_row);
-    assert_eq!(response.next_offset, Some(1));
+    assert!(response.page.cursor.is_some());
 }
 
 #[test]
@@ -88,38 +92,51 @@ fn leads_counts_only_reply_carries_the_page_size_that_applied() {
     let response = run(request(project.path(), None));
 
     assert_eq!(
-        response.row_budget_bytes,
+        response.page.page_bytes,
         ResourceLimits::default().default_page_bytes
     );
     assert!(!response.oversized_row);
 }
 
+/// The byte budget replaces the deleted row cap: with no `limit`, rows stop
+/// at the budget in both row modes, and the response says so rather than
+/// reading as a small mechanic. One row is always returned, so an empty page
+/// never means "budget too small".
 #[test]
-fn an_offset_sqlite_cannot_hold_is_refused_in_both_modes_not_bound_as_no_limit() {
-    let project = unwrap_fixture(1, 2);
-    for mode in [LeadMode::Full, LeadMode::Compact] {
-        let mut huge = request(project.path(), Some("unwrap_calls"));
-        huge.mode = mode;
-        huge.offset = Some(usize::MAX);
+fn the_byte_budget_stops_the_page_in_both_modes_and_reports_it() {
+    let project = unwrap_fixture(3, 4);
+    for (mode, budget) in [(LeadMode::Full, 8), (LeadMode::Compact, 40)] {
+        let limits = ResourceLimits {
+            max_query_response_bytes: budget,
+            ..ResourceLimits::default()
+        };
+        let mut request = request(project.path(), Some("unwrap_calls"));
+        request.mode = mode;
 
-        let error = try_run(huge).expect_err("an offset above i64::MAX must fail");
+        let response = run_with_limits(request, &limits);
 
-        assert!(
-            error
-                .message
-                .contains("exceeds the maximum supported integer"),
-            "{}",
-            error.message
+        assert_eq!(
+            response.page.returned, 1,
+            "the first row is always returned"
         );
+        assert!(!response.page.complete);
+        // The default page is above this tiny ceiling, so the budget that
+        // cut the page is the ceiling itself.
+        assert_eq!(response.page.limited_by, PageLimit::Ceiling);
+        assert_eq!(response.page.page_bytes, budget);
+        assert!(
+            response.page.bytes_used > budget,
+            "{}",
+            response.page.bytes_used
+        );
+        assert_eq!(response.page.total, Some(12), "the total is still complete");
+        assert!(response.page.cursor.is_some());
     }
-}
-
-#[test]
-fn a_mechanic_missing_from_the_counts_fails_instead_of_reading_as_zero() {
-    use crate::tools::leads_page::{count_of, files_of};
-
-    let error = count_of(&[], "unwrap_calls").expect_err("no entry must not count as 0");
-
-    assert!(error.message.contains("unwrap_calls"), "{}", error.message);
-    assert!(files_of(&[], "unwrap_calls").is_err());
+    // A byte-limited page cannot grow by raising `limit`; the schema's own
+    // advice must name the knob that acted.
+    let schema = schemars::schema_for!(PageLimit).to_value().to_string();
+    assert!(
+        schema.contains("page_bytes") && !schema.contains("Raise `limit`"),
+        "{schema}"
+    );
 }

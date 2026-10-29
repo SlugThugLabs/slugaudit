@@ -1,0 +1,150 @@
+{
+  "case": "leads_rows_page2",
+  "request": {
+    "compact": false,
+    "limit": 5,
+    "mechanic": "unwrap_calls",
+    "offset": 5
+  },
+  "response": {
+    "files_covered": 3,
+    "files_not_parsed": 0,
+    "files_total": 3,
+    "mechanic_counts": [
+      {
+        "count": 12,
+        "covers": [
+          "rust"
+        ],
+        "files": 3,
+        "mechanic": "unwrap_calls",
+        "note": null,
+        "source": "builtin"
+      },
+      {
+        "count": 3,
+        "covers": [
+          "rust"
+        ],
+        "files": 3,
+        "mechanic": "expect_calls",
+        "note": null,
+        "source": "builtin"
+      },
+      {
+        "count": 0,
+        "covers": [
+          "rust"
+        ],
+        "files": 0,
+        "mechanic": "panic_calls",
+        "note": null,
+        "source": "builtin"
+      },
+      {
+        "count": 0,
+        "covers": [
+          "rust"
+        ],
+        "files": 0,
+        "mechanic": "todo_calls",
+        "note": null,
+        "source": "builtin"
+      },
+      {
+        "count": 0,
+        "covers": [
+          "rust"
+        ],
+        "files": 0,
+        "mechanic": "assert_calls",
+        "note": null,
+        "source": "builtin"
+      },
+      {
+        "count": 0,
+        "covers": [
+          "rust"
+        ],
+        "files": 0,
+        "mechanic": "diagnostics",
+        "note": null,
+        "source": "builtin"
+      },
+      {
+        "count": 3,
+        "covers": [
+          "rust"
+        ],
+        "files": 3,
+        "mechanic": "comment_markers",
+        "note": null,
+        "source": "builtin"
+      },
+      {
+        "count": 0,
+        "covers": [
+          "rust"
+        ],
+        "files": 0,
+        "mechanic": "credential_files",
+        "note": null,
+        "source": "builtin"
+      }
+    ],
+    "mechanics_invalid": 0,
+    "oversized_row": false,
+    "page": {
+      "bytes_used": 350,
+      "complete": false,
+      "limited_by": "limit",
+      "next_offset": 10,
+      "page_bytes": 65536,
+      "returned": 5,
+      "revision_id": "<REVISION_ID>",
+      "total": 12
+    },
+    "page_file_counts": [
+      {
+        "count": 3,
+        "file": "mod1.rs"
+      },
+      {
+        "count": 2,
+        "file": "mod2.rs"
+      }
+    ],
+    "rows": [
+      {
+        "detail": "x.unwrap",
+        "detail_clipped": false,
+        "file": "mod1.rs",
+        "line": 2
+      },
+      {
+        "detail": "x.unwrap",
+        "detail_clipped": false,
+        "file": "mod1.rs",
+        "line": 3
+      },
+      {
+        "detail": "x.unwrap",
+        "detail_clipped": false,
+        "file": "mod1.rs",
+        "line": 4
+      },
+      {
+        "detail": "x.unwrap",
+        "detail_clipped": false,
+        "file": "mod2.rs",
+        "line": 1
+      },
+      {
+        "detail": "x.unwrap",
+        "detail_clipped": false,
+        "file": "mod2.rs",
+        "line": 2
+      }
+    ]
+  }
+}

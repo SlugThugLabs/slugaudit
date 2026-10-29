@@ -1,4 +1,6 @@
 use super::context::{ensure_synced, internal_error, with_verified_read};
+use super::mechanic::{InvalidMechanic, MechanicListing};
+use super::mechanic_catalog;
 #[cfg(test)]
 use super::report_sections::MAX_PARSER_FAILURE_FILES;
 use super::report_sections::build_report;
@@ -109,6 +111,27 @@ pub struct CompletenessEnvelope {
     /// Binary and skipped rows are excluded: no evidence is their expected
     /// state, not a gap.
     pub indexed_files_without_evidence: i64,
+    /// `indexed` files stored as `language = 'prose'` (Markdown,
+    /// reStructuredText, AsciiDoc, Org, plain text): content is stored and
+    /// searchable, but no grammar is run on them by design, so they are
+    /// `ContentOnly`, have no evidence, and are counted in
+    /// `indexed_files_without_evidence`, yet they are not parser failures and
+    /// never appear in `parser_failure_*`. Subtract this from those counts to
+    /// see the files that lack evidence for another reason.
+    pub prose_files_not_parsed: i64,
+    /// `indexed` files larger than `max_parse_bytes` (`parse_error_reason =
+    /// 'oversize_for_parse'`): content is stored and searchable via `query`,
+    /// but no grammar was run, so they have no evidence and every `leads`
+    /// mechanic that reads evidence is blind to them. They are also listed
+    /// among the parser failures and counted in `leads.files_not_parsed`.
+    pub oversize_for_parse_file_count: i64,
+    /// `indexed` files a parse of which was cut at the sync deadline
+    /// (`parse_error_reason = 'parse_timeout'`): content is stored; no
+    /// evidence when the main parse was cut (`ContentOnly`), the main
+    /// parse's evidence but no call or binding evidence when a later
+    /// re-parse was (`Partial`). Also listed among the parser failures and
+    /// counted in `leads.files_not_parsed`.
+    pub parse_timeout_file_count: i64,
 }
 
 /// Edge totals in both directions, over the whole revision.
@@ -200,8 +223,11 @@ pub struct ImportResolutionCount {
 pub struct ParserFailureFile {
     pub path: String,
     pub parse_outcome: String,
-    /// Set only when the parser returned a hard error (not just syntax
-    /// error nodes). `None` for `NotAttempted` and `SyntaxErrors`.
+    /// Why no tree was extracted: the grammar's load error, the parser's
+    /// hard error (not just syntax error nodes), or a stable code —
+    /// `oversize_for_parse` (content over `max_parse_bytes`, never parsed) or
+    /// `parse_timeout` (the parse was cancelled at the deadline). `None` when
+    /// no grammar exists for the file or for `SyntaxErrors`.
     pub parse_error_reason: Option<String>,
     /// One of `Full`, `Partial`, `ContentOnly`, `Unavailable`. `ContentOnly`
     /// means the file's text *is* indexed but no parser ran over it — the
@@ -223,6 +249,11 @@ const MAX_PATH_BYTES: usize = 32 * 1024;
 pub struct ReportResponse {
     /// Revision id of the index this snapshot was read from.
     pub revision_id: String,
+    /// Present only when this call discarded and rebuilt the project
+    /// database (corruption, version bump, root mismatch): how many findings
+    /// were lost (null = unknown, the database was unreadable) and why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_discard: Option<crate::sync::DatabaseDiscard>,
     /// Rows in `files`: every discovered file whose project-relative path is
     /// representable as UTF-8, whether or not it was indexed. A discovered
     /// path that is not valid UTF-8 cannot have a row and is counted by
@@ -265,8 +296,9 @@ pub struct ReportResponse {
     /// The same graph counted in both directions: how many edges leave a
     /// file, how many land on one, and how many files are on each end.
     /// Pure arithmetic over `dependency_edges` — no ranking, no severity,
-    /// and no claim about which file matters. Per-file traversal is the
-    /// `slugaudit://queries/blast_radius.sql` recipe.
+    /// and no claim about which file matters. Per-file counts and traversal
+    /// are the `blast_radius_outbound.sql`, `blast_radius_inbound.sql` and
+    /// `blast_radius_closure.sql` recipes under `slugaudit://queries/`.
     pub dependency_edges: DependencyEdgeTotals,
     /// Total number of Diagnostic evidence items (e.g. linter or compiler
     /// diagnostics extracted from source files).
@@ -289,6 +321,35 @@ pub struct ReportResponse {
     /// so this count makes the AI aware it is handling credential-*looking*
     /// paths even when it cannot read them.
     pub credential_pattern_file_count: i64,
+    /// Every mechanic `leads` counts — session entries, then project_config
+    /// entries, then the built-ins — with its source and the author's note,
+    /// plus the registered entries that failed to load. On the first
+    /// `report` of this server only, `note` also explains how mechanics
+    /// work.
+    pub mechanics: ReportMechanics,
+    /// `mechanics.invalid.len()`: registered entries that failed to load and
+    /// are not counted by `leads` until fixed or removed.
+    pub mechanics_invalid: usize,
+}
+
+/// The one-time note the first `report` of a server carries.
+const MECHANICS_NOTE: &str = "The built-in mechanics are counting primitives, not a checklist. \
+    What counts as a signal in this codebase is your decision. Register one with `mechanic` \
+    action `add` (`id`, `language`, `query` with exactly one capture, `note`); `leads` then \
+    counts and pages it beside the built-ins. Session entries last until this server exits; \
+    `persist: true` writes the entry to .planning/slugaudit/config.json for later sessions.";
+
+/// The mechanics section of a report.
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct ReportMechanics {
+    /// Present on the first `report` of this server only; `null` after.
+    pub note: Option<String>,
+    /// Every loaded mechanic: session, then project_config, then builtin.
+    pub entries: Vec<MechanicListing>,
+    /// Registered entries that failed to load, each with its error. Never
+    /// dropped: a persisted entry with a bad shape, an unknown section
+    /// `version`, a compile error or an id collision stays listed here.
+    pub invalid: Vec<InvalidMechanic>,
 }
 
 /// # Errors
@@ -305,13 +366,37 @@ pub fn report(
     }
     let synced = ensure_synced(&request.0.path, sink, manager)?;
     let revision_id = synced.revision_id.clone();
-    let response = with_verified_read(&synced, |tx| {
+    let discard = synced.discard.clone();
+    let mut response = with_verified_read(&synced, |tx| {
         build_report(tx, revision_id.clone())
             .map_err(|error| internal_error("building the report", error))
     })?;
+    let root = super::project_root(&request.0.path)?;
+    let session = manager.session_mechanics();
+    let catalog = mechanic_catalog::load(&root, session, &super::limits_for_root(&root)?);
+    response.database_discard = discard;
+    response.mechanics_invalid = catalog.invalid.len();
+    response.mechanics = ReportMechanics {
+        note: None,
+        entries: catalog.listings(),
+        invalid: catalog.invalid,
+    };
+    // Claimed last, once nothing else can fail, so a failed first report
+    // does not use up the note.
+    if session.claim_report_note() {
+        response.mechanics.note = Some(MECHANICS_NOTE.to_owned());
+    }
     Ok(Json(response))
 }
 
 #[cfg(test)]
 #[path = "report_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "report_prose_tests.rs"]
+mod prose_tests;
+
+#[cfg(test)]
+#[path = "report_first_call_tests.rs"]
+mod first_call_tests;

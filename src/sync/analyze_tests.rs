@@ -1,5 +1,24 @@
 use super::*;
 use crate::model::{ExtractionCompleteness, ParseOutcome, ParserAvailability};
+use crate::parse::fetch_gate::test_controls;
+use crate::sync::analyze_results::COOLDOWN_REASON;
+use crate::sync::analyze_seam::forced_failure;
+
+/// `analyze` under the default `max_parse_bytes` and a deadline no test
+/// parse comes near; shadows the glob import.
+fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult {
+    super::analyze(
+        relative_path,
+        content,
+        2 * 1024 * 1024,
+        std::time::Duration::from_secs(600),
+        &generous_deadline(),
+    )
+}
+
+fn generous_deadline() -> Deadline {
+    Deadline::after(std::time::Duration::from_secs(600))
+}
 
 #[test]
 fn sampled_content_with_no_detectable_language_is_content_only() {
@@ -134,5 +153,419 @@ fn a_parser_load_failure_logs_the_redacted_path_not_the_raw_one() {
     assert!(
         !logs.contains(raw_library_path) && !logs.contains("private-user"),
         "the pack's absolute library path must not be logged: {logs}"
+    );
+}
+
+#[test]
+fn a_grammar_download_error_is_recorded_as_load_failed() {
+    let _forced = forced_failure::force(|| PackError::Download("offline".into()));
+
+    let result = analyze("lib.rs", Some("pub fn a() {}"));
+
+    assert!(
+        matches!(
+            result.run.availability,
+            ParserAvailability::LoadFailed { .. }
+        ),
+        "got {:?}",
+        result.run
+    );
+    assert_eq!(result.run.outcome, ParseOutcome::NotAttempted);
+    assert_eq!(result.run.completeness, ExtractionCompleteness::ContentOnly);
+    assert_eq!(result.language.as_deref(), Some("rust"));
+    assert!(result.run.validate().is_ok());
+}
+
+#[test]
+fn every_grammar_fetch_error_variant_is_a_load_failure() {
+    let fetch_errors = [
+        PackError::Download("x".into()),
+        PackError::ChecksumMismatch {
+            file: "f".into(),
+            expected: "a".into(),
+            actual: "b".into(),
+        },
+        PackError::CacheLock("x".into()),
+        PackError::Io(std::io::Error::other("x")),
+    ];
+    for error in &fetch_errors {
+        assert!(is_load_failure(error), "{error:?} must be a load failure");
+    }
+}
+
+#[test]
+fn an_unrelated_parse_error_stays_failed_not_load_failed() {
+    let _forced = forced_failure::force(|| PackError::ParseFailed);
+
+    let result = analyze("lib.rs", Some("pub fn a() {}"));
+
+    assert_eq!(result.run.availability, ParserAvailability::Available);
+    assert!(
+        matches!(result.run.outcome, ParseOutcome::Failed { .. }),
+        "got {:?}",
+        result.run
+    );
+    assert!(result.run.validate().is_ok());
+}
+
+fn stored_run(connection: &rusqlite::Connection, path: &str) -> (String, String) {
+    connection
+        .query_row(
+            "SELECT parser_availability, parse_outcome FROM files WHERE path = ?1",
+            [path],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("stored run")
+}
+
+/// A project whose first publish had every grammar download fail, so its
+/// files are stored `LoadFailed`, with content untouched afterwards.
+fn project_with_failed_download() -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    rusqlite::Connection,
+    String,
+) {
+    use crate::progress::NoopProgressSink;
+    use crate::sync::test_support::write;
+
+    let project = tempfile::tempdir().expect("project dir");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection =
+        crate::store::open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    write(project.path(), "a.rs", b"fn a() {}");
+    let revision = {
+        let _forced = forced_failure::force(|| PackError::Download("offline".into()));
+        crate::sync::publish::publish(&mut connection, project.path(), "1.0", &NoopProgressSink)
+            .expect("publish with the download failing")
+            .revision_id
+    };
+    assert_eq!(
+        stored_run(&connection, "a.rs"),
+        ("LoadFailed".to_owned(), "NotAttempted".to_owned())
+    );
+    // The failed fetch closed the gate; these callers test the retry itself.
+    test_controls::elapse_cooldown();
+    (project, db_dir, connection, revision)
+}
+
+#[test]
+fn a_load_failed_file_is_reparsed_by_reconcile_with_unchanged_content() {
+    let (project, _db_dir, mut connection, revision) = project_with_failed_download();
+
+    let report = crate::sync::reconcile::reconcile_dirty_paths(
+        &mut connection,
+        project.path(),
+        ["a.rs".to_owned()].into(),
+        std::collections::HashSet::new(),
+        Some(&revision),
+    )
+    .expect("reconcile with loading allowed");
+
+    assert_eq!(report.reconciled, 1, "{report:?}");
+    assert_eq!(report.unchanged, 0);
+    assert_eq!(
+        stored_run(&connection, "a.rs"),
+        ("Available".to_owned(), "Succeeded".to_owned())
+    );
+}
+
+#[test]
+fn a_load_failed_file_is_a_sweep_candidate_even_when_its_stat_is_unchanged() {
+    let (project, _db_dir, connection, _revision) = project_with_failed_download();
+    let deadline = crate::util::Deadline::after(std::time::Duration::from_secs(60));
+
+    let report = crate::sync::sweep::sweep(&connection, project.path(), &deadline).expect("sweep");
+
+    assert!(
+        report.candidates.contains("a.rs"),
+        "{:?}",
+        report.candidates
+    );
+    assert_eq!(report.unchanged, 0);
+}
+
+#[test]
+fn a_load_failed_file_is_reparsed_by_a_full_publish_with_unchanged_content() {
+    let (project, _db_dir, mut connection, _revision) = project_with_failed_download();
+
+    let report = crate::sync::publish::publish(
+        &mut connection,
+        project.path(),
+        "1.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("second publish with loading allowed");
+
+    assert_eq!(report.modified, 1, "{report:?}");
+    assert_eq!(
+        stored_run(&connection, "a.rs"),
+        ("Available".to_owned(), "Succeeded".to_owned())
+    );
+}
+
+#[test]
+fn a_succeeded_file_with_unchanged_content_is_still_skipped_by_reconcile() {
+    let (project, _db_dir, mut connection, revision) = crate::sync::test_support::setup_project();
+
+    let report = crate::sync::reconcile::reconcile_dirty_paths(
+        &mut connection,
+        project.path(),
+        ["a.rs".to_owned()].into(),
+        std::collections::HashSet::new(),
+        Some(&revision),
+    )
+    .expect("reconcile");
+
+    assert_eq!((report.reconciled, report.unchanged), (0, 1));
+}
+
+fn stored_reason(connection: &rusqlite::Connection, path: &str) -> String {
+    connection
+        .query_row(
+            "SELECT parse_error_reason FROM files WHERE path = ?1",
+            [path],
+            |row| row.get(0),
+        )
+        .expect("stored reason")
+}
+
+/// A project with two Rust files, synced through the manager while every
+/// grammar fetch fails. Returns the manager, the project and the synced state.
+fn synced_with_failing_fetch() -> (
+    crate::sync::SourceSyncManager,
+    tempfile::TempDir,
+    crate::sync::SyncedProject,
+) {
+    use crate::sync::test_support::{create_project, sync_project, write_file};
+
+    let manager = crate::sync::SourceSyncManager::new();
+    let project = create_project();
+    write_file(&project, "a.rs", b"fn a() {}");
+    write_file(&project, "b.rs", b"fn b() {}");
+    let synced = {
+        let _forced = forced_failure::force(|| PackError::Download("offline".into()));
+        sync_project(&manager, &project)
+    };
+    (manager, project, synced)
+}
+
+#[test]
+fn a_second_file_in_the_same_sync_does_not_reach_the_loader_after_a_fetch_failure() {
+    let (_manager, _project, synced) = synced_with_failing_fetch();
+
+    assert_eq!(forced_failure::calls(), 1, "one failed fetch, then none");
+    let connection = crate::store::open_read_write(&synced.database_path).expect("open db");
+    for path in ["a.rs", "b.rs"] {
+        assert_eq!(
+            stored_run(&connection, path),
+            ("LoadFailed".to_owned(), "NotAttempted".to_owned()),
+            "{path}"
+        );
+    }
+    let reasons = [
+        stored_reason(&connection, "a.rs"),
+        stored_reason(&connection, "b.rs"),
+    ];
+    assert_eq!(
+        reasons.iter().filter(|r| **r == COOLDOWN_REASON).count(),
+        1,
+        "exactly the file after the failure carries the cool-down reason: {reasons:?}"
+    );
+}
+
+#[test]
+fn an_unchanged_load_failed_file_publishes_no_revision_during_the_cooldown() {
+    use crate::sync::test_support::sync_project;
+    let (manager, project, first) = synced_with_failing_fetch();
+    let calls_after_first_sync = forced_failure::calls();
+
+    let second = sync_project(&manager, &project);
+
+    assert_eq!(second.revision_id, first.revision_id, "no new revision");
+    assert_eq!(
+        forced_failure::calls(),
+        calls_after_first_sync,
+        "no loader call"
+    );
+}
+
+#[test]
+fn a_load_failed_file_is_retried_and_parses_once_the_cooldown_has_elapsed() {
+    use crate::sync::test_support::sync_project;
+    let (manager, project, first) = synced_with_failing_fetch();
+    test_controls::elapse_cooldown();
+
+    let second = sync_project(&manager, &project);
+
+    assert_ne!(second.revision_id, first.revision_id, "the retry publishes");
+    let connection = crate::store::open_read_write(&second.database_path).expect("open db");
+    for path in ["a.rs", "b.rs"] {
+        assert_eq!(
+            stored_run(&connection, path),
+            ("Available".to_owned(), "Succeeded".to_owned()),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn a_failed_retry_after_the_cooldown_starts_a_new_cooldown() {
+    let _forced = forced_failure::force(|| PackError::Download("offline".into()));
+    analyze("a.rs", Some("fn a() {}"));
+    test_controls::elapse_cooldown();
+    assert!(crate::parse::fetch_gate::load_failed_retry_due());
+
+    analyze("a.rs", Some("fn a() {}"));
+
+    assert!(!crate::parse::fetch_gate::load_failed_retry_due());
+    assert_eq!(forced_failure::calls(), 2);
+}
+
+#[test]
+fn a_grammar_already_on_the_host_still_parses_during_the_cooldown() {
+    {
+        let _forced = forced_failure::force(|| PackError::Download("offline".into()));
+        analyze("a.rs", Some("fn a() {}"));
+    }
+    test_controls::set_grammar_cached(true);
+
+    let result = analyze("b.rs", Some("fn b() {}"));
+
+    assert_eq!(result.run.availability, ParserAvailability::Available);
+    assert_eq!(result.run.outcome, ParseOutcome::Succeeded);
+}
+
+#[test]
+fn a_load_failure_that_is_not_a_fetch_failure_does_not_close_the_gate() {
+    let _forced = forced_failure::force(|| PackError::DynamicLoad("bad library".into()));
+
+    let result = analyze("a.rs", Some("fn a() {}"));
+
+    assert!(matches!(
+        result.run.availability,
+        ParserAvailability::LoadFailed { .. }
+    ));
+    assert!(crate::parse::fetch_gate::load_failed_retry_due());
+}
+
+/// Publishes `files` (path, content) into a fresh project and returns the
+/// open database; the project and database directories live as long as it.
+fn published(
+    files: &[(&str, &str)],
+) -> (tempfile::TempDir, tempfile::TempDir, rusqlite::Connection) {
+    use crate::progress::NoopProgressSink;
+    use crate::sync::test_support::write;
+
+    let project = tempfile::tempdir().expect("project dir");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection =
+        crate::store::open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    for (path, content) in files {
+        write(project.path(), path, content.as_bytes());
+    }
+    crate::sync::publish::publish(&mut connection, project.path(), "1.0", &NoopProgressSink)
+        .expect("publish");
+    (project, db_dir, connection)
+}
+
+fn count(connection: &rusqlite::Connection, sql: &str) -> i64 {
+    connection
+        .query_row(sql, [], |row| row.get(0))
+        .expect("count query")
+}
+
+#[test]
+fn prose_files_yield_no_diagnostics_and_stay_queryable() {
+    let (_project, _db, connection) = published(&[
+        ("README.md", "# T\n\n```rust\nfn unterminated( {\n"),
+        ("notes.txt", "needle in plain text\n"),
+    ]);
+
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM evidence WHERE kind = 'Diagnostic'"
+        ),
+        0
+    );
+    assert_eq!(count(&connection, "SELECT COUNT(*) FROM evidence"), 0);
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM files WHERE content LIKE '%unterminated(%' \
+             OR content LIKE '%needle%'"
+        ),
+        2
+    );
+    assert_eq!(
+        stored_run(&connection, "notes.txt"),
+        ("Unavailable".to_owned(), "NotAttempted".to_owned())
+    );
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM files WHERE language = 'prose' AND language_detected = 1 \
+             AND extraction_completeness = 'ContentOnly'"
+        ),
+        2
+    );
+}
+
+#[test]
+fn an_ignore_file_yields_no_diagnostics_and_never_reaches_the_loader() {
+    let before = forced_failure::calls();
+
+    let (_project, _db, connection) = published(&[
+        (".gitignore", "target/\n.planning/slugaudit/\n"),
+        ("lib.rs", "pub fn a() {}\n"),
+    ]);
+
+    assert_eq!(
+        forced_failure::calls(),
+        before + 1,
+        "only lib.rs was parsed"
+    );
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM evidence e JOIN files f ON f.id = e.file_id \
+             WHERE f.path = '.gitignore'"
+        ),
+        0
+    );
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM files WHERE path = '.gitignore' AND language = 'prose' \
+             AND extraction_completeness = 'ContentOnly'"
+        ),
+        1
+    );
+}
+
+#[test]
+fn indexing_only_prose_files_never_reaches_the_loader() {
+    let before = forced_failure::calls();
+
+    let _published = published(&[("a.md", "# a\n"), ("b.txt", "b\n"), ("c.rst", "c\n====\n")]);
+
+    assert_eq!(
+        forced_failure::calls(),
+        before,
+        "prose must not load a grammar"
+    );
+}
+
+#[test]
+fn a_yaml_tab_indentation_error_yields_one_diagnostic_row() {
+    let (_project, _db, connection) = published(&[("ci.yaml", "a:\n\t- b\n")]);
+
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM evidence WHERE kind = 'Diagnostic'"
+        ),
+        1
     );
 }

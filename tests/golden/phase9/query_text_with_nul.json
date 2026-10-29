@@ -1,0 +1,27 @@
+{
+  "case": "query_text_with_nul",
+  "request": {
+    "page_bytes": null,
+    "sql": "SELECT 'a'||char(0)||'b' AS s"
+  },
+  "response": {
+    "clipped_cells": [],
+    "non_finite_cells": [],
+    "page": {
+      "bytes_used": 16,
+      "complete": true,
+      "limited_by": "none",
+      "next_offset": null,
+      "page_bytes": 65536,
+      "returned": 1,
+      "revision_id": "<REVISION_ID>",
+      "total": 1
+    },
+    "rows": [
+      {
+        "s": "a\u0000b"
+      }
+    ],
+    "total_unavailable": null
+  }
+}

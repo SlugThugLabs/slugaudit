@@ -3,7 +3,10 @@
 //! does not decide how tools query the result.
 
 mod analyze;
+mod analyze_results;
+mod analyze_seam;
 mod classify;
+mod discard_notice;
 mod discovery;
 mod hash;
 mod hash_io;
@@ -18,6 +21,8 @@ mod publish_diff;
 mod publish_log;
 mod race_hook;
 mod reconcile;
+mod recovery_log;
+mod result_stores;
 mod revalidate;
 mod revision;
 mod revision_edges;
@@ -29,12 +34,15 @@ mod sample_batch;
 mod sweep;
 mod sweep_reconcile;
 
+pub use discard_notice::DatabaseDiscard;
 pub use discovery::{DiscoveredFile, DiscoveryError, FileKind, SkippedFile, discover};
 pub use hash::{HashError, aggregate_manifest_hash, hash_bytes, hash_file};
 pub(crate) use manager::map_activation_error;
 pub use manager::{SourceSyncManager, SyncedProject};
 pub use manifest::{ChangeStatus, FileChange, compare};
 pub use publish::{PublishError, PublishReport, publish};
+pub(crate) use recovery_log::scrub_path;
+pub use result_stores::ResultStoreSlot;
 pub use revision::{FileRecord, RevisionError};
 
 #[cfg(test)]

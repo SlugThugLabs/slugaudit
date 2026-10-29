@@ -35,7 +35,7 @@ a tone-of-voice choice:
 - `leads` returns unranked counts and rows derived at read time
   (`src/tools/leads.rs`).
 
-The server exposes eight tools (`src/server.rs`):
+The server exposes ten tools (`src/server.rs`):
 
 - **`report`** — automatic snapshot of the current revision: file/language
   counts, parser failures, evidence-kind counts, import-resolution buckets,
@@ -43,13 +43,43 @@ The server exposes eight tools (`src/server.rs`):
 - **`leads`** — unranked mechanical observations: call sites by callee name,
   diagnostics, TODO/FIXME/HACK comment markers, credential-shaped files.
   Counts by default, each with its row count, distinct-file count and
-  `covers` (`rust_only` / `all_languages`); file/line rows for one mechanic on
+  `covers` (the sorted languages of the files it read under the
+  pattern); file/line rows for one mechanic on
   request, optionally narrowed by a `pattern` path filter. Rows are cut by a
-  response byte budget rather than a row cap, and every rows response reports
-  `returned` / `total` / `complete` with `files_total` / `files_covered`. A
-  resumed page may pin `expected_revision` and is refused (`stale_revision`)
-  when the index moved on. Callee-based mechanics are Rust-only in this
-  revision.
+  response byte budget rather than a row cap, and every response carries the
+  shared `page` (below) with `files_total` / `files_covered` beside it. A
+  continuation carries the page's `cursor` and reads the stored result, so the
+  index moving on does not affect it.
+- **One paging entry** (`tools/paginate.rs`, re-exported by `tools/context.rs`).
+  `paginate` takes either a new request or a `cursor`. A new request syncs,
+  opens the verified read transaction, streams the tool's rows (typed through
+  `Materialize`, or raw cells for `query`) into the result store, stores the
+  completeness and the tool's extras with the result, and serves page one from
+  the stored copy. A `cursor` call decodes the token, checks the result belongs
+  to the calling tool, and reads the stored result: no sync, no revision check,
+  no `path`, so rows and `revision_id` are those of the first call. The store
+  is one slot on `SourceSyncManager` (`sync/result_stores.rs`), opened lazily
+  and replaced when the runtime directory changes, so a project switch never
+  keeps another project's store. Store failures map to wire codes in one place,
+  `error_codes::store_error`. `Page` carries `cursor` (omitted on the last
+  page) and `completeness`.
+- **One paging contract** (`tools/page.rs`). `leads` (and the `mechanic add`
+  first count, which is a `leads` response), `query`, `structure`,
+  `finding_read` and `mechanic list` embed one nested `page` object:
+  `returned`, `total` (exact: the stored result's row count), `complete`,
+  `cursor` (omitted when nothing remains), `completeness` (`complete`, or
+  `partial` with `limited_by`, `resume_after_file`, `files_scanned`,
+  `files_total`), `page_bytes` (the budget after the clamp to
+  `max_query_response_bytes`), `bytes_used`, `limited_by` (`none` / `limit` /
+  `page_bytes` / `ceiling` / `match_cap` / `scan_window` / `time_budget`) and
+  `revision_id`. Tool-specific extras stay beside `page`; a partial
+  `structure` result is resumed by a new request with `start_after_file`
+  (reported as `next_start_after_file`). Call evidence comes from the Rust call walker
+  (with its macro re-parse) and from one embedded tree-sitter call query per
+  language (`examples/calls/<language>.scm`: python, javascript,
+  typescript, tsx, go, java, c), all feeding one row builder
+  (`evidence/calls/site.rs`); the call-mechanic `covers` list is derived
+  from that query table, never hand-kept.
 - **`query`** — arbitrary read-only SQL against the project's own database.
   The connection itself refuses writes; the SQL is never inspected for write
   intent.
@@ -58,21 +88,89 @@ The server exposes eight tools (`src/server.rs`):
 - **`finding`** — the single write tool. Persists agent-authored conclusions
   bound to a file's current `content_hash`.
 - **`finding_read`** — returns findings scoped to the calling agent session.
+- **`finding_sessions`** — `list` earlier sessions' kept (stale) findings and
+  `adopt` one into the current session.
+- **`mechanic`** — the auditor registers (`add`), removes and lists its own
+  mechanics: a Tree-sitter query with exactly one capture over one language.
+  See *Mechanics* below.
 - **`project_control`** — enable or disable a project (create or remove the
   activation directory and run the initial import).
 - **`health`** — what state is this in and what should the caller do next.
-  Answers with three groups, each present or `null` as a unit so absence
-  reads as absence: `watcher` (health, unreconciled counts, sequences),
-  `database` (revision id, parser pack version, file and skipped-file
-  counts), and `server` (tool-call counters, last-sync timestamp and
-  duration, consecutive full publishes). `phase` and `remedy` summarize the
-  first two; `system_memory` reports host state because it sizes the
-  adaptive import budget.
+  The default answer carries only what a caller acts on: `phase`, `remedy`,
+  `watcher.health`, and `database.revision_id`/`file_count`, each group
+  present or `null` as a unit so absence reads as absence. `verbose: true`
+  adds `detail`, the operator view: the rest of the `watcher` group
+  (unreconciled counts, sequences) and of the `database` group (parser pack
+  version, skipped-file count), `database_read_failed`, `server` (tool-call
+  counters, last-sync timestamp and duration, consecutive full publishes),
+  `system_memory` (it sizes the adaptive import budget) and
+  `mechanic_cache`. `phase` and `remedy` summarize the two groups.
 
-Only `finding` and `project_control` mutate state. Every state-bearing tool
+Only `finding`, `mechanic` and `project_control` mutate state. Every state-bearing tool
 first brings the project current (see *Data flow*); if the watcher reports
 untrusted state, that sync is a full publish rather than a trust of the
 dirty-set.
+
+### Mechanics
+
+The built-in `leads` mechanics are counting primitives, not a checklist; what
+counts as a signal in a codebase is the auditor's decision, recorded with
+`mechanic add {id, language, query, note}` (`src/tools/mechanic*.rs`). The
+query is compiled against the real grammar on `add` and must name exactly one
+capture; each distinct captured node is one row. `leads` scans the parsed
+files of the entry's language (the same file set the built-in evidence
+mechanics read) under `max_structure_execution_time`; a spent budget fails
+the call with `mechanic_budget_exhausted`, naming the entries that were
+running, instead of returning a partial count. Only the registered entries a
+call needs are scanned: all of them for counts only or a compact whole-surface
+page, the one selected entry for its page, none when a built-in is selected
+(its `mechanic_counts` then lists only the built-ins and the selected entry).
+A complete scan is cached per (project, revision, `pattern`, entry identity:
+id, language, query, source) in the server's `SourceSyncManager`
+(`project::MechanicScanCache`, `src/tools/mechanic_scan_cached.rs`), so a
+second call at the same revision parses nothing and pages cut from the cached
+rows exactly as from a fresh scan. A different revision is a miss and drops
+that project's older entries; `mechanic remove` drops the id's; an entry edited
+in `config.json` changes identity and misses. A scan cut by the time budget is
+never cached. The cache holds at most 32 MiB by estimate (path plus detail
+bytes plus a fixed per-row and per-entry overhead), evicts oldest-first, and
+does not cache a result larger than the whole budget (that entry pages from the
+database as before); `health` with `verbose: true` reports, under `detail.mechanic_cache`, entries, bytes, budget,
+evictions, skipped_too_large, hits and misses.
+`language` must be the exact lowercase name the index stores (`python`, not
+`Python`; `bash`, not the pack alias `shell`). Two lifetimes:
+
+- **session** — held in memory by the server's `SourceSyncManager`
+  (`project::SessionMechanics`), never written, gone when the process exits;
+  at most 64 per server.
+- **project_config** — `persist: true` writes the entry into the versioned
+  `mechanics` section of `.planning/slugaudit/config.json`
+  (`{"version": 1, "entries": [...]}`, at most 64) through
+  `ProjectConfig::update_raw`, the one write path of `config.json` (also used
+  by `project_control on` for `profile`): an exclusive advisory lock on the
+  sibling `config.lock` (bounded wait, then a "locked by another process"
+  error) held for the whole read-modify-write; a missing file is an empty
+  object, a file that is not a JSON object is refused and never overwritten;
+  every other key is kept; the result is size-checked against the read cap and
+  replaced atomically (temp file in the same directory, `sync_all`, re-check
+  that `config.json` is not a symlink or non-regular file, `rename`, directory
+  `fsync`). `config.json` and `config.lock` are refused when either is a
+  symlink or not a regular file. It is re-read on every call, and each load first
+  removes the `config.json.<pid>.<n>.tmp` files a crashed update left behind
+  (one warning naming each; only while `config.lock` can be taken without
+  waiting, so never a write in progress; a symlink with that name is not
+  followed; a failure is logged once and never fails the load;
+  `project/config_cleanup.rs`). `mechanic remove`
+  takes `id`, or `index` for a persisted entry reported invalid (no string id,
+  or a built-in's id), decided under the same lock.
+
+`leads` and `report` list entries session first, then project_config, then
+builtin, each with its `source` and the author's `note`. An entry that fails
+to load (bad JSON shape, an unknown `version`, a compile error, an id
+collision) is listed in `report.mechanics.invalid` with its error and counted
+in `mechanics_invalid`, never dropped; its valid siblings still load. The
+first `report` of each server carries `mechanics.note` explaining this, and
+no later one does. Invariant 14 states the never-override rule.
 
 The same server exposes read-only MCP resources (`src/resources.rs`): the
 canonical schema (`slugaudit://schema.sql`), the query recipes under
@@ -83,7 +181,7 @@ session's `INSTRUCTIONS`. They are embedded at compile time via `include_str!`
 and are pull-based — nothing is pushed into a connecting agent's context.
 
 Every tool also carries a `title`, MCP `annotations` (`readOnlyHint` false for
-`finding`/`project_control`, `destructiveHint` true only for
+`finding`/`finding_sessions`/`mechanic`/`project_control`, `destructiveHint` true only for
 `project_control`, whose `off` action purges the database), and an
 `outputSchema` derived from its response type. `check_mcp_surface` snapshots
 `tools/list` + `resources/list` into `.planning/archive/mcp_surface.json` and
@@ -124,9 +222,9 @@ narrow:
 
 SlugAudit is organized into cohesive subsystems under `src/`. For the exhaustive file-by-file manifest, see [.planning/MODULE_MAP.md](MODULE_MAP.md).
 
-- **`tools/`** — MCP tool handlers and orchestration (`report`, `query`, `structure`, `leads`, `finding`, `finding_read`, `project_control`, `health`). Thin boundary contracts delegating to verified storage transactions.
+- **`tools/`** — MCP tool handlers and orchestration (`report`, `query`, `structure`, `leads`, `finding`, `finding_read`, `finding_sessions`, `project_control`, `health`). Thin boundary contracts delegating to verified storage transactions.
 - **`sync/`** — Indexing engine: discovery, sampling, hashing, reconciliation, publish (compare-and-swap), revisions, and stat sweep.
-- **`store/`** — SQLite persistence boundary: connection configuration, schema migrations, read-only and read-write connection guards.
+- **`store/`** — SQLite persistence boundary: connection configuration, schema migrations, read-only and read-write connection guards, and the immutable result store (`store/result_store/`).
 - **`graph/`** — Dependency and import resolution across multiple language ecosystems (Rust, Python, JS/TS, C#, etc.).
 - **`evidence/`** — Evidence normalization from parse trees into indexed structural facts.
 - **`parse/`** — Tree-sitter language pack boundary and language detection.
@@ -162,7 +260,7 @@ Caller                             SlugAudit server
       │                              <!-- mcp://progress: ensuring_current -->
       ├─ project::resolve_project    walk parents for `.planning/slugaudit`
       ├─ store::open_read_write      symlink/NFS/permission guards; WAL; schema
-      ├─ session-start purge         once per database/process: DELETE findings from other sessions
+      ├─ session-start stale-mark    once per database/process: UPDATE other sessions' findings to stale
       ├─ ensure_project_row          INSERT OR IGNORE the singleton row; verify the stored root
       ├─ watch_manager.watch         register or reuse the project's WatchState
       └─ sync_by_health branch
@@ -204,8 +302,11 @@ completed"` at INFO on success and WARN on failure, carrying `outcome`
 deltas observed across the call. The counters cannot be reset and concurrent
 calls bump them too, so they are logged as deltas — never as absolutes or as
 this call's exclusive share; a delta can cover a sibling call running at the
-same time. Nothing else is logged: no tool arguments, no results (see the
-redaction contract in `tools/redaction_tests.rs`).
+same time. On failure the line also carries `error_class`, the machine
+`code`, and `error`, the `ErrorData` message: error messages are logged by
+design, once, here (the default log filter caps rmcp's own `response error`
+line, so a failure is never logged twice). Tool arguments and results are
+never logged (see the redaction contract in `tools/redaction_tests.rs`).
 
 A session's call sequence is recoverable by grepping one session id. With
 `SLUGAUDIT_LOG_FORMAT=json`:
@@ -388,8 +489,31 @@ as deletions.
   cooperatively (per discovered file, per dirty path, per barrier iteration).
   `query` has an SQLite VM-step budget and a wall-clock budget enforced
   through the progress handler. `structure` has a wall-clock budget enforced
-  through Tree-sitter's native progress callback. The permit is bounded
-  because the work it guards is bounded.
+  through Tree-sitter's native progress callbacks, both while each file is
+  parsed (`Parser::parse_with_options`) and while the query cursor runs; a
+  multi-file parse cancelled at the budget returns the earlier files' matches
+  flagged by `parse_timed_out_file`. Sync parses are bounded in size by
+  `max_parse_bytes` (below) and in time by the sync deadline, both between
+  files and inside each parse: every parse of a file (the pack's `process()`
+  and each walker, call and macro-body re-parse) gets what is left of the
+  same deadline through the pack's parse timeout, which cancels from
+  tree-sitter's parse progress callback; under a millisecond left, the parse
+  is not started. A cut parse is recorded `parse_timeout`. Each file also has
+  its own allowance, `max_parse_wall_clock_ms` (default 5000 in every profile;
+  env `SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS`, project `config.json`
+  `max_parse_wall_clock_ms`), and all parses of a file share the lesser of it
+  and what is left of the sync deadline (`Deadline::capped`, whose
+  `BudgetBound` says which one the file ran under). When the file's own
+  allowance runs out the file is stored with `parse_timeout` (`ContentOnly`,
+  or `Partial` when only a re-parse was cut), counted in `files_not_parsed`
+  and `report.completeness.parse_timeout_file_count`, and the sync goes on;
+  an unchanged `parse_timeout` file is not re-parsed on later syncs (a
+  `Failed` row is not a retry candidate), editing it parses it again. When the
+  sync deadline runs out first the sync fails closed at its next
+  between-files deadline check. A bounded `process()` runs on a thread of its
+  own because the pack caches one parser per thread and a cancelled parse
+  leaves that parser resuming the cancelled document on its next use. The permit is
+  bounded because the work it guards is bounded.
 - **Barrier sync loops at most `MAX_BARRIER_LOOPS = 16` times**
   (`sync/reconcile/mod.rs`). Snapshot dirty/deleted sets, reconcile, then loop
   if new events arrived during reconciliation. Exceeding the cap means a
@@ -427,9 +551,14 @@ enforced atomically:
   syscall; an existing file readable or writable by group or other is
   rejected rather than silently exposed.
 
-`store/connection.rs` also installs a SQLite authorizer that blocks
-`ATTACH DATABASE` on every connection, so a read-only connection cannot reach
-a second database file. This is the engine-level half of the invariant that
+`store/connection_guards.rs` installs a SQLite authorizer that denies `ATTACH`/`DETACH` on every
+connection, so a read-only connection cannot reach a second database file. On the read-only
+connection it also denies every `PRAGMA` except a fixed allowlist of side-effect-free schema
+introspection names (`table_info`, `table_xinfo`, `table_list`, `index_list`, `index_info`,
+`index_xinfo`, `foreign_key_list`), so a pragma that acts while a statement is prepared
+(`hard_heap_limit`, `soft_heap_limit`, `temp_store_directory`) is refused before it takes effect;
+`pragma_table_info(...)` keeps working. `query` additionally sets `SQLITE_LIMIT_LENGTH` and
+`SQLITE_LIMIT_SQL_LENGTH` for its own call. This is the engine-level half of the invariant that
 correctness comes from the connection, not from inspecting query text.
 
 **Value-size ceiling.** The bundled SQLite caps one TEXT/BLOB at
@@ -441,13 +570,84 @@ rather than a failed publish. `max_total_import_bytes` is a sampled-bytes
 **work budget**, not a memory bound; the separate memory/in-flight design is
 a pending decision (PLAN, 2026-10-19).
 
+**Parse ceiling.** `max_parse_bytes` (default 2 MiB in every profile; env
+`SLUGAUDIT_MAX_PARSE_BYTES`, project `config.json` `max_parse_bytes`, clamped
+to `max_file_bytes` with a warning) is separate from `max_file_bytes`, which
+governs storage. A file between the two is stored and searchable, but
+`sync::analyze` hands it to no grammar (no fetch, load or parse, decided
+before the fetch gate like prose): `parser_availability = 'Unavailable'`,
+`parse_outcome = 'NotAttempted'`, `extraction_completeness = 'ContentOnly'`,
+`parse_error_reason = 'oversize_for_parse'` (`ParseOutcome::Withheld` in the
+model). A parse cut at the sync deadline is `Failed` with `parse_error_reason =
+'parse_timeout'`: `ContentOnly` when `process()` itself was cut, `Partial` with
+the pack's evidence kept when a later walker re-parse was. `report.completeness`
+counts both codes, every `leads` response carries `files_not_parsed` (the
+`report` parser-failure predicate, prose (which includes the `.gitignore`,
+`.ignore` and `.dockerignore` ignore lists) excluded, narrowed to files with a
+detected language, under the request's pattern), and `structure` reads each
+file's stored size (`octet_length`) before loading it: a file over
+`max_parse_bytes` or over its 64 MiB window is skipped and counted in
+`files_over_parse_limit`, so no single file can exceed the window. Measured
+before this ceiling: a 50 MB Rust file took 185 s and 7.5 GB RSS to parse.
+`max_parse_wall_clock_ms` (above) bounds the time of a file under the ceiling.
+A `0` for any limit (every `SLUGAUDIT_<FIELD>` variable, and the `config.json`
+keys `max_file_bytes`, `max_parse_bytes`, `max_parse_wall_clock_ms`,
+`max_structure_query_bytes`, `max_total_import_bytes`, `default_page_bytes`,
+`max_result_store_bytes`, `result_active_grace_secs`) is
+refused with a warning naming the setting and the value already in place stays. A
+warning about one cause (a zero, or the `max_parse_bytes` clamp to
+`max_file_bytes`) is logged once per process per (setting, configured value),
+because the limits are rebuilt on every call (`model/limit_overrides.rs`).
+
+**Structure query text.** `Query::new` has no deadline hook, so `structure`
+bounds the query text instead: `max_structure_query_bytes` (default 16 KiB in
+every profile; env `SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES`, project
+`config.json` `max_structure_query_bytes`). A longer query is refused with
+`invalid_params`, stating its size and the limit but never the text, before
+the sync and before compilation.
+
 **Schema versioning is discard-and-rebuild.** `store/migrations.rs` writes
-`CURRENT_SCHEMA_VERSION` (currently `7`) to `PRAGMA user_version`. A database
+`CURRENT_SCHEMA_VERSION` (currently `11`) to `PRAGMA user_version`. A database
 whose version is neither fresh (`0`) nor current resolves as
 `UnsupportedVersion`, which `is_corruption()` reports as corruption; the sync
 layer discards the file and rebuilds it from project source. There is no
 migration code path, and a version bump needs only a matching `schema.sql`
 change — a bump is free because there is no primary data to preserve.
+
+**Two processes may open one fresh database at once.** Two harness sessions in
+one project is normal, so the open path is race-safe. `configure` installs the
+busy timeout before any other statement; the first `journal_mode=WAL`
+conversion needs an exclusive lock and SQLite reports `SQLITE_BUSY` for it
+without consulting the busy handler, so it is retried for a bounded 5 s and
+then fails with `StoreError::Busy`. Schema creation runs in an IMMEDIATE
+transaction that reads `user_version` again under the lock, so the second
+process accepts the first one's schema. The corrupt/outdated discard
+(`discard_if_still_unusable`) takes the same write lock and looks again, and
+leaves a database another process already repaired.
+
+### Result store
+
+`store/result_store/` holds materialised, immutable paged results (library only
+until the tools adopt it; wire codes are mapped there). Layout under
+`<runtime dir>/results/`: `<session>.lock` (advisory lock held for the store's
+life, taken before any result file) and `<session>-<result>.db`, a private
+SQLite file per result that is unlinked right after it is opened, so the open
+descriptor is the only reference and a crash leaves nothing (a file seen on
+disk is at most one created in the instant before the unlink). Pragmas
+`journal_mode=OFF`, `synchronous=OFF`, `locking_mode=EXCLUSIVE`, read back at
+open. Rows are untyped columns `c0..cN` keyed by `ord`; a NaN is stored as
+NULL and marked in `nonfinite`.
+
+Invariants: a result is written in one transaction and addressable only after
+its `meta` (`state='complete'`, written last) is committed and the registry
+admitted it; the sum of admitted bytes never exceeds `max_result_store_bytes`;
+an active result (unfinished, served within `result_active_grace_secs`) is
+never reclaimed, delivered results go first, then idle ones, oldest first;
+a write above the whole budget aborts itself; the registry map lock is never
+held across SQL or file I/O. Cursors are `v1.<process-nonce>.<result>.<ord>`,
+decoded strictly. The startup sweep deletes the files of a session whose lock it
+can take and of a session with no lock file, never a live owner's or its own.
+Supported on Unix; elsewhere `open` returns `Unavailable`.
 
 The database holds only current state: `files`, `evidence`, and
 `dependency_edges` are replaced in place, never duplicated per revision, and
@@ -469,7 +669,14 @@ The server speaks MCP over **stdio only** (`rmcp::transport::stdio`); stdout
 is the JSON-RPC transport and logs go to stderr. It is spawned as a child
 process by the agent, so only that parent can send it requests: there is no
 network listener, no HTTP/SSE transport, no socket, and no multi-client
-multiplexing. An attacker who wants to send a malicious MCP request must
+multiplexing. (Outbound network use exists but accepts no requests: the language
+pack fetches a grammar bundle from its GitHub release on first use of a language,
+sha256-verified and cached under `~/.cache/tree-sitter-language-pack/`, and
+`slugaudit update` downloads a release. A failed grammar fetch records the file
+`LoadFailed` and closes a process-wide gate (`parse::fetch_gate`) for 10 minutes: no
+further fetch is attempted and `LoadFailed` rows are not retry candidates until the
+cool-down elapses or the server restarts; the pack's own 60 s HTTP timeout is not
+configurable, so the first failure can block one call that long.) An attacker who wants to send a malicious MCP request must
 already have code execution on the same machine and a handle to the same
 process — at which point they can read any file the user can, including
 `project.db` directly.
@@ -493,9 +700,12 @@ SlugAudit is designed to assist with auditing codebases. `report` surfaces a
 `credential_pattern_file_count` so the agent is aware it is handling
 credential-shaped content rather than silently reading secrets
 (`src/tools/report.rs`), and `leads` can return the matching file paths. All
-query parameters, finding text, and source contents are kept out of log
-emissions (`src/tools/redaction_tests.rs`); the tool-call span logs only the
-tool name and timing/outcome.
+tool arguments (query parameters, finding text), tool results, and file
+contents are kept out of log emissions (`src/tools/redaction_tests.rs`). Error
+messages and the real paths they name are not covered: they are logged by
+design, once, at WARN, so a failure is diagnosable from the log alone. The
+default filter is `warn,slugaudit_mcp_rust=info,rmcp=error`; `RUST_LOG`
+overrides it.
 
 ## Process lifecycle
 
@@ -551,7 +761,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 76 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 124 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only
@@ -632,18 +842,20 @@ the architecture so the next reviewer does not re-litigate it from scratch.
   is re-created on every agent session.
 - **No graceful shutdown** (see *Process lifecycle*).
 - **No HTTP health endpoint or metrics endpoint.** stdio is the only
-  transport; the `health` MCP tool returns watcher health, unreconciled
-  counts, tool-call counters, and sync timing over that same transport. An
+  transport; the `health` MCP tool returns watcher health and, with
+  `verbose: true`, unreconciled counts, tool-call counters, and sync timing
+  over that same transport. An
   HTTP surface belongs with a network transport, not with stdio.
 - **Findings are session-scoped.** A finding is a conclusion from one
   reasoning session, not a durable fact. A different agent must not silently
   inherit another session's conclusions; evidence persists because it is
   reproducible from source, findings do not (`sync/manager_meta.rs::
-  purge_prior_session_findings`, invariant 9).
+  mark_prior_session_findings_stale`, invariant 9). Earlier sessions' rows are
+  kept, not deleted; `finding_sessions` lists and adopts them.
 - **Findings are bound to a content hash, not a line range alone.** The hash
   is what makes auto-invalidation reliable when a file changes; the line range
   is a hint for the reader.
-- **The `query` ATTACH guard is discipline, not containment.** The agent could
+- **The `query` ATTACH/PRAGMA guard is discipline, not containment.** The agent could
   read any file it has permission for with `sqlite3` directly. The authorizer
   exists so the "correctness comes from the connection" invariant stays true
   if the tool surface changes (see *Store and schema lifecycle*).
@@ -651,7 +863,10 @@ the architecture so the next reviewer does not re-litigate it from scratch.
   future and sends are best-effort, so a broken progress channel cannot turn a
   successful call into an error. Volume is throttled by `McpProgressSink`.
 - **The database is discarded, not migrated.** See *Store and schema
-  lifecycle*.
+  lifecycle*. The discard is surfaced: the call that triggered it reports
+  `database_discard` (`findings_discarded` counted before removal, `null`
+  when the database was unreadable; plus the cause) on `project_control on`,
+  `report`, `finding`, `finding_sessions` and the `page` block of paged tools.
 
 ## Key invariants
 
@@ -660,8 +875,8 @@ something else loudly.
 
 1. **Correctness comes from the connection itself, never from inspecting
    query text.** Read paths open `SQLITE_OPEN_READ_ONLY`; the `query` tool
-   never reaches a read-write connection, and the ATTACH authorizer blocks the
-   one read a read-only connection would otherwise permit.
+   never reaches a read-write connection, and the authorizer blocks ATTACH and every non-introspection PRAGMA, the
+   reads and prepare-time side effects a read-only connection would otherwise permit.
 2. **Symlinks and network filesystems are rejected at open time.** A
    symlinked database returns `StoreError::Symlink`; one on NFS/CIFS/SMB
    returns `StoreError::NetworkFilesystem`. The open is the only check.
@@ -689,13 +904,14 @@ something else loudly.
    compile error, not a corrupted stream.
 9. **Findings are scoped to the agent session that wrote them.** Every finding
    row carries the active `session_id` (a UUID generated once per process);
-   `purge_prior_session_findings` runs once per project database at the
-   process/session's first sync, deleting rows from any other session. The
-   `SourceSyncManager` guard keys on the database path and the session UUID,
-   so later tool calls in the same process never repeat the purge — sibling
-   MCP sessions share the database, and a repeated purge would delete a live
-   peer's findings mid-session. A new agent starts with a clean finding set
-   rather than silently inheriting another's conclusions.
+   `mark_prior_session_findings_stale` runs once per project database at the
+   process/session's first sync, marking rows from any other session `stale`
+   and deleting nothing; the count is logged once. The `SourceSyncManager`
+   guard keys on the database path and the session UUID, so later tool calls
+   in the same process never repeat it. `finding_read` and `report` count only
+   the current session, so a new agent starts with a clean view rather than
+   silently inheriting another's conclusions; a continuing agent resumes with
+   `finding_sessions` (`list`, then `adopt`).
 10. **The database is disposable derived data.** Every row in `files`,
     `evidence`, `dependency_edges`, and `revisions` is computed from project
     source and can be regenerated: `rm -rf .planning/slugaudit` followed by any
@@ -728,6 +944,36 @@ something else loudly.
     the sync-budget remedy names the knob rather than advising a retry that
     fails identically, and a path that is not an enabled project produces one
     `project_not_enabled` instruction instead of one opaque failure per tool.
+14. **A registered mechanic can never remove, rename or override a built-in.**
+    Ids are `[a-z0-9_]{1,64}` and unique across the built-ins, the session
+    entries and the persisted entries: `mechanic add` refuses a collision,
+    `mechanic remove` refuses a built-in id, and a persisted entry that
+    collides on load is reported invalid rather than shadowing anything. The
+    built-in table (`leads_mechanics::MECHANICS`) is compiled in and nothing
+    at runtime edits it.
+15. **A paged result is immutable.** Once committed, a result's rows, order,
+    totals and completeness never change; every page of a cursor describes the
+    revision its first page was taken from, whatever the tree or the index
+    does afterwards.
+16. **A continuation does not sync.** A call carrying `cursor` reads the stored
+    result and nothing else: no sync, no revision check, no `path`. With
+    `health` it is one of two calls that do not bring the project current; a
+    call without a cursor is a new request and syncs as every tool does.
+17. **Nothing is addressable before it is committed.** No cursor, registry
+    entry or readable page exists for a result until its writer has committed
+    and been admitted; a failed materialisation leaves no trace a caller could
+    name.
+18. **An active result is never reclaimed.** Pressure from a newer result
+    may take delivered and idle results, never one still being paged; when
+    only active results remain, the newcomer is refused instead.
+19. **The result store and `project.db` hold disjoint data.** Results live
+    under `<runtime dir>/results/`, which discovery, the stat sweep, the
+    watcher scope and reconcile all exclude, and each result is an unlinked
+    private file with its own connection. So replacing the database (stale
+    root, incompatible version, corruption recovery, `project_control off`)
+    cannot disturb an open result, and open results never hold a WAL reader
+    that would block a publish or a checkpoint. The proofs are the
+    `result_store_proof_` tests in `sync/result_store_proof_*_tests.rs`.
 
 ### Machine-readable failure codes
 
@@ -753,10 +999,19 @@ surface).
 | --- | --- | --- |
 | `sync_budget_exhausted` | the sync wall-clock budget (`max_sync_wall_clock`) was spent while discovering, hashing, parsing, or publishing; permanent on a tree too big for the budget, so the remedy names the knob | every sync map site: `manager_meta::map_publish_error`, `sweep_reconcile::sweep_tree` and `sweep_reconcile::apply_sweep_report`, both `manager_health` map sites |
 | `project_not_enabled` | no ancestor of the requested path has an activation marker, so no tool can serve it | `manager_orchestration::map_activation_error` — the single funnel behind every tool |
-| `stale_revision` | the revision this call was pinned to is no longer current, or a sampled file changed before the write — the compare-and-swap race, where retrying is right | `tools::context::verify_revision_matches`, `manager_meta::map_publish_error`; also `tools::context::guard_expected_revision`, where the caller pinned a resumed page (`leads`/`query` `expected_revision`) and the remedy restarts the sweep from offset 0 instead of retrying the offset |
-| `unknown_mechanic` | `leads` was asked for a mechanic id that is not in the catalogue | `tools::leads_mechanics::resolve_mechanic` |
+| `stale_revision` | the revision this call was pinned to is no longer current, or a sampled file changed before the write — the compare-and-swap race, where retrying is right | `tools::context::verify_revision_matches`, `manager_meta::map_publish_error` |
+| `unknown_mechanic` | `leads` was asked for a mechanic id that is not in the catalogue, or `mechanic remove` for an id no session or persisted entry has | `tools::leads_mechanics::resolve_mechanic`, `tools::mechanic_register::remove` |
 | `sql_too_large` | the SQL passed to `query` exceeded `max_query_sql_bytes` | `tools::query::query_with_limits` |
 | `file_not_indexed` | the named file has no indexed source content (never discovered, skipped as oversize/unreadable, or binary) | `tools::structure_source::fetch_source`, `tools::finding::fetch_file` |
+| `mechanic_budget_exhausted` | an auditor-registered mechanic's scan spent `max_structure_execution_time` before every file was read, so no count is returned; the message names the entries that were running, and the remedy names `mechanic remove`, a narrower `pattern` and the knob instead of a retry | `tools::mechanic_scan::budget_error` |
+| `sql_error` | SQLite could not compile or run the statement passed to `query` (a syntax error, an unknown table or column, a function or type error); refusals of the statement's kind (PRAGMA, ATTACH, a write, more than one statement) and spent query budgets carry no code; the remedy names schema discovery | `tools::query::describe_error` |
+| `unknown_language` | a project-wide `structure` call named a language no indexed file in this project has; the message lists the indexed languages (from the index, never the pack's list) and the remedy is static | `tools::structure_source::ensure_indexed_language` |
+| `unknown_cursor` | a `cursor` that is malformed, was issued by another server run, belongs to another tool, or points past its result; a cursor does not survive a restart | `error_codes::store_error` (`ResultStoreError::Unknown`), `tools::paginate::paginate` |
+| `result_expired` | a well-formed cursor whose stored result was reclaimed to make room for a newer one; the remedy is to repeat the request without a cursor | `error_codes::store_error` (`ResultStoreError::Expired`) |
+| `result_store_full` | a new result does not fit and every byte is held by results still being paged; the message carries the active count as a number only | `error_codes::store_error` (`ResultStoreError::Full`) |
+| `result_too_large` | one result alone is larger than the whole result store budget (`max_result_store_bytes`); nothing is stored and no cursor is returned | `error_codes::store_error` (`ResultStoreError::TooLarge`) |
+| `result_store_unavailable` | the result store cannot hold or serve results (disk full or unwritable, unsupported platform); other tools keep working | `error_codes::store_error` (`ResultStoreError::Unavailable`) |
+| `paging_parameter_removed` | a request carried `offset` or `expected_revision`, the pre-cursor paging parameters removed when the tools moved to cursors; the remedy names `cursor` | `tools::page::LegacyPaging::refuse` |
 <!-- error-codes:end -->
 
 `health` is the deliberate exception: it answers normally in the not-enabled

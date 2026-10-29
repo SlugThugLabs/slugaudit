@@ -5,7 +5,7 @@
 
 use super::connection_guards::{
     BUSY_TIMEOUT, configure, create_with_private_permissions_if_missing, guard_against_attach,
-    open_flags, reject_insecure_permissions, reject_symlink, resolve_parent_dir,
+    guard_read_only, open_flags, reject_insecure_permissions, reject_symlink, resolve_parent_dir,
 };
 use super::netfs::reject_network_filesystem;
 use rusqlite::Connection;
@@ -24,6 +24,11 @@ pub enum StoreError {
     /// failed.
     #[error("failed to configure database connection: {0}")]
     Configure(#[source] rusqlite::Error),
+    /// Another process kept the database locked for the whole bounded wait
+    /// (the busy timeout plus the WAL-conversion retry budget) while this
+    /// connection was being set up. Retrying the call is safe.
+    #[error("the project database stayed locked by another process: {0}")]
+    Busy(#[source] rusqlite::Error),
     /// Reading or initializing the schema failed; see
     /// [`MigrationError`](super::migrations::MigrationError).
     #[error(transparent)]
@@ -80,6 +85,7 @@ impl StoreError {
             Self::Open(error) | Self::Configure(error) => super::is_rusqlite_corruption(error),
             Self::Migration(error) => error.is_corruption(),
             Self::Symlink
+            | Self::Busy(_)
             | Self::Inspect(_)
             | Self::WalUnavailable { .. }
             | Self::Permissions(_)
@@ -139,7 +145,9 @@ pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
 /// Opens a connection that cannot write no matter what SQL it executes.
 /// This is the safety boundary for the `query` tool: correctness comes from
 /// the connection itself, never from inspecting query text. Requires an
-/// already-migrated database; it never creates or alters the schema.
+/// already-migrated database; it never creates or alters the schema. Its
+/// authorizer denies ATTACH/DETACH and every PRAGMA except schema
+/// introspection, at prepare time, before a pragma can take effect.
 ///
 /// # Errors
 ///
@@ -164,81 +172,14 @@ pub fn open_read_only(path: &Path) -> Result<Connection, StoreError> {
     connection
         .busy_timeout(BUSY_TIMEOUT)
         .map_err(StoreError::Configure)?;
-    guard_against_attach(&connection);
+    guard_read_only(&connection);
     super::sql_functions::register(&connection).map_err(StoreError::Configure)?;
     Ok(connection)
 }
 
-/// Failure-path tests for the open/discard contract. They sit inline because
-/// `connection_tests.rs` is at the 500-code-line test-file cap.
 #[cfg(test)]
-mod guard_tests {
-    use super::*;
-    use crate::store::test_capture::capture_warns;
-    use std::io::ErrorKind;
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-
-    #[test]
-    fn an_uninspectable_database_path_warning_redacts_the_path() {
-        let path = Path::new("/tmp").join("a".repeat(300)).join("project.db");
-        let (result, logs) = capture_warns(|| {
-            tracing::warn!("lstat_control");
-            reject_symlink(&path)
-        });
-        assert!(matches!(result, Err(StoreError::Inspect(_))) && logs.contains("lstat_control"));
-        assert!(logs.contains("path_id="), "{logs}");
-        assert!(!logs.contains(path.to_string_lossy().as_ref()), "{logs}");
-    }
-
-    #[test]
-    fn a_canonicalize_fallback_warning_redacts_the_path() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let path = directory.path().join("missing-parent").join("project.db");
-        let (result, logs) = capture_warns(|| {
-            tracing::warn!("canonicalize_control");
-            open_read_only(&path)
-        });
-        assert!(matches!(&result, Err(StoreError::Open(_))), "{result:?}");
-        assert!(logs.contains("canonicalize_control"), "{logs}");
-        assert!(logs.contains("path_id="), "{logs}");
-        assert!(!logs.contains(path.to_string_lossy().as_ref()), "{logs}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_directory_at_the_database_path_fails_with_an_open_error() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let path = directory.path().join("project.db");
-        std::fs::create_dir(&path).expect("directory fixture");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).expect("mode");
-        let result = open_read_write(&path);
-        assert!(matches!(&result, Err(StoreError::Open(_))), "{result:?}");
-    }
-
-    #[test]
-    fn a_directory_at_the_database_path_fails_the_corrupt_database_discard() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let path = directory.path().join("project.db");
-        std::fs::create_dir(&path).expect("directory fixture");
-        let error = discard_corrupt_database(&path).expect_err("directory unlink must fail");
-        let kind = error.kind();
-        assert!(kind == ErrorKind::IsADirectory || kind == ErrorKind::PermissionDenied);
-        assert!(path.is_dir());
-    }
-
-    #[test]
-    fn a_read_only_connection_carries_the_busy_timeout() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let path = directory.path().join("project.db");
-        open_read_write(&path).expect("create database");
-        let ro = open_read_only(&path).expect("open read-only");
-        let timeout: i64 = ro
-            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
-            .expect("read");
-        assert_eq!(timeout, 5_000);
-    }
-}
+#[path = "connection_guard_tests.rs"]
+mod guard_tests;
 
 #[cfg(test)]
 #[path = "connection_tests.rs"]

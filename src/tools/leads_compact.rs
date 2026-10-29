@@ -8,21 +8,21 @@
 //! mechanic, a single call has to page across mechanics while keeping the
 //! cumulative file count honest.
 //!
-//! That is why every read here walks one `UNION ALL` over the selected
+//! That is why the read here walks one `UNION ALL` over the selected
 //! mechanics rather than concatenating per-mechanic reads in Rust: the row
-//! order (`ord`, then `path`, then `line`) is defined by the statement, so a
-//! page boundary, an offset, and `files_covered` all agree without a second
+//! order (`ord`, then `path`, then `line`, then the row id) is defined by the
+//! statement, so the stored result and `files_covered` agree without a second
 //! ordering to keep in sync. `ord` is the position in `MECHANICS`; the
 //! mechanic id itself is spliced as a literal from the static catalogue
 //! (never from caller input), which is what keeps each branch self-identifying
 //! without a lookup table in the response.
 //!
-//! Every caller value — the `pattern` glob, the limit, the offset — is bound
-//! as a parameter, exactly as in `leads_query.rs`.
+//! The caller's `pattern` glob is bound as a parameter, exactly as in
+//! `leads_query.rs`.
 
 use super::leads::CompactLeadRow;
 use super::leads_mechanics::{MECHANICS, Mechanic};
-use super::leads_query::{Page, compile_pattern, fill_page, int_bind};
+use super::leads_query::compile_pattern;
 use rmcp::ErrorData;
 use rusqlite::types::Value;
 use rusqlite::{Transaction, params_from_iter};
@@ -36,8 +36,8 @@ pub(super) fn scope(selected: Option<&Mechanic>) -> Vec<&Mechanic> {
     }
 }
 
-/// One `SELECT` per mechanic, each tagging its rows with the mechanic id and
-/// its catalogue position. The id is a compile-time constant from
+/// One `SELECT` per mechanic, each tagging its rows with the mechanic id, its
+/// catalogue position and its row id. The id is a compile-time constant from
 /// [`MECHANICS`], never a caller value.
 fn branches(scope: &[&Mechanic], matched: bool) -> String {
     scope
@@ -45,10 +45,12 @@ fn branches(scope: &[&Mechanic], matched: bool) -> String {
         .enumerate()
         .map(|(ordinal, mechanic)| {
             format!(
-                "SELECT {ordinal} AS ord, '{}' AS mechanic, {} AS path, {} AS line FROM {}{}",
+                "SELECT {ordinal} AS ord, '{}' AS mechanic, {} AS path, {} AS line, \
+                 {} AS rid FROM {}{}",
                 mechanic.id,
                 mechanic.path_expr(),
                 mechanic.line_expr(),
+                mechanic.id_expr(),
                 mechanic.read_from(),
                 mechanic.where_clause(matched)
             )
@@ -57,31 +59,12 @@ fn branches(scope: &[&Mechanic], matched: bool) -> String {
         .join(" UNION ALL ")
 }
 
-/// The paged triple query: catalogue order, then the mechanic's own file/line
-/// order. Placeholders bind in textual order — one pattern glob per branch,
-/// then the limit, then the offset.
+/// The triple query: catalogue order, then the mechanic's own file/line
+/// order, then the row id so equal lines keep one order. One pattern glob is
+/// bound per branch.
 fn rows_sql(scope: &[&Mechanic], matched: bool) -> String {
     format!(
-        "SELECT mechanic, path, line FROM ({}) ORDER BY ord, path, line LIMIT ? OFFSET ?",
-        branches(scope, matched)
-    )
-}
-
-/// Distinct files represented in the first `LIMIT` rows of the same ordered
-/// result `rows_sql` walks — the cumulative file count after a page across
-/// every mechanic in scope.
-fn covered_sql(scope: &[&Mechanic], matched: bool) -> String {
-    format!(
-        "SELECT count(DISTINCT path) FROM (SELECT ord, path, line FROM ({}) \
-         ORDER BY ord, path, line LIMIT ?)",
-        branches(scope, matched)
-    )
-}
-
-/// Distinct files holding at least one observation of any mechanic in scope.
-fn files_total_sql(scope: &[&Mechanic], matched: bool) -> String {
-    format!(
-        "SELECT count(DISTINCT path) FROM ({})",
+        "SELECT mechanic, path, line FROM ({}) ORDER BY ord, path, line, rid",
         branches(scope, matched)
     )
 }
@@ -94,26 +77,16 @@ fn pattern_binds(glob: Option<&str>, branches: usize) -> Vec<Value> {
     }
 }
 
-/// Reads one compact page over `scope`, in `rows_sql` order.
-///
-/// Identical paging contract to the full reader: the caller's `limit` and the
-/// response byte budget cut the page, the first row is always returned even
-/// when it alone exceeds `max_bytes`, and one row past `limit` is fetched only
-/// to report `limited_by`.
-pub(super) fn rows_for(
+/// Streams every compact row of `scope` under `pattern`, in `rows_sql` order,
+/// into `on_row`.
+pub(super) fn stream(
     tx: &Transaction<'_>,
     scope: &[&Mechanic],
     pattern: Option<&str>,
-    limit: Option<usize>,
-    offset: usize,
-    max_bytes: usize,
-) -> Result<Page<CompactLeadRow>, ErrorData> {
+    on_row: &mut dyn FnMut(CompactLeadRow) -> Result<(), ErrorData>,
+) -> Result<(), ErrorData> {
     let glob = compile_pattern(pattern);
-    let fetch = limit.map(|rows| rows.saturating_add(1));
-    let mut binds = pattern_binds(glob.as_deref(), scope.len());
-    binds.push(Value::Integer(int_bind(fetch)?));
-    binds.push(Value::Integer(int_bind(Some(offset))?));
-
+    let binds = pattern_binds(glob.as_deref(), scope.len());
     let mut statement = tx
         .prepare(&rows_sql(scope, glob.is_some()))
         .map_err(|error| super::context::internal_error("preparing compact leads rows", error))?;
@@ -126,42 +99,10 @@ pub(super) fn rows_for(
             })
         })
         .map_err(|error| super::context::internal_error("reading compact leads rows", error))?;
-    fill_page(mapped, limit, max_bytes, "reading compact leads rows")
-}
-
-/// Distinct files represented in the first `through` rows of the scope's
-/// ordered result, across every mechanic in scope. `through = 0` is zero by
-/// construction.
-pub(super) fn files_covered(
-    tx: &Transaction<'_>,
-    scope: &[&Mechanic],
-    pattern: Option<&str>,
-    through: usize,
-) -> Result<i64, ErrorData> {
-    let glob = compile_pattern(pattern);
-    let mut binds = pattern_binds(glob.as_deref(), scope.len());
-    binds.push(Value::Integer(int_bind(Some(through))?));
-    tx.query_row(
-        &covered_sql(scope, glob.is_some()),
-        params_from_iter(binds),
-        |row| row.get(0),
-    )
-    .map_err(|error| super::context::internal_error("counting covered compact files", error))
-}
-
-/// Distinct files holding at least one observation of any mechanic in scope —
-/// the denominator a whole-surface sweep can exhaust.
-pub(super) fn files_total(
-    tx: &Transaction<'_>,
-    scope: &[&Mechanic],
-    pattern: Option<&str>,
-) -> Result<i64, ErrorData> {
-    let glob = compile_pattern(pattern);
-    let binds = pattern_binds(glob.as_deref(), scope.len());
-    tx.query_row(
-        &files_total_sql(scope, glob.is_some()),
-        params_from_iter(binds),
-        |row| row.get(0),
-    )
-    .map_err(|error| super::context::internal_error("counting compact files", error))
+    for row in mapped {
+        on_row(row.map_err(|error| {
+            super::context::internal_error("reading compact leads rows", error)
+        })?)?;
+    }
+    Ok(())
 }

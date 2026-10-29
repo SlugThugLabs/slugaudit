@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=the reconcile SQL (stored state, version, atomic commit) is one cohesive query layer for the pipeline
 //! The SQL and commit step the reconcile pipeline uses: stored content
 //! hashes for dirty paths (to skip unchanged files), the current parser
 //! pack version (to pin the new revision against), and the atomic revision
@@ -22,30 +23,56 @@ use std::collections::{HashMap, HashSet};
 /// closed instead of building one unbounded array first.
 pub(super) const MAX_PATH_LOOKUP_BATCH: usize = 4096;
 
-/// Queries the stored content hashes for the given paths. Callers pass at
-/// most [`MAX_PATH_LOOKUP_BATCH`] paths per call so the serialized JSON
-/// parameter stays bounded.
+/// What the files table already holds for a set of dirty paths.
+#[derive(Debug, Default)]
+pub(super) struct StoredState {
+    /// Stored content hash per path.
+    pub(super) hashes: HashMap<String, String>,
+    /// Paths whose stored parse is `LoadFailed` while a retry is due (the
+    /// grammar fetch is not in cool-down): an unchanged hash must not skip them.
+    pub(super) retry: HashSet<String>,
+}
+
+impl StoredState {
+    fn absorb(&mut self, other: StoredState) {
+        self.hashes.extend(other.hashes);
+        self.retry.extend(other.retry);
+    }
+}
+
+/// Queries the stored content hashes (and which rows are `LoadFailed`) for
+/// the given paths. Callers pass at most [`MAX_PATH_LOOKUP_BATCH`] paths per
+/// call so the serialized JSON parameter stays bounded.
 pub(super) fn query_existing_hashes<'a>(
     connection: &Connection,
     paths: impl IntoIterator<Item = &'a str>,
-) -> Result<HashMap<String, String>, rusqlite::Error> {
+) -> Result<StoredState, rusqlite::Error> {
     let paths: Vec<&str> = paths.into_iter().collect();
+    let mut state = StoredState::default();
+    let retry_due = crate::parse::fetch_gate::load_failed_retry_due();
     if paths.is_empty() {
-        return Ok(HashMap::new());
+        return Ok(state);
     }
     let wanted = paths_json_array(paths)?;
     let mut stmt = connection.prepare(&format!(
-        "SELECT path, content_hash FROM files WHERE path IN ({PATH_SET_SUBQUERY})"
+        "SELECT path, content_hash, parser_availability = 'LoadFailed' FROM files \
+         WHERE path IN ({PATH_SET_SUBQUERY})"
     ))?;
     let rows = stmt.query_map([wanted], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, bool>(2)?,
+        ))
     })?;
-    let mut result = HashMap::new();
     for row in rows {
-        let (path, hash) = row?;
-        result.insert(path, hash);
+        let (path, hash, load_failed) = row?;
+        if load_failed && retry_due {
+            state.retry.insert(path.clone());
+        }
+        state.hashes.insert(path, hash);
     }
-    Ok(result)
+    Ok(state)
 }
 
 /// Reads the parser pack version of the current revision. When no revision
@@ -75,19 +102,19 @@ pub(super) fn load_existing_hashes(
     connection: &Connection,
     dirty: &HashSet<String>,
     deadline: Deadline,
-) -> Result<HashMap<String, String>, ReconcileError> {
-    let mut existing_hashes = HashMap::new();
+) -> Result<StoredState, ReconcileError> {
+    let mut existing = StoredState::default();
     let mut batch: Vec<&str> = Vec::with_capacity(MAX_PATH_LOOKUP_BATCH.min(dirty.len()));
     for path in dirty {
         batch.push(path.as_str());
         if batch.len() == MAX_PATH_LOOKUP_BATCH {
-            existing_hashes.extend(query_stored_hash_batch(connection, &mut batch, deadline)?);
+            existing.absorb(query_stored_hash_batch(connection, &mut batch, deadline)?);
         }
     }
     if !batch.is_empty() {
-        existing_hashes.extend(query_stored_hash_batch(connection, &mut batch, deadline)?);
+        existing.absorb(query_stored_hash_batch(connection, &mut batch, deadline)?);
     }
-    Ok(existing_hashes)
+    Ok(existing)
 }
 
 /// Refreshes the stored size and mtime for a dirty path whose content hash
@@ -113,7 +140,7 @@ pub(super) fn query_stored_hash_batch(
     connection: &Connection,
     batch: &mut Vec<&str>,
     deadline: Deadline,
-) -> Result<HashMap<String, String>, ReconcileError> {
+) -> Result<StoredState, ReconcileError> {
     if let Some(elapsed) = deadline.exceeded() {
         return Err(ReconcileError::TimeBudgetExceeded {
             path: " while reading stored path hashes".to_owned(),
@@ -190,7 +217,8 @@ mod tests {
         paths.insert("a.rs".to_owned());
 
         let hashes = query_existing_hashes(&connection, paths.iter().map(String::as_str))
-            .expect("40k-path lookup");
+            .expect("40k-path lookup")
+            .hashes;
 
         assert_eq!(hashes.len(), 1, "only the stored path matches: {hashes:?}");
         assert!(hashes.contains_key("a.rs"));
@@ -224,7 +252,8 @@ mod tests {
 
         for batch in expected.chunks(MAX_PATH_LOOKUP_BATCH) {
             let hashes = query_existing_hashes(&connection, batch.iter().map(String::as_str))
-                .expect("batch lookup");
+                .expect("batch lookup")
+                .hashes;
 
             assert_eq!(
                 hashes.len(),

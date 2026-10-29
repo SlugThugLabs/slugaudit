@@ -384,27 +384,39 @@ fn discover_with_deadline_aborts_mid_walk_when_budget_exhausts() {
     );
 }
 
-/// `analyze` doesn't carry its own wall-clock deadline — that budget is
-/// enforced one level up in `sample_all_with_deadline` and
-/// `publish_with_limits`. This test pins that documented contract: if a
-/// caller ever moves the deadline into `analyze` itself they will trip
-/// this assertion, and that's the right time to rewrite both this test
-/// and `analyze.rs`. Today, a real "per-file wall-timeout" reaction
-/// lives in `sampling_times_out_when_the_budget_is_exhausted` (analyze
-/// is downstream of sampling).
+/// `analyze` runs every parse of a file within what is left of the sync
+/// deadline it is handed (the deadline `publish_with_limits` and the
+/// reconcile options create once per operation), so one file's parse can
+/// no longer outlive the sync budget. Under a spent deadline the parse is
+/// not started: the file is stored `ContentOnly` with the `parse_timeout`
+/// reason, and the caller's own between-file deadline check then ends the
+/// sync. The progress-callback cancellation of a parse already running is
+/// pinned in `analyze_tests`.
 #[test]
-fn analyze_has_no_per_file_wall_clock_budget_of_its_own() {
+fn analyze_under_a_spent_sync_deadline_records_parse_timeout_without_parsing() {
     use crate::sync::analyze::analyze;
-    // A real source path with real content: `analyze` always returns
-    // (synchronously) and never blocks, because the wall-clock budget
-    // is enforced at the `sample_all_with_deadline` and
-    // `publish_with_limits` layers above it.
-    let result = analyze("src/lib.rs", Some("pub fn lib() {}\n"));
-    assert!(result.run.validate().is_ok());
-    assert!(
-        !result.evidence.is_empty(),
-        "real rust source produces real evidence"
+    let spent = Deadline::after(Duration::ZERO);
+
+    let result = analyze(
+        "src/lib.rs",
+        Some("pub fn lib() {}\n"),
+        crate::model::ResourceLimits::default().max_parse_bytes,
+        Duration::from_secs(5),
+        &spent,
     );
+
+    assert!(result.run.validate().is_ok());
+    assert_eq!(
+        result.run.outcome,
+        crate::model::ParseOutcome::Failed {
+            reason: "parse_timeout".to_owned()
+        }
+    );
+    assert_eq!(
+        result.run.completeness,
+        crate::model::ExtractionCompleteness::ContentOnly
+    );
+    assert!(result.evidence.is_empty(), "nothing was parsed");
 }
 
 /// The public `reconcile` entry point must propagate a failed publish as
@@ -497,5 +509,87 @@ fn a_spent_sweep_budget_keeps_the_sync_budget_payload_and_marks_desynced() {
         state.health(),
         crate::watch::WatcherHealth::Desynced,
         "a failed sweep leaves freshness ambiguous"
+    );
+}
+
+/// A real cancellation, not an injected one: a 400 KiB Rust file (under
+/// `max_parse_bytes`) takes about 1.5 s to parse in a debug build, and a
+/// 50 ms sync budget cuts `process()` itself through the pack's parse
+/// timeout (tree-sitter's progress callback). The file is recorded
+/// `parse_timeout`, nothing is extracted, and `analyze` returns near the
+/// budget instead of after the whole parse.
+#[test]
+fn a_parse_that_outlives_the_sync_budget_is_cancelled_and_recorded_parse_timeout() {
+    use crate::sync::analyze::analyze;
+    let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
+    let content = line.repeat(400 * 1024 / line.len());
+    let limits = crate::model::ResourceLimits::default();
+    let deadline = Deadline::after(Duration::from_millis(50));
+
+    let started = std::time::Instant::now();
+    let result = analyze(
+        "src/big.rs",
+        Some(&content),
+        limits.max_parse_bytes,
+        Duration::from_millis(limits.max_parse_wall_clock_ms),
+        &deadline,
+    );
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        result.run.outcome,
+        crate::model::ParseOutcome::Failed {
+            reason: "parse_timeout".to_owned()
+        }
+    );
+    assert_eq!(
+        result.run.completeness,
+        crate::model::ExtractionCompleteness::ContentOnly
+    );
+    assert!(result.evidence.is_empty());
+    assert!(elapsed < Duration::from_secs(1), "analyze took {elapsed:?}");
+}
+
+/// The sync budget still ends the sync: a file whose parse outlives it is cut
+/// at the sync deadline (the per-file allowance here is far longer), and the
+/// publish fails with the budget error and publishes nothing, as before the
+/// per-file allowance existed.
+#[test]
+fn a_parse_that_outlives_the_sync_budget_still_fails_the_publish() {
+    let project = tempfile::tempdir().expect("project dir");
+    let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
+    write(
+        project.path(),
+        "slow.rs",
+        line.repeat(1_900_000 / line.len()).as_bytes(),
+    );
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    let limits = ResourceLimits {
+        max_sync_wall_clock: Duration::from_millis(300),
+        max_parse_wall_clock_ms: 600_000,
+        ..ResourceLimits::default()
+    };
+
+    let error = publish_with_limits(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+        &limits,
+    )
+    .expect_err("the sync budget ran out during the parse");
+
+    assert!(
+        matches!(
+            error,
+            PublishError::TimeBudgetExceeded { .. }
+                | PublishError::Discovery(DiscoveryError::TimeBudgetExceeded { .. })
+        ),
+        "expected a time-budget error, got {error:?}"
+    );
+    assert!(
+        stored_paths(&connection).is_empty(),
+        "nothing was published"
     );
 }

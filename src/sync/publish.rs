@@ -37,6 +37,10 @@ pub enum PublishError {
     /// Sampling a discovered file failed.
     #[error(transparent)]
     Sample(#[from] sample::SampleError),
+    /// The project's limits could not be derived: its `config.json` is
+    /// present but unreadable or malformed.
+    #[error(transparent)]
+    Limits(#[from] crate::project::ProjectLimitsError),
     /// Writing the revision failed, including the CAS stale-baseline verdict.
     #[error(transparent)]
     Revision(#[from] revision::RevisionError),
@@ -129,6 +133,7 @@ impl PublishError {
         match self {
             PublishError::Discovery(_) => "discovery",
             PublishError::Sample(_) => "sample",
+            PublishError::Limits(_) => "project_limits",
             PublishError::Revision(_) => "revision",
             PublishError::Database(_) => "database",
             PublishError::ImportTooLarge { .. } => "import_too_large",
@@ -141,29 +146,27 @@ impl PublishError {
     }
 
     /// Logs that this failure lost the parallel sampling pool's first-error
-    /// race. Only the static category and a redacted path id are emitted;
-    /// the raw `Display` of several variants embeds a path.
+    /// race. The category, the real path (when the variant names one) and
+    /// the error's `Display` are emitted.
     pub(super) fn warn_sampling_superseded(&self) {
         tracing::warn!(
             operation = "sample_batch",
             category = self.category(),
-            path_id = ?self.redacted_path_id(),
+            path = ?self.path_for_log(),
+            error = %self,
             "a later sampling failure was discarded after the first error was recorded",
         );
     }
 
-    /// A stable, non-reversible id for the path this failure carries, if it
-    /// carries one — the only form of it that may enter a log line.
-    /// [`PublishError::TimeBudgetExceeded::path`] is a pre-formatted note
-    /// (which can embed a relative path), not a path, so it is not exposed
-    /// here.
-    #[must_use]
-    pub(crate) fn redacted_path_id(&self) -> Option<String> {
+    /// The path this failure carries, if it carries one, for log lines.
+    /// [`PublishError::TimeBudgetExceeded::path`] is a pre-formatted note,
+    /// not a path, so it is not exposed here.
+    fn path_for_log(&self) -> Option<String> {
         match self {
             PublishError::ChangedDuringSample { path }
             | PublishError::SamplingResultLost { path, .. }
             | PublishError::Revision(revision::RevisionError::InvalidParserRun { path, .. }) => {
-                Some(crate::util::redacted_log_id(path))
+                Some(path.clone())
             }
             PublishError::Sample(
                 sample::SampleError::Read { path, .. } | sample::SampleError::TooLarge { path, .. },
@@ -172,14 +175,15 @@ impl PublishError {
                 discovery::DiscoveryError::Read { path, .. }
                 | discovery::DiscoveryError::NotRelative(path)
                 | discovery::DiscoveryError::NonUtf8Path(path),
-            ) => Some(crate::util::redacted_path(path)),
+            ) => Some(path.display().to_string()),
             PublishError::Discovery(discovery::DiscoveryError::Walk(error)) => {
-                crate::watch::errors::ignore_error_path(error).map(crate::util::redacted_path)
+                crate::watch::errors::ignore_error_path(error)
+                    .map(|path| path.display().to_string())
             }
             PublishError::Discovery(discovery::DiscoveryError::IgnoreRules {
                 path: Some(path),
                 ..
-            }) => Some(crate::util::redacted_path(path)),
+            }) => Some(path.display().to_string()),
             _ => None,
         }
     }

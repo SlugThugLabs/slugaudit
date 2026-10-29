@@ -1,0 +1,110 @@
+{
+  "case": "leads_counts_only",
+  "request": {
+    "compact": false,
+    "limit": null,
+    "mechanic": null,
+    "offset": null
+  },
+  "response": {
+    "files_covered": 0,
+    "files_not_parsed": 0,
+    "files_total": 0,
+    "mechanic_counts": [
+      {
+        "count": 12,
+        "covers": [
+          "rust"
+        ],
+        "files": 3,
+        "mechanic": "unwrap_calls",
+        "note": null,
+        "source": "builtin"
+      },
+      {
+        "count": 3,
+        "covers": [
+          "rust"
+        ],
+        "files": 3,
+        "mechanic": "expect_calls",
+        "note": null,
+        "source": "builtin"
+      },
+      {
+        "count": 0,
+        "covers": [
+          "rust"
+        ],
+        "files": 0,
+        "mechanic": "panic_calls",
+        "note": null,
+        "source": "builtin"
+      },
+      {
+        "count": 0,
+        "covers": [
+          "rust"
+        ],
+        "files": 0,
+        "mechanic": "todo_calls",
+        "note": null,
+        "source": "builtin"
+      },
+      {
+        "count": 0,
+        "covers": [
+          "rust"
+        ],
+        "files": 0,
+        "mechanic": "assert_calls",
+        "note": null,
+        "source": "builtin"
+      },
+      {
+        "count": 0,
+        "covers": [
+          "rust"
+        ],
+        "files": 0,
+        "mechanic": "diagnostics",
+        "note": null,
+        "source": "builtin"
+      },
+      {
+        "count": 3,
+        "covers": [
+          "rust"
+        ],
+        "files": 3,
+        "mechanic": "comment_markers",
+        "note": null,
+        "source": "builtin"
+      },
+      {
+        "count": 0,
+        "covers": [
+          "rust"
+        ],
+        "files": 0,
+        "mechanic": "credential_files",
+        "note": null,
+        "source": "builtin"
+      }
+    ],
+    "mechanics_invalid": 0,
+    "oversized_row": false,
+    "page": {
+      "bytes_used": 0,
+      "complete": true,
+      "limited_by": "none",
+      "next_offset": null,
+      "page_bytes": 65536,
+      "returned": 0,
+      "revision_id": "<REVISION_ID>",
+      "total": 0
+    },
+    "page_file_counts": [],
+    "rows": []
+  }
+}

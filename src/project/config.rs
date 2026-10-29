@@ -1,6 +1,8 @@
 //! In-repo project configuration (`.planning/slugaudit/config.json`).
 
-use crate::model::{AuditProfile, ResourceLimits, SQLITE_MAX_VALUE_BYTES, limits_for_profile};
+use crate::model::{
+    AuditProfile, MemoryDetectError, ResourceLimits, SQLITE_MAX_VALUE_BYTES, limits_for_profile,
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -26,6 +28,20 @@ pub enum ConfigError {
     },
 }
 
+/// Why the limits for a project could not be derived.
+#[derive(Debug, Error)]
+pub enum ProjectLimitsError {
+    /// The project config is present but unreadable or malformed.
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    /// The configured `adaptive` profile needs host memory that could not be
+    /// detected; choose `lean` or `audit`.
+    #[error(
+        "config profile 'adaptive' cannot be sized ({0}); set the profile to 'lean' or 'audit'"
+    )]
+    Memory(#[from] MemoryDetectError),
+}
+
 /// Optional per-project configuration overrides. An unknown key is a parse
 /// error, so a misspelled limit is reported instead of silently ignored.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -34,16 +50,47 @@ pub struct ProjectConfig {
     /// Desired audit resource profile (`default`, `audit`, or `lean`).
     #[serde(default)]
     pub profile: Option<AuditProfile>,
-    /// Maximum individual file size in bytes to index.
+    /// Maximum individual file size in bytes to index. `0` is refused with a
+    /// warning.
     #[serde(default)]
     pub max_file_bytes: Option<u64>,
-    /// Maximum cumulative size in bytes across all imported files.
+    /// Largest file content in bytes a grammar is run on; larger files are
+    /// stored but not parsed (`oversize_for_parse`). Clamped to the
+    /// effective `max_file_bytes`. `0` is refused with a warning.
+    #[serde(default)]
+    pub max_parse_bytes: Option<u64>,
+    /// Wall-clock allowance in milliseconds for every parse of one file; a
+    /// file whose parse outlives it is stored without structure
+    /// (`parse_timeout`) and the sync goes on. Capped by the sync budget.
+    /// `0` is refused with a warning.
+    #[serde(default)]
+    pub max_parse_wall_clock_ms: Option<u64>,
+    /// Longest `structure` query text in bytes; a longer query is refused
+    /// before it is compiled. `0` is refused with a warning.
+    #[serde(default)]
+    pub max_structure_query_bytes: Option<usize>,
+    /// Maximum cumulative size in bytes across all imported files. `0` is
+    /// refused with a warning.
     #[serde(default)]
     pub max_total_import_bytes: Option<u64>,
     /// Default `query`/`leads` page size in serialized JSON bytes; a request's
-    /// `page_bytes` still overrides it, and the ceiling still clamps it.
+    /// `page_bytes` still overrides it, and the ceiling still clamps it. `0` is
+    /// refused with a warning.
     #[serde(default)]
     pub default_page_bytes: Option<usize>,
+    /// Total bytes the result store keeps for paged results; `0` is refused
+    /// with a warning.
+    #[serde(default)]
+    pub max_result_store_bytes: Option<u64>,
+    /// Seconds an unfinished paged result stays protected from reclaim after
+    /// its last page; `0` is refused with a warning.
+    #[serde(default)]
+    pub result_active_grace_secs: Option<u64>,
+    /// The versioned section of auditor-persisted mechanics. Kept raw here
+    /// so a malformed section never invalidates the limits above; it is read
+    /// and reported entry by entry by `mechanics_config::load_persisted`.
+    #[serde(default)]
+    pub mechanics: Option<serde_json::Value>,
 }
 
 impl ProjectConfig {
@@ -77,33 +124,51 @@ impl ProjectConfig {
         Ok(Some(cfg))
     }
 
-    /// Loads project config if present and valid; falls back to default on error or absence.
-    #[must_use]
-    pub fn load_or_default(project_root: &Path) -> Self {
-        match Self::load(project_root) {
-            Ok(Some(cfg)) => cfg,
-            Ok(None) => Self::default(),
-            // An I/O failure (unreadable file, a directory at the path, the
-            // size cap) is not a parse failure; reporting it as "malformed"
-            // would send the operator to the wrong fix.
-            Err(ConfigError::Io { source, .. }) => {
-                tracing::warn!(root_id = %crate::util::redacted_path(project_root), error_kind = "io", error = %source, "ignoring project config that could not be read; falling back to default");
-                Self::default()
-            }
-            Err(ConfigError::Parse { source, .. }) => {
-                tracing::warn!(root_id = %crate::util::redacted_path(project_root), error_kind = "parse", error = %source, "ignoring malformed project config; falling back to default");
-                Self::default()
-            }
-        }
+    /// Loads the project config; a missing file is the default config.
+    /// First removes the temp files an interrupted update left beside it
+    /// (`config_cleanup.rs`); that cleanup never fails the load.
+    ///
+    /// # Errors
+    ///
+    /// A config file that is present but unreadable (including a directory
+    /// at the path or the size cap) or malformed is an error carrying its
+    /// path and cause, so the call fails instead of running with limits the
+    /// file did not say.
+    pub fn load_or_default(project_root: &Path) -> Result<Self, ConfigError> {
+        super::config_cleanup::remove_stale_temps(project_root);
+        Ok(Self::load(project_root)?.unwrap_or_default())
+    }
+
+    /// The process `base` limits with `project_root`'s config applied: what
+    /// every tool call and sync derives its budget from.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProjectLimitsError`] when the config is present but
+    /// unreadable or malformed, or its `adaptive` profile cannot be sized.
+    pub fn limits_for(
+        project_root: &Path,
+        base: ResourceLimits,
+    ) -> Result<ResourceLimits, ProjectLimitsError> {
+        Ok(Self::load_or_default(project_root)?.apply_to_limits(base)?)
     }
 
     /// Overrides fields in `limits` with any explicitly specified options.
-    #[must_use]
-    pub fn apply_to_limits(&self, mut limits: ResourceLimits) -> ResourceLimits {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryDetectError`] when the configured profile is
+    /// `adaptive` and the host memory cannot be detected.
+    pub fn apply_to_limits(
+        &self,
+        mut limits: ResourceLimits,
+    ) -> Result<ResourceLimits, MemoryDetectError> {
         if let Some(profile) = self.profile {
-            limits = limits_for_profile(profile);
+            limits = limits_for_profile(profile)?;
         }
-        if let Some(file_bytes) = self.max_file_bytes {
+        if let Some(file_bytes) =
+            ResourceLimits::config_nonzero("config max_file_bytes", self.max_file_bytes)
+        {
             let capped = file_bytes.min(SQLITE_MAX_VALUE_BYTES);
             if capped != file_bytes {
                 tracing::warn!(
@@ -114,142 +179,51 @@ impl ProjectConfig {
             }
             limits.max_file_bytes = capped;
         }
-        if let Some(import_bytes) = self.max_total_import_bytes {
+        if let Some(parse_bytes) =
+            ResourceLimits::config_nonzero("config max_parse_bytes", self.max_parse_bytes)
+        {
+            limits.max_parse_bytes = parse_bytes;
+        }
+        if let Some(wall_clock_ms) = ResourceLimits::config_nonzero(
+            "config max_parse_wall_clock_ms",
+            self.max_parse_wall_clock_ms,
+        ) {
+            limits.max_parse_wall_clock_ms = wall_clock_ms;
+        }
+        if let Some(query_bytes) = ResourceLimits::config_nonzero(
+            "config max_structure_query_bytes",
+            self.max_structure_query_bytes,
+        ) {
+            limits.max_structure_query_bytes = query_bytes;
+        }
+        if let Some(import_bytes) = ResourceLimits::config_nonzero(
+            "config max_total_import_bytes",
+            self.max_total_import_bytes,
+        ) {
             limits.max_total_import_bytes = import_bytes;
         }
-        if let Some(page_bytes) = self.default_page_bytes {
+        if let Some(page_bytes) =
+            ResourceLimits::config_nonzero("config default_page_bytes", self.default_page_bytes)
+        {
             limits.default_page_bytes = page_bytes;
         }
-        limits
+        if let Some(store_bytes) = ResourceLimits::config_nonzero(
+            "config max_result_store_bytes",
+            self.max_result_store_bytes,
+        ) {
+            limits.max_result_store_bytes = store_bytes;
+        }
+        if let Some(grace_secs) = ResourceLimits::config_nonzero(
+            "config result_active_grace_secs",
+            self.result_active_grace_secs,
+        ) {
+            limits.result_active_grace_secs = grace_secs;
+        }
+        limits.clamp_parse_to_file_bytes();
+        Ok(limits)
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::store::test_capture::capture_warns;
-
-    #[test]
-    fn loads_valid_config_and_applies_overrides() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let conf_dir = dir.path().join(".planning").join("slugaudit");
-        std::fs::create_dir_all(&conf_dir).expect("create dir");
-        let json = r#"{"profile": "audit", "max_file_bytes": 536870912}"#;
-        std::fs::write(conf_dir.join("config.json"), json).expect("write");
-
-        let loaded = ProjectConfig::load(dir.path()).expect("load should succeed");
-        assert!(loaded.is_some());
-
-        let cfg = ProjectConfig::load_or_default(dir.path());
-        assert_eq!(cfg.profile, Some(AuditProfile::Audit));
-        assert_eq!(cfg.max_file_bytes, Some(536_870_912));
-
-        let base = ResourceLimits::default();
-        let applied = cfg.apply_to_limits(base);
-        assert_eq!(applied.max_file_bytes, 536_870_912);
-        assert_eq!(applied.max_total_import_bytes, 32 * 1024 * 1024 * 1024);
-    }
-
-    #[test]
-    fn loads_default_when_missing_or_invalid() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        assert!(
-            ProjectConfig::load(dir.path())
-                .expect("load missing")
-                .is_none()
-        );
-        let cfg = ProjectConfig::load_or_default(dir.path());
-        assert!(cfg.profile.is_none());
-        assert!(cfg.max_file_bytes.is_none());
-
-        let conf_dir = dir.path().join(".planning").join("slugaudit");
-        std::fs::create_dir_all(&conf_dir).expect("create dir");
-        let conf_file = conf_dir.join("config.json");
-        std::fs::write(&conf_file, "invalid json").expect("write");
-
-        let load_err = ProjectConfig::load(dir.path()).expect_err("should return Parse error");
-        match load_err {
-            ConfigError::Parse { path, .. } => assert_eq!(path, conf_file),
-            ConfigError::Io { .. } => panic!("expected Parse error, got Io"),
-        }
-
-        let cfg_invalid = ProjectConfig::load_or_default(dir.path());
-        assert!(cfg_invalid.profile.is_none());
-
-        let custom = ProjectConfig {
-            max_total_import_bytes: Some(1024),
-            ..Default::default()
-        };
-        let applied = custom.apply_to_limits(ResourceLimits::default());
-        assert_eq!(applied.max_total_import_bytes, 1024);
-    }
-
-    #[test]
-    fn a_configured_default_page_size_overrides_the_profile_default() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let conf_dir = dir.path().join(".planning").join("slugaudit");
-        std::fs::create_dir_all(&conf_dir).expect("create dir");
-        std::fs::write(
-            conf_dir.join("config.json"),
-            r#"{"profile": "lean", "default_page_bytes": 4096}"#,
-        )
-        .expect("write");
-
-        let cfg = ProjectConfig::load_or_default(dir.path());
-        let applied = cfg.apply_to_limits(ResourceLimits::default());
-
-        assert_eq!(applied.default_page_bytes, 4_096);
-        assert_eq!(applied.max_query_response_bytes, 32 * 1024 * 1024);
-    }
-
-    #[test]
-    fn a_misspelled_config_key_is_a_parse_error_not_silently_ignored() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let conf_dir = dir.path().join(".planning").join("slugaudit");
-        std::fs::create_dir_all(&conf_dir).expect("create dir");
-        std::fs::write(conf_dir.join("config.json"), r#"{"max_file_byte": 5}"#).expect("write");
-
-        let error = ProjectConfig::load(dir.path()).expect_err("unknown key must fail");
-
-        assert!(matches!(error, ConfigError::Parse { .. }), "{error}");
-    }
-
-    #[test]
-    fn an_uninspectable_config_path_is_an_io_error_not_no_config() {
-        let root = Path::new("/tmp").join("a".repeat(300));
-
-        let error = ProjectConfig::load(&root).expect_err("stat failure must surface");
-
-        assert!(matches!(error, ConfigError::Io { .. }), "{error}");
-    }
-
-    /// R6: an I/O failure (here a directory at the config path) is not a
-    /// parse failure, and the log must send the operator to the right fix.
-    #[test]
-    fn an_unreadable_config_is_not_reported_as_malformed() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let config = directory.path().join(".planning/slugaudit/config.json");
-        std::fs::create_dir_all(config).expect("dir");
-        let (_, logs) = capture_warns(|| ProjectConfig::load_or_default(directory.path()));
-        assert!(
-            logs.contains("could not be read") && !logs.contains("malformed"),
-            "{logs}"
-        );
-    }
-
-    #[test]
-    fn a_config_file_above_sqlite_max_is_clamped() {
-        let config = ProjectConfig {
-            max_file_bytes: Some(2_000_000_000),
-            ..Default::default()
-        };
-
-        let applied = config.apply_to_limits(ResourceLimits::default());
-
-        assert_eq!(
-            applied.max_file_bytes,
-            crate::model::SQLITE_MAX_VALUE_BYTES,
-            "SQLite cannot store a larger content value; the project limit is clamped"
-        );
-    }
-}
+#[path = "config_tests.rs"]
+mod tests;

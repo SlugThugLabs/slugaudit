@@ -6,7 +6,12 @@ use std::path::{Path, PathBuf};
 
 /// Appends an `export PATH="<dir>:$PATH"` line to the user's shell config
 /// if that exact line isn't already there (idempotent). Chooses the config
-/// file from `$SHELL` with a bash/zsh/profile fallback.
+/// file from `$SHELL` (bash, zsh or fish); an unset or unrecognized shell is
+/// refused with the line to add by hand rather than guessed at.
+///
+/// The write is append-only plus `fsync`: it never rewrites existing bytes, so
+/// a crash cannot truncate the user's rc file, and its permissions and any
+/// symlink (dotfile managers) are preserved.
 pub(crate) fn add_to_path(bin_dir: &Path) -> Result<(), InstallError> {
     let (config_path, line) = path_config(bin_dir)?;
     let existing =
@@ -18,18 +23,29 @@ pub(crate) fn add_to_path(bin_dir: &Path) -> Result<(), InstallError> {
     if existing.lines().any(|l| l.trim() == line) {
         return Ok(());
     }
-    let mut contents = existing;
-    if !contents.ends_with('\n') && !contents.is_empty() {
-        contents.push('\n');
+    let mut addition = String::new();
+    if !existing.ends_with('\n') && !existing.is_empty() {
+        addition.push('\n');
     }
-    contents.push_str(&line);
-    contents.push('\n');
-    std::fs::write(&config_path, contents).map_err(InstallError::Io)?;
+    addition.push_str(&line);
+    addition.push('\n');
+    append_durably(&config_path, &addition).map_err(InstallError::Io)?;
     crate::cli::err(format_args!(
         "Added SlugAudit to your PATH in {}\n",
         config_path.display()
     ))?;
     Ok(())
+}
+
+/// Appends `text` to `path` (creating it) and syncs it to disk.
+fn append_durably(path: &Path, text: &str) -> Result<(), std::io::Error> {
+    use std::io::Write as _;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()
 }
 
 /// Returns the shell config file to edit and the exact `PATH` line to
@@ -38,17 +54,17 @@ fn path_config(bin_dir: &Path) -> Result<(PathBuf, String), InstallError> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or(InstallError::NoHome)?;
-    // An unset $SHELL defaults to bash; a set but non-UTF-8 one is refused
-    // rather than silently treated as bash.
+    // An unset, non-UTF-8 or unrecognized $SHELL is refused rather than
+    // guessed to be bash: editing the wrong rc file is worse than asking.
     let shell = match std::env::var("SHELL") {
         Ok(shell) => shell,
-        Err(std::env::VarError::NotPresent) => "/bin/bash".to_owned(),
+        Err(std::env::VarError::NotPresent) => String::new(),
         Err(std::env::VarError::NotUnicode(_)) => return Err(InstallError::ShellNotUnicode),
     };
     let name = Path::new(&shell)
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or("bash");
+        .unwrap_or("");
     let directory = bin_dir.display().to_string();
     match name {
         "fish" => Ok((
@@ -59,11 +75,14 @@ fn path_config(bin_dir: &Path) -> Result<(PathBuf, String), InstallError> {
             home.join(".zshrc"),
             format!("export PATH=\"{}:$PATH\"", double_quoted(&directory)),
         )),
-        // bash and anything unknown default to ~/.bashrc.
-        _ => Ok((
+        "bash" => Ok((
             home.join(".bashrc"),
             format!("export PATH=\"{}:$PATH\"", double_quoted(&directory)),
         )),
+        _ => Err(InstallError::UnknownShell {
+            shell,
+            line: format!("export PATH=\"{}:$PATH\"", double_quoted(&directory)),
+        }),
     }
 }
 

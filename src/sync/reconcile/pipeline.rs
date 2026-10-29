@@ -4,8 +4,11 @@
 //! loop that drives this pipeline lives in [`super::barrier`]; the SQL and
 //! commit step it reads and writes through live in [`super::queries`].
 
-use super::queries::{commit_reconcile_changes, load_existing_hashes, touch_unchanged};
+use super::queries::{
+    StoredState, commit_reconcile_changes, load_existing_hashes, touch_unchanged,
+};
 use super::{ReconcileError, ReconcileOptions, ReconcileReport};
+use crate::ignore_rules::is_excluded_path;
 use crate::model::{ResourceLimits, SourceIdentity};
 use crate::sync::discovery::{self, DiscoveredFile, sniff_kind};
 use crate::sync::revision_skipped::SkippedRecord;
@@ -36,9 +39,15 @@ fn reconcile_single_dirty_path(
     root: &Path,
     path: String,
     options: &ReconcileOptions,
-    existing_hashes: &HashMap<String, String>,
+    stored: &StoredState,
     skipped_records: &mut Vec<SkippedRecord>,
 ) -> Result<DirtyOutcome, ReconcileError> {
+    // SlugAudit's own state (the runtime dir, including the result store) is
+    // never indexed, whatever upstream filter handed the path over.
+    if is_excluded_path(&path) {
+        return Ok(DirtyOutcome::Ignored);
+    }
+    let existing_hashes = &stored.hashes;
     let absolute_path = root.join(&path);
     let Some(metadata) = discovery::regular_file_metadata(&absolute_path)? else {
         // Gone, a directory (the watcher reports `mkdir` as a create), or a
@@ -67,12 +76,16 @@ fn reconcile_single_dirty_path(
         return Ok(DirtyOutcome::Skipped);
     };
 
-    if existing_hash_matches(existing_hashes, &path, &identity.content_hash) {
+    // A `LoadFailed` row keeps its hash but is never "unchanged": its grammar
+    // could not be fetched or loaded, so the parse is retried every sync.
+    if !stored.retry.contains(&path)
+        && existing_hash_matches(existing_hashes, &path, &identity.content_hash)
+    {
         touch_unchanged(connection, &path, mtime, byte_len)?;
         return Ok(DirtyOutcome::Unchanged);
     }
 
-    match indexable_record(&path, &absolute_path, &options.limits)? {
+    match indexable_record(&path, &absolute_path, options)? {
         Some(record) => Ok(DirtyOutcome::Upsert(Box::new(record))),
         None => {
             sample::push_skipped_record(skipped_records, existing_hashes, &path, &absolute_path);
@@ -123,10 +136,12 @@ fn existing_hash_matches(
         .is_some_and(|existing| existing == content_hash)
 }
 
+/// Samples and analyzes one dirty file under the options' limits; its
+/// parses run within what is left of the reconcile deadline.
 fn indexable_record(
     path: &str,
     absolute_path: &Path,
-    limits: &ResourceLimits,
+    options: &ReconcileOptions,
 ) -> Result<Option<FileRecord>, ReconcileError> {
     let kind = sniff_kind(absolute_path)?;
     let discovered = DiscoveredFile {
@@ -134,8 +149,13 @@ fn indexable_record(
         absolute_path: absolute_path.to_path_buf(),
         kind,
     };
+    let limits = &options.limits;
     match sample::sample_file(&discovered, limits) {
-        Ok(sample) => Ok(Some(sample::to_file_record(sample, limits))),
+        Ok(sample) => Ok(Some(sample::to_file_record(
+            sample,
+            limits,
+            &options.deadline,
+        ))),
         Err(sample::SampleError::TooLarge { .. }) => Ok(None),
         Err(error) => Err(error.into()),
     }
@@ -162,7 +182,7 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
     options: &ReconcileOptions,
     discovered_paths: &HashSet<String>,
 ) -> Result<ReconcileReport, ReconcileError> {
-    let existing_hashes = load_existing_hashes(connection, &dirty, options.deadline)?;
+    let stored = load_existing_hashes(connection, &dirty, options.deadline)?;
     let mut tally = ReconcileTally::default();
     let mut skipped_records: Vec<SkippedRecord> = Vec::new();
 
@@ -178,7 +198,7 @@ pub(crate) fn reconcile_dirty_paths_with_deadline(
             root,
             path,
             options,
-            &existing_hashes,
+            &stored,
             &mut skipped_records,
         )?;
         tally.record(outcome);

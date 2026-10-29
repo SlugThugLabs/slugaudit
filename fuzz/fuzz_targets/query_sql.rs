@@ -8,7 +8,8 @@
 //! 1. the read-only connection (`store::connection::open_read_only`, opened
 //!    with `SQLITE_OPEN_READ_ONLY` via the tool's verified-read transaction),
 //! 2. the authorizer installed on every connection, which denies
-//!    `ATTACH`/`DETACH` (`store::connection::guard_against_attach`),
+//!    `ATTACH`/`DETACH` and, on the read-only connection, every non-introspection
+//!    `PRAGMA` (`store::connection_guards`),
 //! 3. the subquery wrapper (`SELECT * FROM (\n…\n) LIMIT … OFFSET …`), which
 //!    is what refuses a statement that is not a `SELECT`,
 //!
@@ -49,23 +50,23 @@ fuzz_target!(|data: &[u8]| {
     }
     let fixture = &*support::FIXTURE;
     let request = Parameters(QueryRequest {
-        path: fixture.path(),
+        path: Some(fixture.path()),
         sql: String::from_utf8_lossy(data).into_owned(),
-        offset: 0,
-        expected_revision: None,
+        cursor: None,
+        legacy_paging: Default::default(),
         page_bytes: None,
     });
 
     // A refusal is the expected outcome for most hostile inputs and is not
     // the target's subject; what a success must satisfy is the paging
-    // contract: `truncated` and `next_offset` always travel together. (No
-    // row or byte ceiling is asserted: the first row is always kept, even
-    // over the byte budget.)
+    // contract: `page.complete` is false exactly when `page.next_offset` is
+    // present. (No row or byte ceiling is asserted: the first row is always
+    // kept, even over the byte budget.)
     if let Ok(Json(response)) = query(&request, &NoopProgressSink, &fixture.manager) {
         assert_eq!(
-            response.truncated,
-            response.next_offset.is_some(),
-            "truncated and next_offset disagree"
+            !response.page.complete,
+            response.page.next_offset.is_some(),
+            "page.complete and page.next_offset disagree"
         );
     }
 });

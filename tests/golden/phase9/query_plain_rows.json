@@ -1,0 +1,36 @@
+{
+  "case": "query_plain_rows",
+  "request": {
+    "page_bytes": null,
+    "sql": "SELECT path, language FROM files ORDER BY path"
+  },
+  "response": {
+    "clipped_cells": [],
+    "non_finite_cells": [],
+    "page": {
+      "bytes_used": 108,
+      "complete": true,
+      "limited_by": "none",
+      "next_offset": null,
+      "page_bytes": 65536,
+      "returned": 3,
+      "revision_id": "<REVISION_ID>",
+      "total": 3
+    },
+    "rows": [
+      {
+        "language": "rust",
+        "path": "mod0.rs"
+      },
+      {
+        "language": "rust",
+        "path": "mod1.rs"
+      },
+      {
+        "language": "rust",
+        "path": "mod2.rs"
+      }
+    ],
+    "total_unavailable": null
+  }
+}

@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=the leads tool contract: request/response schema types (the MCP outputSchema) plus the one entry point and its registered-mechanic seam
 //! `leads` — unranked mechanical observations about an indexed project.
 //!
 //! This tool surfaces facts the index already holds — call sites by callee
@@ -12,19 +13,25 @@
 //!
 //! # Paging
 //!
-//! A page is cut by the caller's `limit` and by the page byte budget (the
-//! request's `page_bytes` or `ResourceLimits::default_page_bytes`, clamped to
-//! `max_query_response_bytes`, the same page size `query` spends), never by a
-//! row ceiling: the only row cap was a copy of `query`'s and it made the tool that exists for accuracy the one that truncated
-//! silently. Every rows response therefore carries `returned` / `total` /
-//! `complete`, the file denominators (`files_total` / `files_covered` — at
-//! scale the number an agent can actually exhaust is *files containing at
-//! least one observation*, not rows), and `limited_by`, which names what
-//! stopped the page.
+//! A call without a `cursor` is a new request: it syncs, reads the counts and
+//! every row of the requested scope in one verified read transaction, stores
+//! them as one result, and serves page one. A page is cut by the caller's
+//! `limit` and by the page byte budget (the request's `page_bytes` or
+//! `ResourceLimits::default_page_bytes`, clamped to `max_query_response_bytes`,
+//! the same page size `query` spends), never by a row ceiling. Every response
+//! carries the shared [`Page`] (`returned` / `total` / `complete` / `cursor` /
+//! `limited_by`, which names what stopped the page) and the file denominators
+//! (`files_total` / `files_covered` — at scale the number an agent can
+//! actually exhaust is *files containing at least one observation*, not
+//! rows). A call with a `cursor` serves the next page of that stored result
+//! unchanged by anything done to the project since.
 
-use super::context::{ensure_synced, guard_expected_revision, with_verified_read};
-use super::leads_mechanics::resolve_mechanic;
-use super::leads_page::{self, Paging};
+use super::context::{PageRequest, page_request};
+use super::leads_mechanics::resolve_selected;
+use super::leads_page::{self, Cut};
+use super::mechanic::MechanicSource;
+use super::mechanic_catalog::{self, Catalog};
+use super::page::{LegacyPaging, Page};
 use crate::model::ResourceLimits;
 use crate::progress::ProgressSink;
 use crate::sync;
@@ -37,18 +44,30 @@ use serde::{Deserialize, Serialize};
 pub(super) use super::leads_query::{MAX_DETAIL_CHARS, clip_detail};
 const MAX_PATH_BYTES: usize = 32 * 1024;
 const MAX_FILTER_BYTES: usize = 8 * 1024;
-const MAX_REVISION_BYTES: usize = 256;
+const MAX_CURSOR_BYTES: usize = 1024;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 /// Which mechanical counts to run, optional pattern narrowing, the page to
 /// read, and the row mode.
 pub struct LeadsRequest {
     /// Any path inside the active project — selects which project's database
-    /// to read. Must be a path inside an enabled project.
-    #[schemars(description = "Any path inside the active project, used to select the database")]
-    pub path: String,
+    /// to read. Must be a path inside an enabled project. Required unless
+    /// `cursor` is given. A registered mechanic whose scan the call deadline
+    /// stopped reports it in `page.completeness` (`partial`, with
+    /// `resume_after_file`, the last file scanned); resuming means a new call,
+    /// which scans again from the start: narrow `pattern` to what was not
+    /// scanned, or raise `max_structure_execution_time`. No request parameter
+    /// resumes a scan.
+    #[schemars(
+        description = "Any path inside the active project, used to select the database; required unless `cursor` is given"
+    )]
+    #[serde(default)]
+    pub path: Option<String>,
     /// Omit to get `mechanic_counts` only. Pass one of the ids from that
-    /// response to also get rows for that mechanic.
+    /// response to also get rows for that mechanic. A registered mechanic's
+    /// scan is cut by the call deadline (`max_structure_execution_time`): the
+    /// result then holds the rows of the files scanned so far and
+    /// `page.completeness` says `partial`. Ignored with `cursor`.
     #[schemars(description = "Optional mechanic id; omit for counts only")]
     #[serde(default)]
     pub mechanic: Option<String>,
@@ -56,51 +75,54 @@ pub struct LeadsRequest {
     /// way `structure`'s `pattern` is: a GLOB, where a pattern containing no
     /// `*` or `?` is treated as a substring match. `src/auth/*` narrows a
     /// mechanic to one directory; `tests` narrows it to anything with
-    /// `tests` in the path. It filters the counts and the rows alike.
+    /// `tests` in the path. It filters the counts and the rows alike. Ignored
+    /// with `cursor`.
     #[schemars(description = "Optional path GLOB filter (substring match when it has no `*`/`?`)")]
     #[serde(default)]
     pub pattern: Option<String>,
     /// Maximum rows in this page. Omitted means every row that fits the
     /// response byte budget — the default is everything, not a token-thrift
     /// sample. `0` is treated as `1`: a zero-row page could not make
-    /// progress and `next_offset` would repeat it forever.
+    /// progress. Honoured on a continuation too.
     #[schemars(
         description = "Max rows in this page; omit for everything that fits the byte budget"
     )]
     #[serde(default)]
     pub limit: Option<usize>,
-    /// Rows to skip, combined with the response's `next_offset`.
-    #[schemars(description = "Rows to skip when paging")]
+    /// The `page.cursor` of the previous page. With it the call serves the
+    /// next page of that stored result: no sync, no `path` needed, and
+    /// `mechanic`, `pattern` and `mode` are ignored (the result keeps the
+    /// ones it was made with).
+    #[schemars(
+        description = "The previous page's `page.cursor`, copied exactly; omit for a new request"
+    )]
     #[serde(default)]
-    pub offset: Option<usize>,
-    /// Set to the previous page's `revision_id` when resuming a sweep. If
-    /// the index has changed since that page, the call is refused with the
-    /// `stale_revision` code instead of silently skipping or repeating rows:
-    /// the index keeps no per-revision copy of `files` / `evidence`, so a
-    /// stored offset only means anything against the revision it came from.
-    #[schemars(description = "Pin the revision a resumed page expects; a mismatch is refused")]
-    #[serde(default)]
-    pub expected_revision: Option<String>,
+    pub cursor: Option<String>,
     /// Row representation. `full` (the default) returns each row's `detail`
     /// text. `compact` returns `mechanic` / `file` / `line` only — no
     /// per-row text — so the mechanical surface costs a fraction of the
     /// bytes; with no `mechanic` it enumerates every mechanic's rows in one
-    /// response instead of returning counts only.
+    /// response instead of returning counts only. Ignored with `cursor`.
     #[schemars(description = "Row shape: `full` (default) carries `detail`; `compact` drops it")]
     #[serde(default)]
     pub mode: LeadMode,
     /// Page size in serialized JSON bytes for `rows`. Omit it for the server
     /// default (64 KiB unless configured otherwise; the response's
-    /// `row_budget_bytes` says what applied). A larger value returns a larger
+    /// `page.page_bytes` says what applied). A larger value returns a larger
     /// page, up to the hard ceiling `max_query_response_bytes`: a value above
-    /// the ceiling is clamped and the response reports
-    /// `page_bytes_clamped_from`. A single row larger than the page is still
-    /// returned and flagged with `oversized_row`.
+    /// the ceiling is clamped, and a page the ceiling cut reports
+    /// `page.limited_by` = `ceiling`. A single row larger than the page is
+    /// still returned and flagged with `oversized_row`. Honoured on a
+    /// continuation too.
     #[schemars(
         description = "Page size in bytes of serialized rows; omit for the server default, clamped to the ceiling (reported)"
     )]
     #[serde(default)]
     pub page_bytes: Option<usize>,
+    /// The removed `offset` / `expected_revision`, accepted only to be refused.
+    #[serde(flatten, default)]
+    #[schemars(skip)]
+    pub legacy_paging: LegacyPaging,
 }
 
 /// How a response renders its rows. See [`LeadsResponse::rows`].
@@ -114,24 +136,18 @@ pub enum LeadMode {
     Compact,
 }
 
-/// Which languages a mechanic was actually measured over. A zero count on a
-/// [`MechanicCoverage::RustOnly`] mechanic means *unchecked*, not *absent* —
-/// without this field that distinction is only prose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum MechanicCoverage {
-    /// Only the Rust call walker produces the evidence this mechanic reads.
-    RustOnly,
-    /// Produced for every indexed language.
-    AllLanguages,
-}
-
 #[derive(Debug, Serialize, JsonSchema)]
 /// One mechanic's complete counts under the request's pattern — complete
 /// regardless of paging, with no ordering by importance.
 pub struct MechanicCount {
     /// Stable id — pass it back as `mechanic` to get this mechanic's rows.
     pub mechanic: String,
+    /// Where the mechanic comes from: `session` (registered with `mechanic
+    /// add` on this server), `project_config` (persisted in the project's
+    /// `config.json`), or `builtin`.
+    pub source: MechanicSource,
+    /// The author's note for a registered mechanic; `null` for a built-in.
+    pub note: Option<String>,
     /// How many observations this mechanic has in the current revision
     /// under the same `pattern`. Complete, never paged.
     pub count: i64,
@@ -139,9 +155,15 @@ pub struct MechanicCount {
     /// denominator to enumerate: a 50,000-row mechanic is usually far fewer
     /// files, and a file is the unit a sweep can finish.
     pub files: i64,
-    /// The languages this count covers. `rust_only` with a zero count on a
-    /// non-Rust project means nothing was checked.
-    pub covers: MechanicCoverage,
+    /// The languages this count was measured over: every language of the
+    /// files under `pattern` this mechanic read, sorted. Call-site mechanics
+    /// read the files whose grammar ran in a language with call extraction
+    /// (rust, python, javascript, typescript, tsx, go, java, c); diagnostics
+    /// and comment markers read every file whose grammar ran; path mechanics
+    /// read every file; a registered mechanic reads the parsed files of its
+    /// one language. A language of this project missing here was not
+    /// checked by this mechanic, so its zero there means unchecked, not absent.
+    pub covers: Vec<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -201,58 +223,55 @@ pub struct FileCount {
     pub count: i64,
 }
 
-/// What stopped a page. Reports the cap that acted; never a judgment about
-/// whether the page was the right size.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum PageLimit {
-    /// The mechanic was exhausted: `complete` is true.
-    None,
-    /// The caller's `limit` was reached; more rows exist.
-    Limit,
-    /// The response byte budget was reached; more rows exist. A
-    /// byte-limited page is by construction at or below any `limit` that
-    /// was set, so raising `limit` returns nothing more: raise `page_bytes`
-    /// to enlarge the page (up to the server ceiling), or page on.
-    Bytes,
-}
-
 #[derive(Debug, Serialize, JsonSchema)]
 /// One leads call: complete counts, the page's rows, and the paging/budget
 /// truth that makes them quotable as-is.
 pub struct LeadsResponse {
-    /// Revision the counts and rows were read from. Pass it as
-    /// `expected_revision` on the next page to have a changed index refused
-    /// rather than mis-paged.
-    pub revision_id: String,
+    /// Paging for `rows`. `total` is the rows of the requested mechanic (every
+    /// mechanic in a `compact` call without one) under `pattern`; `0` for a
+    /// `full` call naming no mechanic. A page is cut by `limit` or by bytes,
+    /// so raising `limit` past a byte cut returns nothing more.
+    pub page: Page,
     /// Every mechanic this revision can answer under the request's
     /// `pattern`, with its row and distinct-file counts and what it covers.
-    /// Counts are complete regardless of `limit`/`offset`, and carry no
-    /// ordering by importance — the order is the fixed declaration order.
+    /// Counts are complete regardless of `limit` (unless `page.completeness`
+    /// is `partial`: a registered mechanic's scan the call deadline stopped
+    /// counts only the files it read), and carry no
+    /// ordering by importance: session entries first (oldest first), then
+    /// project_config entries (file order), then the built-ins in their fixed
+    /// declaration order. A call naming one `mechanic` scans only that
+    /// registered entry (none for a built-in), so the other registered
+    /// entries are not listed then; call with no `mechanic` to count them all.
     pub mechanic_counts: Vec<MechanicCount>,
+    /// Registered mechanics that failed to load (a bad persisted entry, an
+    /// id collision, a query that no longer compiles) and are therefore not
+    /// in `mechanic_counts`. `report`'s `mechanics.invalid` and `mechanic`
+    /// action `list` name each one with its error.
+    pub mechanics_invalid: usize,
+    /// Indexed files under the request's `pattern` with a detected language
+    /// whose grammar did not run or did not finish, so the mechanics that
+    /// read evidence saw them partly or not at all: content over
+    /// `max_parse_bytes` (`oversize_for_parse`), a parse cut at the sync
+    /// deadline (`parse_timeout`), a grammar that failed to load, a detected
+    /// language the pack has no grammar for, or a failed parse. Every count
+    /// in `mechanic_counts` is a floor while this is above 0. Not counted:
+    /// prose, and files with no detected language (`.gitignore`, `LICENSE`):
+    /// no mechanic reads either. `report`'s parser failures list all of
+    /// these files with reasons.
+    pub files_not_parsed: i64,
     /// The page's rows, shaped by the request's `mode`. Empty when a `full`
     /// call supplied no `mechanic`; a `compact` call with no `mechanic`
     /// enumerates every mechanic instead, one triple per row.
     pub rows: LeadRows,
-    /// Rows in this page.
-    pub returned: usize,
-    /// Total rows in the enumerated scope — the requested mechanic, or (in
-    /// `compact` mode with no `mechanic`) every mechanic — under the same
-    /// `pattern`; `0` when a `full` call requested no mechanic.
-    pub total: i64,
-    /// True when this page reaches the end of the scope
-    /// (`offset + returned >= total`), and when a `full` call requested no
-    /// mechanic. False means rows remain and `next_offset` is present.
-    pub complete: bool,
     /// Distinct files holding at least one observation of any mechanic in
     /// scope — the denominator a sweep can exhaust. `0` when a `full` call
     /// requested no mechanic. For a single mechanic it equals that
     /// `mechanic_counts` entry's `files`.
     pub files_total: i64,
-    /// Distinct files represented in rows `0..offset + returned` of the
-    /// scope. Cumulative for a sweep at one revision: rows are read in a
+    /// Distinct files represented in the rows of the scope up to the end of
+    /// this page. Cumulative for a sweep at one revision: rows are read in a
     /// fixed order — within a single mechanic, by path then line; for a
-    /// compact call with no mechanic, by mechanic declaration order then
+    /// compact call with no mechanic, by the `mechanic_counts` order then
     /// path then line — so a file's rows for one mechanic are contiguous,
     /// but a file with rows under several mechanics appears in several
     /// groups and can span several compact pages. It is still counted once.
@@ -260,49 +279,42 @@ pub struct LeadsResponse {
     pub files_covered: i64,
     /// Rows grouped per file for this page only.
     pub page_file_counts: Vec<FileCount>,
-    /// What stopped the page: the scope ended, the caller's `limit`, or the
-    /// byte budget.
-    pub limited_by: PageLimit,
-    /// Serialized-JSON byte budget applied to `rows` this call: the
-    /// request's `page_bytes` or the server default
-    /// (`SLUGAUDIT_DEFAULT_PAGE_BYTES`), clamped to the ceiling
-    /// `max_query_response_bytes`, the same page size `query` spends. One row
-    /// is always returned even if it alone exceeds it (see `oversized_row`).
-    pub row_budget_bytes: usize,
-    /// Non-null when the requested (or configured default) page size exceeded
-    /// `max_query_response_bytes` and was clamped: the size that was asked
-    /// for. `row_budget_bytes` is then the ceiling.
-    pub page_bytes_clamped_from: Option<usize>,
-    /// True when `rows_bytes` exceeds `row_budget_bytes` because the first
-    /// row alone is larger than the page. It is returned whole so paging
-    /// makes progress and nothing is lost.
+    /// True when `page.bytes_used` exceeds `page.page_bytes` because the
+    /// first row alone is larger than the page. It is returned whole so
+    /// paging makes progress and nothing is lost.
     pub oversized_row: bool,
-    /// Serialized-JSON bytes of the returned `rows`, measured per row
-    /// exactly as `query` measures its values. The rest of this envelope
-    /// (`mechanic_counts` — at most one entry per mechanic — and
-    /// `page_file_counts`) is additional and small relative to the rows.
-    pub rows_bytes: usize,
-    /// Pass as `offset` on the next call while `complete` is false, with
-    /// `expected_revision` set to this response's `revision_id`.
-    pub next_offset: Option<usize>,
 }
 
 /// Unranked mechanical observations from the project's current revision.
 ///
 /// # Errors
 ///
-/// Returns an error if `request.path` is not inside an active project, if
-/// syncing or reading the database fails, if the requested `mechanic` id is
-/// not one this tool defines, if `expected_revision` no longer matches the
-/// current revision (a resumed page — `stale_revision`), or if a read races
-/// a concurrent publish (the caller retries).
+/// Returns an error if the request still carries `offset` or
+/// `expected_revision` (`paging_parameter_removed`), if it has neither a
+/// `cursor` nor a `path`, if `request.path` is not inside an active project,
+/// if syncing or reading the database fails, if the requested `mechanic` id
+/// is not one this tool defines or the auditor registered, if the `cursor` is
+/// unknown or its result was reclaimed (`unknown_cursor`, `result_expired`),
+/// if the result store is full or unavailable, if a registered mechanic's
+/// rows are lost to the execution budget (`mechanic_budget_exhausted`), or if
+/// a read races a concurrent publish (the caller retries).
 pub fn leads(
     request: &Parameters<LeadsRequest>,
     sink: &dyn ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<LeadsResponse>, ErrorData> {
-    let limits = super::resolve_limits(&request.0.path)?;
+    request.0.legacy_paging.refuse()?;
+    let limits = match (&request.0.cursor, &request.0.path) {
+        // A continuation names no project: the process limits apply.
+        (Some(_), _) => *crate::model::process_limits(),
+        (None, Some(path)) => super::resolve_limits(path)?,
+        (None, None) => return Err(missing_path()),
+    };
     leads_with_limits(request, &limits, sink, manager)
+}
+
+fn missing_path() -> ErrorData {
+    ErrorData::invalid_params("path is required when no cursor is given", None)
 }
 
 /// Test-only seam: production code always goes through [`leads`] with the
@@ -314,38 +326,61 @@ fn leads_with_limits(
     sink: &dyn ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<LeadsResponse>, ErrorData> {
-    validate_leads_request(
-        &request.0.path,
-        request.0.mechanic.as_deref(),
-        request.0.pattern.as_deref(),
-        request.0.expected_revision.as_deref(),
-    )?;
-    let page = super::page_size::resolve(request.0.page_bytes, limits)?;
-    let synced = ensure_synced(&request.0.path, sink, manager)?;
-    guard_expected_revision(&synced.revision_id, request.0.expected_revision.as_deref())?;
-    let selected = resolve_mechanic(request.0.mechanic.as_deref())?;
-    let paging = Paging {
-        limit: request.0.limit.map(|rows| rows.max(1)),
-        offset: request.0.offset.unwrap_or(0),
-        budget_bytes: page.bytes,
-        clamped_from: page.clamped_from,
+    request.0.legacy_paging.refuse()?;
+    validate_leads_request(&request.0)?;
+    let catalog = match (&request.0.cursor, &request.0.path) {
+        (Some(_), _) => Catalog {
+            custom: Vec::new(),
+            invalid: Vec::new(),
+        },
+        (None, Some(path)) => {
+            let root = super::project_root(path)?;
+            mechanic_catalog::load(&root, manager.session_mechanics(), limits)
+        }
+        (None, None) => return Err(missing_path()),
     };
-    let response = with_verified_read(&synced, |tx| {
-        leads_page::build(
-            tx,
-            &synced.revision_id,
-            selected,
-            request.0.mode,
-            request.0.pattern.as_deref(),
-            paging,
-        )
-    })?;
+    leads_with_catalog(&request.0, limits, &catalog, sink, manager).map(Json)
+}
+
+/// One `leads` call over an explicit catalogue — the seam `mechanic add`
+/// uses to count a candidate entry exactly as `leads` will once it is
+/// registered. A continuation ignores the catalogue.
+pub(super) fn leads_with_catalog(
+    request: &LeadsRequest,
+    limits: &ResourceLimits,
+    catalog: &Catalog,
+    sink: &dyn ProgressSink,
+    manager: &sync::SourceSyncManager,
+) -> Result<LeadsResponse, ErrorData> {
+    request.legacy_paging.refuse()?;
+    validate_leads_request(request)?;
+    let size = super::page_size::resolve(request.page_bytes, limits)?;
+    let cut = Cut {
+        limit: request.limit.map(|rows| rows.max(1)),
+        size,
+        explicit_bytes: request.page_bytes.is_some(),
+    };
+    let paging = page_request(request.cursor.as_deref(), request.path.as_deref(), sink)?;
+    let scope = match paging {
+        PageRequest::Cursor(_) => None,
+        PageRequest::Fresh { .. } => Some(leads_page::Scope {
+            catalog,
+            selected: resolve_selected(request.mechanic.as_deref(), catalog)?,
+            mode: request.mode,
+            pattern: request.pattern.as_deref(),
+            deadline: super::query_exec::deadline_after(limits.max_structure_execution_time),
+            cache: manager.mechanic_scan_cache(),
+        }),
+    };
+    let response = leads_page::page(manager, paging, cut, scope.as_ref())?;
 
     tracing::info!(
-        revision_id = response.0.revision_id,
-        row_count = response.0.returned,
-        total = response.0.total,
-        complete = response.0.complete,
+        revision_id = response.page.revision_id,
+        row_count = response.page.returned,
+        total = response.page.total,
+        complete = response.page.complete,
+        registered = catalog.custom.len(),
+        mechanics_invalid = response.mechanics_invalid,
         "leads built"
     );
     Ok(response)
@@ -353,16 +388,18 @@ fn leads_with_limits(
 
 /// Validates the byte caps on the request's free-form fields before any
 /// database work. Error text is part of the tool contract.
-fn validate_leads_request(
-    path: &str,
-    mechanic: Option<&str>,
-    pattern: Option<&str>,
-    expected_revision: Option<&str>,
-) -> Result<(), ErrorData> {
-    if crate::util::exceeds_input_bytes(path, MAX_PATH_BYTES) {
+fn validate_leads_request(request: &LeadsRequest) -> Result<(), ErrorData> {
+    if request
+        .path
+        .as_deref()
+        .is_some_and(|path| crate::util::exceeds_input_bytes(path, MAX_PATH_BYTES))
+    {
         return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
     }
-    for (name, value) in [("mechanic", mechanic), ("pattern", pattern)] {
+    for (name, value) in [
+        ("mechanic", request.mechanic.as_deref()),
+        ("pattern", request.pattern.as_deref()),
+    ] {
         if value.is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_FILTER_BYTES)) {
             return Err(ErrorData::invalid_params(
                 format!("{name} exceeds 8192 bytes"),
@@ -370,13 +407,12 @@ fn validate_leads_request(
             ));
         }
     }
-    if expected_revision
-        .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_REVISION_BYTES))
+    if request
+        .cursor
+        .as_deref()
+        .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_CURSOR_BYTES))
     {
-        return Err(ErrorData::invalid_params(
-            "expected_revision exceeds 256 bytes",
-            None,
-        ));
+        return Err(ErrorData::invalid_params("cursor exceeds 1024 bytes", None));
     }
     Ok(())
 }
@@ -384,3 +420,7 @@ fn validate_leads_request(
 #[cfg(test)]
 #[path = "leads_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "leads_not_parsed_tests.rs"]
+mod not_parsed_tests;

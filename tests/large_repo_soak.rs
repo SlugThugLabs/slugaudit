@@ -172,7 +172,9 @@ fn sync_synthetic_project(files: usize, directories: usize) {
     // resolved (env overrides included). The profile default is printed
     // alongside it so a maintainer can see whether an override was in play.
     let budget = process_limits().max_sync_wall_clock;
-    let profile_default = limits_for_profile(AuditProfile::default()).max_sync_wall_clock;
+    let profile_default = limits_for_profile(AuditProfile::default())
+        .expect("profile limits")
+        .max_sync_wall_clock;
 
     let manager = SourceSyncManager::new();
     let started = Instant::now();

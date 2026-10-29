@@ -90,7 +90,10 @@ pub(super) fn diff_against_stored(
         .map(|(path, hash)| (path.as_str(), hash.as_str()))
         .collect();
     let current_refs = current_hashes(samples, skipped);
-    let changes = manifest::compare(stored_refs, current_refs.clone());
+    let mut changes = manifest::compare(stored_refs, current_refs.clone());
+    if crate::parse::fetch_gate::load_failed_retry_due() {
+        add_load_failed_retries(&mut changes, &current_refs, &load_failed_paths(connection)?);
+    }
     let manifest_hash = aggregate_manifest_hash(current_refs);
     let added = count_changes(&changes, ChangeStatus::Added);
     let modified = count_changes(&changes, ChangeStatus::Modified);
@@ -102,6 +105,43 @@ pub(super) fn diff_against_stored(
         added,
         modified,
     })
+}
+
+/// Marks every still-present `LoadFailed` file as `Modified` so the publish
+/// re-parses it even though its content hash is unchanged: its grammar could
+/// not be fetched or loaded last time, and an unchanged hash would otherwise
+/// keep that verdict forever. Only those rows are affected; the manifest hash
+/// is computed from the current hashes and does not move.
+fn add_load_failed_retries(
+    changes: &mut Vec<FileChange>,
+    current: &[(&str, &str)],
+    load_failed: &HashSet<String>,
+) {
+    if load_failed.is_empty() {
+        return;
+    }
+    let already: HashSet<String> = changes
+        .iter()
+        .map(|change| change.relative_path.clone())
+        .collect();
+    changes.extend(
+        current
+            .iter()
+            .filter(|(path, _)| load_failed.contains(*path) && !already.contains(*path))
+            .map(|(path, _)| FileChange {
+                relative_path: (*path).to_owned(),
+                status: ChangeStatus::Modified,
+            }),
+    );
+    changes.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+}
+
+fn load_failed_paths(connection: &Connection) -> Result<HashSet<String>, rusqlite::Error> {
+    let mut statement =
+        connection.prepare("SELECT path FROM files WHERE parser_availability = 'LoadFailed'")?;
+    statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect()
 }
 
 /// Fails closed before the stored-row query when the shared budget is spent.
@@ -192,7 +232,7 @@ pub(super) fn build_upserts_and_deletions(
                     elapsed_ms: elapsed.as_millis(),
                 });
             }
-            upserts.push(to_file_record(sample, limits));
+            upserts.push(to_file_record(sample, limits, deadline));
         }
     }
     Ok((upserts, deletions))

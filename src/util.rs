@@ -18,7 +18,7 @@ pub(crate) use capped_read::{
     CappedReadError, MAX_FOREIGN_TEXT_BYTES, read_file_capped, read_file_capped_bytes,
 };
 pub(crate) use style::Style;
-pub(crate) use time::{Deadline, at_least_timestamp, now_unix};
+pub(crate) use time::{BudgetBound, Deadline, at_least_timestamp, now_unix};
 
 /// Returns whether an externally supplied UTF-8 string exceeds its byte cap.
 /// Tool request validation uses bytes because the transport and storage

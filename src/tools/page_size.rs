@@ -4,8 +4,11 @@
 //! `ResourceLimits::default_page_bytes`, and never above the hard memory
 //! ceiling `max_query_response_bytes`. A request (or configured default) that
 //! asks for more than the ceiling is clamped, and the response says so: the
-//! caller must be able to see that a limit acted on it, and to what value.
+//! effective `page_bytes` is reported, and a page the clamped budget cut says
+//! `limited_by: ceiling`, so the caller can see that raising `page_bytes`
+//! would return nothing more.
 
+use super::page::PageLimit;
 use crate::model::ResourceLimits;
 use rmcp::ErrorData;
 
@@ -14,10 +17,22 @@ use rmcp::ErrorData;
 pub(super) struct PageSize {
     /// Effective page size in serialized JSON bytes.
     pub(super) bytes: usize,
-    /// The larger size that was asked for (by the request, or by the
-    /// configured default) before the ceiling clamped it; `None` when nothing
-    /// was clamped.
-    pub(super) clamped_from: Option<usize>,
+    /// True when the size asked for (by the request, or by the configured
+    /// default) was at or above the ceiling, so `bytes` is the ceiling and a
+    /// larger request cannot enlarge the page.
+    pub(super) at_ceiling: bool,
+}
+
+impl PageSize {
+    /// What a page cut by this byte budget reports as its `limited_by`: the
+    /// ceiling when the budget is the ceiling, the caller's budget otherwise.
+    pub(super) fn byte_cut(self) -> PageLimit {
+        if self.at_ceiling {
+            PageLimit::Ceiling
+        } else {
+            PageLimit::PageBytes
+        }
+    }
 }
 
 /// Resolves the effective page size.
@@ -40,7 +55,7 @@ pub(super) fn resolve(
     let ceiling = limits.max_query_response_bytes;
     Ok(PageSize {
         bytes: wanted.min(ceiling),
-        clamped_from: (wanted > ceiling).then_some(wanted),
+        at_ceiling: wanted >= ceiling,
     })
 }
 
@@ -55,11 +70,12 @@ mod tests {
         let size = resolve(None, &limits).expect("default resolves");
 
         assert_eq!(size.bytes, limits.default_page_bytes);
-        assert_eq!(size.clamped_from, None);
+        assert!(!size.at_ceiling);
+        assert_eq!(size.byte_cut(), PageLimit::PageBytes);
     }
 
     #[test]
-    fn a_page_size_above_the_ceiling_is_clamped_and_reports_what_was_asked() {
+    fn a_page_size_above_the_ceiling_is_clamped_and_a_cut_reports_the_ceiling() {
         let limits = ResourceLimits {
             max_query_response_bytes: 1_000,
             ..ResourceLimits::default()
@@ -67,7 +83,7 @@ mod tests {
 
         let size = resolve(Some(5_000), &limits).expect("clamps");
 
-        assert_eq!((size.bytes, size.clamped_from), (1_000, Some(5_000)));
+        assert_eq!((size.bytes, size.byte_cut()), (1_000, PageLimit::Ceiling));
     }
 
     #[test]
@@ -80,7 +96,31 @@ mod tests {
 
         let size = resolve(None, &limits).expect("clamps");
 
-        assert_eq!((size.bytes, size.clamped_from), (100, Some(400)));
+        assert_eq!((size.bytes, size.byte_cut()), (100, PageLimit::Ceiling));
+    }
+
+    #[test]
+    fn a_page_size_exactly_at_the_ceiling_reports_the_ceiling_when_it_cuts() {
+        let limits = ResourceLimits {
+            max_query_response_bytes: 1_000,
+            ..ResourceLimits::default()
+        };
+
+        let size = resolve(Some(1_000), &limits).expect("resolves");
+
+        assert_eq!((size.bytes, size.byte_cut()), (1_000, PageLimit::Ceiling));
+    }
+
+    #[test]
+    fn a_page_size_below_the_ceiling_reports_page_bytes_when_it_cuts() {
+        let limits = ResourceLimits {
+            max_query_response_bytes: 1_000,
+            ..ResourceLimits::default()
+        };
+
+        let size = resolve(Some(999), &limits).expect("resolves");
+
+        assert_eq!((size.bytes, size.byte_cut()), (999, PageLimit::PageBytes));
     }
 
     #[test]

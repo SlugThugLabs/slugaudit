@@ -1,4 +1,6 @@
 use super::*;
+use crate::tools::PageLimit;
+use crate::tools::context::ensure_synced;
 use rmcp::handler::server::wrapper::Parameters;
 use std::fs;
 
@@ -49,7 +51,7 @@ fn matches_a_real_structural_pattern() {
     let names: Vec<&str> = response.matches.iter().map(|m| m.text.as_str()).collect();
     assert_eq!(names, vec!["greet", "farewell"]);
     assert!(response.matches.iter().all(|m| m.capture_name == "name"));
-    assert!(!response.truncated);
+    assert!(response.page.complete);
 }
 
 /// Regression: a bare node pattern with no `@capture` compiles and matches in
@@ -205,7 +207,8 @@ fn matches_are_capped_and_truncation_is_reported() {
     .map(|Json(response)| response)
     .expect("query succeeds even though it must truncate");
     assert_eq!(response.matches.len(), 2);
-    assert!(response.truncated);
+    assert_eq!(response.page.limited_by, PageLimit::MatchCap);
+    assert!(!response.page.complete);
 }
 
 #[test]
@@ -322,70 +325,6 @@ fn a_structure_query_against_a_binary_file_carries_the_file_not_indexed_code() {
 }
 
 #[test]
-fn a_stale_expected_revision_refuses_a_structure_page() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let query = "(function_item name: (identifier) @name)";
-    let first = ask(&project, "lib.rs", query).expect("the first page succeeds");
-
-    fs::write(
-        project.path().join("lib.rs"),
-        b"pub fn a() {}\npub fn b() {}\n",
-    )
-    .expect("modify fixture");
-    let result = structure(
-        &Parameters(StructureRequest {
-            path: project.path().to_string_lossy().into_owned(),
-            file: Some("lib.rs".to_owned()),
-            query: query.to_owned(),
-            expected_revision: Some(first.revision_id.clone()),
-            ..Default::default()
-        }),
-        &crate::progress::NoopProgressSink,
-        &crate::sync::SourceSyncManager::default(),
-    );
-
-    let error = result
-        .err()
-        .expect("a page pinned to a superseded revision is refused");
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    let data = error.data.expect("the refusal carries a payload");
-    assert_eq!(data["code"], "stale_revision");
-    assert!(
-        error.message.contains(&format!(
-            "expected_revision `{}` is not the current revision",
-            first.revision_id
-        )),
-        "got: {}",
-        error.message
-    );
-}
-
-#[test]
-fn an_unsupported_language_is_refused_with_the_pack_error() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let pack_error = tree_sitter_language_pack::get_language("not-a-real-language")
-        .expect_err("the pack must reject an unknown language")
-        .to_string();
-
-    let result = structure(
-        &Parameters(StructureRequest {
-            path: project.path().to_string_lossy().into_owned(),
-            language: Some("not-a-real-language".to_owned()),
-            query: "(identifier) @name".to_owned(),
-            ..Default::default()
-        }),
-        &crate::progress::NoopProgressSink,
-        &crate::sync::SourceSyncManager::default(),
-    );
-
-    let error = result
-        .err()
-        .expect("an unsupported language must be a typed refusal");
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert_eq!(error.message.as_ref(), pack_error);
-}
-
-#[test]
 fn a_file_with_no_detected_language_is_refused_by_name() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let synced = ensure_synced(
@@ -399,7 +338,7 @@ fn a_file_with_no_detected_language_is_refused_by_name() {
         .execute("UPDATE files SET language = NULL WHERE path = 'lib.rs'", [])
         .expect("clear the detected language");
 
-    let error = crate::tools::structure_source::fetch_source(&connection, "lib.rs")
+    let error = crate::tools::structure_source::fetch_source(&connection, "lib.rs", u64::MAX)
         .expect_err("a file with no detected language must be refused");
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
@@ -415,7 +354,7 @@ fn a_file_with_no_detected_language_is_refused_by_name() {
 fn a_database_failure_reading_a_file_is_an_internal_error_not_a_bad_argument() {
     let connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
 
-    let error = crate::tools::structure_source::fetch_source(&connection, "lib.rs")
+    let error = crate::tools::structure_source::fetch_source(&connection, "lib.rs", u64::MAX)
         .expect_err("a missing files table must fail");
 
     assert_eq!(
@@ -457,7 +396,10 @@ fn a_database_failure_loading_files_is_an_internal_error_not_an_empty_scan() {
         "rust",
         None,
         None,
-        MAX_MULTI_FILE_TOTAL_BYTES,
+        crate::tools::structure_source::WindowBounds {
+            window_bytes: MAX_MULTI_FILE_TOTAL_BYTES,
+            max_parse_bytes: u64::MAX,
+        },
     )
     .expect_err("a missing files table must fail, not scan nothing");
 
@@ -505,4 +447,50 @@ fn a_multi_file_request_without_file_or_language_is_refused() {
         error.message.as_ref(),
         "structure request without 'file' must specify 'language'"
     );
+}
+
+fn assert_prose_refusal(error: &ErrorData) {
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    let message = error.message.to_lowercase();
+    assert!(message.contains("not parsed"), "{}", error.message);
+    assert!(!message.contains("download"), "{}", error.message);
+    assert!(!message.contains("manifest"), "{}", error.message);
+}
+
+fn ask_language(
+    project: &tempfile::TempDir,
+    language: &str,
+) -> Result<StructureResponse, ErrorData> {
+    structure(
+        &Parameters(StructureRequest {
+            path: project.path().to_string_lossy().into_owned(),
+            language: Some(language.to_owned()),
+            query: "(document) @d".to_owned(),
+            ..Default::default()
+        }),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .map(|Json(response)| response)
+}
+
+#[test]
+fn structure_on_the_prose_language_is_refused_as_not_parsed() {
+    let project = activated_project("a.md", b"# title\n");
+    let error = ask_language(&project, "prose").expect_err("prose is not parsed");
+    assert_prose_refusal(&error);
+}
+
+#[test]
+fn structure_on_a_language_shadowed_by_prose_is_refused_as_not_parsed() {
+    let project = activated_project("a.md", b"# title\n");
+    let error = ask_language(&project, "markdown").expect_err("markdown is stored as prose");
+    assert_prose_refusal(&error);
+}
+
+#[test]
+fn structure_on_a_prose_file_is_refused_as_not_parsed() {
+    let project = activated_project("a.md", b"# title\n");
+    let error = ask(&project, "a.md", "(document) @d").expect_err("a.md is stored as prose");
+    assert_prose_refusal(&error);
 }

@@ -421,34 +421,34 @@ fn on_action_with_profile_writes_config_json() {
     assert!(cfg_file.exists(), "config.json should be written");
     let content = fs::read_to_string(cfg_file).expect("read config");
     assert_eq!(
-        content, "{\n  \"profile\": \"audit\"\n}",
+        content, "{\n  \"profile\": \"audit\"\n}\n",
         "the profile config keeps the pretty-printed shape and the exact profile name"
     );
 }
 
+#[cfg(unix)]
 #[test]
-fn on_action_with_profile_reports_config_write_failure() {
+fn on_action_with_profile_refuses_a_config_json_symlinked_outside_the_project() {
+    use std::os::unix::fs::MetadataExt;
     let (project, path) = temp_project_with_source();
-    let config_path = activation_dir(&project).join("config.json");
-    fs::create_dir_all(&config_path).expect("create config parent");
-    let req = Parameters(ProjectControlRequest {
-        path: Some(path),
-        action: ProjectControlAction::On,
-        profile: Some("audit".to_string()),
-    });
+    let outside = tempfile::tempdir().expect("outside dir");
+    let victim = outside.path().join("victim.txt");
+    let dir = activation_dir(&project);
+    fs::write(&victim, b"precious").expect("write victim");
+    let inode = fs::metadata(&victim).expect("stat victim").ino();
+    fs::create_dir_all(&dir).expect("create activation dir");
+    std::os::unix::fs::symlink(&victim, dir.join("config.json")).expect("symlink config");
+    let mut req = on_request(&path);
+    req.0.profile = Some("lean".to_string());
 
-    let result = project_control(&req, &crate::progress::NoopProgressSink, None);
-    assert!(
-        result.is_err(),
-        "a failed profile write must fail the enable request"
-    );
-    if let Err(error) = result {
-        assert!(
-            error.message.contains("write profile config"),
-            "error must identify the failed config write: {}",
-            error.message
-        );
-    }
+    let error = project_control(&req, &crate::progress::NoopProgressSink, None)
+        .err()
+        .expect("a symlinked config.json must be refused");
+
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert!(error.message.contains("config.json"), "{}", error.message);
+    assert_eq!(fs::read(&victim).expect("read victim"), b"precious");
+    assert_eq!(fs::metadata(&victim).expect("stat").ino(), inode);
 }
 
 #[test]

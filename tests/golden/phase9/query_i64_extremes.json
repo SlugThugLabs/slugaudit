@@ -1,0 +1,30 @@
+{
+  "case": "query_i64_extremes",
+  "request": {
+    "page_bytes": null,
+    "sql": "SELECT 9223372036854775807 AS max_i, -9223372036854775808 AS min_i, 9007199254740993 AS past_2_53, 1e15 AS big_real"
+  },
+  "response": {
+    "clipped_cells": [],
+    "non_finite_cells": [],
+    "page": {
+      "bytes_used": 117,
+      "complete": true,
+      "limited_by": "none",
+      "next_offset": null,
+      "page_bytes": 65536,
+      "returned": 1,
+      "revision_id": "<REVISION_ID>",
+      "total": 1
+    },
+    "rows": [
+      {
+        "big_real": 1000000000000000.0,
+        "max_i": 9223372036854775807,
+        "min_i": -9223372036854775808,
+        "past_2_53": 9007199254740993
+      }
+    ],
+    "total_unavailable": null
+  }
+}

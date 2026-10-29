@@ -41,6 +41,8 @@ src/
 ├── update_fetch.rs           network + version helpers for self-update
 ├── connect.rs                register/remove this binary with a target agent
 ├── connect/                  submodule directory of the file module above
+│   ├── config_atomic.rs      atomic mode-preserving replacement of a client config
+│   ├── config_atomic_tests.rs mode preservation and key order of config writes
 │   ├── config_file.rs        JSON config probe/merge/remove for register and disconnect
 │   ├── config_file_tests.rs  removal truthfulness, atomic mode/symlink, typed I/O failures
 │   └── registry_types.rs     client model types (Strategy, ConfigShape, Evidence, Dialect)
@@ -56,35 +58,79 @@ src/
 │   ├── report.rs             automatic project snapshot: contract, completeness envelope, edge totals
 │   ├── report_sections.rs    per-section SQL + response assembly for report
 │   ├── report_completeness.rs  the report's index-completeness block
+│   ├── report_first_call_tests.rs the first report after project_control on, with a real watcher
 │   ├── query.rs              arbitrary read-only SQL with budgets
 │   ├── query_exec.rs         query execution: single-statement proof, budgets, byte-budgeted page, exact total
+│   ├── page.rs               the one paging contract (`Page`, `PageLimit`) every paged tool embeds
+│   ├── paginate.rs           the one paging entry: new request syncs and materialises, a cursor only reads the stored result
 │   ├── page_size.rs          effective page size (request or default, clamped to the ceiling)
 │   ├── query_value.rs        SQLite row/value → JSON with a per-value cap
 │   ├── query_clip.rs         clipping an oversized first row's TEXT/BLOB cells, with substr continuations
 │   ├── query_clip_tests.rs   clipping walks (5 MB text, blob, units) and line functions through query
+│   ├── query_error_tests.rs  sql_error on SQLite failures; refusals and value caps carry no code
+│   ├── query_paged_tests.rs  query paged through the result store: cursor, snapshot, continuation
+│   ├── golden_phase9_support.rs  shared golden helpers: fixtures, normalise, mask_paging (removes paging keys), check_case
+│   ├── golden_phase9_leads_tests.rs  leads golden cases (counts, rows, compact, custom mechanic rows)
+│   ├── golden_phase9_mechanic_tests.rs  mechanic add/list golden cases
+│   ├── golden_phase9_query_tests.rs  query golden cases (values, clipping, paging)
+│   ├── golden_phase9_structure_tests.rs  structure golden cases
+│   ├── golden_phase9_finding_read_tests.rs  finding_read golden cases
 │   ├── structure.rs          tree-sitter pattern match: contract, validation, targets
 │   ├── structure_exec.rs     query execution under match cap + time budget
 │   ├── structure_page.rs     byte paging of matches and the multi-file memory-window cursor
 │   ├── structure_source.rs   source loading + multi-file and snippet helpers
+│   ├── structure_parse_bounds_tests.rs max_parse_bytes skip, window-before-load and parse-timeout partials
+│   ├── structure_language_tests.rs unknown_language naming the indexed languages
+│   ├── structure_stored.rs   structure matches stored as a result and served by cursor
+│   ├── structure_paged_tests.rs structure paged through the result store: both cursors, continuation
 │   ├── leads.rs              unranked mechanical observations
 │   ├── leads_mechanics.rs    the leads mechanic catalogue
+│   ├── leads_covers.rs       each count's `covers`: the languages the mechanic read
+│   ├── leads_language_tests.rs leads and covers over non-Rust call languages
 │   ├── leads_query.rs        the SQL each leads mechanic compiles to
+│   ├── leads_not_parsed_tests.rs files_not_parsed on every leads response and report's oversize count
 │   ├── leads_page.rs         one response assembled: counts, a row page, or the compact enumeration
 │   ├── leads_compact.rs      the compact mechanic/file/line row shape over one mechanic or all
+│   ├── leads_custom.rs       registered mechanics in leads: counts and the streaming page cut
+│   ├── leads_stored.rs       leads rows stored as a result and served by cursor
+│   ├── leads_paged_tests.rs  leads paged through the result store: cursor, partial custom scans
+│   ├── mechanic.rs           auditor-registered mechanics: add/remove/list contract
+│   ├── mechanic_register.rs  add/remove: id, collision and cap rules beside the writes they guard
+│   ├── mechanic_list.rs      the stored `list` result and its cursor continuation
+│   ├── mechanic_catalog.rs   one call's catalogue: session, project_config, built-ins, and invalid entries
+│   ├── mechanic_scan.rs      a registered mechanic's tree-sitter scan under one deadline
+│   ├── mechanic_scan_cached.rs the per-revision cache in front of that scan: lookup, one pass for the misses, rows kept for paging
+│   ├── mechanic_tests.rs     add/count/remove, collisions, refused queries and languages, ordering, first-report note
+│   ├── mechanic_persist_tests.rs persist/reload, other keys kept, symlink refused, invalid entries reported and removed by index
+│   ├── mechanic_scan_tests.rs which registered entries a leads call scans; the spent-budget error and its code
+│   ├── mechanic_paged_tests.rs mechanic list paged through the result store
+│   ├── mechanic_scan_stop_tests.rs a registered mechanic's scan stopped by the deadline: partial page and resume_after_file
 │   ├── finding.rs            the single write tool: request/response contract and caps
 │   ├── finding_insert.rs     validation + session-scoped insert-or-refresh of a finding
 │   ├── finding_read.rs       session-gated finding query
+│   ├── finding_sessions.rs   list and adopt earlier sessions' findings
+│   ├── finding_sessions_tests.rs prior-session visibility, list and adopt
+│   ├── finding_read_rows.rs  finding_read row selection and conversion for the result store
+│   ├── finding_read_paged_tests.rs finding_read paged through the result store
 │   ├── project_control.rs    enable/disable a project: contract and handlers
+│   ├── discard_surface_tests.rs database_discard on project_control and finding responses
 │   ├── health.rs             operational snapshot: schema, process counters, DB read
+│   ├── health_result_store.rs health detail's result-store stats (classes, bytes, sweep)
 │   └── health_phase.rs       health's per-project state derivation (no side effects)
 │
 ├── sync/                     detection and persistence of what changed on disk
 │   ├── mod.rs                public exports
 │   ├── manager.rs            SourceSyncManager: state, watcher ownership, observability
+│   ├── result_stores.rs      the process's lazily opened result store, one slot keyed by runtime dir
+│   ├── result_store_proof_exclusion_tests.rs results dir and lock excluded from discovery, sweep, watcher, reconcile
+│   ├── result_store_proof_replacement_tests.rs open results survive each database replacement and a WAL truncate
 │   ├── manager_orchestration.rs  ensure_current: resolve, open/recover, recovery logs, rebuild tail
 │   ├── manager_health.rs     sync_by_health: the WatcherHealth dispatch
 │   ├── manager_health_support.rs  event barrier, post-sync revision read, sweep-error mapping
 │   ├── manager_meta.rs       metadata row, session purge, publish_from_scratch
+│   ├── discard_notice.rs     DatabaseDiscard: the finding count reported when a database is discarded
+│   ├── recovery_log.rs       the one WARN a database discard-and-rebuild logs
+│   ├── discard_notice_tests.rs discard_surface: count, unknown-on-corrupt, one WARN
 │   ├── sweep.rs              the stat sweep — freshness backstop with walk counters
 │   ├── sweep_walk_tests.rs   fail-closed walk coverage for the stat sweep
 │   ├── sweep_reconcile.rs    apply the sweep's findings under compare-and-swap
@@ -115,6 +161,9 @@ src/
 │   ├── revision_skipped.rs   existence rows for discovered-but-skipped files
 │   ├── revision_support.rs   stale-finding invalidation inside a publish transaction
 │   ├── analyze.rs            tree-sitter parse + evidence extraction for one file
+│   ├── analyze_results.rs    the ParseResult an analysis ends in, one constructor per outcome
+│   ├── analyze_seam.rs       pack-extraction boundary + test-only failure/call-count seam
+│   ├── analyze_bounds_tests.rs max_parse_bytes and parse_timeout outcomes of analyze
 │   ├── classify.rs           path-derived authored/generated/vendored file class
 │   └── race_hook.rs          test-only race-injection hook
 │
@@ -140,7 +189,13 @@ src/
 │   ├── normalize_builders.rs payload builders
 │   ├── sql.rs                EvidenceKind ↔ SQL text mirror
 │   ├── bindings.rs           variable-binding / field-declaration walker
-│   ├── calls.rs              Rust call-site walker
+│   ├── calls.rs              call dispatch + the Rust call-site walker
+│   ├── calls/                submodule directory of the file module above
+│   │   ├── site.rs           the one Call row builder every producer feeds
+│   │   ├── macro_calls.rs    Rust macro token-tree re-parse for nested calls
+│   │   ├── call_queries.rs   embedded per-language call queries (examples/calls/*.scm) + compile-once cache
+│   │   ├── query_calls.rs    runs a call query: budgeted parse, capture → call site
+│   │   └── query_calls_tests.rs per-language call fixtures with comment/string decoys
 │   └── generic_imports.rs    generic import extraction
 │
 ├── watch/                    filesystem watching
@@ -166,13 +221,45 @@ src/
 │   ├── gitignore_tests.rs    guard write-failure and file-type refusal tests
 │   ├── activation_lock.rs    exclusive database lock held while disable removes it
 │   ├── database_path.rs      where this project's project.db lives
-│   └── config.rs             in-repo config (.planning/slugaudit/config.json)
+│   ├── config.rs             in-repo config (.planning/slugaudit/config.json)
+│   ├── config_cleanup.rs     stale config.json.<pid>.<n>.tmp removal on load, under a non-blocking try of config.lock
+│   ├── config_cleanup_tests.rs stale temp removed once, live writer's kept, symlink not followed
+│   ├── config_store.rs       the one write path of config.json: config.lock, read-modify-write, atomic replace
+│   ├── config_store_tests.rs keys kept, unreadable refused, crash before rename, symlink re-check, lock wait, no lost update
+│   ├── mechanics_config.rs   the versioned `mechanics` section of config.json: read, report, read-modify-write
+│   ├── mechanics_config_tests.rs persisted section: other keys kept, nothing unreadable overwritten, bad entries reported
+│   ├── mechanic_scan_cache.rs the byte-budgeted per-revision cache of registered mechanics' scan results
+│   ├── session_mechanics.rs  the per-server in-memory mechanics and the one-time report note
+│   └── config_tests.rs       config load and limit-mapping tests
 │
 ├── store/                    SQLite connection boundary
 │   ├── mod.rs                open_read_write / open_read_only / discard_corrupt_database
 │   ├── connection.rs         typed StoreError + the open entry points
-│   ├── connection_guards.rs  symlink/permission/ATTACH guards, open flags, pragmas
+│   ├── connection_guards.rs  symlink/permission guards, ATTACH/PRAGMA authorizer, open flags, pragmas
+│   ├── connection_guard_tests.rs read-only authorizer, PRAGMA allowlist and open-guard tests
+│   ├── discard.rs            discard an unusable database only if it is still unusable under the write lock
+│   ├── discard_tests.rs      lock-checked discard outcomes
 │   ├── netfs.rs              network-filesystem rejection
+│   ├── result_store/         immutable paged results: one unlinked SQLite file per result, registry, cursors
+│   │   ├── admission_tests.rs      delivered/idle reclaim order, active never reclaimed, Full, TooLarge, budget invariant
+│   │   ├── cell.rs                 Cell storage classes, NonFinite marks, StoredRow, Take, Materialize trait
+│   │   ├── cursor.rs               ResultId and the strict v1 cursor codec
+│   │   ├── cursor_tests.rs         cursor round trip, malformed variants, foreign nonce, expired, ordinal bound
+│   │   ├── error.rs                typed ResultStoreError (source kept) and its wire-code mapping note
+│   │   ├── fault.rs                test-only fault seam: full disk, failure between batches, incomplete meta
+│   │   ├── fidelity_tests.rs       storage-class matrix, NaN and infinity marks, typed rows
+│   │   ├── harness_tests.rs        shared fixtures: temp store, injected clock, descriptor and directory inspection
+│   │   ├── lifecycle_tests.rs      self-abort, mid-write failure, full disk, process abort, sweep, threads
+│   │   ├── mod.rs                  module docs, layout and invariants, re-exports
+│   │   ├── owner.rs                results directory, owner lock and the startup sweep
+│   │   ├── paging_tests.rs         page walks at batch boundaries, grace renewal, delivered, incomplete state
+│   │   ├── platform.rs             Unix-only file helpers (private dir/file, lock file, same-inode check)
+│   │   ├── reader.rs               read_page, read_cursor and read_typed over a stored result
+│   │   ├── registry.rs             registry entries, classes, admission and reclaim planning
+│   │   ├── result_file.rs          create-open-unlink a result file, pragmas read back, schema, size measure
+│   │   ├── stats.rs                StoreStats snapshot
+│   │   ├── store.rs                ResultStore: open, clock, cursor resolution, admission logging
+│   │   ├── writer.rs               ResultWriter: batches in one transaction, meta last, size self-abort
 │   ├── sql_functions.rs      line_count / line_range scalar SQL functions registered on every connection
 │   ├── sql_functions_tests.rs line-function edge cases
 │   ├── migrations.rs         schema versioning (CURRENT_SCHEMA_VERSION)
@@ -181,12 +268,16 @@ src/
 │
 ├── parse/                    tree-sitter language-pack boundary
 │   ├── mod.rs                PACK_VERSION + re-exports
+│   ├── budget.rs             one tree-sitter parse that stops at a deadline (shared by structure, mechanic scans, call queries)
+│   ├── fetch_gate.rs         process-wide cool-down after a failed grammar fetch
 │   └── language.rs           language detection + parser availability
 │
 ├── model/                    contracts shared by parsing, storage, and tools
 │   ├── mod.rs                re-exports
 │   ├── limits.rs             ResourceLimits + process_limits()
 │   ├── limits_tests.rs       limits unit tests
+│   ├── limit_overrides.rs    zero-override refusal, parse clamp and the warn-once ledger
+│   ├── limit_overrides_tests.rs zero refusal and warn-once tests
 │   ├── profile.rs            Lean / Audit / Adaptive profiles
 │   ├── profile_tests.rs      profile unit tests
 │   ├── system_ram.rs         host memory detection

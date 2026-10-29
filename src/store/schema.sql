@@ -110,7 +110,13 @@ CREATE TABLE IF NOT EXISTS files (
     parse_outcome TEXT NOT NULL
         CHECK (parse_outcome IN ('NotAttempted', 'Succeeded', 'SyntaxErrors', 'Failed')),
     -- Set only when parser_availability = 'LoadFailed' or parse_outcome =
-    -- 'Failed'. Per-syntax-error detail lives in the evidence table as
+    -- 'Failed', or to a stable code when the grammar was not run to
+    -- completion on stored content: 'oversize_for_parse' (content over
+    -- max_parse_bytes; parse_outcome = 'NotAttempted', extraction_completeness
+    -- = 'ContentOnly', no grammar fetched or run) or 'parse_timeout'
+    -- (parse_outcome = 'Failed': a parse was cut at the sync deadline;
+    -- 'ContentOnly' when process() was cut, 'Partial' with the pack's
+    -- evidence when a later walker re-parse was). Per-syntax-error detail lives in the evidence table as
     -- Diagnostic rows; this column is for the harder failure where process()
     -- itself returned an error rather than a tree with error nodes.
     parse_error_reason TEXT,
@@ -148,9 +154,9 @@ CREATE TABLE IF NOT EXISTS evidence (
     span_availability TEXT NOT NULL,
     start_byte INTEGER,
     end_byte INTEGER,
-    start_line INTEGER,
+    start_line INTEGER, -- 1-based, inclusive; NULL without a span
     start_column INTEGER,
-    end_line INTEGER,
+    end_line INTEGER, -- 1-based, inclusive; NULL without a span
     end_column INTEGER,
     payload TEXT NOT NULL,
     UNIQUE (file_id, key)

@@ -19,9 +19,13 @@ agent queries over MCP.
 - **Freshness without re-verification.** The index is re-synchronized before every
   tool call, so an answer describes the files on disk (not unsaved editor buffers) and
   the agent never has to double-check whether its view is current.
-- **Caps are reported in the response.** A paged or capped result carries `truncated`
-  and, when more rows exist, the `next_offset` to continue from; `leads` rows flag
-  detail text that was clipped (`detail_clipped`).
+- **Caps are reported in the response.** `leads`, `query`, `structure` and
+  `finding_read` share one `page` object (`returned`, `total`, `complete`,
+  `cursor`, `page_bytes`, `bytes_used`, `limited_by`, `revision_id`, `completeness`): it
+  says what cut the page and gives the `cursor` to continue with (absent when nothing
+  remains). Pages come from one stored copy of the first call's answer, so edits made
+  while reading never skip or repeat rows;
+  `leads` rows flag detail text that was clipped (`detail_clipped`).
 
 For each enabled project, SlugAudit owns exactly one derived-data directory:
 
@@ -58,6 +62,21 @@ The installer script and `slugaudit install` both place the binary at
 `~/.slugthug/slugaudit/slugaudit`, a stable path that survives rebuilds — which is
 what `slugaudit connect` registers with your agent. `slugaudit update` downloads a
 newer release and atomically replaces that binary.
+
+**Grammars are fetched on first use.** SlugAudit does not bundle Tree-sitter grammars.
+The first time a language is parsed, the pinned `tree-sitter-language-pack` downloads a
+compressed bundle of grammars (about 22 MB) from its GitHub release
+(`github.com/xberg-io/tree-sitter-language-pack`), verifies it against the sha256 in the
+release manifest, and caches it at `~/.cache/tree-sitter-language-pack/v1.18.0/libs`
+(the platform cache directory; `TREE_SITTER_LANGUAGE_PACK_CACHE_DIR` overrides its
+base). Later runs load from that cache without touching the network. If the fetch fails
+(for example, offline on a first run), the file's content is still stored and
+searchable, its `files.parser_availability` is `LoadFailed`, and it is retried after a
+10-minute cool-down (or on the next server start) instead of being left unparsed. The
+first failed fetch can block one call for up to about 60 seconds (the pack's HTTP
+timeout, which it does not let us change); during the cool-down no further fetch is
+attempted and no new revision is published for those files. The grammar fetch and `slugaudit update` are
+the only outbound network use; the server itself runs no network listener.
 
 Every release ships the material to check what you downloaded: `SHA256SUMS` for
 the binary, `LICENSE`, a CycloneDX SBOM, a third-party notices file, and a signed
@@ -100,13 +119,15 @@ The server exposes 8 MCP tools, registered in `src/server.rs`:
 | Tool | What it returns |
 | :--- | :--- |
 | `report` | Project snapshot: file and language counts, parser failures, evidence-kind counts, open findings, inbound/outbound dependency-edge totals. |
-| `leads` | Unranked mechanical facts: call sites by callee (`unwrap`, `expect`, `panic`, `todo`, `unimplemented`, `assert`), diagnostics, `TODO`/`FIXME`/`HACK` markers, credential-shaped files. Counts by default; paged file/line rows for one `mechanic` on request. Callee-based mechanics cover Rust only in this revision. |
+| `leads` | Unranked mechanical facts: call sites by callee (`unwrap`, `expect`, `panic`, `todo`, `unimplemented`, `assert`), diagnostics, `TODO`/`FIXME`/`HACK` markers, credential-shaped files. Counts by default; paged file/line rows for one `mechanic` on request. Callee-based mechanics read Rust, Python, JavaScript, TypeScript, TSX, Go, Java and C calls; each count's `covers` lists the languages it read. |
+| `mechanic` | Registers (`add`), removes or lists the auditor's own mechanics: a Tree-sitter query with one capture over one language, counted by `leads` beside the built-ins. Session entries end with the server; `persist: true` writes them to `.planning/slugaudit/config.json`. Built-ins can never be removed or overridden. |
 | `query` | Read-only SQL over the index (`files`, `evidence`, `dependency_edges`), including full file text via `files.content`. |
 | `structure` | Tree-sitter AST queries in one file or across a language, returning matched nodes with line spans and snippets. |
 | `finding` | Persists a conclusion the agent has reviewed, bound to the file's current content hash — it goes stale when that file changes. The judgment is the agent's; SlugAudit never generates it. |
 | `finding_read` | Findings written by the current session only, never another session's conclusions. |
+| `finding_sessions` | A restart is a new session: earlier sessions' findings are kept, marked stale and hidden from `finding_read`. `list` shows them (session id, first-finding time, count); `adopt` re-tags one session's findings to the current session. Nothing is deleted. |
 | `project_control` | Enable (`on`) or disable (`off`) a project, optionally setting its profile; `off` purges the database. |
-| `health` | Operational snapshot: watcher health, unreconciled event counts, current revision and file count, parser-pack version, tool-call counters. |
+| `health` | Phase and next action (`remedy`), watcher health, current revision and file count. `verbose: true` adds the operator detail: unreconciled event counts, parser-pack version, skipped files, tool-call counters, host memory, the mechanic scan cache. |
 
 Every tool advertises a `title`, MCP `annotations` (`readOnlyHint` for the read-only
 tools; `destructiveHint` only on `project_control`, whose `off` action purges the
@@ -125,10 +146,12 @@ files:
 - `slugaudit://queries/README.md` — SQL and Tree-sitter recipes ([`examples/queries/README.md`](examples/queries/README.md))
 - `slugaudit://queries/evidence_payload_keys.md` — every `evidence.payload` key, its JSON type, and the kind it belongs to
 - `slugaudit://queries/find_unhandled_panics.sql` — `unwrap` / `expect` / `panic` call sites
-- `slugaudit://queries/auth_attack_surface.sql` — functions, methods, and calls touching auth, tokens, or sessions
+- `slugaudit://queries/auth_attack_surface.sql` — functions, methods, and calls whose name mentions auth, tokens, or sessions
 - `slugaudit://queries/syntax_diagnostics.sql` — syntax-error and parser diagnostics per file
 - `slugaudit://queries/rust_functions.scm` — Tree-sitter pattern for Rust functions
-- `slugaudit://queries/blast_radius.sql` — per-file inbound/outbound `dependency_edges` counts and the transitive closure
+- `slugaudit://queries/blast_radius_outbound.sql` — per-file outbound `dependency_edges` counts by `resolution_kind`
+- `slugaudit://queries/blast_radius_inbound.sql` — per-file inbound `dependency_edges` counts and importing files
+- `slugaudit://queries/blast_radius_closure.sql` — the transitive import closure of one file, both directions
 - `slugaudit://schema.sql` — the index schema (from `src/store/schema.sql`)
 
 The `tools/list` and `resources/list` contract — names, titles, descriptions, input and
@@ -155,8 +178,12 @@ limits can be overridden with environment variables named `SLUGAUDIT_<FIELD>` (f
 example `SLUGAUDIT_MAX_FILE_BYTES`, `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS`); each field
 and its variable are documented in `src/model/limits.rs`. `query` and `leads` return
 64 KiB pages by default (`SLUGAUDIT_DEFAULT_PAGE_BYTES`, or `default_page_bytes` in
-`config.json`); a request's `page_bytes` raises it up to `SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES`. An unset or unparseable
-override is ignored, leaving the default in place.
+`config.json`); a request's `page_bytes` raises it up to `SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES`. Files larger than
+`SLUGAUDIT_MAX_PARSE_BYTES` (2 MiB by default, or `max_parse_bytes` in `config.json`) are stored and
+searchable but not parsed; `leads` reports them in `files_not_parsed` and `report` in its completeness
+block. A file whose parse takes longer than `SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS` (5000 by default, or
+`max_parse_wall_clock_ms` in `config.json`) is stored without structure and counted the same way; the
+sync goes on, and the file is parsed again only when it changes. Paged results are kept in a bounded store (`SLUGAUDIT_MAX_RESULT_STORE_BYTES`, or `max_result_store_bytes` in `config.json`; 4 times the response ceiling by default) and an unfinished result stays protected from reclaim for `SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS` (900 by default, or `result_active_grace_secs`) after its last page. An unset or unparseable override is ignored, leaving the default in place; a `0` is refused the same way, with a warning.
 
 Logging goes to `stderr`; `stdout` carries JSON-RPC only. Set
 `SLUGAUDIT_LOG_FORMAT=json` for one-line JSON log events.
