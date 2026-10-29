@@ -43,3 +43,14 @@ initialize ok; `project_control on` on a 20-file fixture: enabled, 21 files impo
 
 ## Cut / not done
 LG (above); `off` on a corrupt db; closing the rebuild-path window; fuzz target fix; the unscheduled residue in PLAN.md; deleting rem2/* branches whose content landed by cherry-pick; cargo-deny / cargo-mutants; no push, no tag.
+
+## Follow-up round (Fable-approved, after the report above)
+| Item | Status | Landed as |
+|---|---|---|
+| LG logging fix | LANDED. Cherry-picked from the objects of the deleted rem2/LG (squashed) with trailers dropped, plus the health WARNs (src/tools/health.rs:283,294,305) now log `path = %database_path.display()` and the error source. Luna FAIL once (the new test did not reach the open WARN), fixed by one mason pass; all three WARN arms mutation-checked. | 319e42b, 6c44aa7, d3d7d33 |
+| Fuzz marker | LANDED. `fuzz/fuzz_targets/support.rs` creates the `project.db` marker (0600). Two further breaks found and fixed: `query_sql` target used `Page.next_offset` (now `cursor`, same assertion), and `fuzz/Cargo.lock` was stale (1.0.10). `cd fuzz && cargo +nightly check --bins --locked` passes; `cargo-fuzz` is installed but no `cargo fuzz build` and no campaign was run. | 3228c88, 823d902 |
+| PLAN.md decisions | LANDED. `off` on a corrupt db and the rebuild-path window are `scheduled: 1.1.1` with your decisions (dedicated lock file; one lock across discard and creating open); the three unconfirmed flaky reports listed as `unconfirmed` with repro commands; remaining redacted WARNs in `src/store/connection_guards.rs:46,87` recorded `not scheduled` (luna note, not fixed). | bb254dd, 1e00764 |
+
+Branches: the ten cherry-picked rem2 branches were deleted by Fable; rem3/lg was ff-merged and deleted. `main` is the only branch and worktree. Commit messages since 4a70544 contain no trailers or model/agent names (grep prints 0).
+
+Gate on 1e00764 after `cargo clean -p slugaudit-mcp-rust` (tree clean): fmt, 8 check_* bins, `cargo check`, clippy `-D warnings`, release build all exit 0; `cargo test --lib --bins --tests --all-features --locked`: 1731 passed, 0 failed (lib 1563); `stdio_protocol`: 4 passed; `check_coverage`: 92.72% (16874 / 18199), gate 83%; `check_performance`: PASS, no regression over 20%. Release-binary smoke repeated on this build: `on`, `off` (only config.json left), tool call -> `project_not_enabled` with no db recreated, `on` restores the persisted mechanic, exit 0. This addendum commit is docs-only and follows the gate.
