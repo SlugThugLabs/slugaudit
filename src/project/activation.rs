@@ -215,7 +215,7 @@ fn create_private_dir(path: &Path) -> Result<(), ActivationError> {
     if current != PRIVATE_DIR_MODE {
         // Deliberate raw path: a one-shot security-repair diagnostic — the
         // operator must see *which* directory was world-readable to fix the
-        // umask or mount that caused it. Correlation logs use `redacted_path`.
+        // umask or mount that caused it.
         tracing::warn!(
             target: "slugaudit::project",
             path = %path.display(),

@@ -124,7 +124,7 @@ fn a_depth_capped_scope_walk_stops_at_the_limit_and_flags_it() {
 /// `Display` (`WithPath` renders `{path}: {err}`); the scope warning logs the
 /// redacted path id and the category instead.
 #[test]
-fn a_scope_walk_error_logs_no_raw_path() {
+fn a_scope_walk_error_logs_the_real_path() {
     let project = tempfile::tempdir().expect("project dir");
     let missing = project.path().join("missing-subtree");
     let raw_path = missing.to_string_lossy().to_string();
@@ -151,12 +151,12 @@ fn a_scope_walk_error_logs_no_raw_path() {
         "the failure must carry the walker error category, captured: {logs}"
     );
     assert!(
-        logs.contains("path_id="),
-        "the failure must carry a redacted path id, captured: {logs}"
+        logs.contains(&raw_path),
+        "the failure must name the real directory path, captured: {logs}"
     );
     assert!(
-        !logs.contains(&raw_path),
-        "the raw directory path must not be logged, captured: {logs}"
+        !logs.contains("path_id="),
+        "the path must not be hashed, captured: {logs}"
     );
 }
 

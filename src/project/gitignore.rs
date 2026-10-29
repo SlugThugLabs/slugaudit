@@ -227,7 +227,7 @@ fn remove_abandoned_temp(temp: &Path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => tracing::warn!(
             target: "slugaudit::project",
-            path_id = %crate::util::redacted_path(temp),
+            path = %temp.display(),
             %error,
             "failed to remove an abandoned .gitignore temp file"
         ),

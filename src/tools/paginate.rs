@@ -269,8 +269,8 @@ where
     }
 }
 
-/// The label stored with a result: the project root's path id, as the logs
-/// show it. The runtime directory is `<root>/.planning/slugaudit`.
+/// The label stored with a result: the project root's path hash, an opaque
+/// label that is not the path itself. The runtime directory is `<root>/.planning/slugaudit`.
 fn project_label(runtime_dir: &std::path::Path) -> Result<String, ErrorData> {
     let root = runtime_dir
         .parent()

@@ -400,7 +400,7 @@ fn remove_abandoned_temp(temp: &Path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => tracing::warn!(
-            path_id = %crate::util::redacted_path(temp),
+            path = %temp.display(),
             %error,
             "failed to remove an abandoned config.json temp file"
         ),

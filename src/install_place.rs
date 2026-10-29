@@ -76,9 +76,8 @@ fn make_executable(_path: &Path) -> Result<(), std::io::Error> {
 /// Best-effort removal of a file this flow created or superseded. A missing
 /// file is the goal state, not a failure.
 ///
-/// Deliberate raw path in the log: a one-shot cleanup diagnostic beside the
-/// installed binary — naming the file the operator can see is the point. The
-/// redaction rule (`util::redacted_path`) is for correlation-heavy server logs.
+/// The log names the real path: a one-shot cleanup diagnostic beside the
+/// installed binary — naming the file the operator can see is the point.
 pub(crate) fn remove_leftover(path: &Path, message: &str) {
     if let Err(error) = std::fs::remove_file(path)
         && error.kind() != std::io::ErrorKind::NotFound

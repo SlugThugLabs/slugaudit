@@ -42,8 +42,8 @@ fn a_stale_config_temp_file_is_removed_with_one_warning_naming_it() {
         "{logs}"
     );
     assert!(
-        !logs.contains(project.path().to_str().expect("utf-8 path")),
-        "no raw path is logged:\n{logs}"
+        logs.contains(project.path().to_str().expect("utf-8 path")),
+        "the project root is named:\n{logs}"
     );
 }
 

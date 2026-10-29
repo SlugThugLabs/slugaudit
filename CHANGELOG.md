@@ -11,6 +11,11 @@ The newest entry MUST match the version in `Cargo.toml`.
 
 ### Fixed
 
+- Operator-facing WARN, INFO and DEBUG logs from sync, watch, project config,
+  ignore rules, install, probe and the structure tool now name the real path
+  or project root (`path=`, `root=`) instead of a hashed `path_id`, `root_id`
+  or `file_id`. Error text that can echo ignore-file content is still not
+  logged.
 - Tool calls no longer walk and stat the whole project tree when the file
   watcher is healthy and has no pending events. The sweep still runs on the
   first call after start, after the watcher leaves healthy, when the ignore

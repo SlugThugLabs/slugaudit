@@ -233,7 +233,7 @@ fn on_path(dir: &Path) -> bool {
             Err(error) => {
                 if error.kind() != std::io::ErrorKind::NotFound {
                     tracing::warn!(
-                        path = %crate::util::redacted_path(&entry),
+                        path = %entry.display(),
                         error = %error,
                         "could not canonicalize a PATH entry; comparing it as written",
                     );

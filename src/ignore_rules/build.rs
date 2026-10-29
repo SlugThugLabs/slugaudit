@@ -4,7 +4,6 @@
 //! query path so each file states one concern; the precedence and
 //! descend-and-prune semantics live in the parent module's docs.
 
-use crate::util::redacted_path;
 use crate::watch::errors::ignore_error_kind;
 use ignore::Error;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
@@ -37,9 +36,9 @@ impl Source {
 /// `Display` for `WithPath`/`WithLineNumber`/`Glob` embeds the walker's
 /// absolute path and the offending ignore-file line, and `Loop` embeds both
 /// paths (ignore 0.4.33, `lib.rs:338-343`), so formatting the error would put
-/// an absolute project or home path and user ignore-file content into the
-/// server log. The record carries static `source`/`error_kind` fields and a
-/// non-reversible `path_id` (plus `ancestor_id` for a loop) for correlation.
+/// user ignore-file content into the log. The record carries static
+/// `source`/`error_kind` fields and the real `path` (plus `ancestor` for a
+/// loop), so the operator can find the offending ignore file.
 ///
 /// `Error::Partial` joins its members with newlines, so each member is logged
 /// as its own one-line record instead of one multi-line field.
@@ -60,8 +59,8 @@ fn log_build_failure(source: Source, context: Option<&Path>, error: &Error) {
             operation = "ignore_rules_build",
             source = source.as_str(),
             error_kind = "loop",
-            path_id = ?Some(redacted_path(child)),
-            ancestor_id = %redacted_path(ancestor),
+            path = %child.display(),
+            ancestor = %ancestor.display(),
             "failed to build ignore rules; the affected rules are not applied",
         ),
         other => log_one_failure(source, context, ignore_error_kind(other)),
@@ -69,12 +68,12 @@ fn log_build_failure(source: Source, context: Option<&Path>, error: &Error) {
 }
 
 fn log_one_failure(source: Source, path: Option<&Path>, error_kind: &'static str) {
-    let path_id = path.map(redacted_path);
+    let path = path.map(|path| path.display().to_string());
     tracing::warn!(
         operation = "ignore_rules_build",
         source = source.as_str(),
         error_kind = error_kind,
-        path_id = ?path_id,
+        path = path.as_deref(),
         "failed to build ignore rules; the affected rules are not applied",
     );
 }
@@ -93,10 +92,9 @@ pub(super) fn assemble_matchers(
 ) {
     let mut ignore_by_dir: HashMap<PathBuf, Gitignore> = HashMap::new();
     let mut gitignore_by_dir: HashMap<PathBuf, Gitignore> = HashMap::new();
-    // Matcher diagnostics carry a static source and error category plus a
-    // redacted path id: the offending ignore file is correlatable, and neither
-    // the operator's home directory nor the project path enters a server log
-    // (the blanket rule in `util::redacted_path` docs).
+    // Matcher diagnostics carry a static source and error category plus the
+    // real path of the offending ignore file; the error's own text (which can
+    // echo ignore-file line content) is not logged.
     for (dir, (gitignores, ignores)) in group_files_by_dir(ignore_files) {
         if let Some(matcher) = compile_ignore_matcher(&dir, &ignores) {
             ignore_by_dir.insert(dir.clone(), matcher);
@@ -129,7 +127,7 @@ pub(super) fn group_files_by_dir(
     for file in ignore_files {
         let Some(parent) = file.parent() else {
             tracing::warn!(
-                path_id = %redacted_path(file),
+                path = %file.display(),
                 "ignore file has no parent directory; its rules are not applied",
             );
             continue;

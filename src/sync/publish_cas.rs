@@ -92,14 +92,14 @@ pub(crate) fn publish_with_limits(
             && attempt < MAX_CAS_RETRIES
             && deadline.exceeded().is_none()
         {
-            // Correlate the retry by category and a redacted path id; the
+            // Name the retry by category and the real path; the
             // error's Display carries the changed file's path.
             let (error_kind, path) = publish_log::failure_fields(error);
             match path {
                 Some(path) => tracing::info!(
                     attempt,
                     error_kind,
-                    path_id = %crate::util::redacted_path(path),
+                    path = %path.display(),
                     "publish retrying"
                 ),
                 None => tracing::info!(attempt, error_kind, "publish retrying"),

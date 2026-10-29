@@ -51,7 +51,7 @@ pub(crate) fn redacted_path(path: &std::path::Path) -> String {
 pub(crate) fn canonical_or_self(path: &std::path::Path) -> std::path::PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|error| {
         tracing::warn!(
-            path = %redacted_path(path),
+            path = %path.display(),
             error = %error,
             "could not canonicalize; continuing with the path as given",
         );

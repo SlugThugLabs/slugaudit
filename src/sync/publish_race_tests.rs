@@ -284,10 +284,10 @@ fn a_noop_retry_after_losing_the_cas_race_converges_on_the_winners_revision() {
 }
 
 /// The retry line must not log `ChangedDuringSample`'s Display, which
-/// embeds the changed file's path; it correlates the retry through the
-/// category and a redacted path id instead.
+/// embeds the changed file's path; it names the retry through the category
+/// and a separate `path` field instead.
 #[test]
-fn a_retry_logs_the_changed_file_under_a_redacted_path_id() {
+fn a_retry_logs_the_changed_file_under_a_path_field() {
     let project = tempfile::tempdir().expect("project dir");
     write(project.path(), "lib.rs", b"version one\n");
     let db_dir = tempfile::tempdir().expect("db dir");
@@ -319,11 +319,7 @@ fn a_retry_logs_the_changed_file_under_a_redacted_path_id() {
         "got: {retry_line}"
     );
     assert!(
-        retry_line.contains(&crate::util::redacted_path(std::path::Path::new("lib.rs"))),
-        "the redacted path id must identify the file: {retry_line}"
-    );
-    assert!(
-        !retry_line.contains("lib.rs"),
-        "the raw project-relative path must not be logged: {retry_line}"
+        retry_line.contains("path=lib.rs"),
+        "the path must identify the file: {retry_line}"
     );
 }

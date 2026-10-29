@@ -63,12 +63,12 @@ pub(super) fn analyze(
     deadline: &Deadline,
 ) -> ParseResult {
     let Some(content) = content else {
-        tracing::trace!(path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)), "no content; parser not invoked");
+        tracing::trace!(path = %relative_path, "no content; parser not invoked");
         return ParseResult::without_content();
     };
     let Some(language) = crate::parse::detect_language(relative_path) else {
         tracing::trace!(
-            path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
+            path = %relative_path,
             "no language detected; parser not invoked"
         );
         return ParseResult::content_only(None, false);
@@ -77,14 +77,14 @@ pub(super) fn analyze(
         // Prose is stored and searchable but never parsed: no grammar is
         // fetched or loaded, so it yields no Diagnostic/Structure rows.
         tracing::trace!(
-            path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
+            path = %relative_path,
             "prose file; parser not invoked"
         );
         return ParseResult::content_only(Some(language), true);
     }
     if !crate::parse::language_available(&language) {
         tracing::debug!(
-            path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
+            path = %relative_path,
             language = %language,
             "detected language is not known to the pack; recording ContentOnly",
         );

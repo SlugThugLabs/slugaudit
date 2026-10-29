@@ -256,10 +256,8 @@ pub(super) fn reject_insecure_permissions(path: &Path) -> Result<(), StoreError>
     };
     let mode = metadata.permissions().mode();
     if mode & 0o077 != 0 {
-        // Deliberately the raw path, not redacted_path(): a rejection that
-        // cannot say which file it rejected leaves the operator stuck. The
-        // hash convention is for correlation-heavy sync logs; one-shot
-        // security rejections are diagnostics, and stderr stays local.
+        // The real path: a rejection that cannot say which file it rejected
+        // leaves the operator stuck, and stderr stays local.
         tracing::warn!(
             target: "slugaudit::store",
             path = %path.display(),

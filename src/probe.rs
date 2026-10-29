@@ -3,7 +3,7 @@
 //! negative; any other failure is a deliberate recovery to the negative that
 //! is logged with the source error, so a detection miss always has a cause.
 
-use crate::util::{MAX_FOREIGN_TEXT_BYTES, read_file_capped, redacted_path};
+use crate::util::{MAX_FOREIGN_TEXT_BYTES, read_file_capped};
 use std::path::Path;
 
 /// Whether `path` exists. A stat failure other than "not found" (permissions,
@@ -11,7 +11,7 @@ use std::path::Path;
 pub(crate) fn exists_or_warn(path: &Path) -> bool {
     path.try_exists().unwrap_or_else(|error| {
         tracing::warn!(
-            path = %redacted_path(path),
+            path = %path.display(),
             error = %error,
             "could not stat path; treating it as absent",
         );
@@ -28,7 +28,7 @@ pub(crate) fn read_config_or_warn(path: &Path) -> Option<String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => {
             tracing::warn!(
-                path = %redacted_path(path),
+                path = %path.display(),
                 error = %error,
                 "could not read client config; treating it as not registered",
             );

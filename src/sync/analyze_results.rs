@@ -86,7 +86,7 @@ pub(super) fn pack_error_kind(error: &PackError) -> &'static str {
 /// (unknown, not claimed), like prose.
 pub(super) fn withheld_result(relative_path: &str, language: String, reason: &str) -> ParseResult {
     tracing::debug!(
-        path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
+        path = %relative_path,
         language = %language,
         reason,
         "grammar not run on this file; recording ContentOnly with the reason",
@@ -121,7 +121,7 @@ pub(super) fn timeout_result(
     bound: BudgetBound,
 ) -> ParseResult {
     tracing::debug!(
-        path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
+        path = %relative_path,
         language = %language,
         budget = ?bound,
         evidence_items = evidence.len(),
@@ -156,7 +156,7 @@ pub(super) const COOLDOWN_REASON: &str = "grammar fetch skipped: an earlier fetc
 /// again. Recorded `LoadFailed` like the failure that closed the gate.
 pub(super) fn cooldown_result(relative_path: &str, language: String) -> ParseResult {
     tracing::debug!(
-        path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
+        path = %relative_path,
         language = %language,
         "grammar fetch in cool-down; recording LoadFailed without calling the pack",
     );
@@ -203,7 +203,7 @@ pub(super) fn succeeded_result(
             // logged with the cause rather than reported as an exact count.
             count: u32::try_from(diagnostic_count).unwrap_or_else(|error| {
                 tracing::warn!(
-                    path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
+                    path = %relative_path,
                     diagnostic_count,
                     error = %error,
                     "diagnostic count exceeds u32; the recorded syntax-error count saturates",
@@ -220,7 +220,7 @@ pub(super) fn succeeded_result(
         ExtractionCompleteness::Full
     };
     tracing::debug!(
-        path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
+        path = %relative_path,
         language = %language,
         diagnostic_count,
         outcome = ?outcome,
@@ -248,7 +248,7 @@ pub(super) fn load_failed_result(
 ) -> ParseResult {
     tracing::warn!(
         operation = "parser_load",
-        path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
+        path = %relative_path,
         language = %language,
         error_kind = pack_error_kind(error),
         "parser failed to load; recording LoadFailed",
@@ -276,7 +276,7 @@ pub(super) fn parse_failed_result(
 ) -> ParseResult {
     tracing::debug!(
         operation = "parser_extract",
-        path_id = %crate::util::redacted_path(std::path::Path::new(relative_path)),
+        path = %relative_path,
         language = %language,
         error_kind = pack_error_kind(error),
         "parser ran but extraction failed; recording Failed",

@@ -115,11 +115,11 @@ fn load_failure_classification_is_disjoint_from_parse_failure() {
     assert!(!is_load_failure(&parse_failure));
 }
 
-/// Per-file parse logs identify the file by a redacted path id, not by the
-/// raw project-relative path, and a pack error's `Display` (which embeds the
-/// absolute grammar-library path) must never be formatted into the record.
+/// Per-file parse logs name the project-relative path, and a pack error's
+/// `Display` (which embeds the absolute grammar-library path) must never be
+/// formatted into the record.
 #[test]
-fn a_parser_load_failure_logs_the_redacted_path_not_the_raw_one() {
+fn a_parser_load_failure_logs_the_relative_path_not_the_library_path() {
     let relative = "src/private-name.rs";
     let raw_library_path =
         "/home/private-user/.cache/tree-sitter-language-pack/libtree-sitter-rust.so";
@@ -143,12 +143,8 @@ fn a_parser_load_failure_logs_the_redacted_path_not_the_raw_one() {
         "the record must carry the static error category: {logs}"
     );
     assert!(
-        logs.contains(&crate::util::redacted_path(std::path::Path::new(relative))),
-        "the redacted path id must identify the file: {logs}"
-    );
-    assert!(
-        !logs.contains(relative),
-        "the raw project-relative path must not be logged: {logs}"
+        logs.contains(&format!("path={relative}")),
+        "the relative path must identify the file: {logs}"
     );
     assert!(
         !logs.contains(raw_library_path) && !logs.contains("private-user"),

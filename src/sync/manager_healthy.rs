@@ -45,7 +45,7 @@ impl SourceSyncManager {
                 .may_skip(root.as_path(), rules.as_ref())
         {
             tracing::debug!(
-                root_id = %crate::util::redacted_path(root.as_path()),
+                root = %root.as_path().display(),
                 "watcher healthy and quiet; skipping the full stat sweep",
             );
             return revision_after_sync(connection, database_path);

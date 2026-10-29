@@ -96,7 +96,7 @@ pub(super) fn reconcile_events(
     )?;
 
     tracing::debug!(
-        root_id = %crate::util::redacted_path(root),
+        root = %root.display(),
         elapsed_ms = started.elapsed().as_millis(),
         skipped = skipped_total,
         "incremental reconcile phase complete",

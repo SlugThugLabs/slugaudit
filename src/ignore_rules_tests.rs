@@ -366,12 +366,11 @@ fn an_unstattable_git_exclude_is_reported_not_skipped_silently() {
 /// so a malformed project `.gitignore` must emit structured fields rather
 /// than the error text.
 #[test]
-fn a_malformed_project_gitignore_logs_no_path_or_glob_text() {
+fn a_malformed_project_gitignore_logs_the_path_but_no_glob_text() {
     let project = project();
     let gitignore = project.path().join(".gitignore");
     fs::write(&gitignore, "[z-a]\n").expect("malformed gitignore");
-    let raw_root = project.path().to_string_lossy().to_string();
-    let expected_id = crate::util::redacted_path(&gitignore);
+    let expected_path = gitignore.to_string_lossy().to_string();
 
     let (_rules, logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("capture liveness control for ignore_rules_build");
@@ -390,12 +389,8 @@ fn a_malformed_project_gitignore_logs_no_path_or_glob_text() {
         "the error category must be named:\n{logs}"
     );
     assert!(
-        records[0].contains(&format!("path_id=Some(\"{expected_id}\")")),
-        "the redacted path id must be present:\n{logs}"
-    );
-    assert!(
-        !logs.contains(&raw_root),
-        "the project path leaked:\n{logs}"
+        records[0].contains(&expected_path),
+        "the real path must be present:\n{logs}"
     );
     assert!(!logs.contains("[z-a]"), "the glob text leaked:\n{logs}");
 }
@@ -403,7 +398,7 @@ fn a_malformed_project_gitignore_logs_no_path_or_glob_text() {
 /// R12: the global gitignore normally lives under `$HOME`/XDG, so the same
 /// error `Display` would put the operator's home directory in a server log.
 #[test]
-fn a_malformed_global_gitignore_logs_no_home_path_or_glob_text() {
+fn a_malformed_global_gitignore_logs_the_path_but_no_glob_text() {
     let _guard = TEST_ENV_LOCK.lock().expect("env lock");
     let home = project();
     let xdg = tempfile::tempdir().expect("xdg config dir");
@@ -411,9 +406,7 @@ fn a_malformed_global_gitignore_logs_no_home_path_or_glob_text() {
     fs::create_dir_all(global.parent().expect("git config dir")).expect("git config dir");
     fs::write(&global, "[z-a]\n").expect("malformed global ignore");
     let missing_config = home.path().join("absent-gitconfig");
-    let raw_home = home.path().to_string_lossy().to_string();
-    let raw_xdg = xdg.path().to_string_lossy().to_string();
-    let expected_id = crate::util::redacted_path(&global);
+    let expected_path = global.to_string_lossy().to_string();
 
     let (_rules, logs) = temp_env::with_vars(
         [
@@ -444,26 +437,23 @@ fn a_malformed_global_gitignore_logs_no_home_path_or_glob_text() {
         "the error category must be named:\n{logs}"
     );
     assert!(
-        records[0].contains(&format!("path_id=Some(\"{expected_id}\")")),
-        "the redacted path id must be present:\n{logs}"
+        records[0].contains(&expected_path),
+        "the real path must be present:\n{logs}"
     );
-    assert!(!logs.contains(&raw_home), "the home path leaked:\n{logs}");
-    assert!(!logs.contains(&raw_xdg), "the XDG path leaked:\n{logs}");
     assert!(!logs.contains("[z-a]"), "the glob text leaked:\n{logs}");
 }
 
 /// R12: `.git/info/exclude` is added from an absolute path (`root.join`), so
 /// its malformed glob must not reach the log either.
 #[test]
-fn a_malformed_git_exclude_logs_no_path_or_glob_text() {
+fn a_malformed_git_exclude_logs_the_path_but_no_glob_text() {
     let project = project();
     let gitignore = project.path().join(".gitignore");
     fs::write(&gitignore, "*.tmp\n").expect("valid gitignore");
     let exclude = project.path().join(".git/info/exclude");
     fs::create_dir_all(exclude.parent().expect("exclude dir")).expect("git info dir");
     fs::write(&exclude, "[z-a]\n").expect("malformed exclude");
-    let raw_root = project.path().to_string_lossy().to_string();
-    let expected_id = crate::util::redacted_path(&exclude);
+    let expected_path = exclude.to_string_lossy().to_string();
 
     let (_rules, logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("capture liveness control for ignore_rules_build");
@@ -482,12 +472,8 @@ fn a_malformed_git_exclude_logs_no_path_or_glob_text() {
         "the error category must be named:\n{logs}"
     );
     assert!(
-        records[0].contains(&format!("path_id=Some(\"{expected_id}\")")),
-        "the redacted path id must be present:\n{logs}"
-    );
-    assert!(
-        !logs.contains(&raw_root),
-        "the project path leaked:\n{logs}"
+        records[0].contains(&expected_path),
+        "the real path must be present:\n{logs}"
     );
     assert!(!logs.contains("[z-a]"), "the glob text leaked:\n{logs}");
 }
@@ -500,8 +486,7 @@ fn a_partially_malformed_gitignore_logs_one_record_per_failure() {
     let project = project();
     let gitignore = project.path().join(".gitignore");
     fs::write(&gitignore, "[z-a]\n[9-0]\n").expect("malformed gitignore");
-    let raw_root = project.path().to_string_lossy().to_string();
-    let expected_id = crate::util::redacted_path(&gitignore);
+    let expected_path = gitignore.to_string_lossy().to_string();
 
     let (_rules, logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("capture liveness control for ignore_rules_build");
@@ -521,14 +506,10 @@ fn a_partially_malformed_gitignore_logs_one_record_per_failure() {
             "the error category must be named:\n{logs}"
         );
         assert!(
-            record.contains(&format!("path_id=Some(\"{expected_id}\")")),
-            "the redacted path id must be present:\n{logs}"
+            record.contains(&expected_path),
+            "the real path must be present:\n{logs}"
         );
     }
-    assert!(
-        !logs.contains(&raw_root),
-        "the project path leaked:\n{logs}"
-    );
     assert!(
         !logs.contains("[z-a]") && !logs.contains("[9-0]"),
         "the glob text leaked:\n{logs}"

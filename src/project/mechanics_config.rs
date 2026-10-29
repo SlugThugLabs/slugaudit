@@ -109,14 +109,14 @@ pub fn load_persisted(project_root: &Path) -> PersistedMechanics {
             Some(section) => parse_section(section),
         },
         Err(error) => {
-            // The root is redacted and only the underlying cause is logged:
+            // Only the underlying cause is logged beside the root:
             // the error's own text names the config path.
             let (error_kind, cause) = match &error {
                 ConfigError::Io { source, .. } => ("io", source.to_string()),
                 ConfigError::Parse { source, .. } => ("parse", source.to_string()),
             };
             tracing::warn!(
-                root_id = %crate::util::redacted_path(project_root),
+                root = %project_root.display(),
                 error_kind,
                 error = %cause,
                 "persisted mechanics could not be read; reporting the section invalid",

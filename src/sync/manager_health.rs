@@ -43,7 +43,7 @@ impl SourceSyncManager {
             }
             WatcherHealth::Unavailable => {
                 tracing::info!(
-                    root_id = %crate::util::redacted_path(root.as_path()),
+                    root = %root.as_path().display(),
                     "watcher unavailable; running full publish",
                 );
                 let report = super::super::manager_meta::publish_full(
@@ -78,7 +78,7 @@ impl SourceSyncManager {
     ) -> Result<String, ErrorData> {
         tracing::info!(
             health = ?state.health(),
-            root_id = %crate::util::redacted_path(root.as_path()),
+            root = %root.as_path().display(),
             "watcher untrusted; running full verification",
         );
         // A concurrent first `watch` can still be computing its scope (the

@@ -43,7 +43,7 @@ pub(super) fn insert_finding(
     tracing::info!(
         target: "slugaudit_mcp_rust::tools::finding",
         revision_id,
-        file_id = %util::redacted_log_id(request.file.as_bytes()),
+        file = ?request.file,
         id,
         "finding recorded"
     );

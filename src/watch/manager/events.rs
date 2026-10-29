@@ -7,7 +7,7 @@
 //! that `unwatch` only ever runs on a tool thread) stays intact.
 
 use super::{Deferred, MAX_DEFERRED_EVENTS, WatchManager, WatchManagerInner};
-use crate::util::{lock_or_recover, redacted_path};
+use crate::util::lock_or_recover;
 use crate::watch::errors::log_notify_failure;
 use crate::watch::event_filter::{PathClass, classify_path};
 use crate::watch::path::normalize_relative_path;
@@ -105,7 +105,7 @@ impl WatchManager {
         // sync layer calls from a tool thread, never from the event loop.
         for root in &deleted_roots {
             guard.projects.remove(root);
-            tracing::info!(root_id = %redacted_path(root), "removed watch for deleted project root");
+            tracing::info!(root = %root.display(), "removed watch for deleted project root");
         }
     }
 

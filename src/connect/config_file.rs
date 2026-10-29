@@ -67,7 +67,7 @@ pub fn has_slugaudit(path: &Path, keys: &[&str]) -> bool {
             .any(|k| value.get(*k).and_then(|s| s.get("slugaudit")).is_some()),
         Err(error) => {
             tracing::warn!(
-                path = %crate::util::redacted_path(path),
+                path = %path.display(),
                 error = %error,
                 "client config is not valid JSON; treating it as not registered",
             );

@@ -16,7 +16,7 @@ use super::sweep::{SweepError, SweepReport, sweep};
 use crate::error_codes;
 use crate::ignore_rules::is_excluded_path;
 use crate::progress::{ProgressEvent, ProgressSink};
-use crate::util::{Deadline, redacted_path};
+use crate::util::Deadline;
 use crate::watch::errors::{ignore_error_kind, ignore_error_path};
 use crate::watch::{WatchState, WatcherHealth};
 use rmcp::ErrorData;
@@ -176,7 +176,7 @@ fn mark_sweep_failed(
         .and_then(|data| data["code"].as_str())
         .unwrap_or("none");
     tracing::warn!(
-        root_id = %redacted_path(root),
+        root = %root.display(),
         operation = phase.operation(),
         error_code,
         "{}",
@@ -272,7 +272,7 @@ pub(super) fn log_sweep_findings(root: &Path, candidates: usize, deleted: usize,
         return;
     }
     tracing::debug!(
-        root_id = %redacted_path(root),
+        root = %root.display(),
         candidates,
         deleted,
         unchanged,

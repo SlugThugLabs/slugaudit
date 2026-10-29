@@ -58,7 +58,7 @@ pub(super) fn node_to_match(
         Ok(text) => (text, false),
         Err(error) => {
             tracing::warn!(
-                file_id = %crate::util::redacted_path(std::path::Path::new(file)),
+                file = %file,
                 start_byte = node.start_byte(),
                 end_byte = node.end_byte(),
                 error = %error,
@@ -69,7 +69,7 @@ pub(super) fn node_to_match(
     };
     if capture_name.is_none() {
         tracing::warn!(
-            file_id = %crate::util::redacted_path(std::path::Path::new(file)),
+            file = %file,
             "structure: capture has no name; reporting extraction_failed",
         );
     }

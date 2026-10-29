@@ -8,7 +8,7 @@
 
 use super::{ProjectWatchInfo, WatchManager};
 use crate::ignore_rules::IgnoreRules;
-use crate::util::{canonical_or_self, lock_or_recover, redacted_path};
+use crate::util::{canonical_or_self, lock_or_recover};
 use crate::watch::errors::log_notify_failure;
 use crate::watch::scope::{self, WatchScope};
 use crate::watch::state::WatchState;
@@ -52,7 +52,7 @@ impl WatchManager {
             if let Some(ref mut watcher) = guard.watcher {
                 match watcher.watch(&canonical, RecursiveMode::NonRecursive) {
                     Ok(()) => {
-                        tracing::info!(root_id = %redacted_path(&canonical), "watching project");
+                        tracing::info!(root = %canonical.display(), "watching project");
                     }
                     Err(error) => {
                         log_notify_failure(

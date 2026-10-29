@@ -257,7 +257,7 @@ fn walked_file(
         Ok(metadata) => Ok(Walked::Stat(relative, metadata)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             tracing::debug!(
-                path_id = %crate::util::redacted_path(absolute_path),
+                path = %absolute_path.display(),
                 "sweep walked a file that vanished before it could be stat'd",
             );
             Ok(Walked::Skipped)

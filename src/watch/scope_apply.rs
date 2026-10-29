@@ -10,7 +10,6 @@ use super::manager::{ProjectWatchInfo, WatchManagerInner};
 use super::scope::WatchScope;
 use super::types::WatcherHealth;
 use crate::ignore_rules::IgnoreRules;
-use crate::util::redacted_path;
 use crate::watch::errors::log_notify_failure;
 use notify::{RecursiveMode, Watcher};
 use std::path::Path;
@@ -46,7 +45,7 @@ pub(super) fn apply_scope_locked(
 
     if let Some(limit) = scope.limit.as_ref() {
         tracing::warn!(
-            root_id = %redacted_path(root),
+            root = %root.display(),
             max_entries = limit.max_entries,
             max_depth = limit.max_depth,
             entries_seen = limit.entries_seen,

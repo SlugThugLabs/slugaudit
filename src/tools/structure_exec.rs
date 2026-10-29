@@ -106,7 +106,7 @@ impl Run<'_, '_, '_> {
                 }
                 Parsed::Cancelled => {
                     tracing::warn!(
-                        file_id = %crate::util::redacted_path(std::path::Path::new(file_path)),
+                        file = %file_path,
                         content_bytes = content.len(),
                         "structure: parse cancelled at the execution budget; returning the matches so far",
                     );

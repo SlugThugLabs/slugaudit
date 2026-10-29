@@ -290,7 +290,7 @@ impl SourceSyncManager {
         self.stamp_last_sync(duration_ms);
         tracing::debug!(
             revision_id = %revision_id,
-            root_id = %crate::util::redacted_path(root.as_path()),
+            root = %root.as_path().display(),
             "ensure_current completed",
         );
 

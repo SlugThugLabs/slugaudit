@@ -143,8 +143,13 @@ impl ScopeWalk {
                 // under-registers watches, which means changes under it are
                 // not seen until a full verification — worth a line rather
                 // than silence.
-                let path_id = ignore_error_path(&error).map(crate::util::redacted_path);
-                tracing::warn!(operation = "watch_scope_walk", error_kind = ignore_error_kind(&error), path_id = ?path_id, "watch scope could not read a directory entry; that subtree is unwatched until the next scope refresh");
+                let path = ignore_error_path(&error).map(|path| path.display().to_string());
+                tracing::warn!(
+                    operation = "watch_scope_walk",
+                    error_kind = ignore_error_kind(&error),
+                    path = path.as_deref(),
+                    "watch scope could not read a directory entry; that subtree is unwatched until the next scope refresh"
+                );
                 return;
             }
         };
@@ -170,7 +175,7 @@ impl ScopeWalk {
                 // The walker yields paths under `root`, so this cannot
                 // happen; if it did, the entry would go unwatched.
                 tracing::warn!(
-                    path_id = %crate::util::redacted_path(path),
+                    path = %path.display(),
                     error = %error,
                     "watch scope walked a path outside the project root; it is left out",
                 );
@@ -202,7 +207,7 @@ impl ScopeWalk {
                 // we could not inspect.
                 self.depth_limited = true;
                 tracing::warn!(
-                    path_id = %crate::util::redacted_path(path),
+                    path = %path.display(),
                     error = %error,
                     "could not inspect a directory at the watch-scope depth \
                      limit; treating its children as unwatched",
