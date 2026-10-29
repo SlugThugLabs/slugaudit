@@ -11,6 +11,12 @@ The newest entry MUST match the version in `Cargo.toml`.
 
 ### Fixed
 
+- `connect` and the interactive menu no longer run client CLIs (`<client> mcp
+  list`) to check whether SlugAudit is registered; that is read from the
+  client's config file only. Clients with no known config file (agy, amp, q) are
+  reported as not detected. The `mcp add`/`mcp remove` commands that remain now
+  stop after 15 seconds: a hung client is killed and `connect` fails with a
+  timeout error naming it.
 - A mistyped answer in the interactive menu now prints one error line and asks
   again on the choice line instead of redrawing the whole banner and menu.
 - The interactive connect menu no longer prints "not valid JSON" warnings for

@@ -191,6 +191,14 @@ pub enum ConnectError {
         /// Underlying spawn or wait error.
         inner: std::io::Error,
     },
+    /// The client's executable ran past its deadline and was killed.
+    #[error("`{cli}` did not finish within {timeout_secs}s and was stopped")]
+    AgentTimeout {
+        /// Client executable that timed out.
+        cli: String,
+        /// The deadline it exceeded, in seconds.
+        timeout_secs: f32,
+    },
     /// The client's `mcp remove` subcommand exited non-zero.
     #[error("`{cli} mcp remove` exited with {status}")]
     RemoveFailed {

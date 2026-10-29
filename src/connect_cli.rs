@@ -9,36 +9,9 @@ use crate::cli::ConnectError;
 use crate::connect::registry_types::binary_text;
 use crate::connect_agents::{AgentDef, Dialect};
 use crate::connect_guidance as guidance;
+use crate::connect_run::{CLIENT_CLI_TIMEOUT, run_bounded};
 use std::path::Path;
-use std::process::{Command, Stdio};
-
-/// True when the client's own `mcp list` reports slugaudit.
-///
-/// Advisory: a spawn failure reads as "not connected" and a non-zero exit
-/// still has its stdout scanned; both are logged with the cause.
-pub fn check_connected(cli: &str) -> bool {
-    let output = match Command::new(cli)
-        .args(["mcp", "list"])
-        .stdin(Stdio::null())
-        .output()
-    {
-        Ok(output) => output,
-        Err(error) => {
-            tracing::warn!(cli, error = %error, "could not run `mcp list`; treating the client as not connected");
-            return false;
-        }
-    };
-    list_shows_slugaudit(cli, &output)
-}
-
-/// Scans an `mcp list` result for the server; an unsuccessful exit is logged
-/// and its output is still scanned.
-pub(crate) fn list_shows_slugaudit(cli: &str, output: &std::process::Output) -> bool {
-    if !output.status.success() {
-        tracing::warn!(cli, status = %output.status, "`mcp list` exited unsuccessfully; its output is still scanned");
-    }
-    String::from_utf8_lossy(&output.stdout).contains("slugaudit")
-}
+use std::time::Duration;
 
 /// The `mcp add` argv for this client's grammar, matching its own usage line.
 ///
@@ -124,14 +97,12 @@ fn shell_quote(arg: &str) -> String {
 ///
 /// Returns the client's recorded failure text as a `ConnectError`.
 pub fn run_add(cli: &str, args: &[String]) -> Result<(), ConnectError> {
-    let output = Command::new(cli)
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|inner| ConnectError::AgentCommand {
-            cli: cli.to_string(),
-            inner,
-        })?;
+    run_add_within(cli, args, CLIENT_CLI_TIMEOUT)
+}
+
+/// [`run_add`] with an explicit deadline.
+fn run_add_within(cli: &str, args: &[String], timeout: Duration) -> Result<(), ConnectError> {
+    let output = run_bounded(cli, args, timeout)?;
     if !output.status.success() {
         let status = output.status.to_string();
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -163,16 +134,7 @@ pub fn run_add(cli: &str, args: &[String]) -> Result<(), ConnectError> {
 ///
 /// Returns the client's recorded failure text; the file fallback may still succeed.
 pub fn run_remove(agent: &AgentDef, cli: &str) -> Result<(), ConnectError> {
-    let status = Command::new(cli)
-        .args(remove_args(agent))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|inner| ConnectError::AgentCommand {
-            cli: cli.to_string(),
-            inner,
-        })?;
+    let status = run_bounded(cli, &remove_args(agent), CLIENT_CLI_TIMEOUT)?.status;
     if !status.success() {
         // `RemoveFailed`, not `AddFailed`: the latter names the wrong command
         // and tells the user to "see the output above" while this call nulls
@@ -189,31 +151,23 @@ pub fn run_remove(agent: &AgentDef, cli: &str) -> Result<(), ConnectError> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_cli_that_cannot_be_spawned_is_not_connected_and_says_why() {
-        let (connected, logs) = crate::store::test_capture::capture_warns(|| {
-            check_connected("/nonexistent/slugaudit-fake-cli")
-        });
-
-        assert!(!connected);
-        assert!(logs.contains("could not run `mcp list`"), "{logs}");
-    }
-
     #[cfg(unix)]
     #[test]
-    fn a_list_that_shows_slugaudit_but_exits_nonzero_is_connected_and_logged() {
-        use std::os::unix::process::ExitStatusExt as _;
-        let output = std::process::Output {
-            status: std::process::ExitStatus::from_raw(3 << 8),
-            stdout: b"slugaudit\n".to_vec(),
-            stderr: Vec::new(),
+    fn an_add_that_outlives_its_deadline_is_a_timeout_error() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+        let dir = tempfile::tempdir().expect("dir");
+        let cli = dir.path().join("fake-client");
+        std::fs::write(&cli, "#!/bin/sh\nexec /bin/sleep 30\n").expect("write");
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let cli = cli.display().to_string();
+
+        let result = run_add_within(&cli, &["mcp".to_string()], Duration::from_millis(300));
+
+        let Err(ConnectError::AgentTimeout { cli: named, .. }) = result else {
+            panic!("expected AgentTimeout, got {result:?}");
         };
-
-        let (connected, logs) =
-            crate::store::test_capture::capture_warns(|| list_shows_slugaudit("fake-cli", &output));
-
-        assert!(connected);
-        assert!(logs.contains("exited unsuccessfully"), "{logs}");
+        assert_eq!(named, cli);
     }
 
     #[test]

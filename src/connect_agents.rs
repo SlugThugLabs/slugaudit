@@ -34,8 +34,8 @@ pub struct AgentDef {
     /// name (warp's CLI is `oz`).
     pub cli: Option<&'static str>,
     /// An executable that can only *confirm* registration (`mcp list`), not
-    /// create it — cursor's `agent`. Used for detection and `is_connected`
-    /// only; never for add/remove.
+    /// create it — cursor's `agent`. Used for install detection only; never
+    /// spawned, and never for add/remove.
     pub verify_cli: Option<&'static str>,
     /// Where the client's config file lives.
     pub config: ConfigPath,
@@ -125,20 +125,13 @@ impl AgentDef {
             .is_some_and(|p| p != home && crate::probe::exists_or_warn(p))
     }
 
-    /// Returns true if this agent already has SlugAudit configured.
+    /// Returns true if this agent's local config file already has SlugAudit.
+    ///
+    /// Config files only: no client CLI is ever spawned to ask. A client with
+    /// no known config file (`ConfigPath::Unverified`: agy, amp, q) is always
+    /// reported as not detected.
     pub fn is_connected(&self, home: Option<&Path>) -> bool {
-        if let Some(home) = home
-            && self.config_has_slugaudit(home)
-        {
-            return true;
-        }
-        if let Some(cli) = self
-            .executables()
-            .find(|cli| crate::probe::cli_on_path(cli))
-        {
-            return crate::connect_cli::check_connected(cli);
-        }
-        false
+        home.is_some_and(|home| self.config_has_slugaudit(home))
     }
 
     fn config_has_slugaudit(&self, home: &Path) -> bool {
@@ -217,3 +210,7 @@ pub fn detected_agents(home: Option<&Path>) -> Vec<AgentDef> {
 #[cfg(test)]
 #[path = "connect_registry_tests.rs"]
 mod registry_tests;
+
+#[cfg(test)]
+#[path = "connect_enumeration_tests.rs"]
+mod enumeration_tests;

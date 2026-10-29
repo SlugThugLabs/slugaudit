@@ -53,25 +53,26 @@ struct Case {
 /// `--command` positional spellings. The two `written` rows are the clients
 /// with no `mcp add` at all.
 ///
-/// Every CLI-driven case starts with `mcp list`: `connect` asks the client
-/// whether slugaudit is already registered before it adds it.
+/// Each CLI-driven case records exactly one invocation, the `mcp add`:
+/// `connect` decides "already registered" from the config file alone and never
+/// spawns the client to list.
 const CASES: &[Case] = &[
     Case {
         agent: "codex",
         cli: true,
-        invocations: &["mcp list", "mcp add slugaudit -- {bin}"],
+        invocations: &["mcp add slugaudit -- {bin}"],
         written: None,
     },
     Case {
         agent: "claude",
         cli: true,
-        invocations: &["mcp list", "mcp add -s user slugaudit -- {bin}"],
+        invocations: &["mcp add -s user slugaudit -- {bin}"],
         written: None,
     },
     Case {
         agent: "grok",
         cli: true,
-        invocations: &["mcp list", "mcp add slugaudit --scope user -- {bin}"],
+        invocations: &["mcp add slugaudit --scope user -- {bin}"],
         written: None,
     },
     // Gemini's `--scope` defaults to project, so a global registration passes
@@ -79,40 +80,37 @@ const CASES: &[Case] = &[
     Case {
         agent: "gemini",
         cli: true,
-        invocations: &["mcp list", "mcp add -s user slugaudit {bin}"],
+        invocations: &["mcp add -s user slugaudit {bin}"],
         written: None,
     },
     Case {
         agent: "bob",
         cli: true,
-        invocations: &[
-            "mcp list",
-            "mcp add --transport stdio --scope global slugaudit {bin}",
-        ],
+        invocations: &["mcp add --transport stdio --scope global slugaudit {bin}"],
         written: None,
     },
     Case {
         agent: "droid",
         cli: true,
-        invocations: &["mcp list", "mcp add --type stdio slugaudit {bin}"],
+        invocations: &["mcp add --type stdio slugaudit {bin}"],
         written: None,
     },
     Case {
         agent: "openhands",
         cli: true,
-        invocations: &["mcp list", "mcp add slugaudit --transport stdio {bin}"],
+        invocations: &["mcp add slugaudit --transport stdio {bin}"],
         written: None,
     },
     Case {
         agent: "hermes",
         cli: true,
-        invocations: &["mcp list", "mcp add slugaudit --command {bin}"],
+        invocations: &["mcp add slugaudit --command {bin}"],
         written: None,
     },
     Case {
         agent: "q",
         cli: true,
-        invocations: &["mcp list", "mcp add --name slugaudit --command {bin}"],
+        invocations: &["mcp add --name slugaudit --command {bin}"],
         written: None,
     },
     // cursor's only executable is `agent`, a verify-only CLI that cannot
@@ -133,8 +131,7 @@ const CASES: &[Case] = &[
 
 /// Writes a fake client CLI named `name` into `bin_dir`: a shell script that
 /// records its argv — one line per invocation, arguments space-separated — to
-/// `log` and exits 0. Nothing is printed, so the `mcp list` probe answers "not
-/// registered" and `connect` always takes the add path.
+/// `log` and exits 0.
 fn write_fake_cli(bin_dir: &Path, name: &str, log: &Path) {
     let script = bin_dir.join(name);
     fs::write(

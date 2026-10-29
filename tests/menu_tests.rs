@@ -12,7 +12,7 @@ const MENU_TIMEOUT: Duration = Duration::from_secs(20);
 fn run_menu(input: &str, extra_env: Option<(&str, &str)>) -> (ExitStatus, String, String) {
     let binary = env!("CARGO_BIN_EXE_slugaudit");
     // The menu reaches `connect`/`disconnect` on options 2 and 3, and those
-    // resolve and execute installed client CLIs (`is_connected`, `mcp list`)
+    // resolve and execute installed client CLIs (`mcp add`/`mcp remove`)
     // and read client configs from the user's home. Even though no test here
     // chooses those options today, pin every home into a temp dir and replace
     // `PATH` with an empty directory, so no option can ever reach a real
