@@ -66,8 +66,8 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
         "disconnect" | "remove" => Ok(Command::Disconnect {
             agent: single_agent(first.as_str(), args)?,
         }),
-        "install" => Ok(Command::Install),
-        "menu" => Ok(Command::Menu),
+        "install" => no_arguments("install", args).map(|()| Command::Install),
+        "menu" => no_arguments("menu", args).map(|()| Command::Menu),
         "update" => Ok(Command::Update),
         "version" | "--version" | "-V" | "-v" => Ok(Command::Version),
         "--help" | "-h" => Ok(Command::Help),
@@ -89,6 +89,17 @@ fn single_agent(
             "`{command}` takes at most one agent name; unexpected argument {extra:?}"
         )),
         None => Ok(agent),
+    }
+}
+
+/// Rejects any argument after a command that takes none; a stray argument is
+/// a usage error rather than being silently ignored.
+fn no_arguments(command: &str, mut args: impl Iterator<Item = String>) -> Result<(), String> {
+    match args.next() {
+        Some(extra) => Err(format!(
+            "`{command}` takes no arguments; unexpected argument {extra:?}"
+        )),
+        None => Ok(()),
     }
 }
 

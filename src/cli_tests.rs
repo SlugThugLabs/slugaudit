@@ -119,11 +119,20 @@ fn install_parses_as_its_own_command() {
 }
 
 #[test]
-fn install_ignores_any_extra_arguments() {
+fn parse_install_without_args_ok() {
     assert_eq!(
-        parse_args(vec!["install".to_owned(), "--something".to_owned()].into_iter())
-            .expect("valid arguments parse"),
+        parse_args(vec!["install".to_owned()].into_iter()).expect("valid arguments parse"),
         Command::Install
+    );
+}
+
+#[test]
+fn parse_install_rejects_extra_args() {
+    let err =
+        parse_args(vec!["install".to_owned(), "--something".to_owned()].into_iter()).unwrap_err();
+    assert_eq!(
+        err,
+        "`install` takes no arguments; unexpected argument \"--something\""
     );
 }
 
@@ -136,11 +145,19 @@ fn menu_parses_as_its_own_command() {
 }
 
 #[test]
-fn menu_ignores_any_extra_arguments() {
+fn parse_menu_without_args_ok() {
     assert_eq!(
-        parse_args(vec!["menu".to_owned(), "--wat".to_owned()].into_iter())
-            .expect("valid arguments parse"),
+        parse_args(vec!["menu".to_owned()].into_iter()).expect("valid arguments parse"),
         Command::Menu
+    );
+}
+
+#[test]
+fn parse_menu_rejects_extra_args() {
+    let err = parse_args(vec!["menu".to_owned(), "--wat".to_owned()].into_iter()).unwrap_err();
+    assert_eq!(
+        err,
+        "`menu` takes no arguments; unexpected argument \"--wat\""
     );
 }
 
