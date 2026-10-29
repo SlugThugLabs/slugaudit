@@ -270,3 +270,58 @@ fn read_database_is_never_synced_when_no_database_exists_yet() {
         DatabaseRead::NeverSynced
     );
 }
+
+/// The health database WARNs name the real database path (`path=`) and the
+/// raw source error, not a redacted `database_id`. Covers the inspect and the
+/// read failures; the control line proves the capture was live.
+#[test]
+fn health_database_warns_log_the_real_path_and_source_error() {
+    let directory = tempfile::tempdir().expect("dir");
+    let file = directory.path().join("health_real_path_blocker");
+    std::fs::write(&file, b"x").expect("write file");
+    let inspect_path = file.join("project.db");
+    let read_path = directory.path().join("health_real_path_read.db");
+    let connection = crate::store::open_read_write(&read_path).expect("open the database");
+    connection
+        .execute_batch("DROP TABLE revisions")
+        .expect("remove the revisions table");
+
+    let (_, logs) = crate::store::test_capture::capture_warns(|| {
+        tracing::warn!("capture liveness control for health_real_path");
+        super::read_database(&inspect_path);
+        super::read_database(&read_path);
+    });
+
+    assert!(
+        logs.contains("capture liveness control for health_real_path"),
+        "the capture must be live: {logs}"
+    );
+    let inspect = logs
+        .lines()
+        .find(|line| line.contains("failed to inspect the project database path"))
+        .unwrap_or_else(|| panic!("inspect record missing:\n{logs}"));
+    assert!(
+        inspect.contains(&format!(" path={} ", inspect_path.display())),
+        "inspect WARN must carry the real path:\n{inspect}"
+    );
+    assert!(
+        inspect.contains(" error="),
+        "source error missing:\n{inspect}"
+    );
+    let read = logs
+        .lines()
+        .find(|line| line.contains("failed to read the project database"))
+        .unwrap_or_else(|| panic!("read record missing:\n{logs}"));
+    assert!(
+        read.contains(&format!(" path={} ", read_path.display())),
+        "read WARN must carry the real path:\n{read}"
+    );
+    assert!(
+        read.contains("no such table"),
+        "source error missing:\n{read}"
+    );
+    assert!(
+        !logs.contains("database_id="),
+        "the redacted database id is gone:\n{logs}"
+    );
+}

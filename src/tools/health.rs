@@ -280,7 +280,7 @@ pub(crate) fn read_database(database_path: &std::path::Path) -> DatabaseRead {
         Ok(false) => return DatabaseRead::NeverSynced,
         Err(error) => {
             tracing::warn!(
-                database_id = %crate::util::redacted_path(database_path),
+                path = %database_path.display(),
                 error = %error,
                 "health: failed to inspect the project database path; reporting empty database fields",
             );
@@ -291,7 +291,7 @@ pub(crate) fn read_database(database_path: &std::path::Path) -> DatabaseRead {
         Ok(connection) => connection,
         Err(error) => {
             tracing::warn!(
-                database_id = %crate::util::redacted_path(database_path),
+                path = %database_path.display(),
                 error = %error,
                 "health: failed to open the project database read-only; reporting empty database fields",
             );
@@ -302,7 +302,7 @@ pub(crate) fn read_database(database_path: &std::path::Path) -> DatabaseRead {
         Ok(state) => DatabaseRead::Read(state),
         Err(error) => {
             tracing::warn!(
-                database_id = %crate::util::redacted_path(database_path),
+                path = %database_path.display(),
                 error = %error,
                 "health: failed to read the project database; reporting empty database fields",
             );

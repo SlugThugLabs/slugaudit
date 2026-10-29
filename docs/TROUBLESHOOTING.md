@@ -287,8 +287,8 @@ The phase is `unknown` when the watcher is `Healthy`, `Partial`, or not
 registered; the watcher-only phases (`unavailable`, `restoring`) still
 describe the watcher and stay truthful. The failure may be permissions,
 corruption, a symlink or network filesystem refused at open, a lock/timeout,
-or schema drift; stderr logs the failed open/read beside a redacted database
-id. The phase deliberately does not say `importing` — "the first sync has
+or schema drift; stderr logs the failed inspect/open/read beside the real database
+path (`path=`) and the source error. The phase deliberately does not say `importing` — "the first sync has
 never succeeded" is false when the revision exists but cannot be seen.
 
 `health` is read-only and never syncs or rebuilds. The next state-bearing call
