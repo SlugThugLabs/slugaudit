@@ -6,77 +6,18 @@
 //! synchronized connection to the watcher-health module. Watcher state
 //! transitions and incremental reconciliation live in `manager_health.rs`.
 
+use super::super::discard_notice::{DatabaseDiscard, count_findings, count_findings_at};
 use super::super::manager_meta::{
     ProjectMetaError, ensure_project_row, mark_prior_session_findings_stale, publish_from_scratch,
 };
+use super::super::recovery_log::{DatabaseRecovery, log_database_recovery};
 use super::{SourceSyncManager, SyncedProject};
 use crate::error_codes::{self, ErrorCode};
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::project;
-use crate::store::{self, StoreError};
+use crate::store;
 use rmcp::ErrorData;
 use std::path::{Path, PathBuf};
-
-/// One database recovery event: a database that failed to open, or one whose
-/// metadata proves it belongs to another project root or another contract.
-enum DatabaseRecovery<'a> {
-    OpenFailed {
-        error: &'a StoreError,
-        message: &'static str,
-    },
-    RootMismatch {
-        stored_root: &'a str,
-    },
-    IncompatibleVersion {
-        contract_version: i64,
-        schema_version: i64,
-    },
-}
-
-fn log_database_recovery(database_path: &Path, recovery: DatabaseRecovery<'_>) {
-    match recovery {
-        DatabaseRecovery::OpenFailed { error, message } => tracing::warn!(
-            operation = "open_project_database",
-            database_id = %crate::util::redacted_path(database_path),
-            error_kind = store_error_kind(error),
-            "{}",
-            message,
-        ),
-        DatabaseRecovery::RootMismatch { stored_root } => tracing::warn!(
-            operation = "verify_project_database",
-            database_id = %crate::util::redacted_path(database_path),
-            error_kind = "root_mismatch",
-            stored_root_id = %crate::util::redacted_path(Path::new(stored_root)),
-            "project database is stale; discarding and rebuilding from source",
-        ),
-        DatabaseRecovery::IncompatibleVersion {
-            contract_version,
-            schema_version,
-        } => tracing::warn!(
-            operation = "verify_project_database",
-            database_id = %crate::util::redacted_path(database_path),
-            error_kind = "incompatible_version",
-            contract_version,
-            schema_version,
-            "project database is stale; discarding and rebuilding from source",
-        ),
-    }
-}
-
-fn store_error_kind(error: &StoreError) -> &'static str {
-    match error {
-        StoreError::Open(_) => "open",
-        StoreError::Configure(_) => "configure",
-        StoreError::Busy(_) => "busy",
-        StoreError::Migration(_) => "migration",
-        StoreError::Symlink => "symlink",
-        StoreError::Inspect(_) => "inspect",
-        StoreError::WalUnavailable { .. } => "wal_unavailable",
-        StoreError::Permissions(_) => "permissions",
-        StoreError::NetworkFilesystem => "network_filesystem",
-        StoreError::NetworkFilesystemCheck(_) => "network_filesystem_check",
-    }
-}
 
 fn elapsed_ms(start: std::time::Instant) -> u64 {
     u64::try_from(start.elapsed().as_millis()).unwrap_or_else(|error| {
@@ -140,12 +81,16 @@ impl SourceSyncManager {
         match store::open_read_write(database_path) {
             Ok(connection) => Ok(Ok(connection)),
             Err(error) if error.is_corruption() => {
+                let (notice, count_error) = DatabaseDiscard::assess(
+                    count_findings_at(database_path),
+                    format!("the project database is corrupt or outdated: {error}"),
+                );
                 log_database_recovery(
                     database_path,
-                    DatabaseRecovery::OpenFailed {
+                    DatabaseRecovery::OpenCorrupt {
                         error: &error,
-                        message: "database is corrupt or outdated; \
-                                  discarding and re-publishing from scratch",
+                        discard: &notice,
+                        count_error: count_error.as_ref(),
                     },
                 );
                 // Re-checked under the database lock: a second session may
@@ -166,16 +111,13 @@ impl SourceSyncManager {
                             )
                         });
                 }
-                self.rebuild_and_finish(root, database_path.to_path_buf(), start, sink)
+                self.rebuild_and_finish(root, database_path.to_path_buf(), start, sink, notice)
                     .map(Err)
             }
             Err(error) => {
                 log_database_recovery(
                     database_path,
-                    DatabaseRecovery::OpenFailed {
-                        error: &error,
-                        message: "failed to open project database for sync",
-                    },
+                    DatabaseRecovery::OpenFailed { error: &error },
                 );
                 sink.emit(ProgressEvent::Completed {
                     phase: "ensuring_current",
@@ -198,28 +140,45 @@ impl SourceSyncManager {
     ) -> Result<Result<rusqlite::Connection, SyncedProject>, ErrorData> {
         self.mark_prior_sessions_stale_once(database_path, &mut connection)?;
         if let Err(metadata_error) = ensure_project_row(&mut connection, root.as_path()) {
-            match metadata_error {
-                ProjectMetaError::RootMismatch { stored_root } => {
-                    log_database_recovery(
-                        database_path,
-                        DatabaseRecovery::RootMismatch {
-                            stored_root: &stored_root,
-                        },
-                    );
+            let cause = match &metadata_error {
+                ProjectMetaError::RootMismatch { .. } => {
+                    "the project database was built for a different project root".to_owned()
                 }
                 ProjectMetaError::IncompatibleVersion {
                     contract_version,
                     schema_version,
-                } => {
-                    log_database_recovery(
-                        database_path,
-                        DatabaseRecovery::IncompatibleVersion {
-                            contract_version,
-                            schema_version,
-                        },
-                    );
+                } => format!(
+                    "the project database has an incompatible version \
+                     (contract_version {contract_version}, schema_version {schema_version})"
+                ),
+                ProjectMetaError::Other(_) => {
+                    return Err(ErrorData::from(metadata_error));
                 }
-                other @ ProjectMetaError::Other(_) => return Err(ErrorData::from(other)),
+            };
+            let (notice, count_error) = DatabaseDiscard::assess(count_findings(&connection), cause);
+            let count_error = count_error.as_ref();
+            match &metadata_error {
+                ProjectMetaError::RootMismatch { stored_root } => log_database_recovery(
+                    database_path,
+                    DatabaseRecovery::RootMismatch {
+                        stored_root,
+                        discard: &notice,
+                        count_error,
+                    },
+                ),
+                ProjectMetaError::IncompatibleVersion {
+                    contract_version,
+                    schema_version,
+                } => log_database_recovery(
+                    database_path,
+                    DatabaseRecovery::IncompatibleVersion {
+                        contract_version: *contract_version,
+                        schema_version: *schema_version,
+                        discard: &notice,
+                        count_error,
+                    },
+                ),
+                ProjectMetaError::Other(_) => {}
             }
             drop(connection);
             store::discard_corrupt_database(database_path).map_err(|discard| {
@@ -229,7 +188,7 @@ impl SourceSyncManager {
                 )
             })?;
             return self
-                .rebuild_and_finish(root, database_path.to_path_buf(), start, sink)
+                .rebuild_and_finish(root, database_path.to_path_buf(), start, sink, notice)
                 .map(Err);
         }
         Ok(Ok(connection))
@@ -294,6 +253,7 @@ impl SourceSyncManager {
         Ok(SyncedProject {
             database_path,
             revision_id,
+            discard: None,
         })
     }
 
@@ -307,8 +267,10 @@ impl SourceSyncManager {
         database_path: PathBuf,
         start: std::time::Instant,
         sink: &dyn ProgressSink,
+        discard: DatabaseDiscard,
     ) -> Result<SyncedProject, ErrorData> {
-        let synced = publish_from_scratch(root, database_path, sink)?;
+        let mut synced = publish_from_scratch(root, database_path, sink)?;
+        synced.discard = Some(discard);
         self.record_full_publish();
         let duration_ms = elapsed_ms(start);
         self.stamp_last_sync(duration_ms);

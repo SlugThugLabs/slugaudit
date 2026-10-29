@@ -12,6 +12,7 @@ mod health;
 #[path = "manager_orchestration.rs"]
 mod orchestration;
 
+use super::discard_notice::DatabaseDiscard;
 use super::reconcile;
 use crate::watch::{WatchManager, WatchState};
 pub(crate) use orchestration::map_activation_error;
@@ -31,6 +32,9 @@ pub struct SyncedProject {
     pub database_path: PathBuf,
     /// The revision the database is current at.
     pub revision_id: String,
+    /// Set only on the call that discarded and rebuilt the project database
+    /// (corruption, version bump, root mismatch); `None` on every other call.
+    pub discard: Option<DatabaseDiscard>,
 }
 
 /// Errors produced by incremental reconciliation.

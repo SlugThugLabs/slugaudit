@@ -78,6 +78,11 @@ pub struct FindingResponse {
     /// `current` for every successful write: the file's hash was verified
     /// while the write ran.
     pub status: &'static str,
+    /// Present only when this call discarded and rebuilt the project
+    /// database (corruption, version bump, root mismatch): how many findings
+    /// were lost (null = unknown, the database was unreadable) and why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_discard: Option<crate::sync::DatabaseDiscard>,
 }
 
 /// # Errors
@@ -96,7 +101,9 @@ pub fn finding(
 
     let synced = ensure_synced(&request.path, sink, manager)?;
     let revision_id = synced.revision_id.clone();
-    let response = with_verified_write(&synced, |tx| insert_finding(tx, request, &revision_id))?;
+    let mut response =
+        with_verified_write(&synced, |tx| insert_finding(tx, request, &revision_id))?;
+    response.database_discard = synced.discard;
     Ok(Json(response))
 }
 

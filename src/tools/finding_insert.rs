@@ -48,6 +48,7 @@ pub(super) fn insert_finding(
         "finding recorded"
     );
     Ok(FindingResponse {
+        database_discard: None,
         id,
         revision_id: revision_id.to_owned(),
         source_hash,
@@ -63,10 +64,7 @@ fn persist_finding(
     revision_id: &str,
 ) -> Result<i64, ErrorData> {
     match find_restated(tx, request, source_hash)? {
-        Some(id) => {
-            refresh_restated(tx, request, revision_id, id)?;
-            Ok(id)
-        }
+        Some(id) => refresh_restated(tx, request, revision_id, id).map(|()| id),
         None => insert_new(tx, request, source_hash, revision_id),
     }
 }

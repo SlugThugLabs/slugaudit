@@ -262,7 +262,9 @@ where
                 .map_err(|error| internal_error("encoding the result extras", error))?;
             let handle = writer.finish(&encoded).map_err(|e| store_error(&e))?;
             let meta = store.meta_of(handle.id).map_err(|e| store_error(&e))?;
-            serve(&store, handle.id, 0, stored, meta.as_ref(), accept_for)
+            let mut served = serve(&store, handle.id, 0, stored, meta.as_ref(), accept_for)?;
+            served.page.database_discard = synced.discard;
+            Ok(served)
         }
     }
 }
@@ -354,6 +356,7 @@ where
             PageLimit::PageBytes
         },
         revision_id: read.meta.revision_id.clone(),
+        database_discard: None,
     };
     Ok(Served {
         rows: read.rows,

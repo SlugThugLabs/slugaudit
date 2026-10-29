@@ -249,6 +249,11 @@ const MAX_PATH_BYTES: usize = 32 * 1024;
 pub struct ReportResponse {
     /// Revision id of the index this snapshot was read from.
     pub revision_id: String,
+    /// Present only when this call discarded and rebuilt the project
+    /// database (corruption, version bump, root mismatch): how many findings
+    /// were lost (null = unknown, the database was unreadable) and why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_discard: Option<crate::sync::DatabaseDiscard>,
     /// Rows in `files`: every discovered file whose project-relative path is
     /// representable as UTF-8, whether or not it was indexed. A discovered
     /// path that is not valid UTF-8 cannot have a row and is counted by
@@ -361,6 +366,7 @@ pub fn report(
     }
     let synced = ensure_synced(&request.0.path, sink, manager)?;
     let revision_id = synced.revision_id.clone();
+    let discard = synced.discard.clone();
     let mut response = with_verified_read(&synced, |tx| {
         build_report(tx, revision_id.clone())
             .map_err(|error| internal_error("building the report", error))
@@ -368,6 +374,7 @@ pub fn report(
     let root = super::project_root(&request.0.path)?;
     let session = manager.session_mechanics();
     let catalog = mechanic_catalog::load(&root, session, &super::limits_for_root(&root)?);
+    response.database_discard = discard;
     response.mechanics_invalid = catalog.invalid.len();
     response.mechanics = ReportMechanics {
         note: None,

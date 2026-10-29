@@ -58,12 +58,37 @@
       },
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": {
+          "DatabaseDiscard": {
+            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "type": "object",
+            "properties": {
+              "findings_discarded": {
+                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint64",
+                "minimum": 0
+              },
+              "cause": {
+                "description": "Why the database was discarded.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "cause"
+            ]
+          }
+        },
         "required": [
           "id",
           "revision_id",
           "source_hash",
           "status"
         ],
+        "type": "object",
         "properties": {
           "id": {
             "description": "Row id of the stored finding in this project's `findings` table; a\nrestated finding keeps the id of the row it refreshed.",
@@ -81,9 +106,19 @@
           "status": {
             "description": "`current` for every successful write: the file's hash was verified\nwhile the write ran.",
             "type": "string"
+          },
+          "database_discard": {
+            "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch): how many findings\nwere lost (null = unknown, the database was unreadable) and why.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DatabaseDiscard"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
-        },
-        "type": "object"
+        }
       },
       "annotations": {
         "readOnlyHint": false,
@@ -187,6 +222,17 @@
               "revision_id": {
                 "description": "The index revision every part of this response was read from: that of\nthe call that made the result, on every page.",
                 "type": "string"
+              },
+              "database_discard": {
+                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch): how many findings\nwere lost (null = unknown, the database was unreadable) and why.",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DatabaseDiscard"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -289,6 +335,28 @@
                 "type": "string",
                 "const": "time_budget"
               }
+            ]
+          },
+          "DatabaseDiscard": {
+            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "type": "object",
+            "properties": {
+              "findings_discarded": {
+                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint64",
+                "minimum": 0
+              },
+              "cause": {
+                "description": "Why the database was discarded.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "cause"
             ]
           },
           "FindingReadEntry": {
@@ -459,6 +527,28 @@
               "started_at_unix",
               "findings"
             ]
+          },
+          "DatabaseDiscard": {
+            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "type": "object",
+            "properties": {
+              "findings_discarded": {
+                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint64",
+                "minimum": 0
+              },
+              "cause": {
+                "description": "Why the database was discarded.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "cause"
+            ]
           }
         },
         "required": [
@@ -488,6 +578,17 @@
             ],
             "format": "uint64",
             "minimum": 0
+          },
+          "database_discard": {
+            "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch): how many findings\nwere lost (null = unknown, the database was unreadable) and why.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DatabaseDiscard"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -861,6 +962,17 @@
               "revision_id": {
                 "description": "The index revision every part of this response was read from: that of\nthe call that made the result, on every page.",
                 "type": "string"
+              },
+              "database_discard": {
+                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch): how many findings\nwere lost (null = unknown, the database was unreadable) and why.",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DatabaseDiscard"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -963,6 +1075,28 @@
                 "type": "string",
                 "const": "time_budget"
               }
+            ]
+          },
+          "DatabaseDiscard": {
+            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "type": "object",
+            "properties": {
+              "findings_discarded": {
+                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint64",
+                "minimum": 0
+              },
+              "cause": {
+                "description": "Why the database was discarded.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "cause"
             ]
           },
           "MechanicCount": {
@@ -1551,6 +1685,17 @@
               "revision_id": {
                 "description": "The index revision every part of this response was read from: that of\nthe call that made the result, on every page.",
                 "type": "string"
+              },
+              "database_discard": {
+                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch): how many findings\nwere lost (null = unknown, the database was unreadable) and why.",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DatabaseDiscard"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -1653,6 +1798,28 @@
                 "type": "string",
                 "const": "time_budget"
               }
+            ]
+          },
+          "DatabaseDiscard": {
+            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "type": "object",
+            "properties": {
+              "findings_discarded": {
+                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint64",
+                "minimum": 0
+              },
+              "cause": {
+                "description": "Why the database was discarded.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "cause"
             ]
           },
           "MechanicCount": {
@@ -2016,6 +2183,28 @@
                 "const": "not_written"
               }
             ]
+          },
+          "DatabaseDiscard": {
+            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "type": "object",
+            "properties": {
+              "findings_discarded": {
+                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint64",
+                "minimum": 0
+              },
+              "cause": {
+                "description": "Why the database was discarded.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "cause"
+            ]
           }
         },
         "required": [
@@ -2048,6 +2237,17 @@
             "anyOf": [
               {
                 "$ref": "#/$defs/GitignoreReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "database_discard": {
+            "description": "Present only when `\"on\"` found a corrupt or outdated project database\nand discarded it: how many findings were lost (null = unknown, the\ndatabase was unreadable) and why.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DatabaseDiscard"
               },
               {
                 "type": "null"
@@ -2165,6 +2365,17 @@
               "revision_id": {
                 "description": "The index revision every part of this response was read from: that of\nthe call that made the result, on every page.",
                 "type": "string"
+              },
+              "database_discard": {
+                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch): how many findings\nwere lost (null = unknown, the database was unreadable) and why.",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DatabaseDiscard"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -2267,6 +2478,28 @@
                 "type": "string",
                 "const": "time_budget"
               }
+            ]
+          },
+          "DatabaseDiscard": {
+            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "type": "object",
+            "properties": {
+              "findings_discarded": {
+                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint64",
+                "minimum": 0
+              },
+              "cause": {
+                "description": "Why the database was discarded.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "cause"
             ]
           },
           "ClippedCell": {
@@ -2409,6 +2642,28 @@
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
+          "DatabaseDiscard": {
+            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "type": "object",
+            "properties": {
+              "findings_discarded": {
+                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint64",
+                "minimum": 0
+              },
+              "cause": {
+                "description": "Why the database was discarded.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "cause"
+            ]
+          },
           "CompletenessEnvelope": {
             "description": "Counts that say whether the rest of the response is the whole truth.",
             "type": "object",
@@ -2838,6 +3093,17 @@
             "description": "Revision id of the index this snapshot was read from.",
             "type": "string"
           },
+          "database_discard": {
+            "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch): how many findings\nwere lost (null = unknown, the database was unreadable) and why.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DatabaseDiscard"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "file_count": {
             "description": "Rows in `files`: every discovered file whose project-relative path is\nrepresentable as UTF-8, whether or not it was indexed. A discovered\npath that is not valid UTF-8 cannot have a row and is counted by\n`completeness.unrepresentable_path_count` instead. Read\n`completeness.file_kind_counts` to see how many of these rows have\ncontent (`indexed`), are binary, or were skipped — this number alone\ndoes not mean \"files with evidence\".",
             "type": "integer",
@@ -3069,6 +3335,17 @@
               "revision_id": {
                 "description": "The index revision every part of this response was read from: that of\nthe call that made the result, on every page.",
                 "type": "string"
+              },
+              "database_discard": {
+                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch): how many findings\nwere lost (null = unknown, the database was unreadable) and why.",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DatabaseDiscard"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -3171,6 +3448,28 @@
                 "type": "string",
                 "const": "time_budget"
               }
+            ]
+          },
+          "DatabaseDiscard": {
+            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "type": "object",
+            "properties": {
+              "findings_discarded": {
+                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "uint64",
+                "minimum": 0
+              },
+              "cause": {
+                "description": "Why the database was discarded.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "cause"
             ]
           },
           "StructureMatch": {

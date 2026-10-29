@@ -113,6 +113,7 @@ src/
 │   ├── finding_read_rows.rs  finding_read row selection and conversion for the result store
 │   ├── finding_read_paged_tests.rs finding_read paged through the result store
 │   ├── project_control.rs    enable/disable a project: contract and handlers
+│   ├── discard_surface_tests.rs database_discard on project_control and finding responses
 │   ├── health.rs             operational snapshot: schema, process counters, DB read
 │   ├── health_result_store.rs health detail's result-store stats (classes, bytes, sweep)
 │   └── health_phase.rs       health's per-project state derivation (no side effects)
@@ -127,6 +128,9 @@ src/
 │   ├── manager_health.rs     sync_by_health: the WatcherHealth dispatch
 │   ├── manager_health_support.rs  event barrier, post-sync revision read, sweep-error mapping
 │   ├── manager_meta.rs       metadata row, session purge, publish_from_scratch
+│   ├── discard_notice.rs     DatabaseDiscard: the finding count reported when a database is discarded
+│   ├── recovery_log.rs       the one WARN a database discard-and-rebuild logs
+│   ├── discard_notice_tests.rs discard_surface: count, unknown-on-corrupt, one WARN
 │   ├── sweep.rs              the stat sweep — freshness backstop with walk counters
 │   ├── sweep_walk_tests.rs   fail-closed walk coverage for the stat sweep
 │   ├── sweep_reconcile.rs    apply the sweep's findings under compare-and-swap

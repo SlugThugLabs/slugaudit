@@ -74,6 +74,11 @@ pub struct FindingSessionsResponse {
     /// for `list`. Adopted findings read `current` when their file still
     /// has the content hash they were written against, else `stale`.
     pub adopted: Option<u64>,
+    /// Present only when this call discarded and rebuilt the project
+    /// database (corruption, version bump, root mismatch): how many findings
+    /// were lost (null = unknown, the database was unreadable) and why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_discard: Option<crate::sync::DatabaseDiscard>,
 }
 
 /// # Errors
@@ -90,10 +95,11 @@ pub fn finding_sessions(
     let target = validate(request)?;
     let synced = ensure_synced(&request.path, sink, manager)?;
     let current = session_id().to_string();
-    let response = match target {
+    let mut response = match target {
         None => with_verified_read(&synced, |tx| list_prior_sessions(tx, &current))?,
         Some(target) => with_verified_write(&synced, |tx| adopt_session(tx, &current, target))?,
     };
+    response.database_discard = synced.discard;
     tracing::info!(
         action = ?request.action,
         listed = response.sessions.len(),
@@ -163,6 +169,7 @@ fn list_prior_sessions(
         )
         .map_err(|error| internal_error("counting the prior sessions", error))?;
     Ok(FindingSessionsResponse {
+        database_discard: None,
         sessions,
         total_sessions,
         adopted: None,
@@ -191,6 +198,7 @@ fn adopt_session(
         )
         .map_err(|error| internal_error("adopting the session's findings", error))?;
     Ok(FindingSessionsResponse {
+        database_discard: None,
         sessions: Vec::new(),
         total_sessions: 0,
         adopted: Some(adopted as u64),
