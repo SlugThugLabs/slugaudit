@@ -121,6 +121,7 @@ fn result_store_proof_watcher_scope_excludes_results_dir() {
         .expect("canonical temp dir");
     let project = tempfile::tempdir_in(base).expect("project dir");
     std::fs::create_dir_all(project.path().join(".planning/slugaudit")).expect("activation dir");
+    crate::project::write_database_marker(&project.path().join(".planning/slugaudit"));
     write(project.path(), "lib.rs", b"pub fn a() {}\n");
     let (_slot, _planted) = plant_store_files(project.path());
     let scope = WatchScope::compute(project.path(), &Default::default());

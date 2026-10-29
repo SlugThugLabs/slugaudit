@@ -156,6 +156,7 @@ mod tests {
     fn activate(root: &std::path::Path) {
         fs::create_dir_all(root.join(".planning").join("slugaudit"))
             .expect("create activation dir");
+        crate::project::write_database_marker(&root.join(".planning").join("slugaudit"));
     }
 
     /// A file the walk discovers but deliberately does not index must be

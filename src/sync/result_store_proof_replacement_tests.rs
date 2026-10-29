@@ -257,6 +257,8 @@ fn result_store_proof_corruption_recovery_keeps_the_open_result_readable() {
 #[test]
 fn result_store_proof_project_control_off_keeps_the_open_result_readable() {
     let open = open_result();
+    let activation = open.project.path().join(".planning/slugaudit");
+    std::fs::write(activation.join("config.json"), b"{}").expect("write config.json");
 
     let response = project_control(
         &Parameters(ProjectControlRequest {
@@ -270,9 +272,18 @@ fn result_store_proof_project_control_off_keeps_the_open_result_readable() {
     .expect("project_control off succeeds with a result open");
 
     assert_eq!(response.0.status, "disabled");
+    assert!(!open.database().exists(), "project.db is gone");
     assert!(
-        !open.project.path().join(".planning/slugaudit").exists(),
-        "the activation directory, results directory included, is gone"
+        !activation.join("results").exists(),
+        "the results directory, owner lock included, is gone"
+    );
+    assert!(
+        !activation.join("config.lock").exists(),
+        "the config lock is gone"
+    );
+    assert!(
+        response.0.config_kept && activation.join("config.json").is_file(),
+        "config.json is kept"
     );
     open.assert_continuation_unchanged();
 }

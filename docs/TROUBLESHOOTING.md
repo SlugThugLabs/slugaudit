@@ -197,13 +197,19 @@ project_control {"action": "off", "path": "<project>"}
 project_control {"action": "on",  "path": "<project>"}
 ```
 
-`off` removes the activation directory and purges the database; it is the one
-destructive tool action (`destructiveHint: true`). `on` creates
+A project is active only while `.planning/slugaudit/project.db` exists. `off`
+removes the database, its `-wal`/`-shm`/`-journal` sidecars, the `results/`
+directory and `config.lock`, and says so in its response (`removed`). It keeps
+`config.json` (`config_kept: true`) and any other file, and removes
+`.planning/slugaudit/` only when nothing is left in it; afterwards every tool
+call on the path returns `project_not_enabled`, and `on` restores the settings
+saved in `config.json`. It is the one destructive tool action
+(`destructiveHint: true`). `on` creates
 `.planning/slugaudit/`, appends `.planning/slugaudit/` to the project's
 `.gitignore` when possible (reporting `added`, `already_ignored`, or
 `not_written` with the reason), optionally writes a profile to
-`config.json`, and runs the initial import. Removing the whole
-`.planning/slugaudit` directory manually leaves the project disabled, so call
+`config.json`, and runs the initial import. Removing `project.db` (or the whole
+`.planning/slugaudit` directory) manually leaves the project disabled, so call
 `project_control {"action":"on", …}` rather than expecting a normal tool call
 to work.
 

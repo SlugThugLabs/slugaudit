@@ -8,6 +8,7 @@ use std::fs;
 fn prose_files_are_counted_but_never_listed_as_parser_failures() {
     let project = tempfile::tempdir().expect("project dir");
     fs::create_dir_all(project.path().join(".planning").join("slugaudit")).expect("activate");
+    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"));
     fs::write(project.path().join("a.md"), b"# title\n").expect("write md");
     fs::write(project.path().join("b.txt"), b"notes\n").expect("write txt");
     fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write rs");

@@ -85,9 +85,11 @@ fn a_database_open_failure_warning_logs_no_raw_path() {
     let manager = SourceSyncManager::new();
     let project = create_project();
     let database = project.path().join(".planning/slugaudit/project.db");
-    fs::create_dir_all(&database).expect("make the db path a directory");
+    // A regular file keeps the project active; a directory at the `-wal`
+    // sidecar path is what makes the SQLite connection setup fail.
+    fs::create_dir_all(database.with_extension("db-wal")).expect("make the wal path a directory");
     // Owner-only so the permission guard passes and the failure is the
-    // SQLite open itself (`StoreError::Open`).
+    // SQLite connection setup (`StoreError::Configure`).
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -113,7 +115,7 @@ fn a_database_open_failure_warning_logs_no_raw_path() {
     let records = sync_failure_records(&logs, "open_project_database");
     assert_eq!(records.len(), 1, "one failure is one record:\n{logs}");
     assert!(
-        records[0].contains("error_kind=\"open\""),
+        records[0].contains("error_kind=\"configure\""),
         "the record must carry the static error category:\n{logs}"
     );
     assert!(

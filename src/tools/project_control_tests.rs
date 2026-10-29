@@ -574,20 +574,3 @@ fn an_unknown_profile_is_refused_before_anything_is_enabled() {
         "the refused call must leave the project disabled"
     );
 }
-
-#[test]
-fn off_fails_when_the_activation_dir_cannot_be_inspected() {
-    let (project, path) = temp_project_with_source();
-    // `.planning` is a file, so `.planning/slugaudit` fails with ENOTDIR.
-    fs::write(project.path().join(".planning"), b"x").expect("write file");
-
-    let error = project_control(
-        &off_request(&path),
-        &crate::progress::NoopProgressSink,
-        None,
-    )
-    .err()
-    .expect("an uninspectable activation dir is not 'already disabled'");
-
-    assert!(error.message.contains("inspect"), "{}", error.message);
-}

@@ -2,7 +2,7 @@ use super::activation::activation_dir;
 use super::root::ProjectRoot;
 use std::path::PathBuf;
 
-const DATABASE_FILENAME: &str = "project.db";
+pub(super) const DATABASE_FILENAME: &str = "project.db";
 
 /// Returns the SlugAudit-owned runtime database inside a user project:
 /// `<project-root>/.planning/slugaudit/project.db`.

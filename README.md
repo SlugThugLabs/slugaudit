@@ -126,12 +126,12 @@ The server exposes 8 MCP tools, registered in `src/server.rs`:
 | `finding` | Persists a conclusion the agent has reviewed, bound to the file's current content hash — it goes stale when that file changes. The judgment is the agent's; SlugAudit never generates it. |
 | `finding_read` | Findings written by the current session only, never another session's conclusions. |
 | `finding_sessions` | A restart is a new session: earlier sessions' findings are kept, marked stale and hidden from `finding_read`. `list` shows them (session id, first-finding time, count); `adopt` re-tags one session's findings to the current session. Nothing is deleted. |
-| `project_control` | Enable (`on`) or disable (`off`) a project, optionally setting its profile; `off` purges the database. |
+| `project_control` | Enable (`on`) or disable (`off`) a project, optionally setting its profile; `off` removes the database and keeps `config.json`. |
 | `health` | Phase and next action (`remedy`), watcher health, current revision and file count. `verbose: true` adds the operator detail: unreconciled event counts, parser-pack version, skipped files, tool-call counters, host memory, the mechanic scan cache. |
 
 Every tool advertises a `title`, MCP `annotations` (`readOnlyHint` for the read-only
-tools; `destructiveHint` only on `project_control`, whose `off` action purges the
-database), and an `outputSchema` derived from its response type. Tool schemas and usage
+tools; `destructiveHint` only on `project_control`, whose `off` action removes the
+project database), and an `outputSchema` derived from its response type. Tool schemas and usage
 guidance are served to the agent at runtime by the server itself (`INSTRUCTIONS` in
 `src/server.rs`); the per-kind `evidence.payload` keys live in
 `slugaudit://queries/evidence_payload_keys.md` instead of in the briefing.

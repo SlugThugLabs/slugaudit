@@ -34,6 +34,7 @@ pub(crate) fn create_project() -> TempDir {
     let dir = tempfile::tempdir().expect("create temp dir");
     fs::create_dir_all(dir.path().join(".planning").join("slugaudit"))
         .expect("create activation dir");
+    crate::project::write_database_marker(&dir.path().join(".planning").join("slugaudit"));
     dir
 }
 

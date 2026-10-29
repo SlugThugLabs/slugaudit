@@ -7,6 +7,7 @@ fn activated_project(files: &[(&str, &[u8])]) -> tempfile::TempDir {
     let project = tempfile::tempdir().expect("project dir");
     fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
         .expect("activate project");
+    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"));
     for (relative, content) in files {
         let path = project.path().join(relative);
         if let Some(parent) = path.parent() {

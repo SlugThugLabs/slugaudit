@@ -10,6 +10,7 @@ pub(crate) fn activated_project(relative: &str, content: &[u8]) -> tempfile::Tem
     let project = tempfile::tempdir().expect("project dir");
     fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
         .expect("activate project");
+    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"));
     fs::write(project.path().join(relative), content).expect("write fixture file");
     project
 }

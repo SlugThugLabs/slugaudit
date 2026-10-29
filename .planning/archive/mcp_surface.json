@@ -2041,7 +2041,7 @@
     {
       "name": "project_control",
       "title": "Enable or disable a project",
-      "description": "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable a project (creates the activation directory and runs the initial import), or `\"off\"` to disable it (removes the activation directory and purges its database). On `\"on\"` the runtime directory `.planning/slugaudit/` is also appended to the project-root `.gitignore` unless a rule that already ignores it is present; the response's `gitignore` field reports `added`, `already_ignored`, or `not_written` plus the file's path. `\"off\"` never edits `.gitignore`. Supply `path` to target a specific project root; defaults to the current directory. If the project was moved, copied, or re-extracted elsewhere (e.g. unzipped fresh from an archive), a stale `.planning/slugaudit/project.db` is discarded and rebuilt from source automatically — the agent does not need to delete it or re-enable manually.",
+      "description": "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable a project (creates the activation directory and database and runs the initial import), or `\"off\"` to disable it (removes the database, its sidecars, the results directory and the config lock; `config.json` is kept and `on` restores its settings). On `\"on\"` the runtime directory `.planning/slugaudit/` is also appended to the project-root `.gitignore` unless a rule that already ignores it is present; the response's `gitignore` field reports `added`, `already_ignored`, or `not_written` plus the file's path. `\"off\"` never edits `.gitignore`. Supply `path` to target a specific project root; defaults to the current directory. If the project was moved, copied, or re-extracted elsewhere (e.g. unzipped fresh from an archive), a stale `.planning/slugaudit/project.db` is discarded and rebuilt from source automatically — the agent does not need to delete it or re-enable manually.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
@@ -2049,12 +2049,12 @@
             "description": "The action to take — on enables, off disables.",
             "oneOf": [
               {
-                "description": "Create the activation marker (`.planning/slugaudit`) and run the\ninitial import, so the first evidence call finds a fresh index.",
+                "description": "Create `.planning/slugaudit`, then the project database (the\nactivation marker), and run the initial import, so the first evidence\ncall finds a fresh index. Persisted settings in `config.json` apply.",
                 "type": "string",
                 "const": "on"
               },
               {
-                "description": "Remove the activation marker and purge the project database,\nevidence, and findings. An already-disabled project is a no-op\nreported as `\"already_disabled\"`.",
+                "description": "Remove the project database (the activation marker), its SQLite\nsidecars, the `results` directory and the config lock. `config.json`\nand any other file in `.planning/slugaudit` are kept, and the\ndirectory is removed only when nothing is left in it. Tool calls on\nthe path then return not-enabled until `on` runs again. A project\nwith nothing to remove is a no-op reported as `\"already_disabled\"`.",
                 "type": "string",
                 "const": "off"
               }
@@ -2220,6 +2220,17 @@
           "path": {
             "description": "Absolute path of the project root that was affected.",
             "type": "string"
+          },
+          "removed": {
+            "description": "Absolute paths `\"off\"` removed. Empty when nothing existed to remove.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "config_kept": {
+            "description": "True when `\"off\"` found a `config.json` and kept it.",
+            "type": "boolean"
           },
           "import": {
             "description": "Present when action was `\"on\"` and an initial import ran.",

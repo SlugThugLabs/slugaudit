@@ -92,6 +92,7 @@ fn activated_project() -> TempDir {
     let project = tempfile::tempdir().expect("create project temp dir");
     fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
         .expect("create activation dir");
+    write_database_marker(&project.path().join(".planning").join("slugaudit"));
     project
 }
 
@@ -250,4 +251,16 @@ fn a_sixty_four_file_project_syncs_inside_the_default_wall_clock_budget() {
 #[ignore = "10k-file soak; run on demand with `cargo test --test large_repo_soak -- --ignored --nocapture`"]
 fn a_ten_thousand_file_project_syncs_inside_the_default_wall_clock_budget() {
     sync_synthetic_project(SOAK_FILES, 100);
+}
+
+/// Creates the empty owner-only `project.db` that marks a project as active.
+fn write_database_marker(activation: &std::path::Path) {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(activation.join("project.db"))
+        .expect("create database marker");
 }

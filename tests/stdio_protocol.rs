@@ -156,6 +156,7 @@ impl ServerProcess {
         let project = tempfile::tempdir().expect("project dir");
         std::fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
             .expect("activate project");
+        write_database_marker(&project.path().join(".planning").join("slugaudit"));
         std::fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n")
             .expect("write fixture file");
         let path = project.path().to_string_lossy().replace('\\', "/");
@@ -451,6 +452,7 @@ fn real_stdio_mechanic_add_is_counted_and_listed_first_by_leads() {
     let project = tempfile::tempdir().expect("project dir");
     std::fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
         .expect("activate project");
+    write_database_marker(&project.path().join(".planning").join("slugaudit"));
     std::fs::write(
         project.path().join("app.py"),
         b"def run(code):\n    eval(code)  # eval(comment)\n    return \"eval(text)\"\n",
@@ -496,4 +498,16 @@ fn real_stdio_mechanic_add_is_counted_and_listed_first_by_leads() {
         second_report["mechanics"]["note"].is_null(),
         "only the first report carries the note: {second_report}"
     );
+}
+
+/// Creates the empty owner-only `project.db` that marks a project as active.
+fn write_database_marker(activation: &std::path::Path) {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(activation.join("project.db"))
+        .expect("create database marker");
 }

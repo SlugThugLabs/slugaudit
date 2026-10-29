@@ -13,6 +13,7 @@ use std::fs;
 fn activated_temp_project() -> (tempfile::TempDir, String) {
     let project = tempfile::tempdir().expect("project dir");
     fs::create_dir_all(project.path().join(".planning").join("slugaudit")).expect("activation dir");
+    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"));
     fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
     let path = project.path().to_string_lossy().into_owned();
     (project, path)
@@ -177,6 +178,16 @@ fn revision_helpers_return_none_on_a_fresh_database() {
 fn an_enabled_but_never_synced_project_degrades_gracefully() {
     let project = tempfile::tempdir().expect("project dir");
     fs::create_dir_all(project.path().join(".planning").join("slugaudit")).expect("activation dir");
+    drop(
+        crate::store::open_read_write(
+            &project
+                .path()
+                .join(".planning")
+                .join("slugaudit")
+                .join("project.db"),
+        )
+        .expect("create the empty database"),
+    );
     fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
     let path = project.path().to_string_lossy().into_owned();
 
@@ -185,7 +196,16 @@ fn an_enabled_but_never_synced_project_degrades_gracefully() {
 
     assert_eq!(fields.phase, super::HealthPhase::NoActiveProject);
     assert_eq!(fields.watcher, None, "no watcher was ever registered");
-    assert_eq!(fields.database, None, "nothing was ever published");
+    assert_eq!(
+        fields.database,
+        Some(crate::tools::health::DatabaseState {
+            revision_id: None,
+            parser_pack_version: None,
+            file_count: 0,
+            skipped_file_count: 0,
+        }),
+        "the database exists but nothing was ever published"
+    );
 }
 
 /// The core read-only guarantee: calling `health` with a path must never

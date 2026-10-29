@@ -90,8 +90,7 @@ const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — sym
     OTHER TOOLS: `report` is the project snapshot. `structure` runs a Tree-sitter query (at least \
     one capture) on one `file` or a whole `language`. `finding` records a conclusion you reviewed, \
     bound to the file hash (stale on change), session-scoped; `finding_read` \
-    reads them, `finding_sessions` adopts earlier ones. `project_control` `on` enables and indexes a project, `off` disables \
-    it. `health` reports phase and next action; `verbose: true` adds detail.\n\n\
+    reads them, `finding_sessions` adopts earlier ones. `project_control` `on` indexes, `off` disables (keeps config.json). `health` reports phase and next action; `verbose: true` adds detail.\n\n\
     FLOW: report → leads → mechanic add for shapes you decide matter → query/structure → read source \
     only where evidence points → finding.\n\n\
     FAILURES: errors carry `data.code` (e.g. `project_not_enabled`, `sql_error`, `unknown_language`) and \

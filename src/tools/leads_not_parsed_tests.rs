@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 fn oversize_fixture() -> tempfile::TempDir {
     let project = tempfile::tempdir().expect("project dir");
     fs::create_dir_all(project.path().join(".planning").join("slugaudit")).expect("activate");
+    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"));
     let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
     let big = line.repeat(3 * 1024 * 1024 / line.len() + 1);
     assert!(big.len() > 3 * 1024 * 1024, "the fixture is over 3 MiB");
@@ -118,6 +119,7 @@ fn report_completeness_counts_an_oversize_for_parse_file_and_lists_its_reason() 
 fn a_file_with_no_detected_language_is_not_counted_as_not_parsed() {
     let project = tempfile::tempdir().expect("project dir");
     fs::create_dir_all(project.path().join(".planning").join("slugaudit")).expect("activate");
+    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"));
     fs::write(project.path().join(".gitignore"), "target/\n").expect("write .gitignore");
     fs::write(project.path().join("small.rs"), "pub fn f() {}\n").expect("write small file");
     let manager = crate::sync::SourceSyncManager::default();
@@ -133,6 +135,7 @@ fn slow_parse_fixture() -> tempfile::TempDir {
     let project = tempfile::tempdir().expect("project dir");
     let config_dir = project.path().join(".planning").join("slugaudit");
     fs::create_dir_all(&config_dir).expect("activate");
+    crate::project::write_database_marker(&config_dir);
     fs::write(
         config_dir.join("config.json"),
         r#"{"max_parse_wall_clock_ms": 200}"#,

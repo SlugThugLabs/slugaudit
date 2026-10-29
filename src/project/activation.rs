@@ -6,7 +6,7 @@ pub(super) use super::gitignore::GITIGNORE_FILE;
 use crate::util::MAX_FOREIGN_TEXT_BYTES;
 
 use super::activation_lock::acquire_database_lock;
-use super::database_path::database_path;
+use super::database_path::{DATABASE_FILENAME, database_path};
 use super::root::{ProjectRoot, RootError};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -85,11 +85,12 @@ fn is_symlink(path: &Path) -> std::io::Result<bool> {
     }
 }
 
-/// True when `path` exists and is a directory. A missing path is `false`; any
-/// other stat failure is returned rather than read as "absent".
-fn is_existing_dir(path: &Path) -> std::io::Result<bool> {
-    match std::fs::metadata(path) {
-        Ok(metadata) => Ok(metadata.is_dir()),
+/// True when `path` exists and is a regular file (a symlink is not one). A
+/// missing path is `false`; any other `lstat` failure is returned rather than
+/// read as "absent".
+fn is_regular_file(path: &Path) -> std::io::Result<bool> {
+    match path.symlink_metadata() {
+        Ok(metadata) => Ok(metadata.file_type().is_file()),
         Err(error)
             if matches!(
                 error.kind(),
@@ -100,6 +101,13 @@ fn is_existing_dir(path: &Path) -> std::io::Result<bool> {
         }
         Err(error) => Err(error),
     }
+}
+
+/// The one "is this project active?" predicate: the project is active iff
+/// the regular file `<activation>/project.db` exists. The directory alone
+/// means nothing, because `project_control off` keeps `config.json` there.
+fn is_active_at(activation: &Path) -> std::io::Result<bool> {
+    is_regular_file(&activation.join(DATABASE_FILENAME))
 }
 
 /// Returns the activation directory under `canonical_root`, refusing a
@@ -113,15 +121,15 @@ fn validated_activation_dir(canonical_root: &Path) -> Result<PathBuf, Activation
     Ok(activation)
 }
 
-/// Finds the nearest ancestor of `start` (inclusive) whose activation
-/// directory exists. `start` may be a file, in which case its parent
+/// Finds the nearest ancestor of `start` (inclusive) whose database
+/// file `.planning/slugaudit/project.db` exists. `start` may be a file, in which case its parent
 /// directory is the search origin.
 ///
 /// # Errors
 ///
 /// Returns an error if `start` cannot be resolved, if a `.planning` or
 /// `.planning/slugaudit` component along the way is a symlink or cannot be
-/// inspected, or if no ancestor has an activation directory at all.
+/// inspected, or if no ancestor has a project database.
 pub fn find_project_root(start: &Path) -> Result<ProjectRoot, ActivationError> {
     let canonical = start
         .canonicalize()
@@ -137,7 +145,7 @@ pub fn find_project_root(start: &Path) -> Result<ProjectRoot, ActivationError> {
 
     for ancestor in search_origin.ancestors() {
         let activation = validated_activation_dir(ancestor)?;
-        if is_existing_dir(&activation)? {
+        if is_active_at(&activation)? {
             return Ok(ProjectRoot::resolve(ancestor)?);
         }
     }
@@ -224,28 +232,94 @@ fn create_private_dir(path: &Path) -> Result<(), ActivationError> {
     Ok(())
 }
 
-/// Removes `.planning/slugaudit` under `root` — the one action that turns
-/// SlugAudit "off." The activation directory is disposable derived state;
-/// it is deleted after acquiring an exclusive database lock so no archive or
-/// stale SQLite copy is created.
+/// Files `disable` removes from the activation directory, as names relative
+/// to it: the database, its SQLite sidecars and the config write lock. The
+/// `results` directory is removed too. Every other entry (notably
+/// `config.json`, the user's profile and mechanic overrides) is user data and
+/// is never touched.
+const OWNED_FILES: [&str; 5] = [
+    DATABASE_FILENAME,
+    "project.db-wal",
+    "project.db-shm",
+    "project.db-journal",
+    "config.lock",
+];
+const RESULTS_DIR: &str = "results";
+const CONFIG_FILE: &str = "config.json";
+
+/// What `disable` actually did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct DisableReport {
+    /// Paths that existed and were removed: the owned files, the results
+    /// directory, then the activation directory itself when nothing else was
+    /// left in it.
+    pub removed: Vec<PathBuf>,
+    /// True when `config.json` was present and therefore kept.
+    pub config_kept: bool,
+}
+
+/// Removes one owned path without following a symlink: a directory is removed
+/// recursively (`remove_dir_all` never follows symlinks inside it), anything
+/// else, a symlink included, is unlinked itself. Returns whether it existed.
+fn remove_owned(path: &Path) -> Result<bool, ActivationError> {
+    let metadata = match path.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(ActivationError::Io(error)),
+    };
+    if metadata.file_type().is_dir() {
+        std::fs::remove_dir_all(path)?;
+    } else {
+        std::fs::remove_file(path)?;
+    }
+    Ok(true)
+}
+
+/// Turns SlugAudit "off" for `root` by removing only what SlugAudit created
+/// in `.planning/slugaudit`: the database, its sidecars, the `results`
+/// directory and the config lock, removed while holding an exclusive database
+/// lock so no archive or stale SQLite copy is left behind. `config.json` and
+/// any other file stay; the directory is removed only if that leaves it
+/// empty. With `project.db` gone the project is inactive; `on` restores it
+/// from the kept `config.json`.
 ///
-/// Returns `false` if it was already absent rather than treating that as
-/// an error.
+/// A path that is already absent is not an error and is not reported as
+/// removed, so a second call on a clean directory reports nothing removed.
 ///
 /// # Errors
 ///
 /// Returns an error if a `.planning`/`.planning/slugaudit` component is a
 /// symlink (refuses to remove through one), if the database cannot be locked,
-/// or if removal fails.
-pub fn disable(root: &ProjectRoot) -> Result<bool, ActivationError> {
+/// or if any removal fails.
+pub fn disable(root: &ProjectRoot) -> Result<DisableReport, ActivationError> {
     let activation = validated_activation_dir(root.as_path())?;
     if !activation.try_exists()? {
-        return Ok(false);
+        return Ok(DisableReport::default());
     }
     let database_lock = acquire_database_lock(root)?;
-    std::fs::remove_dir_all(&activation)?;
+    let mut report = DisableReport::default();
+    for name in OWNED_FILES {
+        let path = activation.join(name);
+        if remove_owned(&path)? {
+            report.removed.push(path);
+        }
+    }
+    let results = activation.join(RESULTS_DIR);
+    if remove_owned(&results)? {
+        report.removed.push(results);
+    }
     drop(database_lock);
-    Ok(true)
+    report.config_kept = activation.join(CONFIG_FILE).try_exists()?;
+    match std::fs::remove_dir(&activation) {
+        Ok(()) => report.removed.push(activation),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::NotFound
+            ) => {}
+        Err(error) => return Err(ActivationError::Io(error)),
+    }
+    Ok(report)
 }
 
 #[cfg(test)]

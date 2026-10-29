@@ -140,3 +140,113 @@ fn turning_on_with_a_profile_refuses_a_malformed_config_and_leaves_it_untouched(
         "{\"mechanics\": "
     );
 }
+
+fn control(path: &str, action: ProjectControlAction) -> Json<ProjectControlResponse> {
+    project_control(
+        &Parameters(ProjectControlRequest {
+            path: Some(path.to_owned()),
+            action,
+            profile: None,
+        }),
+        &crate::progress::NoopProgressSink,
+        None,
+    )
+    .expect("project_control succeeds")
+}
+
+fn indexed_project() -> (tempfile::TempDir, String) {
+    let project = tempfile::tempdir().expect("project dir");
+    std::fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
+    let path = project.path().to_string_lossy().into_owned();
+    (project, path)
+}
+
+#[test]
+fn a_tool_call_after_project_off_is_not_active_and_does_not_rebuild_the_database() {
+    let (project, path) = indexed_project();
+    control(&path, ProjectControlAction::On);
+    let activation = project.path().join(".planning/slugaudit");
+    std::fs::write(activation.join("config.json"), b"{}").expect("write config");
+
+    let off = control(&path, ProjectControlAction::Off).0;
+
+    assert_eq!(off.status, "disabled");
+    assert!(off.config_kept);
+    assert!(!activation.join("project.db").exists());
+    assert!(!activation.join("results").exists());
+    let error = crate::tools::report(
+        &Parameters(crate::tools::ReportRequest { path: path.clone() }),
+        &crate::progress::NoopProgressSink,
+        &sync::SourceSyncManager::new(),
+    )
+    .err()
+    .expect("a call on a project that is off fails");
+    assert_eq!(
+        error.data.as_ref().and_then(|data| data.get("code")),
+        Some(&serde_json::json!("project_not_enabled")),
+        "{error:?}"
+    );
+    assert!(
+        !activation.join("project.db").exists(),
+        "the failed call must not rebuild the database"
+    );
+    assert_eq!(
+        control(&path, ProjectControlAction::Off).0.status,
+        "already_disabled",
+        "a second off has nothing left to remove"
+    );
+}
+
+#[test]
+fn project_off_then_on_restores_the_mechanics_persisted_in_config_json() {
+    let (project, path) = indexed_project();
+    control(&path, ProjectControlAction::On);
+    let root = ProjectRoot::resolve(project.path()).expect("resolve root");
+    let entry = project::MechanicEntry {
+        id: "py_eval".to_owned(),
+        language: "python".to_owned(),
+        query: "(call function: (identifier) @c)".to_owned(),
+        note: "counts calls".to_owned(),
+    };
+    project::persist_entry(root.as_path(), &entry).expect("persist the mechanic");
+
+    control(&path, ProjectControlAction::Off);
+    let on = control(&path, ProjectControlAction::On).0;
+
+    assert_eq!(on.status, "enabled");
+    let restored = project::load_persisted(root.as_path());
+    assert!(restored.invalid.is_empty(), "{:?}", restored.invalid);
+    assert_eq!(
+        restored
+            .entries
+            .iter()
+            .map(|(_, restored)| restored)
+            .collect::<Vec<_>>(),
+        vec![&entry]
+    );
+}
+
+#[test]
+fn off_fails_when_the_activation_dir_cannot_be_inspected() {
+    let (project, path) = indexed_project();
+    // `.planning` is a file, so `.planning/slugaudit` fails with ENOTDIR.
+    std::fs::write(project.path().join(".planning"), b"x").expect("write file");
+
+    let error = project_control(
+        &Parameters(ProjectControlRequest {
+            path: Some(path),
+            action: ProjectControlAction::Off,
+            profile: None,
+        }),
+        &crate::progress::NoopProgressSink,
+        None,
+    )
+    .err()
+    .expect("an uninspectable activation dir is not 'already disabled'");
+
+    assert_eq!(
+        error.message,
+        "disable: failed to update the activation directory: Not a directory (os error 20)",
+        "an uninspectable activation dir fails the operation with its cause"
+    );
+}

@@ -379,7 +379,9 @@ fn an_unopenable_database_surfaces_as_an_error_not_a_panic() {
     write_file(&project, "lib.rs", b"pub fn a() {}\n");
 
     let database = project.path().join(".planning/slugaudit/project.db");
-    fs::create_dir_all(&database).expect("make the db path a directory");
+    // A regular file keeps the project active; a directory at the `-wal`
+    // sidecar path is what makes the SQLite open itself fail.
+    fs::create_dir_all(database.with_extension("db-wal")).expect("make the wal path a directory");
     // The dev-only permission guard would otherwise reject the 0755
     // directory before SQLite is asked to open it; owner-only makes the
     // failure the SQLite open itself, which is the arm under test.
@@ -402,8 +404,8 @@ fn an_unopenable_database_surfaces_as_an_error_not_a_panic() {
     // text and path live; asserting the exact wrapper around it proves the
     // non-corruption arm surfaces the open failure rather than a generic
     // message or a different error source.
-    let open_error = crate::store::open_read_write(&database)
-        .expect_err("the database path is still a directory");
+    let open_error =
+        crate::store::open_read_write(&database).expect_err("the wal path is still a directory");
     assert_eq!(
         error.message,
         format!("opening the project database for sync: {open_error}"),

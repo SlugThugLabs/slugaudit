@@ -3,7 +3,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use std::fs;
 
 fn activate(root: &std::path::Path) {
-    fs::create_dir_all(root.join(".planning").join("slugaudit")).expect("create activation dir");
+    crate::project::activate_for_test(root);
 }
 
 #[test]

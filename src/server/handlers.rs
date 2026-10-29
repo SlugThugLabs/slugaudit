@@ -222,8 +222,9 @@ impl SlugAuditServer {
         title = "Enable or disable a project",
         annotations(read_only_hint = false, destructive_hint = true),
         description = "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable \
-         a project (creates the activation directory and runs the initial import), or `\"off\"` to \
-         disable it (removes the activation directory and purges its database). On `\"on\"` the \
+         a project (creates the activation directory and database and runs the initial import), or `\"off\"` to \
+         disable it (removes the database, its sidecars, the results directory and the config lock; \
+         `config.json` is kept and `on` restores its settings). On `\"on\"` the \
          runtime directory `.planning/slugaudit/` is also appended to the project-root `.gitignore` \
          unless a rule that already ignores it is present; the response's `gitignore` field reports \
          `added`, `already_ignored`, or `not_written` plus the file's path. `\"off\"` never edits \

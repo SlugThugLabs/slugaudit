@@ -93,8 +93,10 @@ The server exposes ten tools (`src/server.rs`):
 - **`mechanic`** — the auditor registers (`add`), removes and lists its own
   mechanics: a Tree-sitter query with exactly one capture over one language.
   See *Mechanics* below.
-- **`project_control`** — enable or disable a project (create or remove the
-  activation directory and run the initial import).
+- **`project_control`** — enable or disable a project (`on` creates the
+  activation directory, then `project.db`, then runs the initial import; `off`
+  removes the database, sidecars, `results/` and the config lock and keeps
+  `config.json`).
 - **`health`** — what state is this in and what should the caller do next.
   The default answer carries only what a caller acts on: `phase`, `remedy`,
   `watcher.health`, and `database.revision_id`/`file_count`, each group
@@ -182,7 +184,7 @@ and are pull-based — nothing is pushed into a connecting agent's context.
 
 Every tool also carries a `title`, MCP `annotations` (`readOnlyHint` false for
 `finding`/`finding_sessions`/`mechanic`/`project_control`, `destructiveHint` true only for
-`project_control`, whose `off` action purges the database), and an
+`project_control`, whose `off` action removes the project database), and an
 `outputSchema` derived from its response type. `check_mcp_surface` snapshots
 `tools/list` + `resources/list` into `.planning/archive/mcp_surface.json` and
 fails on drift, so none of those fields can change without a recorded,
@@ -684,8 +686,13 @@ process — at which point they can read any file the user can, including
 ### The activation marker is an opt-in signal, not an authorization gate
 
 Every tool call resolves a project by walking up from the given path looking
-for `.planning/slugaudit/`; if the marker is absent the call fails with
-`NotActive`. The marker's purpose is **discoverability and scope** — "which
+for `.planning/slugaudit/project.db`; if that regular file is absent the call
+fails with `NotActive`. The database file is the single activation predicate
+(`find_project_root`); the directory alone means nothing. `project_control on`
+creates the directory, then the database, then imports. `off` deletes the
+database, its sidecars, `results/` and `config.lock`, keeps `config.json` and
+any other file, and removes the directory only if empty, so `off` then `on`
+restores the persisted mechanics. The marker's purpose is **discoverability and scope** — "which
 project am I operating on?" — not authorization. The agent already has
 filesystem access as the user that launched it, so SlugAudit grants no access
 the agent did not already have; it makes queries fast.
@@ -761,7 +768,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 124 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 125 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only

@@ -121,6 +121,7 @@ pub(super) fn project_with(files: &[(&str, String)]) -> tempfile::TempDir {
     let project = tempfile::tempdir().expect("project dir");
     fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
         .expect("activate project");
+    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"));
     for (relative, content) in files {
         fs::write(project.path().join(relative), content).expect("write fixture file");
     }
