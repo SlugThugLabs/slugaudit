@@ -121,9 +121,9 @@ fn validated_activation_dir(canonical_root: &Path) -> Result<PathBuf, Activation
     Ok(activation)
 }
 
-/// Finds the nearest ancestor of `start` (inclusive) whose database
-/// file `.planning/slugaudit/project.db` exists. `start` may be a file, in which case its parent
-/// directory is the search origin.
+/// Finds the nearest ancestor of `start` (inclusive) whose database file
+/// `.planning/slugaudit/project.db` exists. `start` may be a file, in which
+/// case its parent directory is the search origin.
 ///
 /// # Errors
 ///
@@ -173,9 +173,11 @@ pub fn resolve_project(start: &Path) -> Result<(ProjectRoot, PathBuf), Activatio
     Ok((root, database_path))
 }
 
-/// Creates `.planning/slugaudit` under `root` — the one action that turns
-/// SlugAudit "on" for a project. Idempotent: succeeds silently if already
-/// enabled. Refuses to create through a symlinked `.planning` or
+/// Creates the `.planning/slugaudit` directory under `root`, the first step of
+/// turning SlugAudit "on". It creates only the directory: the project is not
+/// active until the caller (`project_control on`) creates `project.db` in it,
+/// which is the activation marker. Idempotent: succeeds silently if the
+/// directory exists. Refuses to create through a symlinked `.planning` or
 /// `.planning/slugaudit` component, for the same reason `find_project_root`
 /// refuses to read through one — the symlink-safety check is shared code,
 /// not a separate rule that could drift out of sync with the read path.
@@ -284,7 +286,14 @@ fn remove_owned(path: &Path) -> Result<bool, ActivationError> {
 /// from the kept `config.json`.
 ///
 /// A path that is already absent is not an error and is not reported as
-/// removed, so a second call on a clean directory reports nothing removed.
+/// removed, so a second call on a clean directory reports nothing removed. A
+/// symlinked `project.db` is never followed: it is not a database of ours, so
+/// no lock is taken and the link itself is unlinked.
+///
+/// `config.lock` is unlinked while another process may still hold a `flock`
+/// on it. That process keeps locking the unlinked inode, so a later writer
+/// that creates a fresh `config.lock` is not excluded by it; the window is
+/// accepted, not closed.
 ///
 /// # Errors
 ///

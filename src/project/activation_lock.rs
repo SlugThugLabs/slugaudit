@@ -4,7 +4,7 @@
 use super::activation::ActivationError;
 use super::database_path::database_path;
 use super::root::ProjectRoot;
-use crate::store::open_read_write;
+use crate::store::{StoreError, open_existing_read_write};
 use rusqlite::Connection;
 
 /// Acquires an exclusive database connection before removal. The connection
@@ -15,10 +15,22 @@ pub(super) fn acquire_database_lock(
     root: &ProjectRoot,
 ) -> Result<Option<Connection>, ActivationError> {
     let db_path = database_path(root);
-    if !db_path.try_exists()? {
-        return Ok(None);
+    // `symlink_metadata`, not `try_exists`: a symlinked `project.db` must not
+    // be followed. There is no database of ours to lock, and `disable`
+    // unlinks the link itself.
+    match db_path.symlink_metadata() {
+        Ok(metadata) if metadata.file_type().is_symlink() => return Ok(None),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(ActivationError::Io(error)),
     }
-    let connection = open_read_write(&db_path).map_err(ActivationError::Database)?;
+    // Never creates the file: if it vanishes after the check above, there is
+    // nothing left to lock.
+    let connection = match open_existing_read_write(&db_path) {
+        Ok(connection) => connection,
+        Err(StoreError::Missing) => return Ok(None),
+        Err(error) => return Err(ActivationError::Database(error)),
+    };
     // EXCLUSIVE locking is held by this connection until it is dropped. It
     // therefore covers the database lock and removal as one guarded window.
     connection
@@ -117,11 +129,11 @@ mod tests {
         let root = ProjectRoot::resolve(directory.path()).expect("resolve root");
         super::super::activation::enable(&root).expect("enable");
         let db_path = database_path(&root);
-        let writer = open_read_write(&db_path).expect("open writer");
+        let writer = crate::store::open_read_write(&db_path).expect("open writer");
         writer
             .execute_batch("CREATE TABLE wal_probe(x); INSERT INTO wal_probe VALUES (1);")
             .expect("leave frames in the WAL");
-        let reader = open_read_write(&db_path).expect("open reader");
+        let reader = crate::store::open_read_write(&db_path).expect("open reader");
         reader.execute_batch("BEGIN").expect("begin read");
         let _: i64 = reader
             .query_row("SELECT count(*) FROM wal_probe", [], |row| row.get(0))

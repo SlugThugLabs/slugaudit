@@ -8,7 +8,7 @@ use super::connection_guards::{
     guard_read_only, open_flags, reject_insecure_permissions, reject_symlink, resolve_parent_dir,
 };
 use super::netfs::reject_network_filesystem;
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 use thiserror::Error;
 
@@ -36,6 +36,10 @@ pub enum StoreError {
     /// The database path is a symlink; SlugAudit refuses to follow it.
     #[error("refusing to open a database path that is a symlink")]
     Symlink,
+    /// The database file does not exist and the caller asked only to open an
+    /// existing one (see [`open_existing_read_write`]).
+    #[error("the project database does not exist")]
+    Missing,
     /// The database path could not be inspected with `lstat`.
     #[error("failed to inspect the database path (lstat): {0}")]
     Inspect(#[source] std::io::Error),
@@ -85,6 +89,7 @@ impl StoreError {
             Self::Open(error) | Self::Configure(error) => super::is_rusqlite_corruption(error),
             Self::Migration(error) => error.is_corruption(),
             Self::Symlink
+            | Self::Missing
             | Self::Busy(_)
             | Self::Inspect(_)
             | Self::WalUnavailable { .. }
@@ -115,9 +120,21 @@ pub fn discard_corrupt_database(path: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+/// Whether opening a read-write connection may create the database file.
+/// Only `project_control on` and the corrupt-database rebuild (which recreates
+/// the file inside an already-active project) may create it; every other path
+/// must not resurrect a project that `project_control off` just deactivated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CreateMode {
+    MayCreate,
+    MustExist,
+}
+
 /// Opens a read-write connection, creating the database file if needed, and
 /// brings its schema up to date. This is the only connection sync/store
-/// repositories write through.
+/// repositories write through. Use it only where creating the file is the
+/// intent (`project_control on`, rebuilding a discarded database); everything
+/// else uses [`open_existing_read_write`].
 ///
 /// # Errors
 ///
@@ -127,19 +144,67 @@ pub fn discard_corrupt_database(path: &Path) -> Result<(), std::io::Error> {
 /// if the database path resides on a network filesystem (NFS/CIFS/SMB)
 /// where SQLite WAL mode is unreliable.
 pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
+    open_read_write_with(path, CreateMode::MayCreate)
+}
+
+/// [`open_read_write`] for a database that must already exist: it never
+/// creates the file, so a project deactivated between a caller's activation
+/// check and this open stays deactivated.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Missing`] if the file does not exist (including when
+/// it vanishes during the open), otherwise the errors of [`open_read_write`].
+pub fn open_existing_read_write(path: &Path) -> Result<Connection, StoreError> {
+    open_read_write_with(path, CreateMode::MustExist)
+}
+
+fn open_read_write_with(path: &Path, mode: CreateMode) -> Result<Connection, StoreError> {
     let resolved = resolve_parent_dir(path);
     let path = resolved.as_path();
+    if mode == CreateMode::MustExist {
+        ensure_present(path)?;
+    }
     reject_symlink(path)?;
     reject_network_filesystem(path)?;
-    create_with_private_permissions_if_missing(path)?;
+    let mut flags = open_flags(true);
+    match mode {
+        CreateMode::MayCreate => create_with_private_permissions_if_missing(path)?,
+        CreateMode::MustExist => flags.remove(OpenFlags::SQLITE_OPEN_CREATE),
+    }
     reject_insecure_permissions(path)?;
-    let mut connection =
-        Connection::open_with_flags(path, open_flags(true)).map_err(StoreError::Open)?;
+    let mut connection = match Connection::open_with_flags(path, flags) {
+        Ok(connection) => connection,
+        Err(error) => {
+            if mode == CreateMode::MustExist {
+                ensure_present(path)?;
+            }
+            return Err(StoreError::Open(error));
+        }
+    };
     configure(&connection)?;
     guard_against_attach(&connection);
     super::sql_functions::register(&connection).map_err(StoreError::Configure)?;
     super::migrations::ensure_current_schema(&mut connection)?;
     Ok(connection)
+}
+
+/// `Missing` when nothing exists at `path` (a dangling symlink counts as
+/// present so the symlink refusal still applies); other `lstat` failures are
+/// reported as themselves.
+fn ensure_present(path: &Path) -> Result<(), StoreError> {
+    match path.symlink_metadata() {
+        Ok(_) => Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Err(StoreError::Missing)
+        }
+        Err(error) => Err(StoreError::Inspect(error)),
+    }
 }
 
 /// Opens a connection that cannot write no matter what SQL it executes.

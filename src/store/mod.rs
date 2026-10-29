@@ -30,7 +30,9 @@ pub(crate) fn is_rusqlite_corruption(error: &rusqlite::Error) -> bool {
     )
 }
 
-pub use connection::{StoreError, discard_corrupt_database, open_read_only, open_read_write};
+pub use connection::{
+    StoreError, discard_corrupt_database, open_existing_read_write, open_read_only, open_read_write,
+};
 pub use discard::{DiscardError, DiscardOutcome, discard_if_still_unusable};
 pub use migrations::MigrationError;
 pub use result_store::{

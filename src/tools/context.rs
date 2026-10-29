@@ -22,7 +22,7 @@ pub(crate) fn with_verified_write<T>(
     synced: &SyncedProject,
     f: impl FnOnce(&Transaction<'_>) -> Result<T, ErrorData>,
 ) -> Result<T, ErrorData> {
-    let mut connection = store::open_read_write(&synced.database_path)
+    let mut connection = store::open_existing_read_write(&synced.database_path)
         .map_err(|error| internal_error("opening the project database for write", error))?;
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)

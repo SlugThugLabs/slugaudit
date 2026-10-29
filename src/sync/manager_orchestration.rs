@@ -52,6 +52,11 @@ impl SourceSyncManager {
         });
         let (root, database_path) =
             project::resolve_project(Path::new(path)).map_err(map_activation_error)?;
+        // Test-only seam: the window in which `project_control off` can remove
+        // the database after the activation check and before it is opened.
+        // Keyed by the database path, not the root, because the publish hooks
+        // already use the root as their key.
+        super::super::race_hook::fire(&database_path);
 
         let connection = match self.open_or_rebuild(&root, &database_path, start, sink)? {
             Ok(conn) => conn,
@@ -79,8 +84,17 @@ impl SourceSyncManager {
         start: std::time::Instant,
         sink: &dyn ProgressSink,
     ) -> Result<Result<rusqlite::Connection, SyncedProject>, ErrorData> {
-        match store::open_read_write(database_path) {
+        // Never creates the file: a project deactivated since the check in
+        // `resolve_project` must stay deactivated. Only the rebuild below
+        // (inside a project that is still active) recreates it.
+        match store::open_existing_read_write(database_path) {
             Ok(connection) => Ok(Ok(connection)),
+            Err(store::StoreError::Missing) => {
+                sink.emit(ProgressEvent::Completed {
+                    phase: "ensuring_current",
+                });
+                Err(map_activation_error(project::ActivationError::NotActive))
+            }
             Err(error) if error.is_corruption() => {
                 let (notice, count_error) = DatabaseDiscard::assess(
                     count_findings_at(database_path),
@@ -103,13 +117,16 @@ impl SourceSyncManager {
                     )
                 })?;
                 if outcome == store::DiscardOutcome::AlreadyCurrent {
-                    return store::open_read_write(database_path)
+                    return store::open_existing_read_write(database_path)
                         .map(Ok)
-                        .map_err(|error| {
-                            ErrorData::internal_error(
+                        .map_err(|error| match error {
+                            store::StoreError::Missing => {
+                                map_activation_error(project::ActivationError::NotActive)
+                            }
+                            error => ErrorData::internal_error(
                                 format!("opening the project database for sync: {error}"),
                                 None,
-                            )
+                            ),
                         });
                 }
                 self.rebuild_and_finish(root, database_path.to_path_buf(), start, sink, notice)

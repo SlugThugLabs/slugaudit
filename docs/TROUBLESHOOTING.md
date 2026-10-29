@@ -230,7 +230,7 @@ them:
 
 | Message | Cause and fix |
 |---|---|
-| `refusing to open a database path that is a symlink` | The database path is, or became, a symlink. Move it to a real local file. The open uses `SQLITE_OPEN_NOFOLLOW` so this is enforced by SQLite, not by a race-prone pre-check. |
+| `refusing to open a database path that is a symlink` | The database path is, or became, a symlink. A symlinked `project.db` reads as inactive, `project_control on` refuses it with this message, and `project_control off` unlinks the link itself without following it. Move it to a real local file. The open uses `SQLITE_OPEN_NOFOLLOW` so this is enforced by SQLite, not by a race-prone pre-check. |
 | `refusing to open a database on a network filesystem (NFS/CIFS/SMB)` | SQLite WAL is unreliable on network mounts. Move the project to a local filesystem and re-enable it. Detected from `/proc/self/mountinfo` on Linux and the mount table on macOS. |
 | `could not verify whether the database is on a network filesystem` | The platform inspection failed. The open fails closed rather than risk corruption. |
 | `SQLite did not enable WAL journal mode` | The filesystem cannot support WAL; it is unsupported for this database. Use a local filesystem. |

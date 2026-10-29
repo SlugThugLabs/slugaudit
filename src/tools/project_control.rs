@@ -356,10 +356,12 @@ fn disable(
     root: &ProjectRoot,
     manager: Option<&sync::SourceSyncManager>,
 ) -> Result<Json<ProjectControlResponse>, ErrorData> {
+    // Unwatch only once the project is actually off: a failed (busy) disable
+    // leaves the project active, and it must keep its watcher.
+    let report = project::disable(root).map_err(|e| err(format!("disable: {e}")))?;
     if let Some(m) = manager {
         m.unwatch(root.as_path());
     }
-    let report = project::disable(root).map_err(|e| err(format!("disable: {e}")))?;
     // Nothing removed means the project was already off (no database, no
     // results directory, no lock), whether or not `config.json` is still there.
     let status = if report.removed.is_empty() {
@@ -389,3 +391,7 @@ mod config_write_tests;
 #[cfg(test)]
 #[path = "project_control_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "project_control_symlink_tests.rs"]
+mod symlink_tests;

@@ -340,3 +340,7 @@ mod observability_tests;
 #[cfg(test)]
 #[path = "manager_log_tests.rs"]
 mod log_tests;
+
+#[cfg(test)]
+#[path = "manager_off_race_tests.rs"]
+mod off_race_tests;

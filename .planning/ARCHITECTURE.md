@@ -692,7 +692,12 @@ fails with `NotActive`. The database file is the single activation predicate
 creates the directory, then the database, then imports. `off` deletes the
 database, its sidecars, `results/` and `config.lock`, keeps `config.json` and
 any other file, and removes the directory only if empty, so `off` then `on`
-restores the persisted mechanics. The marker's purpose is **discoverability and scope** — "which
+restores the persisted mechanics. The sync path opens an existing `project.db`
+and never creates it (`store::open_existing_read_write`): a call that passed the
+activation check just before `off` fails with `NotActive` rather than recreating
+the database. Only `on` and the corrupt-database rebuild create the file. `off`
+unlinks `config.lock` while another process may hold a `flock` on it; that
+process then locks an unlinked inode (a known, accepted window). The marker's purpose is **discoverability and scope** — "which
 project am I operating on?" — not authorization. The agent already has
 filesystem access as the user that launched it, so SlugAudit grants no access
 the agent did not already have; it makes queries fast.
@@ -768,7 +773,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 125 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 127 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only
