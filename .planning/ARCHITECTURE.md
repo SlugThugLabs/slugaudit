@@ -761,7 +761,7 @@ src/
 └── module_tests.rs          the sibling suite
 ```
 
-The 122 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
+The 124 `*_tests.rs` files share this pattern; `cargo test --lib` runs all of
 them in parallel. Large suites are split into focused siblings (e.g.
 `tools/finding_tests.rs` alongside `tools/finding_session_tests.rs`), and some
 suites live in a `tests.rs` sibling instead (e.g. `watch/tests.rs`) — only
@@ -863,7 +863,10 @@ the architecture so the next reviewer does not re-litigate it from scratch.
   future and sends are best-effort, so a broken progress channel cannot turn a
   successful call into an error. Volume is throttled by `McpProgressSink`.
 - **The database is discarded, not migrated.** See *Store and schema
-  lifecycle*.
+  lifecycle*. The discard is surfaced: the call that triggered it reports
+  `database_discard` (`findings_discarded` counted before removal, `null`
+  when the database was unreadable; plus the cause) on `project_control on`,
+  `report`, `finding`, `finding_sessions` and the `page` block of paged tools.
 
 ## Key invariants
 

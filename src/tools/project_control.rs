@@ -54,6 +54,11 @@ pub struct ProjectControlResponse {
     /// `"off"`, which never touches that file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gitignore: Option<GitignoreReport>,
+    /// Present only when `"on"` found a corrupt or outdated project database
+    /// and discarded it: how many findings were lost (null = unknown, the
+    /// database was unreadable) and why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_discard: Option<sync::DatabaseDiscard>,
 }
 
 /// What enabling a project did about its root `.gitignore`.
@@ -269,9 +274,25 @@ fn enable(
         .map_err(config_write_error)?;
     }
     let db_path = project::database_path(root);
+    let mut discard = None;
     let mut connection = match store::open_read_write(&db_path) {
         Ok(conn) => conn,
-        Err(error) if error.is_corruption() => recover_corrupt_database(&db_path)?,
+        Err(error) if error.is_corruption() => {
+            let (notice, count_error) = sync::DatabaseDiscard::assess_file(
+                &db_path,
+                format!("the project database is corrupt or outdated: {error}"),
+            );
+            tracing::warn!(
+                operation = "enable_project",
+                database_id = %crate::util::redacted_path(&db_path),
+                error = %error,
+                findings_discarded = ?notice.findings_discarded,
+                count_error = count_error.as_ref().map(tracing::field::display),
+                "database is corrupt or outdated; discarding and re-importing from scratch",
+            );
+            discard = Some(notice);
+            recover_corrupt_database(&db_path)?
+        }
         Err(e) => return Err(err(format!("database: {e}"))),
     };
     let report = sync::publish(&mut connection, root.as_path(), parse::PACK_VERSION, sink)
@@ -288,6 +309,7 @@ fn enable(
             revision_id: report.revision_id,
         }),
         gitignore: Some(gitignore),
+        database_discard: discard,
     }))
 }
 
@@ -319,6 +341,7 @@ fn disable(
             path: root.as_path().to_string_lossy().to_string(),
             import: None,
             gitignore: None,
+            database_discard: None,
         }));
     }
     if let Some(m) = manager {
@@ -330,6 +353,7 @@ fn disable(
         path: root.as_path().to_string_lossy().to_string(),
         import: None,
         gitignore: None,
+        database_discard: None,
     }))
 }
 

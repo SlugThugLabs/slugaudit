@@ -153,6 +153,11 @@ pub struct Page {
     /// The index revision every part of this response was read from: that of
     /// the call that made the result, on every page.
     pub revision_id: String,
+    /// Present only when this call discarded and rebuilt the project
+    /// database (corruption, version bump, root mismatch): how many findings
+    /// were lost (null = unknown, the database was unreadable) and why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_discard: Option<crate::sync::DatabaseDiscard>,
 }
 
 #[cfg(test)]
@@ -217,6 +222,7 @@ mod tests {
     #[test]
     fn a_page_serializes_exactly_the_seven_shared_field_names() {
         let page = Page {
+            database_discard: None,
             returned: 2,
             total: Some(5),
             complete: false,
@@ -247,6 +253,7 @@ mod tests {
     #[test]
     fn a_last_page_serializes_unknown_total_as_json_null_and_has_no_next_offset() {
         let page = Page {
+            database_discard: None,
             returned: 1,
             total: None,
             complete: true,

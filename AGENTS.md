@@ -216,11 +216,13 @@ caught in `src/server_runner.rs`: `spawn_blocking(..)`'s `JoinError` becomes an
   SQL, or file content into a code or a remedy. Attach a code where the typed
   failure exists (discovery/publish/reconcile/sweep/activation), not by
   matching a message at the outermost tool.
-- Corruption and staleness are **recovered, not surfaced**:
+- Corruption and staleness are **recovered, and the discard is surfaced**:
   `open_or_rebuild` / `verify_metadata_or_rebuild`
   (`src/sync/manager_orchestration.rs`) discard and rebuild the database on
   corruption or a schema/contract version mismatch (mismatch needs no
-  migration code).
+  migration code). The call that discarded reports `database_discard`
+  (`findings_discarded` counted before removal, `null` when the database was
+  unreadable, never a fabricated 0; plus the cause) and logs one WARN.
 
 ### Adding or extending a tool
 

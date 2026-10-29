@@ -62,6 +62,7 @@ pub(super) fn build_report(
         "report built"
     );
     Ok(ReportResponse {
+        database_discard: None,
         revision_id,
         file_count: scope.file_count,
         completeness: scope.completeness,

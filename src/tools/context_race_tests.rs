@@ -24,6 +24,7 @@ fn clone_synced(synced: &SyncedProject) -> SyncedProject {
     SyncedProject {
         database_path: synced.database_path.clone(),
         revision_id: synced.revision_id.clone(),
+        discard: synced.discard.clone(),
     }
 }
 

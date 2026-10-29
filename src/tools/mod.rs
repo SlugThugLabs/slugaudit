@@ -51,6 +51,10 @@ mod tool_counters;
 pub(crate) mod test_support;
 
 #[cfg(test)]
+#[path = "discard_surface_tests.rs"]
+mod discard_surface_tests;
+
+#[cfg(test)]
 #[path = "redaction_tests.rs"]
 mod redaction_tests;
 
