@@ -372,7 +372,7 @@ grep -F "session_id=<uuid>" audit.log | grep -F 'tool call completed'
 
 Redaction: a correlation log line carries a BLAKE3-derived path id
 (`util::redacted_path`), not a raw path. The exceptions are the database
-recovery and filesystem watcher WARNs, which name the real database or
+recovery, health database and filesystem watcher WARNs, which name the real database or
 watched path (`path=`) and the source error so an operator can act on them.
 SQL text, finding titles and
 descriptions, indexed source content, and environment values never enter logs.

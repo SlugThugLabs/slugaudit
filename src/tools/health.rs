@@ -511,3 +511,7 @@ mod tests;
 #[cfg(test)]
 #[path = "health_state_tests.rs"]
 mod state_tests;
+
+#[cfg(test)]
+#[path = "health_open_log_tests.rs"]
+mod open_log_tests;
