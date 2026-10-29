@@ -75,7 +75,13 @@ compressed bundle of grammars (about 22 MB) from its GitHub release
 (`github.com/xberg-io/tree-sitter-language-pack`), verifies it against the sha256 in the
 release manifest, and caches it at `~/.cache/tree-sitter-language-pack/v1.18.0/libs`
 (the platform cache directory; `TREE_SITTER_LANGUAGE_PACK_CACHE_DIR` overrides its
-base). Later runs load from that cache without touching the network. If the fetch fails
+base). Those grammars are native code: SlugAudit loads them with `dlopen` and runs
+them in the server process, and their integrity rests on the sha256 in that release's
+own manifest — not a hash pinned in SlugAudit or a signature — so it trusts whatever
+that third-party release (`github.com/xberg-io/tree-sitter-language-pack`) serves for
+the pinned tag. Point `TREE_SITTER_LANGUAGE_PACK_MANIFEST_URL` elsewhere, or run
+offline, to prevent the fetch. Later runs load from that cache without touching the
+network. If the fetch fails
 (for example, offline on a first run), the file's content is still stored and
 searchable, its `files.parser_availability` is `LoadFailed`, and it is retried after a
 10-minute cool-down (or on the next server start) instead of being left unparsed. The
