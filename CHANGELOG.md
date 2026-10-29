@@ -11,6 +11,8 @@ The newest entry MUST match the version in `Cargo.toml`.
 
 ### Fixed
 
+- A mistyped answer in the interactive menu now prints one error line and asks
+  again on the choice line instead of redrawing the whole banner and menu.
 - The interactive connect menu no longer prints "not valid JSON" warnings for
   clients whose config is TOML or YAML (codex, grok, hermes); those configs are
   now detected by a text scan with no format warning.

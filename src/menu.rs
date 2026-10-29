@@ -19,8 +19,11 @@ pub fn run_menu() -> Result<bool, Box<dyn std::error::Error>> {
     loop {
         let style = Style::stdout();
         cli::out(format_args!("{}", render_menu(&style)))?;
-        let line = crate::prompt::read_prompt_line()?;
-        match menu_choice(line.as_deref()) {
+        let choice = next_choice(
+            &mut crate::prompt::read_prompt_line,
+            &mut std::io::stdout().lock(),
+        )?;
+        match choice {
             MenuChoice::Install => install_step()?,
             MenuChoice::Connect => connect_step()?,
             MenuChoice::Disconnect => disconnect_step()?,
@@ -31,14 +34,30 @@ pub fn run_menu() -> Result<bool, Box<dyn std::error::Error>> {
                 }
             }
             MenuChoice::Exit => return Ok(false),
-            MenuChoice::Invalid => {
-                cli::out(format_args!(
-                    "\nInvalid choice; pick a number from the list.\n"
-                ))?;
-                continue;
-            }
+            // `next_choice` re-prompts until the answer is valid, so this is
+            // never reached; redrawing the banner would be the wrong fallback.
+            MenuChoice::Invalid => continue,
         }
         cli::out(format_args!("\n"))?;
+    }
+}
+
+/// The line shown on a bad menu answer, followed by the choice prompt again.
+const INVALID_CHOICE: &str =
+    "Invalid choice; pick a number from the list.\nChoose an option [1-6]: ";
+
+/// Reads menu answers until one is valid. A bad answer prints one error line
+/// and re-asks on the choice line only; the banner is never redrawn.
+fn next_choice(
+    read: &mut impl FnMut() -> std::io::Result<Option<String>>,
+    out: &mut impl std::io::Write,
+) -> std::io::Result<MenuChoice> {
+    loop {
+        let choice = menu_choice(read()?.as_deref());
+        if choice != MenuChoice::Invalid {
+            return Ok(choice);
+        }
+        cli::write_to(out, format_args!("{INVALID_CHOICE}"))?;
     }
 }
 
@@ -154,6 +173,38 @@ mod tests {
         for (line, expected) in cases {
             assert_eq!(menu_choice(line), expected, "line {line:?}");
         }
+    }
+
+    #[test]
+    fn an_invalid_answer_prints_one_error_line_and_reprompts_without_the_banner() {
+        let mut answers = vec![
+            Some("x".to_owned()),
+            Some("9".to_owned()),
+            Some("6".to_owned()),
+        ]
+        .into_iter();
+        let mut out = Vec::new();
+
+        let choice = next_choice(&mut || Ok(answers.next().flatten()), &mut out)
+            .expect("reads and writes succeed");
+
+        assert_eq!(choice, MenuChoice::Exit);
+        let text = String::from_utf8(out).expect("utf8 output");
+        assert_eq!(text.matches("Invalid choice;").count(), 2, "{text}");
+        assert_eq!(
+            text.matches("Choose an option [1-6]: ").count(),
+            2,
+            "{text}"
+        );
+        assert!(!text.contains("Install"), "no banner redraw: {text}");
+        assert_eq!(text, INVALID_CHOICE.repeat(2));
+        // The banner is rendered only by `run_menu`'s outer loop, once per menu.
+        assert_eq!(
+            render_menu(&Style::plain())
+                .matches("Choose an option")
+                .count(),
+            1
+        );
     }
 
     #[test]
