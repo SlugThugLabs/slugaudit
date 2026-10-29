@@ -234,7 +234,7 @@ pub fn project_control(
     let root = resolve_root(&path_str, &path)?;
 
     match inner.action {
-        ProjectControlAction::On => enable(&root, profile, sink),
+        ProjectControlAction::On => enable(&root, profile, sink, manager),
         ProjectControlAction::Off => disable(&root, manager),
     }
 }
@@ -271,6 +271,7 @@ fn enable(
     root: &ProjectRoot,
     profile_override: Option<crate::model::AuditProfile>,
     sink: &dyn crate::progress::ProgressSink,
+    manager: Option<&sync::SourceSyncManager>,
 ) -> Result<Json<ProjectControlResponse>, ErrorData> {
     project::enable(root).map_err(|e| err(format!("enable: {e}")))?;
     // Right after the directory itself: the guard must be in place even if
@@ -289,6 +290,12 @@ fn enable(
         .map_err(config_write_error)?;
     }
     let db_path = project::database_path(root);
+    // A previous `off` removed `results/` under any store this process still
+    // holds for the directory; drop it so the next result recreates it. Not
+    // done on `off`: a result opened before it must stay readable.
+    if let (Some(m), Some(runtime_dir)) = (manager, db_path.parent()) {
+        m.result_stores().release_dir(runtime_dir);
+    }
     let mut discard = None;
     let mut connection = match store::open_read_write(&db_path) {
         Ok(conn) => conn,

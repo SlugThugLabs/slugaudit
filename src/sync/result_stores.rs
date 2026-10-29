@@ -74,6 +74,19 @@ impl ResultStoreSlot {
         Ok(store)
     }
 
+    /// Drops the store held for `runtime_dir`, if that is the one in the slot,
+    /// so the next `for_dir` opens a fresh one and recreates `results/`.
+    ///
+    /// Called when a project is enabled: a disable removed the results
+    /// directory under the slot, and the held store would keep pointing at
+    /// it. A store held for another directory is left alone.
+    pub fn release_dir(&self, runtime_dir: &Path) {
+        let mut slot = lock_or_recover(&self.current, "result_store_slot");
+        if slot.as_ref().is_some_and(|(dir, _)| dir == runtime_dir) {
+            *slot = None;
+        }
+    }
+
     /// The open store, if any result was ever materialised in this process.
     pub fn current(&self) -> Option<Arc<ResultStore>> {
         lock_or_recover(&self.current, "result_store_slot")

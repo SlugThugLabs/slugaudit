@@ -289,6 +289,38 @@ fn result_store_proof_project_control_off_keeps_the_open_result_readable() {
 }
 
 #[test]
+fn result_store_proof_project_control_off_then_on_pages_a_new_result_by_cursor() {
+    let open = open_result();
+    let control = |action| {
+        project_control(
+            &Parameters(ProjectControlRequest {
+                path: Some(open.path.clone()),
+                action,
+                profile: None,
+            }),
+            &NoopProgressSink,
+            Some(&open.manager),
+        )
+        .expect("project_control succeeds")
+    };
+    assert_eq!(control(ProjectControlAction::Off).0.status, "disabled");
+    assert_eq!(control(ProjectControlAction::On).0.status, "enabled");
+
+    let first = open_first_page(&open.manager, &open.path);
+    assert_eq!(seen(&first).rows, (0..10).collect::<Vec<_>>());
+    let token = first.page.cursor.clone().expect("more pages remain");
+    let second = continue_with(&open.manager, &token).expect("page two by cursor");
+    assert_eq!(seen(&second).rows, (10..20).collect::<Vec<_>>());
+    assert!(
+        open.project
+            .path()
+            .join(".planning/slugaudit/results")
+            .is_dir(),
+        "results/ was recreated"
+    );
+}
+
+#[test]
 fn result_store_proof_publish_and_wal_checkpoint_truncate_with_results_open() {
     let open = open_result();
     let second = open_first_page(&open.manager, &open.path);
