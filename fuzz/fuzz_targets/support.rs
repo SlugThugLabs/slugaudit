@@ -179,11 +179,22 @@ impl Fixture {
             .expect("create fixture temp dir");
         let root = project.path().to_path_buf();
 
-        // The activation directory is the marker `find_project_root` walks
-        // ancestors for; without it every tool call fails before reaching the
-        // code under test.
-        std::fs::create_dir_all(root.join(".planning").join("slugaudit"))
-            .expect("create activation dir");
+        // A project is active only when `project.db` exists as a regular file
+        // (mode 0600) in the activation directory, which `find_project_root`
+        // walks ancestors for; without it every tool call fails before
+        // reaching the code under test.
+        let activation = root.join(".planning").join("slugaudit");
+        std::fs::create_dir_all(&activation).expect("create activation dir");
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(activation.join("project.db"))
+                .expect("create database marker");
+        }
         for (relative, content) in FILES {
             let path = root.join(relative);
             std::fs::create_dir_all(path.parent().expect("fixture file has a parent"))
