@@ -267,6 +267,10 @@ pub(crate) struct McpProgressSink {
     /// flood the MCP host with notifications the consumer can't use faster
     /// than ~10/s anyway. `Started`/`Completed` always send.
     sampling_throttle: std::sync::Mutex<Throttle>,
+    /// Runtime captured at construction (inside the tool call). `Sampling`
+    /// events are emitted from plain `std::thread::scope` workers that have
+    /// no runtime context, where `tokio::task::spawn` would panic.
+    runtime: tokio::runtime::Handle,
 }
 
 /// Coalesces events that arrive less than `window` apart: the first event
@@ -307,7 +311,7 @@ impl McpProgressSink {
         // observable state. Errors here are silently dropped, matching
         // `run_blocking`'s "broken progress channel can never turn a
         // successful tool call into an error" stance.
-        tokio::task::spawn(async move {
+        self.runtime.spawn(async move {
             notify_progress(&Some((peer, token)), fraction, message).await;
         });
     }
@@ -359,6 +363,7 @@ pub(crate) fn build_inner_sink(
         Some((peer, token)) => Arc::new(McpProgressSink {
             peer,
             token,
+            runtime: tokio::runtime::Handle::current(),
             // 100 ms ≈ 10 notifications/second — enough to show a live
             // i/N ratio without flooding the host on a huge import.
             sampling_throttle: std::sync::Mutex::new(Throttle::new(

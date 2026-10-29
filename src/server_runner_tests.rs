@@ -557,3 +557,63 @@ fn a_failed_tool_call_logs_the_machine_readable_code_but_not_the_cursor_token() 
         "the cursor token leaked into the tool-call log:\n{logs}"
     );
 }
+
+/// `Sampling` events come from `std::thread::scope` workers with no tokio
+/// context; the sink must spawn on the runtime captured at construction.
+#[tokio::test(flavor = "multi_thread")]
+async fn progress_sink_off_runtime_thread_delivers_notification() {
+    use rmcp::ServiceExt;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let (server_io, client_io) = tokio::io::duplex(65536);
+    let server = tokio::spawn(async move {
+        crate::server::SlugAuditServer::new()
+            .serve(server_io)
+            .await
+            .expect("server must complete the handshake")
+    });
+    let (read_half, mut write_half) = tokio::io::split(client_io);
+    let mut lines = BufReader::new(read_half).lines();
+    write_half
+        .write_all(
+            concat!(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#,
+                "\n",
+                r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+                "\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("client write");
+    let running = server.await.expect("server task");
+    lines
+        .next_line()
+        .await
+        .expect("read initialize response")
+        .expect("initialize response line");
+
+    let sink = build_inner_sink(Some((
+        running.peer().clone(),
+        ProgressToken(rmcp::model::NumberOrString::Number(7)),
+    )));
+    std::thread::spawn(move || {
+        sink.emit(ProgressEvent::Sampling {
+            phase: "sample",
+            current: 1,
+            total: 2,
+        });
+    })
+    .join()
+    .expect("emit from a runtime-less thread must not panic");
+
+    let line = tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
+        .await
+        .expect("notification within 5s")
+        .expect("read notification")
+        .expect("notification line");
+    let value: serde_json::Value = serde_json::from_str(&line).expect("json");
+    assert_eq!(value["method"], "notifications/progress");
+    assert_eq!(value["params"]["progressToken"], 7);
+    assert_eq!(value["params"]["message"], "sample: 1/2");
+}
