@@ -857,3 +857,8 @@ the integrated tree; it enforces existence, the module-map paths, and the
 `.github/workflows/release.yml` and are not part of the drift gate's checked
 set. The eight `audit_2026-10-19_*` files in `.planning/archive/` are
 historical evidence copies, not canonical docs, and are not read by the gate.
+
+## Decision 2026-10-29: 5.1 and 5.2 deferred (not known-wrong on the shipped product)
+- 5.1 `/sbin/mount` (netfs.rs, cfg(macos)): the 1.1.0 release ships Linux x86_64 only; the macOS mount code is never reached by the shipped binary. Fix with the statfs detection (needs a `libc` dependency) in the phase that ships macOS.
+- 5.2 Linux-x86_64-only self-update asset: `update` refusing a non-Linux host is correct, since there is no macOS/ARM asset to fetch; the only wart is the message. The asset name goes dynamic when those platforms ship.
+Recorded as a decision, not an oversight. Owner may overrule.
