@@ -13,9 +13,31 @@ pub use language::{PROSE_LANGUAGE, detect_language, is_prose_language_name, lang
 /// `tree-sitter-language-pack` exposes no runtime `VERSION` constant, so
 /// this string is manually duplicated from the exact pin
 /// (`tree-sitter-language-pack = "=1.18.0"`) in `Cargo.toml`. Bumping the
-/// dependency requires updating both together; the repo-level
-/// `check_version_consistency` gate fails loudly if they ever drift apart
-/// (it replaced the unit test that used to guard this next to the const, so
-/// the check reads the manifest at a chosen root instead of only this
-/// crate's own compile-time `include_str!`).
+/// dependency requires updating both together; the unit test in this module
+/// fails if they drift apart.
 pub const PACK_VERSION: &str = "1.18.0";
+
+#[cfg(test)]
+mod tests {
+    use super::PACK_VERSION;
+
+    const PIN_PREFIX: &str = "tree-sitter-language-pack = \"=";
+
+    #[test]
+    fn pack_version_matches_the_manifest_pin() {
+        let manifest = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
+        let pin = manifest
+            .lines()
+            .find(|line| line.starts_with(PIN_PREFIX))
+            .expect("Cargo.toml must pin tree-sitter-language-pack exactly as `=x.y.z`");
+        let version = pin
+            .strip_prefix(PIN_PREFIX)
+            .and_then(|rest| rest.split('"').next())
+            .expect("the tree-sitter-language-pack pin must close its quoted version");
+
+        assert_eq!(
+            PACK_VERSION, version,
+            "PACK_VERSION and the tree-sitter-language-pack pin in Cargo.toml must move together"
+        );
+    }
+}

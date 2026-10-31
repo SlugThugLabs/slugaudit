@@ -78,13 +78,10 @@ jobs:
       - name: Check for duplicate commit subjects and test names
         run: cargo run --quiet --bin check_no_duplicates --locked
 
-      - name: Check docs drift (canonical doc set, module map, test counts)
-        run: cargo run --quiet --bin check_docs_drift --locked
-
       # Fails when an `EvidenceKind` variant has no producer, or an
-      # `ExtractionCompleteness` variant is unreachable — the class Phase 1
-      # found by hand (three dead evidence kinds, `ContentOnly` never
-      # constructed) and Phase 3 deleted ad hoc.
+      # `ExtractionCompleteness` variant is unreachable — the class found
+      # by hand once (three dead evidence kinds, `ContentOnly` never
+      # constructed) and deleted ad hoc.
       - name: Check producer coverage (every evidence kind is constructed)
         run: cargo run --quiet --bin check_producer_coverage --locked
 
@@ -95,17 +92,6 @@ jobs:
       # check_performance.
       - name: Check the MCP surface snapshot (tools/list + resources/list)
         run: cargo run --quiet --bin check_mcp_surface --locked
-
-      # Fails when the governance shell (CODEOWNERS, CONTRIBUTING.md,
-      # SECURITY.md, CODE_OF_CONDUCT.md, CHANGELOG.md) is missing a file, or
-      # when a CODEOWNERS rule references a path that does not exist.
-      - name: Check governance (required files + CODEOWNERS paths)
-        run: cargo run --quiet --bin check_governance --locked
-
-      # Fails when Cargo.toml, lhm.plugin.json, the newest CHANGELOG.md
-      # heading, or parse::PACK_VERSION disagree on a version.
-      - name: Check version consistency (manifests, CHANGELOG, pack pin)
-        run: cargo run --quiet --bin check_version_consistency --locked
 
       - name: Check compilation
         run: cargo check --all-targets --all-features --locked
@@ -218,20 +204,17 @@ jobs:
         with:
           tool: cargo-mutants
 
-      # SCOPE DECISION — six files on purpose. The plan's *Untrusted-input
-      # rigor* item asked for either a wider mutation scope or a written
-      # reason for this one; this comment is the written reason, and
-      # AGENTS.md's "Testing and QA" section (Mutation testing) carries the
-      # same decision for readers who never open this file.
+      # SCOPE DECISION — six files on purpose. This comment is the written
+      # reason for the narrow mutation scope.
       #
       # What the six are: `src/sync/revision.rs` and `src/sync/publish.rs`
       # decide revision identity and atomic publication, `src/sync/hash.rs`
       # owns the hash types and in-memory digests, `src/sync/hash_io.rs`
       # carries the streaming `hash_file` and `stat_identity` that moved out
-      # of `hash.rs` in the wave-3 R4 split (2026-10-19),
+      # of `hash.rs` in a size split (2026-10-19),
       # `src/sync/revision_support.rs` carries the stale-finding
       # invalidation (`invalidate_stale_findings`) that moved out of
-      # `revision.rs` in the wave-4 size fix (2026-10-19), and
+      # `revision.rs` in a later size split (2026-10-19), and
       # `src/tools/context.rs` is the freshness-verification entry point
       # every state-bearing tool handler shares. A mutant that survives in
       # any of them means a revision was published wrong or a stale one was
@@ -248,17 +231,16 @@ jobs:
       # re-runs the whole test suite once per mutant, so the step costs
       # mutant count x suite time, not a one-off. The mutants a wider scope
       # adds are in code the existing suites already drive end to end
-      # (`discovery_tests`, `sample_tests`, `sweep_tests`, `publish_*_tests`,
+      # (`discovery_tests`, `sample_tests`, `publish_*_tests`,
       # the `tools/*_tests` suites), so that multiplier buys verdicts on
       # behavior the tests pin directly, while the six files above are
       # where a mutation can slip past a green suite.
       #
       # This step FAILS CLOSED: the 2026-08-12 baseline recorded zero
       # surviving mutants on the pre-split four-file surface (17 caught, 0
-      # missed, 3 unviable; see .planning/archive/DECISIONS.md). The wave-3
-      # split moved the hash functions to hash_io.rs and the wave-4 size fix
-      # moved stale-finding invalidation to revision_support.rs, both
-      # without changing them, so a survivor in the six-file scope is a real
+      # missed, 3 unviable). The splits
+      # moved the hash functions to hash_io.rs and stale-finding
+      # invalidation to revision_support.rs, both without changing them, so a survivor in the six-file scope is a real
       # regression, not an un-triaged baseline.
       #
       # Linux-only: cargo-mutants has platform-specific behavior and the

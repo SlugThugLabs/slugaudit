@@ -17,14 +17,13 @@
 //!
 //! Scope: the gate measures the shipped product runtime. The dev-only
 //! `src/bin/check_*` gate binaries are excluded via
-//! `--ignore-filename-regex` — AGENTS.md's "Shipped artifact vs
-//! development-only" section says a coverage audit must "not count
-//! development-only check binaries as end-user runtime code", and
+//! `--ignore-filename-regex`: a coverage audit must not count
+//! development-only check binaries as end-user runtime code, and
 //! measuring them here while their own test files are excluded from the
 //! report left six gate mains permanently at 0% inside the denominator
 //! (892 lines, ~8 points of measured coverage). Measured product
 //! coverage at the 2026-10-16 scope change: 87.89%; the 83 floor is
-//! unchanged (measured-minus-margin). See DECISIONS 2026-10-16.
+//! unchanged (measured-minus-margin).
 //!
 //! Pure-Rust replacement: no Python interpreter, no shell. `cargo
 //! llvm-cov` is invoked through `std::process::Command`; the JSON
@@ -41,8 +40,8 @@ fn main() -> ExitCode {
     // is "catch coverage regressions, not block on them", so it tracks
     // measurement rather than an aspirational number. Use `cargo run
     // --quiet --bin check_coverage -- <threshold>` to override for a
-    // single run (e.g. CI flavor that wants a harder floor); document
-    // any raise in `.planning/archive/DECISIONS.md` so the gate stays honest.
+    // single run (e.g. CI flavor that wants a harder floor); record any
+    // raise with the change that makes it so the gate stays honest.
     let threshold_str: String = args.next().unwrap_or_else(|| "83".to_string());
     let threshold = match parse_threshold(&threshold_str) {
         Ok(n) => n,

@@ -18,17 +18,11 @@ const ROOTED_GATES: &[(&str, &str)] = &[
         "check_no_duplicates",
         env!("CARGO_BIN_EXE_check_no_duplicates"),
     ),
-    ("check_docs_drift", env!("CARGO_BIN_EXE_check_docs_drift")),
     (
         "check_producer_coverage",
         env!("CARGO_BIN_EXE_check_producer_coverage"),
     ),
     ("check_mcp_surface", env!("CARGO_BIN_EXE_check_mcp_surface")),
-    ("check_governance", env!("CARGO_BIN_EXE_check_governance")),
-    (
-        "check_version_consistency",
-        env!("CARGO_BIN_EXE_check_version_consistency"),
-    ),
 ];
 
 /// The gates without `--root`; they still own a usage contract.

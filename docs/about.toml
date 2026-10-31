@@ -1,0 +1,50 @@
+# cargo-about 0.9.2 configuration.
+#
+# Consumed by .github/workflows/release.yml:
+#
+#   cargo about generate --locked --fail -c docs/about.toml \
+#     -o "$RUNNER_TEMP/notices.body" docs/third-party-notices.hbs
+#
+# `--fail` turns an undeterminable licence into a failed release rather than a
+# silently missing section, so this file must accept every licence in the
+# release graph. The `accepted` list mirrors deny.toml's `[licenses] allow`
+# list; keep the two in sync when either changes.
+#
+# The fuzz workspace (fuzz/Cargo.toml) is a separate cargo workspace and is
+# not part of the release graph, so its development-only libfuzzer-sys NCSA
+# exception is deliberately not repeated here.
+#
+# cargo-about's default licence-detection confidence threshold is 0.8, the
+# same value deny.toml sets. A crate whose licence cannot be established at
+# that threshold fails the release instead of shipping an empty section.
+
+# The released asset is built for this target only. Dependencies that are
+# pulled in only by another target are not part of the shipped binary and are
+# not listed in its notices.
+targets = ["x86_64-unknown-linux-gnu"]
+
+# A release build does not compile dev-dependencies, so their terms do not
+# travel with the binary. Build dependencies are left included: a release
+# build compiles them.
+ignore-dev-dependencies = true
+
+# Mirrors deny.toml `[licenses] allow`, in the same order.
+accepted = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+# The root crate is `publish = false` with a non-SPDX `license-file`; it is
+# SlugAudit's own work, not a third-party component. The release header
+# carries its `Required Notice:` line and the LICENSE file travels beside the
+# binary, so cargo-about excludes it from the third-party body.
+[private]
+ignore = true
