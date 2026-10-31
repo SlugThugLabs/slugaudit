@@ -14,8 +14,6 @@ fn defaults_are_strictly_positive() {
     assert!(limits.max_structure_matches > 0);
     assert!(limits.max_structure_execution_time.as_millis() > 0);
     assert!(limits.max_sync_wall_clock.as_millis() > 0);
-    assert!(limits.max_watch_entries > 0);
-    assert!(limits.max_watch_depth > 0);
 }
 
 #[test]
@@ -98,32 +96,6 @@ fn multiple_overrides_compose() {
                 limits.max_query_response_bytes,
                 baseline.max_query_response_bytes
             );
-        },
-    );
-}
-
-#[test]
-fn watch_scope_limits_default_to_the_adaptive_profile_caps() {
-    let limits = ResourceLimits::default();
-    assert_eq!(limits.max_watch_entries, 200_000);
-    assert_eq!(limits.max_watch_depth, 64);
-}
-
-#[test]
-fn from_env_overrides_watch_scope_limits() {
-    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
-    temp_env::with_vars(
-        [
-            ("SLUGAUDIT_PROFILE", Some("lean")),
-            ("SLUGAUDIT_MAX_WATCH_ENTRIES", Some("1234")),
-            ("SLUGAUDIT_MAX_WATCH_DEPTH", Some("7")),
-        ],
-        || {
-            let limits = ResourceLimits::from_env().expect("valid env");
-            assert_eq!(limits.max_watch_entries, 1_234);
-            assert_eq!(limits.max_watch_depth, 7);
-            // Unset neighbours remain at the selected profile's defaults.
-            assert_eq!(limits.max_file_bytes, 32 * 1024 * 1024);
         },
     );
 }
@@ -351,14 +323,14 @@ fn fail_closed_a_non_unicode_limit_variable_is_an_error_without_its_value() {
     temp_env::with_vars(
         [
             ("SLUGAUDIT_PROFILE", Some(std::ffi::OsString::from("lean"))),
-            ("SLUGAUDIT_MAX_WATCH_DEPTH", Some(value)),
+            ("SLUGAUDIT_MAX_FILE_BYTES", Some(value)),
         ],
         || {
             let error = ResourceLimits::from_env().expect_err("non-unicode must fail startup");
 
             let message = error.to_string();
             assert!(
-                message.starts_with("SLUGAUDIT_MAX_WATCH_DEPTH is set but is not valid Unicode"),
+                message.starts_with("SLUGAUDIT_MAX_FILE_BYTES is set but is not valid Unicode"),
                 "{message}"
             );
             assert!(!message.contains("secret"), "{message}");

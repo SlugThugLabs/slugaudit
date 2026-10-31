@@ -184,7 +184,7 @@ fn open_result() -> Open {
 }
 
 fn database_rows(open: &Open, sql: &str) -> String {
-    crate::store::open_read_only(&open.database())
+    crate::store::open_existing(&open.database())
         .expect("open the index")
         .query_row(sql, [], |row| row.get(0))
         .expect("read the index")

@@ -109,24 +109,19 @@ fn a_write_attempt_fails_and_changes_nothing() {
     let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);
     let result = ask(&project, "DELETE FROM files");
     let err = result.expect_err("write attempt on read-only query must fail");
-    assert!(
-        err.message.to_lowercase().contains("syntax")
-            || err.message.to_lowercase().contains("readonly")
-            || err.message.to_lowercase().contains("not authorized"),
-        "unexpected error message: {}",
-        err.message
+    assert_eq!(
+        err.message.as_ref(),
+        "sql was refused: `query` accepts a single read-only SELECT/WITH statement"
     );
 
     let after = ask(&project, "SELECT count(*) AS n FROM files").expect("count still works");
     assert_eq!(after.rows[0]["n"], 1);
 }
 
-/// A second database file is exactly what the wrapper and the connection's
-/// authorizer exist to keep out of reach. Both directions of the same
-/// authorizer decision are covered here (`ATTACH` and `DETACH`), together
-/// with the alias a refused `ATTACH` must never have created — a caller
-/// that only checked for rows would not notice a silently readable
-/// `other.secrets`.
+/// A second database file is exactly what the wrapper exists to keep out of
+/// reach. `ATTACH` and `DETACH` are both covered, with
+/// the alias a refused `ATTACH` must never have created — a caller that only
+/// checked for rows would not notice a silently readable `other.secrets`.
 #[test]
 fn an_attached_database_attempt_fails() {
     let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")]);

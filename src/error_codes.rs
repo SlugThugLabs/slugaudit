@@ -23,10 +23,9 @@
 //!   server log, and the redaction contract in `tools/redaction_tests.rs`
 //!   keeps that text out of both.
 //!
-//! The codes are documented in `.planning/ARCHITECTURE.md` (the table
-//! between the `error-codes` markers) and checked against
-//! `ErrorCode::ALL` in both directions by the inline test below: a code
-//! cannot be added without its row, and a row cannot outlive its code.
+//! This module is the closed set: every code that reaches the wire is a
+//! variant of `ErrorCode`, and `ErrorCode::ALL` (test-only) lists each one
+//! so the inline test can check the set's own invariants.
 
 use serde_json::{Value, json};
 
@@ -91,11 +90,10 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    /// Every code, in documentation order. The `ARCHITECTURE.md` table is
-    /// checked against this list in both directions, so adding a code means
-    /// adding its row in the same change. Test-only: the closed set's
+    /// Every code, in declaration order. Test-only: the closed set's
     /// caller-facing contract is the enum and its payloads, not this Rust
-    /// enumeration.
+    /// enumeration; the inline test uses the list to pin the wire-string
+    /// invariants.
     #[cfg(test)]
     pub(crate) const ALL: &'static [ErrorCode] = &[
         ErrorCode::SyncBudgetExhausted,
@@ -196,7 +194,7 @@ impl ErrorCode {
             }
             ErrorCode::ResultStoreUnavailable => {
                 "the result store cannot be used on this machine or its disk is full or \
-                 unwritable; see docs/TROUBLESHOOTING.md; other tools keep working"
+                 unwritable; other tools keep working"
             }
             ErrorCode::PagingParameterRemoved => {
                 "offset and expected_revision were removed; pass the cursor from the previous \
@@ -218,9 +216,9 @@ pub fn payload(code: ErrorCode) -> Option<Value> {
 /// actually ran out of wall-clock budget (`elapsed_ms` is `Some`), else
 /// `None`. The single predicate behind every budget map site: the sync
 /// error types carry the elapsed time in their own variant, so the code is
-/// attached where that typed error is still in hand — discovery, publish,
-/// reconcile, barrier, sweep — rather than guessed at from a message at
-/// the outermost tool.
+/// attached where that typed error is still in hand — discovery, sampling,
+/// publish, stored-content verification — rather than guessed at from a
+/// message at the outermost tool.
 #[must_use]
 pub fn budget_payload(elapsed_ms: Option<u128>) -> Option<Value> {
     if elapsed_ms.is_some() {
@@ -280,41 +278,6 @@ mod tests {
             assert!(seen.insert(text), "{text} is not unique");
             assert!(!code.remedy().is_empty(), "{text} has no remedy");
         }
-    }
-
-    /// The documented table and the code set cannot drift apart: a code
-    /// added without its row fails here, and a row whose code was removed
-    /// fails here too. This is the whole point of the closed set.
-    #[test]
-    fn the_documented_table_matches_the_code_set_exactly() {
-        let architecture = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/.planning/ARCHITECTURE.md"
-        ))
-        .expect("read ARCHITECTURE.md");
-        let documented = documented_codes(&architecture);
-        let implemented: Vec<&str> = ErrorCode::ALL.iter().map(|code| code.as_str()).collect();
-        assert_eq!(
-            documented, implemented,
-            "the error-code table in ARCHITECTURE.md must list exactly ErrorCode::ALL, in \
-             the same order"
-        );
-    }
-
-    /// The first backticked cell of every table row between the
-    /// `error-codes` markers — the table's code column, in document order.
-    fn documented_codes(architecture: &str) -> Vec<String> {
-        let begin = architecture
-            .find("<!-- error-codes:begin -->")
-            .expect("the error-codes table needs its begin marker");
-        let end = architecture
-            .find("<!-- error-codes:end -->")
-            .expect("the error-codes table needs its end marker");
-        architecture[begin..end]
-            .lines()
-            .filter_map(|line| line.trim_start().strip_prefix("| `"))
-            .map(|row| row.split('`').next().unwrap_or_default().to_owned())
-            .collect()
     }
 
     /// The budget case is the one that must not read as "retry": its

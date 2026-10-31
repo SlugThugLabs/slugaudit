@@ -1,7 +1,7 @@
 name: Scheduled fuzzing
 
-# The three fuzz targets from the plan's *Untrusted-input rigor* item. They are
-# deliberately NOT a per-PR gate: a fuzzer that runs for a bounded minute on a
+# The three fuzz targets (query SQL, structure queries, request arguments).
+# They are deliberately NOT a per-PR gate: a fuzzer that runs for a bounded minute on a
 # pull request buys a false sense of coverage, mostly re-executes the seeds, and
 # spends runner minutes on every push. They run on a cron instead, where a
 # regression is found within a day without costing anything on the PR path.
@@ -54,10 +54,10 @@ jobs:
         include:
           # `max_len` is each target's own request ceiling, so the fuzzer never
           # spends an iteration on input the tool would refuse unread
-          # (`ResourceLimits`: 32 KB structure query, 50 KB SQL, no request-size
+          # (`ResourceLimits`: 16 KiB structure query, 50 KB SQL, no request-size
           # limit at the decode boundary).
           - target: structure_query
-            max_len: 32768
+            max_len: 16385
           - target: query_sql
             max_len: 50000
           - target: request_arguments

@@ -2,13 +2,11 @@
 //! `.gitignore` scoping (a single-builder matcher leaks patterns outside
 //! their directory), negations, the "can't re-include under an excluded
 //! parent" rule, `.ignore` overriding `.gitignore`, and parity with
-//! discovery's walker — the exact inconsistency the watcher previously
-//! caused.
+//! discovery's walker.
 
 use super::*;
 use crate::sync::discover;
 use crate::util::TEST_ENV_LOCK;
-use crate::watch::WatchScope;
 use std::fs;
 
 fn project() -> tempfile::TempDir {
@@ -35,11 +33,20 @@ fn assert_capture_live(logs: &str) {
     );
 }
 
-/// Builds rules the way production does: scope walk first (collects the
-/// ignore files), then `IgnoreRules::build`.
+/// Builds rules the way production does: walk the project to collect its
+/// ignore files, then `IgnoreRules::build`.
 fn rules_for(root: &Path) -> IgnoreRules {
-    let scope = WatchScope::compute(root, &Default::default());
-    IgnoreRules::build(root, &scope.ignore_files)
+    let mut ignore_files = Vec::new();
+    for entry in indexable_walker(root) {
+        let Ok(entry) = entry else { continue };
+        let Some(name) = entry.file_name().to_str() else {
+            continue;
+        };
+        if name == ".gitignore" || name == ".ignore" {
+            ignore_files.push(entry.path().to_path_buf());
+        }
+    }
+    IgnoreRules::build(root, &ignore_files)
 }
 
 #[test]
@@ -199,10 +206,8 @@ fn cross_type_precedence_matches_the_walker() {
     }
 }
 
-/// R7: the walker applies parent-directory ignore files (`parents(true)`)
-/// but the scope only collects ignore files under the root, so discovery
-/// could exclude a file the watcher's incremental path indexes. Both paths
-/// must use the same project-scoped rule set.
+/// R7: the walker must not apply parent-directory ignore files above the
+/// project root; project-scoped rules are the contract.
 #[test]
 fn a_parent_gitignore_does_not_diverge_from_the_incremental_rules() {
     let repo = project();
@@ -232,8 +237,7 @@ fn a_parent_gitignore_does_not_diverge_from_the_incremental_rules() {
 
 /// R7: excluded directories must be pruned at descent time. Filtering their
 /// yielded files keeps them out of the index, but walking a large `.git` or
-/// data directory still consumes the watch-scope entry cap and can report
-/// the scope Partial before source directories are reached.
+/// data directory still costs time on every sync.
 #[test]
 fn the_walker_does_not_descend_into_excluded_directories() {
     let project = project();
@@ -247,24 +251,26 @@ fn the_walker_does_not_descend_into_excluded_directories() {
         fs::write(root.join(format!(".planning/slugaudit/{index:02}.db")), "x").expect("data");
     }
     fs::create_dir_all(root.join("src")).expect("src dir");
+    fs::write(root.join("src/lib.rs"), "fn lib() {}\n").expect("lib");
 
-    // Root, `.planning`, and `src` are the only yielded entries; descending
-    // into either excluded subtree would exceed this cap.
-    let scope = WatchScope::compute_with_limits(root, 3, 8);
+    let yielded: Vec<std::path::PathBuf> = indexable_walker(root)
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().to_path_buf())
+        .collect();
 
     assert!(
-        scope.limit.is_none(),
-        "excluded directories must not consume the walk: {:?}",
-        scope.limit
+        yielded
+            .iter()
+            .all(|path| !path.starts_with(root.join(".git"))
+                && !path.starts_with(root.join(".planning/slugaudit"))),
+        "excluded subtrees must not be yielded: {yielded:?}"
     );
-    assert!(scope.watch_dirs.contains(&root.join("src")));
+    assert!(yielded.iter().any(|path| path.ends_with("src/lib.rs")));
 }
 
-/// The heart of the fix: incremental reconcile must skip exactly what a
-/// fresh `discover()` would skip. Every discovered file must be allowed
-/// by the rules, and every rule-ignored file must be absent from
-/// discovery — otherwise the watcher path and the publish path disagree
-/// about the same tree.
+/// The rules matcher and the walker must agree on every file: every
+/// discovered file is allowed by the rules, and every rule-ignored file is
+/// absent from discovery.
 #[test]
 fn discovery_parity_rules_and_walker_agree_on_every_file() {
     let project = project();

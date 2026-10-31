@@ -151,32 +151,6 @@ fn off_action_disables_the_project_and_purges_the_database() {
 }
 
 #[test]
-fn off_action_unwatches_project_in_sync_manager() {
-    let (project, path) = temp_project_with_source();
-    let manager = sync::SourceSyncManager::new();
-    manager.activate(project.path()).expect("activate");
-    assert!(manager.active_watch_state().is_some());
-
-    project_control(
-        &on_request(&path),
-        &crate::progress::NoopProgressSink,
-        Some(&manager),
-    )
-    .expect("enable");
-    project_control(
-        &off_request(&path),
-        &crate::progress::NoopProgressSink,
-        Some(&manager),
-    )
-    .expect("disable");
-
-    assert!(
-        manager.active_watch_state().is_none(),
-        "disabling project must unregister watcher"
-    );
-}
-
-#[test]
 fn off_action_when_already_disabled_is_a_noop() {
     let (project, path) = temp_project_with_source();
     let response = project_control(
@@ -316,7 +290,7 @@ fn corrupt_database_recovery_reports_a_failed_reopen() {
     assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
     assert_eq!(
         error.message,
-        format!("database: failed to set database file permissions: {open_error}")
+        format!("database: failed to create the database file: {open_error}")
     );
 }
 
@@ -325,14 +299,10 @@ fn corrupt_database_recovery_reports_a_failed_reopen() {
 /// misread as corruption to discard.
 #[test]
 fn on_action_reports_a_non_corruption_database_open_failure() {
-    use std::os::unix::fs::PermissionsExt;
-
     let (project, path) = temp_project_with_source();
     let activation = activation_dir(&project);
     let database = activation.join("project.db");
     fs::create_dir_all(&database).expect("a directory where the database belongs");
-    fs::set_permissions(&database, fs::Permissions::from_mode(0o700))
-        .expect("owner-only mode so the permission guard passes");
 
     let error = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
         .err()

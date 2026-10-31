@@ -1,22 +1,21 @@
 #![no_main]
-//! Target 2 — SQL fed to `query`, including authorizer-bypass attempts.
+//! Target 2 — SQL fed to `query`, including statements that are not a plain
+//! `SELECT`.
 //!
 //! `query` executes agent-supplied SQL against the project's own database.
-//! Three guards stand between the text and the store, and all three are
-//! downstream of this one public function:
+//! Two things stand between the text and the store, and both are downstream
+//! of this one public function:
 //!
-//! 1. the read-only connection (`store::connection::open_read_only`, opened
+//! 1. the read-only connection (`store::connection::open_existing`, opened
 //!    with `SQLITE_OPEN_READ_ONLY` via the tool's verified-read transaction),
-//! 2. the authorizer installed on every connection, which denies
-//!    `ATTACH`/`DETACH` and, on the read-only connection, every non-introspection
-//!    `PRAGMA` (`store::connection_guards`),
-//! 3. the subquery wrapper (`SELECT * FROM (\n…\n) LIMIT … OFFSET …`), which
+//!    a connection mode rather than a trust boundary,
+//! 2. the subquery wrapper (`SELECT * FROM (\n…\n) LIMIT -1 OFFSET 0`), which
 //!    is what refuses a statement that is not a `SELECT`,
 //!
 //! A second statement is refused by SQLite's own parser (rusqlite's
 //! `MultipleStatement`), not by any lexer in this crate.
 //!
-//! This target attacks all three from outside: the corpus carries the payload
+//! This target attacks both from outside: the corpus carries the payload
 //! tables from `src/tools/query_safety_tests.rs` (`ATTACH`/`DETACH`,
 //! `PRAGMA` write forms, `VACUUM INTO`, `load_extension`, filesystem
 //! functions, data-modifying CTEs, `;` splices past string literals and
@@ -27,10 +26,8 @@
 //! iteration is one `query` call and the index is never rebuilt between
 //! inputs.
 //!
-//! Known gap: the `offset` contract error (`offset` above `i64::MAX`) is not
-//! fuzzed here — it is a scalar bound already pinned by
-//! `query_tests::an_offset_past_the_integer_range_is_refused`. The SQL text is
-//! the subject.
+//! The SQL text is the subject; paging is the result store's and is not
+//! fuzzed here.
 
 use libfuzzer_sys::fuzz_target;
 use rmcp::handler::server::wrapper::{Json, Parameters};

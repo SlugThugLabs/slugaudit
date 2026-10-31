@@ -102,19 +102,6 @@ pub(super) fn result_store_budget(max_query_response_bytes: usize) -> u64 {
     (max_query_response_bytes as u64).saturating_mul(RESULT_STORE_BUDGET_FACTOR)
 }
 
-/// Watch-scope walk caps. The walk enumerates the directories that carry a
-/// `notify` watch, so its size is bounded in both entries (one potential
-/// kernel watch descriptor and one entry in the scope's path set each) and
-/// depth (a deep tree can be expensive to explore before the entry cap
-/// trips). Lean runs bounded tightly enough for a laptop; Audit and Adaptive
-/// allow a larger tree. Either way a truncated scope is reported as
-/// `WatcherHealth::Partial`, and the stat sweep still runs on every call —
-/// the sweep is the freshness guarantee, not the watcher.
-const LEAN_MAX_WATCH_ENTRIES: usize = 50_000;
-const LEAN_MAX_WATCH_DEPTH: usize = 32;
-const AUDIT_MAX_WATCH_ENTRIES: usize = 200_000;
-const AUDIT_MAX_WATCH_DEPTH: usize = 64;
-
 /// The complete limit set for one profile. `Adaptive` scales the import
 /// budget from detected host memory.
 ///
@@ -155,8 +142,6 @@ pub(super) fn lean_limits() -> ResourceLimits {
         max_structure_matches: 2_000,
         max_structure_execution_time: Duration::from_secs(10),
         max_sync_wall_clock: Duration::from_secs(120),
-        max_watch_entries: LEAN_MAX_WATCH_ENTRIES,
-        max_watch_depth: LEAN_MAX_WATCH_DEPTH,
         max_result_store_bytes: result_store_budget(32 * 1024 * 1024),
         result_active_grace_secs: DEFAULT_RESULT_ACTIVE_GRACE_SECS,
         evidence: EvidenceLimits {
@@ -184,8 +169,6 @@ fn audit_limits() -> ResourceLimits {
         max_structure_matches: 20_000,
         max_structure_execution_time: Duration::from_secs(60),
         max_sync_wall_clock: Duration::from_secs(1200),
-        max_watch_entries: AUDIT_MAX_WATCH_ENTRIES,
-        max_watch_depth: AUDIT_MAX_WATCH_DEPTH,
         max_result_store_bytes: result_store_budget(256 * 1024 * 1024),
         result_active_grace_secs: DEFAULT_RESULT_ACTIVE_GRACE_SECS,
         evidence: EvidenceLimits {
@@ -218,8 +201,6 @@ pub(super) fn adaptive_limits(ram: SystemMemoryInfo) -> ResourceLimits {
         max_structure_matches: 20_000,
         max_structure_execution_time: Duration::from_secs(60),
         max_sync_wall_clock: Duration::from_secs(1200),
-        max_watch_entries: AUDIT_MAX_WATCH_ENTRIES,
-        max_watch_depth: AUDIT_MAX_WATCH_DEPTH,
         max_result_store_bytes: result_store_budget(max_file as usize),
         result_active_grace_secs: DEFAULT_RESULT_ACTIVE_GRACE_SECS,
         evidence: EvidenceLimits {

@@ -13,10 +13,9 @@ use std::collections::HashSet;
 /// addition resolves correctly.
 ///
 /// `discovered_paths` are the project-relative paths the caller walked on
-/// disk (discovery for a full publish, the stat sweep for a reconcile).
-/// They are unioned with the `files` rows, never replaced by them.
+/// disk. They are unioned with the `files` rows, never replaced by them.
 ///
-/// Since Phase 2 the `files` table also holds one existence row per
+/// The `files` table also holds one existence row per
 /// discovered-but-skipped file (`file_kind = 'skipped'`), so the stored side
 /// is now a superset of the caller's walked set for every representable
 /// path. The union is kept anyway: it is one set union, and the caller's
@@ -35,6 +34,60 @@ pub(super) fn known_paths(
         paths.insert(path?);
     }
     Ok(paths.into_iter().collect())
+}
+
+/// Re-resolves stored `Unresolved` edges after a revision changed the path
+/// set: an unchanged importer's edge can become `Resolved` when its target
+/// appears, and must keep its raw text when the target disappears.
+///
+/// `syntax_unmodeled` edges are left alone — the resolver already declined
+/// that syntax, and re-running it reaches the same verdict.
+pub(super) fn re_resolve_unresolved(
+    tx: &Transaction<'_>,
+    known_paths: &HashSet<&str>,
+) -> Result<(), rusqlite::Error> {
+    let rows: Vec<(i64, String, String, String)> = {
+        let mut statement = tx.prepare(
+            "SELECT de.id, f.path, f.language, de.raw_import_text \
+             FROM dependency_edges de JOIN files f ON de.from_file_id = f.id \
+             WHERE de.resolution_kind = 'Unresolved' AND de.syntax_unmodeled = 0 \
+               AND f.language IS NOT NULL",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<Result<_, _>>()?
+    };
+    for (edge_id, from_path, language, raw) in rows {
+        let mut edges = crate::graph::resolve_imports(
+            &language,
+            &from_path,
+            std::slice::from_ref(&raw),
+            known_paths,
+        );
+        let Some(edge) = edges.pop() else {
+            continue;
+        };
+        let Some(target) = edge.to_relative_path else {
+            continue;
+        };
+        let target_id: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM files WHERE path = ?1",
+                params![target],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(target_id) = target_id {
+            tx.execute(
+                "UPDATE dependency_edges SET to_file_id = ?1, resolution_kind = 'Resolved', \
+                 confidence = ?2 WHERE id = ?3",
+                params![target_id, edge.confidence, edge_id],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Re-resolves and replaces every outgoing edge for `file`: deletes what

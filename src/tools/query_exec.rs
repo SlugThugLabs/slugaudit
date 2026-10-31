@@ -34,9 +34,9 @@ use std::time::{Duration, Instant};
 /// `max_query_sql_bytes` check accepted.
 const WRAPPER_OVERHEAD_BYTES: u64 = 64;
 
-/// Worst-case growth of stored file text over the file bytes it came from:
-/// lossy UTF-8 decoding replaces each invalid byte with U+FFFD, three bytes.
-const LOSSY_UTF8_GROWTH: u64 = 3;
+/// Stored text is at most the file's byte length: only valid UTF-8 is
+/// stored, byte for byte.
+const STORED_VALUE_GROWTH: u64 = 1;
 
 /// The engine limits one `query` connection runs under.
 #[derive(Debug, PartialEq, Eq)]
@@ -45,9 +45,8 @@ pub(super) struct EngineLimits {
     /// or read, so an expression such as `hex(zeroblob(n))` fails with "too
     /// big" before allocating instead of growing to gigabytes. SQLite checks
     /// it when a stored column is read as well, so it must cover every value
-    /// indexing can store: the larger of `max_query_value_bytes` and the
-    /// lossy-decoded size of a `max_file_bytes` file, clamped to what the
-    /// bundled SQLite can hold.
+    /// indexing can store: the larger of `max_query_value_bytes` and a
+    /// `max_file_bytes` file, clamped to what the bundled SQLite can hold.
     pub(super) value_length: i32,
     /// `SQLITE_LIMIT_SQL_LENGTH`: the tool's `max_query_sql_bytes` plus the
     /// wrapper's overhead, so the engine accepts no more SQL than the tool
@@ -60,7 +59,7 @@ pub(super) fn engine_limits(
     limits: &ResourceLimits,
 ) -> Result<EngineLimits, std::num::TryFromIntError> {
     let value_bytes = u64::try_from(limits.max_query_value_bytes)?;
-    let stored_bytes = limits.max_file_bytes.saturating_mul(LOSSY_UTF8_GROWTH);
+    let stored_bytes = limits.max_file_bytes.saturating_mul(STORED_VALUE_GROWTH);
     let value_length = value_bytes.max(stored_bytes).min(SQLITE_MAX_VALUE_BYTES);
     // The bundled SQLite's SQL-length ceiling is also 1,000,000,000
     // (`sqlite3_limit` reports it as the default, verified 2026-10-25).

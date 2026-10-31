@@ -12,7 +12,8 @@
 //! the extras stored with the result, so every page of one result agrees.
 
 use super::context::{PageRequest, PageSpec, Produced, RowSink, decode_rows, internal_error};
-use super::leads::{FileCount, LeadMode, LeadRows, LeadsResponse};
+use super::language_notices::untested_language_notices;
+use super::leads::{FileCount, LeadMode, LeadRows, LeadsResponse, MechanicCount};
 use super::leads_compact;
 use super::leads_covers::languages_read;
 use super::leads_custom;
@@ -29,6 +30,7 @@ use crate::store::{Materialize, StoredRow, Take};
 use crate::sync::SourceSyncManager;
 use rmcp::ErrorData;
 use rusqlite::Transaction;
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 #[path = "leads_stored.rs"]
@@ -145,6 +147,7 @@ pub(super) fn page(
         page,
         mechanic_counts: extras.counts.into_iter().map(count_of).collect(),
         mechanics_invalid: extras.mechanics_invalid,
+        notices: extras.notices,
         files_not_parsed: extras.files_not_parsed,
         rows,
         files_total: extras.files_total,
@@ -222,6 +225,7 @@ fn produce(
     )?;
     let mut counts = leads_custom::counts(scope.catalog, &scanned, &found.tallies, &read);
     counts.extend(count_all(tx, scope.pattern, &read)?);
+    let notices = notices_for(scope, &counts);
     let files_not_parsed = leads_query::files_not_parsed(tx, scope.pattern)?;
     let mut feed = Feed::new(sink);
     match (scope.mode, scope.selected) {
@@ -258,6 +262,7 @@ fn produce(
         extra: Extras {
             counts: counts.into_iter().map(stored_of).collect(),
             mechanics_invalid: scope.catalog.invalid.len(),
+            notices,
             files_not_parsed,
             files_total: to_i64(feed.files())?,
             compact: scope.mode == LeadMode::Compact,
@@ -265,6 +270,27 @@ fn produce(
             limit: cut.limit,
         },
     })
+}
+
+/// The untested-language notices for the languages the answer covers: every
+/// counted mechanic's `covers`, or only the selected mechanic's when the call
+/// names one. `covers` is built from the files indexed under the pattern, so
+/// a language with no files here never appears.
+fn notices_for(scope: &Scope<'_>, counts: &[MechanicCount]) -> Vec<String> {
+    let selected_id = scope.selected.map(|selected| match selected {
+        Selected::Builtin(mechanic) => mechanic.id,
+        Selected::Registered(index) => scope
+            .catalog
+            .custom
+            .get(index)
+            .map_or("", |registered| registered.entry.id.as_str()),
+    });
+    let languages: BTreeSet<&str> = counts
+        .iter()
+        .filter(|count| selected_id.is_none_or(|id| count.mechanic == id))
+        .flat_map(|count| count.covers.iter().map(String::as_str))
+        .collect();
+    untested_language_notices(languages.into_iter().map(|language| (language, None)))
 }
 
 /// The registered entries this call scans: every one when no mechanic is

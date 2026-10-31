@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=the parallel sampling loop with per-file skip classification and first-error reporting
 //! Parallel batch sampling for a full publish.
 //!
 //! `sample_all_with_deadline` is the bounded worker-pool loop that feeds
@@ -17,6 +18,7 @@
 
 use super::discovery::{DiscoveredFile, SkippedFile};
 use super::publish::PublishError;
+use super::revision_skipped::{SKIP_REASON_NOT_UTF8, SKIP_REASON_OVERSIZE};
 use super::sample::{Sample, SampleError, sample_file};
 use crate::model::ResourceLimits;
 use crate::progress::{ProgressEvent, ProgressSink};
@@ -119,10 +121,20 @@ pub(super) fn sample_all_with_deadline(
     batch.collect(rx)
 }
 
+/// A per-file sampling skip: the human-readable cause for the report and the
+/// stable `files.skip_reason` code the row is stored with.
+#[derive(Debug)]
+pub(super) struct SkipReason {
+    /// Human-readable cause, for `PublishReport::skipped`.
+    pub(super) message: String,
+    /// Stable stored code (`oversize`, `not_utf8`).
+    pub(super) code: &'static str,
+}
+
 /// What a worker sends the drain for one file: the sample, or the reason the
 /// file was skipped. Every other sampling error aborts through `error_slot`
 /// and never reaches the channel, so the drain has no error arm to ignore.
-type Outcome = Result<Sample, String>;
+type Outcome = Result<Sample, SkipReason>;
 
 /// Shared state for one parallel sampling run, with the worker loop and
 /// the result drain as methods so each stays small; `sample_all_with_deadline`
@@ -181,7 +193,21 @@ impl Batch<'_> {
                 // file going.
                 Err(error @ SampleError::TooLarge { .. }) => {
                     self.emit_sampling(sink, idx);
-                    if !self.deliver(&tx, idx, Err(error.to_string())) {
+                    let skip = SkipReason {
+                        message: error.to_string(),
+                        code: SKIP_REASON_OVERSIZE,
+                    };
+                    if !self.deliver(&tx, idx, Err(skip)) {
+                        return;
+                    }
+                }
+                Err(error @ SampleError::NotUtf8 { .. }) => {
+                    self.emit_sampling(sink, idx);
+                    let skip = SkipReason {
+                        message: error.to_string(),
+                        code: SKIP_REASON_NOT_UTF8,
+                    };
+                    if !self.deliver(&tx, idx, Err(skip)) {
                         return;
                     }
                 }
@@ -284,13 +310,14 @@ impl Batch<'_> {
             };
             match result {
                 Ok(sample) => *slot = Some(sample),
-                Err(reason) => {
+                Err(skip) => {
                     let Some(file) = self.discovered.get(idx) else {
                         return Err(self.index_out_of_range(idx));
                     };
                     skipped.push(SkippedFile {
                         absolute_path: file.absolute_path.clone(),
-                        reason,
+                        reason: skip.message,
+                        code: skip.code,
                     });
                 }
             }

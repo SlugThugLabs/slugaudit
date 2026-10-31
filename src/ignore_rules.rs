@@ -3,12 +3,9 @@
 //! One source of truth for "what must not be indexed": the hardcoded
 //! exclusions (the tool's own data directory, VCS internals, scratch
 //! files) and the project's ignore files (`.gitignore`, `.ignore`,
-//! `.git/info/exclude`, and the global gitignore). Discovery (full
-//! publish), the filesystem watcher (event filtering), and incremental
-//! reconcile all consult this module so the full-publish file set and the
-//! incremental file set can never drift apart — the watcher previously
-//! indexed gitignored build artifacts (`target/`, ...) that a fresh
-//! publish skipped.
+//! `.git/info/exclude`, and the global gitignore). Discovery and every
+//! sync consult this module, so the walker and the matcher can never
+//! disagree about the same tree.
 //!
 //! The matcher mirrors the `ignore` crate's walker semantics. A single
 //! `GitignoreBuilder` cannot hold nested `.gitignore` files: patterns are
@@ -26,14 +23,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// SlugAudit's own data directory inside a project root (the project
-/// database lives here). Never indexed, never watched.
+/// database lives here). Never indexed.
 pub const ACTIVATION_RELATIVE_DIR: &str = ".planning/slugaudit";
 const EXCLUDED_COMPONENT: &str = ".git";
 
 /// Directory-level hard exclusions: VCS internals and SlugAudit's own
 /// data directory. Scratch-file rules apply only to files, matching
-/// discovery. Crate-visible because the watch-scope walk filters
-/// directories with it.
+/// discovery.
 pub(crate) fn is_excluded_dir(relative: &str) -> bool {
     is_activation_dir_or_descendant(relative)
         || relative
@@ -67,26 +63,55 @@ fn is_scratch_file_name(relative: &Path) -> bool {
         || file_name.ends_with('~')
 }
 
-/// The hardcoded exclusion set, shared by discovery, the watcher, and
-/// incremental reconcile.
+/// The hardcoded exclusion set, shared by discovery and every sync pass.
 pub fn is_excluded_path(relative: &str) -> bool {
     is_excluded_dir(relative) || is_scratch_file_name(Path::new(relative))
 }
 
+/// The `ignore::Error` variant as a static, path-free category.
+///
+/// `Display` for `WithPath` is `{path}: {err}` and `Loop` embeds both paths
+/// (ignore 0.4.33, `lib.rs:338-340`), so a walker error is never formatted
+/// into a log line.
+pub(crate) fn ignore_error_kind(error: &ignore::Error) -> &'static str {
+    match error {
+        ignore::Error::WithLineNumber { err, .. }
+        | ignore::Error::WithDepth { err, .. }
+        | ignore::Error::WithPath { err, .. } => ignore_error_kind(err),
+        ignore::Error::Partial(_) => "partial",
+        ignore::Error::Loop { .. } => "loop",
+        ignore::Error::Io(_) => "io",
+        ignore::Error::Glob { .. } => "glob",
+        ignore::Error::UnrecognizedFileType(_) => "unrecognized_file_type",
+        ignore::Error::InvalidDefinition => "invalid_definition",
+    }
+}
+
+/// The path an `ignore::Error` carries, if any, for correlation in a log
+/// record.
+pub(crate) fn ignore_error_path(error: &ignore::Error) -> Option<&Path> {
+    match error {
+        ignore::Error::WithPath { path, .. } => Some(path),
+        ignore::Error::WithLineNumber { err, .. } | ignore::Error::WithDepth { err, .. } => {
+            ignore_error_path(err)
+        }
+        _ => None,
+    }
+}
+
 /// A walker with exactly the configuration `sync::discovery` uses:
 /// standard ignore filters on, hidden files included, symlinks not
-/// followed. Every consumer (discovery, watch-scope computation) builds
-/// its walker from here so they agree on the indexable set by
-/// construction.
+/// followed. Discovery builds its walker from here so the indexable set
+/// is defined in one place.
 pub(crate) fn indexable_walker(root: &Path) -> ignore::Walk {
     indexable_walker_with_max_depth(root, None)
 }
 
 /// [`indexable_walker`], optionally bounded at `max_depth` (the root is
-/// depth 0). Discovery uses the unbounded form; the watch-scope walk uses a
-/// depth bound so a pathologically deep tree cannot dictate how long the
-/// walk runs. The ignore filters are identical either way — only the
-/// descent limit differs.
+/// depth 0). Discovery uses the unbounded form; a caller may bound depth so
+/// a pathologically deep tree cannot dictate how long the walk runs. The
+/// ignore filters are identical either way — only the descent limit
+/// differs.
 pub(crate) fn indexable_walker_with_max_depth(
     root: &Path,
     max_depth: Option<usize>,
@@ -96,11 +121,8 @@ pub(crate) fn indexable_walker_with_max_depth(
     builder
         .standard_filters(true)
         // `standard_filters` enables `parents`, which makes the walker apply
-        // `.gitignore`/`.ignore` files above the project root. The watcher's
-        // rule matcher (`IgnoreRules::build`) only sees ignore files the
-        // scope walk found under the root, so honoring parent files would
-        // exclude a file from a full publish that the incremental path still
-        // indexes. Project-scoped rules are the shared contract.
+        // `.gitignore`/`.ignore` files above the project root. Project-scoped
+        // rules are the shared contract.
         .parents(false)
         .follow_links(false)
         // Hidden files stay indexable (`.github/`, `.env.example`); VCS
@@ -110,8 +132,7 @@ pub(crate) fn indexable_walker_with_max_depth(
         .require_git(false)
         // Prune excluded directories at descent time. Without this the walk
         // still pays for `.git` and `.planning/slugaudit`, and a large
-        // object store or database journal can consume the watch-scope
-        // entry cap before later source directories are enumerated.
+        // object store or database journal slows every sync.
         .filter_entry(move |entry| {
             let relative = entry
                 .path()

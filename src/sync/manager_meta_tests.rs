@@ -340,16 +340,10 @@ fn a_failed_metadata_read_surfaces_the_reading_error() {
 /// open failure preserved.
 #[test]
 fn a_failed_database_recreation_surfaces_the_open_error() {
-    use std::os::unix::fs::PermissionsExt;
-
     let project = tempfile::tempdir().expect("project dir");
     let root = crate::project::ProjectRoot::resolve(project.path()).expect("resolve root");
     let database_path = project.path().join("database-is-a-directory");
     std::fs::create_dir(&database_path).expect("create the database directory");
-    // Owner-only, so the store's permission guard passes and the open
-    // itself is what fails.
-    std::fs::set_permissions(&database_path, std::fs::Permissions::from_mode(0o700))
-        .expect("restrict the directory mode");
 
     let error = match publish_from_scratch(&root, database_path, &NoopProgressSink) {
         Ok(_) => panic!("opening a directory as a database must fail"),

@@ -18,7 +18,7 @@
 //!    truncated one.
 //!
 //! `config.json` and `config.lock` are refused when they are a symlink or not
-//! a regular file (A3), and `config.json` is checked again immediately before
+//! a regular file, and `config.json` is checked again immediately before
 //! the rename. The rename replaces the directory entry itself, never a link
 //! target.
 
@@ -347,7 +347,7 @@ fn replace_atomically(
             drop(file);
             before_rename(&temp).map_err(io_error(&temp))
         })
-        // The A3 rule, checked again as late as possible: the target must
+        // The symlink rule, checked again as late as possible: the target must
         // still be a regular file (or absent) right before it is replaced.
         .and_then(|()| regular_or_missing(target).map(|_| ()))
         .and_then(|()| std::fs::rename(&temp, target).map_err(io_error(target)));

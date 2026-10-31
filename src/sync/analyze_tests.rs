@@ -246,42 +246,6 @@ fn project_with_failed_download() -> (
 }
 
 #[test]
-fn a_load_failed_file_is_reparsed_by_reconcile_with_unchanged_content() {
-    let (project, _db_dir, mut connection, revision) = project_with_failed_download();
-
-    let report = crate::sync::reconcile::reconcile_dirty_paths(
-        &mut connection,
-        project.path(),
-        ["a.rs".to_owned()].into(),
-        std::collections::HashSet::new(),
-        Some(&revision),
-    )
-    .expect("reconcile with loading allowed");
-
-    assert_eq!(report.reconciled, 1, "{report:?}");
-    assert_eq!(report.unchanged, 0);
-    assert_eq!(
-        stored_run(&connection, "a.rs"),
-        ("Available".to_owned(), "Succeeded".to_owned())
-    );
-}
-
-#[test]
-fn a_load_failed_file_is_a_sweep_candidate_even_when_its_stat_is_unchanged() {
-    let (project, _db_dir, connection, _revision) = project_with_failed_download();
-    let deadline = crate::util::Deadline::after(std::time::Duration::from_secs(60));
-
-    let report = crate::sync::sweep::sweep(&connection, project.path(), &deadline).expect("sweep");
-
-    assert!(
-        report.candidates.contains("a.rs"),
-        "{:?}",
-        report.candidates
-    );
-    assert_eq!(report.unchanged, 0);
-}
-
-#[test]
 fn a_load_failed_file_is_reparsed_by_a_full_publish_with_unchanged_content() {
     let (project, _db_dir, mut connection, _revision) = project_with_failed_download();
 
@@ -301,19 +265,20 @@ fn a_load_failed_file_is_reparsed_by_a_full_publish_with_unchanged_content() {
 }
 
 #[test]
-fn a_succeeded_file_with_unchanged_content_is_still_skipped_by_reconcile() {
+fn a_succeeded_file_with_unchanged_content_is_still_skipped_by_the_next_sync() {
     let (project, _db_dir, mut connection, revision) = crate::sync::test_support::setup_project();
 
-    let report = crate::sync::reconcile::reconcile_dirty_paths(
+    let report = crate::sync::publish::publish(
         &mut connection,
         project.path(),
-        ["a.rs".to_owned()].into(),
-        std::collections::HashSet::new(),
-        Some(&revision),
+        "1.0",
+        &crate::progress::NoopProgressSink,
     )
-    .expect("reconcile");
+    .expect("second publish");
 
-    assert_eq!((report.reconciled, report.unchanged), (0, 1));
+    assert_eq!(report.revision_id, revision, "no new revision");
+    assert_eq!((report.added, report.modified), (0, 0));
+    assert_eq!(report.unchanged, 2);
 }
 
 fn stored_reason(connection: &rusqlite::Connection, path: &str) -> String {

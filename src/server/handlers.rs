@@ -21,7 +21,7 @@ use rmcp::{ErrorData, Peer, RoleServer, tool, tool_router};
 impl SlugAuditServer {
     #[tool(
         title = "Project snapshot",
-        description = "Automatic project snapshot: file/language counts, parser failures, evidence-kind counts, open findings, and inbound/outbound dependency-edge counts. Use this first to understand the project's shape, then query for specifics. No score, no risk leads.",
+        description = "Automatic project snapshot: file/language counts, parser failures, evidence-kind counts, open findings, and inbound/outbound dependency-edge counts. Use this first to understand the project's shape, then query for specifics. No score, no risk leads. `notices` flags untested languages (only Rust is tested); `languages[].tested` says which.",
         annotations(read_only_hint = true, destructive_hint = false)
     )]
     async fn report(
@@ -56,7 +56,7 @@ impl SlugAuditServer {
          first call, so edits made meanwhile never skip or repeat rows. For `mechanic`/`file`/`line` triples \
          with no per-row text, pass `mode: compact`; with only `path` it then enumerates every \
          mechanic in one response under the same completeness fields — the cheap way to see the \
-         whole surface."
+         whole surface. `notices` names any untested language the counts cover (only Rust is tested)."
     )]
     async fn leads(
         &self,
@@ -136,7 +136,7 @@ impl SlugAuditServer {
          Examples: Rust `(function_item name: (identifier) @name body: (block) @body)`, \
          Python `(function_definition name: (identifier) @name body: (block) @body)`, \
          TypeScript/JS `(function_declaration name: (identifier) @name)`, \
-         or whole-node `(class_definition) @cls`."
+         or whole-node `(class_definition) @cls`. `notices` warns when the language is untested (only Rust is)."
     )]
     async fn structure(
         &self,
@@ -250,13 +250,12 @@ impl SlugAuditServer {
         title = "Operational health",
         annotations(read_only_hint = true, destructive_hint = false),
         description = "What state the server is in and what to do next: `phase`, `remedy` (the \
-         call to make when no project is served), `watcher.health`, and `database.revision_id` / \
+         call to make when no project is served), and `database.revision_id` / \
          `database.file_count`. Read-only: never syncs, never mutates, and answers a path that \
          is not an enabled project with `phase: disabled` instead of an error. Pass `path` for \
-         a project's database state; without it only the registered project's watcher is \
-         reported. `verbose: true` adds `detail`, the operator view (unreconciled watcher \
-         counts, parser pack version, skipped files, process counters, host memory, the \
-         mechanic scan cache)."
+         a project's database state; without it no project is selected. `verbose: true` adds \
+         `detail`, the operator view (parser pack version, skipped files, process counters, \
+         host memory, the mechanic scan cache)."
     )]
     async fn health(
         &self,

@@ -19,8 +19,8 @@ pub(crate) fn unix_seconds(time: SystemTime) -> i64 {
 
 /// Unix-epoch seconds for a file's mtime, or `None` when the platform cannot
 /// report one (or reports a pre-epoch or out-of-range time); the cause is
-/// logged. Stored alongside the content hash so the sync sweep can skip
-/// unchanged files with one stat instead of a full read+hash.
+/// logged. Recorded for reporting and for the stat-derived identity of skipped
+/// files; it is never used to decide whether a file changed (content hash does).
 pub(crate) fn mtime_unix_seconds(metadata: &std::fs::Metadata) -> Option<i64> {
     mtime_seconds_from(metadata.modified())
 }
@@ -36,7 +36,7 @@ fn mtime_seconds_from(modified: std::io::Result<SystemTime>) -> Option<i64> {
     match seconds {
         Ok(seconds) => Some(seconds),
         Err(error) => {
-            tracing::warn!(error = %error, "file mtime unusable; the file is re-hashed every sweep");
+            tracing::warn!(error = %error, "file mtime unusable; recording it as unknown");
             None
         }
     }

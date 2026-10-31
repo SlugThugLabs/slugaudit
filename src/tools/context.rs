@@ -47,7 +47,7 @@ pub(crate) fn with_verified_read<T>(
     synced: &SyncedProject,
     f: impl FnOnce(&Transaction<'_>) -> Result<T, ErrorData>,
 ) -> Result<T, ErrorData> {
-    let mut connection = store::open_read_only(&synced.database_path)
+    let mut connection = store::open_existing(&synced.database_path)
         .map_err(|error| internal_error("opening the project database", error))?;
     let tx = start_read_transaction(&mut connection)?;
     verify_revision_matches(&tx, &synced.revision_id)?;
@@ -87,16 +87,15 @@ pub(super) fn internal_error(context: &str, error: impl std::fmt::Display) -> Er
 }
 
 /// Resolves the active project from `path`, ensures it's synchronized
-/// (using the filesystem watcher to avoid full publishes when possible),
-/// and returns a handle to its current revision. A concurrent publish is
+/// (hashing the tree and publishing only what changed), and returns a
+/// handle to its current revision. A concurrent publish is
 /// caught by the revision check in `with_verified_read` / `with_verified_write`.
 ///
 /// `manager` is the per-server `SourceSyncManager` instance owned by the
 /// calling `SlugAuditServer` — passing it explicitly (rather than
 /// reaching for a process global) means two servers in the same process
-/// would each manage their own watchers, their own last-sync stamps, and
-/// their own ignore rule sets. `sync::SourceSyncManager::default()` is
-/// fine in tests when the watcher's full mode is not needed.
+/// would each track their own last-sync stamps, session state, and paged
+/// results. `sync::SourceSyncManager::default()` is fine in tests.
 ///
 /// `sink` carries progress events from the sync layer (per-file sampling
 /// during publish, plus `Started`/`Completed` markers for the overall
@@ -118,11 +117,10 @@ pub fn ensure_synced(
 }
 
 /// Backwards-compatible shim that calls [`ensure_synced`] with a no-op
-/// sink. Tests and CLI paths seeded before Phase 2.2 use this so they
+/// sink. Tests and CLI paths that predate progress sinks use this so they
 /// don't have to thread `&NoopProgressSink` by hand. Exposed under the
 /// `cfg(test)` gate so production callers must take a real progress
-/// sink and commit to the wire-point contract documented in
-/// `ARCHITECTURE.md`.
+/// sink and commit to the wire-point contract.
 #[cfg(test)]
 pub(crate) fn ensure_synced_no_progress(
     path: &str,

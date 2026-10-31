@@ -1,4 +1,4 @@
-//! The size and time bounds on `analyze` (A4): content over
+//! The size and time bounds on `analyze`: content over
 //! `max_parse_bytes` never reaches the pack, and a parse cut at the sync
 //! deadline is recorded with the `parse_timeout` reason. The real
 //! (not injected) cancellations are pinned in `sync::timeout_tests`.

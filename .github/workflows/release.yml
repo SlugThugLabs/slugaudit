@@ -1,6 +1,6 @@
 name: Release
 
-# Cuts the distributable end-user `slugaudit-mcp` binary. The check_* binaries
+# Cuts the distributable end-user `slugaudit` binary. The check_* binaries
 # are development/CI tools and are not distributed to users.
 #
 # Gate ownership, so the other workflows do not have to be read alongside this

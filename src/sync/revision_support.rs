@@ -10,7 +10,7 @@
 /// `paths_json_array` serializes the given paths into ONE JSON SQL parameter,
 /// so an unbounded set allocates and binds proportionally to the publish's
 /// touched-file count — millions on a first publish of empty files. This
-/// matches the reconcile stored-hash lookup's batch (4096 paths) and bounds
+/// is the same batch size (4096 paths) the stored-hash lookup uses and bounds
 /// each execution without changing the statement's predicate.
 const STALE_FINDING_PATH_BATCH: usize = 4096;
 

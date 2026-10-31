@@ -17,7 +17,7 @@ use tree_sitter_language_pack::Error as PackError;
 /// on first use (`Download`), verifies it (`ChecksumMismatch`), serialises
 /// writers on a cache lock (`CacheLock`) and reads or writes the cache
 /// (`Io`). An offline host fails there, so those variants are load failures
-/// too; the sweep, reconcile and publish treat a stored `LoadFailed` row as
+/// too; every sync treats a stored `LoadFailed` row as
 /// stale and retry it once the fetch gate is open (see
 /// `parse::fetch_gate`), a `Failed` parse is not retried.
 fn is_load_failure(error: &PackError) -> bool {

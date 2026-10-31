@@ -211,7 +211,7 @@ fn paged_leads_orders_equal_lines_by_id() {
     let manager = crate::sync::SourceSyncManager::default();
     let path = project.path().to_string_lossy().into_owned();
     let synced = ensure_synced(&path, &crate::progress::NoopProgressSink, &manager).expect("sync");
-    let connection = crate::store::open_read_only(&synced.database_path).expect("open the index");
+    let connection = crate::store::open_existing(&synced.database_path).expect("open the index");
     let mut statement = connection
         .prepare(
             "SELECT json_extract(e.payload, '$.callee_text') FROM evidence e \

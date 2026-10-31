@@ -1,8 +1,7 @@
 //! The argument contract every rooted gate shares: `--help`, `--root <dir>`
 //! (defaulting to the working directory), any gate-specific switches, and
 //! exit code 2 for a usage error. Pulled into each gate with `#[path]`, so
-//! the product library never carries dev-only code (DECISIONS 2026-10-16,
-//! "Gate-bin argument parsing shared").
+//! the product library never carries dev-only code.
 
 use std::path::PathBuf;
 use std::process::ExitCode;

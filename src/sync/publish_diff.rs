@@ -34,37 +34,37 @@ pub(super) struct Diff {
 pub(super) fn collect_skipped(
     root: &Path,
     files: &[discovery::SkippedFile],
-    reason: &str,
     discovered_paths: &mut HashSet<String>,
     records: &mut BTreeMap<String, SkippedRecord>,
 ) {
     for file in files {
         let Some(relative) = discovery::representable_relative_path(root, &file.absolute_path)
         else {
-            warn_skipped(file, reason);
+            warn_skipped(file);
             continue;
         };
-        let record = sample::skipped_record(&relative, &file.absolute_path, reason);
+        let record = sample::skipped_record(&relative, &file.absolute_path, file.code);
         // A failed stat is already warned about, with the path, the requested
         // reason and the source error, inside `skipped_record`; a second line
         // for the same file would break "every error is logged once".
         if record.reason != SKIP_REASON_STAT_FAILED {
-            warn_skipped(file, reason);
+            warn_skipped(file);
         }
         discovered_paths.insert(relative.clone());
         records.insert(relative, record);
     }
 }
 
-fn warn_skipped(file: &discovery::SkippedFile, reason: &str) {
+fn warn_skipped(file: &discovery::SkippedFile) {
     // `file.reason` is the skip message itself (for a sampling skip,
     // `SampleError::TooLarge`'s Display, which repeats the path). The path and
     // the static class identify the skip; the specific cause is carried by
     // the report.
     tracing::warn!(
         path = %file.absolute_path.display(),
-        reason_kind = reason,
-        "skipped file during {reason}"
+        reason_kind = file.code,
+        "skipped file during {}",
+        file.code,
     );
 }
 

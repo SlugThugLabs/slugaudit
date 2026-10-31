@@ -4,8 +4,7 @@ use crate::progress::NoopProgressSink;
 use crate::store::open_read_write;
 use crate::sync::publish::publish;
 use crate::sync::test_support::write;
-use crate::util::{Deadline, now_unix};
-use std::time::Duration;
+use crate::util::now_unix;
 
 /// A cap-busting path count: SQLite's bound-variable limit is 32766.
 const OVER_VARIABLE_LIMIT: usize = 40_000;
@@ -119,33 +118,6 @@ fn stale_findings_are_invalidated_across_every_path_batch() {
 }
 
 #[test]
-fn the_manifest_hash_excludes_every_path_of_a_set_beyond_the_sqlite_variable_limit() {
-    let project = tempfile::tempdir().expect("project dir");
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
-    write(project.path(), "a.rs", b"fn a() {}\n");
-    write(project.path(), "b.rs", b"fn b() {}\n");
-    publish(&mut connection, project.path(), "1.0", &NoopProgressSink).expect("seed publish");
-    let mut deletions: Vec<String> = (0..OVER_VARIABLE_LIMIT)
-        .map(|i| format!("filler/{i}.rs"))
-        .collect();
-    let deadline = Deadline::after(Duration::from_secs(60));
-    let without_deleting_a =
-        crate::sync::manifest::compute_manifest_hash(&connection, &[], &deletions, &[], &deadline)
-            .expect("hash with 40k unrelated deletions");
-    deletions.push("a.rs".to_owned());
-
-    let with_a_deleted =
-        crate::sync::manifest::compute_manifest_hash(&connection, &[], &deletions, &[], &deadline)
-            .expect("hash with 40k+1 deletions");
-
-    assert_ne!(
-        without_deleting_a, with_a_deleted,
-        "a deleted stored path must leave the manifest even in a huge exclusion set"
-    );
-}
-
-#[test]
 fn now_unix_tracks_real_wall_clock_time() {
     let before = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -205,6 +177,7 @@ fn a_publish_revision_database_failure_is_the_database_variant() {
             deletions: &[],
             skipped: &[],
             discovered_paths: &discovered,
+            re_resolve_unresolved: false,
         },
     )
     .expect_err("a database without the schema cannot publish a revision");
@@ -258,6 +231,7 @@ fn an_invalid_parser_run_is_rejected_by_the_revision_publish() {
             deletions: &[],
             skipped: &[],
             discovered_paths: &discovered,
+            re_resolve_unresolved: false,
         },
     )
     .expect_err("an invalid parser run must fail the publish");

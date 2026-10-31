@@ -1,29 +1,22 @@
-//! Incremental source synchronization manager for SlugAudit.
+//! Source synchronization manager for SlugAudit.
 //!
-//! `SourceSyncManager` owns a `WatchManager` and uses it to avoid full
-//! publishes when the filesystem hasn't changed meaningfully. The manager
-//! state, public accessors, and related types live here. The synchronization
-//! workflow is split between the private `orchestration` and `health` child
-//! modules, which can access this manager's private state without widening
-//! the API or splitting the watcher state machine across unrelated modules.
+//! `SourceSyncManager` owns the per-server state every tool call shares
+//! (the last-sync stamps, the session-start marking guard, session
+//! mechanics, the mechanic scan cache, and the paged-result store) and
+//! exposes the one sync entry point, `ensure_current`. Every call hashes
+//! the project and publishes the delta; there is no filesystem watcher and
+//! no timestamp shortcut, so an answer is proven against the source before
+//! it is served.
 
-#[path = "manager_health.rs"]
-mod health;
-#[path = "manager_healthy.rs"]
-mod healthy;
 #[path = "manager_orchestration.rs"]
 mod orchestration;
 
 use super::discard_notice::DatabaseDiscard;
-use super::reconcile;
-use crate::model::process_limits;
-use crate::watch::{WatchManager, WatchState};
 pub(crate) use orchestration::{map_activation_error, map_process_limits_error};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use thiserror::Error;
 use uuid::Uuid;
 
 /// A project brought fully up to date, ready for a tool to query. Defined
@@ -40,49 +33,10 @@ pub struct SyncedProject {
     pub discard: Option<DatabaseDiscard>,
 }
 
-/// Errors produced by incremental reconciliation.
-#[derive(Debug, Error)]
-pub enum SyncError {
-    #[error("database error: {0}")]
-    Database(#[from] rusqlite::Error),
-    #[error("reconcile error: {0}")]
-    Reconcile(#[from] reconcile::ReconcileError),
-    /// The watcher-driven reconcile needs the stat sweep's on-disk path
-    /// set for edge resolution; a sweep that cannot complete leaves that
-    /// set unknown, so the reconcile fails closed instead of publishing
-    /// edges resolved against a set it knows is incomplete.
-    #[error("stat sweep error: {0}")]
-    Sweep(String),
-    /// Same failure as [`SyncError::Sweep`], kept typed: the sweep ran out
-    /// of wall-clock budget. A spent budget is a permanent, actionable
-    /// condition (`sync_budget_exhausted` + the knob that raises it), while
-    /// a stringified sweep failure is not, so the two cannot share a
-    /// variant.
-    #[error("stat sweep exceeded its wall-clock time budget after {elapsed_ms} ms")]
-    SweepBudgetExceeded { elapsed_ms: u128 },
-}
-
-impl SyncError {
-    /// The elapsed budget when this failure is the budget being exhausted,
-    /// else `None`. The two `ErrorData` map sites in `manager_health` pair
-    /// this with `crate::error_codes::budget_payload`; the reconcile
-    /// pipeline's own budget variant arrives wrapped, so this recurses one
-    /// level rather than matching only the top variant.
-    #[must_use]
-    pub(crate) fn budget_elapsed_ms(&self) -> Option<u128> {
-        match self {
-            SyncError::SweepBudgetExceeded { elapsed_ms } => Some(*elapsed_ms),
-            SyncError::Reconcile(error) => error.budget_elapsed_ms(),
-            _ => None,
-        }
-    }
-}
-
-/// Owns a `WatchManager` and provides watcher-aware sync entry points.
-/// Cloneable — clones share the underlying watcher state.
+/// Owns the tool-facing per-server state and provides the sync entry point.
+/// Cloneable — clones share the underlying state.
 #[derive(Clone, Default)]
 pub struct SourceSyncManager {
-    watch_manager: WatchManager,
     /// Unix-epoch seconds of the most recent successful `ensure_current`,
     /// regardless of project. Exposed through the `health` MCP tool so
     /// operators can detect "the server has been up but hasn't actually
@@ -91,19 +45,9 @@ pub struct SourceSyncManager {
     /// Stamped after the database write succeeds, not before, so the
     /// timestamp is consistent with what the database sees as the most
     /// recent revision.
-    last_sync_unix_seconds: std::sync::Arc<AtomicI64>,
+    last_sync_unix_seconds: Arc<AtomicI64>,
     /// Duration of the most recent successful sync, in milliseconds.
-    last_sync_duration_ms: std::sync::Arc<AtomicU64>,
-    /// How many consecutive full publishes (untrusted-watcher or
-    /// Unavailable-path verifications) have run since the last successful
-    /// *incremental* reconcile. Every full publish increments it; a
-    /// successful incremental reconcile resets it to zero. Exposed through
-    /// the `health` MCP tool: a value that climbs on a repo where the
-    /// watcher keeps dropping into `Desynced` (e.g. Linux inotify
-    /// `fs.inotify.max_user_watches` overflow) is the earliest signal that
-    /// every tool call is paying a full-publish cost — see the
-    /// full-publish runbook in `docs/TROUBLESHOOTING.md`.
-    consecutive_full_publishes: std::sync::Arc<AtomicU64>,
+    last_sync_duration_ms: Arc<AtomicU64>,
     /// Project databases whose prior-session findings have already been
     /// marked stale in this process, mapped to the session UUID that did it.
     /// This is the guard for the session-start transition: the marking must
@@ -114,10 +58,9 @@ pub struct SourceSyncManager {
     /// Clones share the state.
     prior_sessions_staled: Arc<Mutex<HashMap<PathBuf, Uuid>>>,
     /// The mechanics the auditor registered for this server's session (the
-    /// `mechanic` tool), and whether the one-time `report` mechanics note
-    /// was delivered. Held here because the manager is the per-server state
-    /// every tool already receives; clones share it, and it dies with the
-    /// process.
+    /// `mechanic` tool). Held here because the manager is the per-server
+    /// state every tool already receives; clones share it, and it dies with
+    /// the process.
     session_mechanics: crate::project::SessionMechanics,
     /// Complete scan results of the registered mechanics, per revision; see
     /// `project::MechanicScanCache`. Held beside the session mechanics for
@@ -126,34 +69,12 @@ pub struct SourceSyncManager {
     /// The lazily opened result store for paged results; see
     /// `result_stores`. Per-server state like the fields above.
     result_stores: super::result_stores::ResultStoreSlot,
-    /// Backstop bounding how long a Healthy, quiet watcher is trusted
-    /// without a full-tree sweep; see `full_sweep_gate`.
-    full_sweep_gate: super::full_sweep_gate::FullSweepGate,
 }
 
 impl SourceSyncManager {
-    /// Creates a manager with **no** filesystem watcher running — the default
-    /// for tests; the MCP server uses `with_watcher`.
+    /// Creates a manager with no external resources open.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Creates a new `SourceSyncManager` with a `notify` watcher if the
-    /// platform supports it. If the watcher can't be created, the manager
-    /// operates in `Unavailable` mode — every `ensure_current` call does a
-    /// full publish.
-    pub fn with_watcher() -> Self {
-        Self {
-            watch_manager: WatchManager::with_watcher(),
-            last_sync_unix_seconds: std::sync::Arc::new(AtomicI64::new(0)),
-            last_sync_duration_ms: std::sync::Arc::new(AtomicU64::new(0)),
-            consecutive_full_publishes: std::sync::Arc::new(AtomicU64::new(0)),
-            prior_sessions_staled: Arc::new(Mutex::new(HashMap::new())),
-            session_mechanics: crate::project::SessionMechanics::default(),
-            mechanic_scan_cache: crate::project::MechanicScanCache::default(),
-            result_stores: super::result_stores::ResultStoreSlot::default(),
-            full_sweep_gate: super::full_sweep_gate::FullSweepGate::default(),
-        }
     }
 
     /// The result store slot; see the field.
@@ -199,87 +120,6 @@ impl SourceSyncManager {
     /// `ensure_current`. Zero before the first sync.
     pub fn last_sync_duration_ms(&self) -> u64 {
         self.last_sync_duration_ms.load(Ordering::Relaxed)
-    }
-
-    /// Number of consecutive full publishes since the last successful
-    /// incremental reconcile. Exposed through the `health` MCP tool; a
-    /// non-zero value that persists across calls means the watcher is not
-    /// being trusted (or is unavailable) and every tool call full-verifies.
-    pub fn consecutive_full_publishes(&self) -> u64 {
-        self.consecutive_full_publishes.load(Ordering::Relaxed)
-    }
-
-    /// Records a full publish (untrusted watcher or Unavailable path).
-    /// Called after the publish's database write succeeds, so the counter
-    /// only reflects publishes that actually landed.
-    fn record_full_publish(&self) {
-        self.consecutive_full_publishes
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Resets the consecutive-full-publish counter after a successful
-    /// incremental reconcile proves the watcher is trusted and events are
-    /// being drained incrementally.
-    fn record_incremental_reconcile(&self) {
-        self.consecutive_full_publishes.store(0, Ordering::Relaxed);
-    }
-
-    /// Returns the most recently synced project's `WatchState`, or `None`
-    /// if no project has been synced yet. The "active project" is the
-    /// one `ensure_current` last succeeded for; in the current
-    /// single-active-project model, returns the single registered state.
-    pub fn active_watch_state(&self) -> Option<WatchState> {
-        self.watch_manager
-            .iter()
-            .into_iter()
-            .next()
-            .map(|(_, state)| state)
-    }
-
-    /// Used by `health` to enumerate every watched project's state for
-    /// observability. Iterating owns the inner lock through
-    /// `lock_or_recover`, so a panic inside the iterator's `for` body is
-    /// recovered on the next iteration just like any other caller.
-    pub fn watch_states_snapshot(&self) -> Vec<crate::watch::ProjectWatchState> {
-        self.watch_manager.snapshot_all()
-    }
-
-    /// Start watching `root`. Returns the `WatchState` for the project.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EnvConfigError`](crate::model::EnvConfigError) when the
-    /// process limits were never installed and the environment is invalid.
-    pub fn activate(&self, root: &Path) -> Result<WatchState, crate::model::EnvConfigError> {
-        Ok(self.watch_manager.watch(root, process_limits()?))
-    }
-
-    /// Recomputes `root`'s watch scope under the process limits.
-    pub(super) fn refresh_watch_scope(
-        &self,
-        root: &Path,
-    ) -> Result<(), crate::model::EnvConfigError> {
-        self.watch_manager.refresh_scope(root, process_limits()?);
-        Ok(())
-    }
-
-    /// Stop watching `root` and unregisters its state.
-    pub fn unwatch(&self, root: &Path) {
-        self.watch_manager.unwatch(root);
-    }
-
-    /// Returns the `WatchState` for a previously-watched project root,
-    /// or `None` if the project has not been watched yet.
-    ///
-    /// Unlike `activate`, this does not register a new watch and does
-    /// not set the watcher's health to `NeedsVerification`. Callers
-    /// that want to surface state on a known active project (e.g. the
-    /// `health` MCP tool) should use this; callers that want to ensure
-    /// the project is being watched on this connection should use
-    /// `activate`.
-    pub fn watch_state_for(&self, root: &Path) -> Option<WatchState> {
-        let canonical = crate::util::canonical_or_self(root);
-        self.watch_manager.get(&canonical)
     }
 
     fn stamp_last_sync(&self, duration_ms: u64) {
@@ -340,17 +180,9 @@ mod recovery_tests {
 mod tests;
 
 #[cfg(test)]
-#[path = "manager_observability_tests.rs"]
-mod observability_tests;
-
-#[cfg(test)]
 #[path = "manager_log_tests.rs"]
 mod log_tests;
 
 #[cfg(test)]
 #[path = "manager_off_race_tests.rs"]
 mod off_race_tests;
-
-#[cfg(test)]
-#[path = "full_sweep_gate_tests.rs"]
-mod full_sweep_gate_tests;

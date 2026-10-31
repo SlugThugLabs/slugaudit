@@ -7,8 +7,8 @@
 //! that test wrote). Prepending to the inherited `PATH` is not enough — a real
 //! `codex`/`claude` further along it would still be found and executed, which
 //! is how a test run once rewrote the owner's `~/.codex/config.toml`
-//! (`.planning/DEVIATIONS.md`). Tests driving [`run_connect`] additionally pin
-//! both homes with [`with_config_home`].
+//! (the real client CLI was executed during a test run). Tests driving
+//! [`run_connect`] additionally pin both homes with [`with_config_home`].
 
 use super::*;
 use crate::connect_agents::{ConfigShape, Strategy, find_agent};

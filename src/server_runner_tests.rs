@@ -156,14 +156,14 @@ async fn the_semaphore_bounds_concurrent_blocking_work() {
     );
 }
 
-// Phase 0's instrument is a log line, so it is pinned like one. These
+// The run_blocking instrument is a log line, so it is pinned like one. These
 // tests capture through `store::test_capture`, the same harness
 // `tools::redaction_tests` uses: `capture_at_level` installs a
 // thread-local subscriber, so only events emitted on the test thread are
 // captured. That covers `run_blocking`'s own start and completion lines
 // (the call id/session live on the span both are emitted under), not the
 // internals a tool logs from inside `spawn_blocking` — which is exactly
-// the boundary this phase adds to.
+// the boundary these tests pin.
 //
 // Each capturing test below names its tool with a literal only that test
 // uses and counts only the lines carrying it, so "exactly one start and

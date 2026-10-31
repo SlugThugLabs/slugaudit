@@ -66,8 +66,8 @@ pub(super) fn register(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Test-only `golden_nan()`: returns a REAL NaN, the one route the Phase 9
-/// golden test has to ask whether a NaN can reach a query result at all.
+/// Test-only `golden_nan()`: returns a REAL NaN, the one route the golden
+/// test has to ask whether a NaN can reach a query result at all.
 #[cfg(test)]
 fn register_golden_nan(connection: &Connection) -> Result<()> {
     connection.create_scalar_function(

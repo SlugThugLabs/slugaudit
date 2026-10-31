@@ -6,112 +6,18 @@
 //! function and module items by their full path inside test bodies,
 //! importing only the types we need.
 
+use crate::store;
+use crate::sync::SourceSyncManager;
 use crate::tools::HealthRequest;
-use crate::tools::health::derive_phase;
 use crate::tools::health::{HealthPhase, ToolCounters};
-use crate::watch::{ProjectWatchState, WatcherHealth};
 use rmcp::handler::server::wrapper::Parameters;
+use std::fs;
 
-// `Parameters<X>` is the wrapper rmcp uses for deserialized tool
-// arguments; tests skip the rmcp boundary and call the handler with
-// a hand-built `Parameters<HealthRequest>` so we don't have to spin up
-// a peer/transport.
 fn req(path: Option<&str>) -> Parameters<HealthRequest> {
     Parameters(HealthRequest {
         path: path.map(str::to_owned),
         verbose: true,
     })
-}
-
-#[test]
-fn phase_is_importing_when_healthy_but_no_revision() {
-    assert_eq!(
-        derive_phase(WatcherHealth::Healthy, &None, false),
-        HealthPhase::Importing,
-    );
-    assert_eq!(
-        derive_phase(WatcherHealth::Healthy, &None, true),
-        HealthPhase::Importing,
-    );
-}
-
-#[test]
-fn phase_is_restoring_when_needs_verification() {
-    let revision = Some("rev-1".to_owned());
-    assert_eq!(
-        derive_phase(WatcherHealth::NeedsVerification, &revision, false),
-        HealthPhase::Restoring,
-    );
-}
-
-#[test]
-fn phase_is_restoring_when_desynced() {
-    let revision = Some("rev-1".to_owned());
-    assert_eq!(
-        derive_phase(WatcherHealth::Desynced, &revision, false),
-        HealthPhase::Restoring,
-    );
-}
-
-#[test]
-fn phase_is_restoring_when_healthy_with_unreconciled_events() {
-    let revision = Some("rev-1".to_owned());
-    assert_eq!(
-        derive_phase(WatcherHealth::Healthy, &revision, true),
-        HealthPhase::Restoring,
-    );
-}
-
-#[test]
-fn phase_is_steady_state_when_healthy_with_revision_and_no_unreconciled() {
-    let revision = Some("rev-1".to_owned());
-    assert_eq!(
-        derive_phase(WatcherHealth::Healthy, &revision, false),
-        HealthPhase::SteadyState,
-    );
-}
-
-#[test]
-fn phase_is_degraded_when_partial_with_revision_and_no_unreconciled() {
-    let revision = Some("rev-1".to_owned());
-    assert_eq!(
-        derive_phase(WatcherHealth::Partial, &revision, false),
-        HealthPhase::Degraded,
-        "a partial watch scope is never full steady state"
-    );
-}
-
-#[test]
-fn phase_is_restoring_when_partial_with_unreconciled_events() {
-    let revision = Some("rev-1".to_owned());
-    assert_eq!(
-        derive_phase(WatcherHealth::Partial, &revision, true),
-        HealthPhase::Restoring,
-    );
-}
-
-#[test]
-fn phase_is_importing_when_partial_without_a_revision() {
-    assert_eq!(
-        derive_phase(WatcherHealth::Partial, &None, false),
-        HealthPhase::Importing,
-        "no published revision outranks the watcher's partial scope"
-    );
-}
-
-#[test]
-fn phase_is_unavailable_when_watcher_unavailable() {
-    let revision = Some("rev-1".to_owned());
-    // Watcher Unavailable wins regardless of revision/extras — the
-    // platform can't watch, so steady-state is unreachable.
-    assert_eq!(
-        derive_phase(WatcherHealth::Unavailable, &revision, false),
-        HealthPhase::Unavailable,
-    );
-    assert_eq!(
-        derive_phase(WatcherHealth::Unavailable, &revision, true),
-        HealthPhase::Unavailable,
-    );
 }
 
 #[test]
@@ -142,48 +48,6 @@ fn tool_counters_always_return_non_decreasing_after_a_bump() {
     let snap_calls_before = ToolCounters::snapshot().call_count;
     let snap_after = ToolCounters::record_call(true, 0);
     assert!(snap_after.call_count > snap_calls_before);
-}
-
-#[test]
-fn derive_phase_agrees_with_a_real_snapshot_shape() {
-    // Simple regression: derive the phase from a `ProjectWatchState`
-    // snapshot directly so we can verify `has_unreconciled_events()`
-    // inside `derive_phase` reacts to a real watcher recording an
-    // event without reconcile.
-    let snapshot = ProjectWatchState {
-        health: WatcherHealth::Healthy,
-        watcher_sequence: 1,
-        ..ProjectWatchState::default()
-    };
-    let phase = derive_phase(snapshot.health, &None, snapshot.has_unreconciled_events());
-    assert_eq!(phase, HealthPhase::Importing);
-}
-
-#[test]
-fn health_no_path_response_carries_counter_consistency() {
-    let snap_before = ToolCounters::snapshot();
-    // Call the function via the full module path so the compiler can't
-    // confuse it with the module-name collision.
-    let resp = crate::tools::health::health(
-        &req(None),
-        &crate::progress::NoopProgressSink,
-        &crate::sync::SourceSyncManager::default(),
-    )
-    .expect("health should not fail on shape");
-    let server = resp
-        .0
-        .detail
-        .expect("a verbose answer carries detail")
-        .server;
-    let snap_after = ToolCounters::snapshot();
-    assert!(
-        server.tool_call_count >= snap_before.call_count,
-        "response counter can't precede the snapshot taken before the call"
-    );
-    assert!(
-        server.tool_call_count <= snap_after.call_count,
-        "response counter can't exceed the snapshot taken after"
-    );
 }
 
 #[test]
@@ -239,21 +103,15 @@ fn health_with_an_unrelated_path_returns_the_resolution_error() {
 }
 
 #[test]
-#[cfg(unix)]
 fn read_database_is_unreadable_when_the_database_cannot_be_opened() {
     use crate::tools::health::DatabaseRead;
-    use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().expect("temp dir");
     let db = directory.path().join("project.db");
-    crate::store::open_read_write(&db).expect("create the project database");
-    // The connection layer refuses databases whose permissions were
-    // broadened past owner-only (group/world bits set) — exactly the open
-    // failure `read_database` must degrade on, not propagate: the health
-    // payload stays actionable (the whole `database` group goes absent)
-    // and the failure is logged rather than surfacing as an error. It is
-    // "unreadable", never "never synced": the file is right there.
-    std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o644))
-        .expect("widen database permissions");
+    std::fs::write(&db, b"this is not a sqlite database").expect("corrupt fixture");
+    // An unopenable file is exactly the failure `read_database` must degrade
+    // on, not propagate: the whole `database` group goes absent and the
+    // failure is logged. It is "unreadable", never "never synced": the file
+    // is right there.
     assert_eq!(
         crate::tools::health::read_database(&db),
         DatabaseRead::Unreadable,
@@ -324,4 +182,332 @@ fn health_database_warns_log_the_real_path_and_source_error() {
         !logs.contains("database_id="),
         "the redacted database id is gone:\n{logs}"
     );
+}
+
+fn activated_temp_project() -> (tempfile::TempDir, String) {
+    let project = tempfile::tempdir().expect("project dir");
+    fs::create_dir_all(project.path().join(".planning").join("slugaudit")).expect("activation dir");
+    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"));
+    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
+    let path = project.path().to_string_lossy().into_owned();
+    (project, path)
+}
+
+fn synced_manager(project: &tempfile::TempDir, path: &str) -> SourceSyncManager {
+    let manager = SourceSyncManager::new();
+    manager
+        .ensure_current(path, &crate::progress::NoopProgressSink)
+        .expect("sync");
+    assert!(
+        project
+            .path()
+            .join(".planning/slugaudit/project.db")
+            .exists(),
+        "sync must create the project database"
+    );
+    manager
+}
+
+#[test]
+fn project_state_populates_database_fields_for_an_active_project() {
+    let (project, path) = activated_temp_project();
+    let _manager = synced_manager(&project, &path);
+
+    let fields = super::compute_project_state(&path).expect("project state");
+
+    assert_eq!(fields.phase, HealthPhase::SteadyState);
+    assert_eq!(fields.remedy, None);
+    assert!(!fields.database_read_failed);
+    let database = fields.database.as_ref().expect("database group");
+    assert!(
+        database.revision_id.is_some(),
+        "a revision must exist after sync"
+    );
+    assert!(database.parser_pack_version.is_some());
+    assert_eq!(database.file_count, 1, "one indexed source file");
+    assert_eq!(database.skipped_file_count, 0, "nothing was skipped");
+}
+
+#[test]
+fn global_only_state_is_no_active_project() {
+    let fields = super::compute_global_only_state();
+    assert_eq!(fields.phase, HealthPhase::NoActiveProject);
+    assert_eq!(fields.database, None, "no path never opens a database");
+}
+
+/// The core read-only guarantee: calling `health` with a path must never
+/// create a revision or move `last_sync` — it reports, it does not sync.
+#[test]
+fn health_with_a_path_never_triggers_a_sync() {
+    let (project, path) = activated_temp_project();
+    let manager = synced_manager(&project, &path);
+    let revision_after_sync = manager.last_sync_unix_seconds();
+    assert!(revision_after_sync > 0);
+
+    // Modify the project on disk — a sync would notice and publish.
+    fs::write(
+        project.path().join("lib.rs"),
+        b"pub fn a() { changed(); }\n",
+    )
+    .expect("modify source");
+
+    super::compute_project_state(&path).expect("health read");
+
+    let database = project.path().join(".planning/slugaudit/project.db");
+    let connection = store::open_existing(&database).expect("open");
+    let revision_count: i64 = connection
+        .query_row("SELECT count(*) FROM revisions", [], |row| row.get(0))
+        .expect("revision count");
+    assert_eq!(
+        revision_count, 1,
+        "health must not publish a new revision for the modified file"
+    );
+    assert_eq!(
+        manager.last_sync_unix_seconds(),
+        revision_after_sync,
+        "health must not stamp the last-sync timestamp"
+    );
+}
+
+#[test]
+fn health_with_an_active_project_path_reports_db_fields() {
+    let (project, path) = activated_temp_project();
+    // Production path: `ensure_synced` (via `SlugAuditServer`) and `health`
+    // (same server.rs instance) share the same `SourceSyncManager`, so the
+    // last-sync timestamp the first one stamps is visible to the second.
+    let manager = synced_manager(&project, &path);
+
+    let request = crate::tools::HealthRequest {
+        path: Some(path),
+        verbose: true,
+    };
+    let response = crate::tools::health::health(
+        &Parameters(request),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .expect("health with a path succeeds");
+
+    let inner = response.0;
+    let database = inner.database.as_ref().expect("database group");
+    assert!(database.revision_id.is_some());
+    assert_eq!(database.file_count, 1);
+    let detail = inner
+        .detail
+        .as_ref()
+        .expect("a verbose answer carries detail");
+    let database_detail = detail.database.as_ref().expect("database detail group");
+    assert!(database_detail.parser_pack_version.is_some());
+    assert!(
+        detail.server.last_sync_unix_seconds > 0,
+        "ensure_current must stamp the last-sync timestamp"
+    );
+    let _ = project;
+}
+
+/// A `path` with no activation marker is a *state*, not a failure: a
+/// diagnostic tool that fails when there is nothing to diagnose is useless.
+/// The answer must say `disabled` and carry the same remedy every tool's
+/// `project_not_enabled` error carries, so a caller can treat both as one
+/// instruction.
+#[test]
+fn health_with_a_path_outside_any_enabled_project_reports_disabled() {
+    let project = tempfile::tempdir().expect("project dir");
+    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
+    let path = project.path().to_string_lossy().into_owned();
+
+    let response = super::health(
+        &Parameters(super::HealthRequest {
+            path: Some(path),
+            verbose: false,
+        }),
+        &crate::progress::NoopProgressSink,
+        &SourceSyncManager::new(),
+    )
+    .expect("a disabled path is an answer, not an error");
+
+    assert_eq!(response.0.phase, HealthPhase::Disabled);
+    assert_eq!(response.0.database, None);
+    let remedy = response
+        .0
+        .remedy
+        .as_deref()
+        .expect("a disabled answer carries the remedy");
+    assert!(remedy.contains("project_control"), "{remedy}");
+    assert!(remedy.contains("\"action\":\"on\""), "{remedy}");
+    assert!(remedy.contains("<project directory>"), "{remedy}");
+}
+
+/// The no-`path` case names no project, but it is still the state a cold
+/// caller lands in: it must say nothing is active and how to start.
+#[test]
+fn health_without_a_path_still_names_the_way_to_enable_a_project() {
+    let response = super::health(
+        &Parameters(super::HealthRequest {
+            path: None,
+            verbose: false,
+        }),
+        &crate::progress::NoopProgressSink,
+        &SourceSyncManager::new(),
+    )
+    .expect("health never fails without a path");
+
+    assert_eq!(response.0.phase, HealthPhase::NoActiveProject);
+    assert!(response.0.remedy.is_some());
+}
+
+/// Once a project is actually being served the remedy disappears: the field
+/// means "no project is served for this answer", nothing else.
+#[test]
+fn health_reports_no_remedy_for_an_active_project() {
+    let (project, path) = activated_temp_project();
+    let manager = synced_manager(&project, &path);
+
+    let response = super::health(
+        &Parameters(super::HealthRequest {
+            path: Some(path),
+            verbose: false,
+        }),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .expect("health succeeds for an active project");
+
+    assert_eq!(response.0.remedy, None);
+    assert!(
+        response
+            .0
+            .database
+            .as_ref()
+            .expect("database group")
+            .revision_id
+            .is_some()
+    );
+}
+
+/// A database that exists but cannot be read must report `unknown`, never
+/// `importing` ("the first sync never succeeded") for a project whose first
+/// sync did succeed.
+#[test]
+fn an_unreadable_database_after_a_successful_sync_reports_unknown() {
+    let (project, path) = activated_temp_project();
+    let _manager = synced_manager(&project, &path);
+    let database = project.path().join(".planning/slugaudit/project.db");
+    fs::write(&database, b"this is not a sqlite database").expect("corrupt the database");
+
+    let response = super::health(
+        &Parameters(super::HealthRequest {
+            path: Some(path),
+            verbose: true,
+        }),
+        &crate::progress::NoopProgressSink,
+        &SourceSyncManager::new(),
+    )
+    .expect("an unreadable database degrades to fields, not an error");
+
+    assert_eq!(
+        response.0.phase,
+        HealthPhase::Unknown,
+        "an unreadable database must not claim the first sync never succeeded"
+    );
+    assert!(
+        response
+            .0
+            .detail
+            .as_ref()
+            .expect("a verbose answer carries detail")
+            .database_read_failed,
+        "the response must carry that the database read failed"
+    );
+    assert_eq!(response.0.database, None);
+}
+
+/// Sorted object keys of one JSON value, for asserting a response's shape.
+fn keys(value: &serde_json::Value) -> Vec<&str> {
+    let mut keys: Vec<&str> = value
+        .as_object()
+        .expect("a JSON object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    keys
+}
+
+fn health_json(manager: &SourceSyncManager, path: &str, verbose: bool) -> serde_json::Value {
+    let response = super::health(
+        &Parameters(super::HealthRequest {
+            path: Some(path.to_owned()),
+            verbose,
+        }),
+        &crate::progress::NoopProgressSink,
+        manager,
+    )
+    .expect("health succeeds for an active project");
+    serde_json::to_value(&response.0).expect("health serialises")
+}
+
+/// The default answer is what a model acts on and nothing else: the phase,
+/// the remedy, and the revision with its file count.
+#[test]
+fn health_without_verbose_carries_only_the_fields_a_caller_acts_on() {
+    let (project, path) = activated_temp_project();
+    let manager = synced_manager(&project, &path);
+
+    let answer = health_json(&manager, &path, false);
+
+    assert_eq!(keys(&answer), ["database", "phase", "remedy"]);
+    assert_eq!(keys(&answer["database"]), ["file_count", "revision_id"]);
+    assert_eq!(answer["database"]["file_count"], 1);
+    assert!(answer["database"]["revision_id"].is_string(), "{answer}");
+}
+
+/// `verbose: true` adds the operator view under `detail` and leaves the
+/// default fields exactly as they were.
+#[test]
+fn health_with_verbose_adds_the_operator_detail_beside_the_default_fields() {
+    let (project, path) = activated_temp_project();
+    let manager = synced_manager(&project, &path);
+    let plain = health_json(&manager, &path, false);
+
+    let answer = health_json(&manager, &path, true);
+
+    let detail = &answer["detail"];
+    assert_eq!(
+        keys(detail),
+        [
+            "database",
+            "database_read_failed",
+            "mechanic_cache",
+            "result_store",
+            "server",
+            "system_memory",
+            "system_memory_error"
+        ]
+    );
+    assert!(
+        detail["system_memory"]["total_bytes"]
+            .as_u64()
+            .is_some_and(|bytes| bytes > 0),
+        "detected memory is reported as detected: {detail}"
+    );
+    assert!(
+        detail["system_memory_error"].is_null(),
+        "no detection error when memory was detected: {detail}"
+    );
+    assert_eq!(
+        keys(&detail["database"]),
+        ["parser_pack_version", "skipped_file_count"]
+    );
+    assert_eq!(detail["database_read_failed"], false);
+    assert!(
+        detail["result_store"].is_null(),
+        "no paged result was made yet"
+    );
+    for field in ["phase", "remedy", "database"] {
+        assert_eq!(
+            answer[field], plain[field],
+            "`{field}` changed with verbose"
+        );
+    }
 }

@@ -4,7 +4,7 @@
 //! query path so each file states one concern; the precedence and
 //! descend-and-prune semantics live in the parent module's docs.
 
-use crate::watch::errors::ignore_error_kind;
+use super::ignore_error_kind;
 use ignore::Error;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::collections::HashMap;

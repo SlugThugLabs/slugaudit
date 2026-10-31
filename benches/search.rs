@@ -4,7 +4,7 @@
 //! fully synced project database. Search is a bounded-scan over the
 //! `files.content` / `evidence.payload` columns (SQLite `LIKE`) — there is
 //! no FTS5 table yet, so these numbers are the honest baseline for the
-//! §21.4 "FTS5 versus bounded-scan search" decision. Also included is the
+//! "FTS5 versus bounded-scan search" decision. Also included is the
 //! recursive-CTE dependency traversal over `dependency_edges`, which the
 //! `query` tool exposes for dependents/dependencies lookups.
 //!
@@ -70,8 +70,8 @@ const TRAVERSAL_SQL: &str = "WITH RECURSIVE reach(from_id) AS ( \
 fn bench_search(c: &mut Criterion) {
     let small = build_synced(SMALL);
     let large = build_synced(common::LARGE);
-    let small_connection = store::open_read_only(&small.path).expect("open read-only");
-    let large_connection = store::open_read_only(&large.path).expect("open read-only");
+    let small_connection = store::open_existing(&small.path).expect("open read-only");
+    let large_connection = store::open_existing(&large.path).expect("open read-only");
 
     let mut group = c.benchmark_group("search");
     group.sample_size(15);

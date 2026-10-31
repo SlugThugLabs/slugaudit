@@ -21,8 +21,8 @@ pub enum FileKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// One file yielded by the discovery walk: relative and absolute paths, kind,
-/// and the size/mtime signals the sample stage re-checks.
+/// One file yielded by the discovery walk: relative and absolute paths and
+/// kind. The sample stage re-reads the file itself.
 pub struct DiscoveredFile {
     /// Project-relative path with `/` separators.
     pub relative_path: String,
@@ -44,6 +44,9 @@ pub struct SkippedFile {
     pub absolute_path: PathBuf,
     /// Why the entry was skipped, as carried into the publish report and log.
     pub reason: String,
+    /// Stable `files.skip_reason` code for a representable skip
+    /// (`unreadable`, `oversize`, `not_utf8`).
+    pub code: &'static str,
 }
 
 #[derive(Debug, Error)]
@@ -117,6 +120,7 @@ pub(super) fn strip_project_prefix<'a>(
     absolute_path.strip_prefix(root).map_err(|_| SkippedFile {
         reason: DiscoveryError::NotRelative(absolute_path.to_path_buf()).to_string(),
         absolute_path: absolute_path.to_path_buf(),
+        code: super::revision_skipped::SKIP_REASON_UNREADABLE,
     })
 }
 
@@ -129,8 +133,8 @@ pub(super) fn collect_walk_entry(
     let entry = entry.map_err(DiscoveryError::Walk)?;
     if let Some(error) = entry.error() {
         return Err(DiscoveryError::IgnoreRules {
-            kind: crate::watch::errors::ignore_error_kind(error),
-            path: crate::watch::errors::ignore_error_path(error).map(Path::to_path_buf),
+            kind: crate::ignore_rules::ignore_error_kind(error),
+            path: crate::ignore_rules::ignore_error_path(error).map(Path::to_path_buf),
         });
     }
     if entry.file_type().is_some_and(|kind| kind.is_file()) {
@@ -162,6 +166,7 @@ fn collect_file_entry(
             skipped.push(SkippedFile {
                 reason: error.to_string(),
                 absolute_path,
+                code: super::revision_skipped::SKIP_REASON_UNREADABLE,
             });
             return;
         }
@@ -175,6 +180,7 @@ fn collect_file_entry(
         None => skipped.push(SkippedFile {
             reason: DiscoveryError::NonUtf8Path(absolute_path.clone()).to_string(),
             absolute_path,
+            code: super::revision_skipped::SKIP_REASON_UNREADABLE,
         }),
     }
 }
@@ -208,9 +214,8 @@ pub(super) fn unrepresentable_relative_bytes(root: &Path, absolute_path: &Path) 
     Some(relative.as_os_str().as_encoded_bytes().to_vec())
 }
 
-/// The unrepresentable subset of a discovery walk's skipped files. Used by
-/// the full publish to persist the set; the incremental stat sweep calls
-/// [`unrepresentable_relative_bytes`] per walked entry instead.
+/// The unrepresentable subset of a discovery walk's skipped files,
+/// persisted by the full publish.
 #[must_use]
 pub(super) fn unrepresentable_paths(root: &Path, skipped: &[SkippedFile]) -> HashSet<Vec<u8>> {
     skipped
@@ -221,10 +226,9 @@ pub(super) fn unrepresentable_paths(root: &Path, skipped: &[SkippedFile]) -> Has
 
 /// Sniffs whether `path` is binary (a NUL byte in the first
 /// `BINARY_SNIFF_BYTES`) or indexable text. This is the single source of
-/// truth for binary-ness: the initial import calls it during discovery,
-/// and incremental reconcile re-calls it for dirty paths so a file whose
-/// binary-ness changed on disk is classified the same way it would be on a
-/// fresh import.
+/// truth for binary-ness: discovery calls it for every file it yields, so
+/// a file whose binary-ness changed is classified the same way on every
+/// sync.
 pub(crate) fn sniff_kind(path: &Path) -> Result<FileKind, DiscoveryError> {
     use std::io::Read;
     let mut file = std::fs::File::open(path).map_err(|source| DiscoveryError::Read {
@@ -299,23 +303,6 @@ pub(crate) fn discover_with_deadline(
     discovered.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     skipped.sort_by(|a, b| a.absolute_path.cmp(&b.absolute_path));
     Ok((discovered, skipped))
-}
-
-/// The metadata of `absolute_path` when it is a regular file, `None` when it
-/// is missing or anything else. `symlink_metadata`, not `metadata`: discovery
-/// never follows symlinks, so an incremental re-index must not either, or it
-/// would index a target — possibly outside the project — a full publish skips.
-pub(crate) fn regular_file_metadata(
-    absolute_path: &Path,
-) -> Result<Option<std::fs::Metadata>, super::hash::HashError> {
-    match std::fs::symlink_metadata(absolute_path) {
-        Ok(metadata) => Ok(metadata.is_file().then_some(metadata)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(super::hash::HashError::Read {
-            path: absolute_path.to_path_buf(),
-            source,
-        }),
-    }
 }
 
 #[cfg(test)]

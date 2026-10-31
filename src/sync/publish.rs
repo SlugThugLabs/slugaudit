@@ -182,8 +182,7 @@ impl PublishError {
                 | discovery::DiscoveryError::NonUtf8Path(path),
             ) => Some(path.display().to_string()),
             PublishError::Discovery(discovery::DiscoveryError::Walk(error)) => {
-                crate::watch::errors::ignore_error_path(error)
-                    .map(|path| path.display().to_string())
+                crate::ignore_rules::ignore_error_path(error).map(|path| path.display().to_string())
             }
             PublishError::Discovery(discovery::DiscoveryError::IgnoreRules {
                 path: Some(path),
@@ -221,11 +220,10 @@ pub struct PublishReport {
 }
 
 /// Replaces the persisted set of discovered non-UTF-8 paths with the set a
-/// walk just produced. The table is disposable derived state: every full
-/// discovery and every incremental stat sweep walks the whole tree, so the
-/// replacement is exact, and an unchanged set writes nothing. A failed write
-/// fails the sync pass — `report` must never read a count its latest walk
-/// did not produce.
+/// walk just produced. The table is disposable derived state: every sync
+/// walks the whole tree, so the replacement is exact, and an unchanged set
+/// writes nothing. A failed write fails the sync pass — `report` must never
+/// read a count its latest walk did not produce.
 pub(super) fn replace_unrepresentable_paths(
     connection: &mut rusqlite::Connection,
     paths: &HashSet<Vec<u8>>,

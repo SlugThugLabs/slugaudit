@@ -12,8 +12,8 @@
 //! criterion's median point estimates, and fails when any bench
 //! regresses more than the threshold against the committed baseline
 //! (`.planning/archive/perf_baseline.json` — the planning-record archive
-//! is where the committed baseline lives since commit 231e8c8, even
-//! though the gate consumes it as live state). The same policy as the
+//! is where the committed baseline lives, even though the gate consumes
+//! it as live state). The same policy as the
 //! coverage gate: the gated numbers are printed explicitly, so there is
 //! never a silent failure.
 //!

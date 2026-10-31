@@ -1,4 +1,4 @@
-//! C13 redaction contract: no tool-call logging path may emit tool
+//! Redaction contract: no tool-call logging path may emit tool
 //! arguments, tool results, or file content (SQL text, finding content,
 //! indexed source) into the logs. Error messages are not covered: they are
 //! logged by design, once, by `server_runner::log_completion`.

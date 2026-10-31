@@ -1,6 +1,6 @@
 //! Typed failures of the result store.
 //!
-//! The store knows nothing of tools or the wire. The tool layer (9.2) maps the
+//! The store knows nothing of tools or the wire. The tool layer maps the
 //! kinds to wire codes: `Unavailable` -> `result_store_unavailable`, `Full` ->
 //! `result_store_full`, `TooLarge` -> `result_too_large`, `Expired` ->
 //! `result_expired`, `Unknown` -> `unknown_cursor`.

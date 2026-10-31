@@ -1,14 +1,16 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=one publish attempt: discovery, sampling, skip accounting, the stored-content check and the atomic commit
 //! A single publish attempt: discover, sample, diff, revalidate, and commit
 //! one revision. The retry/CAS loop lives in `publish_cas` — this module is
 //! pure orchestration of one attempt, with no retry logic of its own.
 
 use super::discovery;
+use super::manifest::{ChangeStatus, FileChange};
 use super::publish::{PublishError, PublishReport};
 use super::publish_diff::{self, build_upserts_and_deletions};
 use super::race_hook;
 use super::revalidate::revalidate_unchanged_since_sample;
 use super::revision;
-use super::revision_skipped::{SKIP_REASON_OVERSIZE, SKIP_REASON_UNREADABLE, SkippedRecord};
+use super::revision_skipped::SkippedRecord;
 use super::sample::{self, sample_all_with_deadline};
 use crate::model::ResourceLimits;
 use crate::progress::ProgressSink;
@@ -58,7 +60,6 @@ fn sample_and_diff(
     publish_diff::collect_skipped(
         root,
         &discovery_skips,
-        SKIP_REASON_UNREADABLE,
         &mut discovered_paths,
         &mut skipped_records,
     );
@@ -66,7 +67,6 @@ fn sample_and_diff(
     publish_diff::collect_skipped(
         root,
         &sampling_skips,
-        SKIP_REASON_OVERSIZE,
         &mut discovered_paths,
         &mut skipped_records,
     );
@@ -74,7 +74,14 @@ fn sample_and_diff(
     let mut skipped = discovery_skips;
     skipped.extend(sampling_skips);
     race_hook::fire(root);
-    let diff = publish_diff::diff_against_stored(connection, &samples, &skipped_records, deadline)?;
+    let mut diff =
+        publish_diff::diff_against_stored(connection, &samples, &skipped_records, deadline)?;
+    // The diff compares disk hashes against stored ones, so a `files.content`
+    // edit that left the hash column alone passes it. This pass hashes the
+    // stored text itself; a mismatch forces a re-read of the file, so the
+    // database cannot answer with text it derived from nothing.
+    let mismatched = super::verify_stored::content_mismatches(connection, deadline)?;
+    force_content_repairs(&mut diff, &mismatched, &samples);
     Ok(Attempt {
         discovered,
         discovered_paths,
@@ -84,6 +91,39 @@ fn sample_and_diff(
         skipped_records,
         unrepresentable,
     })
+}
+
+/// Marks every database-side content mismatch that still exists on disk as
+/// `Modified`, so the publish re-reads the file and rewrites the row.
+fn force_content_repairs(
+    diff: &mut publish_diff::Diff,
+    mismatched: &HashSet<String>,
+    samples: &[sample::Sample],
+) {
+    if mismatched.is_empty() {
+        return;
+    }
+    let sampled: HashSet<&str> = samples
+        .iter()
+        .map(|sample| sample.relative_path.as_str())
+        .collect();
+    let mut already: HashSet<String> = diff
+        .changes
+        .iter()
+        .map(|change| change.relative_path.clone())
+        .collect();
+    for path in mismatched {
+        if !sampled.contains(path.as_str()) || !already.insert(path.clone()) {
+            continue;
+        }
+        diff.modified += 1;
+        diff.changes.push(FileChange {
+            relative_path: path.clone(),
+            status: ChangeStatus::Modified,
+        });
+    }
+    diff.changes
+        .sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
 }
 
 struct CurrentRevision {
@@ -193,6 +233,9 @@ fn commit_attempt(
         skipped_records,
         ..
     } = attempt;
+    // A path added or removed can change an unchanged importer's edge, so
+    // stored `Unresolved` edges are re-resolved against the new path set.
+    let re_resolve_unresolved = diff.added > 0 || diff.deleted > 0;
     let (upserts, deletions) = build_upserts_and_deletions(
         samples,
         &diff.changes,
@@ -212,6 +255,7 @@ fn commit_attempt(
             deletions: &deletions,
             skipped: &skipped_records,
             discovered_paths: &discovered_paths,
+            re_resolve_unresolved,
         },
     )?;
 

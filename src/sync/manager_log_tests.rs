@@ -1,7 +1,7 @@
-//! Log-redaction tests for the manager's sync-failure records: database
-//! open/verify failures and reconcile failures must carry static categories
-//! and the real database or project path (the real-path logging policy,
-//! 2026-10-29), including a stored root from another machine or location.
+//! Log-content tests for the manager's database-recovery records: a discard
+//! or open failure must carry static categories and the real database path
+//! (the real-path logging policy, 2026-10-29), including a stored root from
+//! another machine or location.
 
 use crate::sync::SourceSyncManager;
 use crate::sync::test_support::{create_project, sync_project, write_file};
@@ -80,14 +80,7 @@ fn a_database_open_failure_warn_logs_real_path() {
     // A regular file keeps the project active; a directory at the `-wal`
     // sidecar path is what makes the SQLite connection setup fail.
     fs::create_dir_all(database.with_extension("db-wal")).expect("make the wal path a directory");
-    // Owner-only so the permission guard passes and the failure is the
-    // SQLite connection setup (`StoreError::Configure`).
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&database, fs::Permissions::from_mode(0o600))
-            .expect("restrict the database directory to owner-only");
-    }
+    // The failure is the SQLite connection setup (`StoreError::Configure`).
     let expected_path = database.display().to_string();
 
     let (result, logs) = crate::store::test_capture::capture_warns(|| {
@@ -112,96 +105,6 @@ fn a_database_open_failure_warn_logs_real_path() {
     assert!(
         records[0].contains(&format!("path={expected_path}")),
         "the WARN must carry the real database path:\n{logs}"
-    );
-}
-
-/// R12: a dirty path that cannot be read reaches the reconcile log as
-/// `HashError::Read { path: <absolute> }`, which `Display` formats. The
-/// record carries the static kind, the real path and the OS cause.
-#[test]
-fn honest_log_a_dirty_file_read_failure_logs_the_real_path_and_cause() {
-    let manager = SourceSyncManager::with_watcher();
-    let project = create_project();
-    write_file(&project, "lib.rs", b"pub fn a() {}\n");
-    let _synced = sync_project(&manager, &project);
-    // A regular file where a directory is required: resolving
-    // `blocker/child.rs` fails with ENOTDIR, which the reconcile reports as
-    // `HashError::Read`. This is deterministic even when tests run as root,
-    // unlike a permission-based fixture.
-    write_file(&project, "blocker", b"not a directory\n");
-    let state = manager.active_watch_state().expect("registered state");
-    state.mark_dirty("blocker/child.rs".to_owned());
-    let absolute = project.path().join("blocker/child.rs");
-
-    let (result, logs) = crate::store::test_capture::capture_warns(|| {
-        tracing::warn!("capture liveness control for reconcile_drain");
-        manager.ensure_current(
-            &project.path().to_string_lossy(),
-            &crate::progress::NoopProgressSink,
-        )
-    });
-
-    assert!(result.is_err(), "the read failure must surface");
-    assert!(
-        logs.contains("capture liveness control for reconcile_drain"),
-        "the capture must see this thread's events, captured: {logs}"
-    );
-    let records = sync_failure_records(&logs, "reconcile_drain");
-    assert_eq!(records.len(), 1, "one failure is one record:\n{logs}");
-    assert!(
-        records[0].contains("error_kind=\"hash_read\""),
-        "the record must carry the static error category:\n{logs}"
-    );
-    assert!(
-        records[0].contains(&format!("path=Some(\"{}\")", absolute.display())),
-        "the file must be named by its real path:\n{logs}"
-    );
-    assert!(
-        records[0].contains("Not a directory"),
-        "the OS cause must be logged:\n{logs}"
-    );
-}
-
-/// `ReconcileError::TimeBudgetExceeded` embeds a pre-formatted note naming
-/// the path being processed. The record carries the static kind, the real
-/// root and the note.
-#[test]
-fn honest_log_a_reconcile_budget_failure_logs_the_root_and_note() {
-    let root = std::path::Path::new("/home/private-user/secret-repo");
-    let note = "while processing src/private-name.rs";
-    let error =
-        super::SyncError::Reconcile(crate::sync::reconcile::ReconcileError::TimeBudgetExceeded {
-            path: format!(" {note}"),
-            elapsed_ms: 42,
-        });
-
-    let ((), logs) = crate::store::test_capture::capture_warns(|| {
-        tracing::warn!("capture liveness control for reconcile_budget");
-        crate::sync::manager_health_support::log_sync_failure(
-            "reconcile_budget",
-            root,
-            "incremental reconcile failed; marking watcher Desynced so next call re-verifies",
-            &error,
-        );
-    });
-
-    assert!(
-        logs.contains("capture liveness control for reconcile_budget"),
-        "the capture must see this thread's events, captured: {logs}"
-    );
-    let records = sync_failure_records(&logs, "reconcile_budget");
-    assert_eq!(records.len(), 1, "one failure is one record:\n{logs}");
-    assert!(
-        records[0].contains("error_kind=\"reconcile_budget_exceeded\""),
-        "the record must carry the static error category:\n{logs}"
-    );
-    assert!(
-        records[0].contains(&format!("path=Some(\"{note}\")")),
-        "the pending file note must be logged:\n{logs}"
-    );
-    assert!(
-        records[0].contains("root=/home/private-user/secret-repo"),
-        "the real root must be logged:\n{logs}"
     );
 }
 
@@ -320,7 +223,7 @@ fn a_missing_revision_warn_logs_the_real_database_path() {
     let connection = crate::store::open_read_write(&database).expect("open db");
 
     let (result, logs) = crate::store::test_capture::capture_warns(|| {
-        crate::sync::manager_health_support::revision_after_sync(&connection, &database)
+        crate::sync::manager_meta::revision_after_sync(&connection, &database)
     });
 
     assert!(result.is_err(), "no revision must surface as an error");

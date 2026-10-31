@@ -2,6 +2,7 @@
 //! stored layout of a match, the page cut applied while a stored page is read,
 //! and the response assembled from a served page.
 
+use super::language_notices::untested_language_notices;
 use super::page::{Completeness, Page, PageLimit};
 use super::paginate::{Served, decode_rows};
 use super::structure::stored::{CutFacts, PageCut, StoredMatch, StructureExtra};
@@ -212,6 +213,7 @@ pub(super) fn structure_response(
     };
     Ok(Json(StructureResponse {
         page,
+        notices: untested_language_notices([(extra.language.as_str(), None)]),
         language: extra.language,
         matches,
         files_not_scanned: extra.files_not_scanned,

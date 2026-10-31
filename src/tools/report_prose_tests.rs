@@ -69,3 +69,54 @@ fn a_freshly_enabled_project_reports_no_parser_failure_for_its_generated_gitigno
     assert!(response.parser_failure_files.is_empty());
     assert_eq!(response.completeness.prose_files_not_parsed, 1);
 }
+
+fn report_of(files: &[(&str, &[u8])]) -> ReportResponse {
+    let project = tempfile::tempdir().expect("project dir");
+    fs::create_dir_all(project.path().join(".planning").join("slugaudit")).expect("activate");
+    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"));
+    for (relative, content) in files {
+        fs::write(project.path().join(relative), content).expect("write fixture file");
+    }
+    report(
+        &Parameters(ReportRequest {
+            path: project.path().to_string_lossy().into_owned(),
+        }),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .expect("report succeeds")
+    .0
+}
+
+#[test]
+fn an_untested_language_is_flagged_and_gets_exactly_one_notice() {
+    let response = report_of(&[
+        ("lib.rs", b"pub fn a() {}\n"),
+        ("tool.py", b"def b():\n    return 1\n"),
+        ("NOTES.md", b"# notes\n"),
+    ]);
+
+    let tested: Vec<(&str, bool)> = response
+        .languages
+        .iter()
+        .map(|count| (count.language.as_str(), count.tested))
+        .collect();
+    assert_eq!(
+        tested,
+        [("prose", false), ("python", false), ("rust", true)]
+    );
+    assert_eq!(
+        response.notices,
+        [
+            "python: 1 file uses an untested grammar (downloaded on first use). \
+             Only Rust is tested; treat python results as best-effort."
+        ]
+    );
+}
+
+#[test]
+fn a_rust_only_project_has_no_notices() {
+    let response = report_of(&[("lib.rs", b"pub fn a() {}\n"), ("NOTES.md", b"# notes\n")]);
+
+    assert!(response.notices.is_empty(), "{:?}", response.notices);
+}

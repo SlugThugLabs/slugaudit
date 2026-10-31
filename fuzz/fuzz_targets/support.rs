@@ -1,9 +1,9 @@
 //! One synced project, built once per fuzz process.
 //!
 //! `structure` and `query` both resolve the active project and re-verify its
-//! index on every call (`tools::context::ensure_synced` → a stat sweep per
-//! call), so building the project inside the fuzz loop would measure the sync
-//! pipeline instead of the tool. The fixture is created on first use and
+//! index on every call (`tools::context::ensure_synced` → a full hash pass
+//! per call), so building the project inside the fuzz loop would measure the
+//! sync pipeline instead of the tool. The fixture is created on first use and
 //! reused for the rest of the run; every iteration then fuzzes only the
 //! request payload the tool actually owns.
 //!

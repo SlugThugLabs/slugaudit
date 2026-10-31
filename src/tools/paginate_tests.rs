@@ -141,7 +141,10 @@ fn paginate_without_a_cursor_syncs_once_and_serves_page_one() {
 
     let served = fresh(&manager, &path, 25, 10).expect("page one");
 
-    assert_eq!(manager.consecutive_full_publishes(), 1, "exactly one sync");
+    assert!(
+        manager.last_sync_unix_seconds() > 0,
+        "the fresh request synced the project"
+    );
     assert_eq!(numbers(&served), (0..10).collect::<Vec<_>>());
     assert_eq!(served.page.returned, 10);
     assert_eq!(served.page.total, Some(25));
@@ -158,12 +161,15 @@ fn paginate_continuations_cover_the_tail_without_syncing() {
     let manager = manager(ROOMY);
     let first = fresh(&manager, &path, 25, 10).expect("page one");
     let full = fresh(&manager, &path, 25, usize::MAX).expect("a full fetch");
-    let syncs = manager.consecutive_full_publishes();
 
     let second = next(&manager, TOOL, &cursor_of(&first), 10).expect("page two");
     let third = next(&manager, TOOL, &cursor_of(&second), 10).expect("page three");
 
-    assert_eq!(manager.consecutive_full_publishes(), syncs, "no sync");
+    assert_eq!(
+        second.page.revision_id, first.page.revision_id,
+        "a continuation serves the stored answer, not a new sync"
+    );
+    assert_eq!(third.page.revision_id, first.page.revision_id);
     let tail: Vec<i64> = numbers(&second)
         .into_iter()
         .chain(numbers(&third))

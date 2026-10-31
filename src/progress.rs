@@ -2,8 +2,8 @@
 //! MCP-aware server that turns them into `/notifications/progress`
 //! notifications.
 //!
-//! The sync layer must not depend on MCP per the layering rules
-//! ([ARCHITECTURE.md](../ARCHITECTURE.md)); it has, however, natural
+//! The sync layer must not depend on MCP per the layering rules; it has,
+//! however, natural
 //! progress points worth reporting to long-running tool calls
 //! (per-file sampling during a publish, and the start/completion of
 //! the ensure_current orchestration). [`ProgressSink`] is the
@@ -16,14 +16,14 @@
 //! Each variant carries a `phase: &'static str` so a stateful sink
 //! can route events by stage without matching on payload shape.
 //! `phase` is `'static` because the values are site-local string
-//! literals in `publish` and `reconcile` — keeping the enum a
+//! literals in `publish` — keeping the enum a
 //! single-screen summary.
 
 /// A progress event raised by the sync layer.
 ///
-/// `phase` is short, lowercase, and matches the diagram annotations
-/// in `ARCHITECTURE.md` (`ensuring_current`, `publishing`,
-/// `completed`). A consumer that wants to display progress
+/// `phase` is short, lowercase, and names the stage
+/// (`ensuring_current`, `publishing`, `completed`). A consumer that wants
+/// to display progress
 /// percentages only needs to count [`ProgressEvent::Sampling`]
 /// events scoped to the same phase name; intermediate
 /// `Started`/`Completed` flags are for sinks that drive a UI

@@ -242,7 +242,7 @@ fn rejects_an_unknown_mechanic_id() {
     assert!(message.contains("unwrap_calls"), "{message}");
 }
 
-/// The phase-3 contract: a mechanic with more rows than a page reports
+/// The paging contract: a mechanic with more rows than a page reports
 /// `complete: false` with `returned`/`total`, and the denominator is
 /// distinct files — the number a sweep can actually exhaust — not rows.
 #[test]

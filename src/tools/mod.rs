@@ -17,6 +17,7 @@ mod finding_sessions;
 mod health;
 mod health_phase;
 mod health_result_store;
+mod language_notices;
 mod leads;
 mod leads_compact;
 mod leads_covers;

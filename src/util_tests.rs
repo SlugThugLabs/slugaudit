@@ -3,10 +3,7 @@
 //! These are the helper-level `(any T)` tests for `lock_or_recover`:
 //! they exercise the helper on plain `Mutex<T>` types so any future
 //! caller can replace the panic-recovery pattern with the same helper
-//! without re-proving the helper's invariants. The WatchState-specific
-//! poison-recovery test (using `Mutex<ProjectWatchState>`) lives in
-//! `watch::state::tests` because it verifies the recovery in the context
-//! where the helper is actually used.
+//! without re-proving the helper's invariants.
 
 use crate::util::{
     CappedReadError, Style, at_least_timestamp, exceeds_input_bytes, hex_encode, lock_or_recover,
@@ -136,7 +133,7 @@ fn lock_or_recover_recovers_multiple_sequential_poisons() {
 
 /// The poison-recovery line must identify which state was recovered. An
 /// operator reading "a mutex was poisoned" without a label cannot tell
-/// whether the session id, the watch state, or the sampling throttle is
+/// whether the session id or the sampling throttle is
 /// suspect.
 #[test]
 fn lock_or_recover_logs_the_mutex_label_it_was_given() {
@@ -293,7 +290,7 @@ fn canonicalize_failure_falls_back_with_a_warning() {
     assert_eq!(result, missing, "the fallback is the path as given");
     assert!(
         logs.contains("could not canonicalize"),
-        "a silent watch-key fallback is what this helper exists to prevent:\n{logs}"
+        "a silent fallback to the unresolved path is what this helper exists to prevent:\n{logs}"
     );
 }
 

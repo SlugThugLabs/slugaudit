@@ -248,6 +248,11 @@ pub struct LeadsResponse {
     /// in `mechanic_counts`. `report`'s `mechanics.invalid` and `mechanic`
     /// action `list` name each one with its error.
     pub mechanics_invalid: usize,
+    /// One line per untested code language in the `covers` of the counted
+    /// mechanics (for a call naming one `mechanic`, that mechanic's `covers`):
+    /// only Rust is tested; other grammars are downloaded on first use and
+    /// their counts are best-effort. Empty when there is nothing to say.
+    pub notices: Vec<String>,
     /// Indexed files under the request's `pattern` with a detected language
     /// whose grammar did not run or did not finish, so the mechanics that
     /// read evidence saw them partly or not at all: content over

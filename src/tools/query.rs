@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=The query tool contract in one place: request/response shapes, validation order, statement validation and every refusal message, including the PRAGMA/authorizer refusals.
+// slugaudit-line-exception: approved-by=slugthug; reason=The query tool contract in one place: request/response shapes, validation order, statement validation and every refusal message, including the PRAGMA refusal.
 use super::page::{LegacyPaging, Page, PageLimit};
 use super::page_size::{self, PageSize};
 use super::paginate::page_request;
@@ -35,12 +35,13 @@ pub struct QueryRequest {
     /// CTEs, and window functions are fine. Only SELECT is accepted: the
     /// statement is wrapped in a subquery, so writes and other statement
     /// forms (PRAGMA, EXPLAIN, VACUUM, ...) are rejected by the wrapper.
-    /// There is no keyword blocklist or table allowlist, and the connection
-    /// itself is read-only as a second boundary. Its authorizer refuses
-    /// PRAGMA, ATTACH and DETACH; of the `pragma_*` table-valued functions
-    /// only schema introspection works (`pragma_table_info`,
+    /// There is no keyword blocklist or table allowlist: the statement is
+    /// wrapped as a subquery, and a kind the wrapper cannot express
+    /// (PRAGMA, ATTACH, a write, DDL) is refused before it runs. The
+    /// schema-introspection table functions (`pragma_table_info`,
     /// `pragma_table_xinfo`, `pragma_table_list`, `pragma_index_list`,
-    /// `pragma_index_info`, `pragma_index_xinfo`, `pragma_foreign_key_list`).
+    /// `pragma_index_info`, `pragma_index_xinfo`, `pragma_foreign_key_list`)
+    /// are ordinary SELECTs and work.
     /// Required unless `cursor` is given; ignored with a `cursor`.
     #[serde(default)]
     pub sql: String,
@@ -249,6 +250,17 @@ pub(super) fn single_statement_body(
     sql: &str,
     abort_reason: &Arc<AtomicU8>,
 ) -> Result<String, ErrorData> {
+    // Several PRAGMAs take effect while being *prepared* (the heap limits,
+    // `temp_store_directory`), so a PRAGMA is refused before the text
+    // reaches the parser. Every other non-SELECT kind has no prepare-time
+    // effect and is refused by the wrapper below.
+    if first_keyword_is_pragma(sql) {
+        return Err(ErrorData::invalid_params(
+            "sql was refused: `query` accepts a single read-only SELECT/WITH statement, \
+             not PRAGMA (a PRAGMA can change process state while being prepared)",
+            None,
+        ));
+    }
     let statement = tx.prepare(sql).map_err(|error| match error {
         rusqlite::Error::MultipleStatement => ErrorData::invalid_params(
             "sql contains more than one statement; \
@@ -267,6 +279,12 @@ pub(super) fn single_statement_body(
         .map(str::to_owned)
         .collect();
     ensure_unique_column_names(&column_names)?;
+    if !statement.readonly() {
+        return Err(ErrorData::invalid_params(
+            "sql was refused: `query` accepts a single read-only SELECT/WITH statement",
+            None,
+        ));
+    }
     let text = statement.expanded_sql().ok_or_else(|| {
         ErrorData::invalid_params("sql must contain a statement, not only comments", None)
     })?;
@@ -294,27 +312,9 @@ pub(super) fn refuse_wrapped(error: &rusqlite::Error, abort_reason: &Arc<AtomicU
 
 /// Converts an aborted-query error into a message naming which budget was
 /// hit, rather than surfacing SQLite's generic "interrupted" text as if it
-/// were always the step budget. An authorizer denial (PRAGMA, ATTACH,
-/// DETACH, at prepare time or from a `pragma_*` table function during the
-/// step) becomes the refusal that says what `query` accepts; SQLite's own
-/// error is kept in the message and logged here, once.
+/// were always the step budget. SQLite's own error is kept in the message
+/// and logged here, once.
 pub(super) fn describe_error(error: &rusqlite::Error, abort_reason: &Arc<AtomicU8>) -> ErrorData {
-    if error.sqlite_error_code() == Some(rusqlite::ErrorCode::AuthorizationForStatementDenied) {
-        // SQLite's text for this code is the static "not authorized"; the
-        // SQL itself is never logged.
-        tracing::info!(error = %error, "query refused by the read-only connection's authorizer");
-        return ErrorData::invalid_params(
-            format!(
-                "sql was refused: `query` accepts a single read-only SELECT/WITH statement. \
-                 The read-only connection does not authorize PRAGMA statements, ATTACH or \
-                 DETACH, and of the pragma table-valued functions only schema introspection \
-                 is allowed (pragma_table_info, pragma_table_xinfo, pragma_table_list, \
-                 pragma_index_list, pragma_index_info, pragma_index_xinfo, \
-                 pragma_foreign_key_list) (SQLite: {error})"
-            ),
-            None,
-        );
-    }
     match abort_reason.load(Ordering::Relaxed) {
         ABORT_STEP_BUDGET => ErrorData::invalid_params(
             format!("query exceeded its virtual-machine step budget: {error}"),
@@ -326,6 +326,40 @@ pub(super) fn describe_error(error: &rusqlite::Error, abort_reason: &Arc<AtomicU
         ),
         _ => ErrorData::invalid_params(error.to_string(), sqlite_error_payload(error)),
     }
+}
+
+/// True when `sql`'s first token, after leading whitespace and comments, is
+/// the `PRAGMA` keyword (case-insensitive).
+fn first_keyword_is_pragma(sql: &str) -> bool {
+    let bytes = sql.as_bytes();
+    let mut index = 0;
+    loop {
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if bytes[index..].starts_with(b"--") {
+            index += 2;
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+            continue;
+        }
+        if bytes[index..].starts_with(b"/*") {
+            match sql[index + 2..].find("*/") {
+                Some(offset) => {
+                    index += 2 + offset + 2;
+                    continue;
+                }
+                None => return false,
+            }
+        }
+        break;
+    }
+    let start = index;
+    while index < bytes.len() && bytes[index].is_ascii_alphabetic() {
+        index += 1;
+    }
+    sql[start..index].eq_ignore_ascii_case("pragma")
 }
 
 /// `sql_error` when SQLite itself failed to compile or run the statement;

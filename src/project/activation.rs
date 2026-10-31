@@ -5,7 +5,6 @@ pub(super) use super::gitignore::GITIGNORE_FILE;
 #[cfg(test)]
 use crate::util::MAX_FOREIGN_TEXT_BYTES;
 
-use super::activation_lock::acquire_database_lock;
 use super::database_path::{DATABASE_FILENAME, database_path};
 use super::root::{ProjectRoot, RootError};
 use std::path::{Path, PathBuf};
@@ -34,29 +33,6 @@ pub enum ActivationError {
     /// Filesystem work on the activation directory failed.
     #[error("failed to update the activation directory: {0}")]
     Io(#[from] std::io::Error),
-    /// A database operation failed while disabling the project.
-    #[error("database operation failed while disabling the project: {0}")]
-    Database(#[source] crate::store::StoreError),
-    /// Another connection appears to be using the database, so disabling
-    /// could not safely acquire it.
-    #[error(
-        "could not safely disable: another connection appears to be using the \
-         database ({0}). Wait for other SlugAudit tool calls to finish and retry."
-    )]
-    DatabaseBusy(#[source] rusqlite::Error),
-    /// Another connection still holds the database open, so its write-ahead
-    /// log could not be checkpointed.
-    #[error(
-        "could not safely disable: another connection still holds the database open, \
-         so its write-ahead log could not be checkpointed. Wait for other SlugAudit \
-         tool calls to finish and retry."
-    )]
-    CheckpointIncomplete,
-    /// The database opened but a lock/checkpoint statement failed for a
-    /// reason other than contention (for example `SQLITE_IOERR`); the text
-    /// carries the underlying SQLite error.
-    #[error("database operation failed while disabling the project: {0}")]
-    DatabaseOperation(#[source] rusqlite::Error),
 }
 
 /// The SlugAudit-owned runtime directory under a resolved user project:
@@ -203,7 +179,7 @@ const PRIVATE_DIR_MODE: u32 = 0o700;
 /// ends up with a world-readable copy of their own source. This is the one
 /// directory inside a user's project that SlugAudit owns, so it is created
 /// `0700` — and tightened when an earlier run (or a permissive umask) left it
-/// broader, matching the intent of the database file's own permission check.
+/// broader, matching the owner-only mode a new database file is created with.
 #[cfg(unix)]
 fn create_private_dir(path: &Path) -> Result<(), ActivationError> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -279,16 +255,14 @@ fn remove_owned(path: &Path) -> Result<bool, ActivationError> {
 
 /// Turns SlugAudit "off" for `root` by removing only what SlugAudit created
 /// in `.planning/slugaudit`: the database, its sidecars, the `results`
-/// directory and the config lock, removed while holding an exclusive database
-/// lock so no archive or stale SQLite copy is left behind. `config.json` and
-/// any other file stay; the directory is removed only if that leaves it
-/// empty. With `project.db` gone the project is inactive; `on` restores it
-/// from the kept `config.json`.
+/// directory and the config lock. `config.json` and any other file stay;
+/// the directory is removed only if that leaves it empty. With `project.db`
+/// gone the project is inactive; `on` rebuilds the index from source.
 ///
 /// A path that is already absent is not an error and is not reported as
 /// removed, so a second call on a clean directory reports nothing removed. A
-/// symlinked `project.db` is never followed: it is not a database of ours, so
-/// no lock is taken and the link itself is unlinked.
+/// symlinked `project.db` is never followed: it is not a database of ours,
+/// so the link itself is unlinked.
 ///
 /// `config.lock` is unlinked while another process may still hold a `flock`
 /// on it. That process keeps locking the unlinked inode, so a later writer
@@ -298,14 +272,12 @@ fn remove_owned(path: &Path) -> Result<bool, ActivationError> {
 /// # Errors
 ///
 /// Returns an error if a `.planning`/`.planning/slugaudit` component is a
-/// symlink (refuses to remove through one), if the database cannot be locked,
-/// or if any removal fails.
+/// symlink (refuses to remove through one), or if any removal fails.
 pub fn disable(root: &ProjectRoot) -> Result<DisableReport, ActivationError> {
     let activation = validated_activation_dir(root.as_path())?;
     if !activation.try_exists()? {
         return Ok(DisableReport::default());
     }
-    let database_lock = acquire_database_lock(root)?;
     let mut report = DisableReport::default();
     for name in OWNED_FILES {
         let path = activation.join(name);
@@ -317,7 +289,6 @@ pub fn disable(root: &ProjectRoot) -> Result<DisableReport, ActivationError> {
     if remove_owned(&results)? {
         report.removed.push(results);
     }
-    drop(database_lock);
     report.config_kept = activation.join(CONFIG_FILE).try_exists()?;
     match std::fs::remove_dir(&activation) {
         Ok(()) => report.removed.push(activation),

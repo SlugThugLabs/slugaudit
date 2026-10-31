@@ -18,7 +18,7 @@
 //! installed. That version was neither hermetic nor a test of slugaudit: what
 //! it verified depended on which clients happened to be on the machine, and
 //! `is_connected` executing the installed `codex` once rewrote the owner's
-//! `~/.codex/config.toml` during a run (`.planning/DEVIATIONS.md`). The fake
+//! `~/.codex/config.toml` during a run. The fake
 //! CLI removes both problems — it runs deterministically everywhere, with no
 //! skip, and it asserts the registration argv itself rather than a client's
 //! interpretation of it.

@@ -1,17 +1,8 @@
-//! Manifest comparison and aggregate-hash computation: what changed
-//! between a stored revision and current disk state ([`compare`]), and the
-//! single deterministic hash over a file set
-//! ([`compute_manifest_hash`]) that makes a no-op publish detectable
-//! without diffing every file.
+//! Manifest comparison: how a stored revision differs from current disk
+//! state ([`compare`]), plus the JSON path-set parameter shared by the
+//! set-based queries in sync.
 
-use crate::util::Deadline;
-use rusqlite::Connection;
-use std::collections::{BTreeMap, HashSet};
-
-use super::hash;
-use super::reconcile::ReconcileError;
-use super::revision;
-use super::revision_skipped::SkippedRecord;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// How a path differs between the walked tree and the stored revision.
@@ -87,121 +78,12 @@ pub(crate) const PATH_SET_SUBQUERY: &str = "SELECT value FROM json_each(?)";
 /// The whole array becomes ONE SQL parameter, so every caller must pass a
 /// bounded batch (4096 paths is the existing unit) rather than a set whose
 /// size scales with the project: an unbounded path set allocates and binds
-/// proportionally to it. Callers that already hold a caller-sized set split
-/// it and execute once per batch, as `reconcile::queries::query_existing_hashes`
-/// and `revision_support::invalidate_stale_findings` do.
+/// proportionally to it.
 pub(crate) fn paths_json_array<'a>(
     paths: impl IntoIterator<Item = &'a str>,
 ) -> Result<String, rusqlite::Error> {
     let paths: Vec<&str> = paths.into_iter().collect();
     serde_json::to_string(&paths).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
-}
-
-/// How many stored rows [`compute_manifest_hash`] reads per query. The
-/// exclusion set (upserts + deletions + skipped) can be as large as the
-/// project's file count — `max_total_import_bytes` bounds bytes, not the
-/// number of (e.g. empty) files — so neither one JSON parameter for the
-/// whole set nor one unpaged read may allocate proportionally to it. Paging
-/// bounds each query, and the shared sync deadline is checked between pages.
-const STORED_ROW_BATCH: i64 = 4096;
-
-/// Computes the aggregate manifest hash from a post-update file set:
-/// existing DB state, updated with upserts and skipped records, minus
-/// deletions. The skipped records matter twice: their paths stay in the set
-/// (a skipped file is on disk and must not be hashed out of existence), and
-/// a refreshed stat identity must replace the stored one or the hash would
-/// describe a row the transaction is about to overwrite.
-///
-/// Stored rows are read in bounded pages and filtered in memory against the
-/// exclusion set; the deadline is checked before every page, so a spent sync
-/// budget fails here — before any write — rather than after one unbounded
-/// allocation. The caller's publish is the only writer, and it re-checks the
-/// CAS baseline inside its transaction, so this read never has to span one.
-///
-/// `ReconcileError` is the error type because this runs only inside the
-/// reconcile commit and its budget failure must keep the typed
-/// `TimeBudgetExceeded` variant the caller maps to `sync_budget_exhausted`.
-pub(crate) fn compute_manifest_hash(
-    connection: &Connection,
-    upserts: &[revision::FileRecord],
-    deletions: &[String],
-    skipped: &[SkippedRecord],
-    deadline: &Deadline,
-) -> Result<String, ReconcileError> {
-    hash_with_batch(
-        connection,
-        upserts,
-        deletions,
-        skipped,
-        deadline,
-        STORED_ROW_BATCH,
-    )
-}
-
-/// [`compute_manifest_hash`] with an injectable stored-row page size, so the
-/// multi-page path is testable without a `STORED_ROW_BATCH`-row fixture.
-///
-/// Chunked `NOT IN` would be wrong: a per-chunk `NOT IN` query returns rows
-/// belonging to other chunks, so the chunks would need quadratic
-/// re-querying or a temp table. Filtering the already-materialized upsert /
-/// deletion / skipped slices in memory is exact, and the read it replaces
-/// returned every kept row anyway. Keyset pagination (`id > last_id`) is
-/// `O(rows)` in total, unlike `LIMIT/OFFSET`, which rescans from the start
-/// for every page; the deadline is checked before each page.
-pub(super) fn hash_with_batch(
-    connection: &Connection,
-    upserts: &[revision::FileRecord],
-    deletions: &[String],
-    skipped: &[SkippedRecord],
-    deadline: &Deadline,
-    batch_size: i64,
-) -> Result<String, ReconcileError> {
-    let excluded: HashSet<&str> = upserts
-        .iter()
-        .map(|record| record.relative_path.as_str())
-        .chain(deletions.iter().map(String::as_str))
-        .chain(skipped.iter().map(|record| record.relative_path.as_str()))
-        .collect();
-    let mut current_refs = BTreeMap::new();
-    let mut statement = connection
-        .prepare("SELECT id, path, content_hash FROM files WHERE id > ?1 ORDER BY id LIMIT ?2")?;
-    let mut after_id = 0_i64;
-    loop {
-        if let Some(elapsed) = deadline.exceeded() {
-            return Err(ReconcileError::TimeBudgetExceeded {
-                path: " while computing the manifest hash".to_owned(),
-                elapsed_ms: elapsed.as_millis(),
-            });
-        }
-        let page: Vec<(i64, String, String)> = statement
-            .query_map(rusqlite::params![after_id, batch_size], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?
-            .collect::<Result<_, _>>()?;
-        let Some(last) = page.last() else {
-            break;
-        };
-        after_id = last.0;
-        for (_, path, content_hash) in page {
-            if !excluded.contains(path.as_str()) {
-                current_refs.insert(path, content_hash);
-            }
-        }
-    }
-    let overlays = upserts
-        .iter()
-        .map(|record| (&record.relative_path, &record.identity.content_hash))
-        .chain(
-            skipped
-                .iter()
-                .map(|record| (&record.relative_path, &record.identity.content_hash)),
-        );
-    for (path, content_hash) in overlays {
-        current_refs.insert(path.clone(), content_hash.clone());
-    }
-    Ok(hash::aggregate_manifest_hash(
-        current_refs.iter().map(|(k, v)| (k.as_str(), v.as_str())),
-    ))
 }
 
 #[cfg(test)]

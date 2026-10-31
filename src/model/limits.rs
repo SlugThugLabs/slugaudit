@@ -96,7 +96,7 @@ pub struct ResourceLimits {
     /// **work budget**, not a process memory bound: peak memory also includes
     /// in-flight samples, evidence payloads, and parse transients, so a tree
     /// can fit this budget and still exceed available RAM. A separate memory
-    /// bound is a pending architectural decision (PLAN/DECISIONS 2026-10-19).
+    /// bound is not implemented.
     /// Env: `SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES` (u64).
     pub max_total_import_bytes: u64,
     /// Cap on serialized JSON bytes returned by one read call — the rows of
@@ -147,10 +147,9 @@ pub struct ResourceLimits {
     /// aborted mid-query rather than only after it returns.
     /// Env: `SLUGAUDIT_MAX_STRUCTURE_EXECUTION_TIME_SECS` (seconds, u64).
     pub max_structure_execution_time: Duration,
-    /// Wall-clock budget for one sync operation — a full publish (including
-    /// all CAS retries) or one barrier-sync reconcile pass (including all
-    /// barrier iterations). Enforced cooperatively inside the hot loops
-    /// (per discovered file, per dirty path, per barrier iteration), so a
+    /// Wall-clock budget for one sync operation — a full publish, including
+    /// every retry. Enforced cooperatively inside the hot loops (per
+    /// discovered file, per sampled file, per verified row), so a
     /// pathological repo (huge tree, hung network filesystem) fails closed
     /// with a `TimeBudgetExceeded` error instead of stalling the tool call
     /// indefinitely. Generous by default — the measured baseline for a
@@ -158,22 +157,6 @@ pub struct ResourceLimits {
     /// not be cut off; this bounds hangs, not real work.
     /// Env: `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS` (seconds, u64).
     pub max_sync_wall_clock: Duration,
-    /// Largest number of filesystem entries one watch-scope walk may yield.
-    /// The scope decides how many directories carry a `notify` watch, so
-    /// every counted entry is one potential kernel watch descriptor plus the
-    /// path set's per-directory memory; bounding the walk bounds both. A tree
-    /// past the cap produces a partial scope: the directories beyond it are
-    /// unwatched, the scope reports the limit (`WatcherHealth::Partial`), and
-    /// the stat sweep still runs on every call, so freshness does not depend
-    /// on the cap. Env: `SLUGAUDIT_MAX_WATCH_ENTRIES` (usize).
-    pub max_watch_entries: usize,
-    /// Deepest directory level one watch-scope walk may descend, with the
-    /// project root at depth 0. Bounds a pathologically deep tree that the
-    /// entry cap alone would let the walk explore deeply before stopping; a
-    /// directory at the limit with unwalked children also marks the scope
-    /// partial, and the per-call stat sweep remains the freshness guarantee
-    /// for the unwatched subtrees. Env: `SLUGAUDIT_MAX_WATCH_DEPTH` (usize).
-    pub max_watch_depth: usize,
     /// Total on-disk bytes of paged results the result store keeps. A new
     /// result that does not fit reclaims delivered results, then idle ones,
     /// never active ones; one that still does not fit is refused with
@@ -258,7 +241,7 @@ impl ResourceLimits {
         apply_import_overrides(&mut limits)?;
         apply_query_overrides(&mut limits)?;
         apply_structure_overrides(&mut limits)?;
-        apply_sync_and_watch_overrides(&mut limits)?;
+        apply_sync_overrides(&mut limits)?;
         // The store budget follows the effective response ceiling (after the
         // env override above) unless its own variable sets it below.
         limits.max_result_store_bytes =
@@ -335,16 +318,10 @@ fn apply_structure_overrides(limits: &mut ResourceLimits) -> Result<(), EnvConfi
     Ok(())
 }
 
-/// Applies the sync budget and watch-scope walk overrides.
-fn apply_sync_and_watch_overrides(limits: &mut ResourceLimits) -> Result<(), EnvConfigError> {
+/// Applies the sync-budget override.
+fn apply_sync_overrides(limits: &mut ResourceLimits) -> Result<(), EnvConfigError> {
     if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS")? {
         limits.max_sync_wall_clock = Duration::from_secs(val);
-    }
-    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_WATCH_ENTRIES")? {
-        limits.max_watch_entries = val;
-    }
-    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_WATCH_DEPTH")? {
-        limits.max_watch_depth = val;
     }
     Ok(())
 }

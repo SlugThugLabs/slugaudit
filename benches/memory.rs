@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Peak-memory benchmark (Task 9.2 last unmeasured row).
+//! Peak-memory benchmark.
 //!
 //! "Memory, 200-file fixture" was an unmeasured budget because no bench
 //! recorded peak RSS. This bench runs the full `SourceSyncManager` sync

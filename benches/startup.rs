@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Startup latency benchmark (Task 9.2 last unmeasured row).
+//! Startup latency benchmark.
 //!
 //! "Ready for first tool call" means a process start followed by a full
 //! MCP `initialize` round-trip against the just-spawned binary — the

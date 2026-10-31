@@ -94,9 +94,7 @@ fn store_error_kind(error: &StoreError) -> &'static str {
         StoreError::Symlink => "symlink",
         StoreError::Missing => "missing",
         StoreError::Inspect(_) => "inspect",
+        StoreError::Create(_) => "create",
         StoreError::WalUnavailable { .. } => "wal_unavailable",
-        StoreError::Permissions(_) => "permissions",
-        StoreError::NetworkFilesystem => "network_filesystem",
-        StoreError::NetworkFilesystemCheck(_) => "network_filesystem_check",
     }
 }

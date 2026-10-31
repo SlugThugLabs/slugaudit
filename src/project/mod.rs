@@ -6,7 +6,6 @@
 //! the AI via the `project_control` MCP tool (`src/tools/project_control.rs`), not via any CLI command.
 
 mod activation;
-mod activation_lock;
 mod config;
 mod config_cleanup;
 mod config_store;

@@ -72,7 +72,7 @@ fn collect(
 /// Files the repo's test-module conventions declare: a sibling suite
 /// (`*_tests.rs`), the `tests.rs` shorthand, or a shared test fixture
 /// (`test_support.rs`, `proptest.rs`). Mirrors `check_source_limits`'s
-/// classifier, extended with the fixture names `AGENTS.md` documents.
+/// classifier, extended with the shared fixture names above.
 fn is_test_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())

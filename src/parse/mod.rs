@@ -4,7 +4,10 @@ pub(crate) mod budget;
 pub(crate) mod fetch_gate;
 mod language;
 
-pub use language::{PROSE_LANGUAGE, detect_language, is_prose_language_name, language_available};
+pub use language::{
+    PROSE_LANGUAGE, TESTED_LANGUAGES, detect_language, is_prose_language_name, is_tested_language,
+    language_available,
+};
 
 /// The pinned `tree-sitter-language-pack` version, recorded with every
 /// revision so a pack upgrade is visible as a manifest input, not a silent

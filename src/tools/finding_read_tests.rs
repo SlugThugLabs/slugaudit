@@ -121,7 +121,7 @@ fn finding_persists_and_is_readable() {
 
         // Open read-only to verify the row is in the DB before going
         // through finding_read (which calls ensure_synced and the session-start marking).
-        let conn = store::open_read_only(&db_path(&project)).expect("open db");
+        let conn = store::open_existing(&db_path(&project)).expect("open db");
         let count: i64 = conn
             .query_row("SELECT count(*) FROM findings", [], |r| r.get(0))
             .expect("count");
@@ -152,7 +152,7 @@ fn file_filter_returns_only_that_file() {
         write_finding(&project, "a.rs", "a finding", &manager);
         write_finding(&project, "b.rs", "b finding", &manager);
 
-        let conn = store::open_read_only(&db_path(&project)).expect("open db");
+        let conn = store::open_existing(&db_path(&project)).expect("open db");
         let count: i64 = conn
             .query_row("SELECT count(*) FROM findings", [], |r| r.get(0))
             .expect("count");

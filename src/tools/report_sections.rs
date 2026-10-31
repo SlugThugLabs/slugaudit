@@ -6,6 +6,7 @@
 //! not at all. The counts are evidence only — no score, no ranking, and no
 //! claim about what any number means.
 
+use super::language_notices::untested_language_notices;
 use super::report::{
     DependencyEdgeTotals, EvidenceKindCount, ImportResolutionCount, LanguageCount,
     ParserFailureFile, ReportMechanics, ReportResponse,
@@ -66,6 +67,12 @@ pub(super) fn build_report(
         revision_id,
         file_count: scope.file_count,
         completeness: scope.completeness,
+        notices: untested_language_notices(
+            scope
+                .languages
+                .iter()
+                .map(|count| (count.language.as_str(), Some(count.file_count))),
+        ),
         languages: scope.languages,
         evidence_counts: scope.evidence_counts,
         parser_failure_count: scope.parser_failure_count,
@@ -89,9 +96,9 @@ pub(super) fn build_report(
 fn read_scope_sections(connection: &Transaction<'_>) -> Result<ScopeSections, rusqlite::Error> {
     let file_count = scalar_count(connection, "SELECT count(*) FROM files")?;
     // The index cannot hold a non-UTF-8 path, so sync persists the set of
-    // them in `unrepresentable_paths` (refreshed by every full discovery
-    // and every incremental stat sweep); the count is a plain index read,
-    // never a filesystem walk on this read path.
+    // them in `unrepresentable_paths` (refreshed by every full discovery);
+    // the count is a plain index read, never a filesystem walk on this read
+    // path.
     let unrepresentable_path_count =
         scalar_count(connection, "SELECT count(*) FROM unrepresentable_paths")?;
     let completeness = build_completeness(connection, unrepresentable_path_count)?;
@@ -136,7 +143,7 @@ fn read_graph_sections(connection: &Transaction<'_>) -> Result<GraphSections, ru
     // `unsupported_language_unresolved_count`. The verdict is cached on
     // each edge at write time (`revision_edges::resolve_and_store` sets
     // `syntax_unmodeled`), so this is a plain SQL count — never a per-edge
-    // re-extraction per report call (C11).
+    // re-extraction per report call.
     let unsupported_language_unresolved_count = scalar_count(
         connection,
         "SELECT count(*) FROM dependency_edges \
@@ -174,8 +181,10 @@ fn grouped_language_counts(
     )?;
     let languages = language_statement
         .query_map([], |row| {
+            let language: String = row.get(0)?;
             Ok(LanguageCount {
-                language: row.get(0)?,
+                tested: crate::parse::is_tested_language(&language),
+                language,
                 file_count: row.get(1)?,
             })
         })?

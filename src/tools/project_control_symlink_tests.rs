@@ -1,5 +1,5 @@
-//! `project_control` against a symlinked `project.db` (never followed) and the
-//! watcher's lifetime across a refused `off`.
+//! `project_control` against a symlinked `project.db` (never followed) and
+//! that `off` removes the database even while a reader holds a snapshot.
 
 use super::*;
 use std::fs;
@@ -115,28 +115,21 @@ fn off_unlinks_a_symlinked_project_db_without_following_it() {
     );
 }
 
-/// A refused `off` (the database is busy) leaves the project active, so its
-/// watcher must still be registered; a successful retry then removes it.
+/// `off` removes the database even while another process holds a read
+/// snapshot: the index is scratch, so no lock or checkpoint is required.
 #[test]
-fn a_refused_off_keeps_the_watcher_and_a_later_off_removes_it() {
+fn off_removes_the_database_even_while_a_reader_holds_a_wal_snapshot() {
     let project = tempfile::tempdir().expect("project dir");
     fs::create_dir_all(project.path().join("src")).expect("create src dir");
     fs::write(project.path().join("src/lib.rs"), b"pub fn a() {}\n").expect("write source");
     let path = project.path().to_string_lossy().into_owned();
-    let manager = sync::SourceSyncManager::with_watcher();
+    let manager = sync::SourceSyncManager::new();
     project_control(
         &request(&path, ProjectControlAction::On),
         &crate::progress::NoopProgressSink,
         Some(&manager),
     )
     .expect("on");
-    manager
-        .ensure_current(&path, &crate::progress::NoopProgressSink)
-        .expect("sync registers the watcher");
-    assert!(
-        manager.watch_state_for(project.path()).is_some(),
-        "the project is watched while active"
-    );
     let database = project.path().join(".planning/slugaudit/project.db");
     let writer = store::open_read_write(&database).expect("open writer");
     writer
@@ -148,37 +141,14 @@ fn a_refused_off_keeps_the_watcher_and_a_later_off_removes_it() {
         .query_row("SELECT count(*) FROM wal_probe", [], |row| row.get(0))
         .expect("pin a read snapshot");
 
-    let error = project_control(
-        &request(&path, ProjectControlAction::Off),
-        &crate::progress::NoopProgressSink,
-        Some(&manager),
-    )
-    .err()
-    .expect("off is refused while a reader pins the WAL");
-
-    assert!(
-        error
-            .message
-            .starts_with("disable: could not safely disable"),
-        "{}",
-        error.message
-    );
-    assert!(database.exists(), "the project is still active");
-    assert!(
-        manager.watch_state_for(project.path()).is_some(),
-        "a refused off must not drop the watcher"
-    );
-
-    drop(reader);
-    drop(writer);
     project_control(
         &request(&path, ProjectControlAction::Off),
         &crate::progress::NoopProgressSink,
         Some(&manager),
     )
-    .expect("off succeeds once the reader is gone");
-    assert!(
-        manager.watch_state_for(project.path()).is_none(),
-        "a successful off removes the watcher"
-    );
+    .expect("off removes the file regardless of the reader");
+
+    assert!(!database.exists(), "the database is removed");
+    drop(reader);
+    drop(writer);
 }

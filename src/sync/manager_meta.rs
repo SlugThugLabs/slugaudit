@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=the project-metadata row, the session-start stale marking, the revision read and the publish error mapping form one cohesive helper set
 //! Project-metadata helpers used by `SourceSyncManager`.
 //!
 //! Split out from `manager.rs` so the sync orchestrator's hot path is
@@ -54,12 +55,8 @@ pub(crate) fn mark_prior_session_findings_stale(
 }
 
 /// Returns the `revision_id` of the current revision, or `None` if no
-/// revision has been published yet.
-///
-/// Used by both `ensure_current` (after a healthy/incremental pass)
-/// and `reconcile` (to detect concurrent publish/revoke and report a
-/// stale-baseline error). Kept here because both call sites need
-/// identical SQL against identical schema.
+/// revision has been published yet. `ensure_current` reads it after every
+/// sync, so a successful pass always names the revision it converged on.
 pub(crate) fn current_revision_id(
     connection: &Connection,
 ) -> Result<Option<String>, rusqlite::Error> {
@@ -73,6 +70,35 @@ pub(crate) fn current_revision_id(
 }
 
 /// Errors from verifying a project's metadata row.
+/// Reads the revision id the database holds after a sync. Every field is
+/// present or the call errors with a named reason — a successful sync that
+/// cannot name its revision is a bug an operator must be able to see.
+pub(crate) fn revision_after_sync(
+    connection: &Connection,
+    database_path: &Path,
+) -> Result<String, ErrorData> {
+    current_revision_id(connection)
+        .map_err(|error| {
+            tracing::warn!(
+                path = %database_path.display(),
+                error = %error,
+                "failed to read the current revision",
+            );
+            ErrorData::internal_error(format!("reading the current revision: {error}"), None)
+        })?
+        .ok_or_else(|| {
+            tracing::warn!(
+                path = %database_path.display(),
+                "no current revision found after sync",
+            );
+            ErrorData::internal_error(
+                "no current revision found after sync — this is unexpected; \
+                 try disabling and re-enabling the project",
+                None,
+            )
+        })
+}
+
 #[derive(Debug)]
 pub(crate) enum ProjectMetaError {
     /// The database at this path was built by a newer/incompatible

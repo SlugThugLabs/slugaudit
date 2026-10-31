@@ -69,9 +69,9 @@ pub fn hash_file(
 /// (an existence row for a skipped file — see
 /// [`crate::sync::revision_skipped`]). Hashes the path with the file's size
 /// and mtime instead of its bytes, so identity costs one `stat` rather than
-/// a full read — the read is exactly what skipping avoids. The price is the
-/// stat sweep's documented blind spot: same size and same mtime means the
-/// same identity even if the bytes changed.
+/// a full read — the read is exactly what skipping avoids. The accepted
+/// price: same size and same mtime means the same identity even if the
+/// bytes changed.
 #[must_use]
 pub(super) fn stat_identity(
     relative_path: &str,

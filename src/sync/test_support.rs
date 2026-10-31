@@ -40,7 +40,7 @@ pub(crate) fn create_project() -> TempDir {
 
 /// A tempdir project, a tempdir db, and a connection carrying an initial
 /// publish of `a.rs`/`b.rs`. Returns the baseline revision id so the
-/// reconcile suites can assert against it.
+/// publish suites can assert against it.
 pub(crate) fn setup_project() -> (TempDir, TempDir, Connection, String) {
     let project = tempfile::tempdir().expect("project dir");
     let db_dir = tempfile::tempdir().expect("db dir");
@@ -71,23 +71,4 @@ pub(crate) fn stored_paths(connection: &Connection) -> Vec<String> {
         .expect("query")
         .collect::<Result<_, _>>()
         .expect("collect")
-}
-
-/// A manually advanced monotonic clock.
-#[derive(Clone)]
-pub(crate) struct TestClock(std::sync::Arc<std::sync::Mutex<std::time::Instant>>);
-
-impl TestClock {
-    pub(crate) fn new() -> Self {
-        Self(std::sync::Arc::new(std::sync::Mutex::new(
-            std::time::Instant::now(),
-        )))
-    }
-    pub(crate) fn advance(&self, by: std::time::Duration) {
-        *self.0.lock().expect("clock lock") += by;
-    }
-    pub(crate) fn reader(&self) -> std::sync::Arc<dyn Fn() -> std::time::Instant + Send + Sync> {
-        let inner = std::sync::Arc::clone(&self.0);
-        std::sync::Arc::new(move || *inner.lock().expect("clock lock"))
-    }
 }

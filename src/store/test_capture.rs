@@ -4,7 +4,7 @@
 //! assert on the formatted text without depending on `tracing-test`'s
 //! procedural attribute.
 //!
-//! Shared by `connection::tests` and `netfs::tests`. `#[cfg(test)]`-only so
+//! Shared by `connection::tests` and the other store and sync tests. `#[cfg(test)]`-only so
 //! nothing in this file is reachable from production code paths.
 
 use std::io;

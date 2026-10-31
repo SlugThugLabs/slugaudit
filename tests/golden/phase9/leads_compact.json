@@ -1,160 +1,162 @@
 {
   "case": "leads_compact",
   "request": {
-    "compact": true,
-    "limit": 8,
     "mechanic": null,
-    "offset": null
+    "limit": 8,
+    "cursor": null,
+    "compact": true
   },
   "response": {
-    "files_covered": 2,
-    "files_not_parsed": 0,
-    "files_total": 3,
+    "page": {
+      "returned": 8,
+      "total": 18,
+      "complete": false,
+      "cursor": "v1.b44ff69c-fd63-45d4-8db4-bc1e6d11a14b.98259d3b-0b7c-46fa-b020-ea61364d6002.8",
+      "completeness": "complete",
+      "page_bytes": 65536,
+      "bytes_used": 424,
+      "limited_by": "limit",
+      "revision_id": "<REVISION_ID>"
+    },
     "mechanic_counts": [
       {
-        "count": 12,
-        "covers": [
-          "rust"
-        ],
-        "files": 3,
         "mechanic": "unwrap_calls",
+        "source": "builtin",
         "note": null,
-        "source": "builtin"
-      },
-      {
-        "count": 3,
+        "count": 12,
+        "files": 3,
         "covers": [
           "rust"
-        ],
-        "files": 3,
+        ]
+      },
+      {
         "mechanic": "expect_calls",
+        "source": "builtin",
         "note": null,
-        "source": "builtin"
-      },
-      {
-        "count": 0,
-        "covers": [
-          "rust"
-        ],
-        "files": 0,
-        "mechanic": "panic_calls",
-        "note": null,
-        "source": "builtin"
-      },
-      {
-        "count": 0,
-        "covers": [
-          "rust"
-        ],
-        "files": 0,
-        "mechanic": "todo_calls",
-        "note": null,
-        "source": "builtin"
-      },
-      {
-        "count": 0,
-        "covers": [
-          "rust"
-        ],
-        "files": 0,
-        "mechanic": "assert_calls",
-        "note": null,
-        "source": "builtin"
-      },
-      {
-        "count": 0,
-        "covers": [
-          "rust"
-        ],
-        "files": 0,
-        "mechanic": "diagnostics",
-        "note": null,
-        "source": "builtin"
-      },
-      {
         "count": 3,
+        "files": 3,
         "covers": [
           "rust"
-        ],
-        "files": 3,
-        "mechanic": "comment_markers",
-        "note": null,
-        "source": "builtin"
+        ]
       },
       {
+        "mechanic": "panic_calls",
+        "source": "builtin",
+        "note": null,
         "count": 0,
+        "files": 0,
         "covers": [
           "rust"
-        ],
-        "files": 0,
-        "mechanic": "credential_files",
+        ]
+      },
+      {
+        "mechanic": "todo_calls",
+        "source": "builtin",
         "note": null,
-        "source": "builtin"
+        "count": 0,
+        "files": 0,
+        "covers": [
+          "rust"
+        ]
+      },
+      {
+        "mechanic": "assert_calls",
+        "source": "builtin",
+        "note": null,
+        "count": 0,
+        "files": 0,
+        "covers": [
+          "rust"
+        ]
+      },
+      {
+        "mechanic": "diagnostics",
+        "source": "builtin",
+        "note": null,
+        "count": 0,
+        "files": 0,
+        "covers": [
+          "rust"
+        ]
+      },
+      {
+        "mechanic": "comment_markers",
+        "source": "builtin",
+        "note": null,
+        "count": 3,
+        "files": 3,
+        "covers": [
+          "rust"
+        ]
+      },
+      {
+        "mechanic": "credential_files",
+        "source": "builtin",
+        "note": null,
+        "count": 0,
+        "files": 0,
+        "covers": [
+          "rust"
+        ]
       }
     ],
     "mechanics_invalid": 0,
-    "oversized_row": false,
-    "page": {
-      "bytes_used": 424,
-      "complete": false,
-      "limited_by": "limit",
-      "next_offset": 8,
-      "page_bytes": 65536,
-      "returned": 8,
-      "revision_id": "<REVISION_ID>",
-      "total": 18
-    },
-    "page_file_counts": [
-      {
-        "count": 4,
-        "file": "mod0.rs"
-      },
-      {
-        "count": 4,
-        "file": "mod1.rs"
-      }
-    ],
+    "notices": [],
+    "files_not_parsed": 0,
     "rows": [
       {
+        "mechanic": "unwrap_calls",
         "file": "mod0.rs",
-        "line": 1,
-        "mechanic": "unwrap_calls"
+        "line": 1
       },
       {
+        "mechanic": "unwrap_calls",
         "file": "mod0.rs",
-        "line": 2,
-        "mechanic": "unwrap_calls"
+        "line": 2
       },
       {
+        "mechanic": "unwrap_calls",
         "file": "mod0.rs",
-        "line": 3,
-        "mechanic": "unwrap_calls"
+        "line": 3
       },
       {
+        "mechanic": "unwrap_calls",
         "file": "mod0.rs",
-        "line": 4,
-        "mechanic": "unwrap_calls"
+        "line": 4
       },
       {
+        "mechanic": "unwrap_calls",
         "file": "mod1.rs",
-        "line": 1,
-        "mechanic": "unwrap_calls"
+        "line": 1
       },
       {
+        "mechanic": "unwrap_calls",
         "file": "mod1.rs",
-        "line": 2,
-        "mechanic": "unwrap_calls"
+        "line": 2
       },
       {
+        "mechanic": "unwrap_calls",
         "file": "mod1.rs",
-        "line": 3,
-        "mechanic": "unwrap_calls"
+        "line": 3
       },
       {
+        "mechanic": "unwrap_calls",
         "file": "mod1.rs",
-        "line": 4,
-        "mechanic": "unwrap_calls"
+        "line": 4
       }
-    ]
+    ],
+    "files_total": 3,
+    "files_covered": 2,
+    "page_file_counts": [
+      {
+        "file": "mod0.rs",
+        "count": 4
+      },
+      {
+        "file": "mod1.rs",
+        "count": 4
+      }
+    ],
+    "oversized_row": false
   }
 }

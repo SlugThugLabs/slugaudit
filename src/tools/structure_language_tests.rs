@@ -101,3 +101,39 @@ fn an_indexed_language_still_runs_its_project_wide_query() {
     let names: Vec<&str> = response.matches.iter().map(|m| m.text.as_str()).collect();
     assert_eq!(names, ["a"]);
 }
+
+#[test]
+fn an_untested_language_query_carries_one_notice() {
+    let project = project_with(&[
+        ("lib.rs", b"pub fn a() {}\n"),
+        ("tool.py", b"def b():\n    return 1\n"),
+    ]);
+
+    let response = ask_language(
+        &project,
+        "python",
+        "(function_definition name: (identifier) @name)",
+    )
+    .expect("an indexed language runs");
+
+    assert_eq!(
+        response.notices,
+        [
+            "python: uses an untested grammar (downloaded on first use). \
+             Only Rust is tested; treat python results as best-effort."
+        ]
+    );
+}
+
+#[test]
+fn a_rust_query_carries_no_notice() {
+    let project = project_with(&[
+        ("lib.rs", b"pub fn a() {}\n"),
+        ("tool.py", b"def b():\n    return 1\n"),
+    ]);
+
+    let response = ask_language(&project, "rust", "(function_item name: (identifier) @name)")
+        .expect("an indexed language runs");
+
+    assert!(response.notices.is_empty(), "{:?}", response.notices);
+}

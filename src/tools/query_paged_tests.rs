@@ -1,6 +1,6 @@
 //! `query` on the result store: the whole result is stored once, every page
 //! comes from the stored copy, and an edit between pages changes nothing the
-//! reader sees. The golden fixtures of Phase 9.0 pin the visible output.
+//! reader sees. The golden fixtures under `tests/golden/phase9` pin the visible output.
 use super::*;
 use crate::sync::SourceSyncManager;
 use crate::tools::golden_phase9_support::fixture_dir;

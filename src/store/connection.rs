@@ -1,21 +1,22 @@
-//! Database connection open and refusal contract: the read-write and
-//! read-only entry points, plus `StoreError` and corrupt-database discard.
-//! The inspection, permission, and pragma guards they call live in
-//! [`super::connection_guards`].
+//! Database connection open contract: one writer path and one read-mode path.
+//!
+//! The database is runtime scratch: callers delete and rebuild it on any
+//! doubt, so there is no trust boundary around the file, no authored SQL
+//! authorizer, and no permission policing. Safety stays: a symlink at the
+//! database path is refused (opening through it would write to some other
+//! file), a new file is created owner-only, and the writer requires WAL.
 
 use super::connection_guards::{
-    BUSY_TIMEOUT, configure, create_with_private_permissions_if_missing, guard_against_attach,
-    guard_read_only, open_flags, reject_insecure_permissions, reject_symlink, resolve_parent_dir,
+    BUSY_TIMEOUT, configure, create_with_private_permissions_if_missing, open_flags,
+    reject_symlink, resolve_parent_dir,
 };
-use super::netfs::reject_network_filesystem;
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 /// Database-boundary failures. Corruption is recoverable (callers discard and
-/// rebuild); guard rejections — symlink, network filesystem, group-readable
-/// mode — are deliberate refusals that name the offending path.
+/// rebuild); a symlink at the database path is a deliberate refusal.
 pub enum StoreError {
     /// Opening or creating the database file failed.
     #[error("failed to open database: {0}")]
@@ -43,6 +44,9 @@ pub enum StoreError {
     /// The database path could not be inspected with `lstat`.
     #[error("failed to inspect the database path (lstat): {0}")]
     Inspect(#[source] std::io::Error),
+    /// Creating the database file failed.
+    #[error("failed to create the database file: {0}")]
+    Create(#[source] std::io::Error),
     /// SQLite did not enable WAL journal mode, which every read-write
     /// connection requires.
     #[error(
@@ -53,30 +57,6 @@ pub enum StoreError {
         /// The journal mode SQLite enabled instead of WAL.
         granted: String,
     },
-    /// Applying private file permissions to the database failed.
-    #[error("failed to set database file permissions: {0}")]
-    Permissions(#[source] std::io::Error),
-    /// The database path is on a network filesystem (NFS/CIFS/SMB), where
-    /// SQLite WAL mode is unreliable.
-    #[error(
-        "refusing to open a database on a network filesystem (NFS/CIFS/SMB): \
-         SQLite WAL mode is unreliable on network mounts and can produce locking \
-         corruption, stale reads, or SQLITE_BUSY/SQLITE_IOERR errors. \
-         Move the project to a local filesystem, or deactivate and re-enable \
-         SlugAudit after relocating it."
-    )]
-    NetworkFilesystem,
-    /// Whether the database is on a network filesystem could not be
-    /// determined, so opening fails closed rather than risk SQLite
-    /// corruption.
-    #[error(
-        "could not verify whether the database is on a network filesystem \
-         (inspection failed: {0}); refusing to open rather than risk SQLite \
-         corruption on a network mount — move the project to a local \
-         filesystem. The check calls fstatfs on the database directory. This \
-         is not a permissions problem an individual user can work around"
-    )]
-    NetworkFilesystemCheck(#[source] std::io::Error),
 }
 
 impl StoreError {
@@ -91,10 +71,8 @@ impl StoreError {
             | Self::Missing
             | Self::Busy(_)
             | Self::Inspect(_)
-            | Self::WalUnavailable { .. }
-            | Self::Permissions(_)
-            | Self::NetworkFilesystem
-            | Self::NetworkFilesystemCheck(_) => false,
+            | Self::Create(_)
+            | Self::WalUnavailable { .. } => false,
         }
     }
 }
@@ -138,10 +116,8 @@ enum CreateMode {
 /// # Errors
 ///
 /// Returns an error if the file can't be opened/created, if pragmas can't
-/// be applied, if the schema can't be migrated to the current version
-/// (including when the database is from a newer, unsupported version), or
-/// if the database path resides on a network filesystem (NFS/CIFS/SMB)
-/// where SQLite WAL mode is unreliable.
+/// be applied, or if the schema can't be migrated to the current version
+/// (including when the database is from a newer, unsupported version).
 pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
     open_read_write_with(path, CreateMode::MayCreate)
 }
@@ -165,13 +141,11 @@ fn open_read_write_with(path: &Path, mode: CreateMode) -> Result<Connection, Sto
         ensure_present(path)?;
     }
     reject_symlink(path)?;
-    reject_network_filesystem(path)?;
     let mut flags = open_flags(true);
     match mode {
         CreateMode::MayCreate => create_with_private_permissions_if_missing(path)?,
         CreateMode::MustExist => flags.remove(OpenFlags::SQLITE_OPEN_CREATE),
     }
-    reject_insecure_permissions(path)?;
     let mut connection = match Connection::open_with_flags(path, flags) {
         Ok(connection) => connection,
         Err(error) => {
@@ -182,7 +156,6 @@ fn open_read_write_with(path: &Path, mode: CreateMode) -> Result<Connection, Sto
         }
     };
     configure(&connection)?;
-    guard_against_attach(&connection);
     super::sql_functions::register(&connection).map_err(StoreError::Configure)?;
     super::migrations::ensure_current_schema(&mut connection)?;
     Ok(connection)
@@ -206,25 +179,19 @@ fn ensure_present(path: &Path) -> Result<(), StoreError> {
     }
 }
 
-/// Opens a connection that cannot write no matter what SQL it executes.
-/// This is the safety boundary for the `query` tool: correctness comes from
-/// the connection itself, never from inspecting query text. Requires an
-/// already-migrated database; it never creates or alters the schema. Its
-/// authorizer denies ATTACH/DETACH and every PRAGMA except schema
-/// introspection, at prepare time, before a pragma can take effect.
+/// Opens an existing database for reading. The connection uses SQLite's
+/// read-only flag so a read path cannot mutate the index or run schema
+/// migrations; the flag is a connection mode, not a trust boundary — the
+/// index is disposable and the caller owns the machine.
 ///
 /// # Errors
 ///
 /// Returns an error if the file doesn't exist or can't be opened read-only,
-/// if the busy timeout can't be configured, or if the database path resides
-/// on a network filesystem (NFS/CIFS/SMB) where SQLite WAL mode is
-/// unreliable.
-pub fn open_read_only(path: &Path) -> Result<Connection, StoreError> {
+/// or if the busy timeout can't be configured.
+pub fn open_existing(path: &Path) -> Result<Connection, StoreError> {
     let resolved = resolve_parent_dir(path);
     let path = resolved.as_path();
     reject_symlink(path)?;
-    reject_network_filesystem(path)?;
-    reject_insecure_permissions(path)?;
     let connection =
         Connection::open_with_flags(path, open_flags(false)).map_err(StoreError::Open)?;
     // `sqlite3_busy_timeout` and `sqlite3_create_function_v2` fail only on
@@ -236,14 +203,9 @@ pub fn open_read_only(path: &Path) -> Result<Connection, StoreError> {
     connection
         .busy_timeout(BUSY_TIMEOUT)
         .map_err(StoreError::Configure)?;
-    guard_read_only(&connection);
     super::sql_functions::register(&connection).map_err(StoreError::Configure)?;
     Ok(connection)
 }
-
-#[cfg(test)]
-#[path = "connection_guard_tests.rs"]
-mod guard_tests;
 
 #[cfg(test)]
 #[path = "connection_tests.rs"]

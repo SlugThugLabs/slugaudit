@@ -322,7 +322,7 @@ fn a_walk_error_is_returned_with_the_failing_subdirectory_not_the_root() {
 
     match error {
         DiscoveryError::Walk(error) => assert_eq!(
-            crate::watch::errors::ignore_error_path(&error),
+            crate::ignore_rules::ignore_error_path(&error),
             Some(failing.as_path()),
             "the failure must name the directory the walker could not read"
         ),

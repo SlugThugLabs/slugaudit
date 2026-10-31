@@ -6,9 +6,9 @@
 
 //! Producer-coverage gate.
 //!
-//! Phase 1 found `ExtractionCompleteness::ContentOnly` never constructed and
-//! three `EvidenceKind` variants with no producer at all; Phase 3 deleted the
-//! dead kinds ad hoc, which fixes today's instances but not the class. This
+//! An earlier audit found `ExtractionCompleteness::ContentOnly` never constructed and
+//! three `EvidenceKind` variants with no producer at all; the
+//! dead kinds were deleted ad hoc, which fixes today's instances but not the class. This
 //! gate makes the class mechanical: **every `EvidenceKind` variant has at
 //! least one producer, and every `ExtractionCompleteness` variant is
 //! reachable.**

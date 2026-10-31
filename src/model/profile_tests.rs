@@ -100,19 +100,6 @@ fn fail_closed_explicit_lean_and_audit_need_no_memory_detection() {
 }
 
 #[test]
-fn watch_scope_caps_are_bounded_per_profile() {
-    let lean = limits_for_profile(AuditProfile::Lean).expect("profile limits");
-    assert_eq!(lean.max_watch_entries, 50_000);
-    assert_eq!(lean.max_watch_depth, 32);
-
-    for profile in [AuditProfile::Audit, AuditProfile::Adaptive] {
-        let limits = limits_for_profile(profile).expect("profile limits");
-        assert_eq!(limits.max_watch_entries, 200_000, "{profile:?}");
-        assert_eq!(limits.max_watch_depth, 64, "{profile:?}");
-    }
-}
-
-#[test]
 fn adaptive_file_and_query_caps_never_exceed_sqlite_max() {
     let limits = limits_for_profile(AuditProfile::Adaptive).expect("profile limits");
 

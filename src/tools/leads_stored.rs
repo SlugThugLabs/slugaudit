@@ -138,6 +138,7 @@ pub(super) struct StoredCount {
 pub(super) struct Extras {
     pub(super) counts: Vec<StoredCount>,
     pub(super) mechanics_invalid: usize,
+    pub(super) notices: Vec<String>,
     pub(super) files_not_parsed: i64,
     /// Distinct files across every stored row; `0` for a counts-only call.
     pub(super) files_total: i64,

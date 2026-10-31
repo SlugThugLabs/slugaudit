@@ -8,7 +8,7 @@ use crate::sync::test_support::{stored_paths, write};
 use std::fs;
 
 #[test]
-fn invalid_utf8_is_recorded_as_evidence_not_silently_swallowed() {
+fn invalid_utf8_is_recorded_as_a_skipped_file_not_a_lossy_copy() {
     let project = tempfile::tempdir().expect("project dir");
     // 0xFF is never valid as a UTF-8 lead byte.
     write(
@@ -19,7 +19,7 @@ fn invalid_utf8_is_recorded_as_evidence_not_silently_swallowed() {
     let db_dir = tempfile::tempdir().expect("db dir");
     let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
 
-    publish(
+    let report = publish(
         &mut connection,
         project.path(),
         "1.0.0",
@@ -27,37 +27,29 @@ fn invalid_utf8_is_recorded_as_evidence_not_silently_swallowed() {
     )
     .expect("publish");
 
-    // The pack may also produce its own syntax-error diagnostic for this
-    // file, so check that an encoding-specific one exists among possibly
-    // several Diagnostic rows, rather than assuming there's only one.
-    let mut statement = connection
-        .prepare(
-            "SELECT json_extract(e.payload, '$.message') FROM evidence e \
-             JOIN files f ON f.id = e.file_id \
-             WHERE f.path = 'garbled.txt' AND e.kind = 'Diagnostic'",
-        )
-        .expect("prepare");
-    let messages: Vec<String> = statement
-        .query_map([], |row| row.get(0))
-        .expect("query")
-        .collect::<Result<_, _>>()
-        .expect("collect");
-    assert!(
-        messages.iter().any(|message| message.contains("UTF-8")),
-        "expected an encoding diagnostic among {messages:?}"
-    );
-
-    let content: String = connection
+    assert_eq!(report.skipped.len(), 1, "the non-UTF-8 file is reported");
+    let (kind, reason, content): (String, Option<String>, Option<String>) = connection
         .query_row(
-            "SELECT content FROM files WHERE path = 'garbled.txt'",
+            "SELECT file_kind, skip_reason, content FROM files WHERE path = 'garbled.txt'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("read the skipped row");
+    assert_eq!(kind, "skipped");
+    assert_eq!(reason.as_deref(), Some("not_utf8"));
+    assert_eq!(
+        content, None,
+        "a lossy copy would break the rule that content hashes to its stored hash"
+    );
+    let evidence: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM evidence e JOIN files f ON f.id = e.file_id \
+             WHERE f.path = 'garbled.txt'",
             [],
             |row| row.get(0),
         )
-        .expect("read content");
-    assert!(
-        content.contains('\u{FFFD}'),
-        "content should contain the replacement character"
-    );
+        .expect("count evidence");
+    assert_eq!(evidence, 0, "no evidence for content nobody retained");
 }
 
 #[test]
@@ -438,33 +430,28 @@ mod publish_attempt_skip_logging {
     use crate::sync::revision_skipped::SKIP_REASON_STAT_FAILED;
     use std::collections::{BTreeMap, HashSet};
 
-    fn skipped(path: std::path::PathBuf) -> discovery::SkippedFile {
+    fn skipped(path: std::path::PathBuf, code: &'static str) -> discovery::SkippedFile {
         discovery::SkippedFile {
             absolute_path: path,
             reason: "read failed".to_owned(),
+            code,
         }
     }
 
     #[test]
     fn a_stat_failed_skip_logs_exactly_one_warn_line() {
         let root = tempfile::tempdir().expect("tempdir");
-        let files = [skipped(root.path().join("vanished.rs"))];
+        let files = [skipped(root.path().join("vanished.rs"), "unreadable")];
         let mut paths = HashSet::new();
         let mut records = BTreeMap::new();
 
         let (_, logs) = capture_warns(|| {
-            collect_skipped(
-                root.path(),
-                &files,
-                "once-probe-stat-failed",
-                &mut paths,
-                &mut records,
-            );
+            collect_skipped(root.path(), &files, &mut paths, &mut records);
         });
 
         let lines = logs
             .lines()
-            .filter(|line| line.contains("once-probe-stat-failed"))
+            .filter(|line| line.contains("stat failed for a skipped file"))
             .count();
         assert_eq!(lines, 1, "one warn per stat-failed skip: {logs}");
         assert_eq!(records["vanished.rs"].reason, SKIP_REASON_STAT_FAILED);
@@ -476,25 +463,19 @@ mod publish_attempt_skip_logging {
         let root = tempfile::tempdir().expect("tempdir");
         let present = root.path().join("present.rs");
         std::fs::write(&present, b"fn a() {}").expect("write file");
-        let files = [skipped(present)];
+        let files = [skipped(present, "unreadable")];
         let mut paths = HashSet::new();
         let mut records = BTreeMap::new();
 
         let (_, logs) = capture_warns(|| {
-            collect_skipped(
-                root.path(),
-                &files,
-                "once-probe-stat-ok",
-                &mut paths,
-                &mut records,
-            );
+            collect_skipped(root.path(), &files, &mut paths, &mut records);
         });
 
         let lines = logs
             .lines()
-            .filter(|line| line.contains("once-probe-stat-ok"))
+            .filter(|line| line.contains("skipped file during unreadable"))
             .count();
         assert_eq!(lines, 1, "{logs}");
-        assert_eq!(records["present.rs"].reason, "once-probe-stat-ok");
+        assert_eq!(records["present.rs"].reason, "unreadable");
     }
 }

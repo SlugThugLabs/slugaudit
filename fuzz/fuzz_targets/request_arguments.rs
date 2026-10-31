@@ -8,11 +8,11 @@
 //! SlugAuditServer::new().serve(stdio()).await?.waiting().await?
 //! ```
 //!
-//! `rmcp 3.1.4` owns framing, the newline-delimited JSON reader, request-id
+//! `rmcp` owns framing, the newline-delimited JSON reader, request-id
 //! correlation, and method dispatch; the repository contributes no byte-level
-//! parser anywhere on that path (the only `BufRead::read_line` calls in `src/`
-//! are `menu.rs`'s and `install.rs`'s interactive prompts, which never run
-//! under `serve`). Fuzzing "JSON-RPC frame parsing" as written would therefore
+//! parser anywhere on that path (the only `BufRead::read_line` call in `src/`
+//! is `prompt.rs`'s interactive prompt reader, which never runs under
+//! `serve`). Fuzzing "JSON-RPC frame parsing" as written would therefore
 //! be fuzzing rmcp, which this target deliberately does not do — a defect found
 //! in a dependency's parser belongs upstream, and reporting it as this
 //! repository's would be a false finding.

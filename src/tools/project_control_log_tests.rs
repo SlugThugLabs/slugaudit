@@ -1,11 +1,11 @@
 //! Log-record tests for the `project_control` enable path: the corrupt
-//! database discard WARN names the real database path (P4 real-path policy).
+//! database discard WARN names the real database path.
 
 use super::*;
 use std::fs;
 
 /// The enable-path corrupt-database discard WARN names the real database
-/// path and the raw source error (P4 real-path policy), not a redacted id.
+/// path and the raw source error, not a redacted id.
 #[test]
 fn on_action_corrupt_database_discard_warn_logs_the_real_path() {
     let project = tempfile::tempdir().expect("project dir");
@@ -15,14 +15,6 @@ fn on_action_corrupt_database_discard_warn_logs_the_real_path() {
     let database = activation.join("project.db");
     fs::create_dir_all(&activation).expect("db dir");
     fs::write(&database, vec![0xA5_u8; 4096]).expect("write a corrupt database");
-    // Owner-only so the permission guard passes and the failure is the
-    // corruption itself, not the file mode.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&database, fs::Permissions::from_mode(0o600))
-            .expect("restrict the corrupt database to owner-only");
-    }
     let expected_path = database.display().to_string();
 
     let (result, logs) = crate::store::test_capture::capture_warns(|| {

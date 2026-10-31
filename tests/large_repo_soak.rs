@@ -29,8 +29,7 @@
 //!   is still instrumented, so a soak-only file would land in
 //!   `check_coverage`'s `--all-targets` report as a hundred-odd uncovered
 //!   lines, pressing on a gate whose threshold was deliberately set to the
-//!   measured coverage (the 2026-08-12 recalibration in
-//!   `.planning/archive/DECISIONS.md`).
+//!   measured coverage (the 2026-08-12 recalibration).
 //! - `a_ten_thousand_file_project_syncs_inside_the_default_wall_clock_budget`
 //!   is the soak itself and is `#[ignore]`d.
 //!
@@ -74,11 +73,11 @@ use std::time::Instant;
 
 use slugaudit_mcp_rust::model::{AuditProfile, limits_for_profile, process_limits};
 use slugaudit_mcp_rust::progress::NoopProgressSink;
-use slugaudit_mcp_rust::store::open_read_only;
+use slugaudit_mcp_rust::store::open_existing;
 use slugaudit_mcp_rust::sync::SourceSyncManager;
 use tempfile::TempDir;
 
-/// Files the soak project contains. The plan's target is "~10k".
+/// Files the soak project contains. The target is "~10k".
 const SOAK_FILES: usize = 10_000;
 
 /// Files the default-suite companion project contains: enough to walk,
@@ -161,7 +160,7 @@ fn stored_paths(connection: &rusqlite::Connection) -> Vec<String> {
 }
 
 /// Builds the fixture, syncs it through `SourceSyncManager::ensure_current`,
-/// and asserts the three things the plan asks for: the sync completed, it
+/// and asserts three things: the sync completed, it
 /// stayed inside `max_sync_wall_clock`, and the index covers the whole file
 /// set (row count, file kinds, parse outcomes, and the exact path set).
 fn sync_synthetic_project(files: usize, directories: usize) {
@@ -196,7 +195,7 @@ fn sync_synthetic_project(files: usize, directories: usize) {
         "sync of {files} files completed in {elapsed:?}, outside the {budget:?} budget"
     );
 
-    let connection = open_read_only(&synced.database_path).expect("open the published database");
+    let connection = open_existing(&synced.database_path).expect("open the published database");
     assert_eq!(
         count(&connection, "SELECT COUNT(*) FROM files"),
         files,

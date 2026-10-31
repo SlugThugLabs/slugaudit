@@ -348,18 +348,13 @@ fn recover_corrupt_database(path: &std::path::Path) -> Result<rusqlite::Connecti
 }
 
 /// `off` never touches `.gitignore` — removing a rule can unhide paths
-/// SlugAudit knows nothing about, and the backlog item only asks for `on`.
+/// SlugAudit knows nothing about, and only `on` has a reason to add one.
 /// Every response from here therefore omits the `gitignore` field.
 fn disable(
     root: &ProjectRoot,
-    manager: Option<&sync::SourceSyncManager>,
+    _manager: Option<&sync::SourceSyncManager>,
 ) -> Result<Json<ProjectControlResponse>, ErrorData> {
-    // Unwatch only once the project is actually off: a failed (busy) disable
-    // leaves the project active, and it must keep its watcher.
     let report = project::disable(root).map_err(|e| err(format!("disable: {e}")))?;
-    if let Some(m) = manager {
-        m.unwatch(root.as_path());
-    }
     // Nothing removed means the project was already off (no database, no
     // results directory, no lock), whether or not `config.json` is still there.
     let status = if report.removed.is_empty() {

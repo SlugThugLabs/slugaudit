@@ -8,6 +8,17 @@ use tree_sitter_language_pack::{detect_language_from_path, has_language};
 /// or a file with no detected language (`language IS NULL`).
 pub const PROSE_LANGUAGE: &str = "prose";
 
+/// The languages whose parsing and extraction this project's tests cover.
+/// Every other pack language still parses (its grammar is downloaded on first
+/// use) but is untested, so its results are best-effort.
+pub const TESTED_LANGUAGES: &[&str] = &["rust"];
+
+/// True when `language` is one of [`TESTED_LANGUAGES`].
+#[must_use]
+pub fn is_tested_language(language: &str) -> bool {
+    TESTED_LANGUAGES.contains(&language)
+}
+
 /// Extensions (lowercase, no dot) that are prose rather than source or data.
 const PROSE_EXTENSIONS: [&str; 9] = [
     "md", "markdown", "mdx", "rst", "adoc", "asciidoc", "org", "txt", "text",
@@ -82,6 +93,14 @@ pub fn language_available(language: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_rust_is_a_tested_language() {
+        assert_eq!(TESTED_LANGUAGES, ["rust"]);
+        assert!(is_tested_language("rust"));
+        assert!(!is_tested_language("python"));
+        assert!(!is_tested_language(PROSE_LANGUAGE));
+    }
 
     #[test]
     fn prose_extensions_classify_as_prose_and_data_or_source_stay_parsed() {

@@ -47,7 +47,7 @@ pub enum ProjectLimitsError {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectConfig {
-    /// Desired audit resource profile (`default`, `audit`, or `lean`).
+    /// Desired audit resource profile (`lean`, `audit`, or `adaptive`).
     #[serde(default)]
     pub profile: Option<AuditProfile>,
     /// Maximum individual file size in bytes to index. `0` is refused with a

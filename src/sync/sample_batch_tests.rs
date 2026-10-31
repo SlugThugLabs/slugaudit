@@ -33,7 +33,14 @@ fn a_result_that_cannot_be_delivered_aborts_the_run_with_the_file_named() {
     let (tx, rx) = std::sync::mpsc::channel::<(usize, Outcome)>();
     drop(rx);
 
-    let delivered = batch.deliver(&tx, 0, Err("skipped".to_owned()));
+    let delivered = batch.deliver(
+        &tx,
+        0,
+        Err(SkipReason {
+            message: "skipped".to_owned(),
+            code: "unreadable",
+        }),
+    );
 
     assert!(!delivered, "a closed channel must stop the worker");
     let recorded = lock_or_recover(&batch.error_slot, "sample_batch_error_slot").take();
@@ -54,7 +61,14 @@ fn a_delivery_at_the_end_of_the_discovered_set_fails_with_the_index_error() {
     let batch = one_file_batch(&discovered, &limits, &deadline, discovered.len());
     let (tx, _rx) = std::sync::mpsc::channel::<(usize, Outcome)>();
 
-    let delivered = batch.deliver(&tx, discovered.len(), Err("skipped".to_owned()));
+    let delivered = batch.deliver(
+        &tx,
+        discovered.len(),
+        Err(SkipReason {
+            message: "skipped".to_owned(),
+            code: "unreadable",
+        }),
+    );
 
     assert!(!delivered, "an out-of-range index must stop the worker");
     let recorded = lock_or_recover(&batch.error_slot, "sample_batch_error_slot").take();
@@ -78,8 +92,14 @@ fn a_channel_result_with_an_out_of_range_index_fails_the_run() {
     let deadline = Deadline::after(std::time::Duration::from_secs(60));
     let batch = one_file_batch(&discovered, &limits, &deadline, discovered.len());
     let (tx, rx) = std::sync::mpsc::channel::<(usize, Outcome)>();
-    tx.send((discovered.len(), Err("skipped".to_owned())))
-        .expect("send the out-of-range result");
+    tx.send((
+        discovered.len(),
+        Err(SkipReason {
+            message: "skipped".to_owned(),
+            code: "unreadable",
+        }),
+    ))
+    .expect("send the out-of-range result");
     drop(tx);
 
     let error = batch

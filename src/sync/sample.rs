@@ -3,14 +3,13 @@ use super::analyze::analyze;
 use super::discovery::{DiscoveredFile, FileKind};
 use super::hash;
 use super::revision::FileRecord;
-use super::revision_skipped::{SKIP_REASON_OVERSIZE, SKIP_REASON_STAT_FAILED, SkippedRecord};
+use super::revision_skipped::{SKIP_REASON_STAT_FAILED, SkippedRecord};
 use crate::model::{
     EvidenceItem, EvidenceKind, EvidenceOrigin, ExtractionCompleteness, ResourceLimits,
     SourceIdentity, SpanAvailability,
 };
 use crate::util::{self, Deadline};
 use serde_json::json;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
@@ -48,25 +47,28 @@ pub enum SampleError {
         observed: u64,
         limit: u64,
     },
+    /// The file's bytes are not valid UTF-8, so its exact content cannot be
+    /// stored; it becomes a skipped existence row instead of a lossy copy.
+    #[error("{path} is not valid UTF-8; recorded as a skipped file")]
+    NotUtf8 {
+        /// Absolute path of the non-UTF-8 file.
+        path: PathBuf,
+    },
 }
 
 /// One discovered file's on-disk state: content, hash, and whatever it
-/// takes to classify it (binary vs. text, and whether reading it as text
-/// required lossy UTF-8 conversion).
+/// takes to classify it (binary vs. text; text that is not valid UTF-8 is an error,
+/// not a converted copy).
 #[derive(Debug)]
 pub(super) struct Sample {
     pub relative_path: String,
     pub is_binary: bool,
     pub content: Option<String>,
-    /// True when `content` required lossy UTF-8 conversion (invalid byte
-    /// sequences replaced with U+FFFD). Recorded as evidence rather than
-    /// silently accepted — see `to_file_record`.
-    utf8_lossy: bool,
     pub identity: SourceIdentity,
     pub byte_len: u64,
     /// File mtime in unix seconds, captured from the same stat that
-    /// enforced the size ceiling. Persisted so the sync sweep can detect
-    /// changes with one stat instead of a full read+hash.
+    /// enforced the size ceiling. Persisted for reporting only; changes are
+    /// detected by content hash, never by mtime.
     pub modified_unix_seconds: Option<i64>,
 }
 
@@ -110,12 +112,19 @@ pub(super) fn sample_file(
     )?;
 
     let is_binary = file.kind == FileKind::Binary;
-    let (content, utf8_lossy) = if is_binary {
-        (None, false)
+    let content = if is_binary {
+        None
     } else {
         match std::str::from_utf8(&bytes) {
-            Ok(text) => (Some(text.to_owned()), false),
-            Err(_) => (Some(String::from_utf8_lossy(&bytes).into_owned()), true),
+            Ok(text) => Some(text.to_owned()),
+            // Stored content must be byte-exact: a lossy re-encoding would
+            // no longer hash to the file's identity, so the file is skipped
+            // with a reason instead of stored wrong.
+            Err(_) => {
+                return Err(SampleError::NotUtf8 {
+                    path: file.absolute_path.clone(),
+                });
+            }
         }
     };
     Ok(Sample {
@@ -124,7 +133,6 @@ pub(super) fn sample_file(
         byte_len: bytes.len() as u64,
         identity: hash::hash_bytes(&file.relative_path, &bytes),
         content,
-        utf8_lossy,
         modified_unix_seconds: util::mtime_unix_seconds(&metadata),
     })
 }
@@ -168,41 +176,9 @@ pub(super) fn skipped_record(
     }
 }
 
-/// Builds the existence row for a dirty path over the import ceiling, and
-/// records it only when the stored row does not already carry the same stat
-/// identity — a watcher event on an unchanged oversize file must not churn a
-/// revision. Compared against the hashes already read for the dirty set
-/// rather than a fresh query.
-pub(super) fn push_skipped_record(
-    records: &mut Vec<SkippedRecord>,
-    existing_hashes: &HashMap<String, String>,
-    path: &str,
-    absolute_path: &Path,
-) {
-    let record = skipped_record(path, absolute_path, SKIP_REASON_OVERSIZE);
-    if existing_hashes.get(path) != Some(&record.identity.content_hash) {
-        records.push(record);
-    }
-}
-
-fn utf8_lossy_evidence() -> EvidenceItem {
-    EvidenceItem {
-        key: "encoding:0".to_owned(),
-        kind: EvidenceKind::Diagnostic,
-        origin: EvidenceOrigin::SourceContent,
-        span: SpanAvailability::DerivedEvidence,
-        payload: json!({
-            "message": "file contains invalid UTF-8 byte sequences; replaced with U+FFFD during indexing",
-            "severity": "warning",
-        }),
-    }
-}
-
 /// Runs pack analysis on a sampled file and folds the result into a
-/// storable `FileRecord`, appending an encoding diagnostic when the
-/// content required lossy UTF-8 conversion and capping evidence to
-/// `limits.evidence`. The file's parses run within what is left of the
-/// sync `deadline`.
+/// storable `FileRecord`, capping evidence to `limits.evidence`. The file's
+/// parses run within what is left of the sync `deadline`.
 pub(super) fn to_file_record(
     sample: Sample,
     limits: &ResourceLimits,
@@ -216,9 +192,6 @@ pub(super) fn to_file_record(
         Duration::from_millis(limits.max_parse_wall_clock_ms),
         deadline,
     );
-    if sample.utf8_lossy {
-        parsed.evidence.push(utf8_lossy_evidence());
-    }
     // `analyze` decides completeness from the pack's own diagnostics, before
     // the evidence caps run. A run it called `Full` whose items are then
     // discarded by the caps must not be stored as `Full` beside the "records

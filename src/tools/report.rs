@@ -34,9 +34,9 @@ pub struct FileClassCount {
 /// Row count for one recorded skip reason.
 pub struct SkipReasonCount {
     /// A short stable code from `files.skip_reason`: `oversize` (over the
-    /// per-file import ceiling), `unreadable` (the read failed) or
-    /// `stat_failed` (the stat failed, so `files.byte_len` is NULL: size
-    /// unknown, not 0). Empty when a skipped row carries no recorded reason.
+    /// per-file import ceiling), `not_utf8` (the bytes are not valid UTF-8),
+    /// `unreadable` (the read failed) or `stat_failed` (the stat failed, so
+    /// `files.byte_len` is NULL: size unknown, not 0). Empty when a skipped row carries no recorded reason.
     pub reason: String,
     /// Number of skipped `files` rows with this `reason`.
     pub count: i64,
@@ -93,9 +93,9 @@ pub struct CompletenessEnvelope {
     /// Discovered files whose project-relative path is not valid UTF-8, so
     /// no `files` row can represent them and they cannot be stored, skipped
     /// or named in this report. Sync persists this set during every full
-    /// discovery and refreshes it from every incremental stat sweep, so the
-    /// count is read from the index rather than from a walk run for this
-    /// report. It is project-level — describing the tree as of the sync that
+    /// discovery, so the count is read from the index rather than from a
+    /// walk run for this report. It is project-level — describing the tree
+    /// as of the sync that
     /// produced this report, not a particular revision — and is included in
     /// `index_partial`.
     pub unrepresentable_path_count: i64,
@@ -195,6 +195,9 @@ pub struct ReportRequest {
 pub struct LanguageCount {
     pub language: String,
     pub file_count: i64,
+    /// Whether this project's tests cover the language (only Rust). An
+    /// untested language is parsed best-effort and has a line in `notices`.
+    pub tested: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -270,6 +273,10 @@ pub struct ReportResponse {
     /// language and ordered by language name. Rows with no detected language
     /// are not listed.
     pub languages: Vec<LanguageCount>,
+    /// One line per untested code language in `languages` (prose is not one):
+    /// its grammar is downloaded on first use and only Rust is tested, so its
+    /// results are best-effort. Empty when there is nothing to say.
+    pub notices: Vec<String>,
     /// Evidence rows by `kind` across the current revision, ordered by kind.
     pub evidence_counts: Vec<EvidenceKindCount>,
     /// Indexed files whose parser was unavailable or whose parse failed — the

@@ -266,11 +266,10 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
         b"pub fn a() { changed(); }\n",
     )
     .expect("modify source");
-    // The server's watcher delivers modify events asynchronously; poll the
-    // revision count instead of sleeping a fixed amount, so a slow CI
-    // machine can't turn a correct test into a flaky one. Each call that
-    // sees no pending event is a no-op sync; once the event lands, the
-    // reconcile publishes revision 2 (and invalidates the finding).
+    // The next tool call hashes the tree, sees the change, and publishes
+    // revision 2 (invalidating the finding). Poll the revision count
+    // instead of sleeping a fixed amount, so a slow CI machine can't turn
+    // a correct test into a flaky one.
     let mut revision_count: i64 = 1;
     for _ in 0..10 {
         let sync_result = server.tool_json(

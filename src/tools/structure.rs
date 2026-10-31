@@ -115,6 +115,10 @@ pub struct StructureResponse {
     pub page: Page,
     /// The grammar this query ran against.
     pub language: String,
+    /// One line when `language` is untested (only Rust is tested; other
+    /// grammars are downloaded on first use and their results are
+    /// best-effort); empty otherwise.
+    pub notices: Vec<String>,
     /// This page's matches in scan order. The first match is always returned,
     /// so paging always advances.
     pub matches: Vec<StructureMatch>,

@@ -10,7 +10,8 @@
 //! containing Rust tokens *outside* comments, strings, char literals,
 //! and raw-string literals per file under `src/`. Production files at
 //! 0–199 lines auto-pass; 200–300 requires a `slugaudit-line-exception:`
-//! justification comment with `approved-by=slugthug; reason=...`; ≥300 is a
+//! justification comment with `approved-by=slugthug; reason=...`; 301–350
+//! requires a dated human approval (`approved-by=human-user`); above 350 is a
 //! hard failure. Test files (`*_tests.rs`, `tests.rs`) enumerate one
 //! named behavior per `#[test]` — repetition that cannot be DRY'd without
 //! losing failure diagnostics — so they auto-pass up to 500 lines; >500

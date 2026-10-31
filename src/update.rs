@@ -24,8 +24,8 @@
 //! - The displaced binary is retained as `slugaudit.prev` beside the new one
 //!   (copied before the rename, so the atomicity above still holds and the copy
 //!   comes from a complete file). An update that turns out to be worse than the
-//!   version it replaced can therefore be undone without a download — see
-//!   `docs/TROUBLESHOOTING.md`. The copy is overwritten by the next install or
+//!   version it replaced can therefore be undone without a download. The copy
+//!   is overwritten by the next install or
 //!   update, and nothing else reads it.
 
 use std::path::{Path, PathBuf};

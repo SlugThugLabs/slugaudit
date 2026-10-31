@@ -127,3 +127,30 @@ fn covers_follows_the_pattern_and_keeps_both_call_languages_sorted() {
     );
     assert_eq!(entry(&rust_only, "unwrap_calls").covers, ["rust"]);
 }
+
+#[test]
+fn leads_notices_the_untested_languages_the_counts_cover() {
+    let project = python_project();
+    fs::write(project.path().join("lib.rs"), "pub fn a() {}\n").expect("write rust source");
+
+    let response = run(request(project.path(), None));
+
+    assert_eq!(
+        response.notices,
+        [
+            "python: uses an untested grammar (downloaded on first use). \
+             Only Rust is tested; treat python results as best-effort."
+        ]
+    );
+}
+
+#[test]
+fn leads_for_a_rust_only_project_has_no_notices() {
+    let project = tempfile::tempdir().expect("project dir");
+    activate(project.path());
+    fs::write(project.path().join("lib.rs"), "pub fn a() {}\n").expect("write rust source");
+
+    let response = run(request(project.path(), None));
+
+    assert!(response.notices.is_empty(), "{:?}", response.notices);
+}

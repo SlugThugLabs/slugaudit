@@ -1,19 +1,20 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=Recombined manager orchestration workflow and database recovery diagnostics into cohesive module.
+// slugaudit-line-exception: approved-by=slugthug; reason=the ensure_current recovery workflow: resolve, open, verify or discard, rebuild and one full publish
 //! Project synchronization orchestration for [`super::SourceSyncManager`].
 //!
-//! This module owns the outer `ensure_current` workflow: resolving the
-//! project, opening and recovering its derived database, and handing the
-//! synchronized connection to the watcher-health module. Watcher state
-//! transitions and incremental reconciliation live in `manager_health.rs`.
+//! This module owns the `ensure_current` workflow: resolving the project,
+//! opening and recovering its derived database, the once-per-session
+//! findings transition, and one full source scan per call. The scan itself
+//! (discovery, hashing, diff, publish) lives under `publish`; this module
+//! owns the surrounding recovery and error shaping.
 
 use super::super::discard_notice::{DatabaseDiscard, count_findings, count_findings_at};
 use super::super::manager_meta::{
     ProjectMetaError, ensure_project_row, mark_prior_session_findings_stale, publish_from_scratch,
+    publish_full, revision_after_sync,
 };
 use super::super::recovery_log::{DatabaseRecovery, log_database_recovery};
 use super::{SourceSyncManager, SyncedProject};
 use crate::error_codes::{self, ErrorCode};
-use crate::model::process_limits;
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::project;
 use crate::store;
@@ -29,13 +30,13 @@ fn elapsed_ms(start: std::time::Instant) -> u64 {
 
 impl SourceSyncManager {
     /// Ensures the project containing `path` is fully synchronized and
-    /// returns a handle to its current revision. Uses the filesystem
-    /// watcher to avoid full publishes when possible:
+    /// returns a handle to its current revision.
     ///
-    /// - `NeedsVerification` / `Desynced`: full publish, then health → Healthy.
-    /// - `Healthy` with unreconciled events: incremental reconcile.
-    /// - `Healthy` without unreconciled events: returns the current revision.
-    /// - `Unavailable`: full publish.
+    /// Every call walks the project and hashes every indexable file; only
+    /// files whose content differs from the stored row are re-parsed and
+    /// rewritten. The stored-content check also proves each row still
+    /// matches its own hash, so a database edited outside this process is
+    /// repaired from the source before the call returns.
     ///
     /// # Errors
     ///
@@ -74,7 +75,33 @@ impl SourceSyncManager {
             Err(synced) => return Ok(synced),
         };
 
-        self.reconcile_and_finish(&root, database_path, &mut connection, start, sink)
+        let report = publish_full(&mut connection, root.as_path(), sink, "publish failed")
+            .inspect_err(|_| {
+                sink.emit(ProgressEvent::Completed {
+                    phase: "ensuring_current",
+                });
+            })?;
+        let revision_id = revision_after_sync(&connection, &database_path)?;
+
+        let duration_ms = elapsed_ms(start);
+        self.stamp_last_sync(duration_ms);
+        tracing::debug!(
+            revision_id = %revision_id,
+            root = %root.as_path().display(),
+            added = report.added,
+            modified = report.modified,
+            deleted = report.deleted,
+            "ensure_current completed",
+        );
+
+        sink.emit(ProgressEvent::Completed {
+            phase: "ensuring_current",
+        });
+        Ok(SyncedProject {
+            database_path,
+            revision_id,
+            discard: None,
+        })
     }
 
     fn open_or_rebuild(
@@ -111,33 +138,29 @@ impl SourceSyncManager {
                 // Test-only seam: `project_control off` removing the corrupt
                 // file between the failed open and the discard.
                 super::super::race_hook::fire(discard_hook_key(database_path));
-                // Re-checked under the database lock: a second session may
-                // have repaired the file since this open failed.
-                let outcome = store::discard_if_still_unusable(database_path).map_err(|err| {
+                // A database `off` removed while this call held the failed
+                // open must stay removed.
+                match database_path.symlink_metadata() {
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        sink.emit(ProgressEvent::Completed {
+                            phase: "ensuring_current",
+                        });
+                        return Err(map_activation_error(project::ActivationError::NotActive));
+                    }
+                    Err(error) => {
+                        return Err(ErrorData::internal_error(
+                            format!("inspecting the corrupt project database: {error}"),
+                            None,
+                        ));
+                    }
+                }
+                store::discard_corrupt_database(database_path).map_err(|err| {
                     ErrorData::internal_error(
                         format!("discarding the corrupt or outdated project database: {err}"),
                         None,
                     )
                 })?;
-                if outcome == store::DiscardOutcome::Gone {
-                    sink.emit(ProgressEvent::Completed {
-                        phase: "ensuring_current",
-                    });
-                    return Err(map_activation_error(project::ActivationError::NotActive));
-                }
-                if outcome == store::DiscardOutcome::AlreadyCurrent {
-                    return store::open_existing_read_write(database_path)
-                        .map(Ok)
-                        .map_err(|error| match error {
-                            store::StoreError::Missing => {
-                                map_activation_error(project::ActivationError::NotActive)
-                            }
-                            error => ErrorData::internal_error(
-                                format!("opening the project database for sync: {error}"),
-                                None,
-                            ),
-                        });
-                }
                 self.rebuild_and_finish(root, database_path.to_path_buf(), start, sink, notice)
                     .map(Err)
             }
@@ -273,41 +296,10 @@ impl SourceSyncManager {
         Ok(())
     }
 
-    fn reconcile_and_finish(
-        &self,
-        root: &project::ProjectRoot,
-        database_path: PathBuf,
-        connection: &mut rusqlite::Connection,
-        start: std::time::Instant,
-        sink: &dyn ProgressSink,
-    ) -> Result<SyncedProject, ErrorData> {
-        let limits = process_limits().map_err(map_process_limits_error)?;
-        let state = self.watch_manager.watch(root.as_path(), limits);
-        self.watch_manager.refresh_scope(root.as_path(), limits);
-        let revision_id = self.sync_by_health(root, &state, connection, &database_path, sink)?;
-
-        let duration_ms = elapsed_ms(start);
-        self.stamp_last_sync(duration_ms);
-        tracing::debug!(
-            revision_id = %revision_id,
-            root = %root.as_path().display(),
-            "ensure_current completed",
-        );
-
-        sink.emit(ProgressEvent::Completed {
-            phase: "ensuring_current",
-        });
-        Ok(SyncedProject {
-            database_path,
-            revision_id,
-            discard: None,
-        })
-    }
-
     /// Shared tail for the corruption and stale-database recovery paths:
-    /// rebuilds the database from scratch, records the full publish,
-    /// stamps the sync time, and emits the completion signal. Extracted so
-    /// the recovery paths cannot drift apart.
+    /// rebuilds the database from scratch, stamps the sync time, and emits
+    /// the completion signal. Extracted so the recovery paths cannot drift
+    /// apart.
     fn rebuild_and_finish(
         &self,
         root: &project::ProjectRoot,
@@ -318,7 +310,6 @@ impl SourceSyncManager {
     ) -> Result<SyncedProject, ErrorData> {
         let mut synced = publish_from_scratch(root, database_path, sink)?;
         synced.discard = Some(discard);
-        self.record_full_publish();
         let duration_ms = elapsed_ms(start);
         self.stamp_last_sync(duration_ms);
         sink.emit(ProgressEvent::Completed {
@@ -343,15 +334,6 @@ pub(crate) fn map_activation_error(error: project::ActivationError) -> ErrorData
         None
     };
     ErrorData::invalid_params(error.to_string(), data)
-}
-
-impl SourceSyncManager {
-    /// [`SourceSyncManager::refresh_watch_scope`] with the error shaped for a
-    /// tool call.
-    pub(super) fn refresh_watch_scope_for_tool(&self, root: &Path) -> Result<(), ErrorData> {
-        self.refresh_watch_scope(root)
-            .map_err(map_process_limits_error)
-    }
 }
 
 /// The tool error for process limits that were never installed and whose

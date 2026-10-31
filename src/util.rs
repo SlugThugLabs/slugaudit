@@ -43,10 +43,10 @@ pub(crate) fn redacted_path(path: &std::path::Path) -> String {
 /// Canonicalizes `path` for use as a stable identity key, falling back to
 /// the path as given when canonicalization fails.
 ///
-/// Watch-state keys and PATH comparisons depend on the canonical form. The
-/// fallback is deliberate — the caller keeps working — but it must not be
-/// silent: if canonicalization fails while a watcher registered under a
-/// different spelling, the mismatch is invisible unless this says so.
+/// Path identity comparisons depend on the canonical form. The fallback is
+/// deliberate — the caller keeps working — but it must not be silent: a
+/// path that resolves differently can make two spellings look distinct, and
+/// only this warning says so.
 #[must_use]
 pub(crate) fn canonical_or_self(path: &std::path::Path) -> std::path::PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|error| {

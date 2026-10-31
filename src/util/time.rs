@@ -37,13 +37,12 @@ pub(crate) fn at_least_timestamp(observed: i64, persisted: Option<i64>) -> i64 {
 /// A cooperative wall-clock deadline for one sync operation.
 ///
 /// Created once at the entry of an operation that may iterate many times
-/// (a publish spanning CAS retries, a barrier sync spanning reconcile
-/// iterations) so the budget covers the whole operation rather than
-/// resetting per phase — otherwise a pathological repo could restart the
-/// clock on every retry and stall a tool call indefinitely.
+/// (a publish spanning retries) so the budget covers the whole operation
+/// rather than resetting per phase — otherwise a pathological repo could
+/// restart the clock on every retry and stall a tool call indefinitely.
 ///
 /// `exceeded` is checked at cooperative points inside hot loops (per
-/// discovered file, per dirty path, per barrier iteration). It never
+/// discovered file, per sampled file, per verified row). It never
 /// interrupts anything; it only reports that the budget has been spent, so
 /// the loop can fail closed with a `TimeBudgetExceeded` error instead of
 /// looping forever.

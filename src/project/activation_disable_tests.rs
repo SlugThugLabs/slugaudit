@@ -5,7 +5,7 @@ use super::*;
 use std::fs;
 
 /// An enabled project whose `names` exist in the activation directory.
-/// `project.db` is a real database because `disable` opens it for its lock.
+/// `project.db` is a real database because that is what `on` creates.
 fn enabled_with_files(names: &[&str]) -> (tempfile::TempDir, ProjectRoot, PathBuf) {
     let directory = tempfile::tempdir().expect("temp dir");
     let root = ProjectRoot::resolve(directory.path()).expect("resolve root");
@@ -28,12 +28,7 @@ fn project_off_removes_an_otherwise_empty_activation_directory_and_deactivates()
 
     assert_eq!(
         report.removed,
-        vec![
-            activation.join(DATABASE_FILENAME),
-            activation.join("project.db-wal"),
-            activation.join("project.db-shm"),
-            activation.clone()
-        ]
+        vec![activation.join(DATABASE_FILENAME), activation.clone()]
     );
     assert!(!report.config_kept);
     assert!(matches!(
@@ -59,14 +54,7 @@ fn project_off_keeps_config_json_and_unrelated_user_files_but_deactivates() {
 
     let report = disable(&root).expect("disable succeeds");
 
-    assert_eq!(
-        report.removed,
-        vec![
-            activation.join(DATABASE_FILENAME),
-            activation.join("project.db-wal"),
-            activation.join("project.db-shm"),
-        ]
-    );
+    assert_eq!(report.removed, vec![activation.join(DATABASE_FILENAME)]);
     assert!(report.config_kept);
     assert_eq!(
         fs::read(activation.join("config.json")).expect("config kept"),

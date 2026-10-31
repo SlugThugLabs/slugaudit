@@ -71,8 +71,8 @@ pub(crate) fn count_findings(connection: &Connection) -> Result<u64, rusqlite::E
 }
 
 /// Counts findings in the database file at `path` through a raw read-only
-/// connection that skips the schema checks `store::open_read_only` makes, so
-/// a database with a foreign schema version is still counted.
+/// connection that skips the store's connection contract, so a database
+/// with a foreign schema version is still counted.
 ///
 /// # Errors
 ///

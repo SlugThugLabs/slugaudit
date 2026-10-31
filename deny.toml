@@ -52,9 +52,8 @@ highlight = "all"
 #   two independent `0.x` majors pinned by different crates.
 # - `getrandom` 0.2 (const-random → ahash → language-pack) vs 0.3/0.4
 #   (rand_core → proptest): three `0.x` majors, two disjoint subtrees.
-# - `windows-sys`/`windows-targets`/`windows_*`: ring pulls 0.52, fd-lock
-#   0.59, notify 0.60 — three generations of the windows bindings that
-#   never unify. Each `windows_*` target crate follows its parent.
+# - `windows-sys`/`windows-targets`/`windows_*`: ring pulls 0.52 and
+#   fd-lock 0.59 — generations of the windows bindings that never unify. Each `windows_*` target crate follows its parent.
 skip = [
     "syn",
     "hashbrown",

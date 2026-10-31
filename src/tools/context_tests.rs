@@ -21,21 +21,17 @@ fn a_corrupt_derived_database_is_discarded_and_rebuilt_from_project_files() {
         .expect("corrupt cache is rebuilt");
     assert!(!rebuilt.revision_id.is_empty());
     assert!(rebuilt.database_path.exists(), "rebuilt database exists");
-    let connection = crate::store::open_read_only(&rebuilt.database_path).expect("rebuilt db");
+    let connection = crate::store::open_existing(&rebuilt.database_path).expect("rebuilt db");
     let count: i64 = connection
         .query_row("SELECT count(*) FROM files", [], |row| row.get(0))
         .expect("rebuilt file row");
     assert_eq!(count, 1);
 }
 
-/// Deterministic sync for the freshness tests: a local manager with NO
-/// filesystem watcher, so every `ensure_current` runs a full publish and a
-/// content change always moves the revision. The global watcher-backed
-/// manager (`ensure_synced_no_progress`) delivers modify events on an async
-/// watcher thread — under parallel test load the second sync in these
-/// tests could return the same revision if the event hadn't landed yet,
-/// turning a deterministic "stale handle must be rejected" assertion into a
-/// flaky one.
+/// Deterministic sync for the freshness tests: every `ensure_current`
+/// hashes the tree, so a content change always moves the revision and no
+/// background event timing can turn a "stale handle must be rejected"
+/// assertion into a flaky one.
 fn synced_locally(path: &str) -> SyncedProject {
     crate::sync::SourceSyncManager::new()
         .ensure_current(path, &crate::progress::NoopProgressSink)
@@ -144,7 +140,7 @@ fn a_database_copied_from_a_different_project_root_is_rebuilt_not_served() {
     let rebuilt = ensure_synced_no_progress(&path, &crate::sync::SourceSyncManager::default())
         .expect("a stale root must be rebuilt, not served or rejected");
     assert!(!rebuilt.revision_id.is_empty());
-    let connection = crate::store::open_read_only(&rebuilt.database_path).expect("rebuilt db");
+    let connection = crate::store::open_existing(&rebuilt.database_path).expect("rebuilt db");
     let stored_root: String = connection
         .query_row("SELECT root_path FROM project WHERE id = 1", [], |row| {
             row.get(0)

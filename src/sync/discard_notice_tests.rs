@@ -23,7 +23,7 @@ fn seed_findings(database: &Path, count: usize) {
 }
 
 fn synced_project_with_findings(count: usize) -> (SourceSyncManager, tempfile::TempDir) {
-    let manager = SourceSyncManager::with_watcher();
+    let manager = SourceSyncManager::new();
     let project = create_project();
     write_file(&project, "lib.rs", b"pub fn a() {}\n");
     sync_project(&manager, &project);

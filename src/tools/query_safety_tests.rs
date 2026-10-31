@@ -1,8 +1,7 @@
 //! The adversarial half of the `query` tool's boundary. Every test here
-//! asserts *rejection* — the plan's wording, "asserting rejection, not just
-//! 'no rows'". A silently empty page and a statement refused before
-//! execution are indistinguishable to a caller that never inspects the
-//! error, so nothing here is satisfied by an `Ok` with no rows, and every
+//! asserts *rejection*, not just "no rows". A silently empty page and a
+//! statement refused before execution are indistinguishable to a caller that
+//! never inspects the error, so nothing here is satisfied by an `Ok` with no rows, and every
 //! test that claims nothing changed re-reads the index through the same
 //! tool rather than trusting the refusal. Split out of `query_tests.rs`
 //! (one property per test, and the payload tables are the bulk of it) to
@@ -33,8 +32,8 @@ fn ask(project: &tempfile::TempDir, sql: &str) -> Result<QueryResponse, ErrorDat
 }
 
 /// Demands that `sql` be refused. The panic names the false pass: an `Ok`
-/// here would mean a tool advertising a read-only connection executed the
-/// payload anyway.
+/// here would mean a tool advertising read-only SQL executed the payload
+/// anyway.
 fn refused(project: &tempfile::TempDir, sql: &str, what: &str) -> ErrorData {
     match ask(project, sql) {
         Err(error) => error,
@@ -65,8 +64,8 @@ fn all_refused(project: &tempfile::TempDir, payloads: &[&str], what: &str) {
 /// a top-level `INSERT`/`UPDATE`/`DELETE ... RETURNING`. The second shape
 /// parses on its own, so it is refused by the tool's wrapper — and, with
 /// the wrapper experimentally removed, by the read-only connection itself
-/// ("attempt to write a readonly database"), which is the guard the
-/// contract claims writes rest on.
+/// ("attempt to write a readonly database"), a second layer that is a
+/// connection mode rather than a trust boundary.
 #[test]
 fn writes_through_a_data_modifying_cte_are_refused() {
     let project = project();
@@ -153,13 +152,13 @@ fn pragma_and_other_non_select_statements_smuggled_into_the_subquery_are_refused
     );
 }
 
-/// `user_version` and `journal_mode`, read on a plain connection without the
-/// read-only authorizer (which denies both pragmas, so the tool cannot read
-/// them any more). A first `query` syncs the project so the file exists.
+/// `user_version` and `journal_mode`, read on a plain connection. A first
+/// `query` syncs the project so the file exists.
 fn writable_knobs(project: &tempfile::TempDir) -> (i64, String) {
     ask(project, "SELECT 1 AS synced").expect("sync the project");
     let database = project.path().join(".planning/slugaudit/project.db");
-    let connection = rusqlite::Connection::open(database).expect("open without the authorizer");
+    let connection =
+        rusqlite::Connection::open(database).expect("open the project database directly");
     connection
         .query_row(
             "SELECT (SELECT * FROM pragma_user_version), (SELECT * FROM pragma_journal_mode)",
@@ -219,11 +218,11 @@ fn functions_that_could_leave_the_sandbox_are_refused_or_inert() {
     );
 }
 
-/// Statement splicing. A real top-level `;` is caught by the separator
-/// scanner with the friendly typed message — even when a string literal or
-/// a comment sits immediately before it. A `;` *inside* a comment hides
-/// the splice from that scanner, so the whole text reaches the wrapper as
-/// one statement: the wrapper is then the guard that refuses it.
+/// Statement splicing. A real top-level `;` followed by a second statement
+/// is caught by SQLite's own parser (`MultipleStatement`) with the friendly
+/// typed message — even when a string literal or a comment sits immediately
+/// before it. A `;` *inside* a comment is not a separator, so the whole text
+/// reaches the wrapper as one statement: the wrapper then refuses it.
 #[test]
 fn a_second_statement_cannot_be_spliced_past_the_single_statement_guard() {
     let project = project();
@@ -237,7 +236,7 @@ fn a_second_statement_cannot_be_spliced_past_the_single_statement_guard() {
         let error = refused(&project, sql, "a second statement spliced after the first");
         assert!(
             error.message.contains("more than one statement"),
-            "{sql}: expected the separator-scanner refusal, got: {}",
+            "{sql}: expected the single-statement refusal, got: {}",
             error.message
         );
     }
@@ -250,7 +249,7 @@ fn a_second_statement_cannot_be_spliced_past_the_single_statement_guard() {
             "DELETE FROM files -- trailing comment",
             "DELETE FROM files;",
         ],
-        "a write spliced past the separator scanner",
+        "a write spliced past the single-statement check",
     );
 }
 
@@ -293,10 +292,10 @@ fn legal_reads_of_the_schema_and_pragma_table_functions_are_allowed() {
     );
 }
 
-/// The request schema says only SELECT is accepted. `PRAGMA table_info` and
-/// `EXPLAIN SELECT 1` are read-only, but neither is a SELECT, so the wrapper
-/// refuses each before execution, saying what `query` accepts and keeping
-/// the compile error SQLite reports for the wrapped statement.
+/// The request schema says only SELECT is accepted. A PRAGMA is refused
+/// before compilation (it can change process state while being prepared);
+/// `EXPLAIN SELECT 1` is refused by the wrapper, with SQLite's compile
+/// error for the wrapped statement kept.
 #[test]
 fn read_only_non_select_statements_are_refused_by_the_wrapper() {
     let project = project();
@@ -304,30 +303,31 @@ fn read_only_non_select_statements_are_refused_by_the_wrapper() {
                    and this is another kind of statement (PRAGMA, EXPLAIN, a write, DDL or a \
                    transaction command), so it cannot run as a subquery (SQLite: ";
 
-    for (sql, expected) in [
-        (
-            "PRAGMA table_info(files)",
-            format!(
-                "{refusal}near \"(\": syntax error in SELECT * FROM (\nPRAGMA \
-                 table_info(files)\n) LIMIT -1 OFFSET 0 at offset 33)"
-            ),
-        ),
-        (
-            "EXPLAIN SELECT 1",
-            format!(
-                "{refusal}near \"SELECT\": syntax error in SELECT * FROM (\nEXPLAIN SELECT \
-                 1\n) LIMIT -1 OFFSET 0 at offset 24)"
-            ),
-        ),
-    ] {
-        let error = refused(&project, sql, "a read-only non-SELECT statement");
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{sql}");
-        assert_eq!(error.message.as_ref(), expected.as_str(), "{sql}");
-        assert!(
-            error.data.is_none(),
-            "{sql}: a wrapper refusal carries no machine-readable code"
-        );
-    }
+    let pragma = refused(&project, "PRAGMA table_info(files)", "a PRAGMA statement");
+    assert_eq!(pragma.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(
+        pragma.message.as_ref(),
+        "sql was refused: `query` accepts a single read-only SELECT/WITH statement, not \
+         PRAGMA (a PRAGMA can change process state while being prepared)"
+    );
+    assert!(
+        pragma.data.is_none(),
+        "a refusal carries no machine-readable code"
+    );
+
+    let explain = refused(&project, "EXPLAIN SELECT 1", "a non-SELECT statement");
+    assert_eq!(explain.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(
+        explain.message.as_ref(),
+        format!(
+            "{refusal}near \"SELECT\": syntax error in SELECT * FROM (\nEXPLAIN SELECT \
+             1\n) LIMIT -1 OFFSET 0 at offset 24)"
+        )
+    );
+    assert!(
+        explain.data.is_none(),
+        "a refusal carries no machine-readable code"
+    );
 }
 
 #[test]
@@ -441,19 +441,17 @@ fn refused_prepare_time_pragmas_leave_process_wide_state_unchanged() {
     );
 }
 
-/// The schema-introspection `pragma_*` table functions pass the authorizer's
-/// allowlist and return the column rows; a setter-capable one is refused.
+/// The `pragma_*` table functions are ordinary SELECTs: SQLite exposes as
+/// table-valued functions only the pragmas that return results and have no
+/// side effects, so reading one is allowed by design.
 #[test]
-fn pragma_table_info_returns_rows_while_other_pragma_functions_are_refused() {
+fn pragma_table_valued_functions_are_ordinary_selects() {
     let project = project();
 
     let columns =
         ask(&project, "SELECT * FROM pragma_table_info('files')").expect("introspection reads");
-    let knob = refused(
-        &project,
-        "SELECT * FROM pragma_user_version",
-        "a non-introspection pragma function",
-    );
+    let version = ask(&project, "SELECT * FROM pragma_user_version")
+        .expect("a side-effect-free pragma function reads");
 
     assert!(
         columns
@@ -463,11 +461,11 @@ fn pragma_table_info_returns_rows_while_other_pragma_functions_are_refused() {
         "{:?}",
         columns.rows
     );
-    assert_refused_as_not_a_select(&knob, "pragma_user_version");
+    assert_eq!(version.rows.len(), 1, "{:?}", version.rows);
     assert!(
-        knob.message.contains("pragma_table_info"),
-        "{}",
-        knob.message
+        version.rows[0]["user_version"].is_i64(),
+        "{:?}",
+        version.rows
     );
 }
 
@@ -547,34 +545,26 @@ fn the_zeroblob_hex_replace_amplifier_fails_fast_with_a_too_big_error() {
 }
 
 /// SQLite checks the value-length bound when it reads a stored column too.
-/// A text file of invalid UTF-8 at `max_file_bytes` is stored lossy-decoded,
-/// three bytes of U+FFFD per input byte, which is exactly the bound: it must
-/// stay readable with `substr`, and one byte more must not.
+/// Stored content is valid UTF-8 stored byte for byte and at most
+/// `max_file_bytes`; the bound is at least one byte per file byte, so every
+/// stored value is readable within it — a `substr` of its first character works — and the bound
+/// itself is still enforced on computed values (proved by the zeroblob
+/// test above).
 #[test]
-fn a_stored_value_of_exactly_the_length_bound_is_still_readable_with_substr() {
+fn a_stored_value_is_readable_within_the_length_bound_and_substr_works() {
     let file_bytes = 64 * 1024;
-    let project = activated_project("latin.txt", &vec![0xFF; file_bytes]);
-    let over = 3 * file_bytes + 1;
-    std::fs::write(project.path().join("over.txt"), "x".repeat(over)).expect("over fixture");
-    let read = |path: &str| {
-        let sql = format!(
-            "SELECT substr(content, 1, 1) AS head, length(CAST(content AS BLOB)) AS n \
-             FROM files WHERE path = '{path}'"
-        );
-        ask_bounded(&project, &sql, file_bytes)
-    };
+    let body = "a".repeat(file_bytes);
+    let project = activated_project("fits.txt", body.as_bytes());
+    let sql = "SELECT substr(content, 1, 1) AS head, length(CAST(content AS BLOB)) AS n \
+               FROM files WHERE path = 'fits.txt'";
+    let (at, bound) = ask_bounded(&project, sql, file_bytes);
 
-    let (at, bound) = read("latin.txt");
-    let (beyond, _) = read("over.txt");
-
-    assert_eq!(usize::try_from(bound).expect("bound"), 3 * file_bytes);
-    let expected = serde_json::json!({"head": "\u{FFFD}", "n": 3 * file_bytes});
-    assert_eq!(at.expect("the bound reads").rows, vec![expected]);
-    let error = beyond.expect_err("one byte over the bound");
-    assert!(error.message.contains("too big"), "{}", error.message);
+    assert_eq!(usize::try_from(bound).expect("bound"), file_bytes);
+    let expected = serde_json::json!({"head": "a", "n": file_bytes});
+    assert_eq!(at.expect("the stored value reads").rows, vec![expected]);
 }
 
-/// The value bound is the larger of the query value cap and three bytes per
+/// The value bound is the larger of the query value cap and one byte per
 /// file byte, clamped to SQLite's maximum; the SQL bound is the tool's SQL
 /// cap plus the wrapper overhead.
 #[test]
@@ -588,8 +578,8 @@ fn engine_limits_cover_stored_values_and_the_wrapped_sql() {
     };
 
     for (limits, value_length, sql_length) in [
-        (with(1000, 1000, 100), 3000, 164),
-        (with(1000, 10, 100), 3000, 164),
+        (with(1000, 1000, 100), 1000, 164),
+        (with(1000, 10, 100), 1000, 164),
         (with(1000, 5000, 100), 5000, 164),
         (
             with(1_000_000_000, 1, 2_000_000_000),

@@ -218,7 +218,7 @@ mod tests {
             .join("slugaudit")
             .join("project.db");
         let connection =
-            crate::store::open_read_only(&database).expect("open the published database read-only");
+            crate::store::open_existing(&database).expect("open the published database read-only");
         let (kind, reason, content, completeness, outcome, algorithm): (
             String,
             Option<String>,

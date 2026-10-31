@@ -1,11 +1,10 @@
 #![no_main]
 //! Target 1 — Tree-sitter query strings fed to `structure`.
 //!
-//! `structure` is the most interesting surface in the threat model
-//! (`AGENTS.md`, *Security and trust model*): the agent supplies a query, and
-//! the server compiles and executes it against its own indexed sources. The
-//! narrowest public entry point that takes a query string is therefore
-//! [`structure`] itself — the handlers in `src/server.rs` only add progress
+//! `structure` is the most interesting untrusted-input surface: the agent
+//! supplies a query, and the server compiles and executes it against its own
+//! indexed sources. The narrowest public entry point that takes a query string
+//! is therefore [`structure`] itself — the handlers in `src/server.rs` only add progress
 //! plumbing and a blocking-pool hop, and the query compilation
 //! (`Query::new`), the capture cursor, the match-count/time budget, and
 //! `node_to_match`'s span arithmetic are all downstream of it and all private.
@@ -46,10 +45,10 @@ use slugaudit_mcp_rust::tools::{StructureRequest, structure};
 #[path = "support.rs"]
 mod support;
 
-/// `ResourceLimits::default().max_structure_query_bytes` is 32_000; anything
+/// `ResourceLimits::default().max_structure_query_bytes` is 16_384; anything
 /// past it is refused before compilation, so a longer input is a wasted
 /// iteration rather than new coverage.
-const MAX_QUERY_BYTES: usize = 32_000;
+const MAX_QUERY_BYTES: usize = 16_384;
 
 /// Selector bit: run project-wide with `language` instead of a single `file`.
 const MULTI_FILE: u8 = 0x20;

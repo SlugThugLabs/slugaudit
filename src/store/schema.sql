@@ -37,10 +37,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_revisions_single_current
 -- project-relative path is not valid UTF-8, so no TEXT path can represent
 -- them. The path is stored as raw bytes (a BLOB) because no text encoding
 -- names it. This is derived, disposable state refreshed by every full
--- discovery walk and every incremental stat sweep — never a source of
--- truth; sync reads it only to skip rewriting an unchanged set. `report`
--- reads COUNT(*) here instead of walking the filesystem, so
--- `index_partial` stays truthful without putting a walk on a read path.
+-- discovery walk — never a source of truth; sync reads it only to skip
+-- rewriting an unchanged set. `report` reads COUNT(*) here instead of
+-- walking the filesystem, so `index_partial` stays truthful without
+-- putting a walk on a read path.
 CREATE TABLE IF NOT EXISTS unrepresentable_paths (
     path BLOB PRIMARY KEY
 );
@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS files (
     -- (`sync::revision_skipped::SKIP_REASON_*`) rather than the per-file
     -- human message — which embeds each file's own path and size and so
     -- could never group. 'oversize' = over the per-file import ceiling;
-    -- 'unreadable' = the read failed; 'stat_failed' = the stat failed so the
+    -- 'not_utf8' = the bytes are not valid UTF-8, so exact content cannot be
+    -- stored; 'unreadable' = the read failed; 'stat_failed' = the stat failed so the
     -- size is unknown (byte_len NULL). NULL for every other kind: those rows
     -- were read, so nothing was skipped.
     skip_reason TEXT,
@@ -88,9 +89,9 @@ CREATE TABLE IF NOT EXISTS files (
     -- and reading the file to hash it would defeat the skip, so its
     -- identity is stat-derived instead: BLAKE3 over (path, byte_len,
     -- modified_unix_seconds) with hash_algorithm = 'stat-identity'
-    -- (`sync::hash::stat_identity`). Consequence, accepted and identical to
-    -- the stat sweep's documented blind spot: a skipped file whose content
-    -- changes without changing its size or mtime is not detected.
+    -- (`sync::hash_io::stat_identity`). Consequence, accepted: a skipped file
+    -- whose content changes without changing its size or mtime is not
+    -- detected.
     content_hash TEXT NOT NULL,
     hash_algorithm TEXT NOT NULL,
     -- NULL only for a 'skipped' row whose stat failed (skip_reason =
@@ -173,7 +174,7 @@ CREATE TABLE IF NOT EXISTS dependency_edges (
     from_file_id INTEGER NOT NULL REFERENCES files (id) ON DELETE CASCADE,
     to_file_id INTEGER REFERENCES files (id) ON DELETE CASCADE,
     raw_import_text TEXT NOT NULL,
-    -- Mirrors src/graph/resolve.rs::ResolutionKind::as_sql_text() — keep
+    -- Mirrors src/graph/resolver/types.rs::ResolutionKind::as_sql_text() — keep
     -- both in sync if a variant is ever added.
     resolution_kind TEXT NOT NULL CHECK (resolution_kind IN ('Resolved', 'Unresolved', 'External')),
     confidence TEXT CHECK (confidence IS NULL OR confidence IN ('High', 'Low')),
@@ -184,8 +185,8 @@ CREATE INDEX IF NOT EXISTS idx_edges_from ON dependency_edges (from_file_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to ON dependency_edges (to_file_id);
 
 -- Findings are AI-authored only.
--- The session_id column supports the session-scoped cleanup
--- (`sync::manager_meta::purge_prior_session_findings`) on fresh-process boots.
+-- The session_id column supports the session-scoped stale-marking
+-- (`sync::manager_meta::mark_prior_session_findings_stale`) on fresh-process boots.
 CREATE TABLE IF NOT EXISTS findings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     path TEXT NOT NULL,

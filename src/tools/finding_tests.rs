@@ -318,7 +318,7 @@ fn restating_a_conclusion_refreshes_one_row_with_the_latest_body() {
         .join(".planning")
         .join("slugaudit")
         .join("project.db");
-    let connection = crate::store::open_read_only(&db_path).expect("open db read-only");
+    let connection = crate::store::open_existing(&db_path).expect("open db read-only");
     let count: i64 = connection
         .query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
         .expect("count findings");
@@ -372,7 +372,7 @@ fn distinct_targets_leave_distinct_rows() {
         .join(".planning")
         .join("slugaudit")
         .join("project.db");
-    let connection = crate::store::open_read_only(&db_path).expect("open db read-only");
+    let connection = crate::store::open_existing(&db_path).expect("open db read-only");
     let count: i64 = connection
         .query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
         .expect("count findings");
@@ -416,7 +416,7 @@ fn a_restatement_after_the_file_changed_is_a_new_row() {
         .join(".planning")
         .join("slugaudit")
         .join("project.db");
-    let connection = crate::store::open_read_only(&db_path).expect("open db read-only");
+    let connection = crate::store::open_existing(&db_path).expect("open db read-only");
     let count: i64 = connection
         .query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
         .expect("count findings");

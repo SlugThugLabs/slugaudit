@@ -6,8 +6,7 @@
 //! those benches, so no dead-code waiver is required.
 //!
 //! All content is generated deterministically from the file count, so the
-//! same fixture is reproducible across runs and machines (Task 9.2:
-//! "benchmarks run reproducibly on the same fixture"). The tree covers five
+//! same fixture is reproducible across runs and machines. The tree covers five
 //! source families (Rust, Python, JavaScript, TypeScript, plus Markdown and
 //! JSON config), real project-local imports that exercise dependency-edge
 //! resolution during publish, external imports, two intentionally malformed

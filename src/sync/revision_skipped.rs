@@ -18,6 +18,10 @@ use rusqlite::{Transaction, params};
 /// rather than the human message, so `report` can group by it; the schema's
 /// column comment names it too.
 pub(super) const SKIP_REASON_OVERSIZE: &str = "oversize";
+/// `files.skip_reason` for a file whose bytes are not valid UTF-8, so its
+/// exact content cannot be stored. Storing a lossy conversion instead would
+/// break the rule that `content` hashes to `content_hash`.
+pub(super) const SKIP_REASON_NOT_UTF8: &str = "not_utf8";
 /// `files.skip_reason` for a file discovery could not read (the sniff/stat
 /// failed), so its content was never sampled.
 pub(super) const SKIP_REASON_UNREADABLE: &str = "unreadable";

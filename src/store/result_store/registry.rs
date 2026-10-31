@@ -8,7 +8,7 @@
 //! Admission invariant: the sum of admitted bytes never exceeds the budget.
 //! Transient on-disk bytes while results are still being written are bounded
 //! by (concurrent writers x budget), because each writer aborts itself once its
-//! own file exceeds the whole budget (`DEVIATIONS.md`).
+//! own file exceeds the whole budget.
 
 use super::cursor::ResultId;
 use super::error::ResultStoreError;

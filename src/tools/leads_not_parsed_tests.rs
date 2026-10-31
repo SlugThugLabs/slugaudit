@@ -1,6 +1,6 @@
 //! A file whose grammar did not run is visible in every `leads` response
 //! (`files_not_parsed`) and in `report.completeness`, so a mechanic's count
-//! is never quoted as complete while a file was left unparsed (A4).
+//! is never quoted as complete while a file was left unparsed.
 
 use super::*;
 use rmcp::handler::server::wrapper::Parameters;

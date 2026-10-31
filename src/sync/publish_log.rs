@@ -80,7 +80,7 @@ fn discovery_failure_fields(error: &DiscoveryError) -> (&'static str, Option<&Pa
     match error {
         DiscoveryError::Walk(error) => (
             "discovery_walk",
-            crate::watch::errors::ignore_error_path(error),
+            crate::ignore_rules::ignore_error_path(error),
         ),
         DiscoveryError::IgnoreRules { path, .. } => ("discovery_ignore_rules", path.as_deref()),
         DiscoveryError::Read { path, .. } => ("discovery_read", Some(path)),
@@ -94,6 +94,7 @@ fn sample_failure_fields(error: &SampleError) -> (&'static str, Option<&Path>) {
     match error {
         SampleError::Read { path, .. } => ("sample_read", Some(path)),
         SampleError::TooLarge { path, .. } => ("sample_too_large", Some(path)),
+        SampleError::NotUtf8 { path } => ("sample_not_utf8", Some(path)),
     }
 }
 

@@ -89,7 +89,7 @@ fn reports_real_counts_for_an_active_project() {
 /// `unsupported_language_unresolved_count` must count only the `Unresolved`
 /// edges coming from import syntax the resolver can't parse at all (here:
 /// `go`'s `import "fmt"`), not `Unresolved` edges from a modeled language
-/// with a genuinely broken import (here: `python`). Since C11 the verdict
+/// with a genuinely broken import (here: `python`). The verdict
 /// is cached on the edge at write time (`syntax_unmodeled`), so this test
 /// pins the *SQL count* over that cached column — the write-time
 /// computation itself is covered by the publish_edges pipeline tests.

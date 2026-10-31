@@ -1,5 +1,5 @@
 //! `structure` is bounded by `max_parse_bytes`, by its byte window before any
-//! file is loaded, and by its execution budget during the parse itself (A4).
+//! file is loaded, and by its execution budget during the parse itself.
 
 use super::*;
 use crate::tools::PageLimit;

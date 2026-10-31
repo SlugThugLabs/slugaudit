@@ -1,3 +1,5 @@
+// slugaudit-line-exception: approved-by=slugthug; reason=the revision transaction: baseline check, deletions, upserts, edge resolution and the current-pointer swap
+use super::manifest::{PATH_SET_SUBQUERY, paths_json_array};
 use super::revision_edges;
 use super::revision_files;
 use super::revision_skipped::{self, SkippedRecord};
@@ -26,9 +28,8 @@ pub struct FileRecord {
     pub identity: SourceIdentity,
     /// Raw byte length of the file.
     pub byte_len: u64,
-    /// File mtime in unix seconds at sample time. The sync sweep's
-    /// cheap-change signal: a stored mtime + byte_len that still match one
-    /// stat on disk proves the file is unchanged without reading it.
+    /// File mtime in unix seconds at sample time, kept for reporting. It is
+    /// never used to skip a read: freshness is decided by content hash.
     pub modified_unix_seconds: Option<i64>,
     /// Detected language name, or `None` when no grammar matched the path.
     pub language: Option<String>,
@@ -76,16 +77,14 @@ pub enum RevisionError {
 /// `manifest_hash` and `parser_pack_version` are both `&str`, and `deletions`
 /// and `discovered_paths` are both path collections, so a positional call
 /// site can silently swap two same-typed arguments — a mistake the compiler
-/// cannot catch. Same precedent as
-/// [`crate::sync::reconcile::ReconcileOptions`].
+/// cannot catch.
 pub(super) struct RevisionInputs<'a> {
     /// The revision this publish expects to still be current (`None` when the
     /// project has never been published). CAS: a mismatch fails with
     /// [`RevisionError::StaleBaseline`] rather than overwriting a newer
     /// revision with older disk state.
     pub(super) expected_current: Option<&'a str>,
-    /// Aggregate hash over the post-update file set — for a reconcile,
-    /// `manifest::compute_manifest_hash`; for a full publish,
+    /// Aggregate hash over the post-update file set:
     /// `aggregate_manifest_hash` over the sampled *and* skipped set.
     pub(super) manifest_hash: &'a str,
     /// Parser pack version this revision is pinned against.
@@ -100,11 +99,14 @@ pub(super) struct RevisionInputs<'a> {
     /// invisible in every `count(*) FROM files`. Written before edge
     /// resolution so an import targeting one resolves to a real row.
     pub(super) skipped: &'a [SkippedRecord],
-    /// Project-relative paths the caller walked on disk (discovery for a full
-    /// publish, the stat sweep for a reconcile). Edge resolution needs them
-    /// because a discovered file that sampling skipped (oversize, unreadable)
-    /// exists; importing it must resolve, not read as dead code.
+    /// Project-relative paths the caller walked on disk. Edge resolution
+    /// needs them because a discovered file that sampling skipped (oversize,
+    /// unreadable) exists; importing it must resolve, not read as dead code.
     pub(super) discovered_paths: &'a HashSet<String>,
+    /// Re-resolve stored `Unresolved` edges against the post-transaction
+    /// path set. True when this revision added or removed a path, because
+    /// either can change an unchanged importer's resolution.
+    pub(super) re_resolve_unresolved: bool,
 }
 
 /// Publishes one revision atomically under compare-and-swap: the write
@@ -132,6 +134,7 @@ pub(super) fn publish_revision(
         deletions,
         skipped,
         discovered_paths,
+        re_resolve_unresolved,
     } = inputs;
     // The sequence below is the load-bearing ordering stated in the doc
     // comment; each step is a private helper in THIS file so the mutation
@@ -143,7 +146,12 @@ pub(super) fn publish_revision(
 
     apply_deletions(&tx, deletions)?;
     let upserted_ids = write_upserts_and_skipped(&tx, upserts, skipped, revision_db_id)?;
-    resolve_edges(&tx, upserts, &upserted_ids, discovered_paths)?;
+    let known = revision_edges::known_paths(&tx, discovered_paths)?;
+    let known_ref: HashSet<&str> = known.iter().map(String::as_str).collect();
+    resolve_edges(&tx, upserts, &upserted_ids, &known_ref)?;
+    if re_resolve_unresolved {
+        revision_edges::re_resolve_unresolved(&tx, &known_ref)?;
+    }
     invalidate_stale_findings(&tx, &touched_paths(upserts, deletions, skipped))?;
     flip_current_revision(&tx, revision_db_id)?;
 
@@ -179,17 +187,37 @@ fn insert_revision_row(
     Ok((revision_db_id, revision_id))
 }
 
-/// Deletes removed files; their evidence and dependency edges cascade via
-/// foreign keys.
+/// Deletes removed files; their evidence and outgoing edges cascade via
+/// foreign keys. Inbound edges survive as `Unresolved` evidence first: the
+/// import is still written in the importer's source, so dropping the raw
+/// text would erase a fact.
 fn apply_deletions(
     tx: &rusqlite::Transaction<'_>,
     deletions: &[String],
 ) -> Result<(), RevisionError> {
+    if deletions.is_empty() {
+        return Ok(());
+    }
+    let statement_sql = format!(
+        "UPDATE dependency_edges SET to_file_id = NULL, resolution_kind = 'Unresolved', \
+         confidence = NULL WHERE to_file_id IN \
+         (SELECT id FROM files WHERE path IN ({PATH_SET_SUBQUERY}))"
+    );
+    {
+        let mut statement = tx.prepare(&statement_sql)?;
+        for batch in deletions.chunks(DELETED_PATH_BATCH) {
+            let paths = paths_json_array(batch.iter().map(String::as_str))?;
+            statement.execute([paths])?;
+        }
+    }
     for path in deletions {
         tx.execute("DELETE FROM files WHERE path = ?1", params![path])?;
     }
     Ok(())
 }
+
+/// How many deleted paths one edge-nulling statement binds.
+const DELETED_PATH_BATCH: usize = 4096;
 
 /// Writes upserted files with their evidence, then the skipped files'
 /// existence rows — before edge resolution, so an import targeting a skipped
@@ -217,12 +245,10 @@ fn resolve_edges(
     tx: &rusqlite::Transaction<'_>,
     upserts: &[FileRecord],
     upserted_ids: &[i64],
-    discovered_paths: &HashSet<String>,
+    known_paths: &HashSet<&str>,
 ) -> Result<(), RevisionError> {
-    let all_paths = revision_edges::known_paths(tx, discovered_paths)?;
-    let all_paths_ref: HashSet<&str> = all_paths.iter().map(String::as_str).collect();
     for (file, file_id) in upserts.iter().zip(upserted_ids.iter().copied()) {
-        revision_edges::resolve_and_store(tx, file, file_id, &all_paths_ref)?;
+        revision_edges::resolve_and_store(tx, file, file_id, known_paths)?;
     }
     Ok(())
 }

@@ -57,9 +57,7 @@ path = "src/bin/check_performance/main.rs"
 [dependencies]
 blake3 = "1"
 ignore = "0.4"
-notify = "8"
 rmcp = { version = "3", default-features = false, features = ["server", "macros", "transport-io"] }
-rustix = { version = "1.1", default-features = false, features = ["fs", "std"] }
 rusqlite = { version = "0.37", features = ["bundled", "hooks", "functions", "limits"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
@@ -100,7 +98,7 @@ exit = "deny"
 cargo = { level = "deny", priority = -1 }
 multiple_crate_versions = "allow"
 
-# Criterion benchmarks (Task 9.2). Each bench target is its own binary with
+# Criterion benchmarks. Each bench target is its own binary with
 # `harness = false` so criterion provides main(); `cargo test --all-targets`
 # compiles them but never runs them, keeping correctness gates separate
 # from benchmark builds.
@@ -120,16 +118,15 @@ path = "benches/search.rs"
 harness = false
 
 # Startup latency (process spawn → first MCP `initialize` response);
-# see Task 9.2's last < 1 s target. Black-box bench that spawns the
-# compiled `slugaudit-mcp` binary so the measured number is the real
+# target: under 1 s. Black-box bench that spawns the
+# compiled `slugaudit` binary so the measured number is the real
 # cold-invoke figure a CI process pays.
 [[bench]]
 name = "startup"
 path = "benches/startup.rs"
 harness = false
 
-# Peak-memory in the steady-state sync pipeline (Task 9.2 last < 512 MB
-# target). Reads `/proc/self/status` VmHWM on Linux; reports
+# Peak-memory in the steady-state sync pipeline (target: under 512 MB). Reads `/proc/self/status` VmHWM on Linux; reports
 # "unmeasured" on other OSes so the absence is unambiguous rather than
 # silently dropped.
 [[bench]]

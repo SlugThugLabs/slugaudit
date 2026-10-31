@@ -85,12 +85,6 @@ fn verified_read_reports_a_failure_reading_the_current_revision() {
     let directory = tempfile::tempdir().expect("db dir");
     let database_path = directory.path().join("project.db");
     drop(rusqlite::Connection::open(&database_path).expect("create empty database"));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&database_path, std::fs::Permissions::from_mode(0o600))
-            .expect("restrict database permissions");
-    }
     let handle = SyncedProject {
         database_path,
         revision_id: "rev-1".to_owned(),

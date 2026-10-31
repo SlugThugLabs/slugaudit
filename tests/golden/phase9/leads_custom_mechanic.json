@@ -1,142 +1,144 @@
 {
   "case": "leads_custom_mechanic",
   "request": {
-    "compact": false,
-    "limit": 2,
     "mechanic": "println_calls",
-    "offset": null
+    "limit": 2,
+    "cursor": null,
+    "compact": false
   },
   "response": {
-    "files_covered": 2,
-    "files_not_parsed": 0,
-    "files_total": 3,
+    "page": {
+      "returned": 2,
+      "total": 3,
+      "complete": false,
+      "cursor": "v1.be2eb6e8-7e3a-4ba7-921f-cccf5b6cf0cf.79cbe8aa-b800-4bbe-b7dd-803cf742f9eb.2",
+      "completeness": "complete",
+      "page_bytes": 65536,
+      "bytes_used": 138,
+      "limited_by": "limit",
+      "revision_id": "<REVISION_ID>"
+    },
     "mechanic_counts": [
       {
-        "count": 3,
-        "covers": [
-          "rust"
-        ],
-        "files": 3,
         "mechanic": "println_calls",
+        "source": "session",
         "note": "println macro calls",
-        "source": "session"
-      },
-      {
-        "count": 12,
+        "count": 3,
+        "files": 3,
         "covers": [
           "rust"
-        ],
-        "files": 3,
+        ]
+      },
+      {
         "mechanic": "unwrap_calls",
+        "source": "builtin",
         "note": null,
-        "source": "builtin"
-      },
-      {
-        "count": 3,
+        "count": 12,
+        "files": 3,
         "covers": [
           "rust"
-        ],
-        "files": 3,
+        ]
+      },
+      {
         "mechanic": "expect_calls",
+        "source": "builtin",
         "note": null,
-        "source": "builtin"
-      },
-      {
-        "count": 0,
-        "covers": [
-          "rust"
-        ],
-        "files": 0,
-        "mechanic": "panic_calls",
-        "note": null,
-        "source": "builtin"
-      },
-      {
-        "count": 0,
-        "covers": [
-          "rust"
-        ],
-        "files": 0,
-        "mechanic": "todo_calls",
-        "note": null,
-        "source": "builtin"
-      },
-      {
-        "count": 0,
-        "covers": [
-          "rust"
-        ],
-        "files": 0,
-        "mechanic": "assert_calls",
-        "note": null,
-        "source": "builtin"
-      },
-      {
-        "count": 0,
-        "covers": [
-          "rust"
-        ],
-        "files": 0,
-        "mechanic": "diagnostics",
-        "note": null,
-        "source": "builtin"
-      },
-      {
         "count": 3,
+        "files": 3,
         "covers": [
           "rust"
-        ],
-        "files": 3,
-        "mechanic": "comment_markers",
-        "note": null,
-        "source": "builtin"
+        ]
       },
       {
+        "mechanic": "panic_calls",
+        "source": "builtin",
+        "note": null,
         "count": 0,
+        "files": 0,
         "covers": [
           "rust"
-        ],
-        "files": 0,
-        "mechanic": "credential_files",
+        ]
+      },
+      {
+        "mechanic": "todo_calls",
+        "source": "builtin",
         "note": null,
-        "source": "builtin"
+        "count": 0,
+        "files": 0,
+        "covers": [
+          "rust"
+        ]
+      },
+      {
+        "mechanic": "assert_calls",
+        "source": "builtin",
+        "note": null,
+        "count": 0,
+        "files": 0,
+        "covers": [
+          "rust"
+        ]
+      },
+      {
+        "mechanic": "diagnostics",
+        "source": "builtin",
+        "note": null,
+        "count": 0,
+        "files": 0,
+        "covers": [
+          "rust"
+        ]
+      },
+      {
+        "mechanic": "comment_markers",
+        "source": "builtin",
+        "note": null,
+        "count": 3,
+        "files": 3,
+        "covers": [
+          "rust"
+        ]
+      },
+      {
+        "mechanic": "credential_files",
+        "source": "builtin",
+        "note": null,
+        "count": 0,
+        "files": 0,
+        "covers": [
+          "rust"
+        ]
       }
     ],
     "mechanics_invalid": 0,
-    "oversized_row": false,
-    "page": {
-      "bytes_used": 138,
-      "complete": false,
-      "limited_by": "limit",
-      "next_offset": 2,
-      "page_bytes": 65536,
-      "returned": 2,
-      "revision_id": "<REVISION_ID>",
-      "total": 3
-    },
-    "page_file_counts": [
-      {
-        "count": 1,
-        "file": "mod0.rs"
-      },
-      {
-        "count": 1,
-        "file": "mod1.rs"
-      }
-    ],
+    "notices": [],
+    "files_not_parsed": 0,
     "rows": [
       {
-        "detail": "println",
-        "detail_clipped": false,
         "file": "mod0.rs",
-        "line": 6
+        "line": 6,
+        "detail": "println",
+        "detail_clipped": false
       },
       {
-        "detail": "println",
-        "detail_clipped": false,
         "file": "mod1.rs",
-        "line": 6
+        "line": 6,
+        "detail": "println",
+        "detail_clipped": false
       }
-    ]
+    ],
+    "files_total": 3,
+    "files_covered": 2,
+    "page_file_counts": [
+      {
+        "file": "mod0.rs",
+        "count": 1
+      },
+      {
+        "file": "mod1.rs",
+        "count": 1
+      }
+    ],
+    "oversized_row": false
   }
 }

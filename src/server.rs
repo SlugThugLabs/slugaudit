@@ -37,7 +37,8 @@ const MAX_RESOURCE_URI_BYTES: usize = 8 * 1024;
 const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — symbols, imports, exports, call sites, comments, \
     parser diagnostics, file text — that you query instead of reading files: where a symbol is \
     defined, every call site of a callee, which files import which, per-file counts and repo-wide \
-    denominators. Reflects disk, not editor buffers; tree re-verified within 30 s.\n\n\
+    denominators. Reflects disk, not editor buffers; re-hashed before every call. Only Rust is \
+    tested; other languages are best-effort (`report` lists them under `notices`).\n\n\
     FIRST-WIN RULE: about to open more than ~3 files to answer one structural question (where is X \
     defined, who calls Y, what does Z import)? Query instead. On an enabled project start with \
     `report`, then `leads` with only `path`: two calls, no source reads.\n\n\
@@ -63,8 +64,7 @@ const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — sym
     Pass one `mechanic` for rows, `pattern` (path GLOB, or a substring without `*`/`?`) to narrow, \
     `mode: compact` for file/line triples. Counts are complete and unordered; \
     `files_total`/`files_covered` are the file denominators. Callee mechanics read rust, python, \
-    javascript, typescript, tsx, go, java and c calls by Rust callee names. `detail` is clipped at \
-    200 chars (`detail_clipped`). While `files_not_parsed` > 0 every count is a floor; `report` \
+    javascript, typescript, tsx, go, java and c calls by Rust callee names. While `files_not_parsed` > 0 every count is a floor; `report` \
     lists those files.\n\n\
     MECHANICS: the built-ins are counting primitives, not a checklist; what counts as a signal is \
     your decision. `mechanic` `action: add` registers `id`, `language`, `query` (Tree-sitter, \
@@ -83,16 +83,16 @@ const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — sym
     Resolved, Unresolved or External (`syntax_unmodeled` = 1: import syntax not parsed); \
     `report.import_resolution` gives the split. Recipes and schema: `slugaudit://queries/README.md`, \
     `slugaudit://schema.sql`.\n\n\
-    GRAMMARS: grammars are fetched on first use into `~/.cache/tree-sitter-language-pack/`. Offline, \
+    GRAMMARS: grammars are downloaded on first use and are untested except Rust's. Offline, \
     those files stay searchable by `content` but have no evidence until a retry (after 10 minutes or \
     a restart); the first failed fetch can block a call for about 60 s. Markdown, reStructuredText, \
     AsciiDoc, Org, plain-text and ignore-list files are `language = 'prose'`: stored, never parsed.\n\n\
     OTHER TOOLS: `report` is the project snapshot. `structure` runs a Tree-sitter query (at least \
     one capture) on one `file` or a whole `language`. `finding` records a conclusion you reviewed, \
     bound to the file hash (stale on change), session-scoped; `finding_read` \
-    reads them, `finding_sessions` adopts earlier ones. `project_control` `on` indexes, `off` disables (keeps config.json). `health` reports phase and next action; `verbose: true` adds detail.\n\n\
-    FLOW: report → leads → mechanic add for shapes you decide matter → query/structure → read source \
-    only where evidence points → finding.\n\n\
+    reads them, `finding_sessions` adopts earlier ones. `project_control` `on` indexes, `off` disables. `health` reports phase and next action; `verbose: true` adds detail.\n\n\
+    FLOW: report → leads → mechanic add → query/structure → read source only where evidence \
+    points → finding.\n\n\
     FAILURES: errors carry `data.code` (e.g. `project_not_enabled`, `sql_error`, `unknown_language`) and \
     `remedy`, the next action. Branch on `code`; follow `remedy`, don't retry unchanged.\n\n\
     JUDGMENT IS YOURS: SlugAudit reports evidence and never judges, rates or ranks it; the severity \
@@ -105,26 +105,19 @@ const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — sym
 pub struct SlugAuditServer {
     tool_router: ToolRouter<Self>,
     blocking_ops: Arc<Semaphore>,
-    /// Per-server `SourceSyncManager`. Replaces the `static
-    /// SYNC_MANAGER: OnceLock<…>` global that previously sat in
-    /// `tools::context`; each server now owns its own watcher state,
-    /// ignore rules, and `last_sync_unix_seconds` counter, so two
-    /// servers in the same process would track independent projects.
-    /// `Clone` is the cheap clone of `SourceSyncManager` itself — the
-    /// inner `WatchManager` is shared across `Clone`s of the server.
+    /// Per-server `SourceSyncManager`: the last-sync timestamps, the
+    /// session-start findings guard, session mechanics, the mechanic scan
+    /// cache and the paged-result store. `Clone` is the cheap clone of
+    /// `SourceSyncManager` itself — its shared state is shared across
+    /// `Clone`s of the server.
     manager: sync::SourceSyncManager,
 }
 
 impl SlugAuditServer {
-    /// Constructs a server with a real `notify` watcher (when supported
-    /// on the host platform). Production entry point; crate-internal tests
-    /// that don't need watcher-based incremental reconcile should use
-    /// `SlugAuditServer::with_manager` with a `SourceSyncManager::default()`
-    /// so the watcher is bypassed and the tests can't leak `notify`
-    /// handles between cases.
+    /// Constructs the production server: one manager, no external handles.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_manager(sync::SourceSyncManager::with_watcher())
+        Self::with_manager(sync::SourceSyncManager::default())
     }
 
     /// Constructs a server with an explicit `SourceSyncManager`. Used by
@@ -177,11 +170,11 @@ impl Default for SlugAuditServer {
 /// sorted by name.
 ///
 /// `#[tool_handler]` generates `list_tools` as exactly
-/// `tool_router.list_all()` (rmcp 3.1.4), so this is the wire content, not a
+/// `tool_router.list_all()`, so this is the wire content, not a
 /// reconstruction of it. `check_mcp_surface` snapshots it beside
 /// `resources::list()` and fails on drift, which makes a deliberate change to
 /// any of those fields a recorded change; the router is built with a
-/// watcher-less manager because nothing here executes a tool.
+/// manager that executes nothing because the surface is built, not run.
 #[must_use]
 pub fn tool_surface() -> Vec<rmcp::model::Tool> {
     SlugAuditServer::with_manager(sync::SourceSyncManager::default())

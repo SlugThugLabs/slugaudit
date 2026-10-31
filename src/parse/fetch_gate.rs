@@ -92,8 +92,8 @@ fn cooling_down() -> bool {
 }
 
 /// True when a stored `LoadFailed` row should be re-parsed now: no fetch has
-/// failed in this process, or the cool-down has elapsed. The sweep, reconcile
-/// and publish all ask this, so during the cool-down an unchanged
+/// failed in this process, or the cool-down has elapsed. Every sync asks
+/// this, so during the cool-down an unchanged
 /// `LoadFailed` file is skipped like any other and no revision is published.
 pub(crate) fn load_failed_retry_due() -> bool {
     !cooling_down()
