@@ -1,24 +1,28 @@
 {
   "identifier": "slugthuglabs-slugaudit-mcp",
   "name": "SlugAudit MCP",
-  "description": "Pre-parsed, searchable, always-in-sync evidence about a codebase \u2014 symbols, imports, dependency edges, source spans \u2014 so the AI queries a SQLite database instead of reading hundreds of flat files.",
+  "description": "Pre-parsed, searchable evidence about a codebase \u2014 symbols, imports, dependency edges, source spans \u2014 re-verified against disk before every call, so the AI queries a SQLite database instead of reading hundreds of flat files. Rust is the only tested language; other languages use grammars downloaded on first use and are flagged as untested.",
   "version": "1.1.0",
   "tools": [
     {
       "name": "query",
-      "description": "Arbitrary read-only SQL against the project's SQLite index. Joins, CTEs, the lot. Row-capped for safety."
+      "description": "Arbitrary read-only SQL against the project's SQLite index. Joins, CTEs, the lot. Paged, with step and time budgets."
     },
     {
       "name": "report",
-      "description": "Automatic snapshot of the current revision: file counts, languages, what changed since last import."
+      "description": "Snapshot of the current revision: file and language counts, skipped files, import resolution, and notices for untested languages."
     },
     {
       "name": "structure",
-      "description": "Tree-sitter structural pattern matching across 300+ languages (supports single-file or multi-file AST search with lean snippets)."
+      "description": "Tree-sitter structural pattern matching (single-file or multi-file AST search with lean snippets). Rust is tested; other languages are best-effort and flagged in `notices`."
     },
     {
       "name": "leads",
       "description": "Counts and paged file/line rows for mechanical observations \u2014 call-site shapes (unwrap/expect/panic/todo/assert), diagnostics, TODO/FIXME/HACK/XXX comment markers, and credential-shaped paths. Unranked: no severity, no verdict."
+    },
+    {
+      "name": "mechanic",
+      "description": "Register, remove, or list your own mechanics (Tree-sitter call or structure patterns) that `leads` then counts like a built-in."
     },
     {
       "name": "finding",
@@ -38,7 +42,7 @@
     },
     {
       "name": "health",
-      "description": "Operational snapshot: watcher health, unreconciled counts, tool-call counters, last-sync timestamp."
+      "description": "Server and database state: phase, last-sync timestamp, tool-call counters. Never syncs."
     }
   ],
   "homepage": "https://slugthuglabs.dev",
