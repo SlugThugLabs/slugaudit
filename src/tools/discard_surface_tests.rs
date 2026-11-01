@@ -1,5 +1,6 @@
 //! `database_discard` on tool responses: the call that discarded a project
-//! database reports how many findings were lost (null when unreadable).
+//! database reports why. Session findings live in their own database, so a
+//! discard loses none.
 
 use super::finding::{FindingRequest, finding};
 use super::project_control::{ProjectControlAction, ProjectControlRequest, project_control};
@@ -39,7 +40,7 @@ fn source_project() -> (tempfile::TempDir, String) {
 }
 
 #[test]
-fn discard_surface_on_action_reports_a_corrupt_database_as_unknown() {
+fn discard_surface_on_action_reports_a_corrupt_database_and_its_cause() {
     let (project, path) = source_project();
     project_control(&on_request(&path), &NoopProgressSink, None).expect("first enable succeeds");
     fs::write(
@@ -53,8 +54,10 @@ fn discard_surface_on_action_reports_a_corrupt_database_as_unknown() {
 
     let value = serde_json::to_value(&response.0).expect("serialize response");
     assert!(
-        value["database_discard"]["findings_discarded"].is_null(),
-        "unreadable database reports null, not 0: {value}"
+        value["database_discard"]
+            .get("findings_discarded")
+            .is_none(),
+        "no findings are lost with the project database: {value}"
     );
     assert!(
         value["database_discard"]["cause"]
@@ -78,7 +81,7 @@ fn discard_surface_on_action_reports_nothing_for_a_healthy_database() {
 }
 
 #[test]
-fn discard_surface_finding_response_carries_the_rebuild_count() {
+fn discard_surface_finding_response_carries_the_rebuild_cause_and_keeps_the_finding() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let manager = SourceSyncManager::default();
     let first = finding(&finding_request(&project), &NoopProgressSink, &manager)
@@ -100,8 +103,15 @@ fn discard_surface_finding_response_carries_the_rebuild_count() {
         finding(&finding_request(&project), &NoopProgressSink, &manager).expect("finding recovers");
 
     let value = serde_json::to_value(&second.0).expect("serialize");
-    assert_eq!(
-        value["database_discard"]["findings_discarded"], 1,
+    assert!(
+        value["database_discard"]["cause"]
+            .as_str()
+            .expect("cause is text")
+            .contains("corrupt or outdated"),
         "{value}"
+    );
+    assert_eq!(
+        second.0.id, first.0.id,
+        "the restated finding refreshes the one the rebuild left in the findings file"
     );
 }

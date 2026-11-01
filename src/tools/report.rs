@@ -1,4 +1,5 @@
 use super::context::{ensure_synced, internal_error, with_verified_read};
+use super::finding_store::{count_current, findings_path_of};
 use super::mechanic::{InvalidMechanic, MechanicListing};
 use super::mechanic_catalog;
 #[cfg(test)]
@@ -253,8 +254,8 @@ pub struct ReportResponse {
     /// Revision id of the index this snapshot was read from.
     pub revision_id: String,
     /// Present only when this call discarded and rebuilt the project
-    /// database (corruption, version bump, root mismatch): how many findings
-    /// were lost (null = unknown, the database was unreadable) and why.
+    /// database (corruption, version bump, root mismatch), and why. Session
+    /// findings live in their own database and are not affected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database_discard: Option<crate::sync::DatabaseDiscard>,
     /// Rows in `files`: every discovered file whose project-relative path is
@@ -290,7 +291,7 @@ pub struct ReportResponse {
     /// Larger than the returned list's length means the list was truncated at
     /// `MAX_PARSER_FAILURE_FILES`; equal means the list is complete.
     pub parser_failure_files_total: i64,
-    /// Rows in `findings` with `status = 'current'`: findings whose file
+    /// This session's findings that are `current`: findings whose file
     /// content hash still matches the hash they were written against.
     /// Findings invalidated by a later content change are `stale` and are not
     /// counted.
@@ -328,8 +329,8 @@ pub struct ReportResponse {
     /// so this count makes the AI aware it is handling credential-*looking*
     /// paths even when it cannot read them.
     pub credential_pattern_file_count: i64,
-    /// Every mechanic `leads` counts — session entries, then project_config
-    /// entries, then the built-ins — with its source and the author's note,
+    /// Every mechanic `leads` counts — session entries, then the built-ins —
+    /// with its source and the author's note,
     /// plus the registered entries that failed to load. On the first
     /// `report` of this server only, `note` also explains how mechanics
     /// work.
@@ -343,19 +344,17 @@ pub struct ReportResponse {
 const MECHANICS_NOTE: &str = "The built-in mechanics are counting primitives, not a checklist. \
     What counts as a signal in this codebase is your decision. Register one with `mechanic` \
     action `add` (`id`, `language`, `query` with exactly one capture, `note`); `leads` then \
-    counts and pages it beside the built-ins. Session entries last until this server exits; \
-    `persist: true` writes the entry to .planning/slugaudit/config.json for later sessions.";
+    counts and pages it beside the built-ins. Entries last until this server exits.";
 
 /// The mechanics section of a report.
 #[derive(Debug, Default, Serialize, JsonSchema)]
 pub struct ReportMechanics {
     /// Present on the first `report` of this server only; `null` after.
     pub note: Option<String>,
-    /// Every loaded mechanic: session, then project_config, then builtin.
+    /// Every loaded mechanic: session, then builtin.
     pub entries: Vec<MechanicListing>,
     /// Registered entries that failed to load, each with its error. Never
-    /// dropped: a persisted entry with a bad shape, an unknown section
-    /// `version`, a compile error or an id collision stays listed here.
+    /// dropped: a compile error or an id collision stays listed here.
     pub invalid: Vec<InvalidMechanic>,
 }
 
@@ -375,12 +374,14 @@ pub fn report(
     let revision_id = synced.revision_id.clone();
     let discard = synced.discard.clone();
     let mut response = with_verified_read(&synced, |tx| {
-        build_report(tx, revision_id.clone())
-            .map_err(|error| internal_error("building the report", error))
+        let mut response = build_report(tx, revision_id.clone())
+            .map_err(|error| internal_error("building the report", error))?;
+        response.open_finding_count = count_current(tx, &findings_path_of(tx)?)?;
+        Ok(response)
     })?;
     let root = super::project_root(&request.0.path)?;
     let session = manager.session_mechanics();
-    let catalog = mechanic_catalog::load(&root, session, &super::limits_for_root(&root)?);
+    let catalog = mechanic_catalog::load(session, &super::limits_for_root(&root)?);
     response.database_discard = discard;
     response.mechanics_invalid = catalog.invalid.len();
     response.mechanics = ReportMechanics {

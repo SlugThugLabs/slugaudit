@@ -1,12 +1,10 @@
-//! Failure-path tests for `with_verified_read` / `with_verified_write`:
+//! Failure-path tests for `with_verified_read`:
 //! the database-open and transaction error arms that the happy-path and
 //! stale-revision tests don't reach. A handle pointed at a missing or
 //! corrupt database must fail cleanly with a retry-hint message, never
 //! panic and never serve stale data.
 
-use crate::tools::context::{
-    SyncedProject, ensure_synced_no_progress, with_verified_read, with_verified_write,
-};
+use crate::tools::context::{SyncedProject, ensure_synced_no_progress, with_verified_read};
 use crate::tools::test_support::activated_project;
 use std::path::PathBuf;
 
@@ -42,20 +40,6 @@ fn verified_read_fails_cleanly_when_the_database_is_missing() {
         error.message.contains("retry the call"),
         "the error must carry the retry hint, got: {}",
         error.message
-    );
-}
-
-#[test]
-fn verified_write_reports_project_not_enabled_when_the_database_is_missing() {
-    let result = with_verified_write(&missing_handle(), |_tx| Ok(()));
-    let error = result.expect_err("a write against a missing database must fail cleanly");
-    assert_eq!(
-        error.message,
-        "SlugAudit is not enabled for this project or any parent directory"
-    );
-    assert_eq!(
-        error.data,
-        crate::error_codes::payload(crate::error_codes::ErrorCode::ProjectNotEnabled)
     );
 }
 
@@ -136,32 +120,6 @@ fn verified_read_reports_a_failed_commit() {
     );
 }
 
-#[test]
-fn verified_write_reports_a_failed_commit() {
-    let (_project, synced) = synced_project();
-
-    let error = with_verified_write(&synced, |tx| {
-        tx.execute_batch("COMMIT")
-            .expect("end the transaction inside the closure");
-        Ok(())
-    })
-    .expect_err("committing an already-ended transaction must fail");
-
-    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert!(
-        error
-            .message
-            .starts_with("committing the write transaction:"),
-        "the error must name the failed commit, got: {}",
-        error.message
-    );
-    assert!(
-        error.message.contains("no transaction is active"),
-        "the SQLite cause must be kept, got: {}",
-        error.message
-    );
-}
-
 /// `BEGIN DEFERRED` on a connection that already has an open transaction is
 /// the one reachable start failure: the wrapper must translate SQLite's
 /// refusal with the start context and keep the cause, not panic.
@@ -190,36 +148,4 @@ fn verified_read_reports_a_failed_transaction_start_with_an_active_transaction()
     connection
         .execute_batch("ROLLBACK")
         .expect("close the outer transaction");
-}
-
-/// Another connection holds the database's write lock, so `BEGIN IMMEDIATE`
-/// exhausts the busy timeout and the start arm translates the failure.
-#[test]
-fn verified_write_reports_a_failed_transaction_start_when_the_write_lock_is_held() {
-    let (_project, synced) = synced_project();
-    let blocker = rusqlite::Connection::open(&synced.database_path).expect("open blocker");
-    blocker
-        .busy_timeout(std::time::Duration::ZERO)
-        .expect("disable the blocker's busy timeout");
-    blocker
-        .execute_batch("BEGIN IMMEDIATE")
-        .expect("hold the write lock");
-
-    let error = with_verified_write(&synced, |_tx| Ok(()))
-        .expect_err("a second writer cannot start an immediate transaction");
-
-    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert!(
-        error.message.starts_with("starting a write transaction:"),
-        "the error must name the failed start, got: {}",
-        error.message
-    );
-    assert!(
-        error.message.contains("database is locked"),
-        "the SQLite cause must be kept, got: {}",
-        error.message
-    );
-    blocker
-        .execute_batch("ROLLBACK")
-        .expect("release the write lock");
 }

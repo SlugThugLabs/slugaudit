@@ -8,7 +8,6 @@ use serde_json::{Value, json};
 
 #[test]
 fn paged_finding_read_matches_the_golden_apart_from_paging_fields() {
-    let _guard = crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK, "session_test_lock");
     let project = rust_project();
     let manager = SourceSyncManager::default();
     for (n, title) in ["first", "second", "third"].iter().enumerate() {
@@ -49,12 +48,7 @@ fn paged_finding_read_matches_the_golden_apart_from_paging_fields() {
     // cannot match by design; the comparison is content-level: the findings
     // of every page after page one, concatenated, equal the fixture's
     // `findings` array element for element. Paging fields are not compared.
-    let config = project
-        .path()
-        .join(".planning")
-        .join("slugaudit")
-        .join("config.json");
-    std::fs::write(config, "{\"default_page_bytes\": 300}").expect("write project config");
+    let _config = super::test_support::use_global_config("{\"default_page_bytes\": 300}");
     let first = read(FindingReadRequest {
         path: Some(path_of(&project)),
         file: None,

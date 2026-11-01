@@ -1,7 +1,8 @@
 -- SlugAudit per-project schema. One database file per project; there is
 -- exactly one project row and at most one current revision at a time.
 -- No risk_pattern table, and no table whose purpose is to claim SlugAudit
--- found a bug: findings are AI-authored only.
+-- found a bug. Findings are AI-authored only and live for one SlugAudit
+-- process in their own database, findings-<id>.db, beside this one.
 
 CREATE TABLE IF NOT EXISTS project (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -183,25 +184,3 @@ CREATE TABLE IF NOT EXISTS dependency_edges (
 
 CREATE INDEX IF NOT EXISTS idx_edges_from ON dependency_edges (from_file_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to ON dependency_edges (to_file_id);
-
--- Findings are AI-authored only.
--- The session_id column supports the session-scoped stale-marking
--- (`sync::manager_meta::mark_prior_session_findings_stale`) on fresh-process boots.
-CREATE TABLE IF NOT EXISTS findings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    path TEXT NOT NULL,
-    source_hash TEXT NOT NULL,
-    line_start INTEGER NOT NULL CHECK (line_start > 0),
-    line_end INTEGER NOT NULL CHECK (line_end >= line_start),
-    severity TEXT NOT NULL CHECK (length(severity) BETWEEN 1 AND 100),
-    category TEXT NOT NULL CHECK (length(category) BETWEEN 1 AND 100),
-    title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
-    description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 10000),
-    created_at_unix INTEGER NOT NULL,
-    evidence_revision TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'current' CHECK (status IN ('current', 'stale')),
-    session_id TEXT NOT NULL DEFAULT ''
-);
-
-CREATE INDEX IF NOT EXISTS idx_findings_path_hash ON findings (path, source_hash);
-CREATE INDEX IF NOT EXISTS idx_findings_session ON findings (session_id);

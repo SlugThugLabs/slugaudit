@@ -3,7 +3,7 @@
 //! touches it calls `fresh_ledger()` and counts only the lines carrying its own literal.
 
 use super::*;
-use crate::project::ProjectConfig;
+use crate::project::GlobalConfig;
 use crate::store::test_capture::capture_warns;
 
 fn lines_containing(logs: &str, needle: &str) -> usize {
@@ -11,14 +11,10 @@ fn lines_containing(logs: &str, needle: &str) -> usize {
 }
 
 /// Applies `config` to the defaults twice under one capture.
-fn apply_twice(config: &ProjectConfig) -> (ResourceLimits, String) {
+fn apply_twice(config: &GlobalConfig) -> (ResourceLimits, String) {
     capture_warns(|| {
-        let first = config
-            .apply_to_limits(ResourceLimits::default())
-            .expect("limits apply");
-        let second = config
-            .apply_to_limits(ResourceLimits::default())
-            .expect("limits apply");
+        let first = config.apply_limit_keys(ResourceLimits::default());
+        let second = config.apply_limit_keys(ResourceLimits::default());
         assert_eq!(first, second);
         second
     })
@@ -27,7 +23,7 @@ fn apply_twice(config: &ProjectConfig) -> (ResourceLimits, String) {
 #[test]
 fn a_zero_config_max_parse_bytes_is_refused_with_one_warning_and_keeps_the_default() {
     fresh_ledger();
-    let config = ProjectConfig {
+    let config = GlobalConfig {
         max_parse_bytes: Some(0),
         ..Default::default()
     };
@@ -45,7 +41,7 @@ fn a_zero_config_max_parse_bytes_is_refused_with_one_warning_and_keeps_the_defau
 #[test]
 fn a_zero_config_max_parse_wall_clock_ms_is_refused_with_one_warning_and_keeps_the_default() {
     fresh_ledger();
-    let config = ProjectConfig {
+    let config = GlobalConfig {
         max_parse_wall_clock_ms: Some(0),
         ..Default::default()
     };
@@ -63,7 +59,7 @@ fn a_zero_config_max_parse_wall_clock_ms_is_refused_with_one_warning_and_keeps_t
 #[test]
 fn a_zero_config_max_structure_query_bytes_is_refused_with_one_warning_and_keeps_the_default() {
     fresh_ledger();
-    let config = ProjectConfig {
+    let config = GlobalConfig {
         max_structure_query_bytes: Some(0),
         ..Default::default()
     };
@@ -81,7 +77,7 @@ fn a_zero_config_max_structure_query_bytes_is_refused_with_one_warning_and_keeps
 #[test]
 fn a_zero_config_value_keeps_what_the_environment_already_set() {
     fresh_ledger();
-    let config = ProjectConfig {
+    let config = GlobalConfig {
         max_parse_bytes: Some(0),
         ..Default::default()
     };
@@ -90,7 +86,7 @@ fn a_zero_config_value_keeps_what_the_environment_already_set() {
         ..ResourceLimits::default()
     };
 
-    let applied = config.apply_to_limits(from_env).expect("limits apply");
+    let applied = config.apply_limit_keys(from_env);
 
     assert_eq!(applied.max_parse_bytes, 123_456);
 }
@@ -98,7 +94,7 @@ fn a_zero_config_value_keeps_what_the_environment_already_set() {
 #[test]
 fn the_same_clamp_is_reported_once_however_often_the_limits_are_built() {
     fresh_ledger();
-    let config = ProjectConfig {
+    let config = GlobalConfig {
         max_file_bytes: Some(700_001),
         max_parse_bytes: Some(900_009),
         ..Default::default()
@@ -119,7 +115,7 @@ fn the_same_clamp_is_reported_once_however_often_the_limits_are_built() {
 #[test]
 fn a_clamp_with_a_changed_configured_value_is_reported_again() {
     fresh_ledger();
-    let configured = |parse_bytes| ProjectConfig {
+    let configured = |parse_bytes| GlobalConfig {
         max_file_bytes: Some(700_002),
         max_parse_bytes: Some(parse_bytes),
         ..Default::default()
@@ -163,16 +159,17 @@ const ZERO_REFUSED: [&str; 16] = [
 ];
 
 /// Keeps [`ZERO_REFUSED`] in sync with the code: every variable read through
-/// `nonzero_override` in `limits.rs` must be listed, and nothing else.
+/// `nonzero_override` in `env_overrides.rs` must be listed, and nothing else.
 #[test]
-fn the_zero_refused_list_names_exactly_the_variables_limits_rs_reads_with_nonzero_override() {
-    let source = include_str!("limits.rs");
+fn the_zero_refused_list_names_exactly_the_variables_env_overrides_rs_reads_with_nonzero_override()
+{
+    let source = include_str!("env_overrides.rs");
     let mut read: Vec<&str> = source
         .split("nonzero_override")
         .skip(1)
         .filter_map(|rest| {
-            let after = rest.split_once("(\"")?.1;
-            let name = after.split_once('"')?.0;
+            let arguments = rest.split_once('(')?.1.trim_start();
+            let name = arguments.strip_prefix('"')?.split_once('"')?.0;
             name.starts_with("SLUGAUDIT_").then_some(name)
         })
         .collect();
@@ -207,10 +204,10 @@ fn fail_closed_a_zero_limit_env_var_is_an_error_naming_only_the_variable() {
 }
 
 /// Applies `config` over the lean profile twice under one capture.
-fn apply_twice_over_lean(config: &ProjectConfig) -> (ResourceLimits, String) {
+fn apply_twice_over_lean(config: &GlobalConfig) -> (ResourceLimits, String) {
     capture_warns(|| {
-        let first = config.apply_to_limits(lean()).expect("limits apply");
-        let second = config.apply_to_limits(lean()).expect("limits apply");
+        let first = config.apply_limit_keys(lean());
+        let second = config.apply_limit_keys(lean());
         assert_eq!(first, second);
         second
     })
@@ -219,7 +216,7 @@ fn apply_twice_over_lean(config: &ProjectConfig) -> (ResourceLimits, String) {
 #[test]
 fn a_zero_config_max_file_bytes_is_refused_with_one_warning_and_keeps_the_default() {
     fresh_ledger();
-    let config = ProjectConfig {
+    let config = GlobalConfig {
         max_file_bytes: Some(0),
         ..Default::default()
     };
@@ -237,7 +234,7 @@ fn a_zero_config_max_file_bytes_is_refused_with_one_warning_and_keeps_the_defaul
 #[test]
 fn a_zero_config_max_total_import_bytes_is_refused_with_one_warning_and_keeps_the_default() {
     fresh_ledger();
-    let config = ProjectConfig {
+    let config = GlobalConfig {
         max_total_import_bytes: Some(0),
         ..Default::default()
     };
@@ -255,7 +252,7 @@ fn a_zero_config_max_total_import_bytes_is_refused_with_one_warning_and_keeps_th
 #[test]
 fn a_zero_config_default_page_bytes_is_refused_with_one_warning_and_keeps_the_default() {
     fresh_ledger();
-    let config = ProjectConfig {
+    let config = GlobalConfig {
         default_page_bytes: Some(0),
         ..Default::default()
     };
@@ -273,7 +270,7 @@ fn a_zero_config_default_page_bytes_is_refused_with_one_warning_and_keeps_the_de
 #[test]
 fn a_zero_config_max_result_store_bytes_is_refused_with_one_warning_and_keeps_the_default() {
     fresh_ledger();
-    let config = ProjectConfig {
+    let config = GlobalConfig {
         max_result_store_bytes: Some(0),
         ..Default::default()
     };
@@ -291,7 +288,7 @@ fn a_zero_config_max_result_store_bytes_is_refused_with_one_warning_and_keeps_th
 #[test]
 fn a_zero_config_result_active_grace_secs_is_refused_with_one_warning_and_keeps_the_default() {
     fresh_ledger();
-    let config = ProjectConfig {
+    let config = GlobalConfig {
         result_active_grace_secs: Some(0),
         ..Default::default()
     };

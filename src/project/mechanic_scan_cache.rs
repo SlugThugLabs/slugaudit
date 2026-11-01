@@ -8,8 +8,8 @@
 //! revision of the same project drops that project's older entries first, so
 //! a stale result can neither be served nor linger. The key also carries the
 //! entry's identity (id, language, query, source) and the file filter, so a
-//! removed-and-re-added id with a different query, or a persisted entry
-//! edited by another process, never meets an old result.
+//! removed-and-re-added id with a different query never meets an old
+//! result.
 //!
 //! The cache is bounded by a byte budget. The size of a result is estimated,
 //! not measured: for every row its path bytes plus its detail bytes plus
@@ -69,7 +69,7 @@ pub struct ScanKey {
     pub language: String,
     /// The entry's query source.
     pub query: String,
-    /// Where the entry came from (`session` or `project_config`).
+    /// Where the entry came from (always `session`: only session entries are scanned and cached).
     pub source: &'static str,
 }
 

@@ -39,13 +39,12 @@ impl MechanicSource {
     fn as_str(self) -> &'static str {
         match self {
             Self::Session => "session",
-            Self::ProjectConfig => "project_config",
             Self::Builtin => "builtin",
         }
     }
 
     fn parse(name: &str) -> Option<Self> {
-        [Self::Session, Self::ProjectConfig, Self::Builtin]
+        [Self::Session, Self::Builtin]
             .into_iter()
             .find(|source| source.as_str() == name)
     }
@@ -118,12 +117,12 @@ pub(super) fn list(
     manager: &SourceSyncManager,
 ) -> Result<MechanicResponse, ErrorData> {
     let which = page_request(request.cursor.as_deref(), request.path.as_deref(), sink)?;
-    let (root, limits, size) = match &which {
+    let (limits, size) = match &which {
         PageRequest::Fresh { path, .. } => {
             let root = crate::tools::project_root(path)?;
             let limits = crate::tools::limits_for_root(&root)?;
             let size = page_size::resolve(request.page_bytes, &limits)?;
-            (Some(root), limits, Some(size))
+            (limits, Some(size))
         }
         // The stored budget serves a continuation; the process limits only
         // clamp an explicit `page_bytes`, as no project is named.
@@ -133,7 +132,7 @@ pub(super) fn list(
                 .page_bytes
                 .map(|bytes| page_size::resolve(Some(bytes), &limits))
                 .transpose()?;
-            (None, limits, size)
+            (limits, size)
         }
     };
     let mut spec = PageSpec::typed::<MechanicListing>(TOOL, size.map_or(0, |size| size.bytes));
@@ -144,10 +143,7 @@ pub(super) fn list(
         &spec,
         which,
         |_tx, rows| {
-            let root = root.as_deref().ok_or_else(|| {
-                internal_error("listing mechanics", "a fresh list has no project root")
-            })?;
-            let catalog = mechanic_catalog::load(root, manager.session_mechanics(), &limits);
+            let catalog = mechanic_catalog::load(manager.session_mechanics(), &limits);
             for listing in catalog.listings() {
                 rows.push(&listing)?;
             }

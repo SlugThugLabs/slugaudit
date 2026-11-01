@@ -7,6 +7,7 @@
 //! names the path, and the publish that follows force-rewrites that row from
 //! the file on disk. The database cannot answer with text it derived from
 //! nothing.
+// Owner decision (2026-10-31): the database only matters if it is exactly the same as the code base, so stored text is re-hashed against its stored hash on every call.
 
 use super::publish::PublishError;
 use crate::util::Deadline;

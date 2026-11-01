@@ -106,9 +106,9 @@ What `on` does:
 
 A project counts as enabled while the directory `.planning/slugaudit/` exists. A symlink at that path does not count. Every other tool finds the project by looking for that directory in the given path and its parent directories. So you can pass any file or folder inside the project.
 
-An optional `profile` (`adaptive`, `audit`, `lean`) is saved to `config.json` when you enable. See [configuration](configuration.md).
+An optional `profile` (`adaptive`, `audit`, `lean`) applies to this session only. It is held in memory until the server exits and is not saved. See [configuration](configuration.md).
 
-To turn a project off, call `project_control` with `"action": "off"`. This deletes the whole `.planning/slugaudit/` directory, `config.json` included, and then `.planning` if that leaves it empty. See [tools](tools.md).
+To turn a project off, call `project_control` with `"action": "off"`. This deletes the whole `.planning/slugaudit/` directory and then `.planning` if that leaves it empty. See [tools](tools.md).
 
 ## `.gitignore`
 
@@ -140,10 +140,13 @@ If the project is not enabled you get the error code `project_not_enabled` with 
 <project>/.planning/slugaudit/project.db        the index (SQLite, WAL mode)
 <project>/.planning/slugaudit/project.db-wal    SQLite sidecar files
 <project>/.planning/slugaudit/project.db-shm
+<project>/.planning/slugaudit/findings-<id>.db       this session's findings (SQLite, WAL mode)
+<project>/.planning/slugaudit/findings-<id>.db-wal   SQLite sidecar files
+<project>/.planning/slugaudit/findings-<id>.db-shm
+<project>/.planning/slugaudit/findings-<id>.lock     held while the session is alive
 <project>/.planning/slugaudit/results/          stored pages of paged answers
-<project>/.planning/slugaudit/config.json       optional settings (deleted by `off`)
 ```
 
-The database is disposable scratch. If it is damaged or out of date, SlugAudit deletes it and rebuilds it on the next call. If you delete `project.db` yourself, the next call rebuilds it. Everything in the directory is scratch. The project is turned off only by deleting the directory itself (`project_control` with `off`), after which the next call fails with `project_not_enabled`. See [how it works](how-it-works.md).
+The database is disposable scratch. If it is damaged or out of date, SlugAudit deletes it and rebuilds it on the next call. If you delete `project.db` yourself, the next call rebuilds it. Everything in the directory is scratch. A session's findings file is deleted by the next server process that touches the project once the session has ended, so findings never outlive the session that wrote them. The project is turned off only by deleting the directory itself (`project_control` with `off`), after which the next call fails with `project_not_enabled`. See [how it works](how-it-works.md).
 
 Next: [tools](tools.md), [how it works](how-it-works.md).

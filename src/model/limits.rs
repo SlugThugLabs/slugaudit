@@ -1,5 +1,5 @@
 use super::env_error::EnvConfigError;
-use super::limit_overrides::nonzero_override;
+use super::env_overrides::EnvOverrides;
 use super::system_ram::{MemoryDetectError, SystemMemoryInfo, detect_system_memory};
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
@@ -73,7 +73,7 @@ pub struct ResourceLimits {
     /// 185 s and 7.5 GB RSS before this cap). 2 MiB in every profile. Clamped
     /// to `max_file_bytes`, with a warning, when an override sets it higher.
     /// A `0` override is an error.
-    /// Env: `SLUGAUDIT_MAX_PARSE_BYTES` (u64); project `config.json` key
+    /// Env: `SLUGAUDIT_MAX_PARSE_BYTES` (u64); global `config.json` key
     /// `max_parse_bytes`.
     pub max_parse_bytes: u64,
     /// Wall-clock budget, in milliseconds, for every parse of one file (the
@@ -89,7 +89,7 @@ pub struct ResourceLimits {
     /// unchanged content is not re-parsed on later syncs (like any unchanged
     /// file); editing it parses it again. 5000 (5 s) in every profile; a `0`
     /// override is an error.
-    /// Env: `SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS` (milliseconds, u64); project
+    /// Env: `SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS` (milliseconds, u64); global
     /// `config.json` key `max_parse_wall_clock_ms`.
     pub max_parse_wall_clock_ms: u64,
     /// Cap on the sum of sampled file sizes in one publish. This is a
@@ -111,7 +111,7 @@ pub struct ResourceLimits {
     /// `page_bytes` overrides it, and the effective page is always clamped to
     /// `max_query_response_bytes` (the hard ceiling), with the clamp reported
     /// in the response. An oversized row has its individual cells clipped and
-    /// reported in `clipped_cells`. Env: `SLUGAUDIT_DEFAULT_PAGE_BYTES` (usize); project
+    /// reported in `clipped_cells`. Env: `SLUGAUDIT_DEFAULT_PAGE_BYTES` (usize); global
     /// `config.json` key `default_page_bytes`.
     pub default_page_bytes: usize,
     /// Maximum SQL text length accepted by `query` (UTF-8 bytes).
@@ -135,7 +135,7 @@ pub struct ResourceLimits {
     /// with `invalid_params` (stating its size and this limit, never its
     /// text) before it is compiled. 16 KiB in every profile; a `0` override is
     /// an error.
-    /// Env: `SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES` (usize); project
+    /// Env: `SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES` (usize); global
     /// `config.json` key `max_structure_query_bytes`.
     pub max_structure_query_bytes: usize,
     /// Maximum capture matches returned by one `structure` call.
@@ -165,14 +165,14 @@ pub struct ResourceLimits {
     /// `max_query_response_bytes`, including its env override (1 GiB on
     /// `audit`, 128 MiB on `lean`), unless this limit is set itself; a `0`
     /// override is an error.
-    /// Env: `SLUGAUDIT_MAX_RESULT_STORE_BYTES` (u64); project `config.json`
+    /// Env: `SLUGAUDIT_MAX_RESULT_STORE_BYTES` (u64); global `config.json`
     /// key `max_result_store_bytes`.
     pub max_result_store_bytes: u64,
     /// Seconds after its last served page that an unfinished paged result
     /// stays protected from reclaim (900 in every profile). The grace never
     /// deletes anything by itself, and continuing a result renews it. A `0`
     /// override is an error.
-    /// Env: `SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS` (seconds, u64); project
+    /// Env: `SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS` (seconds, u64); global
     /// `config.json` key `result_active_grace_secs`.
     pub result_active_grace_secs: u64,
     /// Per-file bounds applied when normalizing evidence into rows.
@@ -237,17 +237,9 @@ impl ResourceLimits {
     /// Returns [`EnvConfigError`] for a set-but-invalid variable or an
     /// Adaptive profile on a host whose memory cannot be detected.
     pub(super) fn from_env() -> Result<Self, EnvConfigError> {
-        let mut limits = base_limits(super::profile::profile_from_env()?, detect_system_memory)?;
-        apply_import_overrides(&mut limits)?;
-        apply_query_overrides(&mut limits)?;
-        apply_structure_overrides(&mut limits)?;
-        apply_sync_overrides(&mut limits)?;
-        // The store budget follows the effective response ceiling (after the
-        // env override above) unless its own variable sets it below.
-        limits.max_result_store_bytes =
-            super::profile::result_store_budget(limits.max_query_response_bytes);
-        apply_result_store_overrides(&mut limits)?;
-        limits.clamp_parse_to_file_bytes();
+        let env = EnvOverrides::read()?;
+        let mut limits = base_limits(env.profile, detect_system_memory)?;
+        env.apply(&mut limits, false);
         Ok(limits)
     }
 }
@@ -261,99 +253,6 @@ pub(super) fn base_limits(
 ) -> Result<ResourceLimits, EnvConfigError> {
     super::profile::limits_for_profile_with(profile.unwrap_or_default(), detect)
         .map_err(|source| EnvConfigError::MemoryUndetectable { source })
-}
-
-/// Applies the file and publish work-budget overrides.
-fn apply_import_overrides(limits: &mut ResourceLimits) -> Result<(), EnvConfigError> {
-    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_FILE_BYTES")? {
-        limits.max_file_bytes = clamp_sqlite_value("SLUGAUDIT_MAX_FILE_BYTES", val);
-    }
-    if let Some(val) = nonzero_override("SLUGAUDIT_MAX_PARSE_BYTES")? {
-        limits.max_parse_bytes = val;
-    }
-    if let Some(val) = nonzero_override("SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS")? {
-        limits.max_parse_wall_clock_ms = val;
-    }
-    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES")? {
-        limits.max_total_import_bytes = val;
-    }
-    Ok(())
-}
-
-/// Applies the page, SQL, VM-step, wall-clock, and value-cap overrides.
-fn apply_query_overrides(limits: &mut ResourceLimits) -> Result<(), EnvConfigError> {
-    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES")? {
-        limits.max_query_response_bytes = val;
-    }
-    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_DEFAULT_PAGE_BYTES")? {
-        limits.default_page_bytes = val;
-    }
-    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_QUERY_SQL_BYTES")? {
-        limits.max_query_sql_bytes = val;
-    }
-    if let Some(val) = nonzero_override::<u32>("SLUGAUDIT_MAX_QUERY_VM_STEPS")? {
-        limits.max_query_vm_steps = val;
-    }
-    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_QUERY_WALL_CLOCK_SECS")? {
-        limits.max_query_wall_clock = Duration::from_secs(val);
-    }
-    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_QUERY_VALUE_BYTES")? {
-        limits.max_query_value_bytes =
-            clamp_sqlite_value("SLUGAUDIT_MAX_QUERY_VALUE_BYTES", val as u64) as usize;
-    }
-    Ok(())
-}
-
-/// Applies the Tree-sitter `structure` overrides.
-fn apply_structure_overrides(limits: &mut ResourceLimits) -> Result<(), EnvConfigError> {
-    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES")? {
-        limits.max_structure_query_bytes = val;
-    }
-    if let Some(val) = nonzero_override::<usize>("SLUGAUDIT_MAX_STRUCTURE_MATCHES")? {
-        limits.max_structure_matches = val;
-    }
-    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_STRUCTURE_EXECUTION_TIME_SECS")? {
-        limits.max_structure_execution_time = Duration::from_secs(val);
-    }
-    Ok(())
-}
-
-/// Applies the sync-budget override.
-fn apply_sync_overrides(limits: &mut ResourceLimits) -> Result<(), EnvConfigError> {
-    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS")? {
-        limits.max_sync_wall_clock = Duration::from_secs(val);
-    }
-    Ok(())
-}
-
-/// Applies the result store budget and grace overrides.
-fn apply_result_store_overrides(limits: &mut ResourceLimits) -> Result<(), EnvConfigError> {
-    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_MAX_RESULT_STORE_BYTES")? {
-        limits.max_result_store_bytes = val;
-    }
-    if let Some(val) = nonzero_override::<u64>("SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS")? {
-        limits.result_active_grace_secs = val;
-    }
-    Ok(())
-}
-
-/// Clamps one single-value limit to what the bundled SQLite can store.
-///
-/// An override above the cap is unusable: the value would be rejected at
-/// insert/read. Clamp it and say so rather than letting a per-file skip turn
-/// into a failed publish.
-fn clamp_sqlite_value(name: &str, value: u64) -> u64 {
-    if value > SQLITE_MAX_VALUE_BYTES {
-        tracing::warn!(
-            variable = name,
-            requested = value,
-            cap = SQLITE_MAX_VALUE_BYTES,
-            "limit exceeds SQLite's maximum storable value; clamping",
-        );
-        SQLITE_MAX_VALUE_BYTES
-    } else {
-        value
-    }
 }
 
 /// Host memory the [`Default`] limits are sized for: a fixed 16 GiB host, so

@@ -329,16 +329,13 @@ fn paged_query_total_is_exact_on_every_page() {
     assert_eq!(rows_of(&pages).len(), 500);
 }
 
-/// Writes the project-config `default_page_bytes` that `resolve_limits` reads
-/// (`process_limits` is a `OnceLock`, so no env var can set it per test).
-fn write_default_page_bytes(project: &tempfile::TempDir, page_bytes: usize) {
-    let config = project
-        .path()
-        .join(".planning")
-        .join("slugaudit")
-        .join("config.json");
-    fs::write(config, format!("{{\"default_page_bytes\": {page_bytes}}}"))
-        .expect("write project config");
+/// Sets the global-config `default_page_bytes` that `resolve_limits` reads
+/// (the environment is read once per process, so no env var can set it per
+/// test). Keep the returned guard alive for the test.
+fn write_default_page_bytes(page_bytes: usize) -> crate::tools::test_support::GlobalConfigGuard {
+    crate::tools::test_support::use_global_config(&format!(
+        "{{\"default_page_bytes\": {page_bytes}}}"
+    ))
 }
 
 /// Calls the public tool entry (project limits for a new request, process
@@ -367,7 +364,7 @@ fn call_without_page_bytes(
 #[test]
 fn paged_query_continuation_keeps_the_page_budget_of_page_one() {
     let project = listing_project();
-    write_default_page_bytes(&project, SMALL_PAGE);
+    let _config = write_default_page_bytes(SMALL_PAGE);
     let manager = SourceSyncManager::default();
     let path = project.path().to_string_lossy().into_owned();
     let noop = crate::progress::NoopProgressSink;
@@ -409,7 +406,7 @@ impl crate::progress::ProgressSink for SyncCounter {
 #[test]
 fn paged_query_new_request_syncs_once() {
     let project = listing_project();
-    write_default_page_bytes(&project, SMALL_PAGE);
+    let _config = write_default_page_bytes(SMALL_PAGE);
     let manager = SourceSyncManager::default();
     let path = project.path().to_string_lossy().into_owned();
     let counter = SyncCounter::default();

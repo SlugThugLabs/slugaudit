@@ -40,11 +40,9 @@ pub(super) fn add(path: &str, id: &str, language: &str, query: &str) -> Mechanic
         legacy_paging: LegacyPaging::default(),
         action: MechanicAction::Add,
         id: Some(id.to_owned()),
-        index: None,
         language: Some(language.to_owned()),
         query: Some(query.to_owned()),
         note: Some("dynamic code execution".to_owned()),
-        persist: false,
         limit: None,
         page_bytes: None,
     }
@@ -57,11 +55,9 @@ pub(super) fn action(path: &str, action: MechanicAction, id: Option<&str>) -> Me
         legacy_paging: LegacyPaging::default(),
         action,
         id: id.map(str::to_owned),
-        index: None,
         language: None,
         query: None,
         note: None,
-        persist: false,
         limit: None,
         page_bytes: None,
     }
@@ -195,7 +191,7 @@ fn adding_a_session_mechanic_returns_its_first_count_and_remove_drops_it() {
         &manager,
         action(&path, MechanicAction::Remove, Some("py_eval")),
     );
-    assert_refused(&again, "no session or persisted mechanic has id `py_eval`");
+    assert_refused(&again, "no registered mechanic has id `py_eval`");
     let code = again.data.as_ref().and_then(|data| data.get("code"));
     assert_eq!(
         code.and_then(|code| code.as_str()),
@@ -269,6 +265,63 @@ fn a_compact_whole_surface_page_lists_registered_rows_before_builtin_rows() {
     assert_eq!((second.page.complete, second.files_covered), (true, 3));
 }
 
+/// An added mechanic lives in memory only: no `persist` parameter exists, and
+/// nothing is written under the activation directory but the two databases
+/// (and their WAL sidecars) and the stored pages of the paged answer `add`
+/// itself returns.
+#[test]
+fn add_writes_no_config_and_nothing_but_the_databases_and_stored_pages() {
+    let project = python_project();
+    let path = path_of(&project);
+    let manager = sync::SourceSyncManager::default();
+
+    call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).expect("add");
+    call(&manager, action(&path, MechanicAction::List, None)).expect("list");
+    crate::tools::finding(
+        &Parameters(crate::tools::FindingRequest {
+            path: path.clone(),
+            file: "app.py".to_owned(),
+            line_start: 1,
+            line_end: 1,
+            severity: "low".to_owned(),
+            category: "test".to_owned(),
+            title: "t".to_owned(),
+            description: "d".to_owned(),
+        }),
+        &NoopProgressSink,
+        &manager,
+    )
+    .expect("finding");
+
+    let mut names: Vec<String> = fs::read_dir(project.path().join(".planning/slugaudit"))
+        .expect("activation dir")
+        .map(|entry| {
+            entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    let allowed = ["project.db", "project.db-shm", "project.db-wal", "results"];
+    assert!(
+        names.iter().all(|name| allowed.contains(&name.as_str())
+            || (name.starts_with("findings-")
+                && [".db", ".db-shm", ".db-wal", ".lock"]
+                    .iter()
+                    .any(|suffix| name.ends_with(suffix)))),
+        "unexpected files in the activation directory: {names:?}"
+    );
+    assert!(names.contains(&"project.db".to_owned()), "{names:?}");
+    assert!(
+        names
+            .iter()
+            .any(|name| name.starts_with("findings-") && name.ends_with(".db")),
+        "{names:?}"
+    );
+}
+
 #[test]
 fn adding_the_id_of_a_builtin_is_refused() {
     let project = python_project();
@@ -287,32 +340,9 @@ fn adding_an_id_already_registered_for_the_session_is_refused() {
     let manager = sync::SourceSyncManager::default();
     call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).expect("first add");
 
-    let mut persisted = add(&path, "py_eval", "python", EVAL_QUERY);
-    persisted.persist = true;
-    let error = refusal(&manager, persisted);
-
-    assert_refused(&error, "already registered for this session");
-    assert!(
-        !project
-            .path()
-            .join(".planning/slugaudit/config.json")
-            .exists(),
-        "a refused persist writes nothing"
-    );
-}
-
-#[test]
-fn adding_an_id_already_persisted_is_refused() {
-    let project = python_project();
-    let path = path_of(&project);
-    let manager = sync::SourceSyncManager::default();
-    let mut persisted = add(&path, "py_eval", "python", EVAL_QUERY);
-    persisted.persist = true;
-    call(&manager, persisted).expect("persist");
-
     let error = refusal(&manager, add(&path, "py_eval", "python", EVAL_QUERY));
 
-    assert_refused(&error, "already persisted in config.json");
+    assert_refused(&error, "already registered for this session");
 }
 
 #[test]
@@ -414,7 +444,10 @@ fn the_mechanics_note_is_on_the_first_report_of_a_server_only() {
         note.contains("counting primitives, not a checklist"),
         "{note}"
     );
-    assert!(note.contains("`persist: true`"), "{note}");
+    assert!(
+        note.contains("Entries last until this server exits"),
+        "{note}"
+    );
     assert_eq!(
         second.mechanics.note, None,
         "only the first report carries it"
@@ -426,29 +459,28 @@ fn the_mechanics_note_is_on_the_first_report_of_a_server_only() {
 }
 
 #[test]
-fn leads_and_report_list_session_then_project_config_then_builtin() {
+fn leads_and_report_list_session_then_builtin() {
     let project = python_project();
     let path = path_of(&project);
     let manager = sync::SourceSyncManager::default();
-    let mut persisted = add(
-        &path,
-        "py_exec",
-        "python",
-        &EVAL_QUERY.replace("eval", "exec"),
-    );
-    persisted.persist = true;
-    call(&manager, persisted).expect("persist");
-    call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).expect("session add");
+    call(
+        &manager,
+        add(
+            &path,
+            "py_exec",
+            "python",
+            &EVAL_QUERY.replace("eval", "exec"),
+        ),
+    )
+    .expect("first add");
+    call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).expect("second add");
 
     let leads = run_leads(&manager, leads_request(&path, None, LeadMode::Full));
     let report = report_of(&manager, &path);
 
     let listed = sources(&leads);
-    assert_eq!(listed[0], ("py_eval".to_owned(), MechanicSource::Session));
-    assert_eq!(
-        listed[1],
-        ("py_exec".to_owned(), MechanicSource::ProjectConfig)
-    );
+    assert_eq!(listed[0], ("py_exec".to_owned(), MechanicSource::Session));
+    assert_eq!(listed[1], ("py_eval".to_owned(), MechanicSource::Session));
     assert!(
         listed[2..]
             .iter()
@@ -492,17 +524,4 @@ fn a_pack_alias_language_is_refused_with_its_canonical_name() {
     let error = refusal(&manager, add(&path, "sh_eval", "shell", "(command) @c"));
 
     assert_refused(&error, "use `bash`");
-}
-
-#[test]
-fn a_remove_with_both_id_and_index_is_refused() {
-    let project = python_project();
-    let path = path_of(&project);
-    let manager = sync::SourceSyncManager::default();
-    let mut request = action(&path, MechanicAction::Remove, Some("py_eval"));
-    request.index = Some(0);
-
-    let error = refusal(&manager, request);
-
-    assert_refused(&error, "`id` or `index`, not both");
 }

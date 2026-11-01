@@ -130,24 +130,24 @@ fn a_file_with_no_detected_language_is_not_counted_as_not_parsed() {
 }
 
 /// Two small files and one just under `max_parse_bytes` that no 200 ms budget
-/// can parse, in a project whose config sets `max_parse_wall_clock_ms`.
-fn slow_parse_fixture() -> tempfile::TempDir {
+/// can parse, under a global config that sets `max_parse_wall_clock_ms`.
+fn slow_parse_fixture() -> (
+    tempfile::TempDir,
+    crate::tools::test_support::GlobalConfigGuard,
+) {
     let project = tempfile::tempdir().expect("project dir");
     let config_dir = project.path().join(".planning").join("slugaudit");
     fs::create_dir_all(&config_dir).expect("activate");
     crate::project::write_database_marker(&config_dir);
-    fs::write(
-        config_dir.join("config.json"),
-        r#"{"max_parse_wall_clock_ms": 200}"#,
-    )
-    .expect("write config");
+    let config =
+        crate::tools::test_support::use_global_config(r#"{"max_parse_wall_clock_ms": 200}"#);
     let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
     let big = line.repeat(1_900_000 / line.len());
     assert!(big.len() < 2 * 1024 * 1024, "under max_parse_bytes");
     fs::write(project.path().join("slow.rs"), big).expect("write slow file");
     fs::write(project.path().join("one.rs"), line).expect("write small file");
     fs::write(project.path().join("two.rs"), line).expect("write small file");
-    project
+    (project, config)
 }
 
 fn run_report(
@@ -167,7 +167,7 @@ fn run_report(
 
 #[test]
 fn a_file_that_outlives_its_parse_allowance_is_counted_and_the_sync_goes_on() {
-    let project = slow_parse_fixture();
+    let (project, _config) = slow_parse_fixture();
     let manager = crate::sync::SourceSyncManager::default();
 
     let counts = run_leads(leads_request(&project, None), &manager);

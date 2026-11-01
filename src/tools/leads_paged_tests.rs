@@ -254,7 +254,6 @@ fn eval_entry() -> crate::project::MechanicEntry {
 fn paged_leads_custom_scan_stopped_by_deadline_is_partial_on_every_page() {
     let project = unwrap_fixture(3, 4);
     fs::write(project.path().join("app.py"), "eval(\"1\")\n").expect("write python");
-    let path = project.path().to_string_lossy().into_owned();
     let manager = crate::sync::SourceSyncManager::default();
     manager
         .session_mechanics()
@@ -263,8 +262,7 @@ fn paged_leads_custom_scan_stopped_by_deadline_is_partial_on_every_page() {
         max_structure_execution_time: std::time::Duration::ZERO,
         ..ResourceLimits::default()
     };
-    let root = crate::tools::project_root(&path).expect("root");
-    let catalog = mechanic_catalog::load(&root, manager.session_mechanics(), &limits);
+    let catalog = mechanic_catalog::load(manager.session_mechanics(), &limits);
     let mut whole_surface = compact_request(project.path(), None);
     whole_surface.limit = Some(5);
 

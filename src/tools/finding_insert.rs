@@ -1,6 +1,6 @@
 //! The `finding` write path: input validation, the indexed-file lookup, and
-//! the session-scoped insert-or-refresh. Split from `finding.rs` so the tool
-//! contract (request/response shapes) stays separate from the statements
+//! the insert-or-refresh in this process's findings file. Split from `finding.rs` so the
+//! tool contract (request/response shapes) stays separate from the statements
 //! that store an agent-authored conclusion.
 //!
 //! The insert restates a conclusion by refreshing the row it already owns
@@ -8,10 +8,10 @@
 //! dedupe, restored inside the session. Two calls are *the same finding* when
 //! they name the same file at the same content hash, the same line range, and
 //! the same `category` and `title`; `severity` and `description` are body, so
-//! the restatement replaces them. The match is scoped to the writing session:
-//! a conclusion is only ever merged into its author's notebook.
+//! the restatement replaces them. the findings file holds this process's findings
+//! only, so a conclusion is only ever merged into its own session's notebook.
 
-use super::context::{internal_error, session_id};
+use super::context::internal_error;
 use super::finding::{
     FindingRequest, FindingResponse, MAX_CATEGORY_CHARS, MAX_DESCRIPTION_CHARS, MAX_FILE_BYTES,
     MAX_PATH_BYTES, MAX_SEVERITY_CHARS, MAX_TITLE_CHARS,
@@ -21,19 +21,19 @@ use crate::util;
 use rmcp::ErrorData;
 use rusqlite::{OptionalExtension, Transaction, params};
 
-/// Stores one validated finding and returns the persisted row identity.
+/// Stores one validated finding, already checked against the indexed file
+/// (`fetch_file`, `validate_line_range`), in the findings file and returns the
+/// persisted row identity.
 ///
 /// # Errors
 ///
-/// Returns an error when the file is not indexed, the line range does not
-/// fit the file, or any statement fails.
+/// Returns an error when any statement fails.
 pub(super) fn insert_finding(
     tx: &Transaction<'_>,
     request: &FindingRequest,
+    source_hash: String,
     revision_id: &str,
 ) -> Result<FindingResponse, ErrorData> {
-    let (source_hash, content) = fetch_file(tx, &request.file)?;
-    validate_line_range(request, &content)?;
     let id = persist_finding(tx, request, &source_hash, revision_id)?;
 
     // File, line range, and id are structural metadata about *where* a
@@ -69,7 +69,7 @@ fn persist_finding(
     }
 }
 
-/// The row this session already owns for the same file, content hash, line
+/// The row this session already holds for the same file, content hash, line
 /// range, category, and title, if any.
 fn find_restated(
     tx: &Transaction<'_>,
@@ -78,11 +78,10 @@ fn find_restated(
 ) -> Result<Option<i64>, ErrorData> {
     tx.query_row(
         "SELECT id FROM findings \
-         WHERE session_id = ?1 AND path = ?2 AND source_hash = ?3 AND line_start = ?4 \
-           AND line_end = ?5 AND category = ?6 AND title = ?7 \
+         WHERE path = ?1 AND source_hash = ?2 AND line_start = ?3 \
+           AND line_end = ?4 AND category = ?5 AND title = ?6 \
          ORDER BY id LIMIT 1",
         params![
-            session_id().to_string(),
             request.file,
             source_hash,
             request.line_start,
@@ -96,8 +95,8 @@ fn find_restated(
     .map_err(|error| ErrorData::internal_error(error.to_string(), None))
 }
 
-/// Restatement body: replaces the judgment-bearing fields and marks the row
-/// current against the verified revision.
+/// Restatement body: replaces the judgment-bearing fields and records the
+/// verified revision.
 fn refresh_restated(
     tx: &Transaction<'_>,
     request: &FindingRequest,
@@ -105,8 +104,8 @@ fn refresh_restated(
     id: i64,
 ) -> Result<(), ErrorData> {
     tx.execute(
-        "UPDATE findings SET severity = ?1, description = ?2, evidence_revision = ?3, \
-         status = 'current' WHERE id = ?4",
+        "UPDATE findings SET severity = ?1, description = ?2, evidence_revision = ?3 \
+         WHERE id = ?4",
         params![request.severity, request.description, revision_id, id],
     )
     .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -130,8 +129,8 @@ fn insert_new(
     tx.execute(
         "INSERT INTO findings (\
             path, source_hash, line_start, line_end, severity, category, title, description, \
-            created_at_unix, evidence_revision, status, session_id\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'current', ?11)",
+            created_at_unix, evidence_revision\
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             request.file,
             source_hash,
@@ -143,7 +142,6 @@ fn insert_new(
             request.description,
             created_at,
             revision_id,
-            session_id().to_string(),
         ],
     )
     .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -222,7 +220,10 @@ pub(super) fn fetch_file(tx: &Transaction<'_>, file: &str) -> Result<(String, St
     Ok((source_hash, content))
 }
 
-fn validate_line_range(request: &FindingRequest, content: &str) -> Result<(), ErrorData> {
+pub(super) fn validate_line_range(
+    request: &FindingRequest,
+    content: &str,
+) -> Result<(), ErrorData> {
     let line_count = u32::try_from(content.lines().count()).map_err(|error| {
         ErrorData::invalid_params(
             format!(

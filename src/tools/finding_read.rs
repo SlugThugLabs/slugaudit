@@ -1,9 +1,7 @@
-//! `finding_read` MCP tool — returns findings scoped to the current
-//! agent session. Unlike raw `query` access to the `findings` table
-//! (which returns rows from every session), `finding_read` gates on the
-//! current `session_id` — a new agent session sees only its own
-//! conclusions. This is the safe, curated view; `query` remains the
-//! unconstrained "I know what I'm doing" access path.
+//! `finding_read` MCP tool — returns this SlugAudit process's findings,
+//! read from this process's findings file, each with the status it has against the freshly
+//! synced index: `current` while the file still has the hash the finding was
+//! written against, `stale` otherwise.
 //!
 //! A page is cut by serialized JSON bytes, not by a row count: a finding
 //! carries up to 10,000 characters of agent-authored description, so a
@@ -15,7 +13,6 @@
 //! description clipped on a character boundary and flagged, so paging always
 //! makes progress and nothing is silently dropped.
 
-use super::context::session_id;
 use super::page::{LegacyPaging, Page, PageLimit};
 use super::page_size;
 use super::paginate::{PageRequest, PageSpec, Produced, decode_rows, page_request, paginate};
@@ -33,8 +30,8 @@ const MAX_FILE_BYTES: usize = 8 * 1024;
 const TOOL: &str = "finding_read";
 
 #[derive(Debug, Deserialize, JsonSchema)]
-/// Read request for the calling session's findings: the project, and
-/// optionally one file within it; or the `cursor` of a page already read.
+/// Read request for this session's findings: the project, and optionally one
+/// file within it; or the `cursor` of a page already read.
 pub struct FindingReadRequest {
     /// Any path inside the active project — used to select the database.
     /// Required unless `cursor` is given.
@@ -42,7 +39,7 @@ pub struct FindingReadRequest {
     #[serde(default)]
     pub path: Option<String>,
     /// Optional project-relative file path. When supplied, only findings
-    /// for that file are returned. Omit to return all current-session
+    /// for that file are returned. Omit to return all of this session's
     /// findings for the project.
     #[schemars(default)]
     pub file: Option<String>,
@@ -59,13 +56,12 @@ pub struct FindingReadRequest {
     pub legacy_paging: LegacyPaging,
 }
 
-/// One finding row, scoped to the current agent session. Every field is
-/// exactly what the `finding` tool stored — SlugAudit never generates
-/// any of this text.
+/// One finding row of this session. Every field is exactly what the
+/// `finding` tool stored — SlugAudit never generates any of this text.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct FindingReadEntry {
-    /// Row id of the finding in this project's `findings` table; a restated
-    /// finding keeps its id.
+    /// Row id of the finding in this session's findings; a restated finding
+    /// keeps its id.
     pub id: i64,
     /// Project-relative path of the file the finding is about.
     pub path: String,
@@ -89,16 +85,15 @@ pub struct FindingReadEntry {
     /// description. False means the whole stored text is present.
     pub detail_clipped: bool,
     /// `current` while the file's content hash still equals `source_hash`;
-    /// `stale` once a sync sees a different hash.
+    /// `stale` once the file has a different hash or is gone.
     pub status: String,
     /// Content hash of the file at the revision the finding was written
-    /// against; a sync that sees a different hash marks the finding `stale`.
+    /// against; a different hash now makes the finding `stale`.
     pub source_hash: String,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-/// One page of the current session's findings, read against the current
-/// revision.
+/// One page of this session's findings, read against the current revision.
 pub struct FindingReadResponse {
     /// Paging for `findings`; `total` counts this session's findings under
     /// the `file` filter, as they were when the first page was read.
@@ -131,8 +126,7 @@ pub fn finding_read(
         PageRequest::Cursor(_) => None,
     };
     let spec = PageSpec::typed::<StoredFinding>(TOOL, size.map_or(0, |size| size.bytes));
-    let current_session = session_id().to_string();
-    let scope = (current_session.as_str(), request.file.as_deref());
+    let file_filter = request.file.as_deref();
 
     let mut cut = PageCut::new(0);
     let served = paginate::<FindingExtra, _, _>(
@@ -140,7 +134,7 @@ pub fn finding_read(
         &spec,
         page_request,
         |tx, rows| {
-            produce(tx, scope, rows)?;
+            produce(tx, file_filter, rows)?;
             Ok(Produced {
                 completeness: super::page::Completeness::Complete,
                 extra: FindingExtra {

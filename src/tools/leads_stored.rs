@@ -117,7 +117,6 @@ impl Materialize for StoredLead {
 #[serde(remote = "MechanicSource", rename_all = "snake_case")]
 enum SourceForm {
     Session,
-    ProjectConfig,
     Builtin,
 }
 

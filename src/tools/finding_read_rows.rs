@@ -7,6 +7,7 @@ use super::FindingReadEntry;
 use crate::error_codes::store_error;
 use crate::store::{Cell, Materialize, ResultStoreError, StoredRow, Take};
 use crate::tools::context::internal_error;
+use crate::tools::finding_store::{HashLookup, findings_path_of};
 use crate::tools::paginate::RowSink;
 use rmcp::ErrorData;
 use serde::{Deserialize, Serialize};
@@ -102,13 +103,13 @@ impl Materialize for StoredFinding {
 }
 
 /// Streams the session's findings into the result, inside the verified read
-/// transaction.
+/// transaction on the project database.
 pub(super) fn produce(
     tx: &rusqlite::Transaction<'_>,
-    scope: SessionScope<'_>,
+    file_filter: Option<&str>,
     rows: &mut RowSink<'_, '_>,
 ) -> Result<(), ErrorData> {
-    each_session_finding(tx, scope, |entry| rows.push(&StoredFinding { entry }))
+    each_session_finding(tx, file_filter, |entry| rows.push(&StoredFinding { entry }))
 }
 
 /// The byte cut of one page: rows are taken while their serialized sizes fit
@@ -160,23 +161,27 @@ impl PageCut {
     }
 }
 
-/// Which findings a read selects: the calling session's, optionally for one
-/// file.
-pub(super) type SessionScope<'a> = (&'a str, Option<&'a str>);
-
-/// Calls `each` with every finding the scope selects, in id order.
+/// Calls `each` with every finding of this session (optionally for one
+/// file), in id order, with the status it has against the project database
+/// `project_tx` reads. No finding file means no findings were written yet.
 pub(super) fn each_session_finding(
-    tx: &rusqlite::Transaction<'_>,
-    (current_session, file_filter): SessionScope<'_>,
+    project_tx: &rusqlite::Transaction<'_>,
+    file_filter: Option<&str>,
     mut each: impl FnMut(FindingReadEntry) -> Result<(), ErrorData>,
 ) -> Result<(), ErrorData> {
-    let (filter, query_params) = session_filter(current_session, file_filter);
+    let Some(findings) = crate::store::open_findings_existing(&findings_path_of(project_tx)?)
+        .map_err(|error| internal_error("opening the findings database", error))?
+    else {
+        return Ok(());
+    };
+    let mut lookup = HashLookup::new(project_tx)?;
+    let (filter, query_params) = file_clause(file_filter);
     let sql = format!(
         "SELECT id, path, line_start, line_end, severity, category, \
-             title, description, status, source_hash \
-         FROM findings WHERE {filter} ORDER BY id"
+             title, description, source_hash \
+         FROM findings{filter} ORDER BY id"
     );
-    let mut statement = tx
+    let mut statement = findings
         .prepare(&sql)
         .map_err(|error| internal_error("preparing the session findings read", error))?;
     let rows = statement
@@ -186,23 +191,27 @@ pub(super) fn each_session_finding(
         )
         .map_err(|error| internal_error("executing the session findings read", error))?;
     for row in rows {
-        each(row.map_err(|error| internal_error("reading a session finding", error))?)?;
+        let mut entry = row.map_err(|error| internal_error("reading a session finding", error))?;
+        entry.status = if lookup.is_current(&entry.path, &entry.source_hash)? {
+            "current"
+        } else {
+            "stale"
+        }
+        .to_owned();
+        each(entry)?;
     }
     Ok(())
 }
 
-/// The WHERE clause and bound parameters that select one session's
-/// findings.
-fn session_filter(
-    current_session: &str,
-    file_filter: Option<&str>,
-) -> (&'static str, Vec<rusqlite::types::Value>) {
-    let mut query_params = vec![rusqlite::types::Value::Text(current_session.to_owned())];
-    let Some(file) = file_filter else {
-        return ("session_id = ?1", query_params);
-    };
-    query_params.push(rusqlite::types::Value::Text(file.to_owned()));
-    ("session_id = ?1 AND path = ?2", query_params)
+/// The WHERE clause and bound parameters that narrow a read to one file.
+fn file_clause(file_filter: Option<&str>) -> (&'static str, Vec<rusqlite::types::Value>) {
+    match file_filter {
+        None => ("", Vec::new()),
+        Some(file) => (
+            " WHERE path = ?1",
+            vec![rusqlite::types::Value::Text(file.to_owned())],
+        ),
+    }
 }
 
 /// Maps one findings row to its response entry.
@@ -217,8 +226,9 @@ fn finding_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<FindingReadEntry> 
         title: row.get(6)?,
         description: row.get(7)?,
         detail_clipped: false,
-        status: row.get(8)?,
-        source_hash: row.get(9)?,
+        // Decided against the project database by the caller.
+        status: String::new(),
+        source_hash: row.get(8)?,
     })
 }
 

@@ -47,7 +47,7 @@ slugaudit update              # update to the latest release
 | `query` | Read-only SQL over the index (files, evidence, dependency edges) |
 | `structure` | Tree-sitter pattern search over one file or the whole project |
 | `leads` | Counts and file/line rows for mechanical facts (unwrap/expect/panic calls, TODO markers, diagnostics) |
-| `finding`, `finding_read`, `finding_sessions` | Record and read review findings tied to a file's current content |
+| `finding`, `finding_read`, `finding_clear` | Record, read and clear this session's review findings, tied to a file's current content |
 | `mechanic` | Register your own tree-sitter counters |
 | `project_control` | Turn indexing on or off for a project |
 | `health` | Server and database state |

@@ -211,13 +211,9 @@ fn paged_mechanic_continuation_keeps_the_page_budget_of_page_one() {
     let path = path_of(&project);
     let manager = sync::SourceSyncManager::default();
     two_registered(&manager, &path);
-    let config = project
-        .path()
-        .join(".planning")
-        .join("slugaudit")
-        .join("config.json");
-    std::fs::write(config, format!("{{\"default_page_bytes\": {SMALL_PAGE}}}"))
-        .expect("write project config");
+    let _config = crate::tools::test_support::use_global_config(&format!(
+        "{{\"default_page_bytes\": {SMALL_PAGE}}}"
+    ));
     let mut request = action(&path, MechanicAction::List, None);
     request.page_bytes = None;
     let first = call(&manager, request).expect("page one");

@@ -1,9 +1,8 @@
 //! Source synchronization manager for SlugAudit.
 //!
 //! `SourceSyncManager` owns the per-server state every tool call shares
-//! (the last-sync stamps, the session-start marking guard, session
-//! mechanics, the mechanic scan cache, and the paged-result store) and
-//! exposes the one sync entry point, `ensure_current`. Every call hashes
+//! (the last-sync stamps, session mechanics, the mechanic scan cache, and
+//! the paged-result store) and exposes the one sync entry point, `ensure_current`. Every call hashes
 //! the project and publishes the delta; there is no filesystem watcher and
 //! no timestamp shortcut, so an answer is proven against the source before
 //! it is served.
@@ -13,11 +12,10 @@ mod orchestration;
 
 use super::discard_notice::DatabaseDiscard;
 pub(crate) use orchestration::{map_activation_error, map_process_limits_error};
-use std::collections::HashMap;
-use std::path::PathBuf;
+use rmcp::ErrorData;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use uuid::Uuid;
 
 /// A project brought fully up to date, ready for a tool to query. Defined
 /// here (rather than in `tools::context`) so that `SourceSyncManager` can
@@ -31,6 +29,34 @@ pub struct SyncedProject {
     /// Set only on the call that discarded and rebuilt the project database
     /// (corruption, version bump, root mismatch); `None` on every other call.
     pub discard: Option<DatabaseDiscard>,
+}
+
+impl SyncedProject {
+    /// Path of this process's session findings database, beside the project
+    /// database. It need not exist: no finding was written yet in this
+    /// session.
+    ///
+    /// # Errors
+    ///
+    /// Returns `project_not_enabled` when this process has no session for the
+    /// project: `off` ended it after the sync.
+    pub fn findings_path(&self) -> Result<PathBuf, ErrorData> {
+        session_findings_for(&self.database_path)
+    }
+}
+
+/// The session findings database of the project whose `project.db` is
+/// `database_path`.
+///
+/// # Errors
+///
+/// Returns `project_not_enabled` when this process has no session for the
+/// project.
+pub(crate) fn session_findings_for(database_path: &Path) -> Result<PathBuf, ErrorData> {
+    database_path
+        .parent()
+        .and_then(crate::project::session_findings_path)
+        .ok_or_else(|| map_activation_error(crate::project::ActivationError::NotActive))
 }
 
 /// Owns the tool-facing per-server state and provides the sync entry point.
@@ -48,15 +74,6 @@ pub struct SourceSyncManager {
     last_sync_unix_seconds: Arc<AtomicI64>,
     /// Duration of the most recent successful sync, in milliseconds.
     last_sync_duration_ms: Arc<AtomicU64>,
-    /// Project databases whose prior-session findings have already been
-    /// marked stale in this process, mapped to the session UUID that did it.
-    /// This is the guard for the session-start transition: the marking must
-    /// not repeat on every tool call, or it would re-stale a live peer
-    /// session's findings as it writes them. Keyed by
-    /// database path because one manager can serve several projects, and
-    /// valued by session so a (test-only) session change re-arms it.
-    /// Clones share the state.
-    prior_sessions_staled: Arc<Mutex<HashMap<PathBuf, Uuid>>>,
     /// The mechanics the auditor registered for this server's session (the
     /// `mechanic` tool). Held here because the manager is the per-server
     /// state every tool already receives; clones share it, and it dies with

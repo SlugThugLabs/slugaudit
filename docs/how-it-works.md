@@ -25,11 +25,23 @@ Files that are skipped (see below) are identified by size and modification time,
 
 - One SQLite file per project: `<project>/.planning/slugaudit/project.db`, in WAL mode.
 - It is scratch. Anything derived from your source can be rebuilt from your source.
-- SlugAudit deletes and rebuilds it when it is corrupt, has an incompatible schema or contract version, or was built for a different project root (for example, the project folder was copied or unpacked elsewhere). The call that did this carries `database_discard` with `findings_discarded` and `cause`.
-- The one thing in the database that cannot be rebuilt from source is findings. A rebuild loses them. Hence the `findings_discarded` count.
+- SlugAudit deletes and rebuilds it when it is corrupt, has an incompatible schema or contract version, or was built for a different project root (for example, the project folder was copied or unpacked elsewhere). The call that did this carries `database_discard` with a `cause`.
+- Nothing in `project.db` is lost by a rebuild: findings live in their own database (see below).
 - If `project.db` is a symlink, SlugAudit refuses to open it.
 - A new database file is created owner-only (mode 0600 on Unix).
 - If you delete `project.db` yourself, the next call rebuilds it. The project stays on, because the switch is the directory `.planning/slugaudit/`, not the database. Deleting the whole directory turns the project off.
+
+## Findings and session state
+
+Findings are what the agent concluded in this session, so each SlugAudit server process keeps them in its own database, `<project>/.planning/slugaudit/findings-<id>.db` (`<id>` is random per process), opened the same way as `project.db` (WAL mode, created owner-only, a symlink is refused).
+
+- A finding is stored with the content hash of its file. `finding_read` compares that hash with the file's hash in the freshly synced `project.db`: equal is `current`, anything else (edited, deleted) is `stale`.
+- A rebuild of `project.db` never touches the findings file. Findings survive it.
+- A finding lasts one session, meaning one SlugAudit server process. The first time a process touches a project (any tool call on it), it starts with no findings and takes an exclusive lock on its own `findings-<id>.lock` file, which it holds until it exits. Later calls in the same process keep the same file. So a restart gives the agent fresh eyes: no earlier conclusion comes back.
+- Two agent sessions on the same repo run two SlugAudit processes, and each sees only its own findings. A new process never deletes a file whose lock is held. At its first touch it deletes the files of sessions that ended (their lock can be taken), and the plain `findings.db` an older version left behind. `finding_clear` empties only the calling session's file.
+- Locks can be unreliable on a network drive (NFS, SMB). If the repo lives on one, a live session's lock may not be seen, and another session may then delete that session's findings. Keep the repo on a local disk when two sessions share it.
+- `finding_clear` deletes every finding of this session for a project, for the case where you switch models inside one session and want to start clean.
+- Mechanics the agent registers and the profile it picks with `project_control` `on` are also held in server memory for the session. Nothing about them is written to disk.
 
 Only the revision "now" exists. `files`, `evidence` and `dependency_edges` hold the current state. A changed file is replaced in place. A deleted file is removed.
 

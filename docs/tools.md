@@ -15,12 +15,12 @@ Facts that hold for every tool:
 |---|---|---|
 | [`report`](#report) | Project snapshot | no |
 | [`leads`](#leads) | Counts and rows of mechanical facts | no |
-| [`mechanic`](#mechanic) | Add, remove, list your own counters | session memory, optionally `config.json` |
+| [`mechanic`](#mechanic) | Add, remove, list your own counters | session memory |
 | [`query`](#query) | Read-only SQL over the index | no |
 | [`structure`](#structure) | Tree-sitter pattern search | no |
-| [`finding`](#finding) | Record a conclusion you reviewed | writes to the database |
+| [`finding`](#finding) | Record a conclusion you reviewed | writes to `findings-<id>.db` |
 | [`finding_read`](#finding_read) | Read this session's findings | no |
-| [`finding_sessions`](#finding_sessions) | List or adopt earlier sessions' findings | writes to the database |
+| [`finding_clear`](#finding_clear) | Delete this session's findings for a project | deletes from `findings-<id>.db` |
 | [`project_control`](#project_control) | Enable or disable a project | creates or deletes `.planning/slugaudit/` |
 | [`health`](#health) | Server and database state | no |
 
@@ -73,7 +73,7 @@ The result store budget is 4 times `max_query_response_bytes`. An unfinished res
 
 ## `database_discard`
 
-Present only on the call that threw away and rebuilt the database. It has `findings_discarded` (count; `null` if the database was too damaged to count) and `cause`. Findings live in the database, so a rebuild loses them. Check this field.
+Present only on the call that threw away and rebuilt the database. It has `cause`. A rebuild loses nothing the agent wrote: session findings live in their own database, `findings-<id>.db`.
 
 ---
 
@@ -149,7 +149,7 @@ Key response fields:
 
 | Field | Meaning |
 |---|---|
-| `mechanic_counts` | `[{mechanic, source, note, count, files, covers}]`. Counts are complete, never paged. `source` is `session`, `project_config` or `builtin`. `covers` lists the languages the count read. A language missing from `covers` was not checked, so a zero there means nothing. |
+| `mechanic_counts` | `[{mechanic, source, note, count, files, covers}]`. Counts are complete, never paged. `source` is `session` or `builtin`. `covers` lists the languages the count read. A language missing from `covers` was not checked, so a zero there means nothing. |
 | `rows` | `full`: `{file, line, detail, detail_clipped}`. `compact`: `{mechanic, file, line}`. `line` is `0` when there is no span. `detail` is cut at 200 characters. |
 | `files_total`, `files_covered` | File denominators. `files_total - files_covered` is what is left. |
 | `files_not_parsed` | Indexed files whose grammar did not run or finish. While above 0, every count is a floor. `report` lists the files. |
@@ -180,15 +180,13 @@ Parameters:
 | `action` | `add`, `remove`, `list` | Required. |
 | `path` | string | Required unless `cursor` is given. |
 | `id` | string | `add`, `remove`. 1-64 characters of `a-z`, `0-9`, `_`. Never a built-in's id or one already in use. |
-| `index` | integer | `remove` only, instead of `id`: removes a persisted entry that failed to load (listed in `invalid`). |
 | `language` | string | `add`. The lowercase name the index stores (`python`, `rust`, `javascript`, `tsx`). Not a pack alias such as `shell` (use `bash`). Prose is refused. |
 | `query` | string | `add`. Tree-sitter S-expression with exactly one capture. Up to 16384 bytes by default. A query that does not compile is refused with the compiler's message. |
 | `note` | string | `add`. 1 to 1024 bytes. What the entry counts, in your words. |
-| `persist` | boolean | `add`. `true` writes the entry to `.planning/slugaudit/config.json`. Default `false`: kept in server memory until the server exits. |
 | `limit`, `page_bytes` | integer | `add`: size of the first page. `list`: `page_bytes` is the page size. |
 | `cursor` | string | `list` only. |
 
-Limits: 64 session entries and 64 persisted entries.
+Entries are kept in server memory until the server exits. Nothing is written to disk. Limit: 64 entries.
 
 Key response fields: `action`, `id`, `source`, `mechanics` (the catalogue), `invalid`, `mechanics_invalid`. On `add`, `first_count` is the full `leads` response for the new id. On `list`, `page` is present.
 
@@ -201,8 +199,7 @@ Example:
   "id": "eval_calls",
   "language": "python",
   "query": "(call function: (identifier) @callee (#eq? @callee \"eval\"))",
-  "note": "Calls to eval()",
-  "persist": false
+  "note": "Calls to eval()"
 }
 ```
 
@@ -309,7 +306,7 @@ Example:
 
 ## finding
 
-Record a conclusion you have reviewed. SlugAudit never writes findings itself.
+Record a conclusion you have reviewed. SlugAudit never writes findings itself. Findings are stored in `findings-<id>.db` and last until the server process exits.
 
 Parameters (all required):
 
@@ -323,7 +320,7 @@ Parameters (all required):
 | `title` | string | Up to 200 characters. |
 | `description` | string | Up to 10,000 characters. |
 
-A file that is not indexed with content (binary, skipped, never found) fails with `file_not_indexed`. The finding is tied to the file's content hash. When the file changes, the finding becomes `stale`.
+A file that is not indexed with content (binary, skipped, never found) fails with `file_not_indexed`. The finding is tied to the file's content hash. When the file changes, `finding_read` reports the finding as `stale`.
 
 Response: `id`, `revision_id`, `source_hash`, `status` (`current`).
 
@@ -342,7 +339,7 @@ Example:
 
 ## finding_read
 
-Read the findings written by this session. It never returns another session's findings.
+Read the findings written by this session (this server process). A restarted server begins with none.
 
 Parameters:
 
@@ -356,21 +353,19 @@ Response: `page` and `findings`, each `{id, path, line_start, line_end, severity
 
 Example: `{ "path": "/home/you/code/myproject" }`
 
-## finding_sessions
+## finding_clear
 
-A server restart is a new session. `finding_read` shows only the current session's findings. Earlier sessions' findings are kept and marked `stale`. Use this tool to see them or take them over.
+Delete every finding this session recorded for a project, and say how many. It exists for starting clean after a model switch inside one session. A server restart already begins with no findings.
 
 Parameters:
 
 | Name | Type | Notes |
 |---|---|---|
-| `path` | string | Required. |
-| `action` | `list` or `adopt` | Required. |
-| `session_id` | string | Required for `adopt`, refused for `list`. Not the current session's own id. |
+| `path` | string | Required. Any path inside the project. |
 
-Response: `sessions` (`[{session_id, started_at_unix, findings}]`, newest first, at most 100), `total_sessions`, `adopted` (count, for `adopt`). Adopted findings read `current` if their file is unchanged, else `stale`. Nothing is deleted.
+Response: `removed` (count; `0` when there was nothing to delete) and, on a call that rebuilt a damaged database, `database_discard`.
 
-Example: `{ "path": "/home/you/code/myproject", "action": "list" }`
+Example: `{ "path": "/home/you/code/myproject" }`
 
 ## project_control
 
@@ -382,7 +377,7 @@ Parameters:
 |---|---|---|
 | `action` | `on` or `off` | Required. |
 | `path` | string | Project root. Defaults to the server's current directory. |
-| `profile` | `adaptive`, `audit`, `lean` | Optional. Saved to `config.json` on `on`. |
+| `profile` | `adaptive`, `audit`, `lean` | Optional. Held in memory for this project until the server exits. Not saved. |
 
 Response:
 
@@ -395,7 +390,7 @@ Response:
 | `removed` | On `off`: the paths removed (the `.planning/slugaudit` directory, then `.planning` if it was left empty). |
 | `database_discard` | Present when `on` found a damaged database and rebuilt it. |
 
-The project is on while the directory `.planning/slugaudit/` exists. `on` creates it. `off` deletes the whole directory, `config.json` included, and then `.planning` if that leaves it empty. A symlink at `.planning/slugaudit` counts as off, and `off` removes only the link. If `project.db` is missing or broken but the directory exists, the next call rebuilds it. If the project folder was moved, copied or unpacked elsewhere, the old database is thrown away and rebuilt on the next call.
+The project is on while the directory `.planning/slugaudit/` exists. `on` creates it. `off` deletes the whole directory, including the session's `findings-<id>.db`, and then `.planning` if that leaves it empty. A symlink at `.planning/slugaudit` counts as off, and `off` removes only the link. If `project.db` is missing or broken but the directory exists, the next call rebuilds it. If the project folder was moved, copied or unpacked elsewhere, the old database is thrown away and rebuilt on the next call.
 
 Example: `{ "action": "on", "path": "/home/you/code/myproject" }`
 

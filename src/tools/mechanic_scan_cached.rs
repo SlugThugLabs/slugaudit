@@ -54,7 +54,6 @@ pub(super) struct Scanned {
 fn source_tag(source: MechanicSource) -> &'static str {
     match source {
         MechanicSource::Session => "session",
-        MechanicSource::ProjectConfig => "project_config",
         MechanicSource::Builtin => "builtin",
     }
 }

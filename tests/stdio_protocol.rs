@@ -11,6 +11,9 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 struct ServerProcess {
+    /// Keeps the server's home directory alive: it points at an empty temp
+    /// dir so a developer's real `~/.slugthug` config never reaches a test.
+    _home: tempfile::TempDir,
     child: Child,
     stdin: Option<std::process::ChildStdin>,
     stdout_lines: mpsc::Receiver<String>,
@@ -20,7 +23,9 @@ struct ServerProcess {
 impl ServerProcess {
     fn spawn() -> Self {
         let binary = env!("CARGO_BIN_EXE_slugaudit");
+        let home = tempfile::tempdir().expect("server home dir");
         let mut child = Command::new(binary)
+            .env("SLUGTHUG_HOME", home.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -63,6 +68,7 @@ impl ServerProcess {
         });
 
         Self {
+            _home: home,
             child,
             stdin: Some(stdin),
             stdout_lines,
@@ -259,7 +265,7 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
     assert_eq!(finding_result["status"], "current");
     assert!(finding_result["id"].as_i64().is_some_and(|id| id > 0));
 
-    // --- Workflow act 2: the finding must go stale the moment the source
+    // --- Workflow act 2: the finding must read stale the moment the source
     // it was bound to changes, across a real sync on a live server. ---
     std::fs::write(
         project.path().join("lib.rs"),
@@ -267,7 +273,7 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
     )
     .expect("modify source");
     // The next tool call hashes the tree, sees the change, and publishes
-    // revision 2 (invalidating the finding). Poll the revision count
+    // revision 2 (the finding reads stale). Poll the revision count
     // instead of sleeping a fixed amount, so a slow CI machine can't turn
     // a correct test into a flaky one.
     let mut revision_count: i64 = 1;
@@ -290,14 +296,10 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
         "the modification must publish a second revision"
     );
 
-    let stale_result = server.tool_json(
-        8,
-        "query",
-        json!({ "path": project_path, "sql": "SELECT status FROM findings" }),
-    );
+    let stale_result = server.tool_json(8, "finding_read", json!({ "path": project_path }));
     assert_eq!(
-        stale_result["rows"][0]["status"], "stale",
-        "the finding must flip to stale once its source changed"
+        stale_result["findings"][0]["status"], "stale",
+        "the finding must read stale once its source changed"
     );
 
     // Structured tracing (src/server.rs's `run_blocking`, src/tools/*.rs)
@@ -364,6 +366,110 @@ fn restart_serves_the_same_revision_from_disk() {
         second_revision, first_revision,
         "a fresh server must serve the same revision from the persisted database"
     );
+}
+
+/// Session findings live in `findings-<id>.db` for one server process: a restarted
+/// server begins with none, and `finding_clear` empties a live one and says how
+/// many it removed.
+#[test]
+fn findings_last_one_server_process_and_finding_clear_empties_a_live_one() {
+    let (_project, project_path) = ServerProcess::init_project();
+    let finding = json!({
+        "path": project_path,
+        "file": "lib.rs",
+        "line_start": 1,
+        "line_end": 1,
+        "severity": "low",
+        "category": "style",
+        "title": "t",
+        "description": "d",
+    });
+
+    let mut first = ServerProcess::spawn();
+    first.handshake();
+    first.tool_json(2, "finding", finding.clone());
+    let read = first.tool_json(3, "finding_read", json!({ "path": project_path }));
+    assert_eq!(read["findings"].as_array().map(Vec::len), Some(1));
+    let cleared = first.tool_json(4, "finding_clear", json!({ "path": project_path }));
+    assert_eq!(cleared["removed"], 1);
+    first.tool_json(5, "finding", finding);
+    drop(first);
+
+    let mut second = ServerProcess::spawn();
+    second.handshake();
+    let read = second.tool_json(2, "finding_read", json!({ "path": project_path }));
+    assert_eq!(
+        read["findings"].as_array().map(Vec::len),
+        Some(0),
+        "a new server process starts with no findings: {read}"
+    );
+}
+
+/// Two live servers on one repo each keep their own findings: the second
+/// server's first call does not wipe the first server's, and `finding_clear`
+/// in one leaves the other's alone.
+#[test]
+fn two_live_servers_on_one_repo_keep_their_own_findings() {
+    let (_project, project_path) = ServerProcess::init_project();
+    let finding = |title: &str| {
+        json!({
+            "path": project_path,
+            "file": "lib.rs",
+            "line_start": 1,
+            "line_end": 1,
+            "severity": "low",
+            "category": "style",
+            "title": title,
+            "description": "d",
+        })
+    };
+    let titles = |server: &mut ServerProcess, id: u64| -> Vec<String> {
+        let read = server.tool_json(id, "finding_read", json!({ "path": project_path }));
+        read["findings"]
+            .as_array()
+            .expect("findings array")
+            .iter()
+            .map(|entry| entry["title"].as_str().expect("title").to_owned())
+            .collect()
+    };
+
+    let mut first = ServerProcess::spawn();
+    first.handshake();
+    first.tool_json(2, "finding", finding("from first"));
+
+    let mut second = ServerProcess::spawn();
+    second.handshake();
+    assert!(
+        titles(&mut second, 2).is_empty(),
+        "the second server starts with none of its own"
+    );
+    second.tool_json(3, "finding", finding("from second"));
+
+    assert_eq!(titles(&mut first, 3), ["from first"]);
+    assert_eq!(titles(&mut second, 4), ["from second"]);
+    let cleared = second.tool_json(5, "finding_clear", json!({ "path": project_path }));
+    assert_eq!(cleared["removed"], 1);
+    assert_eq!(titles(&mut first, 4), ["from first"]);
+}
+
+/// The advertised tool list: `finding_clear` replaced `finding_sessions`.
+#[test]
+fn the_tool_list_has_finding_clear_and_no_finding_sessions() {
+    let mut server = ServerProcess::spawn();
+    server.handshake();
+    server.send(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#);
+    let (response, _) = server.recv_response(2);
+
+    let names: Vec<&str> = response["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("tool name"))
+        .collect();
+
+    assert_eq!(names.len(), 10, "{names:?}");
+    assert!(names.contains(&"finding_clear"), "{names:?}");
+    assert!(!names.contains(&"finding_sessions"), "{names:?}");
 }
 
 /// When the caller requests progress notifications (by passing

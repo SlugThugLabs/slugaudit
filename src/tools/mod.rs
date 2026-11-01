@@ -11,9 +11,10 @@
 
 pub(crate) mod context;
 mod finding;
+mod finding_clear;
 mod finding_insert;
 mod finding_read;
-mod finding_sessions;
+mod finding_store;
 mod health;
 mod health_phase;
 mod health_result_store;
@@ -87,11 +88,8 @@ pub use context::{
     page_request, paginate,
 };
 pub use finding::{FindingRequest, FindingResponse, finding};
+pub use finding_clear::{FindingClearRequest, FindingClearResponse, finding_clear};
 pub use finding_read::{FindingReadEntry, FindingReadRequest, FindingReadResponse, finding_read};
-pub use finding_sessions::{
-    FindingSessionsAction, FindingSessionsRequest, FindingSessionsResponse, PriorSession,
-    finding_sessions,
-};
 pub use health::{HealthRequest, HealthResponse, health};
 pub use leads::{
     CompactLeadRow, FileCount, LeadMode, LeadRow, LeadRows, LeadsRequest, LeadsResponse,
@@ -185,7 +183,7 @@ pub(crate) const PARSER_FAILURE_PREDICATE: &str = "file_kind = 'indexed' \
 /// project does not use, and would drop the resolution error unlogged. The
 /// error is the same `invalid_params` (with `project_not_enabled` when the
 /// project was never enabled) that `ensure_synced` returns. A present but
-/// unreadable or malformed project config fails the call with an
+/// unreadable or malformed global config fails the call with an
 /// `invalid_params` naming the file.
 pub(super) fn resolve_limits(path: &str) -> Result<ResourceLimits, ErrorData> {
     limits_for_root(&project_root(path)?)
@@ -208,14 +206,20 @@ pub(super) fn process_limits_for_tool() -> Result<ResourceLimits, ErrorData> {
         .map_err(crate::sync::map_process_limits_error)
 }
 
-/// The process limits with `root`'s project config applied.
+/// The limits for the project at `root`: defaults, the global file, the
+/// `SLUGAUDIT_*` environment and the session profile, in the order
+/// `project::effective_limits` documents. The error is logged here, once.
 pub(super) fn limits_for_root(root: &std::path::Path) -> Result<ResourceLimits, ErrorData> {
-    crate::project::ProjectConfig::limits_for(root, process_limits_for_tool()?).map_err(|error| {
-        tracing::error!(%error, "project limits could not be derived");
-        ErrorData::invalid_params(
-            format!("project config is unusable: {error}; fix or remove the file and retry"),
-            None,
-        )
+    use crate::project::ProjectLimitsError;
+    crate::project::effective_limits(root).map_err(|error| match error {
+        ProjectLimitsError::Env(error) => crate::sync::map_process_limits_error(error),
+        error => {
+            tracing::error!(%error, "limits could not be derived");
+            ErrorData::invalid_params(
+                format!("limits could not be resolved: {error}; fix the file and retry"),
+                None,
+            )
+        }
     })
 }
 
@@ -250,11 +254,12 @@ mod tests {
     }
 
     #[test]
-    fn fail_closed_a_malformed_project_config_fails_the_call_naming_the_file() {
+    fn fail_closed_a_malformed_global_config_fails_the_call_naming_the_file() {
         let project = test_support::activated_project("a.rs", b"fn a() {}");
-        let config = project.path().join(".planning/slugaudit/config.json");
-        std::fs::create_dir_all(config.parent().expect("config dir")).expect("create dir");
+        let home = tempfile::tempdir().expect("temp home");
+        let config = home.path().join("config.json");
         std::fs::write(&config, "{ not json").expect("write config");
+        crate::project::set_global_config_path_for_test(Some(config.clone()));
 
         let error = resolve_limits(project.path().to_str().expect("utf-8 path"))
             .expect_err("a malformed config must fail the call, not fall back to defaults");

@@ -503,14 +503,10 @@ fn a_query_of_exactly_the_limit_is_not_refused_for_size() {
 }
 
 #[test]
-fn a_project_config_query_limit_is_honoured_by_the_tool() {
+fn a_global_config_query_limit_is_honoured_by_the_tool() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let config_dir = project.path().join(".planning").join("slugaudit");
-    std::fs::write(
-        config_dir.join("config.json"),
-        r#"{"max_structure_query_bytes": 20}"#,
-    )
-    .expect("write config");
+    let _config =
+        crate::tools::test_support::use_global_config(r#"{"max_structure_query_bytes": 20}"#);
 
     let error = ask(
         &project,

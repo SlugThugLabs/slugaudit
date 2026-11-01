@@ -67,14 +67,10 @@ fn edit_file_immediately_returns_fresh_evidence() {
 }
 
 #[test]
-fn project_file_size_limit_governs_the_scan() {
+fn global_file_size_limit_governs_the_scan() {
     let manager = SourceSyncManager::new();
     let project = create_project();
-    write_file(
-        &project,
-        ".planning/slugaudit/config.json",
-        br#"{"max_file_bytes":50}"#,
-    );
+    let _config = crate::tools::test_support::use_global_config(r#"{"max_file_bytes":50}"#);
     write_file(&project, "lib.rs", b"pub fn initially_small() {}\n");
     let first = sync_project(&manager, &project);
 

@@ -1,9 +1,7 @@
 //! The mechanics an auditor registered for one server's session, held in
-//! memory only. Split from `mechanics_config` (the persisted section) because
-//! the two have different lifetimes: this set dies with the process, the
-//! file outlives it.
+//! memory only: this set dies with the process.
 
-use super::mechanics_config::MechanicEntry;
+use super::mechanic_entry::MechanicEntry;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -28,7 +26,7 @@ impl SessionMechanics {
     }
 
     /// Runs `change` with the session entries locked, so a check and the
-    /// change it guards (collision, cap, persist) are one step for every
+    /// change it guards (collision, cap) are one step for every
     /// `mechanic` call on this server.
     pub fn with_entries<T>(&self, change: impl FnOnce(&mut Vec<MechanicEntry>) -> T) -> T {
         change(&mut crate::util::lock_or_recover(

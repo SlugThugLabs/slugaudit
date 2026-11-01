@@ -1,7 +1,6 @@
 use super::*;
 use crate::sync;
 use crate::tools::test_support::activated_project;
-use crate::util::SESSION_TEST_LOCK;
 use rmcp::handler::server::wrapper::Parameters;
 use rusqlite::Connection;
 use std::fs;
@@ -19,12 +18,46 @@ fn base_request(project: &tempfile::TempDir, file: &str) -> FindingRequest {
     }
 }
 
-fn finding_status(connection: &Connection, id: i64) -> String {
-    connection
-        .query_row("SELECT status FROM findings WHERE id = ?1", [id], |row| {
-            row.get(0)
-        })
-        .expect("read finding status")
+/// Every finding of this session as `finding_read` returns it.
+fn read_all(
+    project: &tempfile::TempDir,
+    manager: &sync::SourceSyncManager,
+) -> Vec<crate::tools::FindingReadEntry> {
+    crate::tools::finding_read(
+        &Parameters(crate::tools::FindingReadRequest {
+            path: Some(project.path().to_string_lossy().into_owned()),
+            file: None,
+            cursor: None,
+            legacy_paging: crate::tools::LegacyPaging::default(),
+        }),
+        &crate::progress::NoopProgressSink,
+        manager,
+    )
+    .expect("finding_read succeeds")
+    .0
+    .findings
+}
+
+fn status_of(entries: &[crate::tools::FindingReadEntry], id: i64) -> String {
+    entries
+        .iter()
+        .find(|entry| entry.id == id)
+        .unwrap_or_else(|| panic!("finding {id} is read back"))
+        .status
+        .clone()
+}
+
+fn write_finding_with(
+    manager: &sync::SourceSyncManager,
+    request: FindingRequest,
+) -> crate::tools::FindingResponse {
+    finding(
+        &Parameters(request),
+        &crate::progress::NoopProgressSink,
+        manager,
+    )
+    .expect("finding succeeds")
+    .0
 }
 
 #[test]
@@ -43,122 +76,58 @@ fn persists_exactly_the_supplied_conclusion() {
 }
 
 #[test]
-fn a_modified_file_invalidates_its_finding_on_next_sync() {
+fn a_modified_file_reads_its_finding_as_stale() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let response = finding(
-        &Parameters(base_request(&project, "lib.rs")),
-        &crate::progress::NoopProgressSink,
-        &crate::sync::SourceSyncManager::default(),
-    )
-    .expect("finding succeeds");
-    let id = response.0.id;
+    let manager = sync::SourceSyncManager::default();
+    let id = write_finding_with(&manager, base_request(&project, "lib.rs")).id;
+    assert_eq!(status_of(&read_all(&project, &manager), id), "current");
 
     fs::write(
         project.path().join("lib.rs"),
         b"pub fn a() { changed(); }\n",
     )
     .expect("modify file");
-    let db_path = project
-        .path()
-        .join(".planning")
-        .join("slugaudit")
-        .join("project.db");
-    let mut connection = crate::store::open_read_write(&db_path).expect("open db");
-    sync::publish(
-        &mut connection,
-        project.path(),
-        "1.0.0",
-        &crate::progress::NoopProgressSink,
-    )
-    .expect("resync");
 
-    assert_eq!(finding_status(&connection, id), "stale");
+    assert_eq!(status_of(&read_all(&project, &manager), id), "stale");
 }
 
 #[test]
-fn a_deleted_file_invalidates_its_finding_on_next_sync() {
+fn a_deleted_file_reads_its_finding_as_stale() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let response = finding(
-        &Parameters(base_request(&project, "lib.rs")),
-        &crate::progress::NoopProgressSink,
-        &crate::sync::SourceSyncManager::default(),
-    )
-    .expect("finding succeeds");
-    let id = response.0.id;
+    let manager = sync::SourceSyncManager::default();
+    let id = write_finding_with(&manager, base_request(&project, "lib.rs")).id;
 
     fs::remove_file(project.path().join("lib.rs")).expect("delete file");
-    let db_path = project
-        .path()
-        .join(".planning")
-        .join("slugaudit")
-        .join("project.db");
-    let mut connection = crate::store::open_read_write(&db_path).expect("open db");
-    sync::publish(
-        &mut connection,
-        project.path(),
-        "1.0.0",
-        &crate::progress::NoopProgressSink,
-    )
-    .expect("resync");
 
-    assert_eq!(finding_status(&connection, id), "stale");
+    assert_eq!(status_of(&read_all(&project, &manager), id), "stale");
 }
 
 #[test]
 fn an_untouched_file_keeps_its_finding_current() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     fs::write(project.path().join("other.rs"), b"pub fn b() {}\n").expect("write second file");
-    let response = finding(
-        &Parameters(base_request(&project, "lib.rs")),
-        &crate::progress::NoopProgressSink,
-        &crate::sync::SourceSyncManager::default(),
-    )
-    .expect("finding succeeds");
-    let id = response.0.id;
+    let manager = sync::SourceSyncManager::default();
+    let id = write_finding_with(&manager, base_request(&project, "lib.rs")).id;
 
     fs::write(
         project.path().join("other.rs"),
         b"pub fn b() { changed(); }\n",
     )
     .expect("modify other file");
-    let db_path = project
-        .path()
-        .join(".planning")
-        .join("slugaudit")
-        .join("project.db");
-    let mut connection = crate::store::open_read_write(&db_path).expect("open db");
-    sync::publish(
-        &mut connection,
-        project.path(),
-        "1.0.0",
-        &crate::progress::NoopProgressSink,
-    )
-    .expect("resync");
 
-    assert_eq!(finding_status(&connection, id), "current");
+    assert_eq!(status_of(&read_all(&project, &manager), id), "current");
 }
 
 #[test]
 fn sync_never_creates_a_finding_on_its_own() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    let db_path = project
-        .path()
-        .join(".planning")
-        .join("slugaudit")
-        .join("project.db");
-    let mut connection = crate::store::open_read_write(&db_path).expect("open db");
-    sync::publish(
-        &mut connection,
-        project.path(),
-        "1.0.0",
-        &crate::progress::NoopProgressSink,
-    )
-    .expect("sync");
+    let manager = sync::SourceSyncManager::default();
 
-    let count: i64 = connection
-        .query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
-        .expect("count findings");
-    assert_eq!(count, 0);
+    assert!(read_all(&project, &manager).is_empty());
+    assert!(
+        !crate::tools::test_support::own_findings_path(&project).exists(),
+        "a read creates no findings database"
+    );
 }
 
 #[test]
@@ -287,7 +256,6 @@ fn an_empty_file_cannot_have_a_finding() {
 /// appending a near-duplicate the way the unconditionally-`INSERT` build did.
 #[test]
 fn restating_a_conclusion_refreshes_one_row_with_the_latest_body() {
-    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     let project = activated_project("lib.rs", b"line one\nline two\n");
 
     let manager = crate::sync::SourceSyncManager::default();
@@ -313,27 +281,20 @@ fn restating_a_conclusion_refreshes_one_row_with_the_latest_body() {
         "a restatement must refresh the existing row, not create a new one"
     );
 
-    let db_path = project
-        .path()
-        .join(".planning")
-        .join("slugaudit")
-        .join("project.db");
-    let connection = crate::store::open_existing(&db_path).expect("open db read-only");
-    let count: i64 = connection
-        .query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
-        .expect("count findings");
-    assert_eq!(count, 1, "a restatement must not leave two rows");
-    let (severity, description, title): (String, String, String) = connection
-        .query_row(
-            "SELECT severity, description, title FROM findings WHERE id = ?1",
-            [first.0.id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .expect("read refreshed row");
-    assert_eq!(severity, "critical", "the restatement's severity must win");
-    assert_eq!(description, "A sharper reading of the same conclusion.");
+    let entries = read_all(&project, &manager);
+    assert_eq!(entries.len(), 1, "a restatement must not leave two rows");
+    let entry = &entries[0];
+    assert_eq!(entry.id, first.0.id);
     assert_eq!(
-        title, "Reviewed conclusion",
+        entry.severity, "critical",
+        "the restatement's severity must win"
+    );
+    assert_eq!(
+        entry.description,
+        "A sharper reading of the same conclusion."
+    );
+    assert_eq!(
+        entry.title, "Reviewed conclusion",
         "identity fields are unchanged"
     );
 }
@@ -343,7 +304,6 @@ fn restating_a_conclusion_refreshes_one_row_with_the_latest_body() {
 /// id — dedupe must not collapse distinct subjects onto one row.
 #[test]
 fn distinct_targets_leave_distinct_rows() {
-    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     let project = activated_project("lib.rs", b"line one\nline two\n");
     let manager = crate::sync::SourceSyncManager::default();
     let first = finding(
@@ -367,16 +327,11 @@ fn distinct_targets_leave_distinct_rows() {
         second.0.id, first.0.id,
         "a different line range is a different finding"
     );
-    let db_path = project
-        .path()
-        .join(".planning")
-        .join("slugaudit")
-        .join("project.db");
-    let connection = crate::store::open_existing(&db_path).expect("open db read-only");
-    let count: i64 = connection
-        .query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
-        .expect("count findings");
-    assert_eq!(count, 2, "distinct targets must not be merged");
+    assert_eq!(
+        read_all(&project, &manager).len(),
+        2,
+        "distinct targets must not be merged"
+    );
 }
 
 /// The content hash is part of the identity: a conclusion restated after its
@@ -384,7 +339,6 @@ fn distinct_targets_leave_distinct_rows() {
 /// restatement is a new row. Dedupe must not silently revive a stale row.
 #[test]
 fn a_restatement_after_the_file_changed_is_a_new_row() {
-    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
 
     let manager = crate::sync::SourceSyncManager::default();
@@ -411,18 +365,14 @@ fn a_restatement_after_the_file_changed_is_a_new_row() {
         second.0.id, first.0.id,
         "changed evidence is a new identity, not a refresh"
     );
-    let db_path = project
-        .path()
-        .join(".planning")
-        .join("slugaudit")
-        .join("project.db");
-    let connection = crate::store::open_existing(&db_path).expect("open db read-only");
-    let count: i64 = connection
-        .query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
-        .expect("count findings");
-    assert_eq!(count, 2, "the stale row and the new row both remain");
-    assert_eq!(finding_status(&connection, first.0.id), "stale");
-    assert_eq!(finding_status(&connection, second.0.id), "current");
+    let entries = read_all(&project, &manager);
+    assert_eq!(
+        entries.len(),
+        2,
+        "the stale row and the new row both remain"
+    );
+    assert_eq!(status_of(&entries, first.0.id), "stale");
+    assert_eq!(status_of(&entries, second.0.id), "current");
 }
 
 #[test]
@@ -475,25 +425,21 @@ fn input_caps_refuse_an_oversized_path_file_and_zero_line() {
     );
 }
 
-const FILES_SCHEMA: &str = "CREATE TABLE files (path TEXT, content_hash TEXT, content TEXT); \
-     INSERT INTO files VALUES ('lib.rs', 'hash', 'line one');";
-
 /// Runs `insert_finding` against a hand-written schema so one statement can
-/// fail on its own, without a production test hook: the `files` row stays
-/// readable while one `findings` column the statement names is absent
-/// (schema drift).
+/// fail on its own, without a production test hook: one `findings` column the
+/// statement names is absent (schema drift).
 fn insert_finding_error(request: &FindingRequest, schema: &str, seed: Option<&str>) -> ErrorData {
     let mut connection = Connection::open_in_memory().expect("in-memory database");
     connection
-        .execute_batch(&format!("{FILES_SCHEMA} {schema}"))
+        .execute_batch(schema)
         .expect("create test schema");
     if let Some(seed) = seed {
         connection
-            .execute(seed, [session_id().to_string()])
+            .execute(seed, [])
             .expect("seed the stored finding");
     }
     let tx = connection.transaction().expect("transaction");
-    insert_finding(&tx, request, "rev").expect_err("the statement must fail")
+    insert_finding(&tx, request, "hash".to_owned(), "rev").expect_err("the statement must fail")
 }
 
 /// Each fallible statement in `insert_finding` — the restatement lookup, the
@@ -501,7 +447,6 @@ fn insert_finding_error(request: &FindingRequest, schema: &str, seed: Option<&st
 /// surface a database failure as an internal error, never as a bad input.
 #[test]
 fn each_findings_write_statement_failure_is_an_internal_error() {
-    let _session_guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
     let project = tempfile::tempdir().expect("temp dir");
     let request = base_request(&project, "lib.rs");
     let cases: &[(&str, &str, Option<&str>, &str)] = &[
@@ -509,7 +454,7 @@ fn each_findings_write_statement_failure_is_an_internal_error() {
             "restatement lookup",
             "CREATE TABLE findings (id INTEGER PRIMARY KEY, path TEXT, source_hash TEXT, \
              line_start INTEGER, line_end INTEGER, title TEXT, description TEXT, \
-             created_at_unix INTEGER, evidence_revision TEXT, status TEXT, session_id TEXT);",
+             created_at_unix INTEGER, evidence_revision TEXT);",
             None,
             "no such column: category",
         ),
@@ -517,12 +462,12 @@ fn each_findings_write_statement_failure_is_an_internal_error() {
             "restatement update",
             "CREATE TABLE findings (id INTEGER PRIMARY KEY, path TEXT, source_hash TEXT, \
              line_start INTEGER, line_end INTEGER, category TEXT, title TEXT, description TEXT, \
-             created_at_unix INTEGER, evidence_revision TEXT, status TEXT, session_id TEXT);",
+             created_at_unix INTEGER, evidence_revision TEXT);",
             Some(
                 "INSERT INTO findings (path, source_hash, line_start, line_end, category, title, \
-                 description, created_at_unix, evidence_revision, status, session_id) \
+                 description, created_at_unix, evidence_revision) \
                  VALUES ('lib.rs', 'hash', 1, 1, 'correctness', 'Reviewed conclusion', 'old', 1, \
-                 'rev', 'current', ?1)",
+                 'rev')",
             ),
             "no such column: severity",
         ),
@@ -530,7 +475,7 @@ fn each_findings_write_statement_failure_is_an_internal_error() {
             "created_at read",
             "CREATE TABLE findings (id INTEGER PRIMARY KEY, path TEXT, source_hash TEXT, \
              line_start INTEGER, line_end INTEGER, severity TEXT, category TEXT, title TEXT, \
-             description TEXT, evidence_revision TEXT, status TEXT, session_id TEXT);",
+             description TEXT, evidence_revision TEXT);",
             None,
             "no such column: created_at_unix",
         ),
@@ -538,7 +483,7 @@ fn each_findings_write_statement_failure_is_an_internal_error() {
             "finding insert",
             "CREATE TABLE findings (id INTEGER PRIMARY KEY, path TEXT, source_hash TEXT, \
              line_start INTEGER, line_end INTEGER, severity TEXT, category TEXT, title TEXT, \
-             description TEXT, created_at_unix INTEGER, status TEXT, session_id TEXT);",
+             description TEXT, created_at_unix INTEGER);",
             None,
             "evidence_revision",
         ),

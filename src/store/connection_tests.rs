@@ -26,7 +26,7 @@ fn a_read_only_connection_cannot_write() {
     open_read_write(&path).expect("create database");
 
     let read_only = open_existing(&path).expect("open read-only");
-    let result = read_only.execute("DELETE FROM findings", []);
+    let result = read_only.execute("DELETE FROM files", []);
     let err = result.expect_err("read-only connection must reject writes");
     assert!(
         err.to_string().to_lowercase().contains("readonly"),

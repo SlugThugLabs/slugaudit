@@ -324,10 +324,8 @@ fn on_action_reports_a_non_corruption_database_open_failure() {
 /// reported as an import failure rather than as success.
 #[test]
 fn on_action_reports_an_import_failure() {
-    let (project, path) = temp_project_with_source();
-    let config = activation_dir(&project).join("config.json");
-    fs::create_dir_all(activation_dir(&project)).expect("create activation dir");
-    fs::write(&config, br#"{"max_total_import_bytes": 1}"#).expect("write project config");
+    let (_project, path) = temp_project_with_source();
+    let _config = crate::tools::test_support::use_global_config(r#"{"max_total_import_bytes": 1}"#);
 
     let error = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
         .err()
@@ -372,52 +370,6 @@ fn off_action_reports_a_disable_failure() {
         error.message
     );
     assert!(elsewhere.join("slugaudit").is_dir(), "nothing was removed");
-}
-
-#[test]
-fn on_action_with_profile_writes_config_json() {
-    let (project, path) = temp_project_with_source();
-    let req = Parameters(ProjectControlRequest {
-        path: Some(path),
-        action: ProjectControlAction::On,
-        profile: Some("audit".to_string()),
-    });
-    let response = project_control(&req, &crate::progress::NoopProgressSink, None)
-        .expect("enable with profile succeeds");
-    assert_eq!(response.0.status, "enabled");
-
-    let cfg_file = activation_dir(&project).join("config.json");
-    assert!(cfg_file.exists(), "config.json should be written");
-    let content = fs::read_to_string(cfg_file).expect("read config");
-    assert_eq!(
-        content, "{\n  \"profile\": \"audit\"\n}\n",
-        "the profile config keeps the pretty-printed shape and the exact profile name"
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn on_action_with_profile_refuses_a_config_json_symlinked_outside_the_project() {
-    use std::os::unix::fs::MetadataExt;
-    let (project, path) = temp_project_with_source();
-    let outside = tempfile::tempdir().expect("outside dir");
-    let victim = outside.path().join("victim.txt");
-    let dir = activation_dir(&project);
-    fs::write(&victim, b"precious").expect("write victim");
-    let inode = fs::metadata(&victim).expect("stat victim").ino();
-    fs::create_dir_all(&dir).expect("create activation dir");
-    std::os::unix::fs::symlink(&victim, dir.join("config.json")).expect("symlink config");
-    let mut req = on_request(&path);
-    req.0.profile = Some("lean".to_string());
-
-    let error = project_control(&req, &crate::progress::NoopProgressSink, None)
-        .err()
-        .expect("a symlinked config.json must be refused");
-
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert!(error.message.contains("config.json"), "{}", error.message);
-    assert_eq!(fs::read(&victim).expect("read victim"), b"precious");
-    assert_eq!(fs::metadata(&victim).expect("stat").ino(), inode);
 }
 
 #[test]

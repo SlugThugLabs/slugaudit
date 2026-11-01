@@ -69,8 +69,7 @@ const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — sym
     MECHANICS: the built-ins are counting primitives, not a checklist; what counts as a signal is \
     your decision. `mechanic` `action: add` registers `id`, `language`, `query` (Tree-sitter, \
     exactly one capture) and `note`, and returns `first_count`; `leads` then counts it like a \
-    built-in. Entries last for this session; `persist: true` saves them to \
-    `.planning/slugaudit/config.json`. A built-in is never removed or overridden.\n\n\
+    built-in. Entries last for this session. A built-in is never removed or overridden.\n\n\
     QUERY: one read-only SELECT/WITH per call over `files` (id, path, language, byte_len, content), \
     `evidence` (id, file_id, kind, start_line, end_line, payload JSON; kinds Structure, Import, \
     Export, Comment, Docstring, Symbol, Diagnostic, Call) and `dependency_edges` (from_file_id, \
@@ -89,8 +88,8 @@ const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — sym
     AsciiDoc, Org, plain-text and ignore-list files are `language = 'prose'`: stored, never parsed.\n\n\
     OTHER TOOLS: `report` is the project snapshot. `structure` runs a Tree-sitter query (at least \
     one capture) on one `file` or a whole `language`. `finding` records a conclusion you reviewed, \
-    bound to the file hash (stale on change), session-scoped; `finding_read` \
-    reads them, `finding_sessions` adopts earlier ones. `project_control` `on` creates `.planning/slugaudit/` and indexes; `off` deletes it. `health` reports phase and next action; `verbose: true` adds detail.\n\n\
+    bound to the file hash (stale on change) and lasting this session; `finding_read` \
+    reads them, `finding_clear` deletes them. `project_control` `on` creates `.planning/slugaudit/` and indexes; `off` deletes it. `health` reports phase and next action; `verbose: true` adds detail.\n\n\
     FLOW: report → leads → mechanic add → query/structure → read source only where evidence \
     points → finding.\n\n\
     FAILURES: errors carry `data.code` (e.g. `project_not_enabled`, `sql_error`, `unknown_language`) and \
@@ -105,9 +104,8 @@ const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — sym
 pub struct SlugAuditServer {
     tool_router: ToolRouter<Self>,
     blocking_ops: Arc<Semaphore>,
-    /// Per-server `SourceSyncManager`: the last-sync timestamps, the
-    /// session-start findings guard, session mechanics, the mechanic scan
-    /// cache and the paged-result store. `Clone` is the cheap clone of
+    /// Per-server `SourceSyncManager`: the last-sync timestamps, session
+    /// mechanics, the mechanic scan cache and the paged-result store. `Clone` is the cheap clone of
     /// `SourceSyncManager` itself — its shared state is shared across
     /// `Clone`s of the server.
     manager: sync::SourceSyncManager,

@@ -16,8 +16,8 @@ use super::mechanic_scan_cached::Scanned;
 use rmcp::ErrorData;
 use rusqlite::Transaction;
 
-/// One count per scanned registered entry, in catalogue order (session,
-/// then project_config), from the scan's tallies. An entry that was not
+/// One count per scanned registered entry, in catalogue order (session
+/// entries, oldest first), from the scan's tallies. An entry that was not
 /// scanned is not listed: an empty tally is not a count of zero. When the
 /// scan was stopped (`page.completeness` says so) a count covers only the
 /// files read before the stop.

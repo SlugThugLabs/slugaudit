@@ -1,15 +1,13 @@
 //! Tests for the metadata helpers split out of `manager.rs`.
 
 use super::{
-    current_revision_id, ensure_project_row, map_publish_error, mark_prior_session_findings_stale,
-    publish_from_scratch, publish_full,
+    current_revision_id, ensure_project_row, map_publish_error, publish_from_scratch, publish_full,
 };
 use crate::progress::NoopProgressSink;
 use crate::store;
 use crate::store::test_capture::capture_warns;
 use std::path::Path;
 use tempfile::TempDir;
-use uuid::Uuid;
 
 fn open_temp_db() -> (TempDir, rusqlite::Connection) {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -91,89 +89,6 @@ fn incompatible_version_is_a_stale_database_labelled_for_recovery() {
     );
 }
 
-/// Drives `mark_prior_session_findings_stale` directly with distinct session
-/// UUIDs against a hand-seeded findings table, simulating separate agent
-/// processes. Prior sessions' rows are kept and marked stale, the current
-/// session's row is untouched, and a second run changes nothing.
-#[test]
-fn marking_stales_only_prior_session_rows_and_deletes_nothing() {
-    let (_dir, mut connection) = open_temp_db();
-    let current = "33333333-3333-3333-3333-333333333333";
-    for (path, session) in [
-        ("old.rs", "11111111-1111-1111-1111-111111111111"),
-        ("shared.rs", "22222222-2222-2222-2222-222222222222"),
-        ("mine.rs", current),
-    ] {
-        connection
-            .execute(
-                "INSERT INTO findings (path, source_hash, line_start, line_end, \
-                 severity, category, title, description, created_at_unix, \
-                 evidence_revision, status, session_id) \
-                 VALUES (?1, 'h', 1, 1, 'low', 'c', 't', 'd', 0, 'r', 'current', ?2)",
-                rusqlite::params![path, session],
-            )
-            .expect("seed finding");
-    }
-    let session = Uuid::parse_str(current).expect("current uuid");
-
-    let marked = mark_prior_session_findings_stale(&mut connection, session).expect("mark");
-    let again = mark_prior_session_findings_stale(&mut connection, session).expect("re-mark");
-
-    let rows: Vec<(String, String)> = connection
-        .prepare("SELECT path, status FROM findings ORDER BY path")
-        .expect("select")
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-        .expect("query")
-        .map(|value| value.expect("row"))
-        .collect();
-    assert_eq!(marked, 2);
-    assert_eq!(again, 0, "an already-stale row is not touched again");
-    assert_eq!(
-        rows,
-        vec![
-            ("mine.rs".to_owned(), "current".to_owned()),
-            ("old.rs".to_owned(), "stale".to_owned()),
-            ("shared.rs".to_owned(), "stale".to_owned()),
-        ]
-    );
-}
-
-/// `ensure_project_row` is metadata-only: marking prior sessions stale belongs to
-/// the session-start transition owned by `SourceSyncManager`, not to the
-/// per-sync metadata row. If this function marked, every tool call would
-/// re-stale a concurrent live session's findings.
-#[test]
-fn ensure_project_row_leaves_findings_to_the_session_start_transition() {
-    let _session_guard =
-        crate::util::lock_or_recover(&crate::util::SESSION_TEST_LOCK, "session_test_lock");
-    let (_dir, mut connection) = open_temp_db();
-
-    let root = Path::new("/tmp/meta-only-example");
-    ensure_project_row(&mut connection, root).expect("first ensure");
-
-    let prior_session =
-        Uuid::parse_str("55555555-5555-5555-5555-555555555555").expect("prior uuid");
-    connection
-        .execute(
-            "INSERT INTO findings (path, source_hash, line_start, line_end, \
-             severity, category, title, description, created_at_unix, \
-             evidence_revision, status, session_id) \
-             VALUES ('stale.rs', 'h', 1, 1, 'low', 'c', 't', 'd', 0, 'r', 'current', ?1)",
-            rusqlite::params![prior_session.to_string()],
-        )
-        .expect("seed prior-session finding");
-
-    ensure_project_row(&mut connection, root).expect("second ensure");
-
-    let count: i64 = connection
-        .query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
-        .expect("count");
-    assert_eq!(
-        count, 1,
-        "the metadata row helper must not delete another session's findings"
-    );
-}
-
 /// The publish half of the machine-readable failure contract. A spent sync
 /// budget is the case that used to read as "often transient — retry": on a
 /// repo too big for the limit, retrying unchanged fails identically, so the
@@ -236,38 +151,8 @@ fn publish_failures_classify_into_the_documented_error_codes() {
     );
 }
 
-/// A damaged `findings` table must surface the marking failure as its own
-/// `ErrorData`, with the SQLite cause preserved, rather than being folded
-/// into one of the later metadata arms.
-#[test]
-fn a_failed_prior_session_marking_surfaces_its_error() {
-    let (_dir, mut connection) = open_temp_db();
-    connection
-        .execute_batch("DROP TABLE findings")
-        .expect("drop the findings table");
-
-    let error = mark_prior_session_findings_stale(
-        &mut connection,
-        Uuid::parse_str("77777777-7777-7777-7777-777777777777").expect("uuid"),
-    )
-    .expect_err("the marking must fail on a damaged schema");
-
-    assert!(
-        error
-            .message
-            .starts_with("marking prior-session findings stale: "),
-        "got: {}",
-        error.message
-    );
-    assert!(
-        error.message.contains("no such table: findings"),
-        "the source error must be preserved: {}",
-        error.message
-    );
-}
-
 /// A failed metadata INSERT must be reported as the recording arm, not
-/// misattributed to the marking or the verification read.
+/// misattributed to the verification read.
 #[test]
 fn a_failed_metadata_write_surfaces_the_recording_error() {
     let (_dir, mut connection) = open_temp_db();

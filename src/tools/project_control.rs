@@ -4,8 +4,8 @@
 //!
 //! A project is on iff the directory `.planning/slugaudit/` exists. `on`
 //! creates it, then the database, then runs the initial import. `off` deletes
-//! the whole directory (database, `config.json` and everything else in it),
-//! then `.planning` if that left it empty. If the database is missing or
+//! the whole directory (databases and everything else in it), then
+//! `.planning` if that left it empty. If the database is missing or
 //! broken while the directory exists, the next tool call rebuilds it.
 
 use crate::parse;
@@ -24,7 +24,8 @@ pub struct ProjectControlRequest {
     pub path: Option<String>,
     /// Action to perform: `"on"` enables the project, `"off"` disables it.
     pub action: ProjectControlAction,
-    /// Optional audit profile to configure: `"audit"`, `"lean"`, or `"adaptive"`.
+    /// Optional audit profile for this session: `"audit"`, `"lean"`, or
+    /// `"adaptive"`. Held in memory until the server exits.
     #[schemars(default)]
     pub profile: Option<String>,
 }
@@ -34,11 +35,11 @@ pub struct ProjectControlRequest {
 pub enum ProjectControlAction {
     /// Create the directory `.planning/slugaudit` (the on switch), then the
     /// project database, and run the initial import, so the first evidence
-    /// call finds a fresh index. Persisted settings in `config.json` apply.
+    /// call finds a fresh index.
     #[serde(rename = "on")]
     On,
-    /// Delete the whole `.planning/slugaudit` directory, `config.json`
-    /// included, then `.planning` if that left it empty. Tool calls on the
+    /// Delete the whole `.planning/slugaudit` directory, then `.planning` if
+    /// that left it empty. Tool calls on the
     /// path then return not-enabled until `on` runs again. A project with no
     /// such directory is a no-op reported as `"already_disabled"`.
     #[serde(rename = "off")]
@@ -64,8 +65,8 @@ pub struct ProjectControlResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gitignore: Option<GitignoreReport>,
     /// Present only when `"on"` found a corrupt or outdated project database
-    /// and discarded it: how many findings were lost (null = unknown, the
-    /// database was unreadable) and why.
+    /// and discarded it, and why. Session findings live in their own database
+    /// and are not affected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database_discard: Option<sync::DatabaseDiscard>,
 }
@@ -149,37 +150,6 @@ fn gitignore_report(outcome: project::GitignoreOutcome) -> GitignoreReport {
 /// Wraps any error into a user-friendly `ErrorData` message.
 fn err(msg: impl Into<String>) -> ErrorData {
     ErrorData::internal_error(msg.into(), None)
-}
-
-/// Maps a failed profile-config update to the tool error. A file the caller
-/// must fix — a symlinked or non-regular `config.json`, one that is not a
-/// JSON object, or one that would outgrow the read cap — is `invalid_params`;
-/// an I/O failure, a lock held past the bounded wait, or a directory sync
-/// that failed after the replace is operational (`internal_error`).
-fn config_write_error(error: project::ConfigWriteError) -> ErrorData {
-    match &error {
-        project::ConfigWriteError::NotRegularFile { .. }
-        | project::ConfigWriteError::Malformed { .. }
-        | project::ConfigWriteError::NotAnObject { .. }
-        | project::ConfigWriteError::TooLarge { .. } => {
-            ErrorData::invalid_params(format!("write profile config: {error}"), None)
-        }
-        project::ConfigWriteError::Locked { .. }
-        | project::ConfigWriteError::Io { .. }
-        | project::ConfigWriteError::NotDurable { .. } => {
-            err(format!("write profile config: {error}"))
-        }
-    }
-}
-
-/// The name `config.json` stores for a profile — the serde name
-/// `ProjectConfig` reads back.
-fn profile_name(profile: crate::model::AuditProfile) -> &'static str {
-    match profile {
-        crate::model::AuditProfile::Lean => "lean",
-        crate::model::AuditProfile::Audit => "audit",
-        crate::model::AuditProfile::Adaptive => "adaptive",
-    }
 }
 
 /// Enables or disables SlugAudit for a project.
@@ -271,17 +241,11 @@ fn enable(
     // Right after the directory itself: the guard must be in place even if
     // the initial import below fails, and it never fails this call.
     let gitignore = gitignore_report(project::ensure_gitignore(root));
+    project::begin_process_session(root).map_err(|e| err(format!("enable: {e}")))?;
     if let Some(profile) = profile_override {
-        // Sets `profile` only: every other key (limits, persisted mechanics)
-        // is kept by the shared locked, atomic read-modify-write.
-        project::ProjectConfig::update_raw(root.as_path(), |config| {
-            config.insert(
-                "profile".to_owned(),
-                serde_json::Value::from(profile_name(profile)),
-            );
-            Ok::<(), project::ConfigWriteError>(())
-        })
-        .map_err(config_write_error)?;
+        // A session setting: held in memory for this project until the
+        // process exits, and applied by every limit derivation below.
+        project::set_session_profile(root.as_path(), profile);
     }
     let db_path = project::database_path(root);
     // A previous `off` removed `results/` under any store this process still
@@ -294,16 +258,13 @@ fn enable(
     let mut connection = match store::open_read_write(&db_path) {
         Ok(conn) => conn,
         Err(error) if error.is_corruption() => {
-            let (notice, count_error) = sync::DatabaseDiscard::assess_file(
-                &db_path,
-                format!("the project database is corrupt or outdated: {error}"),
-            );
+            let notice = sync::DatabaseDiscard {
+                cause: format!("the project database is corrupt or outdated: {error}"),
+            };
             tracing::warn!(
                 operation = "enable_project",
                 path = %db_path.display(),
                 error = %error,
-                findings_discarded = ?notice.findings_discarded,
-                count_error = count_error.as_ref().map(ToString::to_string),
                 "database is corrupt or outdated; discarding and re-importing from scratch",
             );
             discard = Some(notice);
@@ -369,8 +330,8 @@ fn disable(
 }
 
 #[cfg(test)]
-#[path = "project_control_config_tests.rs"]
-mod config_write_tests;
+#[path = "project_control_session_tests.rs"]
+mod session_tests;
 
 #[cfg(test)]
 #[path = "project_control_tests.rs"]

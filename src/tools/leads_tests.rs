@@ -412,8 +412,7 @@ fn clip_detail_flags_only_past_the_char_limit() {
 fn credential_files_reports_a_skipped_credential_shaped_file() {
     let project = tempfile::tempdir().expect("project dir");
     activate(project.path());
-    let config = project.path().join(".planning/slugaudit/config.json");
-    fs::write(config, br#"{"max_file_bytes": 500}"#).expect("write config");
+    let _config = crate::tools::test_support::use_global_config(r#"{"max_file_bytes": 500}"#);
     fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
     fs::write(project.path().join("big.pem"), vec![b'k'; 5_000]).expect("write big.pem");
 

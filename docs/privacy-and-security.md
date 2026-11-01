@@ -16,7 +16,7 @@ It indexes your code so an AI agent can query it. It does not scan for vulnerabi
 |---|---|
 | Every file in an enabled project, except those excluded (see [how it works](how-it-works.md)) | On every tool call. The full text of text files is copied into the index. |
 | `.gitignore`, `.ignore`, `.git/info/exclude`, and your global gitignore | On every tool call, to decide what to skip. |
-| `.planning/slugaudit/config.json` | On every call. |
+| `~/.slugthug/slugaudit/config.json`, if you wrote one | On every call. |
 | The project's `.gitignore` | When you enable a project. |
 | Each agent's config file | When you run `connect`, `disconnect` or `menu`. |
 | Your shell config (`~/.bashrc` or similar) | Only if you accept the PATH prompt in `slugaudit install`. |
@@ -27,7 +27,7 @@ Files that look like credentials (`.env`, `*.pem`, `*.key`, `id_rsa`, ...) are i
 
 | What | Where |
 |---|---|
-| The index (a copy of your source text and extracted facts), its WAL files, stored paged results, and optional `config.json` | `<project>/.planning/slugaudit/` |
+| The index (a copy of your source text and extracted facts), the session findings database, their WAL files, and stored paged results | `<project>/.planning/slugaudit/` |
 | One line, `.planning/slugaudit/`, appended | `<project>/.gitignore` (when you enable a project) |
 | The `slugaudit` binary and `slugaudit.prev` | `~/.slugthug/slugaudit/` |
 | An MCP server entry named `slugaudit` | Your agent's config, via its CLI or by editing its config file |
@@ -38,7 +38,7 @@ The runtime directory is created with your default permissions, and new database
 
 SlugAudit does not modify your source files. The one edit to a file of yours is the `.gitignore` line above.
 
-Findings you record are stored in the index database. They are plain text that your agent wrote.
+Findings you record are stored in `findings-<id>.db` (one file per server process) beside the index. They are plain text that your agent wrote, and they last until the server process exits.
 
 ## What it sends over the network
 

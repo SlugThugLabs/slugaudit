@@ -19,8 +19,7 @@ fn spent_budget(
 ) -> (crate::model::ResourceLimits, mechanic_catalog::Catalog) {
     let mut limits = crate::tools::resolve_limits(path).expect("limits");
     limits.max_structure_execution_time = std::time::Duration::ZERO;
-    let root = crate::tools::project_root(path).expect("root");
-    let catalog = mechanic_catalog::load(&root, manager.session_mechanics(), &limits);
+    let catalog = mechanic_catalog::load(manager.session_mechanics(), &limits);
     (limits, catalog)
 }
 
@@ -396,34 +395,6 @@ fn a_second_project_on_one_manager_does_not_hit_the_first_projects_entry() {
         misses + 1,
         "the second project scanned its own files instead of hitting the first's entry"
     );
-}
-
-#[test]
-fn a_persisted_entry_edited_in_config_json_misses_and_counts_with_the_new_query() {
-    let project = python_project();
-    let path = path_of(&project);
-    let manager = sync::SourceSyncManager::default();
-    let mut persisted = add(&path, "py_eval", "python", EVAL_QUERY);
-    persisted.persist = true;
-    call(&manager, persisted).expect("persist");
-    let config = project.path().join(".planning/slugaudit/config.json");
-    let text = std::fs::read_to_string(&config).expect("read config");
-    let edited = text.replace(r#"\"eval\""#, r#"\"exec\""#);
-    assert_ne!(edited, text, "the query was edited");
-    std::fs::write(&config, edited).expect("another process edits config.json");
-    let misses = cache_stats(&manager).misses;
-
-    let response = run_leads(
-        &manager,
-        leads_request(&path, Some("py_eval"), LeadMode::Full),
-    );
-
-    assert_eq!(
-        response.page.total,
-        Some(0),
-        "the edited query matches no exec call"
-    );
-    assert_eq!(cache_stats(&manager).misses, misses + 1, "it scanned again");
 }
 
 #[test]

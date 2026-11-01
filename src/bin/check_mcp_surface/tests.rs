@@ -92,8 +92,8 @@ fn every_live_tool_carries_a_title_a_description_and_both_schemas() {
 fn every_live_tool_matches_the_documented_annotation_table() {
     let expected = [
         ("finding", false, false),
+        ("finding_clear", false, true),
         ("finding_read", true, false),
-        ("finding_sessions", false, false),
         ("health", true, false),
         ("leads", true, false),
         ("mechanic", false, false),

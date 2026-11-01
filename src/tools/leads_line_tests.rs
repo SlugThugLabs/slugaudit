@@ -61,9 +61,6 @@ fn structure_lines(project: &tempfile::TempDir, name: &str) -> (u32, u32) {
 
 #[test]
 fn every_surface_reports_the_same_one_based_inclusive_lines() {
-    let _guard = crate::util::SESSION_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let project = tempfile::tempdir().expect("project dir");
     activate(project.path());
     fs::write(project.path().join("main.rs"), FIXTURE).expect("write fixture");
@@ -120,12 +117,8 @@ fn every_surface_reports_the_same_one_based_inclusive_lines() {
         &crate::sync::SourceSyncManager::default(),
     )
     .expect("finding succeeds");
-    let db_path = project
-        .path()
-        .join(".planning")
-        .join("slugaudit")
-        .join("project.db");
-    let connection = crate::store::open_read_write(&db_path).expect("open db");
+    let findings_db = crate::tools::test_support::own_findings_path(&project);
+    let connection = crate::store::open_findings(&findings_db).expect("open findings db");
     let stored: (i64, i64) = connection
         .query_row("SELECT line_start, line_end FROM findings", [], |row| {
             Ok((row.get(0)?, row.get(1)?))

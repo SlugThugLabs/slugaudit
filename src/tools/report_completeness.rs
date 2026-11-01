@@ -162,21 +162,13 @@ mod tests {
     /// A file the walk discovers but deliberately does not index must be
     /// visible rather than absent: a `skipped` row with its reason and no
     /// content, plus a response that says the index is partial. Needs the
-    /// real publish path, so the oversize ceiling comes from the project's
-    /// own config.
+    /// real publish path, so the oversize ceiling comes from the global
+    /// config.
     #[test]
     fn a_discovered_but_skipped_file_is_visible_as_a_skipped_row_and_a_partial_index() {
         let project = tempfile::tempdir().expect("project dir");
         activate(project.path());
-        fs::write(
-            project
-                .path()
-                .join(".planning")
-                .join("slugaudit")
-                .join("config.json"),
-            br#"{"max_file_bytes": 50000}"#,
-        )
-        .expect("write project config");
+        let _config = crate::tools::test_support::use_global_config(r#"{"max_file_bytes": 50000}"#);
         fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
         fs::write(project.path().join("huge.rs"), vec![b'x'; 100_000])
             .expect("write oversize file");

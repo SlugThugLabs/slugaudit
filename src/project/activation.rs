@@ -33,6 +33,16 @@ pub enum ActivationError {
     /// Filesystem work on the activation directory failed.
     #[error("failed to update the activation directory: {0}")]
     Io(#[from] std::io::Error),
+    /// This process's session findings files could not be set up when it
+    /// first touched the project: locking its own file or deleting a finished
+    /// session's file failed.
+    #[error("failed to set up the session findings files at '{path}': {source}")]
+    FindingsSession {
+        /// The file or directory the failed step was working on.
+        path: PathBuf,
+        /// Underlying I/O error.
+        source: std::io::Error,
+    },
 }
 
 /// The SlugAudit-owned runtime directory under a resolved user project:
@@ -145,6 +155,7 @@ pub fn resolve_project(start: &Path) -> Result<(ProjectRoot, PathBuf), Activatio
     Ok((root, database_path))
 }
 
+// Owner decision (2026-10-31): the directory is the on/off switch, created only by `on`, so a global install does not index every repo; a repo opts in.
 /// Creates the `.planning/slugaudit` directory under `root`: turning
 /// SlugAudit "on". The directory is the whole switch, and this is the only
 /// code that creates it; the database inside is built by the caller
@@ -175,8 +186,8 @@ pub struct DisableReport {
 }
 
 /// Turns SlugAudit "off" for `root` by deleting the whole
-/// `.planning/slugaudit` directory, `config.json` included: everything in it
-/// is SlugAudit's scratch. `.planning` is removed afterwards only if it is
+/// `.planning/slugaudit` directory, whatever is in it (an old install's
+/// `config.json` included): everything in it is SlugAudit's scratch. `.planning` is removed afterwards only if it is
 /// empty, because the rest of it is the user's.
 ///
 /// `remove_dir_all` never follows a symlink inside the directory. If
@@ -191,6 +202,10 @@ pub struct DisableReport {
 /// it), or if any removal fails.
 pub fn disable(root: &ProjectRoot) -> Result<DisableReport, ActivationError> {
     let activation = planning_checked_activation_dir(root.as_path())?;
+    // Close this process's lock handle first: on Windows a locked file can't
+    // be deleted. Another process's live session on Windows makes the removal
+    // below fail, and that error is returned, not skipped.
+    super::findings_session::end_process_session(root);
     let mut report = DisableReport::default();
     let metadata = match activation.symlink_metadata() {
         Ok(metadata) => metadata,

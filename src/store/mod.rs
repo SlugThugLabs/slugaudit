@@ -5,6 +5,7 @@
 
 mod connection;
 mod connection_guards;
+mod findings_db;
 mod migrations;
 mod result_store;
 mod sql_functions;
@@ -30,7 +31,9 @@ pub(crate) fn is_rusqlite_corruption(error: &rusqlite::Error) -> bool {
 
 pub use connection::{
     StoreError, discard_corrupt_database, open_existing, open_existing_read_write, open_read_write,
+    remove_database_files,
 };
+pub use findings_db::{open_findings, open_findings_existing};
 pub use migrations::MigrationError;
 pub use result_store::{
     Cell, ClassStats, Clock, Cursor, Materialize, NonFinite, PageRead, ResultClass, ResultHandle,

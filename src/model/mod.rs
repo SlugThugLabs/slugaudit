@@ -1,6 +1,7 @@
 //! SlugAudit-owned contracts shared by parsing, storage, and tools.
 
 mod env_error;
+mod env_overrides;
 mod evidence;
 mod limit_overrides;
 mod limits;
@@ -11,6 +12,7 @@ mod span;
 mod system_ram;
 
 pub use env_error::EnvConfigError;
+pub(crate) use env_overrides::{EnvOverrides, env_overrides};
 pub use evidence::{EvidenceItem, EvidenceKind, SpanAvailability};
 pub(crate) use limits::SQLITE_MAX_VALUE_BYTES;
 pub use limits::{EvidenceLimits, ResourceLimits, init_process_limits, process_limits};

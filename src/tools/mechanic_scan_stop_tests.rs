@@ -58,8 +58,7 @@ fn a_scan_stopped_between_files_reports_the_last_file_it_finished() {
     let manager = sync::SourceSyncManager::default();
     call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).expect("add");
     let limits = crate::tools::resolve_limits(&path).expect("limits");
-    let root = crate::tools::project_root(&path).expect("root");
-    let catalog = mechanic_catalog::load(&root, manager.session_mechanics(), &limits);
+    let catalog = mechanic_catalog::load(manager.session_mechanics(), &limits);
     let synced =
         crate::tools::context::ensure_synced(&path, &NoopProgressSink, &manager).expect("sync");
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);

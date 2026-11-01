@@ -26,15 +26,15 @@
     },
     {
       "name": "finding",
-      "description": "Records an audit finding against the evidence, bound to the file's current hash."
+      "description": "Records an audit finding against the evidence, bound to the file's current hash. It lasts until the server exits."
     },
     {
       "name": "finding_read",
-      "description": "Session-gated finding query \u2014 returns only the current agent session's findings."
+      "description": "Reads the findings recorded in this session, each current or stale against the file's present hash. A restart begins with none."
     },
     {
-      "name": "finding_sessions",
-      "description": "List earlier sessions' findings (kept, marked stale, hidden from finding_read) and adopt one into the current session."
+      "name": "finding_clear",
+      "description": "Deletes every finding recorded in this session for a project and reports how many were removed."
     },
     {
       "name": "project_control",

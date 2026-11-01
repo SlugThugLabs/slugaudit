@@ -88,11 +88,9 @@ fn mechanic_request(project: &tempfile::TempDir, action: MechanicAction) -> Mech
         cursor: None,
         legacy_paging: LegacyPaging::default(),
         id: None,
-        index: None,
         language: None,
         query: None,
         note: None,
-        persist: false,
         limit: None,
         page_bytes: None,
     }
@@ -128,11 +126,9 @@ fn clone_mechanic(request: &MechanicRequest) -> MechanicRequest {
         cursor: request.cursor.clone(),
         legacy_paging: LegacyPaging::default(),
         id: request.id.clone(),
-        index: request.index,
         language: request.language.clone(),
         query: request.query.clone(),
         note: request.note.clone(),
-        persist: request.persist,
         limit: request.limit,
         page_bytes: request.page_bytes,
     }

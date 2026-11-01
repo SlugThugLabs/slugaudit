@@ -1,27 +1,9 @@
-use super::rows::each_session_finding;
 use super::*;
 use crate::store;
 use crate::sync;
 use crate::tools::context::ensure_synced_no_progress;
 use crate::tools::test_support::activated_project;
-use crate::util::SESSION_TEST_LOCK;
 use rmcp::handler::server::wrapper::Parameters;
-use rusqlite::Connection;
-
-/// Acquires the shared [`SESSION_TEST_LOCK`] and runs `f`. Every test
-/// here both writes findings (stamped with the process-global
-/// `session_id()`) and reads them back scoped by that same id; it also
-/// calls `finding_read`, whose `ensure_synced` runs the session-start
-/// transition (marking other sessions' findings stale). Without the
-/// lock, a sibling session-flipping test (one calling
-/// `override_session_id_for_test`) could flip the global between this
-/// test's write and read, making the read come back empty or marking
-/// this test's rows stale. Holding the shared lock for the whole
-/// write→sync→read cycle keeps the session stable.
-pub(super) fn with_stable_session<T>(f: impl FnOnce() -> T) -> T {
-    let _guard = crate::util::lock_or_recover(&SESSION_TEST_LOCK, "session_test_lock");
-    f()
-}
 
 pub(super) fn request(path: &str, file: Option<&str>) -> FindingReadRequest {
     FindingReadRequest {
@@ -39,14 +21,6 @@ pub(super) fn cursor_request(token: &str) -> FindingReadRequest {
         cursor: Some(token.to_owned()),
         legacy_paging: LegacyPaging::default(),
     }
-}
-
-pub(super) fn db_path(project: &tempfile::TempDir) -> std::path::PathBuf {
-    project
-        .path()
-        .join(".planning")
-        .join("slugaudit")
-        .join("project.db")
 }
 
 pub(super) fn write_finding(
@@ -83,120 +57,117 @@ pub(super) fn write_finding_with_description(
     .0
 }
 
-/// Writes the project-config key `resolve_limits` reads, so a test can set
-/// a page budget without an env var (`process_limits` is a `OnceLock`).
-pub(super) fn write_default_page_bytes(project: &tempfile::TempDir, page_bytes: usize) {
-    let config = db_path(project)
-        .parent()
-        .expect("database has a parent")
-        .join("config.json");
-    std::fs::write(config, format!("{{\"default_page_bytes\": {page_bytes}}}"))
-        .expect("write project config");
+/// Sets the global-config page budget `resolve_limits` reads, so a test can
+/// set one without an env var (the environment is read once per process).
+/// Keep the returned guard alive for the test.
+pub(super) fn write_default_page_bytes(
+    page_bytes: usize,
+) -> crate::tools::test_support::GlobalConfigGuard {
+    crate::tools::test_support::use_global_config(&format!(
+        "{{\"default_page_bytes\": {page_bytes}}}"
+    ))
+}
+
+pub(super) fn findings_db_path(project: &tempfile::TempDir) -> std::path::PathBuf {
+    crate::tools::test_support::own_findings_path(project)
+}
+
+/// How many rows this process's findings file holds, read directly.
+pub(super) fn stored_finding_count(project: &tempfile::TempDir) -> i64 {
+    store::open_findings_existing(&findings_db_path(project))
+        .expect("open findings db")
+        .expect("the findings file exists")
+        .query_row("SELECT count(*) FROM findings", [], |row| row.get(0))
+        .expect("count findings")
 }
 
 #[test]
 fn an_empty_session_returns_no_findings() {
-    with_stable_session(|| {
-        let project = activated_project("lib.rs", b"fn main() {}\n");
-        let manager = sync::SourceSyncManager::default();
+    let project = activated_project("lib.rs", b"fn main() {}\n");
+    let manager = sync::SourceSyncManager::default();
 
-        let response = finding_read(
-            &Parameters(request(&project.path().to_string_lossy(), None)),
-            &crate::progress::NoopProgressSink,
-            &manager,
-        )
-        .expect("finding_read");
-        assert!(response.0.findings.is_empty());
-    });
+    let response = finding_read(
+        &Parameters(request(&project.path().to_string_lossy(), None)),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .expect("finding_read");
+    assert!(response.0.findings.is_empty());
 }
 
 #[test]
 fn finding_persists_and_is_readable() {
-    with_stable_session(|| {
-        let project = activated_project("lib.rs", b"fn main() {}\n");
-        let manager = sync::SourceSyncManager::default();
+    let project = activated_project("lib.rs", b"fn main() {}\n");
+    let manager = sync::SourceSyncManager::default();
 
-        let finding = write_finding(&project, "lib.rs", "test finding", &manager);
-        assert!(finding.id > 0);
+    let finding = write_finding(&project, "lib.rs", "test finding", &manager);
+    assert!(finding.id > 0);
 
-        // Open read-only to verify the row is in the DB before going
-        // through finding_read (which calls ensure_synced and the session-start marking).
-        let conn = store::open_existing(&db_path(&project)).expect("open db");
-        let count: i64 = conn
-            .query_row("SELECT count(*) FROM findings", [], |r| r.get(0))
-            .expect("count");
-        assert_eq!(count, 1, "finding must be in the DB");
+    assert_eq!(
+        stored_finding_count(&project),
+        1,
+        "finding must be in the findings file"
+    );
 
-        let response = finding_read(
-            &Parameters(request(&project.path().to_string_lossy(), None)),
-            &crate::progress::NoopProgressSink,
-            &manager,
-        )
-        .expect("finding_read");
-        assert_eq!(response.0.findings.len(), 1);
-        assert_eq!(response.0.findings[0].title, "test finding");
-    });
+    let response = finding_read(
+        &Parameters(request(&project.path().to_string_lossy(), None)),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .expect("finding_read");
+    assert_eq!(response.0.findings.len(), 1);
+    assert_eq!(response.0.findings[0].title, "test finding");
 }
 
 #[test]
 fn file_filter_returns_only_that_file() {
-    with_stable_session(|| {
-        let project = activated_project("a.rs", b"fn a() {}\n");
-        std::fs::write(project.path().join("b.rs"), b"fn b() {}\n").expect("b.rs");
-        let manager = sync::SourceSyncManager::default();
+    let project = activated_project("a.rs", b"fn a() {}\n");
+    std::fs::write(project.path().join("b.rs"), b"fn b() {}\n").expect("b.rs");
+    let manager = sync::SourceSyncManager::default();
 
-        // Index b.rs so the finding tool can reference it.
-        ensure_synced_no_progress(&project.path().to_string_lossy(), &manager)
-            .expect("initial sync");
+    // Index b.rs so the finding tool can reference it.
+    ensure_synced_no_progress(&project.path().to_string_lossy(), &manager).expect("initial sync");
 
-        write_finding(&project, "a.rs", "a finding", &manager);
-        write_finding(&project, "b.rs", "b finding", &manager);
+    write_finding(&project, "a.rs", "a finding", &manager);
+    write_finding(&project, "b.rs", "b finding", &manager);
 
-        let conn = store::open_existing(&db_path(&project)).expect("open db");
-        let count: i64 = conn
-            .query_row("SELECT count(*) FROM findings", [], |r| r.get(0))
-            .expect("count");
-        assert_eq!(count, 2, "both findings present");
+    assert_eq!(stored_finding_count(&project), 2, "both findings present");
 
-        let filtered = finding_read(
-            &Parameters(request(&project.path().to_string_lossy(), Some("a.rs"))),
-            &crate::progress::NoopProgressSink,
-            &manager,
-        )
-        .expect("filtered");
-        assert_eq!(filtered.0.findings.len(), 1);
-        assert_eq!(filtered.0.findings[0].path, "a.rs");
-    });
+    let filtered = finding_read(
+        &Parameters(request(&project.path().to_string_lossy(), Some("a.rs"))),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .expect("filtered");
+    assert_eq!(filtered.0.findings.len(), 1);
+    assert_eq!(filtered.0.findings[0].path, "a.rs");
 }
 
 #[test]
 fn stale_findings_are_returned_with_stale_status() {
-    with_stable_session(|| {
-        let project = activated_project("lib.rs", b"fn main() {}\n");
-        let manager = sync::SourceSyncManager::default();
+    let project = activated_project("lib.rs", b"fn main() {}\n");
+    let manager = sync::SourceSyncManager::default();
 
-        write_finding(&project, "lib.rs", "about to go stale", &manager);
+    write_finding(&project, "lib.rs", "about to go stale", &manager);
 
-        let before = finding_read(
-            &Parameters(request(&project.path().to_string_lossy(), None)),
-            &crate::progress::NoopProgressSink,
-            &manager,
-        )
-        .expect("before");
-        assert_eq!(before.0.findings[0].status, "current");
+    let before = finding_read(
+        &Parameters(request(&project.path().to_string_lossy(), None)),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .expect("before");
+    assert_eq!(before.0.findings[0].status, "current");
 
-        std::fs::write(project.path().join("lib.rs"), b"fn main() { changed(); }\n")
-            .expect("modify");
-        ensure_synced_no_progress(&project.path().to_string_lossy(), &manager).expect("re-sync");
+    std::fs::write(project.path().join("lib.rs"), b"fn main() { changed(); }\n").expect("modify");
+    ensure_synced_no_progress(&project.path().to_string_lossy(), &manager).expect("re-sync");
 
-        let after = finding_read(
-            &Parameters(request(&project.path().to_string_lossy(), None)),
-            &crate::progress::NoopProgressSink,
-            &manager,
-        )
-        .expect("after");
-        assert_eq!(after.0.findings[0].status, "stale");
-    });
+    let after = finding_read(
+        &Parameters(request(&project.path().to_string_lossy(), None)),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .expect("after");
+    assert_eq!(after.0.findings[0].status, "stale");
 }
 
 #[test]
@@ -239,42 +210,56 @@ fn an_oversized_read_path_or_file_is_a_typed_error() {
     assert_eq!(file_error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
 }
 
+/// A findings file that is not a database is an internal error from the
+/// read, never an empty session.
 #[test]
-fn a_missing_findings_table_is_an_internal_error() {
-    let mut connection = Connection::open_in_memory().expect("in-memory database");
-    let tx = connection.transaction().expect("transaction");
+fn an_unreadable_findings_database_is_an_internal_error() {
+    let project = activated_project("lib.rs", b"fn main() {}\n");
+    let manager = sync::SourceSyncManager::default();
+    ensure_synced_no_progress(&project.path().to_string_lossy(), &manager).expect("first sync");
+    std::fs::write(findings_db_path(&project), b"this is not a sqlite database")
+        .expect("corrupt the findings file");
 
-    let error = each_session_finding(&tx, ("session", None), |_| Ok(()))
-        .expect_err("the statement cannot prepare against a missing table");
+    let Err(error) = finding_read(
+        &Parameters(request(&project.path().to_string_lossy(), None)),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    ) else {
+        panic!("a corrupt findings database must fail the read");
+    };
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
     assert!(
-        error.message.contains("no such table: findings"),
+        error.message.contains("the session findings read"),
         "{}",
         error.message
     );
 }
 
+/// A findings row whose column has the wrong type cannot decode: an
+/// internal error naming the column, not a skipped row.
 #[test]
 fn an_undecodable_finding_row_is_an_internal_error() {
-    let mut connection = Connection::open_in_memory().expect("in-memory database");
-    connection
-        .execute_batch(
-            "CREATE TABLE findings (id INTEGER, path INTEGER, line_start INTEGER, line_end INTEGER, \
-             severity TEXT, category TEXT, title TEXT, description TEXT, status TEXT, \
-             source_hash TEXT, session_id TEXT); \
-             INSERT INTO findings VALUES (1, 42, 1, 1, 'low', 'test', 't', 'd', 'current', \
-             'hash', 'session');",
-        )
-        .expect("create test schema");
-    let tx = connection.transaction().expect("transaction");
+    let project = activated_project("lib.rs", b"fn main() {}\n");
+    let manager = sync::SourceSyncManager::default();
+    write_finding(&project, "lib.rs", "decodable", &manager);
+    store::open_findings(&findings_db_path(&project))
+        .expect("open findings db")
+        .execute("UPDATE findings SET path = x'ff'", [])
+        .expect("store a blob where text belongs");
 
-    let error = each_session_finding(&tx, ("session", None), |_| Ok(()))
-        .expect_err("a TEXT column holding an integer cannot decode into a String");
+    let Err(error) = finding_read(
+        &Parameters(request(&project.path().to_string_lossy(), None)),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    ) else {
+        panic!("an undecodable row must fail the read");
+    };
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
     assert!(
-        error.message.contains("Invalid column type") && error.message.contains("path"),
+        error.message.contains("reading a session finding")
+            && error.message.contains("Invalid column type"),
         "{}",
         error.message
     );
@@ -284,40 +269,38 @@ fn an_undecodable_finding_row_is_an_internal_error() {
 /// boundary, flagged, and the clipped page still fits the budget.
 #[test]
 fn an_oversized_description_is_clipped_on_a_char_boundary_and_flagged() {
-    with_stable_session(|| {
-        let project = activated_project("lib.rs", b"fn main() {}\n");
-        let manager = sync::SourceSyncManager::default();
-        // Five thousand characters, ten thousand UTF-8 bytes: a clip must
-        // never split one of these two-byte characters.
-        let description = "é".repeat(5_000);
-        write_finding_with_description(&project, "lib.rs", "multibyte", &description, &manager);
-        write_default_page_bytes(&project, 500);
+    let project = activated_project("lib.rs", b"fn main() {}\n");
+    let manager = sync::SourceSyncManager::default();
+    // Five thousand characters, ten thousand UTF-8 bytes: a clip must
+    // never split one of these two-byte characters.
+    let description = "é".repeat(5_000);
+    write_finding_with_description(&project, "lib.rs", "multibyte", &description, &manager);
+    let _config = write_default_page_bytes(500);
 
-        let response = finding_read(
-            &Parameters(request(&project.path().to_string_lossy(), None)),
-            &crate::progress::NoopProgressSink,
-            &manager,
-        )
-        .expect("read")
-        .0;
+    let response = finding_read(
+        &Parameters(request(&project.path().to_string_lossy(), None)),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .expect("read")
+    .0;
 
-        assert_eq!(response.findings.len(), 1);
-        let entry = &response.findings[0];
-        assert!(entry.detail_clipped, "the clip must be reported");
-        assert!(
-            entry.description.chars().count() < description.chars().count(),
-            "the stored description must actually have been shortened"
-        );
-        assert!(
-            description.starts_with(&entry.description),
-            "the returned text must be a character-boundary prefix"
-        );
-        assert!(
-            response.page.bytes_used <= response.page.page_bytes,
-            "a clipped page must fit its budget: {} of {}",
-            response.page.bytes_used,
-            response.page.page_bytes
-        );
-        assert!(response.page.complete, "the scope was exhausted");
-    });
+    assert_eq!(response.findings.len(), 1);
+    let entry = &response.findings[0];
+    assert!(entry.detail_clipped, "the clip must be reported");
+    assert!(
+        entry.description.chars().count() < description.chars().count(),
+        "the stored description must actually have been shortened"
+    );
+    assert!(
+        description.starts_with(&entry.description),
+        "the returned text must be a character-boundary prefix"
+    );
+    assert!(
+        response.page.bytes_used <= response.page.page_bytes,
+        "a clipped page must fit its budget: {} of {}",
+        response.page.bytes_used,
+        response.page.page_bytes
+    );
+    assert!(response.page.complete, "the scope was exhausted");
 }

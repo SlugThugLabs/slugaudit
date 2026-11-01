@@ -9,7 +9,6 @@ use super::publish_attempt::try_publish;
 use super::publish_log;
 use super::revision::RevisionError;
 use crate::model::ResourceLimits;
-use crate::model::process_limits;
 use crate::progress::ProgressSink;
 use crate::util::Deadline;
 use rusqlite::Connection;
@@ -51,7 +50,7 @@ pub fn publish(
     parser_pack_version: &str,
     sink: &dyn ProgressSink,
 ) -> Result<PublishReport, PublishError> {
-    let limits = crate::project::ProjectConfig::limits_for(root, *process_limits()?)?;
+    let limits = crate::project::effective_limits(root)?;
     publish_with_limits(connection, root, parser_pack_version, sink, &limits)
 }
 

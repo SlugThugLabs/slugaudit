@@ -2,15 +2,14 @@
 //! Project synchronization orchestration for [`super::SourceSyncManager`].
 //!
 //! This module owns the `ensure_current` workflow: resolving the project,
-//! opening and recovering its derived database, the once-per-session
-//! findings transition, and one full source scan per call. The scan itself
+//! the once-per-process start of its session findings, opening and
+//! recovering its derived database, and one full source scan per call. The scan itself
 //! (discovery, hashing, diff, publish) lives under `publish`; this module
 //! owns the surrounding recovery and error shaping.
 
-use super::super::discard_notice::{DatabaseDiscard, count_findings, count_findings_at};
+use super::super::discard_notice::DatabaseDiscard;
 use super::super::manager_meta::{
-    ProjectMetaError, ensure_project_row, mark_prior_session_findings_stale, publish_from_scratch,
-    publish_full, revision_after_sync,
+    ProjectMetaError, ensure_project_row, publish_from_scratch, publish_full, revision_after_sync,
 };
 use super::super::recovery_log::{DatabaseRecovery, log_database_recovery};
 use super::{SourceSyncManager, SyncedProject};
@@ -29,6 +28,7 @@ fn elapsed_ms(start: std::time::Instant) -> u64 {
 }
 
 impl SourceSyncManager {
+    // Owner decision (2026-10-31): the database only matters if it is exactly the same as the code base, and hashing every file on every call is simpler than trusting any shortcut.
     /// Ensures the project containing `path` is fully synchronized and
     /// returns a handle to its current revision.
     ///
@@ -53,6 +53,10 @@ impl SourceSyncManager {
         });
         let (root, database_path) =
             project::resolve_project(Path::new(path)).map_err(map_activation_error)?;
+        // The first touch of a project in this process starts its session
+        // findings fresh; every later call, and any rebuild of the project
+        // database below, leaves the session findings file alone.
+        project::begin_process_session(&root).map_err(map_activation_error)?;
 
         let connection = match self.open_or_rebuild(&root, &database_path, start, sink)? {
             Ok(conn) => conn,
@@ -118,17 +122,12 @@ impl SourceSyncManager {
                 .rebuild_and_finish(root, database_path.to_path_buf(), start, sink, None)
                 .map(Err),
             Err(error) if error.is_corruption() => {
-                let (notice, count_error) = DatabaseDiscard::assess(
-                    count_findings_at(database_path),
-                    format!("the project database is corrupt or outdated: {error}"),
-                );
+                let notice = DatabaseDiscard {
+                    cause: format!("the project database is corrupt or outdated: {error}"),
+                };
                 log_database_recovery(
                     database_path,
-                    DatabaseRecovery::OpenCorrupt {
-                        error: &error,
-                        discard: &notice,
-                        count_error: count_error.as_ref(),
-                    },
+                    DatabaseRecovery::OpenCorrupt { error: &error },
                 );
                 store::discard_corrupt_database(database_path).map_err(|err| {
                     ErrorData::internal_error(
@@ -169,7 +168,6 @@ impl SourceSyncManager {
         start: std::time::Instant,
         sink: &dyn ProgressSink,
     ) -> Result<Result<rusqlite::Connection, SyncedProject>, ErrorData> {
-        self.mark_prior_sessions_stale_once(database_path, &mut connection)?;
         if let Err(metadata_error) = ensure_project_row(&mut connection, root.as_path()) {
             let cause = match &metadata_error {
                 ProjectMetaError::RootMismatch { .. } => {
@@ -186,16 +184,11 @@ impl SourceSyncManager {
                     return Err(ErrorData::from(metadata_error));
                 }
             };
-            let (notice, count_error) = DatabaseDiscard::assess(count_findings(&connection), cause);
-            let count_error = count_error.as_ref();
+            let notice = DatabaseDiscard { cause };
             match &metadata_error {
                 ProjectMetaError::RootMismatch { stored_root } => log_database_recovery(
                     database_path,
-                    DatabaseRecovery::RootMismatch {
-                        stored_root,
-                        discard: &notice,
-                        count_error,
-                    },
+                    DatabaseRecovery::RootMismatch { stored_root },
                 ),
                 ProjectMetaError::IncompatibleVersion {
                     contract_version,
@@ -205,8 +198,6 @@ impl SourceSyncManager {
                     DatabaseRecovery::IncompatibleVersion {
                         contract_version: *contract_version,
                         schema_version: *schema_version,
-                        discard: &notice,
-                        count_error,
                     },
                 ),
                 ProjectMetaError::Other(_) => {}
@@ -223,39 +214,6 @@ impl SourceSyncManager {
                 .map(Err);
         }
         Ok(Ok(connection))
-    }
-
-    /// Marks findings left by other agent sessions `stale` exactly once per
-    /// project database in this process/session. Nothing is deleted.
-    ///
-    /// `ensure_current` runs on every tool call, but a live MCP process may
-    /// be only one of several sessions sharing the project database. Marking
-    /// on every call would re-stale a live peer's findings as it writes them.
-    /// The guard is keyed by database path (one manager can serve several
-    /// projects) and records the session UUID the marking ran for, so a
-    /// test-only session change re-arms it. The number of rows marked is
-    /// logged once at info.
-    ///
-    /// A failed update aborts the call with its own error and leaves the
-    /// guard unarmed, so the next sync retries the session-start transition.
-    fn mark_prior_sessions_stale_once(
-        &self,
-        database_path: &Path,
-        connection: &mut rusqlite::Connection,
-    ) -> Result<(), ErrorData> {
-        let current_session_id = crate::util::session_id();
-        let mut marked =
-            crate::util::lock_or_recover(&self.prior_sessions_staled, "prior_sessions_staled");
-        if marked.get(database_path).copied() == Some(current_session_id) {
-            return Ok(());
-        }
-        let staled = mark_prior_session_findings_stale(connection, current_session_id)?;
-        tracing::info!(
-            staled,
-            "prior-session findings marked stale at session start"
-        );
-        marked.insert(database_path.to_path_buf(), current_session_id);
-        Ok(())
     }
 
     /// Shared tail for the missing, corruption and stale-database paths:

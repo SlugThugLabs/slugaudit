@@ -51,10 +51,8 @@ pub struct StructureRequest {
     pub pattern: Option<String>,
     /// A tree-sitter S-expression query, e.g. `(function_item name: (identifier) @name)`.
     /// For patterns normalized evidence and `query` can't easily express.
-    /// At most `max_structure_query_bytes` UTF-8 bytes (16384 by default;
-    /// `SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES`, or `max_structure_query_bytes`
-    /// in the project's `config.json`); a longer query is refused with
-    /// `invalid_params` before it is compiled.
+    /// At most `max_structure_query_bytes` UTF-8 bytes (16384 by default); a
+    /// longer query is refused with `invalid_params` before it is compiled.
     pub query: String,
     /// Whether to include full matched source text up to MAX_TEXT_BYTES.
     /// Defaults to true for single-file queries, and false (lean 1-line snippet) for multi-file queries.

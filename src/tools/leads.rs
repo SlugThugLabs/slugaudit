@@ -26,6 +26,8 @@
 //! rows). A call with a `cursor` serves the next page of that stored result
 //! unchanged by anything done to the project since.
 
+// Owner decision (2026-10-31): when the tool hands the model findings or a checklist, the model starts to treat running the tool as doing the audit, so built-in leads only count and never rank or give verdicts.
+
 use super::context::{PageRequest, page_request};
 use super::leads_mechanics::resolve_selected;
 use super::leads_page::{self, Cut};
@@ -143,8 +145,7 @@ pub struct MechanicCount {
     /// Stable id — pass it back as `mechanic` to get this mechanic's rows.
     pub mechanic: String,
     /// Where the mechanic comes from: `session` (registered with `mechanic
-    /// add` on this server), `project_config` (persisted in the project's
-    /// `config.json`), or `builtin`.
+    /// add` on this server), or `builtin`.
     pub source: MechanicSource,
     /// The author's note for a registered mechanic; `null` for a built-in.
     pub note: Option<String>,
@@ -238,13 +239,13 @@ pub struct LeadsResponse {
     /// is `partial`: a registered mechanic's scan the call deadline stopped
     /// counts only the files it read), and carry no
     /// ordering by importance: session entries first (oldest first), then
-    /// project_config entries (file order), then the built-ins in their fixed
+    /// the built-ins in their fixed
     /// declaration order. A call naming one `mechanic` scans only that
     /// registered entry (none for a built-in), so the other registered
     /// entries are not listed then; call with no `mechanic` to count them all.
     pub mechanic_counts: Vec<MechanicCount>,
-    /// Registered mechanics that failed to load (a bad persisted entry, an
-    /// id collision, a query that no longer compiles) and are therefore not
+    /// Registered mechanics that failed to load (an id collision, a query
+    /// that no longer compiles) and are therefore not
     /// in `mechanic_counts`. `report`'s `mechanics.invalid` and `mechanic`
     /// action `list` name each one with its error.
     pub mechanics_invalid: usize,
@@ -338,10 +339,7 @@ fn leads_with_limits(
             custom: Vec::new(),
             invalid: Vec::new(),
         },
-        (None, Some(path)) => {
-            let root = super::project_root(path)?;
-            mechanic_catalog::load(&root, manager.session_mechanics(), limits)
-        }
+        (None, Some(_)) => mechanic_catalog::load(manager.session_mechanics(), limits),
         (None, None) => return Err(missing_path()),
     };
     leads_with_catalog(&request.0, limits, &catalog, sink, manager).map(Json)

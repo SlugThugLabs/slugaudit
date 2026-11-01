@@ -154,8 +154,8 @@ pub struct Page {
     /// the call that made the result, on every page.
     pub revision_id: String,
     /// Present only when this call discarded and rebuilt the project
-    /// database (corruption, version bump, root mismatch): how many findings
-    /// were lost (null = unknown, the database was unreadable) and why.
+    /// database (corruption, version bump, root mismatch), and why. Session
+    /// findings live in their own database and are not affected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database_discard: Option<crate::sync::DatabaseDiscard>,
 }

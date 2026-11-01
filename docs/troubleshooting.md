@@ -32,9 +32,9 @@ These come as plain messages.
 
 | Message starts with or contains | Cause | What to do |
 |---|---|---|
-| `project config is unusable: ...` | `.planning/slugaudit/config.json` is unreadable, invalid JSON, has an unknown key, or is over 1 MiB. The message names the file. | Fix or remove the file. See [configuration](configuration.md). |
+| `limits could not be resolved: ...` | The global `~/.slugthug/slugaudit/config.json` is unreadable, invalid JSON, has an unknown key, or is over 1 MiB. The message names the file. | Fix or remove the file. See [configuration](configuration.md). |
 | `the SLUGAUDIT_* environment is invalid` or a startup `Error:` naming a variable | A `SLUGAUDIT_*` variable (or `RUST_LOG`) is set to a bad value, or is `0`. | Fix it and restart the server. |
-| `import would load N bytes across sampled files, exceeding the L-byte ceiling` | The project is bigger than `max_total_import_bytes`. | Raise `max_total_import_bytes` (`config.json` or `SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES`), or use the `audit` profile. |
+| `import would load N bytes across sampled files, exceeding the L-byte ceiling` | The project is bigger than `max_total_import_bytes`. | Raise `max_total_import_bytes` (the global `config.json` or `SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES`), or use the `audit` profile. |
 | `failed to walk project files` or `failed to apply the project's ignore rules` | The walk could not list a folder, or an ignore file could not be applied. SlugAudit refuses to index a partial set. | Fix the permissions or the ignore file named in the log. |
 | `offset and expected_revision were removed` | Old paging parameters. | Use `cursor`. |
 | `path exceeds 32768 bytes` and similar | Input over its size limit. | Shorten the value. |
@@ -54,10 +54,10 @@ You see `project_not_enabled` when the path is not inside an enabled project.
 You do not need to do anything. If the database is corrupt, has an incompatible version, or was built for another project root, SlugAudit deletes it and rebuilds it from your source in the same call. That call's response carries `database_discard`:
 
 ```json
-{ "findings_discarded": 3, "cause": "the project database is corrupt or outdated: ..." }
+{ "cause": "the project database is corrupt or outdated: ..." }
 ```
 
-`findings_discarded` is `null` if the database was too damaged to count. Findings are the one thing that cannot be rebuilt from source. If you want to rebuild by hand, call `project_control` with `off`, then `on`.
+Nothing is lost: this session's findings live in their own database, `findings-<id>.db`, which a rebuild never touches. If you want to rebuild by hand, call `project_control` with `off`, then `on`. That also deletes the session's findings.
 
 ## Offline: grammar downloads fail
 

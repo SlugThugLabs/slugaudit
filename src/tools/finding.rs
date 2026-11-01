@@ -1,9 +1,8 @@
-#[cfg(test)]
-use super::context::session_id;
-use super::context::{ensure_synced, with_verified_write};
-#[cfg(test)]
-use super::finding_insert::fetch_file;
-use super::finding_insert::{insert_finding, validate_text_fields};
+use super::context::{ensure_synced, with_verified_read};
+use super::finding_insert::{
+    fetch_file, insert_finding, validate_line_range, validate_text_fields,
+};
+use super::finding_store::with_findings_write;
 use crate::sync;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -62,25 +61,25 @@ pub struct FindingRequest {
 }
 
 /// Persists exactly the conclusion the AI supplied — nothing here is
-/// generated. Tied to the file's real current hash so it auto-invalidates
-/// (`sync::revision_support::invalidate_stale_findings`) the moment that hash
-/// changes, without anyone having to remember to check.
+/// generated. Tied to the file's real current hash, so it reads back `stale`
+/// the moment that hash changes, without anyone having to remember to check.
+/// It lasts until the SlugAudit process exits.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct FindingResponse {
-    /// Row id of the stored finding in this project's `findings` table; a
-    /// restated finding keeps the id of the row it refreshed.
+    /// Row id of the stored finding in this session's findings; a restated
+    /// finding keeps the id of the row it refreshed.
     pub id: i64,
     /// Revision id the finding was recorded against (`evidence_revision`).
     pub revision_id: String,
     /// Content hash of the indexed file the finding was attached to; a later
-    /// hash change marks the finding `stale`.
+    /// hash change reads the finding as `stale`.
     pub source_hash: String,
     /// `current` for every successful write: the file's hash was verified
     /// while the write ran.
     pub status: &'static str,
     /// Present only when this call discarded and rebuilt the project
-    /// database (corruption, version bump, root mismatch): how many findings
-    /// were lost (null = unknown, the database was unreadable) and why.
+    /// database (corruption, version bump, root mismatch), and why. Session
+    /// findings live in their own database and are not affected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database_discard: Option<crate::sync::DatabaseDiscard>,
 }
@@ -101,8 +100,11 @@ pub fn finding(
 
     let synced = ensure_synced(&request.path, sink, manager)?;
     let revision_id = synced.revision_id.clone();
-    let mut response =
-        with_verified_write(&synced, |tx| insert_finding(tx, request, &revision_id))?;
+    let (source_hash, content) = with_verified_read(&synced, |tx| fetch_file(tx, &request.file))?;
+    validate_line_range(request, &content)?;
+    let mut response = with_findings_write(&synced, |tx| {
+        insert_finding(tx, request, source_hash, &revision_id)
+    })?;
     response.database_discard = synced.discard;
     Ok(Json(response))
 }
@@ -112,9 +114,5 @@ pub fn finding(
 mod tests;
 
 #[cfg(test)]
-#[path = "finding_race_tests.rs"]
-mod race_tests;
-
-#[cfg(test)]
-#[path = "finding_session_tests.rs"]
-mod session_tests;
+#[path = "finding_lifecycle_tests.rs"]
+mod lifecycle_tests;

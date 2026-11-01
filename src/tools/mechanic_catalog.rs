@@ -1,20 +1,17 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=the catalogue invariants: the field and language rules, the compile, and the one loader that report, leads and remove-by-index share must not drift apart
-//! The mechanic catalogue one call sees: this server's session entries, the
-//! project's persisted entries, and the built-ins — in that order — plus every
-//! entry that could not be loaded, with its reason.
+//! The mechanic catalogue one call sees: this server's session entries and
+//! the built-ins — in that order — plus every entry that could not be loaded,
+//! with its reason.
 //!
 //! The invariants live here: an entry's id is `[a-z0-9_]{1,64}`, never a
-//! built-in's, and unique across the session and the project; its query
-//! compiles against its language and names exactly one capture. `add` is
-//! refused when any rule fails; a persisted entry that fails one on load is
-//! listed in `invalid`, never dropped, and never shadows a built-in or a
-//! session entry.
+//! built-in's, and unique across the session; its query compiles against its
+//! language and names exactly one capture. `add` is refused when any rule
+//! fails; an entry that fails one on load is listed in `invalid`, never
+//! dropped, and never shadows a built-in or an earlier entry.
 
 use super::leads_mechanics::MECHANICS;
 use super::mechanic::{InvalidMechanic, MechanicListing, MechanicSource};
 use crate::model::ResourceLimits;
-use crate::project::{MechanicEntry, PersistedMechanics, SessionMechanics};
-use std::path::Path;
+use crate::project::{MechanicEntry, SessionMechanics};
 use tree_sitter::Query;
 
 /// Longest entry id, in bytes.
@@ -53,14 +50,14 @@ pub(super) struct Registered {
 
 /// Everything registered for one call.
 pub(super) struct Catalog {
-    /// Session entries (oldest first), then persisted ones (file order).
+    /// Session entries, oldest first.
     pub(super) custom: Vec<Registered>,
     /// Entries that could not be loaded.
     pub(super) invalid: Vec<InvalidMechanic>,
 }
 
 impl Catalog {
-    /// Every loaded entry, session first, then project_config, then builtin.
+    /// Every loaded entry, session first, then builtin.
     pub(super) fn listings(&self) -> Vec<MechanicListing> {
         let custom = self.custom.iter().map(|registered| MechanicListing {
             id: registered.entry.id.clone(),
@@ -173,30 +170,14 @@ pub(super) fn compile(entry: &MechanicEntry, limits: &ResourceLimits) -> Result<
     Ok(query)
 }
 
-/// Loads the catalogue for `project_root`: compiles every session entry and
-/// every persisted one, and reports what fails instead of dropping it.
-pub(super) fn load(
-    project_root: &Path,
-    session: &SessionMechanics,
-    limits: &ResourceLimits,
-) -> Catalog {
-    let persisted = crate::project::load_persisted(project_root);
-    load_from(&session.entries(), persisted, limits)
-}
-
-/// The catalogue over explicit session entries and persisted section — the
-/// same rules [`load`] applies, for a caller that already holds both (a
-/// remove by index, deciding under the config lock).
-pub(super) fn load_from(
-    session: &[MechanicEntry],
-    persisted: PersistedMechanics,
-    limits: &ResourceLimits,
-) -> Catalog {
+/// Loads the catalogue: compiles every session entry and reports what fails
+/// instead of dropping it.
+pub(super) fn load(session: &SessionMechanics, limits: &ResourceLimits) -> Catalog {
     let mut catalog = Catalog {
         custom: Vec::new(),
         invalid: Vec::new(),
     };
-    for (index, entry) in session.iter().cloned().enumerate() {
+    for (index, entry) in session.entries().into_iter().enumerate() {
         let checked = collision(&catalog, &entry.id).and_then(|()| compile(&entry, limits));
         match checked {
             Ok(query) => catalog.custom.push(Registered {
@@ -212,34 +193,6 @@ pub(super) fn load_from(
             }),
         }
     }
-    let mut invalid: Vec<InvalidMechanic> = persisted
-        .invalid
-        .into_iter()
-        .map(|failed| InvalidMechanic {
-            source: MechanicSource::ProjectConfig,
-            index: failed.index,
-            id: failed.id,
-            error: failed.error,
-        })
-        .collect();
-    for (index, entry) in persisted.entries {
-        let checked = collision(&catalog, &entry.id).and_then(|()| compile(&entry, limits));
-        match checked {
-            Ok(query) => catalog.custom.push(Registered {
-                entry,
-                source: MechanicSource::ProjectConfig,
-                query,
-            }),
-            Err(error) => invalid.push(InvalidMechanic {
-                source: MechanicSource::ProjectConfig,
-                index: Some(index),
-                id: Some(entry.id),
-                error,
-            }),
-        }
-    }
-    invalid.sort_by_key(|failed| failed.index);
-    catalog.invalid.extend(invalid);
     catalog
 }
 
@@ -250,16 +203,8 @@ fn collision(catalog: &Catalog, id: &str) -> Result<(), String> {
             "id `{id}` is a built-in mechanic's; a registered mechanic can never replace one"
         ));
     }
-    match catalog
-        .position(id)
-        .and_then(|index| catalog.custom.get(index))
-    {
-        Some(existing) if existing.source == MechanicSource::Session => {
-            Err(format!("id `{id}` is already registered for this session"))
-        }
-        Some(_) => Err(format!(
-            "id `{id}` is already used by an earlier persisted mechanic"
-        )),
+    match catalog.position(id) {
+        Some(_) => Err(format!("id `{id}` is already registered for this session")),
         None => Ok(()),
     }
 }

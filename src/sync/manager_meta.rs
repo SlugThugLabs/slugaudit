@@ -1,11 +1,10 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=the project-metadata row, the session-start stale marking, the revision read and the publish error mapping form one cohesive helper set
+// slugaudit-line-exception: approved-by=slugthug; reason=the project-metadata row, the revision read and the publish error mapping form one cohesive helper set
 //! Project-metadata helpers used by `SourceSyncManager`.
 //!
 //! Split out from `manager.rs` so the sync orchestrator's hot path is
 //! shorter than the small-file rule cap. These helpers are not part
 //! of the orchestrator's runtime concerns — they mediate the project's
-//! SQLite metadata row, the session-start marking of prior
-//! agents' findings stale, and the revision lookup that always succeeds or
+//! SQLite metadata row and the revision lookup that always succeeds or
 //! always returns `None`, respectively.
 
 use super::SyncedProject;
@@ -18,41 +17,6 @@ use crate::store;
 use rmcp::ErrorData;
 use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
-use uuid::Uuid;
-
-/// Marks every `findings` row whose `session_id` does not match
-/// `current_session_id` as `stale` and returns how many rows changed. Rows
-/// are never deleted: a restart or a second session on the same project
-/// must not destroy another session's recorded conclusions. A new audit
-/// starts with a clean default view because `finding_read` selects only the
-/// current session's rows; a continuing session resumes deliberately through
-/// the `finding_sessions` tool (`list`, then `adopt`).
-///
-/// The caller decides *when* this runs, and must run it only once per
-/// process/session per project database: repeating it on every tool call
-/// would re-stale the findings a live peer session keeps writing.
-/// `SourceSyncManager` owns that once-per-session guard; this function is the
-/// single SQL statement it gates.
-///
-/// Idempotent and bounded: rows already `stale` are skipped, and the scan
-/// runs on the existing `idx_findings_session` index.
-pub(crate) fn mark_prior_session_findings_stale(
-    connection: &mut Connection,
-    current_session_id: Uuid,
-) -> Result<usize, ErrorData> {
-    connection
-        .execute(
-            "UPDATE findings SET status = 'stale' \
-             WHERE session_id != ?1 AND status != 'stale'",
-            rusqlite::params![current_session_id.to_string()],
-        )
-        .map_err(|error| {
-            ErrorData::internal_error(
-                format!("marking prior-session findings stale: {error}"),
-                None,
-            )
-        })
-}
 
 /// Returns the `revision_id` of the current revision, or `None` if no
 /// revision has been published yet. `ensure_current` reads it after every
@@ -154,11 +118,7 @@ impl From<ProjectMetaError> for ErrorData {
 /// doesn't already exist, then verifies the stored `root_path` still
 /// matches the canonical root this process resolved on later syncs.
 ///
-/// This function is metadata-only. Marking prior sessions' findings stale is
-/// the caller's session-start transition: `SourceSyncManager` runs
-/// [`mark_prior_session_findings_stale`] once per project database per
-/// process/session, then calls this on every sync. Keeping that out of here
-/// is what stops a second tool call from re-staling a live peer's findings.
+/// This function is metadata-only.
 ///
 /// The `INSERT OR IGNORE` is safe across concurrent first syncs because
 /// the row is keyed on `id = 1`, a fixed constant. The subsequent

@@ -1,40 +1,45 @@
 //! Project root resolution and activation. The directory
 //! `.planning/slugaudit/` is the only on/off control in the whole product:
 //! its presence enables SlugAudit for a project, its absence disables it.
-//! Everything inside it, `project.db` included, is scratch that is rebuilt on
-//! demand. `enable`/`disable` are the one supported way to create or remove
-//! that directory, exposed to the AI via the `project_control` MCP tool
-//! (`src/tools/project_control.rs`), not via any CLI command.
+//! Everything inside it is scratch: `project.db` is rebuilt on demand and
+//! each `findings-<id>.db` lasts one SlugAudit process. `enable`/`disable` are the one
+//! supported way to create or remove that directory, exposed to the AI via
+//! the `project_control` MCP tool (`src/tools/project_control.rs`), not via
+//! any CLI command.
 
 mod activation;
-mod config;
-mod config_cleanup;
-mod config_store;
 mod database_path;
+mod findings_session;
+mod findings_sweep;
 mod gitignore;
+mod global_config;
+mod mechanic_entry;
 mod mechanic_scan_cache;
-mod mechanics_config;
 mod root;
 mod session_mechanics;
+mod session_profile;
 
 pub use activation::{
     ActivationError, DisableReport, GitignoreOutcome, activation_dir, disable, enable,
     ensure_gitignore, find_project_root, resolve_project,
 };
-pub use config::{ConfigError, ProjectConfig, ProjectLimitsError};
-pub use config_store::ConfigWriteError;
 pub use database_path::database_path;
+pub use findings_session::{begin_process_session, session_findings_path};
+#[cfg(test)]
+pub(crate) use findings_session::{
+    forget_root_for_test, put_session_for_test, take_session_for_test,
+};
+#[cfg(test)]
+pub(crate) use global_config::set_global_config_path_for_test;
+pub use global_config::{ConfigError, GlobalConfig, ProjectLimitsError, effective_limits};
+pub use mechanic_entry::MechanicEntry;
 pub use mechanic_scan_cache::{
     CacheStats, CachedRow, DEFAULT_MECHANIC_CACHE_BYTES, ENTRY_OVERHEAD_BYTES, MechanicScanCache,
     ROW_OVERHEAD_BYTES, ScanKey,
 };
-pub use mechanics_config::{
-    InvalidPersistedEntry, MAX_PERSISTED_MECHANICS, MECHANICS_SECTION_VERSION, MechanicEntry,
-    MechanicsWriteError, PersistedMechanics, load_persisted, persist_entry, remove_persisted,
-    remove_persisted_at,
-};
 pub use root::{ProjectRoot, RootError};
 pub use session_mechanics::{MAX_SESSION_MECHANICS, SessionMechanics};
+pub use session_profile::{session_profile, set_session_profile};
 
 /// Test fixture: an empty owner-only `project.db` in `activation` (a
 /// `.planning/slugaudit` directory), which SQLite opens as a fresh database.

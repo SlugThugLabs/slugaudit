@@ -1,12 +1,23 @@
 # Configuration
 
-Configuration is being simplified; this page documents the current version.
+SlugAudit works with no configuration. There is no per-repo config file. You can change its limits in three ways, from lowest to highest priority:
 
-SlugAudit works with no configuration. You can change its limits in three ways:
+1. A global file, `~/.slugthug/slugaudit/config.json`, that you write by hand.
+2. Environment variables (`SLUGAUDIT_*`).
+3. The profile your agent picks for the session with `project_control` `on`.
 
-1. A profile: `lean`, `audit` or `adaptive`.
-2. Environment variables (`SLUGAUDIT_*`), read once when the server starts.
-3. A per-project file, `.planning/slugaudit/config.json`, read on every call.
+Everything the agent sets through the tools (findings, mechanics, the profile) lasts one session: one SlugAudit server process. A new process starts from the defaults and your global file and environment.
+
+## Order of precedence
+
+From lowest to highest:
+
+1. Built-in defaults: the limits of the base profile (`adaptive` unless a profile is chosen).
+2. The global file's limit keys.
+3. `SLUGAUDIT_*` environment variables.
+4. The session profile the agent picked with `project_control` `on` and `profile`.
+
+A profile picks the base limits, and only the base. The session profile beats `SLUGAUDIT_PROFILE`, which beats the global file's `profile`. The global file's limit keys then apply on top of that base, and the environment's limit variables apply last. Choosing a profile therefore never discards a limit you set in the file or the environment.
 
 ## Profiles
 
@@ -16,9 +27,9 @@ SlugAudit works with no configuration. You can change its limits in three ways:
 | `audit` | Deep audits. Large files, long time budgets. |
 | `adaptive` | The default. Limits that scale with the machine's RAM. |
 
-Choose a profile with the environment variable `SLUGAUDIT_PROFILE` (case-insensitive: `lean`, `audit`, `adaptive`), with the `profile` key in `config.json`, or with the `profile` parameter of `project_control` `on` (which writes the key for you). An unknown value in the environment stops the server at startup, with an error that names the variable.
+Choose a profile with the environment variable `SLUGAUDIT_PROFILE` (case-insensitive: `lean`, `audit`, `adaptive`), with the `profile` key in the global file, or, for one session, with the `profile` parameter of `project_control` `on`. The `profile` parameter is held in memory for that project until the server exits; it is not written anywhere. An unknown value in the environment stops the server at startup, with an error that names the variable.
 
-If the machine's memory cannot be detected, `adaptive` cannot be sized. The server then needs an explicit profile. Without one it stops at startup.
+If the machine's memory cannot be detected, `adaptive` cannot be sized. The server then needs an explicit profile in `SLUGAUDIT_PROFILE`. Without one it stops at startup.
 
 ### Default limits by profile
 
@@ -45,9 +56,11 @@ If the machine's memory cannot be detected, `adaptive` cannot be sized. The serv
 
 No value can be stored if it exceeds 1,000,000,000 bytes (the largest value the bundled SQLite can hold). `max_file_bytes` and `max_query_value_bytes` are clamped to that, with a warning.
 
-## `config.json`
+## The global file
 
-Path: `<project>/.planning/slugaudit/config.json`. It is optional. SlugAudit creates it only when you persist something (`project_control` with `profile`, or `mechanic` with `persist: true`). `project_control` `off` deletes it along with the rest of `.planning/slugaudit/`.
+Path: `~/.slugthug/slugaudit/config.json`. It sits in SlugAudit's own directory (`$SLUGTHUG_HOME/slugaudit/config.json` if you set `SLUGTHUG_HOME`). You create and edit it yourself. SlugAudit only reads it: no tool writes it, and `project_control` `off` does not touch it. The file is optional. If it does not exist, nothing changes.
+
+An old install may have left `<project>/.planning/slugaudit/config.json`. SlugAudit ignores it, and `off` deletes it with the rest of the directory.
 
 Example:
 
@@ -63,7 +76,7 @@ Keys:
 
 | Key | Type | What it sets |
 |---|---|---|
-| `profile` | `"lean"`, `"audit"`, `"adaptive"` | The base set of limits for this project. |
+| `profile` | `"lean"`, `"audit"`, `"adaptive"` | The base set of limits. |
 | `max_file_bytes` | integer | Largest file stored. |
 | `max_parse_bytes` | integer | Largest file parsed. |
 | `max_parse_wall_clock_ms` | integer | Parse time allowed for one file, in milliseconds. |
@@ -72,25 +85,23 @@ Keys:
 | `default_page_bytes` | integer | Default page size of `query` and `leads`. |
 | `max_result_store_bytes` | integer | Disk budget for stored paged results. |
 | `result_active_grace_secs` | integer | Seconds an unfinished paged result is protected from reclaim. |
-| `mechanics` | object | Your persisted mechanics, written by `mechanic` with `persist: true`. Do not hand-edit unless you know the format: `{"version": 1, "entries": [{"id", "language", "query", "note"}]}`. At most 64 entries. |
 
 Rules:
 
-- Any other key is an error. A misspelled key is reported, not ignored.
+- Any other key is an error. A misspelled key is reported, not ignored. This includes `mechanics`: mechanics are session-only.
 - A value of `0` is ignored and a warning is logged.
-- Order of precedence: the base is the environment-selected limits; if `profile` is set in `config.json`, the whole base is replaced by that profile's limits (this drops any `SLUGAUDIT_*` limit overrides); then each key in `config.json` is applied on top.
 - The file is read on every call, so changes take effect on the next call. No restart is needed.
-- A file that cannot be read, is not valid JSON, contains an unknown key, has a directory at its path, or is larger than 1 MiB fails the call with `project config is unusable: ...; fix or remove the file and retry`. The message names the file.
+- A file that cannot be read, is not valid JSON, contains an unknown key, has a directory at its path, or is larger than 1 MiB fails the call with `limits could not be resolved: ...; fix the file and retry`. The message names the file. There is no fallback to defaults.
 
 ## Environment variables
 
-Set these in the environment of the server process. How you do that depends on your agent: most MCP clients have an `env` setting for each server. The values are read once when the server starts. Restart the server to change them.
+Set these in the environment of the server process. How you do that depends on your agent: most MCP clients have an `env` setting for each server. The values are read once, the first time they are needed. Restart the server to change them.
 
 A variable that is set but cannot be parsed stops the server at startup, with an error that names the variable (not its value). A `0` is also an error. A variable that is not set changes nothing. A misspelled variable name is not detected.
 
 Limits (the name is `SLUGAUDIT_` plus the upper-case limit name):
 
-| Variable | Type | Also in `config.json` |
+| Variable | Type | Also in the global file |
 |---|---|---|
 | `SLUGAUDIT_PROFILE` | `lean`, `audit`, `adaptive` | yes (`profile`) |
 | `SLUGAUDIT_MAX_FILE_BYTES` | bytes | yes |

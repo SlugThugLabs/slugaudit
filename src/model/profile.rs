@@ -10,7 +10,7 @@ use std::time::Duration;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 /// Named resource-limit presets an operator selects via `SLUGAUDIT_PROFILE`
-/// or the project's `config.json`.
+/// or the global `config.json`.
 pub enum AuditProfile {
     /// Everyday coding assistant mode: fast, responsive, conservative budgets.
     Lean,

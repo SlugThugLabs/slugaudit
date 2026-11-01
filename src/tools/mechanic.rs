@@ -4,11 +4,8 @@
 //! signal in a codebase is the auditor's decision, and this tool is where it
 //! records one. An entry is a Tree-sitter query with exactly one capture over
 //! one language; `leads` counts and pages it beside the built-ins, and
-//! `report` lists it. A session entry lives in this server's memory and ends
-//! with the process; `persist: true` writes it to the project's
-//! `.planning/slugaudit/config.json` instead, where every later call (and
-//! every later server) reads it. No entry can remove, rename or override a
-//! built-in.
+//! `report` lists it. An entry lives in this server's memory and ends with
+//! the process. No entry can remove, rename or override a built-in.
 
 use super::leads::LeadsResponse;
 use super::mechanic_catalog;
@@ -26,15 +23,12 @@ const MAX_PATH_BYTES: usize = 32 * 1024;
 /// (`mechanic_catalog`) run, so an oversized value is never copied or echoed.
 const MAX_FIELD_BYTES: usize = 64 * 1024;
 
-/// Where a mechanic comes from. Listings are ordered session, then
-/// project_config, then builtin.
+/// Where a mechanic comes from. Listings are ordered session, then builtin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MechanicSource {
     /// Registered with `mechanic add` on this server; ends when it exits.
     Session,
-    /// Persisted in the project's `.planning/slugaudit/config.json`.
-    ProjectConfig,
     /// Shipped with SlugAudit; can never be removed or overridden.
     Builtin,
 }
@@ -55,20 +49,18 @@ pub struct MechanicListing {
 }
 
 /// A registered entry that could not be loaded, with the reason. It is not
-/// counted by `leads` until it is fixed or removed, and it is never dropped
-/// from this list.
+/// counted by `leads` until it is removed, and it is never dropped from this
+/// list.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct InvalidMechanic {
-    /// `project_config` for a persisted entry (or the whole section);
-    /// `session` for a session entry whose grammar no longer loads.
+    /// `session`: the entry was registered on this server.
     pub source: MechanicSource,
-    /// Position in `mechanics.entries` (or in the session list); `null` when
-    /// the whole section or file failed.
+    /// Position in the session list (oldest first).
     pub index: Option<usize>,
     /// The entry's id, when it has one.
     pub id: Option<String>,
-    /// Why it was not loaded: a bad JSON shape, an unknown `version`, a
-    /// compile error, a broken field rule, or an id collision.
+    /// Why it was not loaded: a compile error, a broken field rule, or an id
+    /// collision.
     pub error: String,
 }
 
@@ -78,8 +70,7 @@ pub struct InvalidMechanic {
 pub enum MechanicAction {
     /// Register `{id, language, query, note}` and return its first count.
     Add,
-    /// Remove the session or persisted entry `id`, or the invalid persisted
-    /// entry at `index`.
+    /// Remove the registered entry `id`.
     Remove,
     /// List every mechanic and every entry that failed to load.
     List,
@@ -112,13 +103,6 @@ pub struct MechanicRequest {
     /// It can never be a built-in's id or one already registered.
     #[serde(default)]
     pub id: Option<String>,
-    /// `remove` only, instead of `id`: the `index` of a persisted entry
-    /// listed in `invalid` (`report.mechanics.invalid`, or `list`) — the way
-    /// to remove an entry with no string id or with a built-in's id. Only an
-    /// entry that still fails to load is removed this way; a valid one is
-    /// refused (remove it by `id`). Passing both `id` and `index` is refused.
-    #[serde(default)]
-    pub index: Option<usize>,
     /// `add`: the grammar the query compiles against and the indexed files
     /// it reads: exactly the lowercase name the index stores for a file
     /// (`python`, `rust`, `javascript`, `tsx`), never a capitalised name or
@@ -136,12 +120,6 @@ pub struct MechanicRequest {
     /// listed beside the entry in `leads`, `report` and `list`.
     #[serde(default)]
     pub note: Option<String>,
-    /// `add`: `true` writes the entry to the project's
-    /// `.planning/slugaudit/config.json` (every other key kept) so later
-    /// sessions see it; `false` (default) keeps it in this server's memory
-    /// until the server exits.
-    #[serde(default)]
-    pub persist: bool,
     /// `add`: maximum rows in the first page, as `leads`' `limit`.
     #[serde(default)]
     pub limit: Option<usize>,
@@ -162,7 +140,7 @@ pub struct MechanicResponse {
     /// `add`/`remove`: where that entry lives (or lived).
     pub source: Option<MechanicSource>,
     /// Every mechanic after the call: session entries (oldest first), then
-    /// project_config entries (file order), then the built-ins.
+    /// the built-ins.
     pub mechanics: Vec<MechanicListing>,
     /// Registered entries that failed to load, with the reason.
     pub invalid: Vec<InvalidMechanic>,
@@ -195,12 +173,8 @@ pub struct MechanicResponse {
 /// `invalid_params` for an inactive project, a missing or oversized field, an
 /// id that is a built-in's or already registered, a query that does not
 /// compile or does not name exactly one capture, an unknown or prose
-/// language, a full session or project list, a `remove` of a built-in or an
-/// unknown id, a `remove` by an `index` that is not an invalid persisted
-/// entry, or a `config.json` that is a symlink or cannot be extended; an
-/// internal error for a failed read or write of `config.json`, a
-/// `config.json` locked by another process past the bounded wait, a failed
-/// sync, or a failed first count.
+/// language, a full session list, or a `remove` of a built-in or an unknown
+/// id; an internal error for a failed sync or a failed first count.
 pub fn mechanic(
     request: &Parameters<MechanicRequest>,
     sink: &dyn ProgressSink,
@@ -220,15 +194,15 @@ pub fn mechanic(
     let (id, source, first_count) = match request.action {
         MechanicAction::List => return list::list(request, sink, manager).map(Json),
         MechanicAction::Add => {
-            let (id, source, first_count) = add(request, path, &root, &limits, sink, manager)?;
+            let (id, source, first_count) = add(request, path, &limits, sink, manager)?;
             (Some(id), Some(source), Some(first_count))
         }
         MechanicAction::Remove => {
-            let (id, source) = remove(request, &root, &limits, manager)?;
-            (id, Some(source), None)
+            let (id, source) = remove(request, manager)?;
+            (Some(id), Some(source), None)
         }
     };
-    let catalog = mechanic_catalog::load(&root, manager.session_mechanics(), &limits);
+    let catalog = mechanic_catalog::load(manager.session_mechanics(), &limits);
     tracing::info!(
         action = ?request.action,
         source = ?source,
@@ -256,18 +230,6 @@ fn validate(request: &MechanicRequest) -> Result<(), ErrorData> {
     {
         return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
     }
-    if request.index.is_some() && request.id.is_some() {
-        return Err(ErrorData::invalid_params(
-            "`remove` takes `id` or `index`, not both",
-            None,
-        ));
-    }
-    if request.index.is_some() && request.action != MechanicAction::Remove {
-        return Err(ErrorData::invalid_params(
-            "`index` is only for `remove`",
-            None,
-        ));
-    }
     for (name, value) in [
         ("id", &request.id),
         ("language", &request.language),
@@ -293,10 +255,6 @@ mod list;
 #[cfg(test)]
 #[path = "mechanic_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "mechanic_persist_tests.rs"]
-mod persist_tests;
 
 #[cfg(test)]
 #[path = "mechanic_paged_tests.rs"]

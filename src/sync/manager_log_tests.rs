@@ -108,27 +108,15 @@ fn a_database_open_failure_warn_logs_real_path() {
     );
 }
 
-/// An `OpenCorrupt` recovery record: the real database path, the source
-/// error text and the unknown-count error all reach the WARN.
+/// An `OpenCorrupt` recovery record: the real database path and the source
+/// error text reach the WARN.
 #[test]
 fn an_open_corrupt_recovery_warn_logs_real_path_and_source_error() {
     use crate::sync::recovery_log::{DatabaseRecovery, log_database_recovery};
     let database = std::path::Path::new("/home/private-user/secret-repo/project.db");
     let error = crate::store::StoreError::Symlink;
-    let (discard, count_error) = crate::sync::DatabaseDiscard::assess(
-        Err(rusqlite::Error::InvalidQuery),
-        "corrupt".to_owned(),
-    );
-
     let ((), logs) = crate::store::test_capture::capture_warns(|| {
-        log_database_recovery(
-            database,
-            DatabaseRecovery::OpenCorrupt {
-                error: &error,
-                discard: &discard,
-                count_error: count_error.as_ref(),
-            },
-        );
+        log_database_recovery(database, DatabaseRecovery::OpenCorrupt { error: &error });
     });
 
     let records = sync_failure_records(&logs, "open_project_database");
@@ -143,35 +131,23 @@ fn an_open_corrupt_recovery_warn_logs_real_path_and_source_error() {
         "the record must carry the category and the source error:\n{logs}"
     );
     assert!(
-        records[0].contains("findings_discarded=None")
-            && records[0].contains(&format!(
-                "count_error=\"{}\"",
-                rusqlite::Error::InvalidQuery
-            )),
-        "the record must carry the unknown count and its error:\n{logs}"
-    );
-    assert!(
         !records[0].contains("database_id="),
         "the redacted database id is gone:\n{logs}"
     );
 }
 
 /// An `IncompatibleVersion` recovery record carries the real database path,
-/// both versions and the discard count.
+/// and both versions.
 #[test]
 fn an_incompatible_version_recovery_warn_logs_real_path_and_versions() {
     use crate::sync::recovery_log::{DatabaseRecovery, log_database_recovery};
     let database = std::path::Path::new("/home/private-user/secret-repo/project.db");
-    let (discard, count_error) = crate::sync::DatabaseDiscard::assess(Ok(3), "old".to_owned());
-
     let ((), logs) = crate::store::test_capture::capture_warns(|| {
         log_database_recovery(
             database,
             DatabaseRecovery::IncompatibleVersion {
                 contract_version: 7,
                 schema_version: 9,
-                discard: &discard,
-                count_error: count_error.as_ref(),
             },
         );
     });
@@ -185,9 +161,8 @@ fn an_incompatible_version_recovery_warn_logs_real_path_and_versions() {
     assert!(
         records[0].contains("error_kind=\"incompatible_version\"")
             && records[0].contains("contract_version=7")
-            && records[0].contains("schema_version=9")
-            && records[0].contains("findings_discarded=Some(3)"),
-        "the record must carry the category, versions and count:\n{logs}"
+            && records[0].contains("schema_version=9"),
+        "the record must carry the category and versions:\n{logs}"
     );
     assert!(
         !records[0].contains("database_id="),

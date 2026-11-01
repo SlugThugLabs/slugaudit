@@ -1,9 +1,9 @@
 //! Hygiene for limit overrides: a zero in an environment variable is a
-//! startup error; a zero in the project config is ignored with a warning.
+//! startup error; a zero in the global config is ignored with a warning.
 //! A warning about one cause is logged once per process rather than once per
 //! load.
 //!
-//! The limits are rebuilt from the project config on every tool call and
+//! The limits are rebuilt from the global config on every tool call and
 //! every sync, so a warning issued at each build repeats for one unchanged
 //! setting (the clamp warning was logged three times for one cause). The
 //! ledger below remembers which (setting, configured value) pairs were
@@ -23,7 +23,7 @@ static REPORTED: Mutex<BTreeSet<(&'static str, u64)>> = Mutex::new(BTreeSet::new
 
 // In tests the ledger is per thread. A process-wide ledger let any unrelated
 // test that builds limits while another test's environment held a zero spend
-// that test's one warning outside its capture (the mechanic persist test did
+// that test's one warning outside its capture (a test that builds limits did
 // exactly that), and the zero tests then saw no warning at all.
 #[cfg(test)]
 thread_local! {
@@ -128,9 +128,8 @@ impl ResourceLimits {
     ///
     /// A file over `max_file_bytes` is never read, so a parse cap above it can
     /// never act; keeping it would report a limit that is not the one in
-    /// force. Runs after the env overrides and again after the project config
-    /// (`ProjectConfig::apply_to_limits`), and says so when it acts (once per
-    /// configured value), like the SQLite clamp.
+    /// force. Runs after the env overrides (`apply_env_overrides`), and says so
+    /// when it acts (once per configured value), like the SQLite clamp.
     pub(crate) fn clamp_parse_to_file_bytes(&mut self) {
         if self.max_parse_bytes > self.max_file_bytes {
             if first_report("max_parse_bytes clamp", self.max_parse_bytes) {

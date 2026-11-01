@@ -80,6 +80,12 @@ impl StoreError {
 /// Discards a corrupt derived database and its SQLite journal sidecars.
 /// Callers must recreate the schema and republish from project files.
 pub fn discard_corrupt_database(path: &Path) -> Result<(), std::io::Error> {
+    remove_database_files(path)
+}
+
+/// Deletes a database file and its `-wal` / `-shm` sidecars; files that are
+/// already absent are not an error.
+pub fn remove_database_files(path: &Path) -> Result<(), std::io::Error> {
     for suffix in ["", "-wal", "-shm"] {
         let candidate = if suffix.is_empty() {
             path.to_path_buf()
@@ -164,7 +170,7 @@ fn open_read_write_with(path: &Path, mode: CreateMode) -> Result<Connection, Sto
 /// `Missing` when nothing exists at `path` (a dangling symlink counts as
 /// present so the symlink refusal still applies); other `lstat` failures are
 /// reported as themselves.
-fn ensure_present(path: &Path) -> Result<(), StoreError> {
+pub(super) fn ensure_present(path: &Path) -> Result<(), StoreError> {
     match path.symlink_metadata() {
         Ok(_) => Ok(()),
         Err(error)

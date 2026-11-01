@@ -3,10 +3,6 @@ use super::manifest::{PATH_SET_SUBQUERY, paths_json_array};
 use super::revision_edges;
 use super::revision_files;
 use super::revision_skipped::{self, SkippedRecord};
-use super::revision_support::invalidate_stale_findings;
-// Read by `revision_tests` through `use super::*`.
-#[cfg(test)]
-use super::revision_support::invalidate_stale_findings_in_batches;
 use crate::model::{EvidenceItem, ParserRun, SourceIdentity};
 use crate::util;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -152,7 +148,6 @@ pub(super) fn publish_revision(
     if re_resolve_unresolved {
         revision_edges::re_resolve_unresolved(&tx, &known_ref)?;
     }
-    invalidate_stale_findings(&tx, &touched_paths(upserts, deletions, skipped))?;
     flip_current_revision(&tx, revision_db_id)?;
 
     tx.commit()?;
@@ -251,23 +246,6 @@ fn resolve_edges(
         revision_edges::resolve_and_store(tx, file, file_id, known_paths)?;
     }
     Ok(())
-}
-
-/// Every path whose stored evidence this revision changes the picture for.
-/// A file that became skipped has no content hash to match a finding against
-/// any more, so a finding recorded against it must go stale exactly as if it
-/// had been edited.
-fn touched_paths<'a>(
-    upserts: &'a [FileRecord],
-    deletions: &'a [String],
-    skipped: &'a [SkippedRecord],
-) -> Vec<&'a str> {
-    upserts
-        .iter()
-        .map(|file| file.relative_path.as_str())
-        .chain(deletions.iter().map(String::as_str))
-        .chain(skipped.iter().map(|record| record.relative_path.as_str()))
-        .collect()
 }
 
 /// Flips the `is_current` pointer last — two statements: clear the old

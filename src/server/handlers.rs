@@ -81,13 +81,11 @@ impl SlugAuditServer {
          row) and `note` (what it counts, in your words); a query that does not compile is \
          refused with the compiler's message. It returns `first_count`: the `leads` response \
          for that id (counts with `covers`, the first page of rows, `page`, `files_total`, \
-         `files_covered`, `files_not_parsed`). Session entries live until this server exits; \
-         `persist: true` writes the entry to `.planning/slugaudit/config.json` (other keys \
-         kept) so later sessions read it. `leads` and `report` list every entry with `source` \
-         (`session`, `project_config`, `builtin`) and its note, session first. `action: remove` \
-         deletes a session or persisted entry; built-ins can never be removed or overridden. \
-         `action: list` returns every mechanic plus `invalid`: persisted entries that failed to \
-         load, each with its error."
+         `files_covered`, `files_not_parsed`). Entries live until this server exits. `leads` and \
+         `report` list every entry with `source` (`session`, `builtin`) and its note, session \
+         first. `action: remove` deletes a registered entry by `id`; built-ins can never be \
+         removed or overridden. `action: list` returns every mechanic plus `invalid`: registered \
+         entries that failed to load, each with its error."
     )]
     async fn mechanic(
         &self,
@@ -158,8 +156,8 @@ impl SlugAuditServer {
          `file` (project-relative path of the file), `line_start`/`line_end` (one-based inclusive), \
          plus `severity`, `category`, `title`, and `description` (all your own judgment — SlugAudit \
          never generates these). The finding is bound to the file's current content hash and \
-         auto-invalidates (status becomes stale) the moment that file changes, so findings never \
-         outlive the source they were about. Use this to record reviewed issues, not raw diagnostics."
+         `finding_read` reports it `stale` the moment that file changes. Findings last until \
+         this server exits. Use this to record reviewed issues, not raw diagnostics."
     )]
     async fn finding(
         &self,
@@ -176,10 +174,10 @@ impl SlugAuditServer {
     #[tool(
         title = "Read session findings",
         annotations(read_only_hint = true, destructive_hint = false),
-        description = "Retrieve findings scoped to the current agent session — only returns \
-         findings written by this session, never another session's conclusions. Safer than \
-         querying the findings table directly through `query`, which returns every session's \
-         rows. Supply `path` (any path in the active project) to select the database, and \
+        description = "Retrieve the findings recorded in this session (since this server \
+         started); a restart begins with none. Each carries `status`: `current` while its file \
+         still has the content hash it was written against, `stale` once that file changed or \
+         is gone. Supply `path` (any path in the active project) to select the project, and \
          optionally `file` to filter to a specific file. Results are byte-cut pages under the \
          shared `page`; call again with only `page.cursor` for the next page."
     )]
@@ -196,24 +194,21 @@ impl SlugAuditServer {
     }
 
     #[tool(
-        title = "List or adopt earlier sessions' findings",
-        annotations(read_only_hint = false, destructive_hint = false),
-        description = "A restart starts a new session: `finding_read` shows only this session's \
-         findings, and earlier sessions' findings are kept but marked stale. Supply `path` (any \
-         path in the active project) and `action`. `list` returns earlier sessions with \
-         `session_id`, `started_at_unix` (their first finding) and `findings`. `adopt` with a \
-         `session_id` from `list` makes that session's findings yours, so `finding_read` returns \
-         them; each reads `current` if its file is unchanged, else `stale`. Adopt only when you \
-         are continuing that audit; nothing is ever deleted."
+        title = "Clear session findings",
+        annotations(read_only_hint = false, destructive_hint = true),
+        description = "Delete every finding recorded in this session for the project and report \
+         how many were removed (`removed`). Supply `path` (any path in the active project). Use \
+         it to start clean when the user asks, for example after switching models mid-session. \
+         A restart of this server already begins with no findings."
     )]
-    async fn finding_sessions(
+    async fn finding_clear(
         &self,
         meta: RequestMetaObject,
         peer: Peer<RoleServer>,
-        request: Parameters<tools::FindingSessionsRequest>,
-    ) -> Result<Json<tools::FindingSessionsResponse>, ErrorData> {
-        self.dispatch(meta, peer, "finding_sessions", move |sink, manager| {
-            tools::finding_sessions(&request, sink.as_ref(), &manager)
+        request: Parameters<tools::FindingClearRequest>,
+    ) -> Result<Json<tools::FindingClearResponse>, ErrorData> {
+        self.dispatch(meta, peer, "finding_clear", move |sink, manager| {
+            tools::finding_clear(&request, sink.as_ref(), &manager)
         })
         .await
     }
@@ -224,7 +219,7 @@ impl SlugAuditServer {
         description = "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable \
          a project (creates the directory `.planning/slugaudit/`, which is the on switch, builds the database and \
          runs the initial import), or `\"off\"` to disable it (deletes the whole `.planning/slugaudit/` \
-         directory, `config.json` included, then `.planning` if it is empty). A project is on only while that \
+         directory, then `.planning` if it is empty). A project is on only while that \
          directory exists; if its database is missing or broken, the next tool call rebuilds it. On `\"on\"` the \
          runtime directory `.planning/slugaudit/` is also appended to the project-root `.gitignore` \
          unless a rule that already ignores it is present; the response's `gitignore` field reports \
@@ -233,8 +228,8 @@ impl SlugAuditServer {
          target a specific project root; defaults to the current directory. If the project was \
          moved, copied, or re-extracted elsewhere (e.g. unzipped fresh from an archive), a stale \
          `.planning/slugaudit/project.db` is discarded and rebuilt from source automatically — the \
-         agent does not need to delete it or re-enable manually. Persisted settings live in \
-         `config.json` and are lost on `\"off\"`."
+         agent does not need to delete it or re-enable manually. `profile` (`lean`, `audit` or \
+         `adaptive`) sets the resource profile for this session only; it is not saved."
     )]
     async fn project_control(
         &self,

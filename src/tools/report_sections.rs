@@ -33,7 +33,6 @@ struct ScopeSections {
 
 /// Everything the graph/evidence section queries contribute.
 struct GraphSections {
-    open_finding_count: i64,
     import_resolution: Vec<ImportResolutionCount>,
     dependency_edges: DependencyEdgeTotals,
     diagnostic_count: i64,
@@ -58,7 +57,6 @@ pub(super) fn build_report(
         revision_id,
         file_count = scope.file_count,
         parser_failure_count = scope.parser_failure_count,
-        open_finding_count = graph.open_finding_count,
         diagnostic_count = graph.diagnostic_count,
         "report built"
     );
@@ -78,7 +76,9 @@ pub(super) fn build_report(
         parser_failure_count: scope.parser_failure_count,
         parser_failure_files: scope.parser_failure_files,
         parser_failure_files_total: scope.parser_failure_count,
-        open_finding_count: graph.open_finding_count,
+        // Filled by `report::report` from the session findings database; this
+        // function reads the project index only.
+        open_finding_count: 0,
         import_resolution: graph.import_resolution,
         dependency_edges: graph.dependency_edges,
         diagnostic_count: graph.diagnostic_count,
@@ -115,17 +115,9 @@ fn read_scope_sections(connection: &Transaction<'_>) -> Result<ScopeSections, ru
     })
 }
 
-/// The default-scope findings and graph facts: open findings, import
-/// resolution, edge totals, diagnostics, unmodeled import syntax, and
-/// credential-shaped paths.
+/// The default-scope graph facts: import resolution, edge totals,
+/// diagnostics, unmodeled import syntax, and credential-shaped paths.
 fn read_graph_sections(connection: &Transaction<'_>) -> Result<GraphSections, rusqlite::Error> {
-    // Only this session's findings: earlier sessions' rows are stale or
-    // another live session's, and `finding_read` would not return them.
-    let open_finding_count: i64 = connection.query_row(
-        "SELECT count(*) FROM findings WHERE status = 'current' AND session_id = ?1",
-        [super::context::session_id().to_string()],
-        |row| row.get(0),
-    )?;
     let import_resolution = grouped_import_resolution(connection)?;
     // The same edges counted by direction — the zero-decision entry point
     // carries the totals so an agent does not have to write the COUNT to
@@ -158,7 +150,6 @@ fn read_graph_sections(connection: &Transaction<'_>) -> Result<GraphSections, ru
         &format!("SELECT count(*) FROM files WHERE {CREDENTIAL_PATH_PREDICATE}"),
     )?;
     Ok(GraphSections {
-        open_finding_count,
         import_resolution,
         dependency_edges,
         diagnostic_count,

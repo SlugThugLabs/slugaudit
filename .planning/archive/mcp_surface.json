@@ -3,7 +3,7 @@
     {
       "name": "finding",
       "title": "Record a finding",
-      "description": "Persist a conclusion you have personally reviewed about a specific file and line range. Supply `path` (any path in the active project, to select the database), `file` (project-relative path of the file), `line_start`/`line_end` (one-based inclusive), plus `severity`, `category`, `title`, and `description` (all your own judgment — SlugAudit never generates these). The finding is bound to the file's current content hash and auto-invalidates (status becomes stale) the moment that file changes, so findings never outlive the source they were about. Use this to record reviewed issues, not raw diagnostics.",
+      "description": "Persist a conclusion you have personally reviewed about a specific file and line range. Supply `path` (any path in the active project, to select the database), `file` (project-relative path of the file), `line_start`/`line_end` (one-based inclusive), plus `severity`, `category`, `title`, and `description` (all your own judgment — SlugAudit never generates these). The finding is bound to the file's current content hash and `finding_read` reports it `stale` the moment that file changes. Findings last until this server exits. Use this to record reviewed issues, not raw diagnostics.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "required": [
@@ -63,15 +63,6 @@
             "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
             "type": "object",
             "properties": {
-              "findings_discarded": {
-                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "uint64",
-                "minimum": 0
-              },
               "cause": {
                 "description": "Why the database was discarded.",
                 "type": "string"
@@ -91,7 +82,7 @@
         "type": "object",
         "properties": {
           "id": {
-            "description": "Row id of the stored finding in this project's `findings` table; a\nrestated finding keeps the id of the row it refreshed.",
+            "description": "Row id of the stored finding in this session's findings; a restated\nfinding keeps the id of the row it refreshed.",
             "type": "integer",
             "format": "int64"
           },
@@ -100,7 +91,7 @@
             "type": "string"
           },
           "source_hash": {
-            "description": "Content hash of the indexed file the finding was attached to; a later\nhash change marks the finding `stale`.",
+            "description": "Content hash of the indexed file the finding was attached to; a later\nhash change reads the finding as `stale`.",
             "type": "string"
           },
           "status": {
@@ -108,7 +99,7 @@
             "type": "string"
           },
           "database_discard": {
-            "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch): how many findings\nwere lost (null = unknown, the database was unreadable) and why.",
+            "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch), and why. Session\nfindings live in their own database and are not affected.",
             "anyOf": [
               {
                 "$ref": "#/$defs/DatabaseDiscard"
@@ -126,9 +117,72 @@
       }
     },
     {
+      "name": "finding_clear",
+      "title": "Clear session findings",
+      "description": "Delete every finding recorded in this session for the project and report how many were removed (`removed`). Supply `path` (any path in the active project). Use it to start clean when the user asks, for example after switching models mid-session. A restart of this server already begins with no findings.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "description": "Any path inside the active project, used to select the database",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": {
+          "DatabaseDiscard": {
+            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "type": "object",
+            "properties": {
+              "cause": {
+                "description": "Why the database was discarded.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "cause"
+            ]
+          }
+        },
+        "required": [
+          "removed"
+        ],
+        "type": "object",
+        "properties": {
+          "removed": {
+            "description": "How many findings were deleted; 0 when the session had none.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "database_discard": {
+            "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch), and why. Session\nfindings live in their own database and are not affected.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DatabaseDiscard"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
       "name": "finding_read",
       "title": "Read session findings",
-      "description": "Retrieve findings scoped to the current agent session — only returns findings written by this session, never another session's conclusions. Safer than querying the findings table directly through `query`, which returns every session's rows. Supply `path` (any path in the active project) to select the database, and optionally `file` to filter to a specific file. Results are byte-cut pages under the shared `page`; call again with only `page.cursor` for the next page.",
+      "description": "Retrieve the findings recorded in this session (since this server started); a restart begins with none. Each carries `status`: `current` while its file still has the content hash it was written against, `stale` once that file changed or is gone. Supply `path` (any path in the active project) to select the project, and optionally `file` to filter to a specific file. Results are byte-cut pages under the shared `page`; call again with only `page.cursor` for the next page.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -141,7 +195,7 @@
             "default": null
           },
           "file": {
-            "description": "Optional project-relative file path. When supplied, only findings\nfor that file are returned. Omit to return all current-session\nfindings for the project.",
+            "description": "Optional project-relative file path. When supplied, only findings\nfor that file are returned. Omit to return all of this session's\nfindings for the project.",
             "type": [
               "string",
               "null"
@@ -224,7 +278,7 @@
                 "type": "string"
               },
               "database_discard": {
-                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch): how many findings\nwere lost (null = unknown, the database was unreadable) and why.",
+                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch), and why. Session\nfindings live in their own database and are not affected.",
                 "anyOf": [
                   {
                     "$ref": "#/$defs/DatabaseDiscard"
@@ -341,15 +395,6 @@
             "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
             "type": "object",
             "properties": {
-              "findings_discarded": {
-                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "uint64",
-                "minimum": 0
-              },
               "cause": {
                 "description": "Why the database was discarded.",
                 "type": "string"
@@ -360,11 +405,11 @@
             ]
           },
           "FindingReadEntry": {
-            "description": "One finding row, scoped to the current agent session. Every field is\nexactly what the `finding` tool stored — SlugAudit never generates\nany of this text.",
+            "description": "One finding row of this session. Every field is exactly what the\n`finding` tool stored — SlugAudit never generates any of this text.",
             "type": "object",
             "properties": {
               "id": {
-                "description": "Row id of the finding in this project's `findings` table; a restated\nfinding keeps its id.",
+                "description": "Row id of the finding in this session's findings; a restated finding\nkeeps its id.",
                 "type": "integer",
                 "format": "int64"
               },
@@ -405,11 +450,11 @@
                 "type": "boolean"
               },
               "status": {
-                "description": "`current` while the file's content hash still equals `source_hash`;\n`stale` once a sync sees a different hash.",
+                "description": "`current` while the file's content hash still equals `source_hash`;\n`stale` once the file has a different hash or is gone.",
                 "type": "string"
               },
               "source_hash": {
-                "description": "Content hash of the file at the revision the finding was written\nagainst; a sync that sees a different hash marks the finding `stale`.",
+                "description": "Content hash of the file at the revision the finding was written\nagainst; a different hash now makes the finding `stale`.",
                 "type": "string"
               }
             },
@@ -449,151 +494,6 @@
       },
       "annotations": {
         "readOnlyHint": true,
-        "destructiveHint": false
-      }
-    },
-    {
-      "name": "finding_sessions",
-      "title": "List or adopt earlier sessions' findings",
-      "description": "A restart starts a new session: `finding_read` shows only this session's findings, and earlier sessions' findings are kept but marked stale. Supply `path` (any path in the active project) and `action`. `list` returns earlier sessions with `session_id`, `started_at_unix` (their first finding) and `findings`. `adopt` with a `session_id` from `list` makes that session's findings yours, so `finding_read` returns them; each reads `current` if its file is unchanged, else `stale`. Adopt only when you are continuing that audit; nothing is ever deleted.",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$defs": {
-          "FindingSessionsAction": {
-            "description": "What to do with earlier sessions' findings.",
-            "oneOf": [
-              {
-                "description": "List earlier sessions that still have findings in the database.",
-                "type": "string",
-                "const": "list"
-              },
-              {
-                "description": "Re-tag one earlier session's findings to the current session.",
-                "type": "string",
-                "const": "adopt"
-              }
-            ]
-          }
-        },
-        "required": [
-          "path",
-          "action"
-        ],
-        "type": "object",
-        "properties": {
-          "path": {
-            "description": "Any path inside the active project, used to select the database",
-            "type": "string"
-          },
-          "action": {
-            "description": "`list` earlier sessions, or `adopt` one by `session_id`",
-            "$ref": "#/$defs/FindingSessionsAction"
-          },
-          "session_id": {
-            "description": "Session id from `list`; required for `adopt`, refused for `list`",
-            "type": [
-              "string",
-              "null"
-            ],
-            "default": null
-          }
-        }
-      },
-      "outputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$defs": {
-          "PriorSession": {
-            "description": "One earlier session that still has findings in the database.",
-            "type": "object",
-            "properties": {
-              "session_id": {
-                "description": "The session's id, exactly as stored on its findings.",
-                "type": "string"
-              },
-              "started_at_unix": {
-                "description": "Unix seconds of the session's earliest finding; the findings table\nstores no separate session start.",
-                "type": "integer",
-                "format": "int64"
-              },
-              "findings": {
-                "description": "How many findings the session still has, current or stale.",
-                "type": "integer",
-                "format": "uint64",
-                "minimum": 0
-              }
-            },
-            "required": [
-              "session_id",
-              "started_at_unix",
-              "findings"
-            ]
-          },
-          "DatabaseDiscard": {
-            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
-            "type": "object",
-            "properties": {
-              "findings_discarded": {
-                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "uint64",
-                "minimum": 0
-              },
-              "cause": {
-                "description": "Why the database was discarded.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "cause"
-            ]
-          }
-        },
-        "required": [
-          "sessions",
-          "total_sessions"
-        ],
-        "type": "object",
-        "properties": {
-          "sessions": {
-            "description": "For `list`: earlier sessions, newest first, at most 100; empty for\n`adopt`.",
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/PriorSession"
-            }
-          },
-          "total_sessions": {
-            "description": "For `list`: the exact number of earlier sessions, which may exceed\n`sessions.len()`; 0 for `adopt`.",
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0
-          },
-          "adopted": {
-            "description": "For `adopt`: how many findings now belong to the current session; null\nfor `list`. Adopted findings read `current` when their file still\nhas the content hash they were written against, else `stale`.",
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "uint64",
-            "minimum": 0
-          },
-          "database_discard": {
-            "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch): how many findings\nwere lost (null = unknown, the database was unreadable) and why.",
-            "anyOf": [
-              {
-                "$ref": "#/$defs/DatabaseDiscard"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        }
-      },
-      "annotations": {
-        "readOnlyHint": false,
         "destructiveHint": false
       }
     },
@@ -898,7 +798,7 @@
                 "type": "string"
               },
               "database_discard": {
-                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch): how many findings\nwere lost (null = unknown, the database was unreadable) and why.",
+                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch), and why. Session\nfindings live in their own database and are not affected.",
                 "anyOf": [
                   {
                     "$ref": "#/$defs/DatabaseDiscard"
@@ -1015,15 +915,6 @@
             "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
             "type": "object",
             "properties": {
-              "findings_discarded": {
-                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "uint64",
-                "minimum": 0
-              },
               "cause": {
                 "description": "Why the database was discarded.",
                 "type": "string"
@@ -1042,7 +933,7 @@
                 "type": "string"
               },
               "source": {
-                "description": "Where the mechanic comes from: `session` (registered with `mechanic\nadd` on this server), `project_config` (persisted in the project's\n`config.json`), or `builtin`.",
+                "description": "Where the mechanic comes from: `session` (registered with `mechanic\nadd` on this server), or `builtin`.",
                 "$ref": "#/$defs/MechanicSource"
               },
               "note": {
@@ -1079,17 +970,12 @@
             ]
           },
           "MechanicSource": {
-            "description": "Where a mechanic comes from. Listings are ordered session, then\nproject_config, then builtin.",
+            "description": "Where a mechanic comes from. Listings are ordered session, then builtin.",
             "oneOf": [
               {
                 "description": "Registered with `mechanic add` on this server; ends when it exits.",
                 "type": "string",
                 "const": "session"
-              },
-              {
-                "description": "Persisted in the project's `.planning/slugaudit/config.json`.",
-                "type": "string",
-                "const": "project_config"
               },
               {
                 "description": "Shipped with SlugAudit; can never be removed or overridden.",
@@ -1209,14 +1095,14 @@
             "$ref": "#/$defs/Page"
           },
           "mechanic_counts": {
-            "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit` (unless `page.completeness`\nis `partial`: a registered mechanic's scan the call deadline stopped\ncounts only the files it read), and carry no\nordering by importance: session entries first (oldest first), then\nproject_config entries (file order), then the built-ins in their fixed\ndeclaration order. A call naming one `mechanic` scans only that\nregistered entry (none for a built-in), so the other registered\nentries are not listed then; call with no `mechanic` to count them all.",
+            "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit` (unless `page.completeness`\nis `partial`: a registered mechanic's scan the call deadline stopped\ncounts only the files it read), and carry no\nordering by importance: session entries first (oldest first), then\nthe built-ins in their fixed\ndeclaration order. A call naming one `mechanic` scans only that\nregistered entry (none for a built-in), so the other registered\nentries are not listed then; call with no `mechanic` to count them all.",
             "type": "array",
             "items": {
               "$ref": "#/$defs/MechanicCount"
             }
           },
           "mechanics_invalid": {
-            "description": "Registered mechanics that failed to load (a bad persisted entry, an\nid collision, a query that no longer compiles) and are therefore not\nin `mechanic_counts`. `report`'s `mechanics.invalid` and `mechanic`\naction `list` name each one with its error.",
+            "description": "Registered mechanics that failed to load (an id collision, a query\nthat no longer compiles) and are therefore not\nin `mechanic_counts`. `report`'s `mechanics.invalid` and `mechanic`\naction `list` name each one with its error.",
             "type": "integer",
             "format": "uint",
             "minimum": 0
@@ -1268,7 +1154,7 @@
     {
       "name": "mechanic",
       "title": "Register auditor mechanics",
-      "description": "Register, remove, or list your own mechanics. The built-in `leads` mechanics are counting primitives, not a checklist: what counts as a signal in this codebase is your decision, and this is where you record it. `action: add` takes `id` (a-z, 0-9, _; never a built-in's or an existing entry's id), `language`, `query` (a Tree-sitter S-expression with exactly one capture; each distinct captured node is one row) and `note` (what it counts, in your words); a query that does not compile is refused with the compiler's message. It returns `first_count`: the `leads` response for that id (counts with `covers`, the first page of rows, `page`, `files_total`, `files_covered`, `files_not_parsed`). Session entries live until this server exits; `persist: true` writes the entry to `.planning/slugaudit/config.json` (other keys kept) so later sessions read it. `leads` and `report` list every entry with `source` (`session`, `project_config`, `builtin`) and its note, session first. `action: remove` deletes a session or persisted entry; built-ins can never be removed or overridden. `action: list` returns every mechanic plus `invalid`: persisted entries that failed to load, each with its error.",
+      "description": "Register, remove, or list your own mechanics. The built-in `leads` mechanics are counting primitives, not a checklist: what counts as a signal in this codebase is your decision, and this is where you record it. `action: add` takes `id` (a-z, 0-9, _; never a built-in's or an existing entry's id), `language`, `query` (a Tree-sitter S-expression with exactly one capture; each distinct captured node is one row) and `note` (what it counts, in your words); a query that does not compile is refused with the compiler's message. It returns `first_count`: the `leads` response for that id (counts with `covers`, the first page of rows, `page`, `files_total`, `files_covered`, `files_not_parsed`). Entries live until this server exits. `leads` and `report` list every entry with `source` (`session`, `builtin`) and its note, session first. `action: remove` deletes a registered entry by `id`; built-ins can never be removed or overridden. `action: list` returns every mechanic plus `invalid`: registered entries that failed to load, each with its error.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
@@ -1281,7 +1167,7 @@
                 "const": "add"
               },
               {
-                "description": "Remove the session or persisted entry `id`, or the invalid persisted\nentry at `index`.",
+                "description": "Remove the registered entry `id`.",
                 "type": "string",
                 "const": "remove"
               },
@@ -1326,16 +1212,6 @@
             ],
             "default": null
           },
-          "index": {
-            "description": "`remove` only, instead of `id`: the `index` of a persisted entry\nlisted in `invalid` (`report.mechanics.invalid`, or `list`) — the way\nto remove an entry with no string id or with a built-in's id. Only an\nentry that still fails to load is removed this way; a valid one is\nrefused (remove it by `id`). Passing both `id` and `index` is refused.",
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "uint",
-            "minimum": 0,
-            "default": null
-          },
           "language": {
             "description": "`add`: the grammar the query compiles against and the indexed files\nit reads: exactly the lowercase name the index stores for a file\n(`python`, `rust`, `javascript`, `tsx`), never a capitalised name or\na pack alias such as `shell` (use `bash`). Prose is refused.",
             "type": [
@@ -1359,11 +1235,6 @@
               "null"
             ],
             "default": null
-          },
-          "persist": {
-            "description": "`add`: `true` writes the entry to the project's\n`.planning/slugaudit/config.json` (every other key kept) so later\nsessions see it; `false` (default) keeps it in this server's memory\nuntil the server exits.",
-            "type": "boolean",
-            "default": false
           },
           "limit": {
             "description": "`add`: maximum rows in the first page, as `leads`' `limit`.",
@@ -1399,7 +1270,7 @@
                 "const": "add"
               },
               {
-                "description": "Remove the session or persisted entry `id`, or the invalid persisted\nentry at `index`.",
+                "description": "Remove the registered entry `id`.",
                 "type": "string",
                 "const": "remove"
               },
@@ -1411,17 +1282,12 @@
             ]
           },
           "MechanicSource": {
-            "description": "Where a mechanic comes from. Listings are ordered session, then\nproject_config, then builtin.",
+            "description": "Where a mechanic comes from. Listings are ordered session, then builtin.",
             "oneOf": [
               {
                 "description": "Registered with `mechanic add` on this server; ends when it exits.",
                 "type": "string",
                 "const": "session"
-              },
-              {
-                "description": "Persisted in the project's `.planning/slugaudit/config.json`.",
-                "type": "string",
-                "const": "project_config"
               },
               {
                 "description": "Shipped with SlugAudit; can never be removed or overridden.",
@@ -1470,15 +1336,15 @@
             ]
           },
           "InvalidMechanic": {
-            "description": "A registered entry that could not be loaded, with the reason. It is not\ncounted by `leads` until it is fixed or removed, and it is never dropped\nfrom this list.",
+            "description": "A registered entry that could not be loaded, with the reason. It is not\ncounted by `leads` until it is removed, and it is never dropped from this\nlist.",
             "type": "object",
             "properties": {
               "source": {
-                "description": "`project_config` for a persisted entry (or the whole section);\n`session` for a session entry whose grammar no longer loads.",
+                "description": "`session`: the entry was registered on this server.",
                 "$ref": "#/$defs/MechanicSource"
               },
               "index": {
-                "description": "Position in `mechanics.entries` (or in the session list); `null` when\nthe whole section or file failed.",
+                "description": "Position in the session list (oldest first).",
                 "type": [
                   "integer",
                   "null"
@@ -1494,7 +1360,7 @@
                 ]
               },
               "error": {
-                "description": "Why it was not loaded: a bad JSON shape, an unknown `version`, a\ncompile error, a broken field rule, or an id collision.",
+                "description": "Why it was not loaded: a compile error, a broken field rule, or an id\ncollision.",
                 "type": "string"
               }
             },
@@ -1512,14 +1378,14 @@
                 "$ref": "#/$defs/Page"
               },
               "mechanic_counts": {
-                "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit` (unless `page.completeness`\nis `partial`: a registered mechanic's scan the call deadline stopped\ncounts only the files it read), and carry no\nordering by importance: session entries first (oldest first), then\nproject_config entries (file order), then the built-ins in their fixed\ndeclaration order. A call naming one `mechanic` scans only that\nregistered entry (none for a built-in), so the other registered\nentries are not listed then; call with no `mechanic` to count them all.",
+                "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit` (unless `page.completeness`\nis `partial`: a registered mechanic's scan the call deadline stopped\ncounts only the files it read), and carry no\nordering by importance: session entries first (oldest first), then\nthe built-ins in their fixed\ndeclaration order. A call naming one `mechanic` scans only that\nregistered entry (none for a built-in), so the other registered\nentries are not listed then; call with no `mechanic` to count them all.",
                 "type": "array",
                 "items": {
                   "$ref": "#/$defs/MechanicCount"
                 }
               },
               "mechanics_invalid": {
-                "description": "Registered mechanics that failed to load (a bad persisted entry, an\nid collision, a query that no longer compiles) and are therefore not\nin `mechanic_counts`. `report`'s `mechanics.invalid` and `mechanic`\naction `list` name each one with its error.",
+                "description": "Registered mechanics that failed to load (an id collision, a query\nthat no longer compiles) and are therefore not\nin `mechanic_counts`. `report`'s `mechanics.invalid` and `mechanic`\naction `list` name each one with its error.",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
@@ -1637,7 +1503,7 @@
                 "type": "string"
               },
               "database_discard": {
-                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch): how many findings\nwere lost (null = unknown, the database was unreadable) and why.",
+                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch), and why. Session\nfindings live in their own database and are not affected.",
                 "anyOf": [
                   {
                     "$ref": "#/$defs/DatabaseDiscard"
@@ -1754,15 +1620,6 @@
             "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
             "type": "object",
             "properties": {
-              "findings_discarded": {
-                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "uint64",
-                "minimum": 0
-              },
               "cause": {
                 "description": "Why the database was discarded.",
                 "type": "string"
@@ -1781,7 +1638,7 @@
                 "type": "string"
               },
               "source": {
-                "description": "Where the mechanic comes from: `session` (registered with `mechanic\nadd` on this server), `project_config` (persisted in the project's\n`config.json`), or `builtin`.",
+                "description": "Where the mechanic comes from: `session` (registered with `mechanic\nadd` on this server), or `builtin`.",
                 "$ref": "#/$defs/MechanicSource"
               },
               "note": {
@@ -1940,7 +1797,7 @@
             ]
           },
           "mechanics": {
-            "description": "Every mechanic after the call: session entries (oldest first), then\nproject_config entries (file order), then the built-ins.",
+            "description": "Every mechanic after the call: session entries (oldest first), then\nthe built-ins.",
             "type": "array",
             "items": {
               "$ref": "#/$defs/MechanicListing"
@@ -1991,7 +1848,7 @@
     {
       "name": "project_control",
       "title": "Enable or disable a project",
-      "description": "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable a project (creates the directory `.planning/slugaudit/`, which is the on switch, builds the database and runs the initial import), or `\"off\"` to disable it (deletes the whole `.planning/slugaudit/` directory, `config.json` included, then `.planning` if it is empty). A project is on only while that directory exists; if its database is missing or broken, the next tool call rebuilds it. On `\"on\"` the runtime directory `.planning/slugaudit/` is also appended to the project-root `.gitignore` unless a rule that already ignores it is present; the response's `gitignore` field reports `added`, `already_ignored`, or `not_written` plus the file's path. `\"off\"` never edits `.gitignore`. Supply `path` to target a specific project root; defaults to the current directory. If the project was moved, copied, or re-extracted elsewhere (e.g. unzipped fresh from an archive), a stale `.planning/slugaudit/project.db` is discarded and rebuilt from source automatically — the agent does not need to delete it or re-enable manually. Persisted settings live in `config.json` and are lost on `\"off\"`.",
+      "description": "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable a project (creates the directory `.planning/slugaudit/`, which is the on switch, builds the database and runs the initial import), or `\"off\"` to disable it (deletes the whole `.planning/slugaudit/` directory, then `.planning` if it is empty). A project is on only while that directory exists; if its database is missing or broken, the next tool call rebuilds it. On `\"on\"` the runtime directory `.planning/slugaudit/` is also appended to the project-root `.gitignore` unless a rule that already ignores it is present; the response's `gitignore` field reports `added`, `already_ignored`, or `not_written` plus the file's path. `\"off\"` never edits `.gitignore`. Supply `path` to target a specific project root; defaults to the current directory. If the project was moved, copied, or re-extracted elsewhere (e.g. unzipped fresh from an archive), a stale `.planning/slugaudit/project.db` is discarded and rebuilt from source automatically — the agent does not need to delete it or re-enable manually. `profile` (`lean`, `audit` or `adaptive`) sets the resource profile for this session only; it is not saved.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
@@ -1999,12 +1856,12 @@
             "description": "The action to take — on enables, off disables.",
             "oneOf": [
               {
-                "description": "Create the directory `.planning/slugaudit` (the on switch), then the\nproject database, and run the initial import, so the first evidence\ncall finds a fresh index. Persisted settings in `config.json` apply.",
+                "description": "Create the directory `.planning/slugaudit` (the on switch), then the\nproject database, and run the initial import, so the first evidence\ncall finds a fresh index.",
                 "type": "string",
                 "const": "on"
               },
               {
-                "description": "Delete the whole `.planning/slugaudit` directory, `config.json`\nincluded, then `.planning` if that left it empty. Tool calls on the\npath then return not-enabled until `on` runs again. A project with no\nsuch directory is a no-op reported as `\"already_disabled\"`.",
+                "description": "Delete the whole `.planning/slugaudit` directory, then `.planning` if\nthat left it empty. Tool calls on the\npath then return not-enabled until `on` runs again. A project with no\nsuch directory is a no-op reported as `\"already_disabled\"`.",
                 "type": "string",
                 "const": "off"
               }
@@ -2029,7 +1886,7 @@
             "$ref": "#/$defs/ProjectControlAction"
           },
           "profile": {
-            "description": "Optional audit profile to configure: `\"audit\"`, `\"lean\"`, or `\"adaptive\"`.",
+            "description": "Optional audit profile for this session: `\"audit\"`, `\"lean\"`, or\n`\"adaptive\"`. Held in memory until the server exits.",
             "type": [
               "string",
               "null"
@@ -2138,15 +1995,6 @@
             "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
             "type": "object",
             "properties": {
-              "findings_discarded": {
-                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "uint64",
-                "minimum": 0
-              },
               "cause": {
                 "description": "Why the database was discarded.",
                 "type": "string"
@@ -2201,7 +2049,7 @@
             ]
           },
           "database_discard": {
-            "description": "Present only when `\"on\"` found a corrupt or outdated project database\nand discarded it: how many findings were lost (null = unknown, the\ndatabase was unreadable) and why.",
+            "description": "Present only when `\"on\"` found a corrupt or outdated project database\nand discarded it, and why. Session findings live in their own database\nand are not affected.",
             "anyOf": [
               {
                 "$ref": "#/$defs/DatabaseDiscard"
@@ -2324,7 +2172,7 @@
                 "type": "string"
               },
               "database_discard": {
-                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch): how many findings\nwere lost (null = unknown, the database was unreadable) and why.",
+                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch), and why. Session\nfindings live in their own database and are not affected.",
                 "anyOf": [
                   {
                     "$ref": "#/$defs/DatabaseDiscard"
@@ -2441,15 +2289,6 @@
             "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
             "type": "object",
             "properties": {
-              "findings_discarded": {
-                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "uint64",
-                "minimum": 0
-              },
               "cause": {
                 "description": "Why the database was discarded.",
                 "type": "string"
@@ -2603,15 +2442,6 @@
             "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
             "type": "object",
             "properties": {
-              "findings_discarded": {
-                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "uint64",
-                "minimum": 0
-              },
               "cause": {
                 "description": "Why the database was discarded.",
                 "type": "string"
@@ -2918,14 +2748,14 @@
                 ]
               },
               "entries": {
-                "description": "Every loaded mechanic: session, then project_config, then builtin.",
+                "description": "Every loaded mechanic: session, then builtin.",
                 "type": "array",
                 "items": {
                   "$ref": "#/$defs/MechanicListing"
                 }
               },
               "invalid": {
-                "description": "Registered entries that failed to load, each with its error. Never\ndropped: a persisted entry with a bad shape, an unknown section\n`version`, a compile error or an id collision stays listed here.",
+                "description": "Registered entries that failed to load, each with its error. Never\ndropped: a compile error or an id collision stays listed here.",
                 "type": "array",
                 "items": {
                   "$ref": "#/$defs/InvalidMechanic"
@@ -2977,17 +2807,12 @@
             ]
           },
           "MechanicSource": {
-            "description": "Where a mechanic comes from. Listings are ordered session, then\nproject_config, then builtin.",
+            "description": "Where a mechanic comes from. Listings are ordered session, then builtin.",
             "oneOf": [
               {
                 "description": "Registered with `mechanic add` on this server; ends when it exits.",
                 "type": "string",
                 "const": "session"
-              },
-              {
-                "description": "Persisted in the project's `.planning/slugaudit/config.json`.",
-                "type": "string",
-                "const": "project_config"
               },
               {
                 "description": "Shipped with SlugAudit; can never be removed or overridden.",
@@ -2997,15 +2822,15 @@
             ]
           },
           "InvalidMechanic": {
-            "description": "A registered entry that could not be loaded, with the reason. It is not\ncounted by `leads` until it is fixed or removed, and it is never dropped\nfrom this list.",
+            "description": "A registered entry that could not be loaded, with the reason. It is not\ncounted by `leads` until it is removed, and it is never dropped from this\nlist.",
             "type": "object",
             "properties": {
               "source": {
-                "description": "`project_config` for a persisted entry (or the whole section);\n`session` for a session entry whose grammar no longer loads.",
+                "description": "`session`: the entry was registered on this server.",
                 "$ref": "#/$defs/MechanicSource"
               },
               "index": {
-                "description": "Position in `mechanics.entries` (or in the session list); `null` when\nthe whole section or file failed.",
+                "description": "Position in the session list (oldest first).",
                 "type": [
                   "integer",
                   "null"
@@ -3021,7 +2846,7 @@
                 ]
               },
               "error": {
-                "description": "Why it was not loaded: a bad JSON shape, an unknown `version`, a\ncompile error, a broken field rule, or an id collision.",
+                "description": "Why it was not loaded: a compile error, a broken field rule, or an id\ncollision.",
                 "type": "string"
               }
             },
@@ -3057,7 +2882,7 @@
             "type": "string"
           },
           "database_discard": {
-            "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch): how many findings\nwere lost (null = unknown, the database was unreadable) and why.",
+            "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch), and why. Session\nfindings live in their own database and are not affected.",
             "anyOf": [
               {
                 "$ref": "#/$defs/DatabaseDiscard"
@@ -3115,7 +2940,7 @@
             "format": "int64"
           },
           "open_finding_count": {
-            "description": "Rows in `findings` with `status = 'current'`: findings whose file\ncontent hash still matches the hash they were written against.\nFindings invalidated by a later content change are `stale` and are not\ncounted.",
+            "description": "This session's findings that are `current`: findings whose file\ncontent hash still matches the hash they were written against.\nFindings invalidated by a later content change are `stale` and are not\ncounted.",
             "type": "integer",
             "format": "int64"
           },
@@ -3146,7 +2971,7 @@
             "format": "int64"
           },
           "mechanics": {
-            "description": "Every mechanic `leads` counts — session entries, then project_config\nentries, then the built-ins — with its source and the author's note,\nplus the registered entries that failed to load. On the first\n`report` of this server only, `note` also explains how mechanics\nwork.",
+            "description": "Every mechanic `leads` counts — session entries, then the built-ins —\nwith its source and the author's note,\nplus the registered entries that failed to load. On the first\n`report` of this server only, `note` also explains how mechanics\nwork.",
             "$ref": "#/$defs/ReportMechanics"
           },
           "mechanics_invalid": {
@@ -3210,7 +3035,7 @@
             "default": null
           },
           "query": {
-            "description": "A tree-sitter S-expression query, e.g. `(function_item name: (identifier) @name)`.\nFor patterns normalized evidence and `query` can't easily express.\nAt most `max_structure_query_bytes` UTF-8 bytes (16384 by default;\n`SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES`, or `max_structure_query_bytes`\nin the project's `config.json`); a longer query is refused with\n`invalid_params` before it is compiled.",
+            "description": "A tree-sitter S-expression query, e.g. `(function_item name: (identifier) @name)`.\nFor patterns normalized evidence and `query` can't easily express.\nAt most `max_structure_query_bytes` UTF-8 bytes (16384 by default); a\nlonger query is refused with `invalid_params` before it is compiled.",
             "type": "string"
           },
           "full_text": {
@@ -3307,7 +3132,7 @@
                 "type": "string"
               },
               "database_discard": {
-                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch): how many findings\nwere lost (null = unknown, the database was unreadable) and why.",
+                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch), and why. Session\nfindings live in their own database and are not affected.",
                 "anyOf": [
                   {
                     "$ref": "#/$defs/DatabaseDiscard"
@@ -3424,15 +3249,6 @@
             "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
             "type": "object",
             "properties": {
-              "findings_discarded": {
-                "description": "Rows in `findings` (any status) that were in the discarded database.\n`null` means unknown: the database was too damaged to count. Zero\nmeans the database was readable and held no findings.",
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "uint64",
-                "minimum": 0
-              },
               "cause": {
                 "description": "Why the database was discarded.",
                 "type": "string"
