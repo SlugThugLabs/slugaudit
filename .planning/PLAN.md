@@ -66,6 +66,20 @@ files) on a normal laptop. Nothing else gets built until that is true.
     The last release is v1.0.10; `Cargo.toml` says 1.1.0, which was never
     released.
 
+## Decided 2026-10-31
+
+- **On/off:** the `.planning/slugaudit/` directory is the switch. `on`
+  creates it, `off` deletes it. A missing or broken DB inside rebuilds.
+  Built; awaiting gate and commit.
+- **Session-only model state:** findings move to their own
+  `findings.db`, wiped when SlugAudit starts, with a `clear` action for
+  model switches mid-session. `finding_sessions` is deleted. The per-repo
+  `config.json` and `persist: true` are deleted; mechanics and profile are
+  session-only.
+- **Human defaults:** a global `~/.slugthug/slugaudit/config.json`, read
+  only, plus `SLUGAUDIT_*` env vars. Not mentioned in the model-facing
+  instructions.
+
 ## Found while writing docs (fold into the steps above)
 
 - Deleting `project.db` turns the project off instead of rebuilding it
