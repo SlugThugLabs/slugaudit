@@ -281,10 +281,7 @@ fn result_store_proof_project_control_off_keeps_the_open_result_readable() {
         !activation.join("config.lock").exists(),
         "the config lock is gone"
     );
-    assert!(
-        response.0.config_kept && activation.join("config.json").is_file(),
-        "config.json is kept"
-    );
+    assert!(!activation.exists(), "the whole directory is gone");
     open.assert_continuation_unchanged();
 }
 

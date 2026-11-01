@@ -99,16 +99,16 @@ SlugAudit does nothing in a project until you enable it. Ask your agent to do it
 
 What `on` does:
 
-- Creates `<project>/.planning/slugaudit/` (owner-only access, mode 0700 on Unix).
+- Creates the directory `<project>/.planning/slugaudit/`. This directory is the on switch.
 - Creates the database `<project>/.planning/slugaudit/project.db` and indexes every file.
 - Adds `.planning/slugaudit/` to the project's `.gitignore` (see below).
 - Returns an `import` summary: `added`, `modified`, `deleted`, `unchanged`, `skipped`, `revision_id`.
 
-A project counts as enabled when `project.db` exists. Every other tool finds the project by looking for `.planning/slugaudit/project.db` in the given path and its parent directories. So you can pass any file or folder inside the project.
+A project counts as enabled while the directory `.planning/slugaudit/` exists. A symlink at that path does not count. Every other tool finds the project by looking for that directory in the given path and its parent directories. So you can pass any file or folder inside the project.
 
 An optional `profile` (`adaptive`, `audit`, `lean`) is saved to `config.json` when you enable. See [configuration](configuration.md).
 
-To turn a project off, call `project_control` with `"action": "off"`. This removes the database, its sidecar files, the `results` directory, and the config lock. It keeps `config.json`. See [tools](tools.md).
+To turn a project off, call `project_control` with `"action": "off"`. This deletes the whole `.planning/slugaudit/` directory, `config.json` included, and then `.planning` if that leaves it empty. See [tools](tools.md).
 
 ## `.gitignore`
 
@@ -141,9 +141,9 @@ If the project is not enabled you get the error code `project_not_enabled` with 
 <project>/.planning/slugaudit/project.db-wal    SQLite sidecar files
 <project>/.planning/slugaudit/project.db-shm
 <project>/.planning/slugaudit/results/          stored pages of paged answers
-<project>/.planning/slugaudit/config.json       optional settings (you create it)
+<project>/.planning/slugaudit/config.json       optional settings (deleted by `off`)
 ```
 
-The database is disposable scratch. If it is damaged or out of date, SlugAudit deletes it and rebuilds it on the next call. If you delete `project.db` yourself, the project counts as turned off: the next call fails with `project_not_enabled` until you call `project_control` with `on` again. See [how it works](how-it-works.md).
+The database is disposable scratch. If it is damaged or out of date, SlugAudit deletes it and rebuilds it on the next call. If you delete `project.db` yourself, the next call rebuilds it. Everything in the directory is scratch. The project is turned off only by deleting the directory itself (`project_control` with `off`), after which the next call fails with `project_not_enabled`. See [how it works](how-it-works.md).
 
 Next: [tools](tools.md), [how it works](how-it-works.md).

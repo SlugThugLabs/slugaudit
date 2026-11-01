@@ -21,7 +21,7 @@ Facts that hold for every tool:
 | [`finding`](#finding) | Record a conclusion you reviewed | writes to the database |
 | [`finding_read`](#finding_read) | Read this session's findings | no |
 | [`finding_sessions`](#finding_sessions) | List or adopt earlier sessions' findings | writes to the database |
-| [`project_control`](#project_control) | Enable or disable a project | creates or removes the database |
+| [`project_control`](#project_control) | Enable or disable a project | creates or deletes `.planning/slugaudit/` |
 | [`health`](#health) | Server and database state | no |
 
 ## Paging
@@ -392,10 +392,10 @@ Response:
 | `path` | Absolute project root. |
 | `import` | On `on`: `added`, `modified`, `deleted`, `unchanged`, `skipped`, `revision_id`. |
 | `gitignore` | On `on`: `status` (`added`, `already_ignored`, `not_written`), `path`, `error`. |
-| `removed`, `config_kept` | On `off`: the paths removed, and whether `config.json` was kept. |
+| `removed` | On `off`: the paths removed (the `.planning/slugaudit` directory, then `.planning` if it was left empty). |
 | `database_discard` | Present when `on` found a damaged database and rebuilt it. |
 
-`off` removes the database, its SQLite sidecars, the `results` directory and the config lock. It keeps `config.json`. It removes the `.planning/slugaudit` directory only if nothing else is left in it. `on` brings back the settings in `config.json`. If the project folder was moved, copied or unpacked elsewhere, the old database is thrown away and rebuilt on the next call.
+The project is on while the directory `.planning/slugaudit/` exists. `on` creates it. `off` deletes the whole directory, `config.json` included, and then `.planning` if that leaves it empty. A symlink at `.planning/slugaudit` counts as off, and `off` removes only the link. If `project.db` is missing or broken but the directory exists, the next call rebuilds it. If the project folder was moved, copied or unpacked elsewhere, the old database is thrown away and rebuilt on the next call.
 
 Example: `{ "action": "on", "path": "/home/you/code/myproject" }`
 

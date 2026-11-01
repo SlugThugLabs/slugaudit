@@ -222,9 +222,10 @@ impl SlugAuditServer {
         title = "Enable or disable a project",
         annotations(read_only_hint = false, destructive_hint = true),
         description = "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable \
-         a project (creates the activation directory and database and runs the initial import), or `\"off\"` to \
-         disable it (removes the database, its sidecars, the results directory and the config lock; \
-         `config.json` is kept and `on` restores its settings). On `\"on\"` the \
+         a project (creates the directory `.planning/slugaudit/`, which is the on switch, builds the database and \
+         runs the initial import), or `\"off\"` to disable it (deletes the whole `.planning/slugaudit/` \
+         directory, `config.json` included, then `.planning` if it is empty). A project is on only while that \
+         directory exists; if its database is missing or broken, the next tool call rebuilds it. On `\"on\"` the \
          runtime directory `.planning/slugaudit/` is also appended to the project-root `.gitignore` \
          unless a rule that already ignores it is present; the response's `gitignore` field reports \
          `added`, `already_ignored`, or `not_written` plus the file's path. `\"off\"` never edits \
@@ -232,7 +233,8 @@ impl SlugAuditServer {
          target a specific project root; defaults to the current directory. If the project was \
          moved, copied, or re-extracted elsewhere (e.g. unzipped fresh from an archive), a stale \
          `.planning/slugaudit/project.db` is discarded and rebuilt from source automatically — the \
-         agent does not need to delete it or re-enable manually."
+         agent does not need to delete it or re-enable manually. Persisted settings live in \
+         `config.json` and are lost on `\"off\"`."
     )]
     async fn project_control(
         &self,

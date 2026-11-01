@@ -1,48 +1,10 @@
 use super::*;
 use std::fs;
 
-/// Makes `root` an active project: the directory and the `project.db` file
-/// that is the activation marker.
+/// Makes `root` an active project: the activation directory is the switch.
 fn create_activation(root: &Path) {
-    let activation = root.join(PLANNING_DIR).join(ACTIVATION_DIR);
-    fs::create_dir_all(&activation).expect("create activation dir");
-    super::super::write_database_marker(&activation);
-}
-
-#[cfg(unix)]
-#[test]
-fn enabling_a_project_creates_an_owner_only_activation_directory() {
-    use std::os::unix::fs::PermissionsExt;
-    let directory = tempfile::tempdir().expect("temp dir");
-    let root = ProjectRoot::resolve(directory.path()).expect("valid root");
-
-    let activation = enable(&root).expect("enable");
-
-    let mode = fs::metadata(&activation)
-        .expect("stat activation dir")
-        .permissions()
-        .mode()
-        & 0o777;
-    assert_eq!(mode, 0o700, "the index directory holds source text");
-}
-
-/// `create_dir_all` honours the umask, so a project enabled on a machine with
-/// a permissive one — or enabled by an older build — can already exist wider
-/// than `0700`. Re-enabling must not leave it that way.
-#[cfg(unix)]
-#[test]
-fn enabling_a_project_tightens_a_pre_existing_wider_activation_directory() {
-    use std::os::unix::fs::PermissionsExt;
-    let directory = tempfile::tempdir().expect("temp dir");
-    let activation = directory.path().join(PLANNING_DIR).join(ACTIVATION_DIR);
-    fs::create_dir_all(&activation).expect("pre-create wider");
-    fs::set_permissions(&activation, fs::Permissions::from_mode(0o755)).expect("widen");
-
-    let root = ProjectRoot::resolve(directory.path()).expect("valid root");
-    let enabled = enable(&root).expect("enable");
-
-    let mode = fs::metadata(&enabled).expect("stat").permissions().mode() & 0o777;
-    assert_eq!(mode, 0o700, "a wider existing directory is tightened");
+    fs::create_dir_all(root.join(PLANNING_DIR).join(ACTIVATION_DIR))
+        .expect("create activation dir");
 }
 
 #[test]
@@ -63,7 +25,7 @@ fn resolve_project_returns_root_and_database_path_together() {
 #[test]
 fn resolve_project_fails_when_no_project_is_active() {
     let directory = tempfile::tempdir().expect("temp dir");
-    let error = resolve_project(directory.path()).expect_err("no activation marker");
+    let error = resolve_project(directory.path()).expect_err("no activation directory");
     assert!(matches!(error, ActivationError::NotActive));
 }
 
@@ -101,7 +63,7 @@ fn finds_an_active_project_from_a_nested_file() {
 }
 
 #[test]
-fn rejects_a_project_with_no_activation_marker() {
+fn rejects_a_project_with_no_activation_directory() {
     let directory = tempfile::tempdir().expect("temp dir");
     assert!(matches!(
         find_project_root(directory.path()),
@@ -127,7 +89,7 @@ fn a_start_path_that_does_not_exist_is_an_unresolvable_root_not_an_inactive_proj
 
 #[cfg(unix)]
 #[test]
-fn rejects_a_symlinked_activation_directory() {
+fn a_symlinked_activation_directory_does_not_count_as_on() {
     let directory = tempfile::tempdir().expect("temp dir");
     let real_target = directory.path().join("elsewhere");
     fs::create_dir_all(&real_target).expect("create link target");
@@ -140,27 +102,66 @@ fn rejects_a_symlinked_activation_directory() {
 
     assert!(matches!(
         find_project_root(directory.path()),
+        Err(ActivationError::NotActive)
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_planning_directory_is_refused_when_looking_for_a_project() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let real_target = directory.path().join("elsewhere");
+    fs::create_dir_all(real_target.join(ACTIVATION_DIR)).expect("create link target");
+    std::os::unix::fs::symlink(&real_target, directory.path().join(PLANNING_DIR))
+        .expect("create symlink");
+
+    assert!(matches!(
+        find_project_root(directory.path()),
+        Err(ActivationError::SymlinkedActivationPath)
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn enable_refuses_a_symlinked_activation_directory() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let real_target = directory.path().join("elsewhere");
+    fs::create_dir_all(&real_target).expect("create link target");
+    fs::create_dir_all(directory.path().join(PLANNING_DIR)).expect("create planning dir");
+    std::os::unix::fs::symlink(
+        &real_target,
+        directory.path().join(PLANNING_DIR).join(ACTIVATION_DIR),
+    )
+    .expect("create symlink");
+    let root = ProjectRoot::resolve(directory.path()).expect("resolve root");
+
+    assert!(matches!(
+        enable(&root),
         Err(ActivationError::SymlinkedActivationPath)
     ));
 }
 
 #[test]
-fn enable_creates_the_directory_and_find_project_root_sees_it_once_the_database_exists() {
+fn enable_creates_the_directory_and_that_alone_makes_the_project_active() {
     let directory = tempfile::tempdir().expect("temp dir");
     let root = ProjectRoot::resolve(directory.path()).expect("resolve root");
-
-    let created = enable(&root).expect("enable succeeds");
-    assert!(created.is_dir());
     assert!(matches!(
         find_project_root(directory.path()),
         Err(ActivationError::NotActive)
     ));
-    super::super::write_database_marker(&created);
+
+    let created = enable(&root).expect("enable succeeds");
+
+    assert!(created.is_dir());
     assert_eq!(
         find_project_root(directory.path())
             .expect("now active")
             .as_path(),
         root.as_path()
+    );
+    assert!(
+        !created.join("project.db").exists(),
+        "enable builds no database"
     );
 }
 
@@ -203,7 +204,7 @@ fn enable_refuses_to_create_through_a_symlinked_planning_dir() {
 /// or any other error variant.
 #[cfg(unix)]
 #[test]
-fn a_marker_toggled_concurrently_never_panics_or_returns_a_partial_state() {
+fn an_activation_directory_toggled_concurrently_never_panics_or_returns_a_partial_state() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -219,9 +220,8 @@ fn a_marker_toggled_concurrently_never_panics_or_returns_a_partial_state() {
     let stop_toggler = Arc::clone(&stop);
     let toggler = std::thread::spawn(move || {
         while !stop_toggler.load(Ordering::Relaxed) {
-            fs::remove_dir_all(&activation_dir).expect("toggler removes the marker");
+            fs::remove_dir_all(&activation_dir).expect("toggler removes the directory");
             fs::create_dir_all(&activation_dir).expect("toggler recreates the directory");
-            super::super::write_database_marker(&activation_dir);
         }
     });
 
@@ -503,41 +503,36 @@ fn overlong_path() -> PathBuf {
 
 #[test]
 fn an_uninspectable_symlink_guard_path_fails_the_activation_check_closed() {
-    let result = validated_activation_dir(&overlong_path());
+    let result = planning_checked_activation_dir(&overlong_path());
 
     assert!(matches!(result, Err(ActivationError::Io(_))), "{result:?}");
 }
 
 #[test]
-fn an_unstattable_marker_is_an_error_not_absent() {
+fn an_unstattable_activation_path_is_an_error_not_absent() {
     let missing = tempfile::tempdir().expect("temp dir").path().join("gone");
 
-    assert!(!is_regular_file(&missing).expect("a missing path is absent"));
-    assert!(is_regular_file(&overlong_path()).is_err());
+    assert!(!is_active_at(&missing).expect("a missing path is absent"));
+    assert!(is_active_at(&overlong_path()).is_err());
 }
 
 #[test]
-fn a_directory_without_project_db_is_not_an_active_project() {
+fn a_directory_without_project_db_is_an_active_project() {
     let directory = tempfile::tempdir().expect("temp dir");
     let activation = directory.path().join(PLANNING_DIR).join(ACTIVATION_DIR);
     fs::create_dir_all(&activation).expect("create activation dir");
     fs::write(activation.join("config.json"), b"{}").expect("write config");
 
-    assert!(matches!(
-        find_project_root(directory.path()),
-        Err(ActivationError::NotActive)
-    ));
-    assert!(matches!(
-        resolve_project(directory.path()),
-        Err(ActivationError::NotActive)
-    ));
+    assert!(find_project_root(directory.path()).is_ok());
+    assert!(resolve_project(directory.path()).is_ok());
 }
 
 #[test]
-fn a_project_db_that_is_a_directory_does_not_activate() {
+fn an_activation_path_that_is_a_regular_file_is_not_active() {
     let directory = tempfile::tempdir().expect("temp dir");
-    let activation = directory.path().join(PLANNING_DIR).join(ACTIVATION_DIR);
-    fs::create_dir_all(activation.join(DATABASE_FILENAME)).expect("create database dir");
+    let planning = directory.path().join(PLANNING_DIR);
+    fs::create_dir_all(&planning).expect("create planning dir");
+    fs::write(planning.join(ACTIVATION_DIR), b"x").expect("write file");
 
     assert!(matches!(
         find_project_root(directory.path()),

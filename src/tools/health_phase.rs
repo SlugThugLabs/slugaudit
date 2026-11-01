@@ -48,7 +48,7 @@ pub(super) fn compute_project_state(path: &str) -> Result<ProjectHealthFields, E
 }
 
 /// Resolves the project root and its database path. `Ok(None)` means the
-/// path has no activation marker: `health` reports that state instead of
+/// path has no activation directory: `health` reports that state instead of
 /// failing on it, because "this path is not an enabled project, here is the
 /// call that enables it" must be an answer. Any *other* resolution failure
 /// (an unreadable parent, a symlinked activation component) stays an error:
@@ -83,7 +83,7 @@ fn project_phase(revision_id: &Option<String>, database_read_failed: bool) -> He
 ///
 /// The two callers reach this with the same absence and differ only in
 /// which phase names it: `Disabled` when the path has no activation
-/// marker, `NoActiveProject` when no path was supplied at all. The remedy
+/// directory, `NoActiveProject` when no path was supplied at all. The remedy
 /// is the same either way.
 fn inactive_fields(phase: HealthPhase) -> ProjectHealthFields {
     ProjectHealthFields {

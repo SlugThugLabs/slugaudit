@@ -624,7 +624,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
           "HealthPhase": {
-            "description": "Coarse-grained operational phase. Derived from existing state rather\nthan tracked separately so it can't drift.\n\n- `Importing`: no current revision — the first sync has never succeeded.\n- `SteadyState`: a current revision exists and the database is readable.\n- `NoActiveProject`: no `path` was supplied, so no project is selected\n  for this answer.\n- `Unknown`: the project database exists but could not be read, so the\n  revision is unknowable (`database_read_failed` is true).\n- `Disabled`: `request.path` resolved to no enabled project — the\n  activation marker is absent — so nothing can serve that path until\n  `project_control` enables it. `remedy` names that call. This is a\n  state, not an error: a diagnostic tool that fails when there is\n  nothing to diagnose is useless.",
+            "description": "Coarse-grained operational phase. Derived from existing state rather\nthan tracked separately so it can't drift.\n\n- `Importing`: no current revision — the first sync has never succeeded.\n- `SteadyState`: a current revision exists and the database is readable.\n- `NoActiveProject`: no `path` was supplied, so no project is selected\n  for this answer.\n- `Unknown`: the project database exists but could not be read, so the\n  revision is unknowable (`database_read_failed` is true).\n- `Disabled`: `request.path` resolved to no enabled project — the\n  `.planning/slugaudit` directory is absent — so nothing can serve that path until\n  `project_control` enables it. `remedy` names that call. This is a\n  state, not an error: a diagnostic tool that fails when there is\n  nothing to diagnose is useless.",
             "type": "string",
             "enum": [
               "importing",
@@ -1991,7 +1991,7 @@
     {
       "name": "project_control",
       "title": "Enable or disable a project",
-      "description": "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable a project (creates the activation directory and database and runs the initial import), or `\"off\"` to disable it (removes the database, its sidecars, the results directory and the config lock; `config.json` is kept and `on` restores its settings). On `\"on\"` the runtime directory `.planning/slugaudit/` is also appended to the project-root `.gitignore` unless a rule that already ignores it is present; the response's `gitignore` field reports `added`, `already_ignored`, or `not_written` plus the file's path. `\"off\"` never edits `.gitignore`. Supply `path` to target a specific project root; defaults to the current directory. If the project was moved, copied, or re-extracted elsewhere (e.g. unzipped fresh from an archive), a stale `.planning/slugaudit/project.db` is discarded and rebuilt from source automatically — the agent does not need to delete it or re-enable manually.",
+      "description": "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable a project (creates the directory `.planning/slugaudit/`, which is the on switch, builds the database and runs the initial import), or `\"off\"` to disable it (deletes the whole `.planning/slugaudit/` directory, `config.json` included, then `.planning` if it is empty). A project is on only while that directory exists; if its database is missing or broken, the next tool call rebuilds it. On `\"on\"` the runtime directory `.planning/slugaudit/` is also appended to the project-root `.gitignore` unless a rule that already ignores it is present; the response's `gitignore` field reports `added`, `already_ignored`, or `not_written` plus the file's path. `\"off\"` never edits `.gitignore`. Supply `path` to target a specific project root; defaults to the current directory. If the project was moved, copied, or re-extracted elsewhere (e.g. unzipped fresh from an archive), a stale `.planning/slugaudit/project.db` is discarded and rebuilt from source automatically — the agent does not need to delete it or re-enable manually. Persisted settings live in `config.json` and are lost on `\"off\"`.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
@@ -1999,12 +1999,12 @@
             "description": "The action to take — on enables, off disables.",
             "oneOf": [
               {
-                "description": "Create `.planning/slugaudit`, then the project database (the\nactivation marker), and run the initial import, so the first evidence\ncall finds a fresh index. Persisted settings in `config.json` apply.",
+                "description": "Create the directory `.planning/slugaudit` (the on switch), then the\nproject database, and run the initial import, so the first evidence\ncall finds a fresh index. Persisted settings in `config.json` apply.",
                 "type": "string",
                 "const": "on"
               },
               {
-                "description": "Remove the project database (the activation marker), its SQLite\nsidecars, the `results` directory and the config lock. `config.json`\nand any other file in `.planning/slugaudit` are kept, and the\ndirectory is removed only when nothing is left in it. Tool calls on\nthe path then return not-enabled until `on` runs again. A project\nwith nothing to remove is a no-op reported as `\"already_disabled\"`.",
+                "description": "Delete the whole `.planning/slugaudit` directory, `config.json`\nincluded, then `.planning` if that left it empty. Tool calls on the\npath then return not-enabled until `on` runs again. A project with no\nsuch directory is a no-op reported as `\"already_disabled\"`.",
                 "type": "string",
                 "const": "off"
               }
@@ -2177,10 +2177,6 @@
             "items": {
               "type": "string"
             }
-          },
-          "config_kept": {
-            "description": "True when `\"off\"` found a `config.json` and kept it.",
-            "type": "boolean"
           },
           "import": {
             "description": "Present when action was `\"on\"` and an initial import ran.",

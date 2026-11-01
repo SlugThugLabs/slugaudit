@@ -2,11 +2,11 @@
 //! Project enable/disable control. Exposed as an MCP tool so the calling
 //! AI can drive activation: `project_control` with `action = "on"` / `"off"`.
 //!
-//! A project is active iff `.planning/slugaudit/project.db` exists. `on`
-//! creates the activation directory, then the database, then runs the initial
-//! import. `off` removes the database, its sidecars, the `results` directory
-//! and the config lock, keeps `config.json` and any other file, and removes
-//! the directory only when it is empty afterwards.
+//! A project is on iff the directory `.planning/slugaudit/` exists. `on`
+//! creates it, then the database, then runs the initial import. `off` deletes
+//! the whole directory (database, `config.json` and everything else in it),
+//! then `.planning` if that left it empty. If the database is missing or
+//! broken while the directory exists, the next tool call rebuilds it.
 
 use crate::parse;
 use crate::project::{self, ProjectRoot};
@@ -32,17 +32,15 @@ pub struct ProjectControlRequest {
 /// The action to take — on enables, off disables.
 #[derive(Debug, Deserialize, JsonSchema, PartialEq, Eq)]
 pub enum ProjectControlAction {
-    /// Create `.planning/slugaudit`, then the project database (the
-    /// activation marker), and run the initial import, so the first evidence
+    /// Create the directory `.planning/slugaudit` (the on switch), then the
+    /// project database, and run the initial import, so the first evidence
     /// call finds a fresh index. Persisted settings in `config.json` apply.
     #[serde(rename = "on")]
     On,
-    /// Remove the project database (the activation marker), its SQLite
-    /// sidecars, the `results` directory and the config lock. `config.json`
-    /// and any other file in `.planning/slugaudit` are kept, and the
-    /// directory is removed only when nothing is left in it. Tool calls on
-    /// the path then return not-enabled until `on` runs again. A project
-    /// with nothing to remove is a no-op reported as `"already_disabled"`.
+    /// Delete the whole `.planning/slugaudit` directory, `config.json`
+    /// included, then `.planning` if that left it empty. Tool calls on the
+    /// path then return not-enabled until `on` runs again. A project with no
+    /// such directory is a no-op reported as `"already_disabled"`.
     #[serde(rename = "off")]
     Off,
 }
@@ -58,10 +56,6 @@ pub struct ProjectControlResponse {
     #[schemars(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub removed: Vec<String>,
-    /// True when `"off"` found a `config.json` and kept it.
-    #[schemars(default)]
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub config_kept: bool,
     /// Present when action was `"on"` and an initial import ran.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub import: Option<ImportReport>,
@@ -193,9 +187,9 @@ fn profile_name(profile: crate::model::AuditProfile) -> &'static str {
 /// When `action` is `"on"`, creates the activation directory and immediately
 /// runs the initial import so the AI's first tool call finds fresh evidence.
 ///
-/// When `action` is `"off"`, removes the project database, its sidecars, the
-/// `results` directory and the config lock, keeping `config.json` and any
-/// other user file. Returns `already_disabled` if there was nothing to remove.
+/// When `action` is `"off"`, deletes the whole `.planning/slugaudit`
+/// directory (then `.planning` if empty). Returns `already_disabled` if the
+/// directory did not exist.
 pub fn project_control(
     request: &Parameters<ProjectControlRequest>,
     sink: &dyn crate::progress::ProgressSink,
@@ -229,7 +223,7 @@ pub fn project_control(
         .transpose()?;
     let path = std::path::PathBuf::from(&path_str);
     // `ProjectRoot::resolve`, not `project::resolve_project`: enabling a
-    // project must work *before* the activation marker exists, so there
+    // project must work *before* the activation directory exists, so there
     // is no active project to find yet.
     let root = resolve_root(&path_str, &path)?;
 
@@ -323,7 +317,6 @@ fn enable(
         status: "enabled".into(),
         path: root.as_path().to_string_lossy().to_string(),
         removed: Vec::new(),
-        config_kept: false,
         import: Some(ImportReport {
             added: report.added,
             modified: report.modified,
@@ -355,8 +348,7 @@ fn disable(
     _manager: Option<&sync::SourceSyncManager>,
 ) -> Result<Json<ProjectControlResponse>, ErrorData> {
     let report = project::disable(root).map_err(|e| err(format!("disable: {e}")))?;
-    // Nothing removed means the project was already off (no database, no
-    // results directory, no lock), whether or not `config.json` is still there.
+    // Nothing removed means there was no activation directory: already off.
     let status = if report.removed.is_empty() {
         "already_disabled"
     } else {
@@ -370,7 +362,6 @@ fn disable(
             .iter()
             .map(|path| path.to_string_lossy().to_string())
             .collect(),
-        config_kept: report.config_kept,
         import: None,
         gitignore: None,
         database_discard: None,
@@ -388,6 +379,10 @@ mod tests;
 #[cfg(test)]
 #[path = "project_control_symlink_tests.rs"]
 mod symlink_tests;
+
+#[cfg(test)]
+#[path = "project_control_activation_tests.rs"]
+mod activation_tests;
 
 #[cfg(test)]
 #[path = "project_control_log_tests.rs"]

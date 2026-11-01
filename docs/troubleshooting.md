@@ -8,7 +8,7 @@ First check: call `health` with the project `path`. It never fails on a project 
 
 | Code | Meaning | What to do |
 |---|---|---|
-| `project_not_enabled` | No folder above the path has `.planning/slugaudit/project.db`. | Call `project_control` with `{"action":"on","path":"<project directory>"}`. |
+| `project_not_enabled` | No folder above the path has a `.planning/slugaudit/` directory (a symlink there does not count). | Call `project_control` with `{"action":"on","path":"<project directory>"}`. |
 | `sync_budget_exhausted` | The freshness check ran past `max_sync_wall_clock`. On a project too big for the budget this is permanent. | Set `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS`, or use the `audit` profile (1200 s) instead of `lean` (120 s). |
 | `stale_revision` | The index changed under this call (another writer, or a file changed while it was being read). | Retry the call. It re-syncs. |
 | `unknown_mechanic` | `leads` got a mechanic id that does not exist. | Call `leads` with only `path` to list the ids, then retry with one. |
@@ -46,7 +46,7 @@ These come as plain messages.
 You see `project_not_enabled` when the path is not inside an enabled project.
 
 1. Call `project_control` with `"action": "on"` and the project root as `path`.
-2. If it was enabled before, check that `.planning/slugaudit/project.db` exists. If the file was deleted, the project is off.
+2. If it was enabled before, check that the directory `.planning/slugaudit/` exists. If the directory was deleted, the project is off. A missing `project.db` alone does not turn it off: the next call rebuilds it.
 3. If the folder was moved, copied or unpacked from an archive, the old database is thrown away and rebuilt on the next call.
 
 ## The database was damaged

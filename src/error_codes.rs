@@ -39,8 +39,8 @@ pub enum ErrorCode {
     /// is permanent, not transient, so "retry" is the wrong advice and
     /// the remedy names the knob instead.
     SyncBudgetExhausted,
-    /// No ancestor of the requested path has a SlugAudit activation
-    /// marker (`.planning/slugaudit`), so no tool can serve that path.
+    /// No ancestor of the requested path has a `.planning/slugaudit`
+    /// directory, so no tool can serve that path.
     ProjectNotEnabled,
     /// The revision this call was pinned to is no longer current — another
     /// publish won the compare-and-swap race, or a sampled file changed on

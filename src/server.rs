@@ -51,7 +51,7 @@ const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — sym
     (`total`, `complete`, `cursor`, `page_bytes`, `limited_by`) cut by bytes; raise `page_bytes` \
     (64 KiB) up to the server ceiling. A `page.cursor` means more: repeat the call with only \
     that `cursor` for the next page of the same stored answer (no sync, unaffected by later \
-    edits); none means done. `offset` and `expected_revision` no longer exist. A `partial` \
+    edits); none means done. A `partial` \
     `page.completeness` names `resume_after_file`: resuming is a NEW request \
     (`structure`: `start_after_file`) that syncs. `unknown_cursor` (bad, foreign, or from before \
     a restart) and `result_expired` (reclaimed): ask again without it. `result_store_full`: \
@@ -90,7 +90,7 @@ const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — sym
     OTHER TOOLS: `report` is the project snapshot. `structure` runs a Tree-sitter query (at least \
     one capture) on one `file` or a whole `language`. `finding` records a conclusion you reviewed, \
     bound to the file hash (stale on change), session-scoped; `finding_read` \
-    reads them, `finding_sessions` adopts earlier ones. `project_control` `on` indexes, `off` disables. `health` reports phase and next action; `verbose: true` adds detail.\n\n\
+    reads them, `finding_sessions` adopts earlier ones. `project_control` `on` creates `.planning/slugaudit/` and indexes; `off` deletes it. `health` reports phase and next action; `verbose: true` adds detail.\n\n\
     FLOW: report → leads → mechanic add → query/structure → read source only where evidence \
     points → finding.\n\n\
     FAILURES: errors carry `data.code` (e.g. `project_not_enabled`, `sql_error`, `unknown_language`) and \

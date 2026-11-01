@@ -53,11 +53,6 @@ impl SourceSyncManager {
         });
         let (root, database_path) =
             project::resolve_project(Path::new(path)).map_err(map_activation_error)?;
-        // Test-only seam: the window in which `project_control off` can remove
-        // the database after the activation check and before it is opened.
-        // Keyed by the database path, not the root, because the publish hooks
-        // already use the root as their key.
-        super::super::race_hook::fire(&database_path);
 
         let connection = match self.open_or_rebuild(&root, &database_path, start, sink)? {
             Ok(conn) => conn,
@@ -111,17 +106,17 @@ impl SourceSyncManager {
         start: std::time::Instant,
         sink: &dyn ProgressSink,
     ) -> Result<Result<rusqlite::Connection, SyncedProject>, ErrorData> {
-        // Never creates the file: a project deactivated since the check in
-        // `resolve_project` must stay deactivated. Only the rebuild below
-        // (inside a project that is still active) recreates it.
+        // Never creates the file here: the rebuild below does, and it fails
+        // cleanly if `.planning/slugaudit` itself is gone (see
+        // `publish_from_scratch`), because only `project_control on` creates
+        // that directory.
         match store::open_existing_read_write(database_path) {
             Ok(connection) => Ok(Ok(connection)),
-            Err(store::StoreError::Missing) => {
-                sink.emit(ProgressEvent::Completed {
-                    phase: "ensuring_current",
-                });
-                Err(map_activation_error(project::ActivationError::NotActive))
-            }
+            // The database is scratch: a missing one is rebuilt, with no
+            // discard notice because no earlier contents are known.
+            Err(store::StoreError::Missing) => self
+                .rebuild_and_finish(root, database_path.to_path_buf(), start, sink, None)
+                .map(Err),
             Err(error) if error.is_corruption() => {
                 let (notice, count_error) = DatabaseDiscard::assess(
                     count_findings_at(database_path),
@@ -135,34 +130,20 @@ impl SourceSyncManager {
                         count_error: count_error.as_ref(),
                     },
                 );
-                // Test-only seam: `project_control off` removing the corrupt
-                // file between the failed open and the discard.
-                super::super::race_hook::fire(discard_hook_key(database_path));
-                // A database `off` removed while this call held the failed
-                // open must stay removed.
-                match database_path.symlink_metadata() {
-                    Ok(_) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        sink.emit(ProgressEvent::Completed {
-                            phase: "ensuring_current",
-                        });
-                        return Err(map_activation_error(project::ActivationError::NotActive));
-                    }
-                    Err(error) => {
-                        return Err(ErrorData::internal_error(
-                            format!("inspecting the corrupt project database: {error}"),
-                            None,
-                        ));
-                    }
-                }
                 store::discard_corrupt_database(database_path).map_err(|err| {
                     ErrorData::internal_error(
                         format!("discarding the corrupt or outdated project database: {err}"),
                         None,
                     )
                 })?;
-                self.rebuild_and_finish(root, database_path.to_path_buf(), start, sink, notice)
-                    .map(Err)
+                self.rebuild_and_finish(
+                    root,
+                    database_path.to_path_buf(),
+                    start,
+                    sink,
+                    Some(notice),
+                )
+                .map(Err)
             }
             Err(error) => {
                 log_database_recovery(
@@ -231,25 +212,6 @@ impl SourceSyncManager {
                 ProjectMetaError::Other(_) => {}
             }
             drop(connection);
-            // Test-only seam: `off` removing the database between the
-            // metadata mismatch and the discard.
-            super::super::race_hook::fire(discard_hook_key(database_path));
-            // A database `off` already removed must stay removed.
-            match database_path.symlink_metadata() {
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    sink.emit(ProgressEvent::Completed {
-                        phase: "ensuring_current",
-                    });
-                    return Err(map_activation_error(project::ActivationError::NotActive));
-                }
-                Err(error) => {
-                    return Err(ErrorData::internal_error(
-                        format!("inspecting the stale project database: {error}"),
-                        None,
-                    ));
-                }
-            }
             store::discard_corrupt_database(database_path).map_err(|discard| {
                 ErrorData::internal_error(
                     format!("discarding the stale project database: {discard}"),
@@ -257,7 +219,7 @@ impl SourceSyncManager {
                 )
             })?;
             return self
-                .rebuild_and_finish(root, database_path.to_path_buf(), start, sink, notice)
+                .rebuild_and_finish(root, database_path.to_path_buf(), start, sink, Some(notice))
                 .map(Err);
         }
         Ok(Ok(connection))
@@ -296,7 +258,7 @@ impl SourceSyncManager {
         Ok(())
     }
 
-    /// Shared tail for the corruption and stale-database recovery paths:
+    /// Shared tail for the missing, corruption and stale-database paths:
     /// rebuilds the database from scratch, stamps the sync time, and emits
     /// the completion signal. Extracted so the recovery paths cannot drift
     /// apart.
@@ -306,10 +268,14 @@ impl SourceSyncManager {
         database_path: PathBuf,
         start: std::time::Instant,
         sink: &dyn ProgressSink,
-        discard: DatabaseDiscard,
+        discard: Option<DatabaseDiscard>,
     ) -> Result<SyncedProject, ErrorData> {
-        let mut synced = publish_from_scratch(root, database_path, sink)?;
-        synced.discard = Some(discard);
+        let mut synced = publish_from_scratch(root, database_path, sink).inspect_err(|_| {
+            sink.emit(ProgressEvent::Completed {
+                phase: "ensuring_current",
+            });
+        })?;
+        synced.discard = discard;
         let duration_ms = elapsed_ms(start);
         self.stamp_last_sync(duration_ms);
         sink.emit(ProgressEvent::Completed {
@@ -321,7 +287,7 @@ impl SourceSyncManager {
 
 /// Every state-bearing tool funnels through `ensure_current`, so this is
 /// the one place the "no project here" case can be shaped: a path with no
-/// activation marker is not an opaque failure of whichever tool was called
+/// activation directory is not an opaque failure of whichever tool was called
 /// — it is a project that was never enabled, and the response carries
 /// `project_not_enabled` plus the exact remedy (`project_control` with
 /// `action: "on"` and the path argument). Any other resolution failure — an
@@ -345,13 +311,4 @@ pub(crate) fn map_process_limits_error(error: crate::model::EnvConfigError) -> E
         format!("the SLUGAUDIT_* environment is invalid: {error}; fix it and restart the server"),
         None,
     )
-}
-
-/// Race-hook key for the window between a failed open or metadata check and
-/// the discard that follows it: the activation directory, which exists until
-/// `off` and is distinct from the database-path key of the window before the
-/// open. A path that does not exist would log a canonicalization warning on
-/// every call, so the key must name something present.
-fn discard_hook_key(database_path: &Path) -> &Path {
-    database_path.parent().unwrap_or(database_path)
 }

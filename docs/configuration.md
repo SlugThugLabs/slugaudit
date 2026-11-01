@@ -47,7 +47,7 @@ No value can be stored if it exceeds 1,000,000,000 bytes (the largest value the 
 
 ## `config.json`
 
-Path: `<project>/.planning/slugaudit/config.json`. It is optional. SlugAudit creates it only when you persist something (`project_control` with `profile`, or `mechanic` with `persist: true`). `project_control` `off` keeps it.
+Path: `<project>/.planning/slugaudit/config.json`. It is optional. SlugAudit creates it only when you persist something (`project_control` with `profile`, or `mechanic` with `persist: true`). `project_control` `off` deletes it along with the rest of `.planning/slugaudit/`.
 
 Example:
 

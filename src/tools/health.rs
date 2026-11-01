@@ -296,7 +296,7 @@ pub struct ServerCounters {
 /// - `Unknown`: the project database exists but could not be read, so the
 ///   revision is unknowable (`database_read_failed` is true).
 /// - `Disabled`: `request.path` resolved to no enabled project — the
-///   activation marker is absent — so nothing can serve that path until
+///   `.planning/slugaudit` directory is absent — so nothing can serve that path until
 ///   `project_control` enables it. `remedy` names that call. This is a
 ///   state, not an error: a diagnostic tool that fails when there is
 ///   nothing to diagnose is useless.

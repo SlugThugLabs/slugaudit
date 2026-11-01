@@ -295,6 +295,25 @@ pub(crate) fn publish_from_scratch(
     sink: &dyn crate::progress::ProgressSink,
 ) -> Result<SyncedProject, ErrorData> {
     let mut connection = store::open_read_write(&database_path).map_err(|error| {
+        // Only `project_control on` creates `.planning/slugaudit`. If it is
+        // gone (`off` ran, or the user deleted it) the file cannot be
+        // created and the directory must stay gone: report that, not a bare
+        // I/O error.
+        if matches!(error, store::StoreError::Create(_))
+            && database_path.parent().is_some_and(|dir| !dir.is_dir())
+        {
+            tracing::warn!(
+                operation = "rebuild_project_database",
+                path = %database_path.display(),
+                error = %error,
+                "the activation directory disappeared during the call; not recreating it",
+            );
+            return ErrorData::invalid_params(
+                "the project was turned off during this call: .planning/slugaudit no longer \
+                 exists. Call project_control with action \"on\" to enable it again",
+                error_codes::payload(ErrorCode::ProjectNotEnabled),
+            );
+        }
         ErrorData::internal_error(format!("recreating the project database: {error}"), None)
     })?;
     ensure_project_row(&mut connection, root.as_path())?;

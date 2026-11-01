@@ -2,7 +2,7 @@
 //! `.planning/slugaudit/` rule unless it is already ignored, atomically and
 //! without touching any other byte.
 //!
-//! Kept separate from the activation marker because the guard is non-fatal: a
+//! Kept separate from the activation directory because the guard is non-fatal: a
 //! failure here is reported as [`GitignoreOutcome::NotWritten`] and never
 //! undoes an enable.
 

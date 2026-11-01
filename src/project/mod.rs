@@ -1,9 +1,10 @@
-//! Project root resolution and activation. The regular file
-//! `.planning/slugaudit/project.db` is the only on/off control in the whole
-//! product: its presence enables SlugAudit for a project, its absence
-//! disables it (the directory alone means nothing; `off` keeps `config.json`).
-//! `enable`/`disable` are the one supported way to create or remove that state — exposed to
-//! the AI via the `project_control` MCP tool (`src/tools/project_control.rs`), not via any CLI command.
+//! Project root resolution and activation. The directory
+//! `.planning/slugaudit/` is the only on/off control in the whole product:
+//! its presence enables SlugAudit for a project, its absence disables it.
+//! Everything inside it, `project.db` included, is scratch that is rebuilt on
+//! demand. `enable`/`disable` are the one supported way to create or remove
+//! that directory, exposed to the AI via the `project_control` MCP tool
+//! (`src/tools/project_control.rs`), not via any CLI command.
 
 mod activation;
 mod config;
@@ -35,8 +36,8 @@ pub use mechanics_config::{
 pub use root::{ProjectRoot, RootError};
 pub use session_mechanics::{MAX_SESSION_MECHANICS, SessionMechanics};
 
-/// Test fixture: the empty owner-only `project.db` that marks `activation`
-/// (a `.planning/slugaudit` directory) as an active project.
+/// Test fixture: an empty owner-only `project.db` in `activation` (a
+/// `.planning/slugaudit` directory), which SQLite opens as a fresh database.
 #[cfg(test)]
 pub(crate) fn write_database_marker(activation: &std::path::Path) {
     use std::os::unix::fs::OpenOptionsExt;
@@ -49,8 +50,8 @@ pub(crate) fn write_database_marker(activation: &std::path::Path) {
         .expect("create database marker");
 }
 
-/// Test fixture: creates `<root>/.planning/slugaudit` with its `project.db`
-/// marker, the minimum shape of an active project.
+/// Test fixture: creates `<root>/.planning/slugaudit` with an empty
+/// `project.db`, an active project whose first call builds the index.
 #[cfg(test)]
 pub(crate) fn activate_for_test(root: &std::path::Path) {
     let activation = root.join(".planning").join("slugaudit");

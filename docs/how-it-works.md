@@ -29,7 +29,7 @@ Files that are skipped (see below) are identified by size and modification time,
 - The one thing in the database that cannot be rebuilt from source is findings. A rebuild loses them. Hence the `findings_discarded` count.
 - If `project.db` is a symlink, SlugAudit refuses to open it.
 - A new database file is created owner-only (mode 0600 on Unix).
-- If you delete `project.db` yourself, the project is turned off. Call `project_control` with `on` again.
+- If you delete `project.db` yourself, the next call rebuilds it. The project stays on, because the switch is the directory `.planning/slugaudit/`, not the database. Deleting the whole directory turns the project off.
 
 Only the revision "now" exists. `files`, `evidence` and `dependency_edges` hold the current state. A changed file is replaced in place. A deleted file is removed.
 

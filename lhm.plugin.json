@@ -38,7 +38,7 @@
     },
     {
       "name": "project_control",
-      "description": "Enable or disable a project \u2014 creates the activation marker and runs the first import, or purges the project database."
+      "description": "Enable or disable a project \u2014 creates the .planning/slugaudit directory and runs the first import, or deletes that directory."
     },
     {
       "name": "health",

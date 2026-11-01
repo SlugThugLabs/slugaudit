@@ -28,7 +28,7 @@ pub(crate) fn write_file(project: &TempDir, relative: &str, content: &[u8]) {
     write(project.path(), relative, content);
 }
 
-/// Creates a tempdir with a `.planning/slugaudit` activation marker — the
+/// Creates a tempdir with a `.planning/slugaudit` activation directory — the
 /// minimum shape of an enabled project.
 pub(crate) fn create_project() -> TempDir {
     let dir = tempfile::tempdir().expect("create temp dir");

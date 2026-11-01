@@ -5,7 +5,7 @@ pub(super) use super::gitignore::GITIGNORE_FILE;
 #[cfg(test)]
 use crate::util::MAX_FOREIGN_TEXT_BYTES;
 
-use super::database_path::{DATABASE_FILENAME, database_path};
+use super::database_path::database_path;
 use super::root::{ProjectRoot, RootError};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -17,17 +17,17 @@ const PLANNING_DIR: &str = ".planning";
 const ACTIVATION_DIR: &str = "slugaudit";
 
 #[derive(Debug, Error)]
-/// Failures from enabling or disabling a project: the activation marker, its
-/// directory mode, and `.gitignore` maintenance.
+/// Failures from enabling or disabling a project: the activation directory
+/// and `.gitignore` maintenance.
 pub enum ActivationError {
     /// Resolving the project root failed; see [`RootError`].
     #[error(transparent)]
     Root(#[from] RootError),
-    /// No ancestor of the requested path carries an activation marker.
+    /// No ancestor of the requested path has a `.planning/slugaudit` directory.
     #[error("SlugAudit is not enabled for this project or any parent directory")]
     NotActive,
-    /// A `.planning` or `.planning/slugaudit` component is a symlink, so the
-    /// activation path is refused.
+    /// `.planning` is a symlink, or `enable` met a symlinked
+    /// `.planning/slugaudit`, so the activation path is refused.
     #[error("refusing a symlinked SlugAudit activation path")]
     SymlinkedActivationPath,
     /// Filesystem work on the activation directory failed.
@@ -61,12 +61,14 @@ fn is_symlink(path: &Path) -> std::io::Result<bool> {
     }
 }
 
-/// True when `path` exists and is a regular file (a symlink is not one). A
-/// missing path is `false`; any other `lstat` failure is returned rather than
-/// read as "absent".
-fn is_regular_file(path: &Path) -> std::io::Result<bool> {
-    match path.symlink_metadata() {
-        Ok(metadata) => Ok(metadata.file_type().is_file()),
+/// The one "is this project on?" predicate: the project is on iff
+/// `<activation>` is a real directory. A symlink there does not count, and
+/// neither does anything inside the directory: `project.db` is disposable
+/// scratch that the next tool call rebuilds. Any `lstat` failure other than
+/// "absent" is returned rather than read as "off".
+fn is_active_at(activation: &Path) -> std::io::Result<bool> {
+    match activation.symlink_metadata() {
+        Ok(metadata) => Ok(metadata.file_type().is_dir()),
         Err(error)
             if matches!(
                 error.kind(),
@@ -79,33 +81,27 @@ fn is_regular_file(path: &Path) -> std::io::Result<bool> {
     }
 }
 
-/// The one "is this project active?" predicate: the project is active iff
-/// the regular file `<activation>/project.db` exists. The directory alone
-/// means nothing, because `project_control off` keeps `config.json` there.
-fn is_active_at(activation: &Path) -> std::io::Result<bool> {
-    is_regular_file(&activation.join(DATABASE_FILENAME))
-}
-
 /// Returns the activation directory under `canonical_root`, refusing a
-/// symlinked `.planning` or `.planning/slugaudit` component.
-fn validated_activation_dir(canonical_root: &Path) -> Result<PathBuf, ActivationError> {
+/// symlinked `.planning` component. A symlinked `.planning/slugaudit` is
+/// returned as is: callers decide, because it reads as "off" and `off`
+/// removes only the link.
+fn planning_checked_activation_dir(canonical_root: &Path) -> Result<PathBuf, ActivationError> {
     let planning = canonical_root.join(PLANNING_DIR);
-    let activation = planning.join(ACTIVATION_DIR);
-    if is_symlink(&planning)? || is_symlink(&activation)? {
+    if is_symlink(&planning)? {
         return Err(ActivationError::SymlinkedActivationPath);
     }
-    Ok(activation)
+    Ok(planning.join(ACTIVATION_DIR))
 }
 
-/// Finds the nearest ancestor of `start` (inclusive) whose database file
-/// `.planning/slugaudit/project.db` exists. `start` may be a file, in which
+/// Finds the nearest ancestor of `start` (inclusive) that has a
+/// `.planning/slugaudit` directory. `start` may be a file, in which
 /// case its parent directory is the search origin.
 ///
 /// # Errors
 ///
-/// Returns an error if `start` cannot be resolved, if a `.planning` or
-/// `.planning/slugaudit` component along the way is a symlink or cannot be
-/// inspected, or if no ancestor has a project database.
+/// Returns an error if `start` cannot be resolved, if a `.planning`
+/// component along the way is a symlink or cannot be inspected, or if no
+/// ancestor has an activation directory.
 pub fn find_project_root(start: &Path) -> Result<ProjectRoot, ActivationError> {
     let canonical = start
         .canonicalize()
@@ -120,7 +116,7 @@ pub fn find_project_root(start: &Path) -> Result<ProjectRoot, ActivationError> {
     };
 
     for ancestor in search_origin.ancestors() {
-        let activation = validated_activation_dir(ancestor)?;
+        let activation = planning_checked_activation_dir(ancestor)?;
         if is_active_at(&activation)? {
             return Ok(ProjectRoot::resolve(ancestor)?);
         }
@@ -135,9 +131,9 @@ pub fn find_project_root(start: &Path) -> Result<ProjectRoot, ActivationError> {
 /// drift in ordering or error handling.
 ///
 /// `project_control` deliberately does **not** use this: enabling a
-/// project must work *before* the activation marker exists, so it
+/// project must work *before* the activation directory exists, so it
 /// resolves the root with [`ProjectRoot::resolve`] and only then creates
-/// the marker.
+/// the directory.
 ///
 /// # Errors
 ///
@@ -149,149 +145,67 @@ pub fn resolve_project(start: &Path) -> Result<(ProjectRoot, PathBuf), Activatio
     Ok((root, database_path))
 }
 
-/// Creates the `.planning/slugaudit` directory under `root`, the first step of
-/// turning SlugAudit "on". It creates only the directory: the project is not
-/// active until the caller (`project_control on`) creates `project.db` in it,
-/// which is the activation marker. Idempotent: succeeds silently if the
-/// directory exists. Refuses to create through a symlinked `.planning` or
-/// `.planning/slugaudit` component, for the same reason `find_project_root`
-/// refuses to read through one — the symlink-safety check is shared code,
-/// not a separate rule that could drift out of sync with the read path.
+/// Creates the `.planning/slugaudit` directory under `root`: turning
+/// SlugAudit "on". The directory is the whole switch, and this is the only
+/// code that creates it; the database inside is built by the caller
+/// (`project_control on`) or, if missing, by the next tool call. Idempotent:
+/// succeeds silently if the directory exists. Refuses to create through a
+/// symlinked `.planning` or `.planning/slugaudit` component, for the same
+/// reason `find_project_root` will not read through one.
 ///
 /// # Errors
 ///
 /// Returns an error if a `.planning`/`.planning/slugaudit` component is a
 /// symlink, or if the directory can't be created.
 pub fn enable(root: &ProjectRoot) -> Result<PathBuf, ActivationError> {
-    let activation = validated_activation_dir(root.as_path())?;
-    create_private_dir(&activation)?;
+    let activation = planning_checked_activation_dir(root.as_path())?;
+    if is_symlink(&activation)? {
+        return Err(ActivationError::SymlinkedActivationPath);
+    }
+    std::fs::create_dir_all(&activation)?;
     Ok(activation)
 }
-
-/// Owner-only access for the activation directory, which holds the index
-/// database and its sidecars — all of them containing source text.
-#[cfg(unix)]
-const PRIVATE_DIR_MODE: u32 = 0o700;
-
-/// Creates the activation directory with owner-only access.
-///
-/// `create_dir_all` alone honours the process umask, which is how a customer
-/// ends up with a world-readable copy of their own source. This is the one
-/// directory inside a user's project that SlugAudit owns, so it is created
-/// `0700` — and tightened when an earlier run (or a permissive umask) left it
-/// broader, matching the owner-only mode a new database file is created with.
-#[cfg(unix)]
-fn create_private_dir(path: &Path) -> Result<(), ActivationError> {
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(PRIVATE_DIR_MODE)
-        .create(path)?;
-    let current = std::fs::metadata(path)?.permissions().mode() & 0o777;
-    if current != PRIVATE_DIR_MODE {
-        // Deliberate raw path: a one-shot security-repair diagnostic — the
-        // operator must see *which* directory was world-readable to fix the
-        // umask or mount that caused it.
-        tracing::warn!(
-            target: "slugaudit::project",
-            path = %path.display(),
-            mode = format!("{current:o}"),
-            reason = "tightening_activation_dir",
-            "activation directory was not owner-only; tightening it"
-        );
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(PRIVATE_DIR_MODE))?;
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn create_private_dir(path: &Path) -> Result<(), ActivationError> {
-    std::fs::create_dir_all(path)?;
-    Ok(())
-}
-
-/// Files `disable` removes from the activation directory, as names relative
-/// to it: the database, its SQLite sidecars and the config write lock. The
-/// `results` directory is removed too. Every other entry (notably
-/// `config.json`, the user's profile and mechanic overrides) is user data and
-/// is never touched.
-const OWNED_FILES: [&str; 5] = [
-    DATABASE_FILENAME,
-    "project.db-wal",
-    "project.db-shm",
-    "project.db-journal",
-    "config.lock",
-];
-const RESULTS_DIR: &str = "results";
-const CONFIG_FILE: &str = "config.json";
 
 /// What `disable` actually did.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct DisableReport {
-    /// Paths that existed and were removed: the owned files, the results
-    /// directory, then the activation directory itself when nothing else was
-    /// left in it.
+    /// Paths that existed and were removed: the activation directory (or the
+    /// symlink that stood in for it), then `.planning` when that left it empty.
     pub removed: Vec<PathBuf>,
-    /// True when `config.json` was present and therefore kept.
-    pub config_kept: bool,
 }
 
-/// Removes one owned path without following a symlink: a directory is removed
-/// recursively (`remove_dir_all` never follows symlinks inside it), anything
-/// else, a symlink included, is unlinked itself. Returns whether it existed.
-fn remove_owned(path: &Path) -> Result<bool, ActivationError> {
-    let metadata = match path.symlink_metadata() {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(ActivationError::Io(error)),
-    };
-    if metadata.file_type().is_dir() {
-        std::fs::remove_dir_all(path)?;
-    } else {
-        std::fs::remove_file(path)?;
-    }
-    Ok(true)
-}
-
-/// Turns SlugAudit "off" for `root` by removing only what SlugAudit created
-/// in `.planning/slugaudit`: the database, its sidecars, the `results`
-/// directory and the config lock. `config.json` and any other file stay;
-/// the directory is removed only if that leaves it empty. With `project.db`
-/// gone the project is inactive; `on` rebuilds the index from source.
+/// Turns SlugAudit "off" for `root` by deleting the whole
+/// `.planning/slugaudit` directory, `config.json` included: everything in it
+/// is SlugAudit's scratch. `.planning` is removed afterwards only if it is
+/// empty, because the rest of it is the user's.
 ///
-/// A path that is already absent is not an error and is not reported as
-/// removed, so a second call on a clean directory reports nothing removed. A
-/// symlinked `project.db` is never followed: it is not a database of ours,
-/// so the link itself is unlinked.
+/// `remove_dir_all` never follows a symlink inside the directory. If
+/// `.planning/slugaudit` is itself a symlink it is not "on" and not ours to
+/// empty, so only the link is removed and its target is left alone.
 ///
-/// `config.lock` is unlinked while another process may still hold a `flock`
-/// on it. That process keeps locking the unlinked inode, so a later writer
-/// that creates a fresh `config.lock` is not excluded by it; the window is
-/// accepted, not closed.
+/// An absent directory is not an error and reports nothing removed.
 ///
 /// # Errors
 ///
-/// Returns an error if a `.planning`/`.planning/slugaudit` component is a
-/// symlink (refuses to remove through one), or if any removal fails.
+/// Returns an error if `.planning` is a symlink (refuses to remove through
+/// it), or if any removal fails.
 pub fn disable(root: &ProjectRoot) -> Result<DisableReport, ActivationError> {
-    let activation = validated_activation_dir(root.as_path())?;
-    if !activation.try_exists()? {
-        return Ok(DisableReport::default());
-    }
+    let activation = planning_checked_activation_dir(root.as_path())?;
     let mut report = DisableReport::default();
-    for name in OWNED_FILES {
-        let path = activation.join(name);
-        if remove_owned(&path)? {
-            report.removed.push(path);
-        }
+    let metadata = match activation.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(report),
+        Err(error) => return Err(ActivationError::Io(error)),
+    };
+    if metadata.file_type().is_dir() {
+        std::fs::remove_dir_all(&activation)?;
+    } else {
+        std::fs::remove_file(&activation)?;
     }
-    let results = activation.join(RESULTS_DIR);
-    if remove_owned(&results)? {
-        report.removed.push(results);
-    }
-    report.config_kept = activation.join(CONFIG_FILE).try_exists()?;
-    match std::fs::remove_dir(&activation) {
-        Ok(()) => report.removed.push(activation),
+    report.removed.push(activation);
+    let planning = root.as_path().join(PLANNING_DIR);
+    match std::fs::remove_dir(&planning) {
+        Ok(()) => report.removed.push(planning),
         Err(error)
             if matches!(
                 error.kind(),

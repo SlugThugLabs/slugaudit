@@ -403,3 +403,31 @@ fn a_failed_manager_publish_emits_exactly_one_warn_line() {
     assert_eq!(warnings, 1, "one failed publish, one warn line: {logs}");
     assert!(result.is_err(), "the trigger must fail the publish");
 }
+
+/// Only `project_control on` creates `.planning/slugaudit`: a rebuild whose
+/// directory vanished mid-call fails with a clear error and leaves it gone.
+#[test]
+fn a_rebuild_whose_activation_directory_vanished_fails_without_recreating_it() {
+    let project = tempfile::tempdir().expect("temp dir");
+    let activation = project.path().join(".planning").join("slugaudit");
+    std::fs::create_dir_all(&activation).expect("create directory");
+    let root = crate::project::ProjectRoot::resolve(project.path()).expect("resolve root");
+    let database = crate::project::database_path(&root);
+    std::fs::remove_dir_all(&activation).expect("directory vanishes mid-call");
+
+    let error = publish_from_scratch(&root, database, &NoopProgressSink)
+        .err()
+        .expect("the rebuild must fail");
+
+    assert!(
+        error.message.contains("turned off during this call"),
+        "{}",
+        error.message
+    );
+    assert_eq!(
+        error.data.as_ref().and_then(|data| data.get("code")),
+        Some(&serde_json::json!("project_not_enabled")),
+        "{error:?}"
+    );
+    assert!(!activation.exists(), "the directory is not recreated");
+}

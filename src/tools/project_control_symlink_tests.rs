@@ -39,15 +39,29 @@ fn project_with_symlinked_database() -> (
 
 #[cfg(unix)]
 #[test]
-fn a_symlinked_project_db_reads_as_inactive() {
-    let (project, _path, _link, _target) = project_with_symlinked_database();
+fn a_tool_call_refuses_a_symlinked_project_db_and_leaves_the_link_and_target_alone() {
+    let (_project, path, link, target) = project_with_symlinked_database();
 
-    let result = crate::project::find_project_root(project.path());
+    let error = crate::tools::report(
+        &Parameters(crate::tools::ReportRequest { path }),
+        &crate::progress::NoopProgressSink,
+        &sync::SourceSyncManager::new(),
+    )
+    .err()
+    .expect("a symlinked project.db is never opened");
 
-    assert!(
-        matches!(result, Err(crate::project::ActivationError::NotActive)),
-        "a symlinked project.db is not an activation marker: {result:?}"
+    assert_eq!(
+        error.message,
+        "opening the project database for sync: refusing to open a database path that is a symlink"
     );
+    assert!(
+        fs::symlink_metadata(&link)
+            .expect("link still present")
+            .file_type()
+            .is_symlink(),
+        "the link is untouched"
+    );
+    assert_eq!(fs::read(&target).expect("read target"), VICTIM_BYTES);
 }
 
 #[cfg(unix)]
@@ -79,39 +93,25 @@ fn on_refuses_a_symlinked_project_db_and_leaves_the_link_and_target_alone() {
 
 #[cfg(unix)]
 #[test]
-fn off_unlinks_a_symlinked_project_db_without_following_it() {
-    let (project, path, link, target) = project_with_symlinked_database();
+fn off_deletes_the_directory_without_following_a_symlinked_project_db() {
+    let (project, path, _link, target) = project_with_symlinked_database();
 
     let response = project_control(
         &request(&path, ProjectControlAction::Off),
         &crate::progress::NoopProgressSink,
         None,
     )
-    .expect("off unlinks the link itself");
+    .expect("off deletes the directory, link included");
 
     assert_eq!(response.0.status, "disabled");
-    assert_eq!(
-        response.0.removed.len(),
-        2,
-        "the link and then the emptied directory: {:?}",
-        response.0.removed
-    );
-    assert_eq!(response.0.removed[0], link.to_string_lossy());
     assert!(
-        matches!(
-            fs::symlink_metadata(&link),
-            Err(ref error) if error.kind() == std::io::ErrorKind::NotFound
-        ),
-        "the link is gone"
+        !project.path().join(".planning/slugaudit").exists(),
+        "the whole directory is gone"
     );
     assert_eq!(
         fs::read(&target).expect("the target survives"),
         VICTIM_BYTES,
         "off never touches what the link pointed at"
-    );
-    assert!(
-        !project.path().join(".planning/slugaudit").exists(),
-        "an emptied activation directory is removed"
     );
 }
 

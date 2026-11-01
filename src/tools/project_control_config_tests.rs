@@ -162,7 +162,7 @@ fn indexed_project() -> (tempfile::TempDir, String) {
 }
 
 #[test]
-fn a_tool_call_after_project_off_is_not_active_and_does_not_rebuild_the_database() {
+fn a_tool_call_after_project_off_is_not_active_and_does_not_recreate_the_directory() {
     let (project, path) = indexed_project();
     control(&path, ProjectControlAction::On);
     let activation = project.path().join(".planning/slugaudit");
@@ -171,9 +171,8 @@ fn a_tool_call_after_project_off_is_not_active_and_does_not_rebuild_the_database
     let off = control(&path, ProjectControlAction::Off).0;
 
     assert_eq!(off.status, "disabled");
-    assert!(off.config_kept);
-    assert!(!activation.join("project.db").exists());
-    assert!(!activation.join("results").exists());
+    assert!(!activation.exists(), "off deletes the whole directory");
+    assert!(!project.path().join(".planning").exists());
     let error = crate::tools::report(
         &Parameters(crate::tools::ReportRequest { path: path.clone() }),
         &crate::progress::NoopProgressSink,
@@ -187,8 +186,8 @@ fn a_tool_call_after_project_off_is_not_active_and_does_not_rebuild_the_database
         "{error:?}"
     );
     assert!(
-        !activation.join("project.db").exists(),
-        "the failed call must not rebuild the database"
+        !activation.exists(),
+        "the failed call must not recreate the directory"
     );
     assert_eq!(
         control(&path, ProjectControlAction::Off).0.status,
@@ -198,7 +197,7 @@ fn a_tool_call_after_project_off_is_not_active_and_does_not_rebuild_the_database
 }
 
 #[test]
-fn project_off_then_on_restores_the_mechanics_persisted_in_config_json() {
+fn project_off_then_on_starts_without_the_persisted_mechanics() {
     let (project, path) = indexed_project();
     control(&path, ProjectControlAction::On);
     let root = ProjectRoot::resolve(project.path()).expect("resolve root");
@@ -216,14 +215,7 @@ fn project_off_then_on_restores_the_mechanics_persisted_in_config_json() {
     assert_eq!(on.status, "enabled");
     let restored = project::load_persisted(root.as_path());
     assert!(restored.invalid.is_empty(), "{:?}", restored.invalid);
-    assert_eq!(
-        restored
-            .entries
-            .iter()
-            .map(|(_, restored)| restored)
-            .collect::<Vec<_>>(),
-        vec![&entry]
-    );
+    assert!(restored.entries.is_empty(), "off deleted config.json");
 }
 
 #[test]

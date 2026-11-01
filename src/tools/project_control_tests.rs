@@ -126,12 +126,12 @@ fn on_action_is_idempotent_when_already_enabled() {
     assert_eq!(response.0.status, "enabled");
     assert!(
         activation_dir(&project).is_dir(),
-        "the marker stays in place across repeated enables"
+        "the directory stays in place across repeated enables"
     );
 }
 
 #[test]
-fn off_action_disables_the_project_and_purges_the_database() {
+fn off_action_disables_the_project_and_deletes_the_directory() {
     let (project, path) = temp_project_with_source();
     project_control(&on_request(&path), &crate::progress::NoopProgressSink, None).expect("enable");
     assert!(activation_dir(&project).is_dir());
@@ -146,7 +146,7 @@ fn off_action_disables_the_project_and_purges_the_database() {
     assert!(response.0.import.is_none());
     assert!(
         !activation_dir(&project).exists(),
-        "disable must purge the activation marker and the database together"
+        "disable must delete the whole activation directory"
     );
 }
 
@@ -345,18 +345,16 @@ fn on_action_reports_an_import_failure() {
     );
 }
 
-/// `project::disable` refuses to remove a symlinked activation directory;
+/// `project::disable` refuses to remove through a symlinked `.planning`;
 /// that refusal reaches the caller instead of a reported success.
 #[cfg(unix)]
 #[test]
 fn off_action_reports_a_disable_failure() {
     let (project, path) = temp_project_with_source();
-    project_control(&on_request(&path), &crate::progress::NoopProgressSink, None).expect("enable");
-    let activation = activation_dir(&project);
-    fs::remove_dir_all(&activation).expect("remove the real activation dir");
     let elsewhere = project.path().join("elsewhere");
-    fs::create_dir_all(&elsewhere).expect("create link target");
-    std::os::unix::fs::symlink(&elsewhere, &activation).expect("symlink the activation dir");
+    fs::create_dir_all(elsewhere.join("slugaudit")).expect("create link target");
+    std::os::unix::fs::symlink(&elsewhere, project.path().join(".planning"))
+        .expect("symlink .planning");
 
     let error = project_control(
         &off_request(&path),
@@ -364,7 +362,7 @@ fn off_action_reports_a_disable_failure() {
         None,
     )
     .err()
-    .expect("disable through a symlinked activation dir is refused");
+    .expect("disable through a symlinked .planning is refused");
 
     assert!(
         error
@@ -373,6 +371,7 @@ fn off_action_reports_a_disable_failure() {
         "{}",
         error.message
     );
+    assert!(elsewhere.join("slugaudit").is_dir(), "nothing was removed");
 }
 
 #[test]

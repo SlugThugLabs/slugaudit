@@ -24,9 +24,15 @@ pub(crate) fn with_verified_write<T>(
 ) -> Result<T, ErrorData> {
     let mut connection =
         store::open_existing_read_write(&synced.database_path).map_err(|error| match error {
-            // `off` removed the database after the sync: the project is off,
-            // not in a transient failure worth retrying.
-            store::StoreError::Missing => {
+            // The directory is gone: `off` ran after the sync, so the project
+            // is off. A directory without a database is deleted scratch, and
+            // the next call rebuilds it.
+            store::StoreError::Missing
+                if synced
+                    .database_path
+                    .parent()
+                    .is_some_and(|dir| !dir.is_dir()) =>
+            {
                 sync::map_activation_error(crate::project::ActivationError::NotActive)
             }
             error => internal_error("opening the project database for write", error),
