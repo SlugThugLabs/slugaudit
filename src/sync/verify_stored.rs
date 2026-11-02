@@ -35,10 +35,22 @@ pub(super) fn content_mismatches(
                 elapsed_ms: elapsed.as_millis(),
             });
         }
-        let path: String = row.get(0)?;
-        let content: String = row.get(1)?;
-        let stored_hash: String = row.get(2)?;
-        if blake3::hash(content.as_bytes()).to_string() != stored_hash {
+        let content: rusqlite::types::ValueRef<'_> = row.get_ref(1)?;
+        let content_bytes = match content {
+            rusqlite::types::ValueRef::Text(s) => s,
+            rusqlite::types::ValueRef::Blob(b) => b,
+            _ => continue,
+        };
+        let stored_hash: rusqlite::types::ValueRef<'_> = row.get_ref(2)?;
+        let stored_hash_str = stored_hash.as_str().map_err(|error| {
+            PublishError::Database(rusqlite::Error::FromSqlConversionFailure(
+                2,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            ))
+        })?;
+        if blake3::hash(content_bytes).to_hex().as_str() != stored_hash_str {
+            let path: String = row.get(0)?;
             mismatched.insert(path);
         }
     }

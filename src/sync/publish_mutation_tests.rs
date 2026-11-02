@@ -406,3 +406,181 @@ fn a_file_that_grows_past_the_ceiling_becomes_a_skipped_row_without_content() {
         .expect("lib.rs row");
     assert_eq!(lib_kind, "indexed", "the untouched file is unaffected");
 }
+
+#[test]
+fn publish_error_corruption_classification_matches_sqlite_corruption() {
+    let corrupt_db = PublishError::Database(rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error {
+            code: rusqlite::ffi::ErrorCode::DatabaseCorrupt,
+            extended_code: 11,
+        },
+        Some("database disk image is malformed".into()),
+    ));
+    assert!(corrupt_db.is_corruption());
+
+    let corrupt_rev =
+        PublishError::Revision(RevisionError::Database(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ffi::ErrorCode::DatabaseCorrupt,
+                extended_code: 11,
+            },
+            None,
+        )));
+    assert!(corrupt_rev.is_corruption());
+
+    assert!(!PublishError::Database(rusqlite::Error::QueryReturnedNoRows).is_corruption());
+    assert!(
+        !PublishError::Revision(RevisionError::Database(
+            rusqlite::Error::QueryReturnedNoRows
+        ))
+        .is_corruption()
+    );
+    assert!(
+        !PublishError::Revision(RevisionError::StaleBaseline {
+            expected: "rev-1".into(),
+            found: "rev-2".into(),
+        })
+        .is_corruption()
+    );
+    assert!(
+        !PublishError::TimeBudgetExceeded {
+            path: String::new(),
+            elapsed_ms: 100,
+        }
+        .is_corruption()
+    );
+    assert!(
+        !PublishError::SamplingResultLost {
+            path: "a.rs".into(),
+            reason: "channel closed".into(),
+        }
+        .is_corruption()
+    );
+}
+
+#[test]
+fn publish_error_budget_elapsed_and_categories_and_logging_paths() {
+    let budget_pub = PublishError::TimeBudgetExceeded {
+        path: " a.rs".into(),
+        elapsed_ms: 42,
+    };
+    assert_eq!(budget_pub.budget_elapsed_ms(), Some(42));
+    assert_eq!(budget_pub.category(), "time_budget_exceeded");
+    assert_eq!(budget_pub.path_for_log(), None);
+
+    let budget_disc =
+        PublishError::Discovery(discovery::DiscoveryError::TimeBudgetExceeded { elapsed_ms: 84 });
+    assert_eq!(budget_disc.budget_elapsed_ms(), Some(84));
+    assert_eq!(budget_disc.category(), "discovery");
+
+    let changed = PublishError::ChangedDuringSample {
+        path: "changed.rs".into(),
+    };
+    assert_eq!(changed.budget_elapsed_ms(), None);
+    assert_eq!(changed.category(), "changed_during_sample");
+    assert_eq!(changed.path_for_log(), Some("changed.rs".into()));
+
+    let lost = PublishError::SamplingResultLost {
+        path: "lost.rs".into(),
+        reason: "channel closed".into(),
+    };
+    assert_eq!(lost.category(), "sampling_result_lost");
+    assert_eq!(lost.path_for_log(), Some("lost.rs".into()));
+
+    let invalid_run = PublishError::Revision(RevisionError::InvalidParserRun {
+        path: "run.rs".into(),
+        reason: "err",
+    });
+    assert_eq!(invalid_run.category(), "revision");
+    assert_eq!(invalid_run.path_for_log(), Some("run.rs".into()));
+
+    let sample_err = PublishError::Sample(sample::SampleError::Read {
+        path: std::path::PathBuf::from("sample.rs"),
+        source: std::io::Error::other("test"),
+    });
+    assert_eq!(sample_err.category(), "sample");
+    assert_eq!(sample_err.path_for_log(), Some("sample.rs".into()));
+
+    let disc_not_rel = PublishError::Discovery(discovery::DiscoveryError::NotRelative(
+        std::path::PathBuf::from("rel.rs"),
+    ));
+    assert_eq!(disc_not_rel.path_for_log(), Some("rel.rs".into()));
+
+    let disc_ignore_path = PublishError::Discovery(discovery::DiscoveryError::IgnoreRules {
+        kind: "git",
+        path: Some(std::path::PathBuf::from("ignore.rs")),
+    });
+    assert_eq!(disc_ignore_path.path_for_log(), Some("ignore.rs".into()));
+
+    let disc_ignore_none = PublishError::Discovery(discovery::DiscoveryError::IgnoreRules {
+        kind: "git",
+        path: None,
+    });
+    assert_eq!(disc_ignore_none.path_for_log(), None);
+
+    let limits_err = PublishError::Limits(crate::project::ProjectLimitsError::Config(
+        crate::project::ConfigError::Io {
+            path: std::path::PathBuf::from("config.json"),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
+        },
+    ));
+    assert_eq!(limits_err.category(), "project_limits");
+
+    let db_err = PublishError::Database(rusqlite::Error::QueryReturnedNoRows);
+    assert_eq!(db_err.category(), "database");
+
+    let import_err = PublishError::ImportTooLarge {
+        total: 10,
+        limit: 5,
+    };
+    assert_eq!(import_err.category(), "import_too_large");
+
+    let index_oob = PublishError::SamplingIndexOutOfRange { index: 2, total: 1 };
+    assert_eq!(index_oob.category(), "sampling_index_out_of_range");
+
+    let pack_err = PublishError::InvalidParserPackVersion("v0".into());
+    assert_eq!(pack_err.category(), "invalid_parser_pack_version");
+
+    let walk_err =
+        PublishError::Discovery(discovery::DiscoveryError::Walk(ignore::Error::WithPath {
+            path: std::path::PathBuf::from("walk.rs"),
+            err: Box::new(ignore::Error::from(std::io::Error::other("test"))),
+        }));
+    assert_eq!(walk_err.path_for_log(), Some("walk.rs".into()));
+
+    let (_, logs) = crate::store::test_capture::capture_warns(|| {
+        sample_err.warn_sampling_superseded();
+    });
+    assert!(logs.contains("a later sampling failure was discarded"));
+}
+
+#[test]
+fn unrepresentable_paths_storage_and_replacement_roundtrip() {
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+
+    let initial = stored_unrepresentable_paths(&connection).expect("read empty stored");
+    assert!(initial.is_empty());
+
+    let mut set_a = HashSet::new();
+    set_a.insert(vec![0xFF, 0xFE]);
+    replace_unrepresentable_paths(&mut connection, &set_a).expect("insert unrepresentable");
+    assert_eq!(
+        stored_unrepresentable_paths(&connection).expect("read unrepresentable"),
+        set_a
+    );
+
+    replace_unrepresentable_paths(&mut connection, &set_a).expect("no-op unrepresentable");
+    assert_eq!(
+        stored_unrepresentable_paths(&connection).expect("read unrepresentable"),
+        set_a
+    );
+
+    let empty = HashSet::new();
+    replace_unrepresentable_paths(&mut connection, &empty).expect("clear unrepresentable");
+    assert!(
+        stored_unrepresentable_paths(&connection)
+            .expect("read cleared")
+            .is_empty()
+    );
+}

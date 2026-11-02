@@ -127,6 +127,17 @@ impl PublishError {
         }
     }
 
+    #[must_use]
+    pub(crate) fn is_corruption(&self) -> bool {
+        match self {
+            PublishError::Database(err) => crate::store::is_rusqlite_corruption(err),
+            PublishError::Revision(revision::RevisionError::Database(err)) => {
+                crate::store::is_rusqlite_corruption(err)
+            }
+            _ => false,
+        }
+    }
+
     /// Static category for a log line about this failure. Never the error's
     /// `Display`: several variants embed a path or file content in it.
     #[must_use]

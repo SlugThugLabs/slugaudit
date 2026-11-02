@@ -1,9 +1,10 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=one publish attempt: discovery, sampling, skip accounting, the stored-content check and the atomic commit
-//! A single publish attempt: discover, sample, diff, revalidate, and commit
+// slugaudit-line-exception: approved-by=slugthug; reason=one publish attempt: two-pass streaming discovery, hash, diff, selective sample, and atomic commit
+//! A single publish attempt: discover, stream-hash, diff, sample changed files, and commit
 //! one revision. The retry/CAS loop lives in `publish_cas` — this module is
 //! pure orchestration of one attempt, with no retry logic of its own.
 
 use super::discovery;
+use super::hash_batch;
 use super::manifest::{ChangeStatus, FileChange};
 use super::publish::{PublishError, PublishReport};
 use super::publish_diff::{self, build_upserts_and_deletions};
@@ -12,80 +13,69 @@ use super::revalidate::revalidate_unchanged_since_sample;
 use super::revision;
 use super::revision_skipped::SkippedRecord;
 use super::sample::{self, sample_all_with_deadline};
-use crate::model::ResourceLimits;
+use crate::model::{ResourceLimits, SourceIdentity};
 use crate::progress::ProgressSink;
 use crate::util::Deadline;
 use rusqlite::Connection;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-/// Everything one sampled-and-diffed attempt produces before the delta is
-/// written: the inputs `publish_revision` needs, plus the report fields.
-struct Attempt {
+/// Everything Pass 1 (discovery + stream hashing + diff) produces.
+struct DiffState {
     discovered: Vec<discovery::DiscoveredFile>,
     discovered_paths: HashSet<String>,
-    samples: Vec<sample::Sample>,
+    identities: Vec<SourceIdentity>,
     diff: publish_diff::Diff,
     skipped: Vec<discovery::SkippedFile>,
-    skipped_records: Vec<SkippedRecord>,
-    /// Paths with no UTF-8 representation, persisted so `report` can count
-    /// them without walking.
+    skipped_records: BTreeMap<String, SkippedRecord>,
     unrepresentable: HashSet<Vec<u8>>,
 }
 
-/// Discovery + sampling + skip accounting + diff: the read half of an
-/// attempt, with every skip warned and recorded in one pass per class.
-fn sample_and_diff(
+/// Pass 1: Discover and stream-hash all files on disk, then diff against stored hashes.
+/// No file text is allocated or held in memory during this pass.
+fn hash_and_diff(
     connection: &Connection,
     root: &Path,
-    sink: &dyn ProgressSink,
     limits: &ResourceLimits,
     deadline: &Deadline,
-) -> Result<Attempt, PublishError> {
+) -> Result<DiffState, PublishError> {
     let (discovered, discovery_skips) = discovery::discover_with_deadline(root, deadline)?;
     let unrepresentable = discovery::unrepresentable_paths(root, &discovery_skips);
-    // Every path the walk saw on disk, including files sampling will skip
-    // (oversize) — those exist, so an import targeting one must resolve
-    // rather than be written as `Unresolved`.
     let mut discovered_paths: HashSet<String> = discovered
         .iter()
         .map(|file| file.relative_path.clone())
         .collect();
-    // Existence rows for the files we deliberately do not index, keyed by
-    // path so one path can never be written twice and the order is
-    // deterministic. A path with no UTF-8 representation, or one outside
-    // the root, has no usable key — it stays visible only in
-    // `PublishReport::skipped` and the log.
     let mut skipped_records: BTreeMap<String, SkippedRecord> = BTreeMap::new();
     publish_diff::collect_skipped(
         root,
         &discovery_skips,
+        None,
         &mut discovered_paths,
         &mut skipped_records,
     );
-    let (samples, sampling_skips) = sample_all_with_deadline(&discovered, limits, sink, deadline)?;
+
+    let (identities, hashing_skips) =
+        hash_batch::hash_all_with_deadline(&discovered, limits.max_file_bytes, deadline)?;
     publish_diff::collect_skipped(
         root,
-        &sampling_skips,
+        &hashing_skips,
+        None,
         &mut discovered_paths,
         &mut skipped_records,
     );
-    let skipped_records: Vec<SkippedRecord> = skipped_records.into_values().collect();
+    let skipped_records_vec: Vec<SkippedRecord> = skipped_records.values().cloned().collect();
     let mut skipped = discovery_skips;
-    skipped.extend(sampling_skips);
-    race_hook::fire(root);
+    skipped.extend(hashing_skips);
+
     let mut diff =
-        publish_diff::diff_against_stored(connection, &samples, &skipped_records, deadline)?;
-    // The diff compares disk hashes against stored ones, so a `files.content`
-    // edit that left the hash column alone passes it. This pass hashes the
-    // stored text itself; a mismatch forces a re-read of the file, so the
-    // database cannot answer with text it derived from nothing.
+        publish_diff::diff_against_stored(connection, &identities, &skipped_records_vec, deadline)?;
     let mismatched = super::verify_stored::content_mismatches(connection, deadline)?;
-    force_content_repairs(&mut diff, &mismatched, &samples);
-    Ok(Attempt {
+    force_content_repairs(&mut diff, &mismatched, &identities);
+
+    Ok(DiffState {
         discovered,
         discovered_paths,
-        samples,
+        identities,
         diff,
         skipped,
         skipped_records,
@@ -98,14 +88,14 @@ fn sample_and_diff(
 fn force_content_repairs(
     diff: &mut publish_diff::Diff,
     mismatched: &HashSet<String>,
-    samples: &[sample::Sample],
+    identities: &[SourceIdentity],
 ) {
     if mismatched.is_empty() {
         return;
     }
-    let sampled: HashSet<&str> = samples
+    let present: HashSet<&str> = identities
         .iter()
-        .map(|sample| sample.relative_path.as_str())
+        .map(|id| id.relative_path.as_str())
         .collect();
     let mut already: HashSet<String> = diff
         .changes
@@ -113,10 +103,11 @@ fn force_content_repairs(
         .map(|change| change.relative_path.clone())
         .collect();
     for path in mismatched {
-        if !sampled.contains(path.as_str()) || !already.insert(path.clone()) {
+        if !present.contains(path.as_str()) || !already.insert(path.clone()) {
             continue;
         }
         diff.modified += 1;
+        diff.unchanged = diff.unchanged.saturating_sub(1);
         diff.changes.push(FileChange {
             relative_path: path.clone(),
             status: ChangeStatus::Modified,
@@ -150,21 +141,9 @@ fn current_revision(connection: &Connection) -> Result<Option<CurrentRevision>, 
         })
 }
 
-/// One publish attempt: discovers, hashes, and diffs the project's current
-/// disk state against what the database has stored, then publishes exactly
-/// the delta as one atomic CAS revision. A disk state identical to the
-/// current revision skips publishing entirely rather than churning out a
-/// no-op revision.
-///
-/// The caller (`publish_cas::publish`) wraps this in a retry loop for the
-/// two retryable hazards: another publisher winning the CAS race, and a
-/// file changing on disk after being sampled.
-///
-/// # Errors
-///
-/// Returns an error if discovery, sampling, diffing, revalidation, or the
-/// revision publish fails. Retryable errors are `StaleBaseline` (another
-/// publisher won) and `ChangedDuringSample` (a file changed mid-sample).
+/// One publish attempt: discovers, stream-hashes, and diffs the project's current
+/// disk state against what the database has stored. If unchanged, finishes immediately
+/// without reading file contents. If changed, samples only modified files and publishes.
 pub(super) fn try_publish(
     connection: &mut Connection,
     root: &Path,
@@ -178,39 +157,133 @@ pub(super) fn try_publish(
         .as_ref()
         .map(|revision| revision.revision_id.as_str());
 
-    let attempt = sample_and_diff(connection, root, sink, limits, deadline)?;
-    // Persist what the walk could not represent before deciding whether the
-    // revision itself changed: a non-UTF-8 add or remove with no
-    // representable file change is a no-op revision but not a no-op count.
-    super::publish::replace_unrepresentable_paths(connection, &attempt.unrepresentable)?;
+    let state = hash_and_diff(connection, root, limits, deadline)?;
+    super::publish::replace_unrepresentable_paths(connection, &state.unrepresentable)?;
 
     let parser_version_changed = baseline
         .as_ref()
         .is_none_or(|revision| revision.parser_pack_version != parser_pack_version);
 
-    if attempt.diff.changes.is_empty()
+    if state.diff.changes.is_empty()
         && !parser_version_changed
-        && let Some(current) = baseline
+        && let Some(current) = &baseline
     {
+        race_hook::fire(root);
+        let current_now = current_revision(connection)?;
+        let current_id_now = current_now.as_ref().map(|r| r.revision_id.as_str());
+        if current_id_now != expected_current {
+            return Err(PublishError::Revision(
+                revision::RevisionError::StaleBaseline {
+                    expected: expected_current.unwrap_or("").to_owned(),
+                    found: current_id_now.unwrap_or("").to_owned(),
+                },
+            ));
+        }
         return Ok(PublishReport {
-            revision_id: current.revision_id,
+            revision_id: current.revision_id.clone(),
             added: 0,
             modified: 0,
             deleted: 0,
-            unchanged: attempt.diff.unchanged,
-            skipped: attempt.skipped,
+            unchanged: state.diff.unchanged,
+            skipped: state.skipped,
         });
     }
+
+    let hashed_paths: HashSet<&str> = state
+        .identities
+        .iter()
+        .map(|id| id.relative_path.as_str())
+        .collect();
+
+    let files_to_sample: Vec<discovery::DiscoveredFile> = if parser_version_changed {
+        state
+            .discovered
+            .iter()
+            .filter(|f| hashed_paths.contains(f.relative_path.as_str()))
+            .cloned()
+            .collect()
+    } else {
+        let changed_set: HashSet<&str> = state
+            .diff
+            .changes
+            .iter()
+            .filter(|c| c.status != ChangeStatus::Deleted)
+            .map(|c| c.relative_path.as_str())
+            .collect();
+        state
+            .discovered
+            .iter()
+            .filter(|f| {
+                changed_set.contains(f.relative_path.as_str())
+                    && hashed_paths.contains(f.relative_path.as_str())
+            })
+            .cloned()
+            .collect()
+    };
+
+    let (samples, sampling_skips) =
+        sample_all_with_deadline(&files_to_sample, limits, sink, deadline)?;
+
+    // Validate that no sampled file was modified between Pass 1 stream-hashing
+    // and Pass 2 selective sampling. If content changed, abort this attempt
+    // so `publish_cas` retries rather than commit a mismatched manifest hash.
+    let pass1_hashes: std::collections::HashMap<&str, &str> = state
+        .identities
+        .iter()
+        .map(|id| (id.relative_path.as_str(), id.content_hash.as_str()))
+        .collect();
+    for sample in &samples {
+        if let Some(&p1_hash) = pass1_hashes.get(sample.relative_path.as_str())
+            && sample.identity.content_hash != p1_hash
+        {
+            return Err(PublishError::ChangedDuringSample {
+                path: sample.relative_path.clone(),
+            });
+        }
+    }
+
+    let mut discovered_paths = state.discovered_paths;
+    let mut skipped_records = state.skipped_records;
+    publish_diff::collect_skipped(
+        root,
+        &sampling_skips,
+        Some(&state.identities),
+        &mut discovered_paths,
+        &mut skipped_records,
+    );
+    let mut skipped = state.skipped;
+    skipped.extend(sampling_skips);
+    let skipped_records: Vec<SkippedRecord> = skipped_records.into_values().collect();
+    race_hook::fire(root);
+
+    let inputs = CommitInputs {
+        discovered: &state.discovered,
+        discovered_paths,
+        samples,
+        diff: state.diff,
+        skipped,
+        skipped_records,
+    };
 
     commit_attempt(
         connection,
         expected_current,
         parser_pack_version,
-        attempt,
+        inputs,
         parser_version_changed,
         limits,
         deadline,
     )
+}
+
+/// The write-side inputs prepared across Pass 1 and Pass 2.
+struct CommitInputs<'a> {
+    discovered: &'a [discovery::DiscoveredFile],
+    discovered_paths: HashSet<String>,
+    samples: Vec<sample::Sample>,
+    diff: publish_diff::Diff,
+    skipped: Vec<discovery::SkippedFile>,
+    skipped_records: Vec<SkippedRecord>,
 }
 
 /// The write half of an attempt: build the delta, revalidate what the diff
@@ -219,22 +292,19 @@ fn commit_attempt(
     connection: &mut Connection,
     expected_current: Option<&str>,
     parser_pack_version: &str,
-    attempt: Attempt,
+    inputs: CommitInputs<'_>,
     parser_version_changed: bool,
     limits: &ResourceLimits,
     deadline: &Deadline,
 ) -> Result<PublishReport, PublishError> {
-    let Attempt {
+    let CommitInputs {
         discovered,
         discovered_paths,
         samples,
         diff,
         skipped,
         skipped_records,
-        ..
-    } = attempt;
-    // A path added or removed can change an unchanged importer's edge, so
-    // stored `Unresolved` edges are re-resolved against the new path set.
+    } = inputs;
     let re_resolve_unresolved = diff.added > 0 || diff.deleted > 0;
     let (upserts, deletions) = build_upserts_and_deletions(
         samples,
@@ -243,7 +313,7 @@ fn commit_attempt(
         limits,
         deadline,
     )?;
-    revalidate_unchanged_since_sample(&discovered, &upserts, limits, deadline)?;
+    revalidate_unchanged_since_sample(discovered, &upserts, limits, deadline)?;
 
     let revision_id = revision::publish_revision(
         connection,

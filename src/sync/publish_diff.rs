@@ -10,7 +10,7 @@ use super::publish::PublishError;
 use super::revision::FileRecord;
 use super::revision_skipped::{SKIP_REASON_STAT_FAILED, SkippedRecord};
 use super::sample::{self, Sample, to_file_record};
-use crate::model::ResourceLimits;
+use crate::model::{ResourceLimits, SourceIdentity};
 use crate::util::Deadline;
 use rusqlite::Connection;
 use std::collections::{BTreeMap, HashSet};
@@ -34,6 +34,7 @@ pub(super) struct Diff {
 pub(super) fn collect_skipped(
     root: &Path,
     files: &[discovery::SkippedFile],
+    identities: Option<&[SourceIdentity]>,
     discovered_paths: &mut HashSet<String>,
     records: &mut BTreeMap<String, SkippedRecord>,
 ) {
@@ -43,7 +44,13 @@ pub(super) fn collect_skipped(
             warn_skipped(file);
             continue;
         };
-        let record = sample::skipped_record(&relative, &file.absolute_path, file.code);
+        let mut record = sample::skipped_record(&relative, &file.absolute_path, file.code);
+        if file.code == super::revision_skipped::SKIP_REASON_NOT_UTF8
+            && let Some(identities) = identities
+            && let Some(id) = identities.iter().find(|id| id.relative_path == relative)
+        {
+            record.identity = id.clone();
+        }
         // A failed stat is already warned about, with the path, the requested
         // reason and the source error, inside `skipped_record`; a second line
         // for the same file would break "every error is logged once".
@@ -79,7 +86,7 @@ fn warn_skipped(file: &discovery::SkippedFile) {
 /// ones, so an unchanged tree still hashes to the same value.
 pub(super) fn diff_against_stored(
     connection: &Connection,
-    samples: &[Sample],
+    identities: &[SourceIdentity],
     skipped: &[SkippedRecord],
     deadline: &Deadline,
 ) -> Result<Diff, PublishError> {
@@ -89,7 +96,7 @@ pub(super) fn diff_against_stored(
         .iter()
         .map(|(path, hash)| (path.as_str(), hash.as_str()))
         .collect();
-    let current_refs = current_hashes(samples, skipped);
+    let current_refs = current_hashes(identities, skipped);
     let mut changes = manifest::compare(stored_refs, current_refs.clone());
     if crate::parse::fetch_gate::load_failed_retry_due() {
         add_load_failed_retries(&mut changes, &current_refs, &load_failed_paths(connection)?);
@@ -99,7 +106,7 @@ pub(super) fn diff_against_stored(
     let modified = count_changes(&changes, ChangeStatus::Modified);
     Ok(Diff {
         deleted: count_changes(&changes, ChangeStatus::Deleted),
-        unchanged: samples.len() + skipped.len() - (added + modified),
+        unchanged: identities.len() + skipped.len() - (added + modified),
         changes,
         manifest_hash,
         added,
@@ -165,20 +172,15 @@ fn stored_hashes(connection: &Connection) -> Result<Vec<(String, String)>, rusql
     Ok(stored_rows)
 }
 
-/// The sampled and skipped files as `(path, content_hash)` pairs, in the
+/// The hashed and skipped files as `(path, content_hash)` pairs, in the
 /// order `manifest::compare` and `aggregate_manifest_hash` consume.
 fn current_hashes<'a>(
-    samples: &'a [Sample],
+    identities: &'a [SourceIdentity],
     skipped: &'a [SkippedRecord],
 ) -> Vec<(&'a str, &'a str)> {
-    let mut current_refs: Vec<(&str, &str)> = samples
+    let mut current_refs: Vec<(&str, &str)> = identities
         .iter()
-        .map(|sample| {
-            (
-                sample.relative_path.as_str(),
-                sample.identity.content_hash.as_str(),
-            )
-        })
+        .map(|id| (id.relative_path.as_str(), id.content_hash.as_str()))
         .collect();
     current_refs.extend(skipped.iter().map(|record| {
         (

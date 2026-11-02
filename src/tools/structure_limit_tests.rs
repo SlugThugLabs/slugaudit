@@ -504,6 +504,7 @@ fn a_query_of_exactly_the_limit_is_not_refused_for_size() {
 
 #[test]
 fn a_global_config_query_limit_is_honoured_by_the_tool() {
+    let _lock = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let _config =
         crate::tools::test_support::use_global_config(r#"{"max_structure_query_bytes": 20}"#);

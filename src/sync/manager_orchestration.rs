@@ -9,8 +9,10 @@
 
 use super::super::discard_notice::DatabaseDiscard;
 use super::super::manager_meta::{
-    ProjectMetaError, ensure_project_row, publish_from_scratch, publish_full, revision_after_sync,
+    ProjectMetaError, ensure_project_row, map_publish_error, publish_from_scratch,
+    revision_after_sync,
 };
+use super::super::publish::publish;
 use super::super::recovery_log::{DatabaseRecovery, log_database_recovery};
 use super::{SourceSyncManager, SyncedProject};
 use crate::error_codes::{self, ErrorCode};
@@ -74,12 +76,37 @@ impl SourceSyncManager {
             Err(synced) => return Ok(synced),
         };
 
-        let report = publish_full(&mut connection, root.as_path(), sink, "publish failed")
-            .inspect_err(|_| {
+        let report = match publish(
+            &mut connection,
+            root.as_path(),
+            crate::parse::PACK_VERSION,
+            sink,
+        ) {
+            Ok(report) => report,
+            Err(error) if error.is_corruption() => {
+                let notice = DatabaseDiscard {
+                    cause: format!("the project database became corrupt during sync: {error}"),
+                };
+                log_database_recovery(
+                    &database_path,
+                    DatabaseRecovery::PublishCorrupt { error: &error },
+                );
+                drop(connection);
+                store::discard_corrupt_database(&database_path).map_err(|discard| {
+                    ErrorData::internal_error(
+                        format!("discarding the corrupt project database: {discard}"),
+                        None,
+                    )
+                })?;
+                return self.rebuild_and_finish(&root, database_path, start, sink, Some(notice));
+            }
+            Err(error) => {
                 sink.emit(ProgressEvent::Completed {
                     phase: "ensuring_current",
                 });
-            })?;
+                return Err(map_publish_error(root.as_path(), error, "publish failed"));
+            }
+        };
         let revision_id = revision_after_sync(&connection, &database_path)?;
 
         let duration_ms = elapsed_ms(start);

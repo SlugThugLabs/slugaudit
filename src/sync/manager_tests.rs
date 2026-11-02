@@ -313,3 +313,87 @@ fn outdated_database_is_automatically_deleted_and_recreated() {
         "source files must be republished from scratch"
     );
 }
+
+#[test]
+fn database_corrupted_during_sync_is_automatically_rebuilt() {
+    let manager = SourceSyncManager::new();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn first() {}\n");
+
+    let synced = sync_project(&manager, &project);
+    assert!(!synced.revision_id.is_empty());
+
+    // Corrupt the database file content by overwriting SQLite header with garbage.
+    {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&synced.database_path)
+            .expect("open db file");
+        file.seek(SeekFrom::Start(0)).expect("seek");
+        file.write_all(b"not a valid sqlite database header at all!")
+            .expect("corrupt header");
+    }
+
+    // Next sync must detect the corrupt DB, discard it, and rebuild from scratch.
+    let synced_after = sync_project(&manager, &project);
+    assert!(!synced_after.revision_id.is_empty());
+    assert!(synced_after.discard.is_some());
+
+    let file_count: i64 = with_verified_read(&synced_after, |tx| {
+        tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
+            .map_err(db_error)
+    })
+    .expect("read count");
+    assert_eq!(
+        file_count, 1,
+        "source files must be republished from scratch after corruption"
+    );
+}
+
+#[test]
+fn database_corrupted_during_publish_is_automatically_rebuilt() {
+    let manager = SourceSyncManager::new();
+    let project = create_project();
+    write_file(&project, "lib.rs", b"pub fn first() {}\n");
+
+    let synced = sync_project(&manager, &project);
+    assert!(!synced.revision_id.is_empty());
+
+    write_file(&project, "second.rs", b"pub fn second() {}\n");
+
+    let db_path = synced.database_path.clone();
+    super::super::race_hook::set(project.path(), move || {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&db_path)
+            .expect("open db file");
+        file.set_len(512).expect("truncate db");
+        file.sync_all().expect("sync");
+    });
+
+    let synced_after = sync_project(&manager, &project);
+    assert!(!synced_after.revision_id.is_empty());
+    assert!(synced_after.discard.is_some());
+    let discard = synced_after
+        .discard
+        .as_ref()
+        .expect("discard notice expected");
+    assert!(
+        discard.cause.contains("corrupt"),
+        "discard notice should mention corruption: {}",
+        discard.cause
+    );
+
+    let file_count: i64 = with_verified_read(&synced_after, |tx| {
+        tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
+            .map_err(db_error)
+    })
+    .expect("read count");
+    assert_eq!(
+        file_count, 2,
+        "both files must be published after rebuilding from corruption"
+    );
+}

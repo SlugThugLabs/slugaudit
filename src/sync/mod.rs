@@ -16,6 +16,7 @@ mod classify;
 mod discard_notice;
 mod discovery;
 mod hash;
+mod hash_batch;
 mod hash_io;
 mod manager;
 mod manager_meta;

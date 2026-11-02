@@ -1,11 +1,10 @@
 //! Tests for the metadata helpers split out of `manager.rs`.
 
-use super::{
-    current_revision_id, ensure_project_row, map_publish_error, publish_from_scratch, publish_full,
-};
+use super::{current_revision_id, ensure_project_row, map_publish_error, publish_from_scratch};
 use crate::progress::NoopProgressSink;
 use crate::store;
 use crate::store::test_capture::capture_warns;
+use crate::sync::publish::publish;
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -269,12 +268,13 @@ fn a_failed_manager_publish_emits_exactly_one_warn_line() {
 
     let (result, logs) = capture_warns(|| {
         tracing::warn!("once-probe-capture-control");
-        publish_full(
+        publish(
             &mut connection,
             project.path(),
+            crate::parse::PACK_VERSION,
             &NoopProgressSink,
-            "publish failed",
         )
+        .map_err(|error| map_publish_error(project.path(), error, "publish failed"))
     });
 
     assert!(

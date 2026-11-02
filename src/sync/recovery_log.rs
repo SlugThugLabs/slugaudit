@@ -22,6 +22,10 @@ pub(super) enum DatabaseRecovery<'a> {
         contract_version: i64,
         schema_version: i64,
     },
+    /// The publish failed due to database corruption; the database is discarded.
+    PublishCorrupt {
+        error: &'a super::publish::PublishError,
+    },
 }
 
 /// The one WARN for a recovery event.
@@ -58,6 +62,13 @@ pub(super) fn log_database_recovery(database_path: &Path, recovery: DatabaseReco
             contract_version,
             schema_version,
             "project database is stale; discarding and rebuilding from source",
+        ),
+        DatabaseRecovery::PublishCorrupt { error } => tracing::warn!(
+            operation = "publish_project_database",
+            path = %database_path.display(),
+            error_kind = "publish_corrupt",
+            error = %error,
+            "database became corrupt during sync; discarding and re-publishing from scratch",
         ),
     }
 }

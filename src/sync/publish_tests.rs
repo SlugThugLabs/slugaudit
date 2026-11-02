@@ -50,6 +50,21 @@ fn invalid_utf8_is_recorded_as_a_skipped_file_not_a_lossy_copy() {
         )
         .expect("count evidence");
     assert_eq!(evidence, 0, "no evidence for content nobody retained");
+
+    let second_report = publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .expect("second publish on unchanged project with non-utf8 file");
+    assert_eq!(
+        second_report.revision_id, report.revision_id,
+        "an unchanged project with non-UTF-8 files must early-exit on the same revision"
+    );
+    assert_eq!(second_report.modified, 0);
+    assert_eq!(second_report.added, 0);
+    assert_eq!(second_report.deleted, 0);
 }
 
 #[test]
@@ -446,7 +461,7 @@ mod publish_attempt_skip_logging {
         let mut records = BTreeMap::new();
 
         let (_, logs) = capture_warns(|| {
-            collect_skipped(root.path(), &files, &mut paths, &mut records);
+            collect_skipped(root.path(), &files, None, &mut paths, &mut records);
         });
 
         let lines = logs
@@ -468,7 +483,7 @@ mod publish_attempt_skip_logging {
         let mut records = BTreeMap::new();
 
         let (_, logs) = capture_warns(|| {
-            collect_skipped(root.path(), &files, &mut paths, &mut records);
+            collect_skipped(root.path(), &files, None, &mut paths, &mut records);
         });
 
         let lines = logs

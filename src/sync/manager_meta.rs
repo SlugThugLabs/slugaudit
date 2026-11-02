@@ -231,21 +231,6 @@ pub(crate) fn map_publish_error(
     ErrorData::internal_error(format!("publishing a new revision: {error}"), data)
 }
 
-/// Publishes a full revision from the current filesystem state, mapping
-/// failures into `ErrorData` with the standard warn-and-error shape.
-/// Shared by the verification and Unavailable branches of
-/// `ensure_current` so the two near-identical publish blocks can't drift
-/// apart.
-pub(crate) fn publish_full(
-    connection: &mut Connection,
-    root: &Path,
-    sink: &dyn crate::progress::ProgressSink,
-    warn_message: &str,
-) -> Result<publish::PublishReport, ErrorData> {
-    publish(connection, root, parse::PACK_VERSION, sink)
-        .map_err(|error| map_publish_error(root, error, warn_message))
-}
-
 /// Rebuilds a project's database from scratch after the previous one was
 /// discarded as corrupt. Kept here (not in `manager.rs`) so the sync
 /// orchestrator stays under the small-file rule cap.
