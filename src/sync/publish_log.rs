@@ -1,5 +1,5 @@
 //! Structured tracing for one `publish()` attempt's terminal outcome —
-//! split out to keep `publish.rs`'s own retry-loop control flow readable.
+//! kept apart so `publish.rs`'s own retry-loop control flow stays readable.
 use super::discovery::DiscoveryError;
 use super::publish::{PublishError, PublishReport};
 use super::revision::RevisionError;

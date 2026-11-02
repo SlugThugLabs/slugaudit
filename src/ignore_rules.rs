@@ -50,7 +50,7 @@ fn is_activation_dir_or_descendant(relative: &str) -> bool {
 
 /// True if the file name (last component) is scratch/editor junk that is
 /// almost never legitimate project source. Mirrors `sync::discovery`'s
-/// historical heuristic exactly.
+/// heuristic exactly.
 fn is_scratch_file_name(relative: &Path) -> bool {
     let Some(file_name) = relative.file_name().and_then(|n| n.to_str()) else {
         return false;

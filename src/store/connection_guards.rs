@@ -64,8 +64,8 @@ pub(super) fn reject_symlink(path: &Path) -> Result<(), StoreError> {
 /// Resolves symlinks in the *parent directory* only, so `SQLITE_OPEN_NOFOLLOW`
 /// (which rejects a symlink in any path component, `SQLITE_CANTOPEN_SYMLINK`)
 /// keeps guarding the database file itself without refusing a project under a
-/// symlinked ancestor — on macOS `/var` and `/tmp` are links into `/private`
-/// (verified on macos-latest CI, 2026-10-16). Falls back to the path as given
+/// symlinked ancestor — on macOS `/var` and `/tmp` are links into `/private`.
+/// Falls back to the path as given
 /// when the parent cannot be resolved (logged with the cause); the open then
 /// fails on its own terms.
 pub(super) fn resolve_parent_dir(path: &Path) -> std::path::PathBuf {

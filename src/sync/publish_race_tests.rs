@@ -1,6 +1,6 @@
 //! Deterministic coverage for the two publish-time race hazards: a file
 //! changing on disk between being sampled and written (TOCTOU), and two
-//! independent connections publishing concurrently (CAS). Split out of
+//! independent connections publishing concurrently (CAS). Kept apart from
 //! `publish_tests.rs` to keep both files under the source-size gate.
 use super::*;
 use crate::store::open_read_write;

@@ -129,8 +129,7 @@ pub(super) fn test_names_by_file(
 /// Returns the trailing text after a `#[test]`-style attribute. Matches
 /// `#[test]`, `#[tokio::test]`, `#[some::path::test]` exactly — never
 /// `#[cfg(test)]` (the cfg-gated helper) and never `#[test_case]`.
-/// Trims leading whitespace before scanning (matches the prior Python
-/// regex's `^\s*` anchor) and treats the first `]` after `#[` as the
+/// Trims leading whitespace before scanning and treats the first `]` after `#[` as the
 /// attribute closer rather than requiring the `]` at the very end.
 fn strip_test_attr(line: &str) -> Option<&str> {
     let trimmed = line.trim_start();

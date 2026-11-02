@@ -4,10 +4,9 @@
 //! and the `CliDirect` route all resolve executables through `PATH`, so every
 //! test below that can reach one runs under [`with_no_cli_on_path`] (an empty
 //! `PATH`) or [`with_fake_clis_on_path`] (a directory holding only the fakes
-//! that test wrote). Prepending to the inherited `PATH` is not enough — a real
-//! `codex`/`claude` further along it would still be found and executed, which
-//! is how a test run once rewrote the owner's `~/.codex/config.toml`
-//! (the real client CLI was executed during a test run). Tests driving
+//! that test wrote). Prepending to the inherited `PATH` is not enough: a real
+//! `codex`/`claude` further along it would still be found and executed, and
+//! could rewrite the developer's own client config. Tests driving
 //! [`run_connect`] additionally pin both homes with [`with_config_home`].
 
 use super::*;
@@ -356,11 +355,11 @@ fn write_recording_cli(script: &Path, log: &Path) {
 
 #[test]
 fn connect_emits_the_transport_grammar_each_client_requires() {
-    // The probe wave found the transport spelling is per-client and
-    // inconsistent (`--transport` for openhands/bob, `--type` for droid), and
-    // that Bob's scope defaults to workspace. The recorded argv also proves the
-    // attempt is add-only: slugaudit never runs a client's `remove` as part of
-    // registering, because a failed remove can deregister a working server.
+    // The transport spelling is per-client and inconsistent (`--transport` for
+    // openhands/bob, `--type` for droid), and Bob's scope defaults to workspace.
+    // The recorded argv also proves the attempt is add-only: slugaudit never runs
+    // a client's `remove` as part of registering, because a failed remove can
+    // deregister a working server.
     let cases: &[(&str, &str)] = &[
         (
             "openhands",

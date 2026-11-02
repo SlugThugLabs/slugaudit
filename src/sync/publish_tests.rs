@@ -436,7 +436,7 @@ fn honest_log_a_failed_publish_logs_the_sqlite_cause() {
     assert!(logs.contains("root=/tmp/once-probe-project"), "got: {logs}");
 }
 
-/// Skip collection now lives beside the diff that consumes it; these tests
+/// Skip collection lives beside the diff that consumes it; these tests
 /// stay with the publish scenarios that own the "logged once" contract.
 mod publish_attempt_skip_logging {
     use crate::store::test_capture::capture_warns;

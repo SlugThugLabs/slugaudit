@@ -3,7 +3,7 @@
 //! statement refused before execution are indistinguishable to a caller that
 //! never inspects the error, so nothing here is satisfied by an `Ok` with no rows, and every
 //! test that claims nothing changed re-reads the index through the same
-//! tool rather than trusting the refusal. Split out of `query_tests.rs`
+//! tool rather than trusting the refusal. Kept apart from `query_tests.rs`
 //! (one property per test, and the payload tables are the bulk of it) to
 //! keep that file inside the test-file code-line cap.
 use super::*;
@@ -501,7 +501,7 @@ fn ask_bounded(
     (result.map(|Json(response)| response), bound)
 }
 
-/// The deep-dive amplifier peaked at 2.1 GB. Under a 3 MiB value-length bound
+/// Unbounded, the amplifier chain grows to gigabytes. Under a 3 MiB value-length bound
 /// it, and each step of the same chain just above the bound, fails quickly
 /// with SQLite's "too big" as `invalid_params`; the bound itself evaluates.
 #[test]

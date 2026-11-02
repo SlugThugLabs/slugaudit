@@ -2,7 +2,7 @@
 //! count, built from the languages of the files the mechanic actually read
 //! under the request's `pattern`.
 //!
-//! Split from `leads_query.rs` (the statements that count and page rows) so
+//! Kept apart from `leads_query.rs` (the statements that count and page rows) so
 //! "which languages did this zero check" is answered in one place, from the
 //! index itself and from the call-language list the evidence layer derives
 //! from its embedded queries — never from a hand-kept list that could drift.

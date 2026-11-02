@@ -1,7 +1,7 @@
 //! Targeted coverage for boundary/control-flow conditions that plain
 //! behavioral tests don't pin down precisely enough to catch an off-by-one
-//! or operator-swap regression — added after a `cargo-mutants` run against
-//! this module found these exact gaps. Split out of `publish_tests.rs`/
+//! or operator-swap regression (the gaps a `cargo-mutants` run reports for
+//! this module). Kept apart from `publish_tests.rs`/
 //! `publish_race_tests.rs` to keep both under the source-size gate.
 use super::*;
 use crate::store::open_read_write;
@@ -164,7 +164,7 @@ fn retry_gives_up_after_exactly_max_cas_retries_and_never_hangs() {
 /// non-UTF8 name rather than permission bits so the test is meaningful
 /// when run as root (which bypasses permission checks entirely).
 // APFS, macOS's default filesystem, refuses a non-UTF-8 file name outright
-// (`EILSEQ`, "Illegal byte sequence"; verified on macos-latest CI 2026-10-16),
+// (`EILSEQ`, "Illegal byte sequence"),
 // so this input cannot arise there and the test cannot construct it.
 #[cfg(all(unix, not(target_os = "macos")))]
 #[test]

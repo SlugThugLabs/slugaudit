@@ -4,8 +4,8 @@
 //! load.
 //!
 //! The limits are rebuilt from the global config on every tool call and
-//! every sync, so a warning issued at each build repeats for one unchanged
-//! setting (the clamp warning was logged three times for one cause). The
+//! every sync, so a warning issued at each build would repeat for one
+//! unchanged setting. The
 //! ledger below remembers which (setting, configured value) pairs were
 //! already reported; a setting whose value changes is a new cause and warns
 //! again.
@@ -21,10 +21,10 @@ use std::sync::Mutex;
 #[cfg(not(test))]
 static REPORTED: Mutex<BTreeSet<(&'static str, u64)>> = Mutex::new(BTreeSet::new());
 
-// In tests the ledger is per thread. A process-wide ledger let any unrelated
-// test that builds limits while another test's environment held a zero spend
-// that test's one warning outside its capture (a test that builds limits did
-// exactly that), and the zero tests then saw no warning at all.
+// In tests the ledger is per thread. A process-wide ledger would let any
+// unrelated test that builds limits while another test's environment held a
+// zero spend that test's one warning outside its capture, and the zero tests
+// would then see no warning at all.
 #[cfg(test)]
 thread_local! {
     static REPORTED: std::cell::RefCell<BTreeSet<(&'static str, u64)>> =

@@ -1,5 +1,5 @@
 //! `mechanic add` and `mechanic remove`: the registration rules and the
-//! writes they guard. Split from `mechanic.rs` (the tool contract) because
+//! writes they guard. Kept apart from `mechanic.rs` (the tool contract) because
 //! this is the only code that changes the registry — the session list — so
 //! every check that must hold before a change (built-in ids, collisions,
 //! caps) sits beside the change it guards.

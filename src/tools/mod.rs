@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn credential_path_predicate_matches_credential_shaped_paths() {
         assert_predicate_cases(&[
-            // The rules that already existed.
+            // The baseline rules.
             (".env", true),
             (".env.local", true),
             ("config/.env", true),
@@ -316,8 +316,7 @@ mod tests {
             ("main.key", true),
             ("cert.p12", true),
             ("cert.pfx", true),
-            // Widened: the dotfiles, key stores and state files the backlog
-            // listed as missed.
+            // Dotfiles, key stores and state files.
             (".netrc", true),
             ("home/.netrc", true),
             (".npmrc", true),
@@ -338,8 +337,7 @@ mod tests {
     #[test]
     fn credential_path_predicate_matches_ssh_private_keys() {
         assert_predicate_cases(&[
-            // Widened: root-level SSH keys, which the old rule missed
-            // because it required a leading slash.
+            // Root-level SSH keys match as well as nested ones.
             ("id_rsa", true),
             ("id_ed25519", true),
             ("id_ecdsa", true),
@@ -354,7 +352,7 @@ mod tests {
     #[test]
     fn credential_path_predicate_rejects_public_keys_and_lookalikes() {
         assert_predicate_cases(&[
-            // Tightened: a public key is not a secret.
+            // A public key is not a secret.
             ("id_rsa.pub", false),
             ("id_ed25519.pub", false),
             (".ssh/id_rsa.pub", false),

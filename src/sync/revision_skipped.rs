@@ -1,14 +1,13 @@
 //! The `files` row for a discovered file that was deliberately not read.
 //!
-//! A `files` row used to mean "this file was sampled successfully", so a
-//! file the walk found but could not index — oversize, unreadable — had no
-//! row at all and was invisible in every count the tools report (a bare
-//! `count(*) FROM files`). It now means "this file is in the project": one
-//! row per discovered file, with `file_kind = 'skipped'` and a
-//! `skip_reason` naming why there is no content.
+//! A `files` row means "this file is in the project": one row per discovered
+//! file. A file the walk found but could not index — oversize, unreadable —
+//! still gets a row, with `file_kind = 'skipped'` and a `skip_reason` naming
+//! why there is no content, so it is visible in every count the tools report
+//! (a bare `count(*) FROM files`).
 //!
-//! Split out of `revision.rs` (the same pattern as `revision_edges.rs`) so
-//! the indexed-file write path stays focused on content rows.
+//! Kept apart from `revision.rs` (as `revision_edges.rs` is) so the
+//! indexed-file write path stays focused on content rows.
 
 use super::classify::classify;
 use crate::model::SourceIdentity;

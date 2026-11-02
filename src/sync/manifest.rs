@@ -68,8 +68,8 @@ pub fn compare<'a>(
 /// rejects a statement with more than `SQLITE_MAX_VARIABLE_NUMBER` bound
 /// variables (32766 in the bundled build, probed 2026-10-18: 32766 binds
 /// succeed, 32767 fail with "too many SQL variables"), and a project's first
-/// publish touches every file, so a per-path bind list made any project with
-/// more than 32766 files impossible to index. One parameter keeps the work
+/// publish touches every file, so a per-path bind list could not index a
+/// project with more than 32766 files. One parameter keeps the work
 /// set-based and inside the caller's transaction.
 pub(crate) const PATH_SET_SUBQUERY: &str = "SELECT value FROM json_each(?)";
 

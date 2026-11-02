@@ -1,5 +1,5 @@
 //! The `health` tool's per-project field derivation: resolve the project,
-//! read the database state, and map it to a phase. Split from `health.rs`
+//! read the database state, and map it to a phase. Kept apart from `health.rs`
 //! so the response schema stays separate from the derivation that fills it.
 //! It never calls `ensure_current`, so a health call can never trigger a
 //! publish.

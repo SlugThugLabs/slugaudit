@@ -22,8 +22,7 @@ default-run = "slugaudit"
 name = "slugaudit"
 path = "src/main.rs"
 
-# Pure-Rust dev tooling: every gate that used to live in tools/*.sh
-# (a Python heredoc + bash wrapper) is now a first-class cargo bin. CI's
+# Pure-Rust dev tooling: every gate is a first-class cargo bin. CI's
 # workflow calls these directly; locally the same `cargo run --bin <name>`
 # is the single entry point. No shell, no Python interpreter required.
 #

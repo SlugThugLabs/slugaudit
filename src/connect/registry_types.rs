@@ -4,8 +4,8 @@
 //! facts were established ([`Evidence`]), and the argument grammar of its
 //! `mcp add` subcommand ([`Dialect`]).
 //!
-//! [`crate::connect_agents`] re-exports every type at its historical path; the
-//! registry table and its lookups stay there.
+//! [`crate::connect_agents`] re-exports every type; the registry table and its
+//! lookups live there.
 
 use crate::cli::ConnectError;
 use std::path::{Path, PathBuf};

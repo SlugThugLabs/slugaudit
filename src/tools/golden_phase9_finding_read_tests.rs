@@ -41,7 +41,7 @@ fn paged_finding_read_matches_the_golden_apart_from_paging_fields() {
     let list = read(by_path);
     check_case("finding_read_list", &project, &json!({}), &list);
 
-    // The old `offset: 1` case. A cursor continuation keeps page one's stored
+    // The `offset: 1` fixture case. A cursor continuation keeps page one's stored
     // page budget (300 bytes here), so its pages do not split the findings
     // the way the fixture's default-budget page did (two rows on one page).
     // The fixture's `page` block (page_bytes, returned, bytes_used) therefore

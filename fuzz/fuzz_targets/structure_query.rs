@@ -14,7 +14,7 @@
 //! hostile text, a real parse of indexed content, the capture cursor with its
 //! progress-callback deadline, and node → match conversion including
 //! `model::span::char_column`, which slices the source at a node's byte offset
-//! and used to panic on an offset that was not a char boundary.
+//! and must not panic on an offset that is not a char boundary.
 //!
 //! Input layout: byte 0 is a selector (which fixture file, single- vs
 //! multi-file mode, `full_text`); the rest is the query text. The project

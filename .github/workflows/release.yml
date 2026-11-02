@@ -59,8 +59,8 @@ env:
   RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag }}
 
   # The one input a rebuild can neither derive nor be expected to reproduce on
-  # its own: the absolute paths a build records inside the binary. The released
-  # v1.0.10 asset carries 419 of them from the cargo registry
+  # its own: the absolute paths a build records inside the binary. A release
+  # binary carries hundreds of them from the cargo registry
   # (`/home/runner/.cargo/registry/src/…`) plus one under the workspace — a
   # dependency's build-script output path — so they are both a build-machine
   # fingerprint and a source of avoidable divergence. Mapping them to fixed
@@ -164,9 +164,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          # Generated from this tag's own dependency graph — `.planning/archive/
-          # DEPENDENCIES.md` was deleted in the 2026-09-30 docs reset, so there is
-          # no stale file to copy. `--fail` turns an undeterminable licence into a
+          # Generated from this tag's own dependency graph, not copied from a
+          # checked-in file that could go stale. `--fail` turns an undeterminable licence into a
           # failed release instead of a silently missing section.
           cargo about generate --locked --fail -c docs/about.toml \
             -o "$RUNNER_TEMP/notices.body" docs/third-party-notices.hbs
@@ -234,9 +233,8 @@ jobs:
           files: dist/*
           # The release body is the one place a consumer is guaranteed to see
           # this, so the verification commands live here as well as in
-          # docs/RELEASING.md. It replaces an empty body: nothing here is
-          # generated from the commit log, and `generate_release_notes` stays
-          # unset so adding this text did not turn that on.
+          # docs/RELEASING.md. Nothing here is generated from the commit log,
+          # so `generate_release_notes` stays unset.
           body: |
             ## Verifying this release
 

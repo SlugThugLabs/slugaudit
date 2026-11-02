@@ -17,7 +17,7 @@ use std::collections::HashSet;
 ///
 /// The `files` table also holds one existence row per
 /// discovered-but-skipped file (`file_kind = 'skipped'`), so the stored side
-/// is now a superset of the caller's walked set for every representable
+/// is a superset of the caller's walked set for every representable
 /// path. The union is kept anyway: it is one set union, and the caller's
 /// discovered set remains the transaction's authoritative statement of what
 /// exists — a file skipped in this very transaction, or one whose path has
@@ -129,7 +129,7 @@ pub(super) fn resolve_and_store(
     // resolver" verdict is cached on the edge at write time so `report`
     // counts it in SQL instead of re-running `extract_reference` over
     // every Unresolved edge on every call. The resolver is chosen by the
-    // file's language exactly as `report` used to do per edge.
+    // file's language.
     let resolver = crate::graph::resolver::get_resolver(language);
     for edge in edges {
         let to_file_id: Option<i64> = match &edge.to_relative_path {

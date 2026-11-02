@@ -17,22 +17,23 @@ mod sql;
 /// `macro_calls::scan` including macro re-entry, `walk_bindings`,
 /// `walk_imports`, `flatten_structure`, `simple_name`) is therefore a loop
 /// over a heap stack ([`push_children`]), never recursion; the only recursion
-/// left is `first_identifier_descendant`, fixed at 3 levels. This bound no
-/// longer guards the stack: it keeps the walkers' truncation aligned with the
+/// is `first_identifier_descendant`, fixed at 3 levels. This bound does not
+/// guard the stack: it keeps the walkers' truncation aligned with the
 /// language pack's (`ts_pack::intel` truncates at `MAX_TREE_DEPTH = 512`), and
 /// a cut is reported as `ExtractionCompleteness::Partial`, never silent.
 ///
-/// Stack budget, measured 2026-10-18 (Rust 1.97.1, pack 1.18.0) by bisecting
-/// the smallest thread stack `normalize::extract` completes on, 20 000-deep
-/// inputs: SlugAudit's walkers need no stack proportional to depth — Rust
+/// Stack budget (Rust 1.97.1, pack 1.18.0), found by bisecting the smallest
+/// thread stack `normalize::extract` completes on, 20 000-deep inputs:
+/// SlugAudit's walkers need no stack proportional to depth — Rust
 /// paren/call/macro shapes (incl. 64 macro levels x 505 parens) finish in
 /// 31 KiB debug / 15 KiB release. The deepest user is the pack's own
 /// bounded recursion: JSON value extraction, 512 levels, 1646 KiB debug /
 /// 455 KiB release (~3.2 / ~0.9 KiB per level). The smallest stack production
 /// extracts on is 2 MiB (tokio's blocking pool and `std::thread` defaults —
 /// `server_runner.rs` `spawn_blocking`, `sync/sample_batch.rs`
-/// `thread::scope`). Before this, the walkers recursed with ~2.2 KiB debug
-/// frames and macro re-entry multiplied 64 macro levels by 512 tree levels.
+/// `thread::scope`). Recursing walkers would need ~2.2 KiB debug frames per
+/// level, and macro re-entry would multiply 64 macro levels by 512 tree
+/// levels.
 pub(super) const MAX_WALK_DEPTH: u32 = 512;
 
 /// Pushes one `entry` per named child of `node` onto a walker's explicit

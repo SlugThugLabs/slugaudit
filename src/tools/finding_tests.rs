@@ -233,7 +233,7 @@ fn an_oversized_description_is_a_typed_error() {
 }
 #[test]
 fn an_empty_file_cannot_have_a_finding() {
-    // The fixture name deliberately avoids the word the old assertion looked
+    // The fixture name deliberately avoids the words the message checks
     // for, and the assertion is the exact message, so neither the file name
     // nor a fixture path can satisfy it on its own.
     let project = activated_project("blank.rs", b"");
@@ -253,7 +253,7 @@ fn an_empty_file_cannot_have_a_finding() {
 /// conclusion's identity — file, content hash, line range, category, title —
 /// must leave **one** row: the second call refreshes the existing row with the
 /// latest body (severity, description) and returns the same `id`, rather than
-/// appending a near-duplicate the way the unconditionally-`INSERT` build did.
+/// appending a near-duplicate.
 #[test]
 fn restating_a_conclusion_refreshes_one_row_with_the_latest_body() {
     let project = activated_project("lib.rs", b"line one\nline two\n");

@@ -107,10 +107,10 @@ fn verify_checksum_accepts_a_matching_file() {
     verify_checksum(&binary, &sums_file).expect("matching checksum must verify");
 }
 
-/// The temp binary no longer needs to be named exactly the asset filename:
+/// The temp binary need not be named exactly the asset filename:
 /// verification compares digests, not filenames, so a unique temp name (as
-/// `apply_update` now uses) must verify fine. This is the regression test
-/// for a temp name that had to equal the asset filename.
+/// `apply_update` uses) must verify fine. This guards against a temp name
+/// that has to equal the asset filename.
 #[test]
 fn verify_checksum_accepts_a_unique_temporary_file_path() {
     let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");

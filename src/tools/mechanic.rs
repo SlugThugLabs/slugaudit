@@ -94,7 +94,7 @@ pub struct MechanicRequest {
     /// with `leads`.
     #[serde(default)]
     pub cursor: Option<String>,
-    /// Refuses the removed `offset` and `expected_revision` with a message
+    /// Refuses `offset` and `expected_revision` with a message
     /// that names `cursor`.
     #[serde(flatten, default)]
     #[schemars(skip)]

@@ -3,10 +3,9 @@
 
 //! End-to-end tests for `slugaudit update` on the shipped platform.
 //!
-//! `run_update` had no test on Linux/x86_64: the only direct call was the
-//! compile-gated refusal in `src/update_tests.rs`, which never runs here. The
-//! UpToDate, Newer, and Incomparable branches and their user-visible text were
-//! asserted nowhere.
+//! The compile-gated refusal in `src/update_tests.rs` never runs on
+//! Linux/x86_64, so these tests are what assert the UpToDate, Newer, and
+//! Incomparable branches of `run_update` and their user-visible text.
 //!
 //! These spawn the real binary because the branch text goes to stdout through
 //! `cli::out`; an in-process call cannot capture it without a production seam.

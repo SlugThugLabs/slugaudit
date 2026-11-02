@@ -1,6 +1,6 @@
-// Tests for `src/store/connection.rs`. Extracted to a sibling file so the
+// Tests for `src/store/connection.rs`, in a sibling file so the
 // production source stays under the 300-line hard cap while the test suite
-// still has room to grow. The `evidence.kind` CHECK tests live here too:
+// has room to grow. The `evidence.kind` CHECK tests live here too:
 // this is the store's only test surface that opens a migrated connection,
 // and the constraint is only observable through one.
 

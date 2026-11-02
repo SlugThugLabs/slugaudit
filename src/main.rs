@@ -22,9 +22,8 @@ use tracing_subscriber::EnvFilter;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `std::env::args()` panics on any argument that is not valid Unicode,
     // and on Linux argv is bytes: a path typed or completed from a Latin-1
-    // filename reaches here unmodified. Reproduced against this binary -
-    // `slugaudit $'\xff'` exited 101 with `panicked at library/std/src/env.rs:
-    // called Result::unwrap() on an Err value` - so the lossy conversion is
+    // filename reaches here unmodified (`slugaudit $'\xff'` would exit 101 with
+    // `called Result::unwrap() on an Err value`), so the lossy conversion is
     // what keeps a bad argument a rejected command rather than a crash.
     let args = std::env::args_os()
         .skip(1)
@@ -149,7 +148,7 @@ enum CommandOutcome {
     /// `Error: {0}` and exit 1, unless the cause is a closed stdout.
     Reported(Box<dyn std::error::Error>),
     /// The `menu` path failed with a boxed error; propagate out of `main`
-    /// exactly as the old `run_menu()?` did.
+    /// as `run_menu()?` would.
     Propagated(Box<dyn std::error::Error>),
 }
 

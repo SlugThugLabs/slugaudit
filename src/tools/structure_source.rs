@@ -271,7 +271,7 @@ pub(super) fn load_targets(
 
 /// Refuses a project-wide scan of a language no scannable file in the index
 /// has, naming the languages that do exist, before the pack is asked for the
-/// grammar. Without it a misspelt or absent language reached the pack, whose
+/// grammar. Without it a misspelt or absent language would reach the pack, whose
 /// error (or, for a real grammar, a query compiled against it) said nothing
 /// about what this project holds. The list comes from the index with the
 /// same filter the scan uses, so every name in it is one a retry can scan;

@@ -1,14 +1,14 @@
 //! The `finding` write path: input validation, the indexed-file lookup, and
-//! the insert-or-refresh in this process's findings file. Split from `finding.rs` so the
+//! the insert-or-refresh in this process's findings file. Kept apart from `finding.rs` so the
 //! tool contract (request/response shapes) stays separate from the statements
 //! that store an agent-authored conclusion.
 //!
 //! The insert restates a conclusion by refreshing the row it already owns
-//! instead of appending a near-duplicate — the Python build's `identity_hash`
-//! dedupe, restored inside the session. Two calls are *the same finding* when
+//! instead of appending a near-duplicate.
+//! Two calls are *the same finding* when
 //! they name the same file at the same content hash, the same line range, and
 //! the same `category` and `title`; `severity` and `description` are body, so
-//! the restatement replaces them. the findings file holds this process's findings
+//! the restatement replaces them. The findings file holds this process's findings
 //! only, so a conclusion is only ever merged into its own session's notebook.
 
 use super::context::internal_error;

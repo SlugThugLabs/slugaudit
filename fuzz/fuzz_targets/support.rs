@@ -25,7 +25,7 @@ use std::sync::LazyLock;
 /// sites, string literals, and non-ASCII text (CJK inside Python strings, an
 /// emoji inside a Rust literal, an accented identifier in Go) so node spans
 /// land on multi-byte boundaries and `model::span::char_column` — the offset
-/// arithmetic that used to slice a string mid-codepoint — is exercised against
+/// arithmetic that must not slice a string mid-codepoint — is exercised against
 /// real content rather than ASCII.
 pub const FILES: &[(&str, &str)] = &[
     (

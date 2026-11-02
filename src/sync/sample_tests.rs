@@ -35,12 +35,11 @@ fn total_payload_bytes(items: &[EvidenceItem]) -> usize {
         .sum()
 }
 
-/// Reproduces a real production failure: 82 items each individually well
-/// under the 64 KiB per-item cap, and 82 items is nowhere near the 10,000
-/// item-count cap, yet their combined serialized payload was 5,326,990
-/// bytes — over the 4 MiB (4,194,304-byte) per-file cap. The old
-/// truncate-then-retain implementation checked count and per-item size
-/// only, so it let the whole oversized set through.
+/// 82 items each individually well under the 64 KiB per-item cap, and 82
+/// items is nowhere near the 10,000 item-count cap, yet their combined
+/// serialized payload is 5,326,990 bytes — over the 4 MiB (4,194,304-byte)
+/// per-file cap. A check of count and per-item size only would let the whole
+/// oversized set through, so the cumulative cap must catch it.
 #[test]
 fn reproduces_the_5_326_990_byte_cumulative_overflow() {
     let limits = ResourceLimits {
@@ -183,7 +182,7 @@ fn evidence_limit_truncation_downgrades_a_full_run_to_partial() {
 }
 
 /// The downgrade must be conditional: a clean parse with room for every item
-/// stays `Full`, so the change cannot simply erase `Full` everywhere.
+/// stays `Full`, so the downgrade cannot simply erase `Full` everywhere.
 #[test]
 fn a_full_run_within_every_evidence_cap_stays_full() {
     let content = "pub fn a() {}\npub fn b() {}\n";
@@ -455,9 +454,8 @@ fn expired_deadline_returns_time_budget_exceeded() {
 }
 
 /// Progress events arrive at the sink at least once per sampled file
-/// (the exact ordering is racy by design). We just pin the count — the
-/// C3 audit's whole reason for parallelizing was keeping the progress
-/// channel honest during an initial import.
+/// (the exact ordering is racy by design). We just pin the count — parallel
+/// sampling must keep the progress channel honest during an initial import.
 #[test]
 fn parallel_sampling_emits_one_progress_event_per_file() {
     let (_dir, discovered) = write_files_relative(&["p1.rs", "p2.rs", "p3.rs"]);

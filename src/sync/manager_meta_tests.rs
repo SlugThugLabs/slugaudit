@@ -1,4 +1,4 @@
-//! Tests for the metadata helpers split out of `manager.rs`.
+//! Tests for the metadata helpers in `manager_meta.rs`.
 
 use super::{current_revision_id, ensure_project_row, map_publish_error, publish_from_scratch};
 use crate::progress::NoopProgressSink;
@@ -89,9 +89,9 @@ fn incompatible_version_is_a_stale_database_labelled_for_recovery() {
 }
 
 /// The publish half of the machine-readable failure contract. A spent sync
-/// budget is the case that used to read as "often transient — retry": on a
-/// repo too big for the limit, retrying unchanged fails identically, so the
-/// payload has to name the knob instead. The CAS race is the opposite and
+/// budget is not "often transient — retry": on a repo too big for the limit,
+/// retrying unchanged fails identically, so the payload has to name the knob
+/// instead. The CAS race is the opposite and
 /// must stay distinguishable. A publish failure that is neither carries no
 /// code at all — an over-attached code is as useless as a missing one.
 #[test]
@@ -249,7 +249,7 @@ fn a_failed_database_recreation_surfaces_the_open_error() {
 }
 
 /// One failed manager-path publish must emit exactly one warn line. The
-/// publish log emits "publish failed" and `map_publish_error` used to log
+/// publish log emits "publish failed" and `map_publish_error` must not log
 /// the same failure again; both sites use the same message, so a duplicate
 /// is counted whichever site emits it.
 #[test]

@@ -1,6 +1,6 @@
 //! Token-aware Rust code-line counter.
 //!
-//! Faithful port of the prior shell script's state machine: knows about
+//! State machine that knows about
 //! `//` and `/*…*/` comments (the latter nested), `"…"` strings (with
 //! `\` escapes but not raw newlines — Rust strings don't have unescaped
 //! newlines), `'…'` char literals (including `\\X` escapes), and
@@ -9,8 +9,7 @@
 //! The state machines's token-coverage semantics: the count measures the
 //! number of source lines on which at least one non-comment, non-string
 //! Rust token appears. Multi-line raw-string literals count once per
-//! physical line that contains a token (mirrors the prior Python
-//! implementation: finalize-on-newline runs at the top of the loop
+//! physical line that contains a token (finalize-on-newline runs at the top of the loop
 //! regardless of state, so each `\n` inside a raw string still resets
 //! `has_code`).
 

@@ -92,8 +92,8 @@ pub(super) fn extract(macro_node: &Node, input: &Input<'_>) -> MacroCalls {
 /// one explicit heap stack: no recursion, so neither tree depth nor macro
 /// nesting consumes thread stack. A node's own row is emitted before its
 /// subtree and a nested macro's fragment is pushed on top of the node's
-/// children, so rows come out in the same order as the recursive scan this
-/// replaced and `calls::walk`'s first-wins dedup keeps the outermost row.
+/// children, so rows come out in pre-order, as a recursive scan's would, and
+/// `calls::walk`'s first-wins dedup keeps the outermost row.
 /// Records in `out` whether the macro-nesting or tree-depth bound truncated
 /// the scan, or a fragment's re-parse timed out.
 fn scan(context: &Scan<'_>, range: (usize, usize), out: &mut MacroCalls) {

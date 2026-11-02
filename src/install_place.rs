@@ -19,7 +19,7 @@ pub struct PlaceError {
 
 /// Moves the complete executable at `staged` to `target`: marks it
 /// executable, retains the binary it displaces as `slugaudit.prev`, renames
-/// it into place, then removes the pre-rename `slugaudit-mcp` leftovers.
+/// it into place, then removes any leftover `slugaudit-mcp` files.
 ///
 /// On failure the staged file is removed before the error returns — it is a
 /// full copy of the binary, and nothing would ever reclaim it.

@@ -1,5 +1,5 @@
-//! The one WARN a database recovery (discard and rebuild) logs. Split from
-//! `manager_orchestration.rs` to keep the workflow file under the size cap.
+//! The one WARN a database recovery (discard and rebuild) logs. Kept apart
+//! from `manager_orchestration.rs` to keep the workflow file under the size cap.
 
 use crate::store::StoreError;
 use std::path::Path;

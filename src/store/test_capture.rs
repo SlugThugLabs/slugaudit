@@ -1,5 +1,5 @@
-//! In-tree equivalent of `tracing_test::traced_test`'s `logs_contain` (minus
-//! the macro magic that proved brittle for our local Rust-version target).
+//! In-tree equivalent of `tracing_test::traced_test`'s `logs_contain` (without
+//! the macro magic, which is brittle for our local Rust-version target).
 //! Lets a test exercise code that emits `tracing::warn!` / `info!` events and
 //! assert on the formatted text without depending on `tracing-test`'s
 //! procedural attribute.
@@ -59,7 +59,7 @@ impl<'a> MakeWriter<'a> for SharedBuf {
 /// capture starting at the wrong moment therefore leaves callsites cached as
 /// `never` process-wide, and `tracing`'s macros drop those events for every
 /// *other* test's live capture too — including the `INFO tool call started`
-/// lines the log-capture tests assert on, which is what made them flaky
+/// lines the log-capture tests assert on, so those tests turn flaky
 /// under parallel load.
 ///
 /// Holding a second dispatcher registered for the life of the binary keeps
@@ -94,11 +94,10 @@ where
     // `=` and its value, so captured text reads
     // `tool\x1b[0m\x1b[2m=\x1b[0m"probe"` and every test that probes the
     // capture with `logs.contains("tool=\"probe\"")` silently matches
-    // nothing. That made three `server_runner` tests pass only when the
-    // ambient `NO_COLOR` happened to be set — green locally, red in CI.
-    // `without_time` was added for the same reason; a new formatting default
-    // must not be allowed to reintroduce the problem, which is why
-    // `captured_text_carries_no_ansi_escapes` asserts it.
+    // nothing, so those tests would pass only when the ambient `NO_COLOR`
+    // happened to be set. `without_time` is set for the same reason; a new
+    // formatting default must not be allowed to reintroduce the problem,
+    // which is why `captured_text_carries_no_ansi_escapes` asserts it.
     let subscriber = tracing_subscriber::fmt()
         .with_writer(buf.clone())
         .with_max_level(min_level)

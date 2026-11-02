@@ -122,7 +122,7 @@ fn crate_src_dir(importing_relative_path: &str, known_paths: &HashSet<&str>) -> 
 /// `crate::` is anchored at the owning crate's `src` (workspace-aware, see
 /// [`crate_src_dir`]). `super::`/`self::` are resolved against the real
 /// module tree first — `super::` from `src/a/b.rs` means module `a`, not
-/// `src` — and fall back to the older parent-directory heuristic when the
+/// `src` — and fall back to the looser parent-directory heuristic when the
 /// strict interpretation finds nothing, so trees that genuinely are
 /// `mod.rs`-shaped still resolve. Both remain `"Low"` confidence: without
 /// reading `mod` declarations we cannot prove which interpretation the

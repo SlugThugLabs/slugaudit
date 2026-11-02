@@ -17,7 +17,7 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// The pre-session findings file name an older build left behind; the sweep
+/// The findings file name from before per-session files; the sweep
 /// deletes it.
 pub(super) const LEGACY_FINDINGS_FILENAME: &str = "findings.db";
 

@@ -6,13 +6,13 @@
 
 //! No-duplicates gate.
 //!
-//! Replaces `tools/check_no_duplicates.sh`. Fails when:
+//! Fails when:
 //! - a commit subject occurs more than once in reachable history (the
 //!   fingerprint of the same logical change being committed twice), or
 //! - a `#[test]`-attributed function name is defined in more than one
 //!   file under `src/` or `tests/`.
 //!
-//! Pure-Rust replacement: no Python interpreter, no shell. `git log` is
+//! Pure Rust: no Python interpreter, no shell. `git log` is
 //! invoked through `std::process::Command`; the test-name scan reads
 //! each Rust file with stdlib only.
 

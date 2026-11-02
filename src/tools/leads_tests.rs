@@ -426,7 +426,7 @@ fn credential_files_reports_a_skipped_credential_shaped_file() {
     assert_eq!(rows.files_total, 1);
 }
 
-/// The new switch is optional: a request JSON carrying only `path` still
+/// The `mode` switch is optional: a request JSON carrying only `path` still
 /// deserializes, to `full`.
 #[test]
 fn a_request_without_mode_deserializes_to_full() {

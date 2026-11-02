@@ -55,10 +55,10 @@ fn matches_a_real_structural_pattern() {
     assert!(response.page.complete);
 }
 
-/// Regression: a bare node pattern with no `@capture` compiles and matches in
+/// A bare node pattern with no `@capture` compiles and matches in
 /// tree-sitter but yields zero captures, so the tool would silently return an
-/// empty list — the exact footgun that made an agent believe `structure`
-/// couldn't parse Python. It must be rejected with an actionable message
+/// empty list, which reads as `structure`
+/// being unable to parse the language. It must be rejected with an actionable message
 /// telling the agent to add a capture, not silently return `[]`.
 #[test]
 fn a_query_with_no_capture_is_rejected_with_guidance_not_empty() {
@@ -72,7 +72,7 @@ fn a_query_with_no_capture_is_rejected_with_guidance_not_empty() {
     );
 }
 
-/// Mirrors the live repro: a Python function query with a `@name` capture
+/// A Python function query with a `@name` capture
 /// returns the function definitions (proving Python parsing works once a
 /// capture is present).
 #[test]
@@ -386,8 +386,8 @@ fn a_database_failure_reading_a_file_is_an_internal_error_not_a_bad_argument() {
 }
 
 /// The multi-file scan's database failures must also reach the caller as
-/// operational errors. Before this, `internal()` dropped both the operation
-/// and the retry hint, and the same helper had no test at all.
+/// operational errors that name the operation and carry the retry hint,
+/// not as the caller's bad input.
 #[test]
 fn a_database_failure_loading_files_is_an_internal_error_not_an_empty_scan() {
     let connection = rusqlite::Connection::open_in_memory().expect("in-memory database");

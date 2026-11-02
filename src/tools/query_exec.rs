@@ -3,7 +3,7 @@
 //! materialisation of its rows into the result store, and the byte-budgeted
 //! page served from the stored copy.
 //!
-//! Split from `query.rs` so that file stays the tool contract (request and
+//! Kept apart from `query.rs` so that file stays the tool contract (request and
 //! response shapes, validation order, statement validation and error text)
 //! and this one owns what runs under the progress handler.
 

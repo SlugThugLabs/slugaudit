@@ -1,9 +1,8 @@
 //! Python-specific resolver helpers.
 //!
-//! Extracted from `src/graph/resolver.rs` so Python's dot-prefix relative
-//! imports (`from .pkg import foo`, `from .. import bar`) live next to
-//! the language's `__init__.py` index-filename handling and the
-//! python-tuned `GenericResolver` config factory.
+//! Keeps Python's dot-prefix relative imports (`from .pkg import foo`,
+//! `from .. import bar`) next to the language's `__init__.py` index-filename
+//! handling and the python-tuned `GenericResolver` config factory.
 //!
 //! Python is a special case for relative imports because its syntax
 //! (`.foo`, `..pkg.mod`) is its own thing — neither filesystem-relative
@@ -76,7 +75,7 @@ pub(crate) fn resolve_python_relative(
             // it: `.` from a root-level file, or `..` from a first-level
             // package, leaves `path` empty. Its marker is `__init__.py`,
             // not `/__init__.py` — the latter can never equal a stored
-            // project-relative path, so the edge was reported Unresolved.
+            // project-relative path, so the edge would be reported Unresolved.
             let init_path = if path.is_empty() {
                 format!("{index}.py")
             } else {

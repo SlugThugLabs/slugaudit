@@ -34,8 +34,8 @@ pub(super) fn extract_reference(
     // Python branch below, which claims every statement beginning with
     // `import`: JavaScript's `import x from 'p'` and Python's `import x`
     // share that prefix, and only the quoted path tells them apart. Ordering
-    // it after the Python branch let `extract_python_reference` return the
-    // local binding name — `import { b } from './b.js'` extracted `{`.
+    // it after the Python branch would let `extract_python_reference` return the
+    // local binding name — `import { b } from './b.js'` would extract `{`.
     //
     // Gating on the `import` prefix as well as the `from` token is what keeps
     // Python's `from X import Y`, which contains a bare `from` token, out of

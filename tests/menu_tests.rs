@@ -14,9 +14,9 @@ fn run_menu(input: &str, extra_env: Option<(&str, &str)>) -> (ExitStatus, String
     // The menu reaches `connect`/`disconnect` on options 2 and 3, and those
     // resolve and execute installed client CLIs (`mcp add`/`mcp remove`)
     // and read client configs from the user's home. Even though no test here
-    // chooses those options today, pin every home into a temp dir and replace
+    // chooses those options, pin every home into a temp dir and replace
     // `PATH` with an empty directory, so no option can ever reach a real
-    // client — the failure mode that rewrote `~/.codex/config.toml`.
+    // client or rewrite a live config such as `~/.codex/config.toml`.
     let sandbox = tempfile::tempdir().expect("temp dir");
     let home = sandbox.path().join("home");
     let empty_path = sandbox.path().join("bin");

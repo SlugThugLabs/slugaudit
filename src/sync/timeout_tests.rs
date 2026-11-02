@@ -130,7 +130,7 @@ fn discover_with_deadline_aborts_mid_walk_when_budget_exhausts() {
 
 /// `analyze` runs every parse of a file within what is left of the sync
 /// deadline it is handed (the deadline `publish_with_limits` creates once
-/// per operation), so one file's parse can no longer outlive the sync
+/// per operation), so one file's parse cannot outlive the sync
 /// budget. Under a spent deadline the parse is not started: the file is
 /// stored `ContentOnly` with the `parse_timeout` reason, and the caller's
 /// own between-file deadline check then ends the sync. The progress-callback
@@ -202,8 +202,7 @@ fn a_parse_that_outlives_the_sync_budget_is_cancelled_and_recorded_parse_timeout
 
 /// The sync budget still ends the sync: a file whose parse outlives it is cut
 /// at the sync deadline (the per-file allowance here is far longer), and the
-/// publish fails with the budget error and publishes nothing, as before the
-/// per-file allowance existed.
+/// publish fails with the budget error and publishes nothing.
 #[test]
 fn a_parse_that_outlives_the_sync_budget_still_fails_the_publish() {
     let project = tempfile::tempdir().expect("project dir");

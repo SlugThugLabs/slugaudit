@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
-//! Proves the compiled server speaks real MCP over real stdio: every prior
-//! test in this repo calls Rust functions directly and never touches the
+//! Proves the compiled server speaks real MCP over real stdio: the other
+//! tests in this repo call Rust functions directly and never touch the
 //! actual protocol. This spawns the real binary as a subprocess.
 
 use serde_json::json;
@@ -305,11 +305,10 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
     // Structured tracing (src/server.rs's `run_blocking`, src/tools/*.rs)
     // must actually reach stderr with the fields it claims to record, and
     // — the point of this whole test file — none of that can leak onto
-    // stdout, which every prior `recv_stdout_line` + `serde_json::from_str`
+    // stdout, which every `recv_stdout_line` + `serde_json::from_str`
     // call above already implicitly guarantees (any stray non-JSON text on
-    // a stdout line would have failed parsing), but assert it explicitly
-    // for the tracing content specifically since that's new since this
-    // test was first written.
+    // a stdout line would fail parsing), but assert it explicitly
+    // for the tracing content specifically.
     let stderr = server.stderr_snapshot();
     assert!(
         !stderr.is_empty(),
@@ -452,7 +451,7 @@ fn two_live_servers_on_one_repo_keep_their_own_findings() {
     assert_eq!(titles(&mut first, 4), ["from first"]);
 }
 
-/// The advertised tool list: `finding_clear` replaced `finding_sessions`.
+/// The advertised tool list has `finding_clear` and not `finding_sessions`.
 #[test]
 fn the_tool_list_has_finding_clear_and_no_finding_sessions() {
     let mut server = ServerProcess::spawn();

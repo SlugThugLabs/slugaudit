@@ -1,8 +1,8 @@
 //! The per-file `files` / `evidence` writes for one publish, and the caps
 //! that bound the evidence stored with each file.
 //!
-//! Split out of `revision.rs` (the same pattern as `revision_edges.rs` and
-//! `revision_skipped.rs`) so that module reads as the transaction it is: the
+//! Kept apart from `revision.rs` (as `revision_edges.rs` and
+//! `revision_skipped.rs` are) so that module reads as the transaction it is: the
 //! input struct, the compare-and-swap baseline check, the write ordering, and
 //! the current-pointer swap. How one indexed file's row and evidence are
 //! written lives here.
@@ -155,11 +155,10 @@ fn insert_evidence(
 const TRUNCATION_MARKER_RESERVE_BYTES: usize = 512;
 
 /// Enforces all three evidence caps in one pass: per-item count, per-item
-/// payload bytes, and — the one the old truncate-then-retain version never
-/// checked — cumulative payload bytes across every kept item. A file with
-/// many small-but-not-tiny items (each under the per-item cap) could still
-/// serialize to a multi-megabyte evidence blob; this is what actually
-/// caught the 5,326,990-byte failure. Whenever anything is discarded, an
+/// payload bytes, and cumulative payload bytes across every kept item. A file
+/// with many small-but-not-tiny items (each under the per-item cap) could
+/// still serialize to a multi-megabyte evidence blob, so the cumulative cap
+/// is checked too. Whenever anything is discarded, an
 /// explicit `Diagnostic` evidence item records it — the AI sees a "this
 /// file's evidence was truncated" signal instead of silently incomplete data.
 ///

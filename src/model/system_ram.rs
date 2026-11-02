@@ -27,8 +27,8 @@ pub struct MemoryDetectError {
 /// When neither yields a value this fails closed with every cause: the
 /// Adaptive profile is never sized off a guessed machine, and the caller
 /// (startup, `health`) reports the memory as undetected. The `/proc` parse
-/// is kept rather than `sysconf`/`statfs` because no `libc` dependency
-/// exists and adding one is outside this change.
+/// is used rather than `sysconf`/`statfs` because the crate has no `libc`
+/// dependency.
 ///
 /// # Errors
 ///

@@ -1,7 +1,7 @@
 //! The resolution outcome model shared by every resolver: what an import
 //! resolves to, and the candidate-picking that decides it.
 //!
-//! Split out of `generic.rs` so the data model is usable and testable on
+//! Kept apart from `generic.rs` so the data model is usable and testable on
 //! its own, separate from the `LanguageResolver` trait and the
 //! `GenericResolver` implementation.
 

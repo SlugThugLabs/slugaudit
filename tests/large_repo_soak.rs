@@ -28,8 +28,8 @@
 //!   the soak. It also keeps the shared runner covered: an `#[ignore]`d body
 //!   is still instrumented, so a soak-only file would land in
 //!   `check_coverage`'s `--all-targets` report as a hundred-odd uncovered
-//!   lines, pressing on a gate whose threshold was deliberately set to the
-//!   measured coverage (the 2026-08-12 recalibration).
+//!   lines, pressing on a gate whose threshold is deliberately set to the
+//!   measured coverage.
 //! - `a_ten_thousand_file_project_syncs_inside_the_default_wall_clock_budget`
 //!   is the soak itself and is `#[ignore]`d.
 //!
@@ -56,8 +56,8 @@
 //! cargo test --test large_repo_soak -- --ignored --nocapture
 //! ```
 //!
-//! Not scheduled in CI. Measured on the machine it was written on (12-core
-//! Ryzen 9 5900X, Linux, unoptimized `test` profile): two runs of the soak
+//! Not scheduled in CI. Measured on a 12-core Ryzen 9 5900X, Linux,
+//! unoptimized `test` profile: two runs of the soak
 //! synced all 10k files in 21.3 s and 23.6 s, against the 1200 s default
 //! budget. That is 2 percent of the budget here, but the 10k-file
 //! write/hash/parse/publish work is exactly the kind of thing a shared

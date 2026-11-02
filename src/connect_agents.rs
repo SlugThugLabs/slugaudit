@@ -6,15 +6,15 @@
 //! ([`ConfigShape`]). [`Dialect`] is left with one job only: the argument
 //! grammar of a client's `mcp add` subcommand.
 //!
-//! Each entry carries an [`Evidence`] marker because two independent
-//! doc-research passes disagreed on seven of the original 26 clients — and each
-//! pass was wrong on roughly half of those (cursor and kimi turned out to have
-//! no `mcp add` at all, while opencode and crush landed on the opposite verdict
-//! each pass had chosen). Only probing the installed binaries was reliable, so
-//! a client whose mechanism could not be established is not in the registry
-//! (pearai, trae and 1mcp were removed on 2026-10-17 for that reason), and
-//! `connect` never runs an invented command for a [`Strategy::Unknown`] one. A
-//! probe result ([`Evidence::VerifiedByProbe`]) overrides both doc passes.
+//! Each entry carries an [`Evidence`] marker because vendor documentation is
+//! unreliable about whether a client has a scriptable `mcp add` at all: two
+//! independent doc-research passes disagreed on seven of 26 clients, and each
+//! pass was wrong on roughly half of those (cursor and kimi have no `mcp add`
+//! at all, while opencode and crush take the opposite verdict each pass chose).
+//! Only probing the installed binary is reliable, so a client whose mechanism
+//! cannot be established does not belong in the registry, and `connect` never
+//! runs an invented command for a [`Strategy::Unknown`] one. A probe result
+//! ([`Evidence::VerifiedByProbe`]) overrides both doc passes.
 
 use crate::connect::registry_types::binary_text;
 use std::path::Path;

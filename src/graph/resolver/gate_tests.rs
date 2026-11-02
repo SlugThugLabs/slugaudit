@@ -1,21 +1,18 @@
-//! Regression tests for the `contains("from")` substring gate that
-//! lived in `GenericResolver::extract_reference` before the C1 fix.
+//! Tests for the token gate on the JS branch of
+//! `GenericResolver::extract_reference`.
 //!
-//! The prior implementation matched the substring `"from"` anywhere
-//! in the line and routed the line through the JS/TS extractor,
-//! returning `None` when the JS extractor couldn't find a quoted
-//! string after `from`. That's the right verdict for the malformed
-//! case `import x from broken` (no quoted path), but it's the wrong
-//! verdict for any line whose MODULE NAME contains `from` as a
-//! substring: `import from_util`, `import foo_bar.from_baz`, etc.
-//! Those are legal Python bare-module imports and must reach the
-//! generic `import X` extractor below — they should resolve
-//! like any other bare module name, not be silently dropped.
+//! The gate matches `from` as a keyword (delimited by whitespace), not as a
+//! substring anywhere in the line. A substring gate would route the line
+//! through the JS/TS extractor, which returns `None` when it finds no quoted
+//! string after `from`. That is the right verdict for the malformed case
+//! `import x from broken` (no quoted path), but the wrong verdict for any line
+//! whose MODULE NAME contains `from` as a substring: `import from_util`,
+//! `import foo_bar.from_baz`, etc. Those are legal Python bare-module imports
+//! and must reach the generic `import X` extractor below — they resolve like
+//! any other bare module name, not silently dropped.
 //!
-//! The fix token-gates the JS branch on `from` being a real keyword
-//! (delimited by whitespace), not a substring. These tests pin both
-//! halves of that correction: the previously-dropped cases now
-//! extract, and the previously-handled cases still do.
+//! These tests pin both halves: lines with `from` inside a module name
+//! extract, and real JS-shaped lines still do.
 use super::generic::{GenericResolver, GenericResolverConfig, LanguageResolver};
 use std::collections::HashSet;
 
@@ -25,11 +22,10 @@ fn paths<'a>(set: &'a [&'a str]) -> HashSet<&'a str> {
 
 #[test]
 fn python_bare_module_named_from_util_is_not_dropped() {
-    // The bug: `import from_util` was dropped by the substring-gated
-    // JS branch even though it's a legal Python bare-module import.
-    // The fix: token-gating routes it to the generic `import X`
-    // extractor and the bare-name branch returns `from_util` as a
-    // bare module name.
+    // `import from_util` is a legal Python bare-module import. Token-gating
+    // routes it to the generic `import X` extractor and the bare-name branch
+    // returns `from_util` as a bare module name (a substring-gated JS branch
+    // would drop it).
     let resolver = GenericResolver::python();
     let reference = resolver
         .extract_reference("import from_util")
@@ -39,10 +35,9 @@ fn python_bare_module_named_from_util_is_not_dropped() {
 
 #[test]
 fn python_dotted_module_with_from_substring_is_not_dropped() {
-    // The bug: `import foo_bar.from_baz` was dropped because `from`
-    // appeared as a substring of the module path. The module name is
-    // legal Python (`foo_bar.from_baz` is a real import path
-    // pattern).
+    // `import foo_bar.from_baz`: `from` appears as a substring of the module
+    // path. The module name is legal Python (`foo_bar.from_baz` is a real import
+    // path pattern), so it must not be dropped.
     let resolver = GenericResolver::python();
     let reference = resolver
         .extract_reference("import foo_bar.from_baz")
@@ -91,8 +86,8 @@ fn malformed_js_import_with_unquoted_from_still_drops() {
 
 #[test]
 fn valid_js_import_still_extracts_the_quoted_path() {
-    // Regression guard for the case the JS branch was originally
-    // handling: `import x from 'foo.js'` → `text: "foo.js"`.
+    // The case the JS branch exists for:
+    // `import x from 'foo.js'` → `text: "foo.js"`.
     let resolver = GenericResolver::js();
     let reference = resolver
         .extract_reference("import x from 'foo.js'")

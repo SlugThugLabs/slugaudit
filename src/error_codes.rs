@@ -84,8 +84,8 @@ pub enum ErrorCode {
     /// disk is full or unwritable, or the platform lacks the file semantics
     /// it needs. Other tools keep working.
     ResultStoreUnavailable,
-    /// A request carried `offset` or `expected_revision`, the pre-cursor
-    /// paging parameters that were removed when the tools moved to cursors.
+    /// A request carried `offset` or `expected_revision`; paging uses a `cursor`,
+    /// and these parameters are not accepted.
     PagingParameterRemoved,
 }
 

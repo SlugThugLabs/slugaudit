@@ -69,8 +69,8 @@ pub struct ResourceLimits {
     /// recorded `ContentOnly` with `parse_error_reason = 'oversize_for_parse'`,
     /// counted in `report.completeness` and in every `leads` response's
     /// `files_not_parsed`, and `structure` skips it. Bounds the parse's
-    /// memory and time, which grow with input size (a 50 MB Rust file took
-    /// 185 s and 7.5 GB RSS before this cap). 2 MiB in every profile. Clamped
+    /// memory and time, which grow with input size (an uncapped 50 MB Rust file
+    /// takes 185 s and 7.5 GB RSS). 2 MiB in every profile. Clamped
     /// to `max_file_bytes`, with a warning, when an override sets it higher.
     /// A `0` override is an error.
     /// Env: `SLUGAUDIT_MAX_PARSE_BYTES` (u64); global `config.json` key
@@ -85,7 +85,7 @@ pub struct ResourceLimits {
     /// `parse_error_reason = 'parse_timeout'`, counted in
     /// `report.completeness` and in every `leads` response's
     /// `files_not_parsed`, and the sync goes on with the next file. When the
-    /// sync budget runs out first, the sync fails as before. A cut file with
+    /// sync budget runs out first, the sync fails. A cut file with
     /// unchanged content is not re-parsed on later syncs (like any unchanged
     /// file); editing it parses it again. 5000 (5 s) in every profile; a `0`
     /// override is an error.

@@ -15,15 +15,13 @@ use std::time::Duration;
 use thiserror::Error;
 
 // The evidence-capping loop lives beside the evidence writes in
-// `revision_files`; re-exported here so `to_file_record` and its tests keep
+// `revision_files`; re-exported here so `to_file_record` and its tests use
 // this module's path.
 pub(crate) use super::revision_files::apply_evidence_limits;
 
-// The parallel batch loop lives in `sample_batch` — it outgrew this
-// file's source-size budget once it gained per-file skip handling.
-// Re-exported here so existing importers
-// (`crate::sync::sample::sample_all_with_deadline`) keep resolving
-// through this module's path.
+// The parallel batch loop lives in `sample_batch`, which keeps this file
+// within its source-size budget. Re-exported here so importers resolve
+// `crate::sync::sample::sample_all_with_deadline` through this module's path.
 pub(super) use super::sample_batch::sample_all_with_deadline;
 
 #[derive(Debug, Error)]

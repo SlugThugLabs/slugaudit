@@ -1,7 +1,7 @@
 //! Shared support for the Phase 9 golden tests. Each test runs real tool calls over a small
 //! project and compares the serialized response with a fixture under
 //! `tests/golden/phase9/`, after normalising volatile values (the revision
-//! id, absolute paths) and masking the paging fields that Phase 9.3 changes
+//! id, absolute paths) and masking the paging fields that differ
 //! by design. With `GOLDEN_PHASE9_RECORD=1` in the environment (read only)
 //! the same tests write the fixtures instead; see `tests/golden/phase9/README.md`.
 use serde::Serialize;
@@ -20,7 +20,7 @@ const PAGING_KEYS: [&str; 6] = [
     "expected_revision",
     "cursor",
     "completeness",
-    // Removed from `query` in 9.3; the fixtures recorded it as null.
+    // Not a `query` response field; the fixtures recorded it as null.
     "total_unavailable",
 ];
 

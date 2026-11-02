@@ -6,7 +6,7 @@
 
 //! Performance regression gate.
 //!
-//! Replaces `tools/check_performance.sh`. Runs the discovery, parsing,
+//! Runs the discovery, parsing,
 //! and search criterion benches with a reduced sample size (fast enough
 //! for CI), parses
 //! criterion's median point estimates, and fails when any bench
@@ -17,7 +17,7 @@
 //! coverage gate: the gated numbers are printed explicitly, so there is
 //! never a silent failure.
 //!
-//! Pure-Rust replacement: no Python interpreter, no shell. `cargo
+//! Pure Rust: no Python interpreter, no shell. `cargo
 //! bench` is invoked through `std::process::Command`; estimate JSONs
 //! are parsed with `serde_json` (already a dependency).
 //!
@@ -98,7 +98,7 @@ fn run(options: &Options) -> Result<ExitCode, String> {
     };
 
     if options.record {
-        // No cwd here: it embedded a developer's absolute path in a committed file.
+        // No cwd is recorded: it would embed a developer's absolute path in a committed file.
         let json = record::baseline_json(
             &measured,
             &baseline,

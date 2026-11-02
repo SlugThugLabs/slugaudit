@@ -1,9 +1,9 @@
 //! JS/TS-specific resolver helpers.
 //!
-//! Extracted from `src/graph/resolver.rs` so JavaScript/TypeScript's
-//! `import ... from 'path'` quote-handling lives next to the language's
-//! other concerns (the `js()` constructor in the generic config, which
-//! is small enough to stay co-located with [`super::generic::GenericResolver`]).
+//! Keeps JavaScript/TypeScript's `import ... from 'path'` quote-handling next
+//! to the language's other concerns (the `js()` constructor in the generic
+//! config, which is small enough to stay co-located with
+//! [`super::generic::GenericResolver`]).
 //!
 //! JS/TS is special-case for one reason: the language uses quoted
 //! strings as module paths (`import x from 'y'`), unlike Python's

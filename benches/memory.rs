@@ -2,8 +2,8 @@
 
 //! Peak-memory benchmark.
 //!
-//! "Memory, 200-file fixture" was an unmeasured budget because no bench
-//! recorded peak RSS. This bench runs the full `SourceSyncManager` sync
+//! This bench records peak RSS for the "Memory, 200-file fixture" budget. It
+//! runs the full `SourceSyncManager` sync
 //! pipeline against the standard `LARGE` (200-file) fixture and reports
 //! the peak resident-set size measured via `/proc/self/status`'s
 //! `VmHWM` (high-water-mark RSS) on Linux.

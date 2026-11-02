@@ -98,7 +98,7 @@ fn leads_counts_only_reply_carries_the_page_size_that_applied() {
     assert!(!response.oversized_row);
 }
 
-/// The byte budget replaces the deleted row cap: with no `limit`, rows stop
+/// The byte budget, not a row cap, bounds a page: with no `limit`, rows stop
 /// at the budget in both row modes, and the response says so rather than
 /// reading as a small mechanic. One row is always returned, so an empty page
 /// never means "budget too small".

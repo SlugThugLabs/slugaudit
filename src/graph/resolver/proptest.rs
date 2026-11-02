@@ -5,15 +5,13 @@
 //! statements, rather than carefully selected cases. Each proptest is a
 //! fuzzer for a *round-trip* between two surface representations of an
 //! import — usually between the raw text on the source line and the
-//! canonical `ImportReference` (and, in later rounds, between the
-//! reference and the resolved `Resolution`).
+//! canonical `ImportReference`.
 //!
-//! Foundation Step 1 covers the surface→reference round trip for
-//! Python-style `from <M> import <S>`: regardless of whitespace
+//! The covered round trip is surface→reference for Python-style
+//! `from <M> import <S>`: regardless of whitespace
 //! variation, `extract_reference` must produce `ImportReference{text:M}`
 //! where `M` is the canonical (whitespace-stripped, original) module
-//! path. Future rounds add resolve→candidate round trips and JS/TS
-//! quote-variant equivalence.
+//! path.
 //!
 //! [`proptest::proptest!`] supplies the strategy combinators, the
 //! default 256-case runs, and the auto-shrinking on failure. Each test
@@ -48,13 +46,11 @@ fn python_from_vocab() -> impl Strategy<Value = (String, String, String)> {
 
     // Whitespace variations: 1–2 spaces (or tabs) around each keyword
     // boundary. Lower bound is 1 because Python requires at least
-    // one separator between `from`, `<M>`, `import`, and `<S>`. (The
-    // proptest caught this on the first run — the `fromaimporta`
-    // rejection — when the lower bound was 0 and the parser correctly
-    // refused it. Lower bounds of 0 generate inputs the parser is
-    // *supposed* to refuse, which we'd then assert on, conflating
+    // one separator between `from`, `<M>`, `import`, and `<S>`. A lower bound
+    // of 0 would generate inputs the parser is *supposed* to refuse
+    // (`fromaimporta`), which we'd then assert on, conflating
     // "parser rejects" with "parser extract succeeded but produced
-    // wrong text".)
+    // wrong text".
     let spaces_before = "[ \\t]{1,2}";
     let spaces_after_m = "[ \\t]{1,2}";
     let spaces_after_import = "[ \\t]{1,2}";
@@ -125,9 +121,9 @@ proptest! {
         // this equality is enough coverage: if the parser extracted
         // `<S>` (the symbol) instead of `<M>` (the module path), the
         // strings differ and the assertion fails. A finer-grained
-        // `ends_with(sym)` check turned out false-positive: a valid
+        // `ends_with(sym)` check would be a false positive: a valid
         // `a.b` module legitimately ends with the symbol string `b`,
-        // so checking "doesn't end with sym" rejected correct parses
+        // so checking "doesn't end with sym" would reject correct parses
         // like `from a.b import b`.
         prop_assert_eq!(
             reference.text.as_str(),

@@ -141,10 +141,9 @@ pub(super) fn write_json_server(
             path: path.to_path_buf(),
         })?;
     let s = map.entry(section).or_insert_with(|| serde_json::json!({}));
-    // An `if let` here meant a section key holding a non-object silently
-    // skipped the insert, the file was rewritten unchanged, and the caller
-    // still printed "Wrote {section}.slugaudit to {path}". Refusing is the
-    // honest answer.
+    // A section key holding a non-object cannot take the insert. Skipping it would
+    // rewrite the file unchanged while the caller still printed
+    // "Wrote {section}.slugaudit to {path}", so refusing is the honest answer.
     s.as_object_mut()
         .ok_or_else(|| ConnectError::SectionNotAnObject {
             section: section.to_owned(),

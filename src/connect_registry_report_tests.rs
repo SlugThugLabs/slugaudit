@@ -1,6 +1,6 @@
 //! Refusal, report and config-detection invariants for the agent registry.
 //!
-//! Split from `connect_registry_tests.rs`, which keeps the table-shape
+//! Kept apart from `connect_registry_tests.rs`, which holds the table-shape
 //! invariants; wired from `connect_agents.rs` the same way.
 
 use super::*;

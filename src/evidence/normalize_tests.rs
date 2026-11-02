@@ -57,11 +57,11 @@ fn extracts_rust_structure_and_a_nested_child_gets_a_distinct_key() {
 }
 
 /// A file nested past the walk bound must come back truncated, not abort the
-/// process. Before the cap existed this test aborted: the walkers recursed
-/// once per nesting level until the thread stack ran out, and a stack
-/// overflow is not a catchable panic — `fatal runtime error: stack overflow,
-/// aborting` — so the tool call never returned and the caller's session died
-/// with it. Reproduced at 6 000 nested parens against the release binary.
+/// process. Without the bound the walkers would recurse once per nesting
+/// level until the thread stack ran out, and a stack overflow is not a
+/// catchable panic — `fatal runtime error: stack overflow, aborting` — so the
+/// tool call never returns and the caller's session dies with it. 6 000 nested
+/// parens are deep enough to show it.
 #[test]
 fn a_source_nested_past_the_walk_bound_is_truncated_not_aborted() {
     let nesting = usize::try_from(crate::evidence::MAX_WALK_DEPTH).expect("fits") * 4;
@@ -78,9 +78,9 @@ fn a_source_nested_past_the_walk_bound_is_truncated_not_aborted() {
     assert!(!items.is_empty(), "the walk still yields what it reached");
 }
 
-/// 10 000 levels of `a!(a!(...))` aborted the process with a stack overflow
-/// (observed 2026-10-18 on the unbounded `macro_calls` recursion) and, before
-/// that, reparsed the whole body once per level. The nesting bound makes it a
+/// 10 000 levels of `a!(a!(...))` must not abort the process with a stack
+/// overflow (as unbounded macro recursion would) nor reparse the whole body
+/// once per level. The nesting bound makes it a
 /// truncated extraction, reported the same way as the tree-depth bound.
 #[test]
 fn a_rust_macro_nested_past_the_macro_bound_is_reported_partial_not_aborted() {
@@ -112,11 +112,11 @@ fn a_rust_macro_nested_within_the_bound_is_fully_scanned() {
     );
 }
 
-/// A minified single-line file used to cost line-length steps per evidence
-/// item (`char_column` walked back to the line start and counted). Here 20 000
-/// calls sit behind a 16 MB block comment on ONE line, so the old code
-/// counted ~16 MB twice per call (~6e11 bytes, measured at over a minute);
-/// with the per-file `LineIndex` the whole extraction is linear.
+/// A minified single-line file must not cost line-length steps per evidence
+/// item (`char_column` walking back to the line start and counting). Here 20 000
+/// calls sit behind a 16 MB block comment on ONE line, so a per-call count
+/// would cost ~16 MB twice per call (~6e11 bytes, over a minute); with the
+/// per-file `LineIndex` the whole extraction is linear.
 #[test]
 fn a_multi_megabyte_single_line_file_indexes_in_linear_time() {
     let pad = "é".repeat(8 * 1024 * 1024);
@@ -371,11 +371,11 @@ fn nested_macro_source(levels: usize, parens: usize) -> String {
     )
 }
 
-/// The auditor's reproducer (2026-10-18): 30 macro levels x 480 parens, a
-/// 29 KB file, aborted a release build on a 2 MiB thread because the macro
+/// Reproducer: 30 macro levels x 480 parens, a 29 KB file. If the macro
 /// bound (64) and the tree-walk bound (512) multiplied instead of sharing one
-/// budget. Run against the pre-fix code on this 256 KiB stack, this test
-/// aborted the test process with "has overflowed its stack".
+/// budget, it would abort a release build on a 2 MiB thread; on this 256 KiB
+/// stack that shows as the test process aborting with "has overflowed its
+/// stack".
 #[test]
 fn a_rust_file_of_nested_paren_heavy_macros_is_partial_on_a_small_stack() {
     let (items, depth_capped) = extract_on_small_stack("rust", nested_macro_source(30, 480));
@@ -450,7 +450,7 @@ mod outer {
 /// SlugAudit's own walkers use constant stack, but the language pack's JSON
 /// value extraction recurses (bounded at its own depth 512) and is the deepest
 /// stack user measured on the extraction path: 1646 KiB in a debug build,
-/// 455 KiB in release (2026-10-18, pack 1.18.0, Rust 1.97.1). This pins that
+/// 455 KiB in release (pack 1.18.0, Rust 1.97.1). This pins that
 /// it still fits the smallest production stack (2 MiB), so a pack bump that
 /// deepens it fails here instead of aborting the server.
 #[test]
@@ -476,7 +476,7 @@ fn a_json_file_nested_past_the_pack_bound_fits_the_production_stack() {
 /// document on its next use (tree-sitter requires `reset()`, which the pack's
 /// `process()` does not call). A bounded extraction therefore must not run
 /// on a thread whose cached parser it can poison: the file parsed next on
-/// the same thread would be read against the wrong source (observed as a
+/// the same thread would be read against the wrong source (a
 /// slice-out-of-bounds panic inside the pack).
 #[test]
 fn a_parse_cut_at_the_deadline_does_not_corrupt_the_next_parse_on_the_same_thread() {

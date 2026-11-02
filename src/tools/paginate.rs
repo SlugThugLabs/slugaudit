@@ -377,7 +377,7 @@ pub fn decode_rows<R: Materialize>(rows: &[StoredRow]) -> Result<Vec<R>, ErrorDa
         .collect()
 }
 
-/// Resolves the cursor/path pair every migrated tool takes into a
+/// Resolves the cursor/path pair every paged tool takes into a
 /// [`PageRequest`]. With a cursor the call continues a stored result: `path`
 /// and every request-shaping parameter are ignored (only `page_bytes` is
 /// honoured). Without one it is a new request and `path` is required.

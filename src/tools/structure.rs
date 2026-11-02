@@ -75,7 +75,7 @@ pub struct StructureRequest {
     /// syncs and describes the current tree.
     #[serde(default)]
     pub start_after_file: Option<String>,
-    /// Refuses the removed `offset` and `expected_revision` parameters.
+    /// Refuses the `offset` and `expected_revision` parameters.
     #[serde(flatten, default)]
     #[schemars(skip)]
     pub legacy_paging: LegacyPaging,
@@ -159,7 +159,7 @@ pub struct StructureResponse {
 /// Returns an error if `request.path` isn't an active project, `request.file`
 /// isn't indexed with a detected, pack-supported language, the query text
 /// is empty/too large or fails to compile, the parser returns no tree, the
-/// request carries the removed `offset` or `expected_revision`, or `cursor`
+/// request carries `offset` or `expected_revision`, or `cursor`
 /// names no readable stored result.
 pub fn structure(
     request: &Parameters<StructureRequest>,

@@ -76,7 +76,7 @@ fn a_plain_select_returns_real_rows() {
 }
 
 /// A trailing `-- line comment` must not swallow the `) LIMIT N` wrapper we
-/// append around the user's SQL. The fix puts the user SQL on its own line
+/// append around the user's SQL. The wrapper puts the user SQL on its own line
 /// so the comment terminates before the closing paren.
 #[test]
 fn a_query_with_a_trailing_line_comment_still_executes() {

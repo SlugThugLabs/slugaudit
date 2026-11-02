@@ -1,9 +1,8 @@
 //! The `--help` usage text and the styling that renders it.
 //!
-//! Split from the parent module to keep `cli.rs` under the source-size gate.
-//! The parent re-exports the public [`usage`] entry point, and imports
-//! [`USAGE`] and [`render_usage`] for `cli_tests`; their crate paths are
-//! otherwise unchanged.
+//! Lives apart from the parent module to keep `cli.rs` under the source-size
+//! gate. The parent re-exports the public [`usage`] entry point, and imports
+//! [`USAGE`] and [`render_usage`] for `cli_tests`.
 
 use crate::util::Style;
 

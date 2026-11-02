@@ -71,9 +71,8 @@ jobs:
 
       # dtolnay/rust-toolchain publishes no release tags — its versions *are*
       # its branches — so this pins the commit the `nightly` branch pointed at
-      # when it was resolved. It moves: two `git ls-remote` calls twenty minutes
-      # apart returned different SHAs, which is exactly why this is a SHA and
-      # not `@nightly`. Dependabot cannot bump it (no tag to compare), so
+      # when it was resolved. The branch moves within minutes, which is why this
+      # is a SHA and not `@nightly`. Dependabot cannot bump it (no tag to compare), so
       # re-pinning is a deliberate manual act.
       - name: Install nightly Rust toolchain
         uses: dtolnay/rust-toolchain@0e28dd9a7764e5f83064112bb1f24025a14c313c # nightly (branch; no releases)

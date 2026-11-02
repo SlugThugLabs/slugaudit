@@ -1,6 +1,6 @@
 //! Shared fixture helper for `tools` tests. `activated_project` creates a
 //! temp project with the `.planning/slugaudit/` activation directory and one
-//! source file; it was previously copied in finding_tests.rs,
+//! source file; it is used by finding_tests.rs,
 //! context_tests.rs, and structure_limit_tests.rs.
 use std::fs;
 

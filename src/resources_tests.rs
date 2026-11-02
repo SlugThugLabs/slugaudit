@@ -35,8 +35,8 @@ fn serves_the_payload_key_reference_with_every_evidence_kind() {
         other => panic!("expected text contents, got {other:?}"),
     };
 
-    // The reference replaces the payload-key prose that used to sit in
-    // `INSTRUCTIONS`, so it has to cover every kind that can occur.
+    // The reference carries the payload-key prose (it is not in
+    // `INSTRUCTIONS`), so it has to cover every kind that can occur.
     for kind in [
         "Structure",
         "Import",

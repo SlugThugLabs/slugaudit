@@ -215,9 +215,8 @@ fn completion_lines<'a>(logs: &'a str, tool: &str) -> Vec<&'a str> {
 
 /// Every test below probes a capture with `contains`, so one escape sequence
 /// anywhere in the text silently defeats all of them. The formatter colours
-/// by default and interleaves escapes between a field's name, `=` and value;
-/// that is what made three of these tests pass only when the ambient
-/// `NO_COLOR` happened to be set — green locally, red in CI.
+/// by default and interleaves escapes between a field's name, `=` and value,
+/// so an ambient `NO_COLOR` would otherwise decide whether these tests pass.
 ///
 /// The control assertion comes first on purpose: an absence-only check on a
 /// capture that went blind would pass while proving nothing.
@@ -354,7 +353,7 @@ fn a_failed_tool_call_logs_one_completion_line_marked_error() {
 }
 
 /// The hard redaction invariant (`tools/redaction_tests.rs`) holds for the
-/// new lines too: a call whose argument is a sentinel must not put that
+/// lines of `run_blocking` too: a call whose argument is a sentinel must not put that
 /// sentinel in any log line, the completion line included. The completion
 /// line is asserted to be present as well, so the absence check cannot pass
 /// vacuously.

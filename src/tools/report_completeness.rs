@@ -1,12 +1,10 @@
 //! The completeness block of `report`: what the index does *not* contain.
 //!
-//! `report` used to present bare counts — `file_count` was
-//! `count(*) FROM files` — with nothing saying whether a number was the whole
-//! truth. A file discovered but skipped (oversize, unreadable) had no row at
-//! all, so it was absent from every count; a file whose text was indexed but
-//! never parsed was indistinguishable from one whose parser failed. The tools
-//! contract is that every number is quotable as-is, so each of those gaps is
-//! now a count in this block.
+//! A bare count cannot say whether a number is the whole truth, so each gap is
+//! a count in this block: a file discovered but skipped (oversize, unreadable)
+//! is counted by reason, and a file whose text was indexed but never parsed is
+//! told apart from one whose parser failed. The tools contract is that every
+//! number is quotable as-is.
 //!
 //! Facts only, in the same register as the rest of `report`: no scores, no
 //! severity, no ordering by importance. `skipped_by_reason` is ordered by the
@@ -72,7 +70,7 @@ pub(super) fn build(
     })
 }
 
-/// Every grouped breakdown, read in the historical order.
+/// Every grouped breakdown, read in a fixed order.
 struct GroupedCounts {
     file_kind_counts: Vec<FileKindCount>,
     file_class_counts: Vec<FileClassCount>,

@@ -1,5 +1,5 @@
 //! The per-section queries that fill a `report` snapshot, and the assembly
-//! that joins them. Split from `report.rs` so the request/response schema
+//! that joins them. Kept apart from `report.rs` so the request/response schema
 //! (the MCP `outputSchema`) stays separate from the SQL that counts truth.
 //!
 //! A failure in any section propagates: a report is built from full truth or
@@ -41,8 +41,8 @@ struct GraphSections {
 }
 
 /// Assembles the report from per-section queries — the ordering plus the
-/// completion log, nothing else. Query order matches the historical
-/// single-pass build so the first failing statement is unchanged.
+/// completion log, nothing else. The query order is fixed so
+/// the first failing statement is always the same.
 pub(super) fn build_report(
     connection: &Transaction<'_>,
     revision_id: String,

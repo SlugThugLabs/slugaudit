@@ -118,7 +118,7 @@ fn unknown_language_returns_nothing_without_error() {
     assert!(extract_generic_imports("not-a-real-language", "import x\n").is_empty());
 }
 
-/// C7: the exact import-kind list must not fire on ordinary non-import
+/// The exact import-kind list must not fire on ordinary non-import
 /// constructs in any matrix language. A source with no import statement
 /// must produce zero Import items from the generic walker — this guards
 /// against a future kind being added that collides with, say, a function
@@ -154,9 +154,9 @@ fn c7_no_imports_source_produces_no_import_items_in_any_matrix_language() {
     }
 }
 
-/// C7: the matrix languages' real import statements must still be
-/// captured — exact matching must not have dropped coverage for a
-/// language whose kind was previously matched by substring.
+/// The matrix languages' real import statements must be captured —
+/// exact matching must not lose coverage for a language whose kind a
+/// substring match would catch.
 #[test]
 fn c7_matrix_languages_still_capture_their_real_imports() {
     for (language, source, expected) in [

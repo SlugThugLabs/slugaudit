@@ -12,8 +12,8 @@ use std::collections::HashSet;
 /// Strips a trailing glob (`::*`) off a use path, leaving the module path
 /// it globs over. `use super::*;` imports every item of the parent module,
 /// so the edge it produces points at that module's own file — searching for
-/// a file literally named `*.rs` finds nothing, which is what made glob
-/// imports (the single most common form in real Rust code) never resolve.
+/// a file literally named `*.rs` finds nothing, which would leave glob
+/// imports (the single most common form in real Rust code) unresolved.
 pub(super) fn strip_trailing_glob(rest: &str) -> &str {
     let trimmed = rest.trim();
     let without_star = trimmed.strip_suffix('*').unwrap_or(trimmed);

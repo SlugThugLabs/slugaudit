@@ -4,7 +4,7 @@ use std::path::Path;
 
 // A map, not a single slot: `cargo test` runs different `#[test]` fns
 // concurrently by default, and each race test calls `set` near the start of
-// its body. A single-slot design lost hooks under real parallelism — one
+// its body. A single slot would lose hooks under real parallelism — one
 // test's `set` would silently drop (and never fire) a different, not-yet-
 // consumed test's still-armed closure. Keying by root path, which every
 // test gets a fresh unique tempdir for, makes concurrent race tests fully
@@ -18,9 +18,9 @@ static HOOKS: std::sync::Mutex<Option<Hooks>> = std::sync::Mutex::new(None);
 /// Arms a one-shot hook that fires the next time [`fire`] is called for the
 /// same `root`. Both sides key by the canonical root: the sync path passes
 /// [`fire`] a canonical root while `publish()` callers pass the test's temp
-/// path, which is not canonical on macOS (`/var` → `/private/var`). Keying
-/// only one side made the publish race tests wait forever on macOS CI
-/// (run 38949456424, 2026-10-16, cancelled at the 6-hour job limit).
+/// path, which is not canonical on macOS (`/var` → `/private/var`). A hook
+/// keyed by only one spelling never fires, and the publish race tests wait
+/// forever.
 #[cfg(test)]
 pub(crate) fn set(root: &Path, hook: impl FnOnce() + Send + 'static) {
     let mut guard = crate::util::lock_or_recover(&HOOKS, "test_race_hooks");

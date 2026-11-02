@@ -7,8 +7,8 @@ name: Supply chain
 #
 # Triggered by `pull_request` and by `push` to `main`, and never
 # `pull_request_target`. The push trigger exists because the owner is a solo
-# developer who commits straight to `main` and opens no PRs: with a PR-only
-# trigger these three gates never ran at all. On a push the "change" is the
+# developer who commits straight to `main` and opens no PRs: a PR-only
+# trigger would never run these three gates. On a push the "change" is the
 # range `github.event.before`..`github.sha`; the dependency-review job says how
 # it handles that range and its degenerate cases. Nothing here needs a
 # repository secret or a write token, so the untrusted-code path stays fully
@@ -164,6 +164,4 @@ jobs:
       # SQLite index holding the full source text of whatever project was
       # indexed. It is gitignored, so it is normally absent from a CI checkout;
       # the skip means even a force-added copy is never read, so a developer's
-      # local index cannot be uploaded by this step. (Checked by hand: a planted
-      # token under that directory is reported without the flag and absent with
-      # it.)
+      # local index cannot be uploaded by this step.

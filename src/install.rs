@@ -119,8 +119,8 @@ pub const PREVIOUS_BINARY_NAME: &str = "slugaudit.prev";
 /// or update that follows can be undone. Returns `None` when there is nothing
 /// to retain (a first install).
 ///
-/// Called **before** the replacement rename. That preserves the existing
-/// property that a crash during replacement leaves the current binary intact,
+/// Called **before** the replacement rename, so a crash during replacement
+/// leaves the current binary intact,
 /// and it means the retained copy is a complete file. The copy is written to a
 /// temporary file, synced, then renamed over `slugaudit.prev`, so a failure
 /// part-way leaves any existing retained copy untouched. It keeps the source's

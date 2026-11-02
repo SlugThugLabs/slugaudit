@@ -130,7 +130,7 @@ fn apply_update(latest: &LatestRelease, target: &Path) -> Result<(), UpdateError
 
     // Unique temp names: checksum verification compares digests directly
     // (see `verify_checksum`), not by `sha256sum -c` filename matching, so
-    // the temp binary no longer needs to be named exactly `ASSET` — which
+    // the temp binary need not be named exactly `ASSET` — which
     // would otherwise overwrite a same-named file a user had placed in the
     // directory before verification had a chance to run.
     let temp_exe = dir.join(format!(".slugaudit-update-{}-{ASSET}", std::process::id()));

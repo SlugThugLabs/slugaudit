@@ -41,7 +41,7 @@ fn an_offset_past_the_end_measures_the_whole_line() {
     assert_eq!(char_column(source, 99), 2);
 }
 
-/// The pre-index implementations, kept verbatim as the oracle.
+/// The per-call implementations (no index), kept verbatim as the oracle.
 fn legacy_position(source: &str, byte: usize) -> Position {
     let clamped = byte.min(source.len());
     let mut floor = clamped;

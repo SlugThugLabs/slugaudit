@@ -1,28 +1,27 @@
-//! C7 grammar-matrix validation: `is_field_declaration` matches node
-//! kinds *by exact name*. These tests pin the fixed grammar matrix the
-//! audit (C7) called for: for every language, a class/struct with known
-//! members must surface exactly those members as Field symbols — and,
-//! crucially, must NOT emit a duplicate from a container node (the
-//! `field_declaration_list` false positive the old substring match
-//! produced). The sources are deliberately minimal so the expected member
-//! set is unambiguous.
+//! Grammar-matrix validation: `is_field_declaration` matches node
+//! kinds *by exact name*. These tests pin a fixed grammar matrix: for every
+//! language, a class/struct with known members must surface exactly those
+//! members as Field symbols — and, crucially, must NOT emit a duplicate from a
+//! container node (the `field_declaration_list` false positive a substring
+//! match would produce). The sources are deliberately minimal so the expected
+//! member set is unambiguous.
 //!
-//! Split from `normalize_tests.rs` (2026-08-12, C7) to keep each file
-//! under the source-size cap; the `#[path]` include in `normalize.rs`
-//! wires this in as a sibling test module.
+//! Kept apart from `normalize_tests.rs` to keep each file under the
+//! source-size cap; the `#[path]` include in `normalize.rs` wires this in as a
+//! sibling test module.
 
 use super::*;
 use crate::model::EvidenceKind;
 
-// --- C7 grammar-matrix validation ---
+// --- Grammar-matrix validation ---
 //
 // `is_field_declaration` matches node kinds *by exact name*. These tests
-// pin the fixed grammar matrix the audit (C7) called for: for every
-// language, a class/struct with known members must surface exactly those
-// members as Field symbols — and, crucially, must NOT emit a duplicate
-// from a container node (the `field_declaration_list` false positive the
-// old substring match produced). The sources are deliberately minimal so
-// the expected member set is unambiguous.
+// pin a fixed grammar matrix: for every language, a class/struct with known
+// members must surface exactly those members as Field symbols — and,
+// crucially, must NOT emit a duplicate from a container node (the
+// `field_declaration_list` false positive a substring match would produce).
+// The sources are deliberately minimal so the expected member set is
+// unambiguous.
 
 /// `extract` also reports the depth cap; these tests are about items.
 fn extract_items(language: &str, source: &str) -> Vec<EvidenceItem> {
@@ -111,8 +110,8 @@ fn c7_field_definition_kinds_surface_exactly_the_members_in_javascript_and_types
 fn c7_languages_without_field_declaration_kinds_produce_no_field_symbols() {
     // Languages whose grammars have no member-declaration node kind must
     // produce no Field symbols at all — the exact-match list must not
-    // fire on their ordinary expression/assignment kinds (the audit's
-    // "no false positives per language" requirement). Python attributes
+    // fire on their ordinary expression/assignment kinds (no false positives per
+    // language). Python attributes
     // are assignments (Variable symbols), not Field symbols.
     for (language, source) in [
         ("python", "class C:\n    a = 1\n"),

@@ -4,8 +4,8 @@
 //! to `crate::tools` through `SlugAuditServer::dispatch`, which owns the
 //! progress sink and the blocking-pool semaphore. The titles, descriptions,
 //! and annotations here are the advertised wire surface — `check_mcp_surface`
-//! snapshots them beside `resources::list()` — so they are kept byte-identical
-//! to the pre-split file. `#[tool_router]` also generates the
+//! snapshots them beside `resources::list()` — so a change to them is
+//! deliberate and recorded. `#[tool_router]` also generates the
 //! `SlugAuditServer::tool_router()` constructor the server struct stores.
 //!
 //! The router constructor is `pub(crate)` because it is built in this child

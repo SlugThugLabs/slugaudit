@@ -37,10 +37,10 @@ use tree_sitter_language_pack::get_parser;
 /// `import_declaration` nodes either. If a future language needs
 /// child-level import nodes, this list is the single place to extend.
 ///
-/// Exact match only (C7). The bare `"import"` kind is kept because
+/// Exact match only. The bare `"import"` kind is kept because
 /// Haskell's grammar names its import statement `import` (verified by the
-/// `haskell_import_is_captured` matrix test — C7's "prove a grammar needs
-/// it" carve-out); the matrix's no-imports test guarantees a non-import
+/// `haskell_import_is_captured` matrix test); the matrix's no-imports test
+/// guarantees a non-import
 /// `import`-kind node doesn't appear in ordinary function/expression
 /// source. Every other kind is verified by the grammar-matrix tests —
 /// add a kind only with a regression test proving a real grammar needs it.
@@ -98,14 +98,13 @@ pub(super) fn extract_generic_imports(language: &str, source: &str) -> Vec<Evide
 /// skipped: some grammars nest the real import inside a wrapper that is
 /// itself import-shaped (dart: `import_or_export → library_import →
 /// `import_specification`; haskell: `imports → import`). Emitting at
-/// both levels would double-report the same statement (a C7
-/// grammar-matrix finding). The outermost matched node owns the emit;
+/// both levels would double-report the same statement. The outermost
+/// matched node owns the emit;
 /// nested matches are containers, not statements.
 ///
 /// `pub(super)` so `normalize.rs::extract_extra_walkers` can run this
 /// walker on the same already-parsed tree it uses for the
-/// variable-binding walker — saving the redundant second parse that
-/// the C2 audit flagged.
+/// variable-binding walker — saving a second parse of the same source.
 ///
 /// The walk is a loop over an explicit heap stack, never recursion (see
 /// [`super::push_children`]): each entry carries whether it is *suppressed*

@@ -69,8 +69,8 @@ const BLOCK_BYTES: usize = 256;
 ///
 /// Counting characters back to the line start on every call costs
 /// line-length steps per query, so a minified single-line file with one
-/// evidence item per token is quadratic in file size. This index replaces
-/// that for every bulk caller. Results are identical to the per-call count
+/// evidence item per token is quadratic in file size. Every bulk caller uses
+/// this index instead. Results are identical to the per-call count
 /// and to counting `\n` bytes before the offset, including for offsets past
 /// the end of the source or inside a multi-byte character (floored to the
 /// boundary).

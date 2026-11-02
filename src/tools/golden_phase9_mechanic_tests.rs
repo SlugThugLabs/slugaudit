@@ -80,7 +80,7 @@ fn golden_phase9_mechanic_add_and_list() {
         (listed.mechanics.len(), true, None),
         "the small catalogue fits one page"
     );
-    // The fixture predates the `page` block `list` gained with the cursor; the
+    // The fixture holds no `page` block, which `list` carries with the cursor; the
     // block is asserted above, everything else is compared unchanged.
     let mut listed = serde_json::to_value(listed).expect("response serializes");
     listed

@@ -1,5 +1,5 @@
 //! `mechanic list` and its cursor: the stored catalogue, the refusal of the
-//! removed paging parameters, and the promise that a continuation never
+//! paging parameters it does not take, and the promise that a continuation never
 //! registers or removes anything. The golden equality of `add` and `list` is
 //! `golden_phase9_mechanic_tests`.
 use super::tests::{EVAL_QUERY, action, add, call, path_of, python_project};

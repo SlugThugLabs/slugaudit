@@ -1,10 +1,8 @@
 //! Path-arithmetic helpers used across the language-specific and
 //! generic resolvers.
 //!
-//! Extracted from `src/graph/resolver.rs` as part of the small-file-rule
-//! cleanup. These are pure functions operating on project-relative
-//! forward-slash paths; they don't know or care which language is being
-//! resolved.
+//! These are pure functions operating on project-relative forward-slash paths;
+//! they don't know or care which language is being resolved.
 //!
 //! `crate::graph::resolve` already owns the low-level path utilities
 //! (`normalize_join`, `parent_dir`); what's here is resolver-level glue:

@@ -34,7 +34,7 @@ fn is_variable_binding(kind: &str) -> bool {
 }
 
 /// Exact node kinds for a *field* declaration, verified against a fixed
-/// grammar matrix (C7): rust/go/c/cpp/csharp/ocaml/java use
+/// grammar matrix: rust/go/c/cpp/csharp/ocaml/java use
 /// `field_declaration`; swift/kotlin use `property_declaration`;
 /// javascript uses `field_definition`; typescript uses
 /// `public_field_definition` and (for interface members) `property_signature`.
@@ -134,8 +134,8 @@ fn push_binding(
 /// byte range.
 ///
 /// When no direct child is an identifier, falls back to a bounded
-/// recursive search of the declaration node's subtree (C7 grammar-matrix
-/// finding): swift/kotlin nest the name under `pattern` /
+/// recursive search of the declaration node's subtree: swift/kotlin nest
+/// the name under `pattern` /
 /// `variable_declaration` wrappers, so `property_declaration`'s direct
 /// children are not identifiers. The search returns the *first*
 /// identifier-kind descendant — for the probed grammars (rust, go, c,
@@ -187,7 +187,7 @@ fn first_identifier_descendant(
 /// `type_identifier`/`type_name`: in Java (and other grammars) a
 /// `field_declaration` lists the type before the name, so treating the
 /// type node as a name candidate would emit the type as the member name
-/// (a C7 grammar-matrix finding). Type-name nodes are never the *name* of
+/// (found by the grammar-matrix tests). Type-name nodes are never the *name* of
 /// a binding this walker targets.
 fn is_identifier_kind(kind: &str) -> bool {
     matches!(

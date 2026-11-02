@@ -1,7 +1,7 @@
 //! Language-specific and generic import resolution.
 //!
-//! Split into submodules so each file stays under the small-file-rule
-//! cap. The split files are:
+//! Organized into submodules so each file stays under the small-file-rule
+//! cap:
 //!
 //! - [`types`] — the outcome data model (`Resolution` / `ResolutionKind` /
 //!   `pick` / `unresolved` / `external`), usable and testable on its own.
@@ -19,7 +19,7 @@
 //! - [`registry`] — the `OnceLock`-backed resolver lookup and the
 //!   public entry points (`get_resolver`, `resolve_one`).
 //!
-//! Public API re-exported below so callers continue to use
+//! Public API re-exported below so callers use
 //! `crate::graph::resolver::Resolution` etc. without caring which
 //! submodule defines them.
 

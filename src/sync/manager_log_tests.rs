@@ -1,6 +1,6 @@
 //! Log-content tests for the manager's database-recovery records: a discard
 //! or open failure must carry static categories and the real database path
-//! (the real-path logging policy, 2026-10-29), including a stored root from
+//! (the real-path logging policy), including a stored root from
 //! another machine or location.
 
 use crate::sync::SourceSyncManager;
@@ -13,7 +13,7 @@ fn sync_failure_records<'a>(logs: &'a str, operation: &str) -> Vec<&'a str> {
     logs.lines().filter(|line| line.contains(&marker)).collect()
 }
 
-/// R12: the stale-metadata warning used to format a reason string that
+/// R12: the stale-metadata warning must not format a reason string that
 /// embeds the *previous* absolute project root (the move/copy/unzip
 /// scenario). The record must carry a static kind, the real database path,
 /// and the old root as a real path.
@@ -69,7 +69,7 @@ fn a_stale_project_root_discard_warn_logs_real_path() {
     );
 }
 
-/// R12: the open-failure warning used to format `StoreError`, whose
+/// R12: the open-failure warning must not format `StoreError`, whose
 /// dependency errors can embed the database path. The record must carry a
 /// static kind and the real database path.
 #[test]

@@ -62,7 +62,7 @@ pub struct QueryRequest {
     /// `page_bytes` to avoid clipping. May change between pages.
     #[serde(default)]
     pub page_bytes: Option<usize>,
-    /// The removed `offset` and `expected_revision`, accepted only to refuse
+    /// The `offset` and `expected_revision` parameters, accepted only to refuse
     /// them naming `cursor`.
     #[serde(flatten, default)]
     #[schemars(skip)]
@@ -115,7 +115,7 @@ pub struct QueryResponse {
 /// (the whole call fails and nothing is stored), the result's column names
 /// repeat (the caller must alias them), a result value can't be represented
 /// (including a single TEXT/BLOB value over the per-value cap), the request
-/// carries the removed `offset`/`expected_revision`, or the cursor is unknown
+/// carries `offset`/`expected_revision`, or the cursor is unknown
 /// or expired.
 pub fn query(
     request: &Parameters<QueryRequest>,

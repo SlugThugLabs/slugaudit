@@ -1,7 +1,7 @@
 //! Registered mechanics inside `leads`: their counts, and their rows fed into
 //! the result being stored.
 //!
-//! Split from `leads_page.rs` because a registered mechanic's rows come from
+//! Kept apart from `leads_page.rs` because a registered mechanic's rows come from
 //! a Tree-sitter scan (`mechanic_scan`), not from one SQL statement: they are
 //! the rows the counting pass held (or the cache kept), or, for an entry too
 //! large to hold, a second scan of that one entry.

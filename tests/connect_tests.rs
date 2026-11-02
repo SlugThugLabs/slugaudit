@@ -12,16 +12,12 @@
 //! the one `install` just copied into the temp home, so the asserted argument
 //! is a temp path too.
 //!
-//! This replaced an earlier version that drove the *real* client binaries
-//! (`bob`, `claude`, `grok`, `codex`) against the real home, backing up and
-//! restoring the user's live configs and self-skipping when no client CLI was
-//! installed. That version was neither hermetic nor a test of slugaudit: what
-//! it verified depended on which clients happened to be on the machine, and
-//! `is_connected` executing the installed `codex` once rewrote the owner's
-//! `~/.codex/config.toml` during a run. The fake
-//! CLI removes both problems — it runs deterministically everywhere, with no
-//! skip, and it asserts the registration argv itself rather than a client's
-//! interpretation of it.
+//! The test drives fake CLIs, never the *real* client binaries (`bob`,
+//! `claude`, `grok`, `codex`): a real client would make the result depend on
+//! which clients happen to be on the machine, and executing one can rewrite
+//! the user's live config (for example `~/.codex/config.toml`). The fake CLI
+//! runs deterministically everywhere, with no skip, and the test asserts the
+//! registration argv itself rather than a client's interpretation of it.
 //!
 //! The `install` step deliberately runs into the temp `SLUGTHUG_HOME`, never
 //! `~/.slugthug`, so it leaves the machine exactly as it found it.

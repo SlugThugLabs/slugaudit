@@ -109,7 +109,7 @@ fn registry_entries_carry_an_evidence_status() {
             "{id} is source-verified"
         );
     }
-    // The Unknown state stays part of the model, but every client now has an
+    // The Unknown state is part of the model, but every client has an
     // established mechanism, so no live entry needs it.
     assert!(
         AGENTS.iter().all(|a| a.strategy != Strategy::Unknown),

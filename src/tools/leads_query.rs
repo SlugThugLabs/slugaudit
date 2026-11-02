@@ -2,8 +2,8 @@
 //! The statements each `leads` family compiles to, and the reads that
 //! execute them.
 //!
-//! Split from `leads.rs` so the tool contract — request/response shapes,
-//! paging, and the transaction envelope — lives in one place, and split from
+//! Kept apart from `leads.rs` so the tool contract — request/response shapes,
+//! paging, and the transaction envelope — lives in one place, and from
 //! `leads_mechanics.rs` so the catalogue and each family's SQL shape stay a
 //! declarative table. Nothing here draws a conclusion about what a row
 //! means.
@@ -112,7 +112,7 @@ pub(super) fn count_all(
 /// failures (prose excluded), so the two tools cannot disagree, narrowed to
 /// `language IS NOT NULL` — a file with no detected language (`.gitignore`,
 /// `LICENSE`) has no grammar to run, so no mechanic could have read it, and
-/// counting it made almost every project report a non-zero floor. `report`
+/// counting it would make almost every project report a non-zero floor. `report`
 /// still lists those files. See `LeadsResponse::files_not_parsed`.
 pub(super) fn files_not_parsed(
     tx: &Transaction<'_>,

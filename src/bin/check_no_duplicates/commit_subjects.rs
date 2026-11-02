@@ -5,9 +5,8 @@ use std::env::VarError;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// A git failure is a FAILURE, not a skip. Every branch below used to print
-/// "skipping commit-subject check" and return empty, which `main` then counted
-/// as a clean run and printed `no-duplicates: PASS` for — half the gate
+/// A git failure is a FAILURE, not a skip. Returning empty would let `main`
+/// count it as a clean run and print `no-duplicates: PASS` — half the gate
 /// silently unrun on any checkout where git did not answer, which is the one
 /// situation where the check cannot be trusted to have happened.
 pub(super) fn duplicate_commit_subjects(

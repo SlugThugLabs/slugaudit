@@ -1,8 +1,5 @@
-//! Shared fixture helpers for `sync` tests. Previously each test file
-//! carried its own copy (`write`: 8 copies, `stored_paths`: 3 copies,
-//! `setup_project`: 2, `create_project`/`write_file`/`sync_project`: 2
-//! each), so a change to how fixture files are written or queried now
-//! lives in exactly one place.
+//! Shared fixture helpers for `sync` tests, so a change to how fixture files
+//! are written or queried lives in exactly one place.
 use std::fs;
 use std::path::Path;
 

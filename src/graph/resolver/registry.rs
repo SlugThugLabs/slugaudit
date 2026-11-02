@@ -1,10 +1,9 @@
 //! The resolver registry and the public entry points used by
 //! [`crate::graph::mod.rs`].
 //!
-//! Extracted from `src/graph/resolver.rs` so registry state, the
-//! `OnceLock`-initialized lookup table, and the cross-language dispatch
-//! (e.g. `resolve_one` looking up the right resolver for an import's
-//! language and invoking it) live in one file. The registry's
+//! Keeps registry state, the `OnceLock`-initialized lookup table, and the
+//! cross-language dispatch (e.g. `resolve_one` looking up the right resolver
+//! for an import's language and invoking it) in one file. The registry's
 //! initialization is the one place that knows about *every* registered
 //! resolver: if a new language ships, this is the only file that
 //! needs to grow.

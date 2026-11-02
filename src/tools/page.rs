@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error_codes::{ErrorCode, payload};
 
-/// The pre-cursor paging parameters, kept only so a request that still sends
+/// The `offset` and `expected_revision` paging parameters, accepted only so a request that sends
 /// them is refused with a message instead of the parameters being silently
 /// dropped. A request embeds it as
 /// `#[serde(flatten, default)] #[schemars(skip)] pub legacy_paging: LegacyPaging`,

@@ -206,7 +206,7 @@ fn cross_type_precedence_matches_the_walker() {
     }
 }
 
-/// R7: the walker must not apply parent-directory ignore files above the
+/// The walker must not apply parent-directory ignore files above the
 /// project root; project-scoped rules are the contract.
 #[test]
 fn a_parent_gitignore_does_not_diverge_from_the_incremental_rules() {
@@ -235,7 +235,7 @@ fn a_parent_gitignore_does_not_diverge_from_the_incremental_rules() {
     );
 }
 
-/// R7: excluded directories must be pruned at descent time. Filtering their
+/// Excluded directories must be pruned at descent time. Filtering their
 /// yielded files keeps them out of the index, but walking a large `.git` or
 /// data directory still costs time on every sync.
 #[test]
@@ -367,7 +367,7 @@ fn an_unstattable_git_exclude_is_reported_not_skipped_silently() {
     );
 }
 
-/// R12: `ignore::Error`'s `Display` for a `WithPath`/`Glob` error is
+/// `ignore::Error`'s `Display` for a `WithPath`/`Glob` error is
 /// `"<absolute ignore-file path>: line N: error parsing glob '<glob>': ..."`,
 /// so a malformed project `.gitignore` must emit structured fields rather
 /// than the error text.
@@ -401,7 +401,7 @@ fn a_malformed_project_gitignore_logs_the_path_but_no_glob_text() {
     assert!(!logs.contains("[z-a]"), "the glob text leaked:\n{logs}");
 }
 
-/// R12: the global gitignore normally lives under `$HOME`/XDG, so the same
+/// The global gitignore normally lives under `$HOME`/XDG, so the same
 /// error `Display` would put the operator's home directory in a server log.
 #[test]
 fn a_malformed_global_gitignore_logs_the_path_but_no_glob_text() {
@@ -449,7 +449,7 @@ fn a_malformed_global_gitignore_logs_the_path_but_no_glob_text() {
     assert!(!logs.contains("[z-a]"), "the glob text leaked:\n{logs}");
 }
 
-/// R12: `.git/info/exclude` is added from an absolute path (`root.join`), so
+/// `.git/info/exclude` is added from an absolute path (`root.join`), so
 /// its malformed glob must not reach the log either.
 #[test]
 fn a_malformed_git_exclude_logs_the_path_but_no_glob_text() {
@@ -484,7 +484,7 @@ fn a_malformed_git_exclude_logs_the_path_but_no_glob_text() {
     assert!(!logs.contains("[z-a]"), "the glob text leaked:\n{logs}");
 }
 
-/// R12: `Error::Partial` joins its members with newlines, so each failure
+/// `Error::Partial` joins its members with newlines, so each failure
 /// must be logged as its own one-line record rather than one multi-line
 /// field.
 #[test]

@@ -11,7 +11,7 @@
 //! token trees (`calls/macro_calls.rs`), which a query cannot reach, and it
 //! records every call node — including a callee no pattern names, such as
 //! `(f)()` or `f()()`, whose whole call text becomes the callee — which a
-//! single-capture query would drop, changing existing counts.
+//! single-capture query would drop.
 
 use crate::model::{EvidenceOrigin, LineIndex};
 use std::collections::HashSet;
@@ -152,7 +152,7 @@ fn generic_function_inner(node: &Node) -> Option<Node> {
 /// Pre-order walk with an explicit heap stack, so the thread stack stays flat
 /// however deep the file nests (see [`crate::evidence::MAX_WALK_DEPTH`]).
 /// Children pop in source order, which keeps `call:N` keys and the first-wins
-/// dedup identical to the recursive walk this replaced.
+/// dedup identical to a recursive pre-order walk's.
 fn walk(
     root: Node,
     input: &Input<'_>,

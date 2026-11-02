@@ -111,7 +111,7 @@ fn honors_gitignore_content() {
 /// NUL, no `/`), so a lone `0xFF` byte is real and filesystem-legal here
 /// even though it can never be valid UTF-8.
 // APFS, macOS's default filesystem, refuses a non-UTF-8 file name outright
-// (`EILSEQ`, "Illegal byte sequence"; verified on macos-latest CI 2026-10-16),
+// (`EILSEQ`, "Illegal byte sequence"),
 // so this input cannot arise there and the test cannot construct it.
 #[cfg(all(unix, not(target_os = "macos")))]
 #[test]

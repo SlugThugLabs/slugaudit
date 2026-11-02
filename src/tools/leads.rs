@@ -121,7 +121,7 @@ pub struct LeadsRequest {
     )]
     #[serde(default)]
     pub page_bytes: Option<usize>,
-    /// The removed `offset` / `expected_revision`, accepted only to be refused.
+    /// The `offset` / `expected_revision` parameters, accepted only to be refused.
     #[serde(flatten, default)]
     #[schemars(skip)]
     pub legacy_paging: LegacyPaging,
@@ -295,7 +295,7 @@ pub struct LeadsResponse {
 ///
 /// # Errors
 ///
-/// Returns an error if the request still carries `offset` or
+/// Returns an error if the request carries `offset` or
 /// `expected_revision` (`paging_parameter_removed`), if it has neither a
 /// `cursor` nor a `path`, if `request.path` is not inside an active project,
 /// if syncing or reading the database fails, if the requested `mechanic` id

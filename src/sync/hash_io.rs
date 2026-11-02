@@ -3,7 +3,7 @@
 //! [`super::hash`] owns the hash types and in-memory digests; this module
 //! holds the streaming read path ([`hash_file`]) and the stat identity for
 //! files whose content is deliberately not retained ([`stat_identity`]).
-//! Both are re-exported from `hash`, so their existing paths are unchanged.
+//! Both are re-exported from `hash`.
 
 use super::hash::{HashError, STAT_IDENTITY_ALGORITHM};
 use crate::model::SourceIdentity;
