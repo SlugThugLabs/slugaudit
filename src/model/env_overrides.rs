@@ -74,10 +74,9 @@ impl EnvOverrides {
             max_query_sql_bytes: nonzero_override("SLUGAUDIT_MAX_QUERY_SQL_BYTES")?,
             max_query_vm_steps: nonzero_override("SLUGAUDIT_MAX_QUERY_VM_STEPS")?,
             max_query_wall_clock_secs: nonzero_override("SLUGAUDIT_MAX_QUERY_WALL_CLOCK_SECS")?,
-            max_query_value_bytes: nonzero_override::<usize>("SLUGAUDIT_MAX_QUERY_VALUE_BYTES")?
-                .map(|bytes| {
-                    clamp_sqlite_value("SLUGAUDIT_MAX_QUERY_VALUE_BYTES", bytes as u64) as usize
-                }),
+            max_query_value_bytes: nonzero_override::<u64>("SLUGAUDIT_MAX_QUERY_VALUE_BYTES")?
+                .map(query_value_bytes)
+                .transpose()?,
             max_structure_query_bytes: nonzero_override("SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES")?,
             max_structure_matches: nonzero_override("SLUGAUDIT_MAX_STRUCTURE_MATCHES")?,
             max_structure_execution_time_secs: nonzero_override(
@@ -158,6 +157,21 @@ fn set<T>(target: &mut T, value: Option<T>) {
     if let Some(value) = value {
         *target = value;
     }
+}
+
+/// The `SLUGAUDIT_MAX_QUERY_VALUE_BYTES` override, clamped to what SQLite can
+/// store.
+///
+/// The variable is parsed as `u64` so the clamp compares like with like. The
+/// clamped value is at most `SQLITE_MAX_VALUE_BYTES`, so narrowing it to
+/// `usize` only fails on a target too small to address that many bytes, and
+/// then it fails closed.
+fn query_value_bytes(bytes: u64) -> Result<usize, EnvConfigError> {
+    const NAME: &str = "SLUGAUDIT_MAX_QUERY_VALUE_BYTES";
+    usize::try_from(clamp_sqlite_value(NAME, bytes)).map_err(|error| EnvConfigError::Invalid {
+        variable: NAME.to_owned(),
+        expected: format!("a value this platform can address ({error})"),
+    })
 }
 
 /// Clamps one single-value limit to what the bundled SQLite can store.

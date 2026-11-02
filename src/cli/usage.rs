@@ -63,6 +63,7 @@ EXAMPLES:
 ";
 
 /// Formats the usage text, applying ANSI terminal styling when stdout is a terminal.
+#[must_use]
 pub fn usage() -> String {
     render_usage(&Style::stdout())
 }

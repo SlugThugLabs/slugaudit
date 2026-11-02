@@ -67,6 +67,7 @@ pub struct AgentDef {
 impl AgentDef {
     /// The sentence explaining why `connect` must refuse this entry, or `None`
     /// when the automated path is sufficient.
+    #[must_use]
     pub fn blocker(&self) -> Option<&'static str> {
         if self.manual_steps {
             return Some(match self.shape {
@@ -83,6 +84,7 @@ impl AgentDef {
     /// The manual remedy for a refusal, with `{binary}` resolved, or `None`
     /// when the entry carries no remedy. A path no client can represent yields
     /// the refusal text itself, never a lossy rendering.
+    #[must_use]
     pub fn guidance(&self, binary: &Path) -> Option<String> {
         let remedy = self.remedy.trim();
         if remedy.is_empty() {
@@ -95,6 +97,7 @@ impl AgentDef {
     }
     /// True when this entry registers itself by writing the config file, either
     /// as its primary strategy or as a fallback.
+    #[must_use]
     pub fn writes_config_file(&self) -> bool {
         self.file_fallback
             || matches!(
@@ -130,6 +133,7 @@ impl AgentDef {
     /// Config files only: no client CLI is ever spawned to ask. A client with
     /// no known config file (`ConfigPath::Unverified`: agy, amp, q) is always
     /// reported as not detected.
+    #[must_use]
     pub fn is_connected(&self, home: Option<&Path>) -> bool {
         home.is_some_and(|home| self.config_has_slugaudit(home))
     }
@@ -183,6 +187,7 @@ pub const AGENTS: &[AgentDef] = &[
 ];
 
 /// Looks up an agent definition by identifier or display name, supporting common aliases.
+#[must_use]
 pub fn find_agent(name: &str) -> Option<AgentDef> {
     let n = name.trim().to_ascii_lowercase();
     let n = match n.as_str() {
@@ -199,6 +204,7 @@ pub fn find_agent(name: &str) -> Option<AgentDef> {
 }
 
 /// Returns all agents in [`AGENTS`] that appear to be installed on the machine.
+#[must_use]
 pub fn detected_agents(home: Option<&Path>) -> Vec<AgentDef> {
     AGENTS
         .iter()

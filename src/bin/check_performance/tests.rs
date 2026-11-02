@@ -79,6 +79,39 @@ fn collect_benches_rejects_a_non_finite_or_negative_median() {
     }
 }
 
+#[test]
+fn collect_benches_truncates_a_fractional_median_and_rejects_one_past_u64() {
+    for (median, expected) in [("1234.9", 1234_u64), ("0.5", 0), ("-0.0", 0)] {
+        let root = tempfile::tempdir().expect("temp dir");
+        write_estimates(
+            root.path(),
+            "g",
+            "f",
+            &format!(r#"{{"median": {{"point_estimate": {median}}}}}"#),
+        );
+
+        let benches = estimates::collect_benches_in(root.path()).expect("valid median");
+
+        assert_eq!(benches.get("g/f"), Some(&expected), "median {median}");
+    }
+    for median in ["-0.5", "1.8446744073709552e19"] {
+        let root = tempfile::tempdir().expect("temp dir");
+        write_estimates(
+            root.path(),
+            "g",
+            "f",
+            &format!(r#"{{"median": {{"point_estimate": {median}}}}}"#),
+        );
+
+        let error = estimates::collect_benches_in(root.path()).expect_err("invalid median");
+
+        assert!(
+            error.to_string().contains("is not a valid time in ns"),
+            "median {median}: {error}"
+        );
+    }
+}
+
 fn write_estimates(root: &std::path::Path, group: &str, func: &str, body: &str) {
     let dir = root.join(group).join(func).join("new");
     std::fs::create_dir_all(&dir).expect("estimates dir");

@@ -59,9 +59,10 @@ fn paged_leads_pages_survive_an_edit_between_pages() {
     );
 
     // One match vanishes (mod0 loses a function), one appears (a new file).
-    let shorter: String = (0..5)
+    let shorter = (0..5)
         .map(|n| format!("pub fn f{n}(x: Option<u8>) -> u8 {{ x.unwrap() }}\n"))
-        .collect();
+        .collect::<Vec<_>>()
+        .concat();
     fs::write(project.path().join("mod0.rs"), shorter).expect("shrink mod0");
     fs::write(
         project.path().join("extra.rs"),

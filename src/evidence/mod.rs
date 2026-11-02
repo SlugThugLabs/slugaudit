@@ -49,7 +49,8 @@ pub(super) fn push_children<T>(
 ) {
     let first = pending.len();
     pending.extend(
-        (0..node.named_child_count() as u32)
+        (0..=u32::MAX)
+            .take(node.named_child_count())
             .filter_map(|index| node.named_child(index))
             .map(entry),
     );
@@ -65,7 +66,7 @@ pub(super) fn push_children<T>(
 /// logged, never source text or a path.
 pub(super) fn span_unavailable(
     context: &'static str,
-    error: crate::model::SpanError,
+    error: &crate::model::SpanError,
 ) -> crate::model::SpanAvailability {
     tracing::warn!(context, %error, "evidence span failed local range validation");
     crate::model::SpanAvailability::NormalizerUnavailable {
@@ -111,7 +112,7 @@ pub(super) fn range_span(
     };
     match crate::model::Span::new(start_byte as u64, end_byte as u64, start, end) {
         Ok(span) => crate::model::SpanAvailability::Present(span),
-        Err(error) => span_unavailable(context, error),
+        Err(error) => span_unavailable(context, &error),
     }
 }
 
@@ -226,7 +227,7 @@ mod tests {
 
     #[test]
     fn an_unavailable_span_keeps_the_real_span_error_in_its_reason() {
-        let availability = span_unavailable("binding", crate::model::SpanError::ReversedBytes);
+        let availability = span_unavailable("binding", &crate::model::SpanError::ReversedBytes);
 
         let crate::model::SpanAvailability::NormalizerUnavailable { reason } = availability else {
             panic!("expected NormalizerUnavailable, got {availability:?}");
@@ -274,7 +275,7 @@ mod tests {
 
     #[test]
     fn a_parse_with_time_left_returns_its_tree() {
-        let deadline = crate::util::Deadline::after(std::time::Duration::from_secs(60));
+        let deadline = crate::util::Deadline::after(std::time::Duration::from_mins(1));
 
         let tree = parse_tree("rust", "fn a() {}", Some(&deadline)).expect("a tree");
 

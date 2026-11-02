@@ -28,7 +28,7 @@ fn a_result_that_cannot_be_delivered_aborts_the_run_with_the_file_named() {
     let (discovered, _skipped) =
         crate::sync::discovery::discover(project.path()).expect("discover");
     let limits = ResourceLimits::default();
-    let deadline = Deadline::after(std::time::Duration::from_secs(60));
+    let deadline = Deadline::after(std::time::Duration::from_mins(1));
     let batch = one_file_batch(&discovered, &limits, &deadline, discovered.len());
     let (tx, rx) = std::sync::mpsc::channel::<(usize, Outcome)>();
     drop(rx);
@@ -57,7 +57,7 @@ fn a_delivery_at_the_end_of_the_discovered_set_fails_with_the_index_error() {
     let (discovered, _skipped) =
         crate::sync::discovery::discover(project.path()).expect("discover");
     let limits = ResourceLimits::default();
-    let deadline = Deadline::after(std::time::Duration::from_secs(60));
+    let deadline = Deadline::after(std::time::Duration::from_mins(1));
     let batch = one_file_batch(&discovered, &limits, &deadline, discovered.len());
     let (tx, _rx) = std::sync::mpsc::channel::<(usize, Outcome)>();
 
@@ -89,7 +89,7 @@ fn a_channel_result_with_an_out_of_range_index_fails_the_run() {
     let (discovered, _skipped) =
         crate::sync::discovery::discover(project.path()).expect("discover");
     let limits = ResourceLimits::default();
-    let deadline = Deadline::after(std::time::Duration::from_secs(60));
+    let deadline = Deadline::after(std::time::Duration::from_mins(1));
     let batch = one_file_batch(&discovered, &limits, &deadline, discovered.len());
     let (tx, rx) = std::sync::mpsc::channel::<(usize, Outcome)>();
     tx.send((
@@ -103,7 +103,7 @@ fn a_channel_result_with_an_out_of_range_index_fails_the_run() {
     drop(tx);
 
     let error = batch
-        .collect(rx)
+        .collect(&rx)
         .expect_err("an out-of-range channel index must fail the run");
 
     assert!(

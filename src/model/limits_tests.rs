@@ -53,7 +53,7 @@ fn from_env_overrides_duration_fields() {
     let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
     temp_env::with_var("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS", Some("120"), || {
         let limits = ResourceLimits::from_env().expect("valid env");
-        assert_eq!(limits.max_sync_wall_clock, Duration::from_secs(120));
+        assert_eq!(limits.max_sync_wall_clock, Duration::from_mins(2));
     });
 }
 
@@ -113,7 +113,7 @@ fn an_override_above_sqlite_max_is_clamped() {
             assert_eq!(limits.max_file_bytes, SQLITE_MAX_VALUE_BYTES);
             assert_eq!(
                 limits.max_query_value_bytes,
-                SQLITE_MAX_VALUE_BYTES as usize
+                usize::try_from(SQLITE_MAX_VALUE_BYTES).expect("the cap fits usize")
             );
         },
     );

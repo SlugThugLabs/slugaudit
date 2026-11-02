@@ -55,6 +55,11 @@ pub enum Command {
 /// Parses command-line arguments into a high-level [`Command`].
 ///
 /// Returns `Ok(Command::Serve)` if no arguments were provided.
+///
+/// # Errors
+///
+/// Returns a usage message when the command is unknown, or when a command
+/// receives arguments it does not accept.
 #[must_use = "the returned Command must be dispatched by the caller"]
 pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
     let Some(first) = args.next() else {
@@ -73,7 +78,7 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
     let args = rest.into_iter();
     match first.as_str() {
         "serve" => Ok(Command::Serve),
-        "help" => Ok(Command::Help),
+        "help" | "--help" | "-h" => Ok(Command::Help),
         "connect" => Ok(Command::Connect {
             agent: single_agent("connect", args)?,
         }),
@@ -84,7 +89,6 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
         "menu" => no_arguments("menu", args).map(|()| Command::Menu),
         "update" => Ok(Command::Update),
         "version" | "--version" | "-V" | "-v" => Ok(Command::Version),
-        "--help" | "-h" => Ok(Command::Help),
         other => Err(format!(
             "unknown command {other:?}; expected one of: serve, connect, disconnect, install, update, menu, version, help"
         )),

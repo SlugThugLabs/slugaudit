@@ -79,12 +79,21 @@ impl StoreError {
 
 /// Discards a corrupt derived database and its SQLite journal sidecars.
 /// Callers must recreate the schema and republish from project files.
+///
+/// # Errors
+///
+/// Returns the I/O error if the database or a sidecar exists but cannot be
+/// removed.
 pub fn discard_corrupt_database(path: &Path) -> Result<(), std::io::Error> {
     remove_database_files(path)
 }
 
 /// Deletes a database file and its `-wal` / `-shm` sidecars; files that are
 /// already absent are not an error.
+///
+/// # Errors
+///
+/// Returns the I/O error of the first file that exists but cannot be removed.
 pub fn remove_database_files(path: &Path) -> Result<(), std::io::Error> {
     for suffix in ["", "-wal", "-shm"] {
         let candidate = if suffix.is_empty() {

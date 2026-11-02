@@ -18,7 +18,7 @@ fn a_file_changed_after_sampling_is_detected_and_rejected() {
     let sink = crate::progress::NoopProgressSink;
     // A far-future deadline so these tests exercise the race logic, not the
     // wall-clock budget.
-    let deadline = crate::util::Deadline::after(std::time::Duration::from_secs(60));
+    let deadline = crate::util::Deadline::after(std::time::Duration::from_mins(1));
     let (samples, _skipped) =
         sample_all_with_deadline(&discovered, &limits, &sink, &deadline).expect("sample");
     // `parser_version_changed: true` forces every sampled file into
@@ -47,7 +47,7 @@ fn a_file_that_became_unreadable_after_sampling_fails_with_its_real_cause_not_as
     let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
     let limits = ResourceLimits::default();
     let sink = crate::progress::NoopProgressSink;
-    let deadline = crate::util::Deadline::after(std::time::Duration::from_secs(60));
+    let deadline = crate::util::Deadline::after(std::time::Duration::from_mins(1));
     let (samples, _skipped) =
         sample_all_with_deadline(&discovered, &limits, &sink, &deadline).expect("sample");
     let (upserts, _deletions) =
@@ -76,7 +76,7 @@ fn a_file_deleted_after_sampling_is_reported_as_changed_during_sample() {
     let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
     let limits = ResourceLimits::default();
     let sink = crate::progress::NoopProgressSink;
-    let deadline = crate::util::Deadline::after(std::time::Duration::from_secs(60));
+    let deadline = crate::util::Deadline::after(std::time::Duration::from_mins(1));
     let (samples, _skipped) =
         sample_all_with_deadline(&discovered, &limits, &sink, &deadline).expect("sample");
     let (upserts, _deletions) =
@@ -98,7 +98,7 @@ fn an_unchanged_file_passes_revalidation() {
     let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
     let limits = ResourceLimits::default();
     let sink = crate::progress::NoopProgressSink;
-    let deadline = crate::util::Deadline::after(std::time::Duration::from_secs(60));
+    let deadline = crate::util::Deadline::after(std::time::Duration::from_mins(1));
     let (samples, _skipped) =
         sample_all_with_deadline(&discovered, &limits, &sink, &deadline).expect("sample");
     let (upserts, _deletions) =

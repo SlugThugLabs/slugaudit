@@ -94,7 +94,7 @@ fn run(options: &Options) -> Result<ExitCode, String> {
     let baseline = if baseline_path.exists() {
         estimates::load_baseline(baseline_path)?
     } else {
-        Default::default()
+        std::collections::BTreeMap::default()
     };
 
     if options.record {

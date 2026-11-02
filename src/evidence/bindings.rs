@@ -75,7 +75,7 @@ pub(super) fn walk_bindings(
             continue;
         }
         match identifier_name(&node, source) {
-            Ok(Some(name)) => push_binding(&node, name, lines, items, counter),
+            Ok(Some(name)) => push_binding(&node, &name, lines, items, counter),
             Ok(None) => {}
             Err(error) => {
                 tracing::warn!(%error, "binding name skipped; extraction is partial");
@@ -91,7 +91,7 @@ pub(super) fn walk_bindings(
 /// binding; any other named node is not a binding and emits nothing.
 fn push_binding(
     node: &tree_sitter_language_pack::Node,
-    name: String,
+    name: &str,
     lines: &LineIndex<'_>,
     items: &mut Vec<EvidenceItem>,
     counter: &mut usize,
@@ -108,7 +108,7 @@ fn push_binding(
     } else {
         return;
     };
-    let key = format!("{}:{counter}", origin_kind);
+    let key = format!("{origin_kind}:{counter}");
     *counter += 1;
     items.push(EvidenceItem {
         key,
@@ -208,5 +208,8 @@ fn is_identifier_kind(kind: &str) -> bool {
 fn named_children(
     node: &tree_sitter_language_pack::Node,
 ) -> impl Iterator<Item = tree_sitter_language_pack::Node> {
-    (0..node.named_child_count() as u32).filter_map(move |i| node.named_child(i))
+    // tree-sitter counts children in a `u32`, so `0..=u32::MAX` covers every index.
+    (0..=u32::MAX)
+        .take(node.named_child_count())
+        .filter_map(move |i| node.named_child(i))
 }

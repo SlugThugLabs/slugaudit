@@ -4,8 +4,8 @@
 //! End-to-end tests for `slugaudit update` on the shipped platform.
 //!
 //! The compile-gated refusal in `src/update_tests.rs` never runs on
-//! Linux/x86_64, so these tests are what assert the UpToDate, Newer, and
-//! Incomparable branches of `run_update` and their user-visible text.
+//! `Linux/x86_64`, so these tests are what assert the `UpToDate`, `Newer`, and
+//! `Incomparable` branches of `run_update` and their user-visible text.
 //!
 //! These spawn the real binary because the branch text goes to stdout through
 //! `cli::out`; an in-process call cannot capture it without a production seam.
@@ -122,8 +122,8 @@ impl UpdateSandbox {
 }
 
 fn write_executable(path: &Path, script: &str) {
-    fs::write(path, script).expect("write fake tool");
     use std::os::unix::fs::PermissionsExt;
+    fs::write(path, script).expect("write fake tool");
     let mut permissions = fs::metadata(path).expect("stat fake tool").permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(path, permissions).expect("chmod fake tool");

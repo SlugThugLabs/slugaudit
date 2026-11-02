@@ -247,6 +247,13 @@ fn ensure_platform_supported(os: &'static str, arch: &'static str) -> Result<(),
 
 /// Entry point for `slugaudit update`. Prints human-facing progress to
 /// stdout; never touches the MCP transport.
+///
+/// # Errors
+///
+/// Fails when the platform has no published asset, when the latest release
+/// cannot be fetched or parsed, when the running binary's path cannot be
+/// determined, when downloading, verifying, or replacing the binary fails, or
+/// when writing the progress text fails.
 pub fn run_update() -> Result<(), UpdateError> {
     let current = env!("CARGO_PKG_VERSION");
 

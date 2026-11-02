@@ -114,7 +114,7 @@ impl ServerProcess {
         &mut self,
         id: u64,
         name: &str,
-        arguments: serde_json::Value,
+        arguments: &serde_json::Value,
     ) -> serde_json::Value {
         let request = json!({
             "jsonrpc": "2.0",
@@ -134,7 +134,7 @@ impl ServerProcess {
         &mut self,
         id: u64,
         name: &str,
-        arguments: serde_json::Value,
+        arguments: &serde_json::Value,
     ) -> serde_json::Value {
         let response = self.tool_response(id, name, arguments);
         let content = response["result"]["content"][0]["text"]
@@ -208,20 +208,15 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
     let mut server = ServerProcess::spawn();
     server.handshake();
 
-    let report = server.tool_json(2, "report", json!({ "path": project_path }));
+    let report = server.tool_json(2, "report", &json!({ "path": project_path }));
     assert_eq!(report["file_count"], 1);
-    assert!(
-        report["languages"]
-            .as_array()
-            .expect("languages array")
-            .iter()
-            .any(|entry| entry["language"] == "rust")
-    );
+    let languages = report["languages"].as_array().expect("languages array");
+    assert!(languages.iter().any(|entry| entry["language"] == "rust"));
 
     let query_result = server.tool_json(
         3,
         "query",
-        json!({ "path": project_path, "sql": "SELECT path, language FROM files" }),
+        &json!({ "path": project_path, "sql": "SELECT path, language FROM files" }),
     );
     assert_eq!(query_result["rows"][0]["path"], "lib.rs");
     assert_eq!(query_result["rows"][0]["language"], "rust");
@@ -229,7 +224,7 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
     let write_response = server.tool_response(
         4,
         "query",
-        json!({ "path": project_path, "sql": "DELETE FROM files" }),
+        &json!({ "path": project_path, "sql": "DELETE FROM files" }),
     );
     assert!(
         write_response["error"]["code"].is_number(),
@@ -239,7 +234,7 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
     let structure_result = server.tool_json(
         5,
         "structure",
-        json!({
+        &json!({
             "path": project_path,
             "file": "lib.rs",
             "query": "(function_item name: (identifier) @name)",
@@ -251,7 +246,7 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
     let finding_result = server.tool_json(
         6,
         "finding",
-        json!({
+        &json!({
             "path": project_path,
             "file": "lib.rs",
             "line_start": 1,
@@ -281,7 +276,7 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
         let sync_result = server.tool_json(
             7,
             "query",
-            json!({ "path": project_path, "sql": "SELECT count(*) AS n FROM revisions" }),
+            &json!({ "path": project_path, "sql": "SELECT count(*) AS n FROM revisions" }),
         );
         revision_count = sync_result["rows"][0]["n"]
             .as_i64()
@@ -296,7 +291,7 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
         "the modification must publish a second revision"
     );
 
-    let stale_result = server.tool_json(8, "finding_read", json!({ "path": project_path }));
+    let stale_result = server.tool_json(8, "finding_read", &json!({ "path": project_path }));
     assert_eq!(
         stale_result["findings"][0]["status"], "stale",
         "the finding must read stale once its source changed"
@@ -386,17 +381,17 @@ fn findings_last_one_server_process_and_finding_clear_empties_a_live_one() {
 
     let mut first = ServerProcess::spawn();
     first.handshake();
-    first.tool_json(2, "finding", finding.clone());
-    let read = first.tool_json(3, "finding_read", json!({ "path": project_path }));
+    first.tool_json(2, "finding", &finding);
+    let read = first.tool_json(3, "finding_read", &json!({ "path": project_path }));
     assert_eq!(read["findings"].as_array().map(Vec::len), Some(1));
-    let cleared = first.tool_json(4, "finding_clear", json!({ "path": project_path }));
+    let cleared = first.tool_json(4, "finding_clear", &json!({ "path": project_path }));
     assert_eq!(cleared["removed"], 1);
-    first.tool_json(5, "finding", finding);
+    first.tool_json(5, "finding", &finding);
     drop(first);
 
     let mut second = ServerProcess::spawn();
     second.handshake();
-    let read = second.tool_json(2, "finding_read", json!({ "path": project_path }));
+    let read = second.tool_json(2, "finding_read", &json!({ "path": project_path }));
     assert_eq!(
         read["findings"].as_array().map(Vec::len),
         Some(0),
@@ -423,7 +418,7 @@ fn two_live_servers_on_one_repo_keep_their_own_findings() {
         })
     };
     let titles = |server: &mut ServerProcess, id: u64| -> Vec<String> {
-        let read = server.tool_json(id, "finding_read", json!({ "path": project_path }));
+        let read = server.tool_json(id, "finding_read", &json!({ "path": project_path }));
         read["findings"]
             .as_array()
             .expect("findings array")
@@ -434,7 +429,7 @@ fn two_live_servers_on_one_repo_keep_their_own_findings() {
 
     let mut first = ServerProcess::spawn();
     first.handshake();
-    first.tool_json(2, "finding", finding("from first"));
+    first.tool_json(2, "finding", &finding("from first"));
 
     let mut second = ServerProcess::spawn();
     second.handshake();
@@ -442,11 +437,11 @@ fn two_live_servers_on_one_repo_keep_their_own_findings() {
         titles(&mut second, 2).is_empty(),
         "the second server starts with none of its own"
     );
-    second.tool_json(3, "finding", finding("from second"));
+    second.tool_json(3, "finding", &finding("from second"));
 
     assert_eq!(titles(&mut first, 3), ["from first"]);
     assert_eq!(titles(&mut second, 4), ["from second"]);
-    let cleared = second.tool_json(5, "finding_clear", json!({ "path": project_path }));
+    let cleared = second.tool_json(5, "finding_clear", &json!({ "path": project_path }));
     assert_eq!(cleared["removed"], 1);
     assert_eq!(titles(&mut first, 4), ["from first"]);
 }
@@ -566,11 +561,11 @@ fn real_stdio_mechanic_add_is_counted_and_listed_first_by_leads() {
     let mut server = ServerProcess::spawn();
     server.handshake();
 
-    let first_report = server.tool_json(2, "report", json!({ "path": project_path }));
+    let first_report = server.tool_json(2, "report", &json!({ "path": project_path }));
     let added = server.tool_json(
         3,
         "mechanic",
-        json!({
+        &json!({
             "path": project_path,
             "action": "add",
             "id": "py_eval",
@@ -579,8 +574,8 @@ fn real_stdio_mechanic_add_is_counted_and_listed_first_by_leads() {
             "note": "dynamic code execution",
         }),
     );
-    let leads = server.tool_json(4, "leads", json!({ "path": project_path }));
-    let second_report = server.tool_json(5, "report", json!({ "path": project_path }));
+    let leads = server.tool_json(4, "leads", &json!({ "path": project_path }));
+    let second_report = server.tool_json(5, "report", &json!({ "path": project_path }));
 
     assert!(
         first_report["mechanics"]["note"]

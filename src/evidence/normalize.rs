@@ -210,7 +210,7 @@ pub(super) fn convert_span(span: &PackSpan, lines: &LineIndex<'_>) -> SpanAvaila
     };
     match Span::new(span.start_byte as u64, span.end_byte as u64, start, end) {
         Ok(converted) => SpanAvailability::Present(converted),
-        Err(error) => super::span_unavailable("pack", error),
+        Err(error) => super::span_unavailable("pack", &error),
     }
 }
 

@@ -29,13 +29,13 @@ struct HashBatch<'a> {
     error_slot: Mutex<Option<PublishError>>,
 }
 
-impl<'a> HashBatch<'a> {
+impl HashBatch<'_> {
     fn abort(&self, error: PublishError) {
-        if !self.error_flag.swap(true, Ordering::SeqCst) {
+        if self.error_flag.swap(true, Ordering::SeqCst) {
+            error.warn_sampling_superseded();
+        } else {
             let mut guard = crate::util::lock_or_recover(&self.error_slot, "hash_batch::abort");
             *guard = Some(error);
-        } else {
-            error.warn_sampling_superseded();
         }
     }
 
@@ -58,7 +58,7 @@ impl<'a> HashBatch<'a> {
         }
     }
 
-    fn run_worker(&self, tx: mpsc::Sender<(usize, HashOutcome)>) {
+    fn run_worker(&self, tx: &mpsc::Sender<(usize, HashOutcome)>) {
         while !self.error_flag.load(Ordering::Relaxed) {
             let idx = self.next_index.fetch_add(1, Ordering::Relaxed);
             if idx >= self.total {
@@ -78,7 +78,7 @@ impl<'a> HashBatch<'a> {
                 self.max_file_bytes,
             ) {
                 Ok(identity) => {
-                    if !self.send_outcome(&tx, idx, HashOutcome::Ok(identity)) {
+                    if !self.send_outcome(tx, idx, HashOutcome::Ok(identity)) {
                         return;
                     }
                 }
@@ -95,7 +95,7 @@ impl<'a> HashBatch<'a> {
                         ),
                         code: SKIP_REASON_OVERSIZE,
                     };
-                    if !self.send_outcome(&tx, idx, HashOutcome::Skipped(skip)) {
+                    if !self.send_outcome(tx, idx, HashOutcome::Skipped(skip)) {
                         return;
                     }
                 }
@@ -109,7 +109,7 @@ impl<'a> HashBatch<'a> {
 
     fn collect(
         self,
-        rx: mpsc::Receiver<(usize, HashOutcome)>,
+        rx: &mpsc::Receiver<(usize, HashOutcome)>,
     ) -> Result<(Vec<SourceIdentity>, Vec<SkippedFile>), PublishError> {
         let mut results = Vec::with_capacity(self.total);
         while let Ok((idx, outcome)) = rx.recv() {
@@ -141,7 +141,7 @@ pub(super) fn hash_all_with_deadline(
     if total == 0 {
         return Ok((Vec::new(), Vec::new()));
     }
-    let parallelism = thread::available_parallelism().map_or(1, |n| n.get());
+    let parallelism = thread::available_parallelism().map_or(1, std::num::NonZero::get);
     let worker_count = total.min(parallelism.min(8));
 
     let (tx, rx) = mpsc::channel();
@@ -159,12 +159,12 @@ pub(super) fn hash_all_with_deadline(
         for _ in 0..worker_count {
             let tx = tx.clone();
             let batch = &batch;
-            scope.spawn(move || batch.run_worker(tx));
+            scope.spawn(move || batch.run_worker(&tx));
         }
         drop(tx);
     });
 
-    batch.collect(rx)
+    batch.collect(&rx)
 }
 
 #[cfg(test)]

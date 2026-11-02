@@ -285,7 +285,7 @@ fn commit_attempt(
 
     let revision_id = revision::publish_revision(
         connection,
-        revision::RevisionInputs {
+        &revision::RevisionInputs {
             expected_current,
             manifest_hash: &diff.manifest_hash,
             parser_pack_version,

@@ -100,7 +100,7 @@ fn publish_failures_classify_into_the_documented_error_codes() {
 
     let budget = map_publish_error(
         root,
-        super::publish::PublishError::TimeBudgetExceeded {
+        &super::publish::PublishError::TimeBudgetExceeded {
             path: String::new(),
             elapsed_ms: 4_500,
         },
@@ -117,7 +117,7 @@ fn publish_failures_classify_into_the_documented_error_codes() {
     // wrapped, and must classify identically.
     let wrapped = map_publish_error(
         root,
-        super::publish::PublishError::Discovery(
+        &super::publish::PublishError::Discovery(
             crate::sync::discovery::DiscoveryError::TimeBudgetExceeded { elapsed_ms: 4_500 },
         ),
         "test",
@@ -129,7 +129,7 @@ fn publish_failures_classify_into_the_documented_error_codes() {
 
     let raced = map_publish_error(
         root,
-        super::publish::PublishError::ChangedDuringSample {
+        &super::publish::PublishError::ChangedDuringSample {
             path: "src/lib.rs".to_owned(),
         },
         "test",
@@ -141,7 +141,7 @@ fn publish_failures_classify_into_the_documented_error_codes() {
 
     let other = map_publish_error(
         root,
-        super::publish::PublishError::InvalidParserPackVersion("nope".to_owned()),
+        &super::publish::PublishError::InvalidParserPackVersion("nope".to_owned()),
         "test",
     );
     assert!(
@@ -229,9 +229,8 @@ fn a_failed_database_recreation_surfaces_the_open_error() {
     let database_path = project.path().join("database-is-a-directory");
     std::fs::create_dir(&database_path).expect("create the database directory");
 
-    let error = match publish_from_scratch(&root, database_path, &NoopProgressSink) {
-        Ok(_) => panic!("opening a directory as a database must fail"),
-        Err(error) => error,
+    let Err(error) = publish_from_scratch(&root, database_path, &NoopProgressSink) else {
+        panic!("opening a directory as a database must fail")
     };
 
     assert!(
@@ -274,7 +273,7 @@ fn a_failed_manager_publish_emits_exactly_one_warn_line() {
             crate::parse::PACK_VERSION,
             &NoopProgressSink,
         )
-        .map_err(|error| map_publish_error(project.path(), error, "publish failed"))
+        .map_err(|error| map_publish_error(project.path(), &error, "publish failed"))
     });
 
     assert!(

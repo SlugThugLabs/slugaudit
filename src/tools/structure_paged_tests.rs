@@ -19,7 +19,8 @@ const SMALL_PAGE: usize = 900;
 fn functions(prefix: &str, count: usize) -> String {
     (0..count)
         .map(|index| format!("pub fn {prefix}{index:02}() {{}}\n"))
-        .collect()
+        .collect::<Vec<_>>()
+        .concat()
 }
 
 fn two_file_project() -> tempfile::TempDir {

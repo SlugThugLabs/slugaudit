@@ -65,7 +65,10 @@ fn every_sql_recipe_compiles_and_runs_against_the_schema() {
     for resource in list() {
         let uri = resource.uri.as_str();
         // The schema resource is the DDL applied above, not a query recipe.
-        if !uri.ends_with(".sql") || uri == "slugaudit://schema.sql" {
+        let is_sql = std::path::Path::new(uri)
+            .extension()
+            .is_some_and(|ext| ext == "sql");
+        if !is_sql || uri == "slugaudit://schema.sql" {
             continue;
         }
         let Some(ResourceContents::TextResourceContents { text, .. }) = read(uri) else {
@@ -265,7 +268,7 @@ fn every_sql_recipe_runs_unedited_through_the_query_tool() {
                 path: Some(project.path().to_string_lossy().into_owned()),
                 sql,
                 cursor: None,
-                legacy_paging: Default::default(),
+                legacy_paging: crate::tools::LegacyPaging::default(),
                 page_bytes: None,
             }),
             &crate::progress::NoopProgressSink,

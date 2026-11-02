@@ -448,12 +448,9 @@ fn a_directory_sync_failure_after_the_rename_is_logged_and_kept() {
     let path = directory.path().join("mcp.json");
 
     let (result, logs) = crate::store::test_capture::capture_warns(|| {
-        write_atomic_with(
-            &path,
-            b"replacement",
-            |file| file.sync_all(),
-            |_| Err(std::io::Error::other("injected directory failure")),
-        )
+        write_atomic_with(&path, b"replacement", std::fs::File::sync_all, |_| {
+            Err(std::io::Error::other("injected directory failure"))
+        })
     });
 
     result.expect("the committed write must still be reported as successful");

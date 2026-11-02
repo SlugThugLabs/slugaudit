@@ -238,7 +238,7 @@ fn result_store_a_sweep_removal_failure_is_counted_and_keeps_the_first_error() {
     std::fs::create_dir(&not_a_file).expect("dir");
     let mut outcome = SweepOutcome::default();
 
-    let (_, logs) = crate::store::test_capture::capture_warns(|| {
+    let ((), logs) = crate::store::test_capture::capture_warns(|| {
         outcome.remove(&not_a_file, "remove the zz-sweep-probe file");
     });
 
@@ -327,7 +327,7 @@ fn result_store_dropping_the_store_removes_its_lock_file() {
 }
 
 /// A deadlock in the store must fail the test, not hang the suite.
-const THREADS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+const THREADS_DEADLINE: std::time::Duration = std::time::Duration::from_mins(2);
 
 /// Seeds, then runs writers and pagers together; returns the seeded and
 /// the concurrently written handles.

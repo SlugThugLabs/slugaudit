@@ -3039,7 +3039,7 @@
             "type": "string"
           },
           "full_text": {
-            "description": "Whether to include full matched source text up to MAX_TEXT_BYTES.\nDefaults to true for single-file queries, and false (lean 1-line snippet) for multi-file queries.",
+            "description": "Whether to include full matched source text up to `MAX_TEXT_BYTES`.\nDefaults to true for single-file queries, and false (lean 1-line snippet) for multi-file queries.",
             "type": [
               "boolean",
               "null"

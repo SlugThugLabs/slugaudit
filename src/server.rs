@@ -144,7 +144,7 @@ impl SlugAuditServer {
         + Send
         + 'static,
     ) -> Result<T, ErrorData> {
-        let progress = progress_target(meta, &peer);
+        let progress = progress_target(&meta, &peer);
         let inner_sink = build_inner_sink(progress.clone());
         let manager = self.manager.clone();
         run_blocking(

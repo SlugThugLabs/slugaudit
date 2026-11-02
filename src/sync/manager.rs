@@ -90,11 +90,13 @@ pub struct SourceSyncManager {
 
 impl SourceSyncManager {
     /// Creates a manager with no external resources open.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// The result store slot; see the field.
+    #[must_use]
     pub fn result_stores(&self) -> &super::result_stores::ResultStoreSlot {
         &self.result_stores
     }
@@ -129,12 +131,14 @@ impl SourceSyncManager {
 
     /// Returns the unix-epoch seconds of the most recent successful
     /// `ensure_current`. Zero before the first sync.
+    #[must_use]
     pub fn last_sync_unix_seconds(&self) -> i64 {
         self.last_sync_unix_seconds.load(Ordering::Relaxed)
     }
 
     /// Returns the duration in milliseconds of the most recent successful
     /// `ensure_current`. Zero before the first sync.
+    #[must_use]
     pub fn last_sync_duration_ms(&self) -> u64 {
         self.last_sync_duration_ms.load(Ordering::Relaxed)
     }

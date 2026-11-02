@@ -124,7 +124,7 @@ mod deadline_tests {
 
     #[test]
     fn a_generous_budget_is_not_exceeded_immediately() {
-        let deadline = Deadline::after(Duration::from_secs(60));
+        let deadline = Deadline::after(Duration::from_mins(1));
         assert!(deadline.exceeded().is_none());
     }
 
@@ -144,7 +144,7 @@ mod deadline_tests {
 
     #[test]
     fn a_live_budget_reports_its_whole_remaining_milliseconds() {
-        let deadline = Deadline::after(Duration::from_secs(60));
+        let deadline = Deadline::after(Duration::from_mins(1));
 
         let remaining = deadline.remaining_millis().expect("time is left");
 
@@ -156,7 +156,7 @@ mod deadline_tests {
 
     #[test]
     fn a_cap_below_the_remaining_budget_is_a_unit_bound() {
-        let operation = Deadline::after(Duration::from_secs(60));
+        let operation = Deadline::after(Duration::from_mins(1));
 
         let (unit, bound) = operation.capped(Duration::from_secs(5));
 
@@ -169,7 +169,7 @@ mod deadline_tests {
     fn a_cap_above_the_remaining_budget_is_an_operation_bound() {
         let operation = Deadline::after(Duration::from_secs(5));
 
-        let (unit, bound) = operation.capped(Duration::from_secs(60));
+        let (unit, bound) = operation.capped(Duration::from_mins(1));
 
         assert_eq!(bound, BudgetBound::Operation);
         let remaining = unit.remaining_millis().expect("time is left").get();
@@ -188,7 +188,7 @@ mod deadline_tests {
 
     #[test]
     fn a_zero_cap_is_a_spent_unit_bound() {
-        let operation = Deadline::after(Duration::from_secs(60));
+        let operation = Deadline::after(Duration::from_mins(1));
 
         let (unit, bound) = operation.capped(Duration::ZERO);
 

@@ -5,7 +5,7 @@ use super::*;
 use rusqlite::{Connection, params};
 
 fn deadline() -> Deadline {
-    Deadline::after(std::time::Duration::from_secs(60))
+    Deadline::after(std::time::Duration::from_mins(1))
 }
 
 fn seeded_connection() -> (tempfile::TempDir, Connection) {

@@ -32,7 +32,7 @@ fn plant_store_files(root: &Path) -> (ResultStoreSlot, Vec<String>) {
         .collect();
     planted.sort();
     assert!(
-        planted.iter().any(|path| path.ends_with(".lock")),
+        planted.iter().any(|path| has_extension(path, "lock")),
         "the owner lock exists: {planted:?}"
     );
     assert!(
@@ -42,8 +42,15 @@ fn plant_store_files(root: &Path) -> (ResultStoreSlot, Vec<String>) {
     (slot, planted)
 }
 
+/// Whether `path` names a file whose extension is `extension`, ignoring ASCII case.
+fn has_extension(path: &str, extension: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .is_some_and(|found| found.eq_ignore_ascii_case(extension))
+}
+
 fn mentions_results(path: &str) -> bool {
-    path.contains("results") || path.contains(".lock") || path.ends_with(".db")
+    path.contains("results") || path.contains(".lock") || has_extension(path, "db")
 }
 
 #[test]

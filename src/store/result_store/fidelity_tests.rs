@@ -1,7 +1,7 @@
 use super::harness_tests::*;
 use super::*;
 
-fn round_trip(cells: Vec<Cell>) -> StoredRow {
+fn round_trip(cells: &[Cell]) -> StoredRow {
     let fx = fixture(1 << 30);
     let names: Vec<String> = (0..cells.len()).map(|index| format!("c{index}")).collect();
     let mut writer = fx
@@ -11,7 +11,7 @@ fn round_trip(cells: Vec<Cell>) -> StoredRow {
             ..spec(&["unused"])
         })
         .expect("begin");
-    writer.push(&cells).expect("push");
+    writer.push(cells).expect("push");
     let handle = writer.finish(&complete()).expect("finish");
     read_all(&fx.store, handle.id).remove(0)
 }
@@ -34,7 +34,7 @@ fn result_store_fidelity_matrix_round_trips_every_storage_class_exactly() {
         Cell::Text("0x10".to_owned()),
     ];
 
-    let row = round_trip(cells.clone());
+    let row = round_trip(&cells);
 
     assert_eq!(row.cells, cells);
     assert!(row.nonfinite.is_empty());
@@ -42,7 +42,7 @@ fn result_store_fidelity_matrix_round_trips_every_storage_class_exactly() {
 
 #[test]
 fn result_store_negative_zero_keeps_its_sign_bit() {
-    let row = round_trip(vec![Cell::Real(-0.0)]);
+    let row = round_trip(&[Cell::Real(-0.0)]);
 
     match row.cells[0] {
         Cell::Real(value) => assert!(value.is_sign_negative() && value == 0.0, "{value}"),
@@ -52,7 +52,7 @@ fn result_store_negative_zero_keeps_its_sign_bit() {
 
 #[test]
 fn result_store_nan_is_stored_as_null_and_marked() {
-    let row = round_trip(vec![Cell::Int(1), Cell::Real(f64::NAN)]);
+    let row = round_trip(&[Cell::Int(1), Cell::Real(f64::NAN)]);
 
     assert_eq!(row.cells, vec![Cell::Int(1), Cell::Null]);
     assert_eq!(row.nonfinite, vec![(1, NonFinite::NaN)]);
@@ -60,7 +60,7 @@ fn result_store_nan_is_stored_as_null_and_marked() {
 
 #[test]
 fn result_store_infinities_are_stored_natively_and_marked() {
-    let row = round_trip(vec![
+    let row = round_trip(&[
         Cell::Real(f64::INFINITY),
         Cell::Real(f64::NEG_INFINITY),
         Cell::Real(2.0),

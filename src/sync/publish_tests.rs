@@ -397,7 +397,7 @@ fn honest_log_a_failed_publish_logs_the_real_path_and_io_cause() {
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "gone"),
         }));
 
-    let (_, logs) = capture_warns(|| crate::sync::publish_log::log_outcome(root, &result, 0));
+    let ((), logs) = capture_warns(|| crate::sync::publish_log::log_outcome(root, &result, 0));
 
     assert!(logs.contains("publish failed"), "got: {logs}");
     assert!(logs.contains("error_kind=\"sample_read\""), "got: {logs}");
@@ -426,7 +426,7 @@ fn honest_log_a_failed_publish_logs_the_sqlite_cause() {
             Some("SENTINEL_SQLITE_CAUSE".to_owned()),
         )));
 
-    let (_, logs) = capture_warns(|| crate::sync::publish_log::log_outcome(root, &result, 0));
+    let ((), logs) = capture_warns(|| crate::sync::publish_log::log_outcome(root, &result, 0));
 
     assert!(logs.contains("error_kind=\"database\""), "got: {logs}");
     assert!(
@@ -460,7 +460,7 @@ mod publish_attempt_skip_logging {
         let mut paths = HashSet::new();
         let mut records = BTreeMap::new();
 
-        let (_, logs) = capture_warns(|| {
+        let ((), logs) = capture_warns(|| {
             collect_skipped(root.path(), &files, None, &mut paths, &mut records);
         });
 
@@ -482,7 +482,7 @@ mod publish_attempt_skip_logging {
         let mut paths = HashSet::new();
         let mut records = BTreeMap::new();
 
-        let (_, logs) = capture_warns(|| {
+        let ((), logs) = capture_warns(|| {
             collect_skipped(root.path(), &files, None, &mut paths, &mut records);
         });
 

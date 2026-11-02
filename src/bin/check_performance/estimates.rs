@@ -27,7 +27,7 @@ pub(crate) fn collect_new_benches() -> std::io::Result<BTreeMap<String, u64>> {
 pub(crate) fn collect_benches_in(dir: &Path) -> std::io::Result<BTreeMap<String, u64>> {
     let mut paths = Vec::new();
     walk(dir, &mut paths)?;
-    let mut out: BTreeMap<String, u64> = Default::default();
+    let mut out: BTreeMap<String, u64> = BTreeMap::default();
     for estimates_path in paths {
         let func_dir = estimates_path.parent().and_then(Path::parent);
         let names = (
@@ -53,17 +53,29 @@ pub(crate) fn collect_benches_in(dir: &Path) -> std::io::Result<BTreeMap<String,
             .and_then(|m| m.get("point_estimate"))
             .and_then(serde_json::Value::as_f64)
             .ok_or_else(|| invalid(&estimates_path, "no median.point_estimate"))?;
-        // `as u64` saturates silently (NaN or negative -> 0), and a 0 median is
-        // judged infinitely fast, so reject anything that is not a real time.
-        if !median.is_finite() || median < 0.0 || median >= u64::MAX as f64 {
-            return Err(invalid(
+        // A 0 median is judged infinitely fast, so reject anything that is not
+        // a real time: negative, NaN, infinite, or past what `u64` ns can hold.
+        let median_ns = median_to_ns(median).map_err(|reason| {
+            invalid(
                 &estimates_path,
-                &format!("median.point_estimate {median} is not a valid time in ns"),
-            ));
-        }
-        out.insert(format!("{group_name}/{func_name}"), median as u64);
+                &format!("median.point_estimate {median} is not a valid time in ns: {reason}"),
+            )
+        })?;
+        out.insert(format!("{group_name}/{func_name}"), median_ns);
     }
     Ok(out)
+}
+
+/// The whole nanoseconds of a criterion point estimate; the error says why it
+/// is not a time. Converts through `Duration`, which checks its input, instead
+/// of an `as` cast that would saturate silently.
+fn median_to_ns(median: f64) -> Result<u64, String> {
+    if median < 0.0 {
+        return Err("negative".to_owned());
+    }
+    let duration = std::time::Duration::try_from_secs_f64(median.trunc() / 1e9)
+        .map_err(|error| error.to_string())?;
+    u64::try_from(duration.as_nanos()).map_err(|error| error.to_string())
 }
 
 fn invalid(path: &Path, what: &str) -> std::io::Error {

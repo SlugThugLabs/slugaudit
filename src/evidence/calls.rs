@@ -279,7 +279,10 @@ fn function_name(node: &Node, source: &str) -> Result<Option<String>, TextRangeE
 }
 
 fn named_children(node: &Node) -> impl Iterator<Item = Node> {
-    (0..node.named_child_count() as u32).filter_map(move |index| node.named_child(index))
+    // tree-sitter counts children in a `u32`, so `0..=u32::MAX` covers every index.
+    (0..=u32::MAX)
+        .take(node.named_child_count())
+        .filter_map(move |index| node.named_child(index))
 }
 
 #[cfg(test)]

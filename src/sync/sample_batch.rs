@@ -84,7 +84,7 @@ pub(super) fn sample_all_with_deadline(
             );
             1
         },
-        |n| n.get(),
+        std::num::NonZero::get,
     );
     let worker_count = total.min(parallelism.min(8));
 
@@ -110,7 +110,7 @@ pub(super) fn sample_all_with_deadline(
         for _ in 0..worker_count {
             let tx = tx.clone();
             let batch = &batch;
-            scope.spawn(move || batch.run_worker(tx, sink));
+            scope.spawn(move || batch.run_worker(&tx, sink));
         }
         // All senders live in worker closures; drop our `tx` clone once
         // the scope above closes so the receiver disconnects and
@@ -118,7 +118,7 @@ pub(super) fn sample_all_with_deadline(
         drop(tx);
     });
 
-    batch.collect(rx)
+    batch.collect(&rx)
 }
 
 /// A per-file sampling skip: the human-readable cause for the report and the
@@ -175,7 +175,7 @@ impl Batch<'_> {
     /// and send results in arrival order. Exits on the shared error flag,
     /// an exhausted deadline, claimed-index overflow, or a dropped
     /// receiver.
-    fn run_worker(&self, tx: std::sync::mpsc::Sender<(usize, Outcome)>, sink: &dyn ProgressSink) {
+    fn run_worker(&self, tx: &std::sync::mpsc::Sender<(usize, Outcome)>, sink: &dyn ProgressSink) {
         loop {
             if self.error_flag.load(Ordering::Acquire) {
                 return;
@@ -203,7 +203,7 @@ impl Batch<'_> {
                     self.emit_sampling(sink, idx);
                     // Send AFTER any cap/limit bookkeeping so a post-cap
                     // sample never lands in the result vector.
-                    if !self.deliver(&tx, idx, Ok(sample)) {
+                    if !self.deliver(tx, idx, Ok(sample)) {
                         return;
                     }
                 }
@@ -211,22 +211,21 @@ impl Batch<'_> {
                 // UTF-8): this file cannot be indexed at all. Skip it like
                 // discovery skips an unreadable file — record the reason
                 // through the channel, keep every other file going.
-                Err(error) => match skip_code(&error) {
-                    Some(code) => {
+                Err(error) => {
+                    if let Some(code) = skip_code(&error) {
                         self.emit_sampling(sink, idx);
                         let skip = SkipReason {
                             message: error.to_string(),
                             code,
                         };
-                        if !self.deliver(&tx, idx, Err(skip)) {
+                        if !self.deliver(tx, idx, Err(skip)) {
                             return;
                         }
-                    }
-                    None => {
+                    } else {
                         self.abort(PublishError::Sample(error));
                         return;
                     }
-                },
+                }
             }
         }
     }
@@ -309,7 +308,7 @@ impl Batch<'_> {
     /// regardless of which worker finished which file first.
     fn collect(
         &self,
-        rx: std::sync::mpsc::Receiver<(usize, Outcome)>,
+        rx: &std::sync::mpsc::Receiver<(usize, Outcome)>,
     ) -> Result<(Vec<Sample>, Vec<SkippedFile>), PublishError> {
         let mut samples: Vec<Option<Sample>> = (0..self.total).map(|_| None).collect();
         let mut skipped: Vec<SkippedFile> = Vec::new();

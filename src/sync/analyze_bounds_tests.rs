@@ -10,11 +10,11 @@ use crate::util::BudgetBound;
 use std::time::Duration;
 
 /// A per-file allowance no test parse comes near.
-const PER_FILE: Duration = Duration::from_secs(600);
+const PER_FILE: Duration = Duration::from_mins(10);
 
 /// A deadline no test parse comes near.
 fn generous_deadline() -> Deadline {
-    Deadline::after(Duration::from_secs(600))
+    Deadline::after(Duration::from_mins(10))
 }
 
 /// `analyze` under the default `max_parse_bytes`.

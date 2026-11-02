@@ -92,7 +92,7 @@ fn reports_real_counts_for_an_active_project() {
 /// with a genuinely broken import (here: `python`). The verdict
 /// is cached on the edge at write time (`syntax_unmodeled`), so this test
 /// pins the *SQL count* over that cached column — the write-time
-/// computation itself is covered by the publish_edges pipeline tests.
+/// computation itself is covered by the `publish_edges` pipeline tests.
 #[test]
 fn unsupported_language_unresolved_is_counted_separately_from_supported_language_unresolved() {
     use crate::store::open_read_write;
@@ -509,7 +509,7 @@ fn parser_failure_files_total_equals_the_list_when_under_the_cap() {
 #[test]
 fn parser_failure_files_total_exceeds_the_capped_list_when_over_the_cap() {
     let (_dir, mut connection) = database_with_one_revision();
-    let total = MAX_PARSER_FAILURE_FILES + 5;
+    let total = i64::try_from(MAX_PARSER_FAILURE_FILES).expect("cap fits in i64") + 5;
     for index in 0..total {
         insert_indexed_file(
             &connection,
@@ -528,7 +528,7 @@ fn parser_failure_files_total_exceeds_the_capped_list_when_over_the_cap() {
         response.parser_failure_files.len(),
         MAX_PARSER_FAILURE_FILES
     );
-    assert_eq!(response.parser_failure_files_total, total as i64);
+    assert_eq!(response.parser_failure_files_total, total);
 }
 
 /// The envelope counts kinds, skip reasons, extraction completeness, and the

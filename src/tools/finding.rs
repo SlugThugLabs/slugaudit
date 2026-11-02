@@ -32,7 +32,7 @@ pub struct FindingRequest {
     /// One-based line number where the finding starts (inclusive).
     #[schemars(description = "One-based inclusive start line of the finding")]
     pub line_start: u32,
-    /// One-based line number where the finding ends (inclusive). Must be >= line_start.
+    /// One-based line number where the finding ends (inclusive). Must be >= `line_start`.
     #[schemars(description = "One-based inclusive end line of the finding")]
     pub line_end: u32,
     /// How serious the finding is, in your own words — e.g. "critical",

@@ -97,7 +97,7 @@ fn result_store_the_ordinal_at_the_row_count_is_an_empty_final_page() {
 fn result_store_an_idle_result_is_still_readable_and_active_again_after_one_read() {
     let fx = fixture(1 << 30);
     let handle = write_rows(&fx.store, 10, 3).expect("write");
-    fx.set_time(1_000 + GRACE_SECS as i64 + 1);
+    fx.set_time(1_000 + GRACE_SECS_SIGNED + 1);
     assert_eq!(fx.store.stats().idle.results, 1);
 
     let page = touch(&fx.store, handle.id);
@@ -112,9 +112,9 @@ fn result_store_the_grace_boundary_is_inclusive() {
     let fx = fixture(1 << 30);
     write_rows(&fx.store, 3, 3).expect("write");
 
-    fx.set_time(1_000 + GRACE_SECS as i64);
+    fx.set_time(1_000 + GRACE_SECS_SIGNED);
     let at = fx.store.stats();
-    fx.set_time(1_000 + GRACE_SECS as i64 + 1);
+    fx.set_time(1_000 + GRACE_SECS_SIGNED + 1);
     let after = fx.store.stats();
 
     assert_eq!((at.active.results, after.idle.results), (1, 1));
@@ -199,7 +199,7 @@ fn result_store_a_writer_dropped_before_finish_leaves_no_trace() {
 fn result_store_tool_of_names_the_producer_without_renewing_or_marking() {
     let fx = fixture(1 << 30);
     let handle = write_rows(&fx.store, 10, 3).expect("write");
-    fx.set_time(1_000 + i64::try_from(GRACE_SECS).expect("grace fits") + 1);
+    fx.set_time(1_000 + GRACE_SECS_SIGNED + 1);
     assert_eq!(fx.store.stats().idle.results, 1, "idle before the call");
 
     let tool = fx.store.tool_of(handle.id).expect("tool");

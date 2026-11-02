@@ -135,9 +135,8 @@ fn from_json_prefers_actual_asset_urls_when_present() {
 fn from_json_without_a_tag_name_reports_no_tag() {
     let json = serde_json::json!({ "assets": [] });
 
-    let error = match LatestRelease::from_json(&json) {
-        Ok(_) => panic!("no tag name must not parse as a release"),
-        Err(error) => error,
+    let Err(error) = LatestRelease::from_json(&json) else {
+        panic!("no tag name must not parse as a release");
     };
 
     assert!(matches!(error, UpdateError::NoTag), "{error:?}");
@@ -149,9 +148,8 @@ fn fetch_latest_release_reports_undecodable_json() {
     let log = bin.path().join("curl-argv.log");
     plant_fake_curl(bin.path(), &log, "not json at all", "", 0);
 
-    let error = match with_replaced_path(bin.path(), fetch_latest_release) {
-        Ok(_) => panic!("invalid JSON must not parse as a release"),
-        Err(error) => error,
+    let Err(error) = with_replaced_path(bin.path(), fetch_latest_release) else {
+        panic!("invalid JSON must not parse as a release");
     };
 
     let UpdateError::Json(message) = error else {
@@ -172,9 +170,8 @@ fn fetch_latest_release_reports_undecodable_json() {
 fn fetch_latest_release_reports_a_missing_curl_as_a_tool_spawn_failure() {
     let empty = tempfile::tempdir().expect("empty bin dir");
 
-    let error = match with_replaced_path(empty.path(), fetch_latest_release) {
-        Ok(_) => panic!("a PATH with no curl cannot fetch a release"),
-        Err(error) => error,
+    let Err(error) = with_replaced_path(empty.path(), fetch_latest_release) else {
+        panic!("a PATH with no curl cannot fetch a release");
     };
 
     let UpdateError::ToolSpawn { tool, source } = error else {
@@ -190,9 +187,8 @@ fn fetch_latest_release_reports_a_failing_curl_as_network() {
     let log = bin.path().join("curl-argv.log");
     plant_fake_curl(bin.path(), &log, "", "could not resolve host", 1);
 
-    let error = match with_replaced_path(bin.path(), fetch_latest_release) {
-        Ok(_) => panic!("a failing curl must not yield a release"),
-        Err(error) => error,
+    let Err(error) = with_replaced_path(bin.path(), fetch_latest_release) else {
+        panic!("a failing curl must not yield a release");
     };
 
     let UpdateError::Network(message) = error else {

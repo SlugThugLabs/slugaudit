@@ -73,7 +73,8 @@ fn commit_range(
         Ok(base) => return Some(format!("{base}..HEAD")),
         Err(VarError::NotUnicode(raw)) => {
             failures.push(format!(
-                "SLUGAUDIT_CHECK_COMMITS_BASE is not valid UTF-8 ({raw:?}); cannot choose the commit range"
+                "SLUGAUDIT_CHECK_COMMITS_BASE is not valid UTF-8 ({}); cannot choose the commit range",
+                raw.display()
             ));
             return None;
         }

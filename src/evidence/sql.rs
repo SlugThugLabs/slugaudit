@@ -36,34 +36,33 @@ pub fn to_row(item: &EvidenceItem) -> EvidenceRow {
     // is not a real file size, so such a span is stored as unavailable (NULL
     // coordinates, logged) rather than as a clamped offset quoted as fact.
     let mut span_availability = span_availability_text(&item.span);
-    let (start_byte, end_byte, start_line, start_column, end_line, end_column) = match &item.span {
-        SpanAvailability::Present(span) => {
-            match (
+    let (start_byte, end_byte, start_line, start_column, end_line, end_column) =
+        if let SpanAvailability::Present(span) = &item.span {
+            if let (Ok(start_byte), Ok(end_byte), Some(start_line), Some(end_line)) = (
                 i64::try_from(span.start_byte),
                 i64::try_from(span.end_byte),
                 one_based_line(span.start.line),
                 one_based_line(span.end.line),
             ) {
-                (Ok(start_byte), Ok(end_byte), Some(start_line), Some(end_line)) => (
+                (
                     Some(start_byte),
                     Some(end_byte),
                     Some(start_line),
                     Some(i64::from(span.start.column)),
                     Some(end_line),
                     Some(i64::from(span.end.column)),
-                ),
-                _ => {
-                    tracing::warn!(
-                        key = %item.key,
-                        "evidence span coordinate exceeds the storable range; stored as unavailable"
-                    );
-                    span_availability = "NormalizerUnavailable";
-                    (None, None, None, None, None, None)
-                }
+                )
+            } else {
+                tracing::warn!(
+                    key = %item.key,
+                    "evidence span coordinate exceeds the storable range; stored as unavailable"
+                );
+                span_availability = "NormalizerUnavailable";
+                (None, None, None, None, None, None)
             }
-        }
-        _ => (None, None, None, None, None, None),
-    };
+        } else {
+            (None, None, None, None, None, None)
+        };
     EvidenceRow {
         key: item.key.clone(),
         kind: kind_text(&item.kind),

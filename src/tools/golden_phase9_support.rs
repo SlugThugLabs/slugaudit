@@ -132,9 +132,10 @@ pub(super) fn project_with(files: &[(&str, String)]) -> tempfile::TempDir {
 pub(super) fn rust_project() -> tempfile::TempDir {
     let files: Vec<(String, String)> = (0..3)
         .map(|file| {
-            let body: String = (0..4)
+            let body = (0..4)
                 .map(|n| format!("pub fn f{n}(x: Option<u8>) -> u8 {{ x.unwrap() }}\n"))
-                .collect();
+                .collect::<Vec<_>>()
+                .concat();
             let extra = "// TODO: revisit\npub fn g(x: Option<u8>) -> u8 { println!(\"hi\"); x.expect(\"nope\") }\n";
             (format!("mod{file}.rs"), format!("{body}{extra}"))
         })

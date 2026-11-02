@@ -50,13 +50,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match run_command(command) {
         CommandOutcome::Serve => {}
         CommandOutcome::Done => return Ok(()),
-        CommandOutcome::Reported(error) if cli::is_broken_pipe(error.as_ref()) => return Ok(()),
-        CommandOutcome::Reported(error) => {
-            cli::err(format_args!("Error: {error}\n"))?;
-            std::process::exit(1);
+        CommandOutcome::Reported(error) | CommandOutcome::Propagated(error)
+            if cli::is_broken_pipe(error.as_ref()) =>
+        {
+            return Ok(());
         }
-        CommandOutcome::Propagated(error) if cli::is_broken_pipe(error.as_ref()) => return Ok(()),
-        CommandOutcome::Propagated(error) => {
+        CommandOutcome::Reported(error) | CommandOutcome::Propagated(error) => {
             cli::err(format_args!("Error: {error}\n"))?;
             std::process::exit(1);
         }

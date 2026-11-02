@@ -9,7 +9,7 @@ use crate::tools::context::with_verified_read;
 use rmcp::ErrorData;
 use std::fs;
 
-fn db_error(error: rusqlite::Error) -> ErrorData {
+fn db_error(error: &rusqlite::Error) -> ErrorData {
     ErrorData::internal_error(error.to_string(), None)
 }
 
@@ -28,7 +28,7 @@ fn edit_file_between_calls_returns_fresh_evidence() {
             [],
             |row| row.get(0),
         )
-        .map_err(db_error)
+        .map_err(|error| db_error(&error))
     })
     .expect("read content");
     assert!(content_a.expect("read file back").contains("42"));
@@ -44,7 +44,7 @@ fn edit_file_between_calls_returns_fresh_evidence() {
             [],
             |row| row.get(0),
         )
-        .map_err(db_error)
+        .map_err(|error| db_error(&error))
     })
     .expect("read content");
     assert!(content_b.expect("read file back").contains("99"));
@@ -84,7 +84,7 @@ fn global_file_size_limit_governs_the_scan() {
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .map_err(db_error)
+        .map_err(|error| db_error(&error))
     })
     .expect("read scanned file state");
     assert_eq!(kind, "skipped", "the project limit must govern the scan");
@@ -100,7 +100,7 @@ fn create_new_file_gets_indexed() {
     let synced = sync_project(&manager, &project);
     let file_count: i64 = with_verified_read(&synced, |tx| {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
-            .map_err(db_error)
+            .map_err(|error| db_error(&error))
     })
     .expect("read count");
     assert_eq!(file_count, 1);
@@ -110,7 +110,7 @@ fn create_new_file_gets_indexed() {
     let synced2 = sync_project(&manager, &project);
     let file_count2: i64 = with_verified_read(&synced2, |tx| {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
-            .map_err(db_error)
+            .map_err(|error| db_error(&error))
     })
     .expect("read count");
     assert_eq!(file_count2, 2);
@@ -126,7 +126,7 @@ fn delete_file_gets_removed_from_index() {
     let synced = sync_project(&manager, &project);
     let file_count: i64 = with_verified_read(&synced, |tx| {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
-            .map_err(db_error)
+            .map_err(|error| db_error(&error))
     })
     .expect("read count");
     assert_eq!(file_count, 2);
@@ -136,7 +136,7 @@ fn delete_file_gets_removed_from_index() {
     let synced2 = sync_project(&manager, &project);
     let file_count2: i64 = with_verified_read(&synced2, |tx| {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
-            .map_err(db_error)
+            .map_err(|error| db_error(&error))
     })
     .expect("read count");
     assert_eq!(file_count2, 1);
@@ -171,7 +171,7 @@ fn multiple_rapid_edits_collapse_to_one_revision() {
         write_file(
             &project,
             "lib.rs",
-            format!("pub fn a{}() {{}}\n", i).as_bytes(),
+            format!("pub fn a{i}() {{}}\n").as_bytes(),
         );
     }
 
@@ -218,7 +218,7 @@ fn delete_then_recreate_gets_reindexed() {
             [],
             |row| row.get(0),
         )
-        .map_err(db_error)
+        .map_err(|error| db_error(&error))
     })
     .expect("read content");
     assert!(
@@ -260,7 +260,7 @@ fn a_content_edit_in_the_database_is_repaired_on_the_next_call() {
             [],
             |row| row.get(0),
         )
-        .map_err(db_error)
+        .map_err(|error| db_error(&error))
     })
     .expect("read content");
     assert_eq!(
@@ -305,7 +305,7 @@ fn outdated_database_is_automatically_deleted_and_recreated() {
 
     let file_count: i64 = with_verified_read(&synced_after, |tx| {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
-            .map_err(db_error)
+            .map_err(|error| db_error(&error))
     })
     .expect("read count");
     assert_eq!(
@@ -343,7 +343,7 @@ fn database_corrupted_during_sync_is_automatically_rebuilt() {
 
     let file_count: i64 = with_verified_read(&synced_after, |tx| {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
-            .map_err(db_error)
+            .map_err(|error| db_error(&error))
     })
     .expect("read count");
     assert_eq!(
@@ -389,7 +389,7 @@ fn database_corrupted_during_publish_is_automatically_rebuilt() {
 
     let file_count: i64 = with_verified_read(&synced_after, |tx| {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
-            .map_err(db_error)
+            .map_err(|error| db_error(&error))
     })
     .expect("read count");
     assert_eq!(

@@ -90,7 +90,7 @@ fn count_of(response: &LeadsResponse, mechanic: &str) -> i64 {
 fn full_rows(response: &LeadsResponse) -> &[LeadRow] {
     match &response.rows {
         LeadRows::Full(rows) => rows,
-        _ => panic!("expected full rows"),
+        LeadRows::Compact(_) => panic!("expected full rows"),
     }
 }
 
@@ -98,7 +98,7 @@ fn full_rows(response: &LeadsResponse) -> &[LeadRow] {
 fn compact_rows(response: &LeadsResponse) -> &[CompactLeadRow] {
     match &response.rows {
         LeadRows::Compact(rows) => rows,
-        _ => panic!("expected compact rows"),
+        LeadRows::Full(_) => panic!("expected compact rows"),
     }
 }
 
@@ -131,9 +131,10 @@ fn unwrap_fixture(files: usize, per_file: usize) -> tempfile::TempDir {
     let project = tempfile::tempdir().expect("project dir");
     activate(project.path());
     for file in 0..files {
-        let body: String = (0..per_file)
+        let body = (0..per_file)
             .map(|n| format!("pub fn f{n}(x: Option<u8>) -> u8 {{ x.unwrap() }}\n"))
-            .collect();
+            .collect::<Vec<_>>()
+            .concat();
         fs::write(project.path().join(format!("mod{file}.rs")), body).expect("write rust source");
     }
     project

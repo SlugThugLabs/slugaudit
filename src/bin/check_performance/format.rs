@@ -2,15 +2,15 @@
 
 use std::path::Path;
 
-use crate::compare::{Comparison, Row};
+use crate::compare::{Comparison, Row, seconds};
 
 pub(crate) fn fmt_ns(ns: u64) -> String {
     if ns >= 1_000_000_000 {
-        format!("{:.2} s", ns as f64 / 1e9)
+        format!("{:.2} s", seconds(ns))
     } else if ns >= 1_000_000 {
-        format!("{:.2} ms", ns as f64 / 1e6)
+        format!("{:.2} ms", seconds(ns) * 1e3)
     } else if ns >= 1_000 {
-        format!("{:.2} us", ns as f64 / 1e3)
+        format!("{:.2} us", seconds(ns) * 1e6)
     } else {
         format!("{ns} ns")
     }

@@ -136,7 +136,7 @@ impl SourceSyncManager {
                 };
                 log_database_recovery(
                     database_path,
-                    DatabaseRecovery::OpenCorrupt { error: &error },
+                    &DatabaseRecovery::OpenCorrupt { error: &error },
                 );
                 self.rebuild_and_finish(
                     root,
@@ -153,7 +153,7 @@ impl SourceSyncManager {
             Err(error) => {
                 log_database_recovery(
                     database_path,
-                    DatabaseRecovery::OpenFailed { error: &error },
+                    &DatabaseRecovery::OpenFailed { error: &error },
                 );
                 sink.emit(ProgressEvent::Completed {
                     phase: "ensuring_current",
@@ -190,7 +190,7 @@ impl SourceSyncManager {
                 };
                 log_database_recovery(
                     database_path,
-                    DatabaseRecovery::PublishCorrupt { error: &error },
+                    &DatabaseRecovery::PublishCorrupt { error: &error },
                 );
                 drop(connection);
                 self.rebuild_and_finish(
@@ -209,7 +209,7 @@ impl SourceSyncManager {
                 sink.emit(ProgressEvent::Completed {
                     phase: "ensuring_current",
                 });
-                Err(map_publish_error(root.as_path(), error, "publish failed"))
+                Err(map_publish_error(root.as_path(), &error, "publish failed"))
             }
         }
     }
@@ -242,14 +242,14 @@ impl SourceSyncManager {
             match &metadata_error {
                 ProjectMetaError::RootMismatch { stored_root } => log_database_recovery(
                     database_path,
-                    DatabaseRecovery::RootMismatch { stored_root },
+                    &DatabaseRecovery::RootMismatch { stored_root },
                 ),
                 ProjectMetaError::IncompatibleVersion {
                     contract_version,
                     schema_version,
                 } => log_database_recovery(
                     database_path,
-                    DatabaseRecovery::IncompatibleVersion {
+                    &DatabaseRecovery::IncompatibleVersion {
                         contract_version: *contract_version,
                         schema_version: *schema_version,
                     },

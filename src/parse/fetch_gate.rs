@@ -16,7 +16,7 @@ use std::time::Duration;
 /// offline host pays the fetch timeout once per session rather than once per
 /// tool call, short enough that regaining the network is noticed within a
 /// working session without a restart.
-pub(crate) const GRAMMAR_FETCH_COOLDOWN: Duration = Duration::from_secs(10 * 60);
+pub(crate) const GRAMMAR_FETCH_COOLDOWN: Duration = Duration::from_mins(10);
 
 #[cfg(not(test))]
 mod state {

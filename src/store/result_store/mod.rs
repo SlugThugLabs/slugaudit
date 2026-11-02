@@ -23,6 +23,7 @@
 mod cell;
 mod cursor;
 mod error;
+#[cfg(test)]
 mod fault;
 mod owner;
 mod platform;

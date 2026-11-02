@@ -58,7 +58,7 @@ fn a_publish_revision_database_failure_is_the_database_variant() {
 
     let error = publish_revision(
         &mut connection,
-        RevisionInputs {
+        &RevisionInputs {
             expected_current: None,
             manifest_hash: "manifest",
             parser_pack_version: "1.0",
@@ -112,7 +112,7 @@ fn an_invalid_parser_run_is_rejected_by_the_revision_publish() {
 
     let error = publish_revision(
         &mut connection,
-        RevisionInputs {
+        &RevisionInputs {
             expected_current: None,
             manifest_hash: "manifest",
             parser_pack_version: "1.0",

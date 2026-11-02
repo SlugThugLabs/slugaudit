@@ -27,7 +27,7 @@ fn sql_rows(project: &tempfile::TempDir, sql: &str) -> Vec<serde_json::Value> {
             path: Some(project.path().to_string_lossy().into_owned()),
             sql: sql.to_owned(),
             cursor: None,
-            legacy_paging: Default::default(),
+            legacy_paging: crate::tools::page::LegacyPaging::default(),
             page_bytes: None,
         }),
         &crate::progress::NoopProgressSink,

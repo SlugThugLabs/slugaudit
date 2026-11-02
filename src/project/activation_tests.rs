@@ -433,7 +433,7 @@ fn a_failed_gitignore_write_leaves_the_original_untouched() {
     );
     let leftovers = fs::read_dir(root.as_path())
         .expect("read the project root")
-        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.expect("read a project root entry"))
         .filter(|entry| {
             entry
                 .file_name()

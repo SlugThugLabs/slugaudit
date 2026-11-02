@@ -104,7 +104,10 @@ fn adaptive_file_and_query_caps_never_exceed_sqlite_max() {
     let limits = limits_for_profile(AuditProfile::Adaptive).expect("profile limits");
 
     assert!(limits.max_file_bytes <= SQLITE_MAX_VALUE_BYTES);
-    assert!(limits.max_query_value_bytes <= SQLITE_MAX_VALUE_BYTES as usize);
+    assert!(
+        limits.max_query_value_bytes
+            <= usize::try_from(SQLITE_MAX_VALUE_BYTES).expect("the cap fits usize")
+    );
 }
 
 #[test]

@@ -54,7 +54,7 @@ pub struct StructureRequest {
     /// At most `max_structure_query_bytes` UTF-8 bytes (16384 by default); a
     /// longer query is refused with `invalid_params` before it is compiled.
     pub query: String,
-    /// Whether to include full matched source text up to MAX_TEXT_BYTES.
+    /// Whether to include full matched source text up to `MAX_TEXT_BYTES`.
     /// Defaults to true for single-file queries, and false (lean 1-line snippet) for multi-file queries.
     #[serde(default)]
     pub full_text: Option<bool>,

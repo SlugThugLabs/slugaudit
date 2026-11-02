@@ -84,6 +84,7 @@ impl ConfigShape {
     /// Top-level keys that may hold the server map for this shape. The legacy
     /// `mcp` alias is accepted alongside `mcpServers` so an entry written by an
     /// older slugaudit is still detected.
+    #[must_use]
     pub fn sections(self) -> &'static [&'static str] {
         match self {
             ConfigShape::McpServersCommandArgs => &["mcpServers", "mcp"],
@@ -98,6 +99,7 @@ impl ConfigShape {
     /// produce the file safely: `Unknown` has no established shape, and
     /// `GooseExtensions` is a YAML block the user pastes themselves — merging
     /// YAML without a parser would clobber an existing config.
+    #[must_use]
     pub fn write_section(self) -> Option<&'static str> {
         match self {
             ConfigShape::McpServersCommandArgs => Some("mcpServers"),
@@ -167,6 +169,7 @@ pub enum ConfigPath {
 
 impl ConfigPath {
     /// Resolves the config file against `home` (the OS home directory).
+    #[must_use]
     pub fn resolve(&self, home: &Path) -> Option<PathBuf> {
         match self {
             ConfigPath::Home(rel) => Some(home.join(rel)),
@@ -193,6 +196,7 @@ impl ConfigPath {
 
     /// The per-OS paths for a platform-specific entry, so a refusal can print
     /// them instead of guessing.
+    #[must_use]
     pub fn per_os_paths(&self) -> Option<(&'static str, &'static str, &'static str)> {
         match self {
             ConfigPath::PerOs {
@@ -205,6 +209,7 @@ impl ConfigPath {
     }
 
     /// True when a path is known well enough to read or write.
+    #[must_use]
     pub fn is_usable(&self) -> bool {
         !matches!(self, ConfigPath::Unverified)
     }

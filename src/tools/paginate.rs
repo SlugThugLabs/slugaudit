@@ -26,6 +26,7 @@ use rusqlite::Transaction;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// What the call is: a new request or the continuation of a stored one.
+#[derive(Clone, Copy)]
 pub enum PageRequest<'a> {
     /// No cursor: sync `path` and materialise a new result.
     Fresh {
@@ -58,6 +59,7 @@ pub struct PageSpec {
 
 impl PageSpec {
     /// A spec whose columns are those of the typed row `R`.
+    #[must_use]
     pub fn typed<R: Materialize>(tool: &'static str, page_bytes: usize) -> Self {
         Self {
             tool,

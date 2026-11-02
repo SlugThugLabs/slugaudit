@@ -69,21 +69,22 @@ fn main() -> ExitCode {
             eprintln!("{message}");
             cleanup_then(&report_path, ExitCode::from(1))
         }
-        Ok((covered, count)) => {
-            let (percent, passed) = gate(covered, count, threshold);
-            println!(
-                "line coverage: {:.2}% ({} / {} lines, gate {}%)",
-                percent, covered, count, threshold
-            );
-            if passed {
-                return cleanup_then(&report_path, ExitCode::SUCCESS);
+        Ok((covered, count)) => match gate(covered, count, threshold) {
+            Err(message) => {
+                eprintln!("{message}");
+                cleanup_then(&report_path, ExitCode::from(1))
             }
-            println!(
-                "FAIL: line coverage {:.2}% is below the {}% gate",
-                percent, threshold
-            );
-            cleanup_then(&report_path, ExitCode::from(1))
-        }
+            Ok((percent, passed)) => {
+                println!(
+                    "line coverage: {percent:.2}% ({covered} / {count} lines, gate {threshold}%)"
+                );
+                if passed {
+                    return cleanup_then(&report_path, ExitCode::SUCCESS);
+                }
+                println!("FAIL: line coverage {percent:.2}% is below the {threshold}% gate");
+                cleanup_then(&report_path, ExitCode::from(1))
+            }
+        },
     }
 }
 
@@ -121,14 +122,21 @@ fn measure(report_path: &std::path::Path) -> Result<(u64, u64), String> {
 }
 
 /// The line-coverage percent (0.0 when nothing was counted) and whether
-/// it meets the threshold.
-fn gate(covered: u64, count: u64, threshold: f64) -> (f64, bool) {
+/// it meets the threshold. The error is the complete `FAIL: ...` message to
+/// print when a line total does not fit the `u32` the percentage is
+/// computed from (no integer-to-float cast can represent it exactly).
+fn gate(covered: u64, count: u64, threshold: f64) -> Result<(f64, bool), String> {
+    let exact = |name: &str, total: u64| {
+        u32::try_from(total).map(f64::from).map_err(|err| {
+            format!("FAIL: {name} line total {total} is too large to compute a percentage: {err}")
+        })
+    };
     let percent = if count == 0 {
         0.0
     } else {
-        (covered as f64) / (count as f64) * 100.0
+        exact("covered", covered)? / exact("counted", count)? * 100.0
     };
-    (percent, percent >= threshold)
+    Ok((percent, percent >= threshold))
 }
 
 /// Parse the gate threshold. `f64::from_str` accepts `NaN` and `inf`,
@@ -236,19 +244,28 @@ mod tests {
 
     #[test]
     fn gate_passes_at_or_above_the_threshold() {
-        assert_eq!(gate(83, 100, 83.0), (83.0, true));
-        assert_eq!(gate(90, 100, 83.0), (90.0, true));
+        assert_eq!(gate(83, 100, 83.0), Ok((83.0, true)));
+        assert_eq!(gate(90, 100, 83.0), Ok((90.0, true)));
     }
 
     #[test]
     fn gate_fails_below_the_threshold() {
-        assert_eq!(gate(82, 100, 83.0), (82.0, false));
+        assert_eq!(gate(82, 100, 83.0), Ok((82.0, false)));
     }
 
     #[test]
     fn gate_with_no_counted_lines_is_zero_percent() {
-        assert_eq!(gate(0, 0, 83.0), (0.0, false));
-        assert_eq!(gate(0, 0, 0.0), (0.0, true));
+        assert_eq!(gate(0, 0, 83.0), Ok((0.0, false)));
+        assert_eq!(gate(0, 0, 0.0), Ok((0.0, true)));
+    }
+
+    #[test]
+    fn gate_rejects_a_total_too_large_for_an_exact_percentage() {
+        let too_big = u64::from(u32::MAX) + 1;
+        let message = gate(1, too_big, 83.0).expect_err("count exceeds u32");
+        assert!(message.starts_with("FAIL: counted line total 4294967296 is too large"));
+        let message = gate(too_big, too_big, 83.0).expect_err("covered exceeds u32");
+        assert!(message.starts_with("FAIL: covered line total 4294967296 is too large"));
     }
 
     #[test]

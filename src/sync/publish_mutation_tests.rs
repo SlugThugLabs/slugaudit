@@ -37,7 +37,7 @@ fn sample_all_rejects_strictly_over_the_byte_limit_not_at_or_under_it() {
     write(project.path(), "a.rs", b"12345");
     let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
 
-    let generous = crate::util::Deadline::after(std::time::Duration::from_secs(60));
+    let generous = crate::util::Deadline::after(std::time::Duration::from_mins(1));
     let exact = ResourceLimits {
         max_total_import_bytes: 5,
         ..ResourceLimits::default()
@@ -548,7 +548,7 @@ fn publish_error_budget_elapsed_and_categories_and_logging_paths() {
         }));
     assert_eq!(walk_err.path_for_log(), Some("walk.rs".into()));
 
-    let (_, logs) = crate::store::test_capture::capture_warns(|| {
+    let ((), logs) = crate::store::test_capture::capture_warns(|| {
         sample_err.warn_sampling_superseded();
     });
     assert!(logs.contains("a later sampling failure was discarded"));

@@ -125,11 +125,13 @@ fn file_filter(
         } else {
             format!("*{pattern}*")
         });
-        sql.push_str(&format!(" AND path GLOB ?{}", params.len()));
+        sql.push_str(" AND path GLOB ?");
+        sql.push_str(&params.len().to_string());
     }
     if let Some(after) = after {
         params.push(after.to_owned());
-        sql.push_str(&format!(" AND path > ?{}", params.len()));
+        sql.push_str(" AND path > ?");
+        sql.push_str(&params.len().to_string());
     }
     (sql, params)
 }

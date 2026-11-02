@@ -466,16 +466,10 @@ fn a_selected_index_outside_the_catalogue_fails_the_call_instead_of_being_skippe
         revision: "r",
     };
 
-    let error = match crate::tools::mechanic_scan_cached::tally_cached(
-        &tx,
-        &[],
-        &[0],
-        None,
-        None,
-        &scope,
-    ) {
-        Err(error) => error,
-        Ok(_) => panic!("an out-of-range index must fail the call"),
+    let Err(error) =
+        crate::tools::mechanic_scan_cached::tally_cached(&tx, &[], &[0], None, None, &scope)
+    else {
+        panic!("an out-of-range index must fail the call")
     };
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);

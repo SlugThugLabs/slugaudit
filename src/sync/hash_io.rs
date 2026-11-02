@@ -22,7 +22,7 @@ pub(crate) fn hash_reader(
     max_bytes: u64,
 ) -> Result<SourceIdentity, HashError> {
     let mut hasher = blake3::Hasher::new();
-    let mut chunk = [0_u8; HASH_CHUNK_BYTES];
+    let mut chunk = vec![0_u8; HASH_CHUNK_BYTES];
     let mut observed = 0_u64;
     loop {
         let read = match reader.read(&mut chunk) {
@@ -130,7 +130,7 @@ mod tests {
         data: &'a [u8],
     }
 
-    impl<'a> std::io::Read for MockInterruptedReader<'a> {
+    impl std::io::Read for MockInterruptedReader<'_> {
         fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
             if !self.interrupted_once {
                 self.interrupted_once = true;
@@ -167,9 +167,7 @@ mod tests {
 
     impl std::io::Read for MockNonInterruptedErrorReader {
         fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
-            if self.called {
-                panic!("non-interrupted error must not be retried");
-            }
+            assert!(!self.called, "non-interrupted error must not be retried");
             self.called = true;
             Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,

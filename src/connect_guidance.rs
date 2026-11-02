@@ -21,10 +21,13 @@ use std::path::Path;
 
 /// The config file we would touch, or the client id when no verified path
 /// exists.
+#[must_use]
 pub fn target(agent: &AgentDef, home: Option<&Path>) -> String {
     home.and_then(|home| agent.config.resolve(home))
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| format!("`{}`", agent.id))
+        .map_or_else(
+            || format!("`{}`", agent.id),
+            |path| path.display().to_string(),
+        )
 }
 
 /// `Reference: <version/date>` — always printed, so a probed registration is
@@ -112,11 +115,13 @@ fn absent_instructions(agent: &AgentDef, binary: &Path, cli: &str, command: &str
 
 /// True when the automated path may touch the config file at all: an
 /// established shape and a verified path.
+#[must_use]
 pub fn config_writable(agent: &AgentDef) -> bool {
     agent.writes_config_file() && agent.config.is_usable() && agent.shape.write_section().is_some()
 }
 
 /// The refusal error: what we will not attempt, the remedy, and the source.
+#[must_use]
 pub fn refusal(agent: &AgentDef, binary: &Path, home: Option<&Path>) -> ConnectError {
     let mut reason = format!(
         "no automated write is possible for {}: {}",
@@ -148,6 +153,7 @@ fn push_provenance(reason: &mut String, agent: &AgentDef) {
 }
 
 /// The client's executable is not on PATH, so nothing can be attempted.
+#[must_use]
 pub fn cli_absent(agent: &AgentDef, binary: &Path, cli: &str, command: &str) -> ConnectError {
     let mut reason = format!(
         "`{cli}` was not found on PATH, so slugaudit cannot register with {} automatically.\n{}",
@@ -163,6 +169,7 @@ pub fn cli_absent(agent: &AgentDef, binary: &Path, cli: &str, command: &str) -> 
 
 /// What to print after a successful registration: the concrete change, then
 /// the provenance.
+#[must_use]
 pub fn success_lines(agent: &AgentDef, action: &str) -> Vec<String> {
     let mut lines = vec![action.to_owned()];
     lines.extend(provenance(agent));
@@ -189,6 +196,7 @@ pub fn failure_lines(
 }
 
 /// Explains a CLI→file fallback so the user knows which route was taken.
+#[must_use]
 pub fn fallback_note(agent: &AgentDef, home: Option<&Path>, cli: &str, why: &str) -> String {
     format!(
         "`{cli}` was {why}, so slugaudit wrote {} instead.",

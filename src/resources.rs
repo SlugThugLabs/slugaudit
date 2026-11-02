@@ -102,6 +102,7 @@ const CATALOG: &[CatalogEntry] = &[
 /// `check_mcp_surface` snapshots the same list the wire carries and fails
 /// on drift. Adding, removing, or re-describing a resource is therefore a
 /// deliberate, recorded change.
+#[must_use]
 pub fn list() -> Vec<Resource> {
     CATALOG
         .iter()

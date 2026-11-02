@@ -160,6 +160,13 @@ fn err(msg: impl Into<String>) -> ErrorData {
 /// When `action` is `"off"`, deletes the whole `.planning/slugaudit`
 /// directory (then `.planning` if empty). Returns `already_disabled` if the
 /// directory did not exist.
+///
+/// # Errors
+///
+/// `invalid_params` when the path exceeds 32768 bytes, the profile exceeds 64
+/// bytes or is unknown, or the path cannot be resolved to a directory. An
+/// internal error when the project database cannot be opened, when enabling
+/// or disabling the project fails, or when the initial import fails.
 pub fn project_control(
     request: &Parameters<ProjectControlRequest>,
     sink: &dyn crate::progress::ProgressSink,

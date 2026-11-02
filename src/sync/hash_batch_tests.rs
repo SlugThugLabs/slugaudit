@@ -117,7 +117,7 @@ fn a_closed_channel_aborts_worker_with_sampling_result_lost() {
 
 #[test]
 fn a_superseded_error_in_hash_batch_is_warn_logged_exactly_once() {
-    let (_, logs) = crate::store::test_capture::capture_warns(|| {
+    let ((), logs) = crate::store::test_capture::capture_warns(|| {
         let deadline = Deadline::after(std::time::Duration::from_secs(10));
         let batch = HashBatch {
             discovered: &[],

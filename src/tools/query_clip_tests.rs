@@ -1,5 +1,6 @@
 use super::*;
 use crate::sync::SourceSyncManager;
+use std::fmt::Write as _;
 
 const BIG: &str = "big.txt";
 const LINES: usize = 78_000;
@@ -10,9 +11,11 @@ fn big_text() -> String {
     let mut text = String::new();
     for number in 1..=LINES {
         let ending = if number % 1000 == 0 { "\r\n" } else { "\n" };
-        text.push_str(&format!(
+        write!(
+            text,
             "{number:06} héllo wörld 日本語 🦀 \"q\" \\ \t padding padding padding{ending}"
-        ));
+        )
+        .expect("writing to a String cannot fail");
     }
     text
 }
@@ -377,11 +380,12 @@ fn a_text_with_a_nul_is_continued_as_bytes_because_sqlite_text_functions_stop_at
         None,
     )
     .expect("continuation");
-    let expected: String = "ab\0cdefghij"
+    let expected = "ab\0cdefghij"
         .bytes()
         .skip(cell.returned)
         .map(|byte| format!("{byte:02X}"))
-        .collect();
+        .collect::<Vec<_>>()
+        .concat();
     assert_eq!(first_string(&rest, "h"), expected);
 }
 

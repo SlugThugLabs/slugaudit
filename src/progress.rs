@@ -6,7 +6,7 @@
 //! however, natural
 //! progress points worth reporting to long-running tool calls
 //! (per-file sampling during a publish, and the start/completion of
-//! the ensure_current orchestration). [`ProgressSink`] is the
+//! the `ensure_current` orchestration). [`ProgressSink`] is the
 //! abstraction that lets the sync layer emit those events into
 //! something the surrounding transport can render. The MCP-aware
 //! implementation lives in `crate::server_runner` and translates each
@@ -84,3 +84,33 @@ pub struct NoopProgressSink;
 impl ProgressSink for NoopProgressSink {
     fn emit(&self, _event: ProgressEvent) {}
 }
+
+/// `current / total` as a progress fraction, `0.0` when `total` is zero.
+///
+/// Returns `None`, after logging once, when a count exceeds `u32::MAX` (which
+/// `f64` converts exactly): no real project has that many files, so the
+/// notification is dropped rather than reporting a rounded fraction.
+pub(crate) fn sampling_fraction(current: usize, total: usize) -> Option<f64> {
+    match exact_fraction(current, total) {
+        Ok(fraction) => Some(fraction),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "could not compute a progress fraction; notification skipped"
+            );
+            None
+        }
+    }
+}
+
+/// The fallible core of [`sampling_fraction`].
+fn exact_fraction(current: usize, total: usize) -> Result<f64, std::num::TryFromIntError> {
+    if total == 0 {
+        return Ok(0.0);
+    }
+    Ok(f64::from(u32::try_from(current)?) / f64::from(u32::try_from(total)?))
+}
+
+#[cfg(test)]
+#[path = "progress_tests.rs"]
+mod tests;

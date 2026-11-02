@@ -72,6 +72,7 @@ fn remove_args(agent: &AgentDef) -> Vec<String> {
 
 /// The command line as the user would type it, for the "Tried:"/"Ran:" lines.
 /// Every argument is shell-quoted, so a copied line cannot split or expand.
+#[must_use]
 pub fn display_command(cli: &str, args: &[String]) -> String {
     let quoted: Vec<String> = args.iter().map(|arg| shell_quote(arg)).collect();
     format!("{cli} {}", quoted.join(" "))

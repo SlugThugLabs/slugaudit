@@ -102,9 +102,10 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
     // queued (waiting for a blocking permit) or about to start. Sending
     // this before the semaphore acquire is what makes a queued call
     // visible instead of silent.
-    notify_progress(&progress, 0.0, format!("{tool_name} ensuring_current")).await;
+    let target = progress.as_ref();
+    notify_progress(target, 0.0, format!("{tool_name} ensuring_current")).await;
 
-    let result = acquire_and_run(semaphore, tool_name, work, &progress, blocking_span)
+    let result = acquire_and_run(semaphore, tool_name, work, target, blocking_span)
         .instrument(span.clone())
         .await;
 
@@ -112,7 +113,7 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
     // about to be returned. Progress reaches 1.0 whether the work succeeded
     // or failed — "completed" describes the operation's lifecycle, not its
     // outcome.
-    notify_progress(&progress, 1.0, format!("{tool_name} completed")).await;
+    notify_progress(target, 1.0, format!("{tool_name} completed")).await;
 
     log_completion(&span, counters_before, started, result.as_ref().err());
     result
@@ -124,7 +125,7 @@ async fn acquire_and_run<T: Send + 'static>(
     semaphore: Arc<Semaphore>,
     tool_name: &str,
     work: impl FnOnce() -> Result<T, ErrorData> + Send + 'static,
-    progress: &Option<(Peer<RoleServer>, ProgressToken)>,
+    progress: Option<&(Peer<RoleServer>, ProgressToken)>,
     blocking_span: tracing::Span,
 ) -> Result<T, ErrorData> {
     tracing::info!("tool call started");
@@ -218,7 +219,7 @@ fn machine_code(error: &ErrorData) -> Option<&str> {
 /// lifecycle notifications and [`McpProgressSink`], so the notification
 /// shape and the silent-drop contract live in one place.
 async fn notify_progress(
-    progress: &Option<(Peer<RoleServer>, ProgressToken)>,
+    progress: Option<&(Peer<RoleServer>, ProgressToken)>,
     fraction: f64,
     message: String,
 ) {
@@ -240,7 +241,7 @@ async fn notify_progress(
 /// not request progress, in which case the sync layer gets a
 /// [`NoopProgressSink`] and emits nothing.
 pub(crate) fn progress_target(
-    meta: RequestMetaObject,
+    meta: &RequestMetaObject,
     peer: &Peer<RoleServer>,
 ) -> Option<(Peer<RoleServer>, ProgressToken)> {
     meta.get_progress_token().map(|token| (peer.clone(), token))
@@ -312,7 +313,7 @@ impl McpProgressSink {
         // `run_blocking`'s "broken progress channel can never turn a
         // successful tool call into an error" stance.
         self.runtime.spawn(async move {
-            notify_progress(&Some((peer, token)), fraction, message).await;
+            notify_progress(Some(&(peer, token)), fraction, message).await;
         });
     }
 }
@@ -328,10 +329,8 @@ impl ProgressSink for McpProgressSink {
                 current,
                 total,
             } => {
-                let fraction = if total > 0 {
-                    current as f64 / total as f64
-                } else {
-                    0.0
+                let Some(fraction) = crate::progress::sampling_fraction(current, total) else {
+                    return;
                 };
                 // The last Sampling of a burst is allowed to be dropped:
                 // `Completed` (1.0) always sends, so a consumer never

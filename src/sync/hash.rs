@@ -167,7 +167,7 @@ mod tests {
                 );
                 assert_eq!(limit, 8);
             }
-            other => panic!("expected TooLarge, got {other:?}"),
+            other @ HashError::Read { .. } => panic!("expected TooLarge, got {other:?}"),
         }
     }
 

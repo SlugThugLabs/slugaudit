@@ -276,8 +276,8 @@ fn kind_check_allowed_values(connection: &rusqlite::Connection) -> Vec<String> {
 }
 
 /// The parent rows an `evidence` insert needs: `revisions` backs
-/// `files.last_revision_id`, and every parser column on `files` is CHECKed,
-/// so the fixture supplies modeled values.
+/// `files.last_revision_id`, and every parser column on `files` has a CHECK
+/// constraint, so the fixture supplies modeled values.
 fn insert_a_file_row(connection: &rusqlite::Connection) -> i64 {
     connection
         .execute(

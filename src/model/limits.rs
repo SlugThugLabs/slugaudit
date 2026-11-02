@@ -35,7 +35,7 @@ impl Default for EvidenceLimits {
 /// `SQLITE_MAX_LENGTH` of 1,000,000,000 bytes (`sqlite3.c:14137-14138`).
 /// A content or query value over this cannot be inserted or read, so the
 /// per-file/query limits are clamped here: without the clamp, a file in
-/// (1e9, max_file] would fail the whole publish at insert instead of
+/// (1e9, `max_file`] would fail the whole publish at insert instead of
 /// becoming a reported skipped row. Verified 2026-10-19.
 pub(crate) const SQLITE_MAX_VALUE_BYTES: u64 = 1_000_000_000;
 
@@ -45,7 +45,7 @@ pub(crate) const SQLITE_MAX_VALUE_BYTES: u64 = 1_000_000_000;
 /// Every field except `evidence` can be overridden at startup via an
 /// environment variable (see [`process_limits`]). When no override is
 /// present, the compile-time default is used. The pattern is
-/// `SLUGAUDIT_<FIELD>` where `<FIELD>` is the snake_case name of the field —
+/// `SLUGAUDIT_<FIELD>` where `<FIELD>` is the `snake_case` name of the field —
 /// e.g. `SLUGAUDIT_MAX_FILE_BYTES=134217728` doubles the per-file size cap.
 /// Duration fields accept a number of seconds (whole seconds only).
 /// Only explicitly-set variables override; defaults are never altered. A

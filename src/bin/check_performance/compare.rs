@@ -78,6 +78,12 @@ pub(crate) fn compare(
     out
 }
 
+/// `ns` nanoseconds as seconds. Goes through `Duration` so no integer-to-float
+/// cast is needed.
+pub(crate) fn seconds(ns: u64) -> f64 {
+    std::time::Duration::from_nanos(ns).as_secs_f64()
+}
+
 /// One baselined bench's row; pushes a failure line per broken rule.
 fn judge(
     key: &str,
@@ -89,7 +95,7 @@ fn judge(
     let ratio = if entry.median_ns == 0 {
         f64::INFINITY
     } else {
-        new_ns as f64 / entry.median_ns as f64
+        seconds(new_ns) / seconds(entry.median_ns)
     };
     let mut verdict = Verdict::Ok;
     if ratio > 1.0 + threshold_pct / 100.0 {
@@ -105,8 +111,8 @@ fn judge(
         verdict = Verdict::OverBudget;
         failures.push(format!(
             "{key}: {:.1} ms exceeds the {:.0} ms budget",
-            new_ns as f64 / 1e6,
-            budget as f64 / 1e6
+            seconds(new_ns) * 1e3,
+            seconds(budget) * 1e3
         ));
     }
     Row {

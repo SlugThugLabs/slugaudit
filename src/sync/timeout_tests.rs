@@ -58,9 +58,8 @@ fn sampling_times_out_when_the_budget_is_exhausted() {
         &crate::progress::NoopProgressSink,
         &tiny_budget(),
     );
-    let error = match result {
-        Err(error) => error,
-        Ok(_) => panic!("a spent budget must abort sampling"),
+    let Err(error) = result else {
+        panic!("a spent budget must abort sampling")
     };
     assert!(
         matches!(error, PublishError::TimeBudgetExceeded { .. }),

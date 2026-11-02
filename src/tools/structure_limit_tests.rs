@@ -80,7 +80,8 @@ fn long_match_text_is_truncated_and_flagged() {
 pub(super) fn many_functions(count: usize) -> String {
     (0..count)
         .map(|index| format!("pub fn f{index:02}() {{}}\n"))
-        .collect()
+        .collect::<Vec<_>>()
+        .concat()
 }
 
 pub(super) fn page_request(
@@ -190,20 +191,17 @@ fn files_past_the_memory_window_are_reported_and_a_continuation_reaches_them() {
         let response = run_with(&request, &limits, 18);
         windows += 1;
         names.extend(response.matches.iter().map(|m| m.text.clone()));
-        match response.next_start_after_file {
-            Some(next) => {
-                assert!(response.files_not_scanned > 0 && response.bytes_not_scanned > 0);
-                assert!(!response.page.complete, "a window remains");
-                assert_eq!(response.page.limited_by, PageLimit::ScanWindow);
-                assert_eq!(response.page.cursor, None);
-                start_after = Some(next);
-            }
-            None => {
-                assert_eq!(response.files_not_scanned, 0);
-                assert_eq!(response.bytes_not_scanned, 0);
-                assert!(response.page.complete);
-                break;
-            }
+        if let Some(next) = response.next_start_after_file {
+            assert!(response.files_not_scanned > 0 && response.bytes_not_scanned > 0);
+            assert!(!response.page.complete, "a window remains");
+            assert_eq!(response.page.limited_by, PageLimit::ScanWindow);
+            assert_eq!(response.page.cursor, None);
+            start_after = Some(next);
+        } else {
+            assert_eq!(response.files_not_scanned, 0);
+            assert_eq!(response.bytes_not_scanned, 0);
+            assert!(response.page.complete);
+            break;
         }
     }
 

@@ -96,7 +96,7 @@ def classify(value: int) -> str:
     return "positive"
 "#;
 
-pub(crate) const JS_SAMPLE: &str = r#"
+pub(crate) const JS_SAMPLE: &str = r"
 import { readFile } from 'fs/promises';
 
 export class Widget {
@@ -125,9 +125,9 @@ export function classify(value) {
   if (value === 0) return 'zero';
   return 'positive';
 }
-"#;
+";
 
-pub(crate) const TS_SAMPLE: &str = r#"
+pub(crate) const TS_SAMPLE: &str = r"
 import { readFile } from 'fs/promises';
 
 export interface Widget {
@@ -154,4 +154,4 @@ export async function loadWidget(path: string): Promise<Widget> {
 }
 
 export type Status = 'ready' | 'busy' | 'failed';
-"#;
+";

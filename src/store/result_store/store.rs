@@ -197,19 +197,20 @@ impl ResultStore {
         let reclaimed = match admitted {
             Ok(reclaimed) => reclaimed,
             Err(refused) => {
-                match &refused.error {
-                    ResultStoreError::Full { active_count } => tracing::info!(
+                if let ResultStoreError::Full { active_count } = &refused.error {
+                    tracing::info!(
                         active_count,
                         bytes = refused.entry.bytes,
                         budget,
                         "result refused: the store is full"
-                    ),
-                    _ => tracing::info!(
+                    );
+                } else {
+                    tracing::info!(
                         result = %id,
                         bytes = refused.entry.bytes,
                         budget,
                         "result refused: larger than the whole budget"
-                    ),
+                    );
                 }
                 let Refused { error, entry } = refused;
                 // Closes the refused entry's connection and file, lock released.

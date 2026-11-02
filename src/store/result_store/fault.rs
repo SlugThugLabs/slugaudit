@@ -1,19 +1,18 @@
 //! Test-only fault injection for the writer: forces the failures that are
 //! otherwise hard to cause (a full disk, a failure between batches, a result
-//! that was never marked complete). In production builds the seam compiles to
-//! the plain behaviour.
+//! that was never marked complete). The module exists only in test builds; the
+//! writer takes the plain path otherwise.
 
 use super::error::ResultStoreError;
 use super::writer::ResultWriter;
 
 /// A fault the writer consults.
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum Fault {
     /// No fault.
     #[default]
     None,
-    /// Lower `PRAGMA max_page_count` so SQLite itself raises SQLITE_FULL.
+    /// Lower `PRAGMA max_page_count` so SQLite itself raises `SQLITE_FULL`.
     MaxPages(u32),
     /// Fail at the n-th batch checkpoint (1-based), after that batch's rows.
     FailBeforeBatch(usize),
@@ -21,7 +20,6 @@ pub(crate) enum Fault {
     IncompleteMeta,
 }
 
-#[cfg(test)]
 impl ResultWriter<'_> {
     /// Arms `fault` on this writer.
     pub(crate) fn inject(&mut self, fault: Fault) -> Result<(), ResultStoreError> {
@@ -49,16 +47,5 @@ impl ResultWriter<'_> {
             Fault::IncompleteMeta => "incomplete",
             _ => "complete",
         }
-    }
-}
-
-#[cfg(not(test))]
-impl ResultWriter<'_> {
-    pub(super) fn before_batch(&self) -> Result<(), ResultStoreError> {
-        Ok(())
-    }
-
-    pub(super) fn final_state(&self) -> &'static str {
-        "complete"
     }
 }

@@ -48,10 +48,10 @@ fn bench_discovery(c: &mut Criterion) {
     group.bench_function("walk_small", |b| b.iter(|| walk(small.path())));
     group.bench_function("walk_large", |b| b.iter(|| walk(large.path())));
     group.bench_function("walk_and_hash_small", |b| {
-        b.iter(|| walk_and_hash(small.path()))
+        b.iter(|| walk_and_hash(small.path()));
     });
     group.bench_function("walk_and_hash_large", |b| {
-        b.iter(|| walk_and_hash(large.path()))
+        b.iter(|| walk_and_hash(large.path()));
     });
 
     group.finish();

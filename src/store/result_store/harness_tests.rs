@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use uuid::Uuid;
 
 pub(super) const GRACE_SECS: u64 = 900;
+/// [`GRACE_SECS`] as the signed clock value the tests add to timestamps.
+pub(super) const GRACE_SECS_SIGNED: i64 = GRACE_SECS.cast_signed();
 
 pub(super) struct Fixture {
     pub(super) dir: tempfile::TempDir,
@@ -72,7 +74,10 @@ pub(super) fn write_rows(
     let mut writer = store.begin(spec(&["id", "payload"]))?;
     let payload = "x".repeat(payload_len);
     for index in 0..rows {
-        writer.push(&[Cell::Int(index as i64), Cell::Text(payload.clone())])?;
+        writer.push(&[
+            Cell::Int(i64::try_from(index).expect("row index fits i64")),
+            Cell::Text(payload.clone()),
+        ])?;
     }
     writer.finish(&complete())
 }
@@ -106,7 +111,11 @@ pub(super) fn db_files(results_dir: &std::path::Path) -> Vec<String> {
                 .to_string_lossy()
                 .into_owned()
         })
-        .filter(|name| name.ends_with(".db"))
+        .filter(|name| {
+            std::path::Path::new(name)
+                .extension()
+                .is_some_and(|extension| extension == "db")
+        })
         .collect();
     names.sort();
     names

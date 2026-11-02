@@ -47,13 +47,14 @@ fn parse_from(
                 };
                 root = PathBuf::from(value);
             }
-            other => match switches.iter_mut().find(|(name, _)| *name == other) {
-                Some((_, flag)) => **flag = true,
-                None => {
+            other => {
+                if let Some((_, flag)) = switches.iter_mut().find(|(name, _)| *name == other) {
+                    **flag = true;
+                } else {
                     eprintln!("unknown argument: {other}");
                     return Err(ExitCode::from(USAGE_EXIT));
                 }
-            },
+            }
         }
     }
     Ok(root)

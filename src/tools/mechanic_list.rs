@@ -50,10 +50,8 @@ impl MechanicSource {
     }
 }
 
-fn optional_text(value: &Option<String>) -> Cell {
-    value
-        .as_ref()
-        .map_or(Cell::Null, |text| Cell::Text(text.clone()))
+fn optional_text(value: Option<&str>) -> Cell {
+    value.map_or(Cell::Null, |text| Cell::Text(text.to_owned()))
 }
 
 impl Materialize for MechanicListing {
@@ -65,9 +63,9 @@ impl Materialize for MechanicListing {
         vec![
             Cell::Text(self.id.clone()),
             Cell::Text(self.source.as_str().to_owned()),
-            optional_text(&self.note),
-            optional_text(&self.language),
-            optional_text(&self.query),
+            optional_text(self.note.as_deref()),
+            optional_text(self.language.as_deref()),
+            optional_text(self.query.as_deref()),
         ]
     }
 

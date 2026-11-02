@@ -222,7 +222,7 @@ fn completion_lines<'a>(logs: &'a str, tool: &str) -> Vec<&'a str> {
 /// capture that went blind would pass while proving nothing.
 #[test]
 fn captured_text_carries_no_ansi_escapes() {
-    let (_, logs) = capture_at_level(
+    let ((), logs) = capture_at_level(
         || tracing::info!(tool = "probe_ansi_escapes", "tool call completed"),
         Level::INFO,
     );
@@ -246,7 +246,7 @@ fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() 
     // tool with a literal nothing else uses, so these counts can only ever
     // come from the calls made below.
     const TOOL: &str = "probe_call_sequence";
-    let (_, logs) = capture_at_level(
+    let ((), logs) = capture_at_level(
         || {
             current_thread_runtime().block_on(async {
                 let semaphore = Arc::new(Semaphore::new(4));
@@ -369,7 +369,7 @@ fn tool_call_logging_never_emits_the_calls_argument_or_result() {
         path: Some(project.path().to_string_lossy().into_owned()),
         sql: format!("SELECT '{SENTINEL}' AS marker FROM files"),
         cursor: None,
-        legacy_paging: Default::default(),
+        legacy_paging: crate::tools::LegacyPaging::default(),
         page_bytes: None,
     };
 
@@ -419,7 +419,7 @@ fn honest_log_a_failed_tool_call_logs_the_error_message_once() {
         path: Some(project.path().to_string_lossy().into_owned()),
         sql: format!("SELECT {SECRET} FROM files"),
         cursor: None,
-        legacy_paging: Default::default(),
+        legacy_paging: crate::tools::LegacyPaging::default(),
         page_bytes: None,
     };
 
@@ -495,7 +495,7 @@ fn a_failed_tool_call_logs_the_machine_readable_code_but_not_the_cursor_token() 
         path: Some(project.path().to_string_lossy().into_owned()),
         sql: "SELECT path FROM files".to_owned(),
         cursor: Some(CURSOR_TOKEN.to_owned()),
-        legacy_paging: Default::default(),
+        legacy_paging: crate::tools::LegacyPaging::default(),
         page_bytes: None,
     };
 

@@ -267,10 +267,10 @@ pub(super) fn read_row(
         // unread: the cap check never allocates the bytes it refuses.
         match row.get_ref(index)? {
             ValueRef::Text(bytes) => {
-                reject_oversized(bytes.len(), value_cap, index, SqlType::Text)?
+                reject_oversized(bytes.len(), value_cap, index, SqlType::Text)?;
             }
             ValueRef::Blob(bytes) => {
-                reject_oversized(bytes.len(), value_cap, index, SqlType::Blob)?
+                reject_oversized(bytes.len(), value_cap, index, SqlType::Blob)?;
             }
             ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) => {}
         }

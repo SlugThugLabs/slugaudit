@@ -47,7 +47,8 @@ fn call(
 fn many_functions(count: usize) -> String {
     (0..count)
         .map(|index| format!("pub fn f{index}(x: Option<u8>) -> u8 {{ x.unwrap() }}\n"))
-        .collect()
+        .collect::<Vec<_>>()
+        .concat()
 }
 
 #[test]

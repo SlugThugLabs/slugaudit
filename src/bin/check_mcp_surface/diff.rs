@@ -73,6 +73,7 @@ fn walk(committed: &Value, live: &Value, path: &str, found: &mut Vec<String>) {
 }
 
 /// The one surface an entry appears on when the other lacks it.
+#[derive(Clone, Copy)]
 enum Side {
     /// Only the committed snapshot has it.
     Snapshot,

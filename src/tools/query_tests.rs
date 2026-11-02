@@ -280,9 +280,8 @@ fn oversized_sql_carries_its_code_and_never_the_sql_text() {
         "SELECT '{sentinel}' {}",
         "1+".repeat(crate::model::ResourceLimits::default().max_query_sql_bytes)
     );
-    let error = match ask(&project, &huge) {
-        Err(error) => error,
-        Ok(_) => panic!("a statement over the byte cap must fail"),
+    let Err(error) = ask(&project, &huge) else {
+        panic!("a statement over the byte cap must fail")
     };
     assert!(
         !error.message.contains(sentinel),
@@ -350,9 +349,8 @@ fn an_agent_limit_and_offset_still_work_inside_the_subquery() {
 #[test]
 fn query_on_an_inactive_project_is_a_typed_error_not_a_panic() {
     let project = tempfile::tempdir().expect("project dir");
-    let error = match ask(&project, "SELECT 1") {
-        Err(error) => error,
-        Ok(_) => panic!("an inactive project must fail"),
+    let Err(error) = ask(&project, "SELECT 1") else {
+        panic!("an inactive project must fail")
     };
     // The disabled state is one instruction, not one opaque failure per
     // tool: the prose stays, and the machine-readable half says *which*

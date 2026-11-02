@@ -12,6 +12,13 @@ use crate::install::{config_home, running_binary, slugaudit_dir};
 use std::path::{Path, PathBuf};
 
 /// Registers SlugAudit as an MCP server for the named agent, or prompts interactively.
+///
+/// # Errors
+///
+/// Fails when `agent_name` is not a registered agent, when registration fails
+/// (the refusal, config write, or client CLI error is returned as is), or, in
+/// the interactive path, when the prompt cannot be read or the answer is not a
+/// valid choice.
 pub fn run_connect(agent_name: Option<&str>) -> Result<(), ConnectError> {
     match agent_name {
         Some(name) => {
@@ -24,6 +31,12 @@ pub fn run_connect(agent_name: Option<&str>) -> Result<(), ConnectError> {
 }
 
 /// Disconnects SlugAudit from the named agent, or prompts interactively.
+///
+/// # Errors
+///
+/// Fails when `agent_name` is not a registered agent, when removing the
+/// registration fails, or, in the interactive path, when the prompt cannot be
+/// read or the answer is not a valid choice.
 pub fn run_disconnect(agent_name: Option<&str>) -> Result<(), ConnectError> {
     match agent_name {
         Some(name) => {
@@ -117,6 +130,12 @@ fn disconnect_one(agent: AgentDef) -> Result<(), ConnectError> {
 }
 
 /// Runs the interactive terminal prompt to choose and connect a detected agent.
+///
+/// # Errors
+///
+/// Fails when writing to the terminal fails, when input ends before an answer
+/// or the answer is not a valid choice, or when registering the chosen agent
+/// fails.
 pub fn run_connect_interactive() -> Result<(), ConnectError> {
     let home = config_home();
     let detected = detected_agents(home.as_deref());
@@ -191,6 +210,12 @@ fn print_detected_agents(detected: &[AgentDef], home: Option<&Path>) -> Result<(
 }
 
 /// Runs the interactive terminal prompt to choose and disconnect an active agent connection.
+///
+/// # Errors
+///
+/// Fails when writing to the terminal fails, when input ends before an answer
+/// or the answer is not a valid choice, or when removing the chosen agent's
+/// registration fails.
 pub fn run_disconnect_interactive() -> Result<(), ConnectError> {
     let home = config_home();
     let connected: Vec<_> = crate::connect_agents::AGENTS

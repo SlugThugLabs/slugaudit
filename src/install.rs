@@ -17,6 +17,7 @@ pub fn slugthug_home() -> Option<PathBuf> {
 }
 
 /// The dedicated directory for SlugAudit (`~/.slugthug/slugaudit`).
+#[must_use]
 pub fn slugaudit_dir() -> Option<PathBuf> {
     slugthug_home().map(|home| home.join("slugaudit"))
 }
@@ -172,6 +173,13 @@ fn elapsed_since_epoch(now: std::time::SystemTime) -> Result<std::time::Duration
 /// then offers to put `bin_dir` on `PATH` (interactively). Adding to PATH is
 /// always opt-in: an unattended install (piped stdin / CI) keeps the manual
 /// hint instead of editing a shell config it can't confirm.
+///
+/// # Errors
+///
+/// Fails when the running binary or the home directory cannot be determined,
+/// when the install directory cannot be created, when the binary cannot be
+/// copied or placed, or when writing the progress text fails. A failure to
+/// edit the shell config is reported on stderr and is not an error.
 pub fn run_install() -> Result<(), InstallError> {
     let source = running_binary_path(running_binary())?;
     let bin_dir = slugaudit_dir().ok_or(InstallError::NoHome)?;

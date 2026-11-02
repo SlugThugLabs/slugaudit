@@ -11,13 +11,13 @@ fn analyze(relative_path: &str, content: Option<&str>) -> ParseResult {
         relative_path,
         content,
         2 * 1024 * 1024,
-        std::time::Duration::from_secs(600),
+        std::time::Duration::from_mins(10),
         &generous_deadline(),
     )
 }
 
 fn generous_deadline() -> Deadline {
-    Deadline::after(std::time::Duration::from_secs(600))
+    Deadline::after(std::time::Duration::from_mins(10))
 }
 
 #[test]
@@ -124,7 +124,7 @@ fn a_parser_load_failure_logs_the_relative_path_not_the_library_path() {
     let raw_library_path =
         "/home/private-user/.cache/tree-sitter-language-pack/libtree-sitter-rust.so";
     let error = PackError::DynamicLoad(format!("Failed to load library {raw_library_path}"));
-    let (_, logs) = crate::store::test_capture::capture_warns(|| {
+    let ((), logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("capture liveness control for parser_load");
         load_failed_result(relative, "rust".to_owned(), &error);
     });

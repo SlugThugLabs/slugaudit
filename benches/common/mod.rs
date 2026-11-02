@@ -50,8 +50,8 @@ impl Mix {
         z ^ (z >> 31)
     }
 
-    fn below(&mut self, bound: usize) -> usize {
-        (self.next() % bound as u64) as usize
+    fn below(&mut self, bound: u64) -> u64 {
+        self.next() % bound
     }
 }
 
@@ -121,7 +121,7 @@ pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
                 rust_index += 1;
                 write(
                     &format!("src/rust/mod_{k}.rs"),
-                    &rust_source(k, sibling(k, rust_count), mix.below(100) as u64),
+                    &rust_source(k, sibling(k, rust_count), mix.below(100)),
                 );
             }
             3 | 4 | 9 => {
@@ -129,7 +129,7 @@ pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
                 python_index += 1;
                 write(
                     &format!("src/python/mod_{k}.py"),
-                    &python_source(k, sibling(k, python_count), mix.below(100) as u64),
+                    &python_source(k, sibling(k, python_count), mix.below(100)),
                 );
             }
             5 => {
@@ -137,7 +137,7 @@ pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
                 js_index += 1;
                 write(
                     &format!("src/js/mod_{k}.js"),
-                    &js_source(k, sibling(k, js_count), mix.below(100) as u64),
+                    &js_source(k, sibling(k, js_count), mix.below(100)),
                 );
             }
             6 => {
@@ -145,7 +145,7 @@ pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
                 ts_index += 1;
                 write(
                     &format!("src/ts/mod_{k}.ts"),
-                    &ts_source(k, sibling(k, ts_count), mix.below(100) as u64),
+                    &ts_source(k, sibling(k, ts_count), mix.below(100)),
                 );
             }
             _ => write(
@@ -258,7 +258,7 @@ def use_neighbor() -> int:
 
 fn js_source(k: usize, neighbor: usize, offset: u64) -> String {
     format!(
-        r#"// Generated benchmark fixture file {k}
+        r"// Generated benchmark fixture file {k}
 import {{ needle_{neighbor} }} from './mod_{neighbor}';
 import fs from 'fs';
 
@@ -284,13 +284,13 @@ export function shared_helper(value) {{
 export function use_neighbor() {{
   return needle_{neighbor}();
 }}
-"#
+"
     )
 }
 
 fn ts_source(k: usize, neighbor: usize, offset: u64) -> String {
     format!(
-        r#"// Generated benchmark fixture file {k}
+        r"// Generated benchmark fixture file {k}
 import {{ needle_{neighbor} }} from './mod_{neighbor}';
 
 export interface Widget {{
@@ -317,6 +317,6 @@ export function shared_helper(value: number): number {{
 export function use_neighbor(): number {{
   return needle_{neighbor}();
 }}
-"#
+"
     )
 }

@@ -116,7 +116,7 @@ fn an_open_corrupt_recovery_warn_logs_real_path_and_source_error() {
     let database = std::path::Path::new("/home/private-user/secret-repo/project.db");
     let error = crate::store::StoreError::Symlink;
     let ((), logs) = crate::store::test_capture::capture_warns(|| {
-        log_database_recovery(database, DatabaseRecovery::OpenCorrupt { error: &error });
+        log_database_recovery(database, &DatabaseRecovery::OpenCorrupt { error: &error });
     });
 
     let records = sync_failure_records(&logs, "open_project_database");
@@ -145,7 +145,7 @@ fn an_incompatible_version_recovery_warn_logs_real_path_and_versions() {
     let ((), logs) = crate::store::test_capture::capture_warns(|| {
         log_database_recovery(
             database,
-            DatabaseRecovery::IncompatibleVersion {
+            &DatabaseRecovery::IncompatibleVersion {
                 contract_version: 7,
                 schema_version: 9,
             },
@@ -178,7 +178,7 @@ fn an_open_failed_recovery_warn_logs_the_source_error() {
     let error = crate::store::StoreError::Symlink;
 
     let ((), logs) = crate::store::test_capture::capture_warns(|| {
-        log_database_recovery(database, DatabaseRecovery::OpenFailed { error: &error });
+        log_database_recovery(database, &DatabaseRecovery::OpenFailed { error: &error });
     });
 
     let records = sync_failure_records(&logs, "open_project_database");

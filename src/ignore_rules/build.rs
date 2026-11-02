@@ -53,7 +53,7 @@ fn log_build_failure(source: Source, context: Option<&Path>, error: &Error) {
             log_build_failure(source, context, err);
         }
         Error::WithPath { path, err } => {
-            log_one_failure(source, Some(path), ignore_error_kind(err))
+            log_one_failure(source, Some(path), ignore_error_kind(err));
         }
         Error::Loop { ancestor, child } => tracing::warn!(
             operation = "ignore_rules_build",

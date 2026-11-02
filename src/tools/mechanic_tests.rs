@@ -315,9 +315,10 @@ fn add_writes_no_config_and_nothing_but_the_databases_and_stored_pages() {
     );
     assert!(names.contains(&"project.db".to_owned()), "{names:?}");
     assert!(
-        names
-            .iter()
-            .any(|name| name.starts_with("findings-") && name.ends_with(".db")),
+        names.iter().any(|name| name.starts_with("findings-")
+            && std::path::Path::new(name)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("db"))),
         "{names:?}"
     );
 }

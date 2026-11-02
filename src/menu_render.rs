@@ -85,15 +85,18 @@ pub(crate) fn section_label(trimmed: &str) -> Option<&str> {
 }
 
 pub(crate) fn other_agent_instructions(binary: &Path) -> String {
-    let mut text = String::new();
-    text.push_str("SlugAudit is a standard stdio MCP server, so any MCP client can add it:\n\n");
-    text.push_str("  Server name:  slugaudit\n");
-    text.push_str(&format!("  Command:      {}\n", binary.display()));
-    text.push_str("  Arguments:    (none - `serve` is the default)\n\n");
-    text.push_str("Config entry for `.mcp.json` or equivalent:\n\n");
-    text.push_str("{\n  \"mcpServers\": {\n    \"slugaudit\": {\n");
-    text.push_str(&format!("      \"command\": \"{}\",\n", binary.display()));
-    text.push_str("      \"args\": []\n    }\n  }\n}\n\n");
-    text.push_str("Stable command path after install: ~/.slugthug/slugaudit/slugaudit\n");
-    text
+    format!(
+        concat!(
+            "SlugAudit is a standard stdio MCP server, so any MCP client can add it:\n\n",
+            "  Server name:  slugaudit\n",
+            "  Command:      {binary}\n",
+            "  Arguments:    (none - `serve` is the default)\n\n",
+            "Config entry for `.mcp.json` or equivalent:\n\n",
+            "{{\n  \"mcpServers\": {{\n    \"slugaudit\": {{\n",
+            "      \"command\": \"{binary}\",\n",
+            "      \"args\": []\n    }}\n  }}\n}}\n\n",
+            "Stable command path after install: ~/.slugthug/slugaudit/slugaudit\n",
+        ),
+        binary = binary.display()
+    )
 }

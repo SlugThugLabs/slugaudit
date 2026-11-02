@@ -126,10 +126,7 @@ fn integer_arg(
 
 /// Number of lines under the model in the module docs.
 fn count_lines(text: &str) -> usize {
-    let bytes = text.as_bytes();
-    let terminators = bytes.iter().filter(|byte| **byte == b'\n').count();
-    let unterminated_last = bytes.last().is_some_and(|byte| *byte != b'\n');
-    terminators + usize::from(unterminated_last)
+    text.split_inclusive('\n').count()
 }
 
 fn next_newline(bytes: &[u8], from: usize) -> Option<usize> {
@@ -157,23 +154,21 @@ fn slice_lines(text: &str, start: i64, end: i64) -> &str {
     let begin = cursor;
     let mut stop = bytes.len();
     for _ in start..=end {
-        match next_newline(bytes, cursor) {
-            Some(newline) => {
-                cursor = newline + 1;
-                stop = cursor;
-            }
-            None => {
-                stop = bytes.len();
-                break;
-            }
+        if let Some(newline) = next_newline(bytes, cursor) {
+            cursor = newline + 1;
+            stop = cursor;
+        } else {
+            stop = bytes.len();
+            break;
         }
     }
     // `begin` and `stop` sit just after a `\n` or at the ends, so both are
     // char boundaries.
     let slice = &text[begin..stop];
-    match slice.strip_suffix('\n') {
-        Some(line) => line.strip_suffix('\r').unwrap_or(line),
-        None => slice,
+    if let Some(line) = slice.strip_suffix('\n') {
+        line.strip_suffix('\r').unwrap_or(line)
+    } else {
+        slice
     }
 }
 

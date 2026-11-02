@@ -120,7 +120,7 @@ pub(super) struct RevisionInputs<'a> {
 /// resolution reads the known-path set, and the pointer swap comes last.
 pub(super) fn publish_revision(
     connection: &mut Connection,
-    inputs: RevisionInputs<'_>,
+    inputs: &RevisionInputs<'_>,
 ) -> Result<String, RevisionError> {
     let RevisionInputs {
         expected_current,
@@ -131,7 +131,7 @@ pub(super) fn publish_revision(
         skipped,
         discovered_paths,
         re_resolve_unresolved,
-    } = inputs;
+    } = *inputs;
     // The sequence below is the load-bearing ordering stated in the doc
     // comment; each step is a private helper in THIS file so the mutation
     // scope over revision.rs keeps covering the whole publish path.

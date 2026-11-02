@@ -29,7 +29,7 @@ pub(super) enum DatabaseRecovery<'a> {
 }
 
 /// The one WARN for a recovery event.
-pub(super) fn log_database_recovery(database_path: &Path, recovery: DatabaseRecovery<'_>) {
+pub(super) fn log_database_recovery(database_path: &Path, recovery: &DatabaseRecovery<'_>) {
     match recovery {
         DatabaseRecovery::OpenFailed { error } => tracing::warn!(
             operation = "open_project_database",

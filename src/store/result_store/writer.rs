@@ -203,6 +203,7 @@ impl ResultWriter<'_> {
         self.batches += 1;
         self.rows_since_check = 0;
         self.bytes_since_check = 0;
+        #[cfg(test)]
         self.before_batch()?;
         let bytes = result_file::measure_bytes(&self.conn)?;
         if bytes > self.store.limits().max_bytes {
@@ -256,7 +257,10 @@ impl ResultWriter<'_> {
         let row_count = i64::try_from(meta.row_count).map_err(|_| ResultStoreError::Invalid {
             reason: "too many rows",
         })?;
+        #[cfg(test)]
         let state = self.final_state();
+        #[cfg(not(test))]
+        let state = "complete";
         let put = |key: &str, value: &dyn ToSql| {
             self.conn
                 .execute(

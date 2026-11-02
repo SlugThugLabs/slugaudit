@@ -160,9 +160,8 @@ fn every_item_carries_a_span_or_an_explicit_missing_reason() {
 #[test]
 fn unknown_language_is_a_typed_error_not_a_panic() {
     let result = extract("not-a-real-language", "irrelevant");
-    let err = match result {
-        Ok(_) => panic!("unknown language should fail"),
-        Err(err) => err,
+    let Err(err) = result else {
+        panic!("unknown language should fail");
     };
     assert!(
         matches!(err, PackError::Download(_) | PackError::LanguageNotFound(_)),
@@ -480,7 +479,7 @@ fn a_json_file_nested_past_the_pack_bound_fits_the_production_stack() {
 /// slice-out-of-bounds panic inside the pack).
 #[test]
 fn a_parse_cut_at_the_deadline_does_not_corrupt_the_next_parse_on_the_same_thread() {
-    let generous = Deadline::after(std::time::Duration::from_secs(600));
+    let generous = Deadline::after(std::time::Duration::from_mins(10));
     let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
     let big = line.repeat(400 * 1024 / line.len());
     extract_within("rust", "pub fn warm() {}\n", Some(&generous)).expect("warm the cached parser");

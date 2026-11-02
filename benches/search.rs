@@ -58,7 +58,7 @@ const SUBSTRING_SQL: &str = "SELECT COUNT(*) FROM files WHERE content LIKE '%sha
 /// Symbol lookup: filter evidence by kind and by payload content.
 const SYMBOL_SQL: &str = "SELECT COUNT(*) FROM evidence e JOIN files f ON f.id = e.file_id \
      WHERE e.kind = 'Symbol' AND e.payload LIKE '%needle_17%'";
-/// Dependency traversal: recursive CTE over dependency_edges from one Rust
+/// Dependency traversal: recursive CTE over `dependency_edges` from one Rust
 /// module (the `query` tool's dependents/dependencies pattern).
 const TRAVERSAL_SQL: &str = "WITH RECURSIVE reach(from_id) AS ( \
        SELECT id FROM files WHERE path = 'src/rust/mod_1.rs' \

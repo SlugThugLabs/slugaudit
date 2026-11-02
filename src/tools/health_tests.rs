@@ -144,7 +144,7 @@ fn health_database_warns_log_the_real_path_and_source_error() {
         .execute_batch("DROP TABLE revisions")
         .expect("remove the revisions table");
 
-    let (_, logs) = crate::store::test_capture::capture_warns(|| {
+    let ((), logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("capture liveness control for health_real_path");
         super::read_database(&inspect_path);
         super::read_database(&read_path);

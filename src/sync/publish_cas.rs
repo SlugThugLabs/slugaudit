@@ -94,14 +94,15 @@ pub(crate) fn publish_with_limits(
             // Name the retry by category and the real path; the
             // error's Display carries the changed file's path.
             let (error_kind, path) = publish_log::failure_fields(error);
-            match path {
-                Some(path) => tracing::info!(
+            if let Some(path) = path {
+                tracing::info!(
                     attempt,
                     error_kind,
                     path = %path.display(),
                     "publish retrying"
-                ),
-                None => tracing::info!(attempt, error_kind, "publish retrying"),
+                );
+            } else {
+                tracing::info!(attempt, error_kind, "publish retrying");
             }
             attempt += 1;
             continue;

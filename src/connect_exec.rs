@@ -183,6 +183,11 @@ pub enum DisconnectOutcome {
 
 /// Removes SlugAudit from one agent: the CLI route when its binary is present,
 /// and the file entry only for configs this tool writes.
+///
+/// # Errors
+///
+/// Fails when the config file entry cannot be read or rewritten, or when the
+/// client's remove command fails to run or exits unsuccessfully.
 pub fn disconnect_agent(
     agent: &AgentDef,
     home: Option<&Path>,

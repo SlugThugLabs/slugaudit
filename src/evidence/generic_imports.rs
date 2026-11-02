@@ -96,8 +96,8 @@ pub(super) fn extract_generic_imports(language: &str, source: &str) -> Vec<Evide
 ///
 /// A matched node whose **parent** is also an import-shaped node is
 /// skipped: some grammars nest the real import inside a wrapper that is
-/// itself import-shaped (dart: `import_or_export → library_import →
-/// `import_specification`; haskell: `imports → import`). Emitting at
+/// itself import-shaped (dart: `import_or_export` → `library_import` →
+/// `import_specification`; haskell: `imports` → `import`). Emitting at
 /// both levels would double-report the same statement. The outermost
 /// matched node owns the emit;
 /// nested matches are containers, not statements.

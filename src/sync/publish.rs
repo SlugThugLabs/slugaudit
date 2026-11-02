@@ -186,15 +186,14 @@ impl PublishError {
             | PublishError::Discovery(
                 discovery::DiscoveryError::Read { path, .. }
                 | discovery::DiscoveryError::NotRelative(path)
-                | discovery::DiscoveryError::NonUtf8Path(path),
+                | discovery::DiscoveryError::NonUtf8Path(path)
+                | discovery::DiscoveryError::IgnoreRules {
+                    path: Some(path), ..
+                },
             ) => Some(path.display().to_string()),
             PublishError::Discovery(discovery::DiscoveryError::Walk(error)) => {
                 crate::ignore_rules::ignore_error_path(error).map(|path| path.display().to_string())
             }
-            PublishError::Discovery(discovery::DiscoveryError::IgnoreRules {
-                path: Some(path),
-                ..
-            }) => Some(path.display().to_string()),
             _ => None,
         }
     }

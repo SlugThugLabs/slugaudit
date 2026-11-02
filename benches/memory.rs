@@ -76,14 +76,14 @@ fn bench_memory(c: &mut Criterion) {
                 slugaudit_mcp_rust::project::enable(&project_root).expect("activate project");
 
                 let start = std::time::Instant::now();
-                let _synced = slugaudit_mcp_rust::sync::SourceSyncManager::new()
+                let synced = slugaudit_mcp_rust::sync::SourceSyncManager::new()
                     .ensure_current(
                         &project.path().to_string_lossy(),
                         &slugaudit_mcp_rust::progress::NoopProgressSink,
                     )
                     .expect("sync");
                 total += start.elapsed();
-                drop(_synced);
+                drop(synced);
                 drop(connection);
             }
             total

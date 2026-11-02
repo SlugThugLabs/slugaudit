@@ -192,12 +192,12 @@ pub(super) fn each_session_finding(
         .map_err(|error| internal_error("executing the session findings read", error))?;
     for row in rows {
         let mut entry = row.map_err(|error| internal_error("reading a session finding", error))?;
-        entry.status = if lookup.is_current(&entry.path, &entry.source_hash)? {
+        let status = if lookup.is_current(&entry.path, &entry.source_hash)? {
             "current"
         } else {
             "stale"
-        }
-        .to_owned();
+        };
+        status.clone_into(&mut entry.status);
         each(entry)?;
     }
     Ok(())

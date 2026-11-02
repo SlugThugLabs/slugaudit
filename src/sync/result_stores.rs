@@ -88,6 +88,7 @@ impl ResultStoreSlot {
     }
 
     /// The open store, if any result was ever materialised in this process.
+    #[must_use]
     pub fn current(&self) -> Option<Arc<ResultStore>> {
         lock_or_recover(&self.current, "result_store_slot")
             .as_ref()

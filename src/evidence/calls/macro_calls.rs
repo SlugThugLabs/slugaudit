@@ -206,14 +206,14 @@ fn emit_call_row(
     let callee_text = node_text(wrapped, callee.start_byte(), callee.end_byte())?;
     let name = simple_name(callee.clone(), wrapped)?
         .unwrap_or_else(|| callee_text.trim_end_matches('!').to_owned());
-    let span = Span::new(
+    let call_span = Span::new(
         start as u64,
         end as u64,
         scan.lines.position(start),
         scan.lines.position(end),
     )
     .map_or_else(
-        |error| crate::evidence::span_unavailable("macro argument call", error),
+        |error| crate::evidence::span_unavailable("macro argument call", &error),
         SpanAvailability::Present,
     );
     let site = CallSite {
@@ -224,7 +224,7 @@ fn emit_call_row(
         callee_name: name,
         caller: scan.caller.clone(),
         macro_call,
-        span,
+        span: call_span,
     };
     // The key is assigned by `calls::emit_call`, after its dedup.
     Ok(Some((start, end, call_item(String::new(), site))))

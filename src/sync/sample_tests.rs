@@ -353,7 +353,7 @@ fn parallel_sampling_preserves_discovered_index_ordering() {
 
 /// Pins that the concurrent byte-cap check uses CAS, not load+store —
 /// i.e. when several workers would each push past the cap, exactly one
-/// worker surfaces the ImportTooLarge error and the rest bail. Without
+/// worker surfaces the `ImportTooLarge` error and the rest bail. Without
 /// the CAS the test would occasionally observe two errors or a
 /// race-dependence on worker scheduling.
 #[test]
@@ -458,9 +458,6 @@ fn expired_deadline_returns_time_budget_exceeded() {
 /// sampling must keep the progress channel honest during an initial import.
 #[test]
 fn parallel_sampling_emits_one_progress_event_per_file() {
-    let (_dir, discovered) = write_files_relative(&["p1.rs", "p2.rs", "p3.rs"]);
-    let limits = ResourceLimits::default();
-
     #[derive(Default)]
     struct Counter(Arc<std::sync::atomic::AtomicUsize>);
     impl crate::progress::ProgressSink for Counter {
@@ -468,6 +465,9 @@ fn parallel_sampling_emits_one_progress_event_per_file() {
             self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
+
+    let (_dir, discovered) = write_files_relative(&["p1.rs", "p2.rs", "p3.rs"]);
+    let limits = ResourceLimits::default();
 
     let counter = Counter::default();
     let deadline = crate::util::Deadline::after(Duration::from_secs(10));
@@ -553,5 +553,5 @@ fn the_truncation_marker_names_items_that_failed_to_serialize_only_when_there_we
 
 /// A sync deadline no test parse comes near.
 fn generous_deadline() -> crate::util::Deadline {
-    crate::util::Deadline::after(std::time::Duration::from_secs(600))
+    crate::util::Deadline::after(std::time::Duration::from_mins(10))
 }

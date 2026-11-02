@@ -65,14 +65,15 @@ fn bench_startup(c: &mut Criterion) {
     // `target/release/slugaudit` for direct `cargo run` invocations
     // of just this file (none expected, but a missing var would otherwise
     // panic on first iteration).
-    let binary_path = std::env::var_os("CARGO_BIN_EXE_slugaudit")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
+    let binary_path = std::env::var_os("CARGO_BIN_EXE_slugaudit").map_or_else(
+        || {
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("target")
                 .join("release")
                 .join("slugaudit")
-        });
+        },
+        std::path::PathBuf::from,
+    );
 
     // Warm: the first iteration pays filesystem-cached binary load +
     // dynamic libraries; a steep cold-cost on first call. The bench

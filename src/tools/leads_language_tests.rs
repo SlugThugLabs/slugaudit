@@ -55,7 +55,7 @@ fn query_reads_every_python_call_as_call_evidence() {
             path: Some(project.path().to_string_lossy().into_owned()),
             sql: sql.to_owned(),
             cursor: None,
-            legacy_paging: Default::default(),
+            legacy_paging: crate::tools::page::LegacyPaging::default(),
             page_bytes: None,
         }),
         &crate::progress::NoopProgressSink,

@@ -5,6 +5,7 @@
 //! code — so a gate whose verdict never reaches its status cannot pass a
 //! broken tree, and a gate pointed at the wrong directory cannot pass at all.
 
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -87,7 +88,10 @@ fn the_source_limit_gate_passes_a_small_file_and_fails_an_oversized_one() {
     write(project.path(), "src/lib.rs", "pub fn small() {}\n");
 
     let small = run(gate, &["--root", root], project.path());
-    let body: String = (0..360).map(|i| format!("pub fn f{i}() {{}}\n")).collect();
+    let mut body = String::new();
+    for i in 0..360 {
+        writeln!(body, "pub fn f{i}() {{}}").expect("write to a String");
+    }
     write(project.path(), "src/big.rs", &body);
     let big = run(gate, &["--root", root], project.path());
 

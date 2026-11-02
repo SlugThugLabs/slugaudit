@@ -48,6 +48,9 @@ fn is_activation_dir_or_descendant(relative: &str) -> bool {
         .all(|expected| components.next() == Some(expected))
 }
 
+/// Scratch-file suffixes, compared byte for byte: `NOTES.TMP` is not scratch.
+const SCRATCH_SUFFIXES: [&str; 4] = [".tmp", ".bak", ".swp", "~"];
+
 /// True if the file name (last component) is scratch/editor junk that is
 /// almost never legitimate project source. Mirrors `sync::discovery`'s
 /// heuristic exactly.
@@ -57,13 +60,13 @@ fn is_scratch_file_name(relative: &Path) -> bool {
     };
     file_name.ends_with(".claude_output.txt")
         || file_name.starts_with("scratch.")
-        || file_name.ends_with(".tmp")
-        || file_name.ends_with(".bak")
-        || file_name.ends_with(".swp")
-        || file_name.ends_with('~')
+        || SCRATCH_SUFFIXES
+            .iter()
+            .any(|suffix| file_name.ends_with(suffix))
 }
 
 /// The hardcoded exclusion set, shared by discovery and every sync pass.
+#[must_use]
 pub fn is_excluded_path(relative: &str) -> bool {
     is_excluded_dir(relative) || is_scratch_file_name(Path::new(relative))
 }
@@ -172,6 +175,7 @@ impl IgnoreRules {
     /// `.gitignore`-first.
     ///
     /// Matcher assembly lives in `build`; this is the thin constructor.
+    #[must_use]
     pub fn build(root: &Path, ignore_files: &[PathBuf]) -> IgnoreRules {
         let (ignore_by_dir, gitignore_by_dir, global) =
             build::assemble_matchers(root, ignore_files);
@@ -185,6 +189,7 @@ impl IgnoreRules {
 
     /// True if `relative` (a project-relative, `/`-separated path) must
     /// not be indexed: a hardcoded exclusion or a matching ignore rule.
+    #[must_use]
     pub fn should_ignore(&self, relative: &str) -> bool {
         if is_excluded_path(relative) {
             return true;
@@ -207,8 +212,8 @@ impl IgnoreRules {
             current.push(component);
             let is_last = components.peek().is_none();
             match self.matched_at(&current, /* is_dir */ !is_last) {
-                Match::Ignore(_) => return true,
-                Match::Whitelist(_) | Match::None => {}
+                Match::Ignore(()) => return true,
+                Match::Whitelist(()) | Match::None => {}
             }
         }
         false

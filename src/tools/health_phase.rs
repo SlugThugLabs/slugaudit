@@ -40,7 +40,7 @@ pub(super) fn compute_project_state(path: &str) -> Result<ProjectHealthFields, E
     };
 
     Ok(ProjectHealthFields {
-        phase: project_phase(&revision_id, database_read_failed),
+        phase: project_phase(revision_id.as_deref(), database_read_failed),
         remedy: None,
         database,
         database_read_failed,
@@ -66,7 +66,7 @@ fn resolve_active_project(
 /// Maps the database state to a phase. An unreadable database makes the
 /// revision unknowable and must never read as "the first sync never
 /// succeeded".
-fn project_phase(revision_id: &Option<String>, database_read_failed: bool) -> HealthPhase {
+fn project_phase(revision_id: Option<&str>, database_read_failed: bool) -> HealthPhase {
     if database_read_failed {
         return HealthPhase::Unknown;
     }

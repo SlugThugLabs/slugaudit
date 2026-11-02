@@ -41,7 +41,7 @@ fn capped_byte_read_reports_an_oversized_file_without_reading_it_whole() {
             assert_eq!(limit, 1024);
             assert_eq!(observed, 1025);
         }
-        other => panic!("expected TooLarge, got {other:?}"),
+        other @ CappedReadError::Io(_) => panic!("expected TooLarge, got {other:?}"),
     }
 }
 
@@ -56,7 +56,7 @@ fn capped_byte_read_keeps_not_found() {
         CappedReadError::Io(error) => {
             assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
         }
-        other => panic!("expected Io, got {other:?}"),
+        other @ CappedReadError::TooLarge { .. } => panic!("expected Io, got {other:?}"),
     }
 }
 

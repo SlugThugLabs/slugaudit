@@ -135,13 +135,12 @@ fn empty_title_is_a_typed_error() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let mut request = base_request(&project, "lib.rs");
     request.title = String::new();
-    let err = match finding(
+    let Err(err) = finding(
         &Parameters(request),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
-    ) {
-        Ok(_) => panic!("empty title must error"),
-        Err(err) => err,
+    ) else {
+        panic!("empty title must error")
     };
     assert!(err.message.contains("title"));
 }
@@ -152,13 +151,12 @@ fn reversed_line_range_is_a_typed_error() {
     let mut request = base_request(&project, "lib.rs");
     request.line_start = 10;
     request.line_end = 1;
-    let err = match finding(
+    let Err(err) = finding(
         &Parameters(request),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
-    ) {
-        Ok(_) => panic!("reversed line range must error"),
-        Err(err) => err,
+    ) else {
+        panic!("reversed line range must error")
     };
     assert!(err.message.contains("line_end"));
 }
@@ -167,13 +165,12 @@ fn reversed_line_range_is_a_typed_error() {
 fn a_finding_against_an_unindexed_file_is_a_typed_error() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let request = base_request(&project, "does_not_exist.rs");
-    let err = match finding(
+    let Err(err) = finding(
         &Parameters(request),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
-    ) {
-        Ok(_) => panic!("unindexed file must error"),
-        Err(err) => err,
+    ) else {
+        panic!("unindexed file must error")
     };
     assert_eq!(
         err.message,
@@ -189,13 +186,12 @@ fn a_line_number_past_the_files_real_length_is_a_typed_error() {
     let mut request = base_request(&project, "lib.rs");
     request.line_start = 1;
     request.line_end = 9_999;
-    let err = match finding(
+    let Err(err) = finding(
         &Parameters(request),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
-    ) {
-        Ok(_) => panic!("line number past length must error"),
-        Err(err) => err,
+    ) else {
+        panic!("line number past length must error")
     };
     assert!(err.message.contains("exceeds file line count") || err.message.contains("line_end"));
 }
@@ -221,13 +217,12 @@ fn an_oversized_description_is_a_typed_error() {
     let project = activated_project("lib.rs", b"pub fn a() {}\n");
     let mut request = base_request(&project, "lib.rs");
     request.description = "x".repeat(MAX_DESCRIPTION_CHARS + 1);
-    let err = match finding(
+    let Err(err) = finding(
         &Parameters(request),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
-    ) {
-        Ok(_) => panic!("oversized description must error"),
-        Err(err) => err,
+    ) else {
+        panic!("oversized description must error")
     };
     assert!(err.message.contains("description") || err.message.contains("character"));
 }
@@ -238,13 +233,12 @@ fn an_empty_file_cannot_have_a_finding() {
     // nor a fixture path can satisfy it on its own.
     let project = activated_project("blank.rs", b"");
     let request = base_request(&project, "blank.rs");
-    let err = match finding(
+    let Err(err) = finding(
         &Parameters(request),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
-    ) {
-        Ok(_) => panic!("empty file finding must error"),
-        Err(err) => err,
+    ) else {
+        panic!("empty file finding must error")
     };
     assert_eq!(err.message, "blank.rs has no lines to attach a finding to");
 }

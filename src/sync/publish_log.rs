@@ -27,8 +27,8 @@ pub(super) fn log_outcome(
         ),
         Err(error) => {
             let (error_kind, path) = failure_fields(error);
-            match path {
-                Some(path) => tracing::warn!(
+            if let Some(path) = path {
+                tracing::warn!(
                     root = %root.display(),
                     operation = "publish",
                     retries,
@@ -36,15 +36,16 @@ pub(super) fn log_outcome(
                     path = %path.display(),
                     error = %error,
                     "publish failed"
-                ),
-                None => tracing::warn!(
+                );
+            } else {
+                tracing::warn!(
                     root = %root.display(),
                     operation = "publish",
                     retries,
                     error_kind,
                     error = %error,
                     "publish failed"
-                ),
+                );
             }
         }
     }

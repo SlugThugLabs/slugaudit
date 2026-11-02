@@ -36,31 +36,31 @@ fn registered(fx: &Fixture, handle: &ResultHandle) -> bool {
 fn result_store_admission_reclaims_delivered_oldest_first_before_any_idle() {
     let unit = unit_bytes();
     let fx = fixture(unit * 3);
-    let a = write_at(&fx, 10);
-    let b = write_at(&fx, 20);
-    let c = write_at(&fx, 30);
-    // Delivery order (B at 40, A at 50) is the reverse of creation order, so
-    // a creation-order sort would reclaim A first.
+    let first = write_at(&fx, 10);
+    let second = write_at(&fx, 20);
+    let third = write_at(&fx, 30);
+    // Delivery order (second at 40, first at 50) is the reverse of creation order, so
+    // a creation-order sort would reclaim the first result first.
     fx.set_time(40);
-    read_all(&fx.store, b.id);
+    read_all(&fx.store, second.id);
     fx.set_time(50);
-    read_all(&fx.store, a.id);
+    read_all(&fx.store, first.id);
 
-    let d = write_at(&fx, 60);
+    let fourth = write_at(&fx, 60);
 
     assert!(
-        !registered(&fx, &b),
+        !registered(&fx, &second),
         "the oldest delivered result goes first"
     );
-    assert!(registered(&fx, &a) && registered(&fx, &c) && registered(&fx, &d));
+    assert!(registered(&fx, &first) && registered(&fx, &third) && registered(&fx, &fourth));
 
-    let e = write_at(&fx, 70);
+    let fifth = write_at(&fx, 70);
 
     assert!(
-        !registered(&fx, &a),
+        !registered(&fx, &first),
         "the next delivered result goes before any idle one"
     );
-    assert!(registered(&fx, &c) && registered(&fx, &d) && registered(&fx, &e));
+    assert!(registered(&fx, &third) && registered(&fx, &fourth) && registered(&fx, &fifth));
     let stats = fx.store.stats();
     assert_eq!((stats.reclaimed_delivered, stats.reclaimed_idle), (2, 0));
 }
@@ -71,30 +71,30 @@ fn result_store_admission_reclaims_delivered_oldest_first_before_any_idle() {
 fn result_store_admission_reclaims_idle_results_by_last_access_not_creation_order() {
     let unit = unit_bytes();
     let fx = fixture(unit * 3);
-    let a = write_at(&fx, 10);
-    let b = write_at(&fx, 20);
-    let c = write_at(&fx, 30);
-    // A is the oldest created but the most recently accessed: last-access
-    // order is B(20), C(30), A(40).
+    let first = write_at(&fx, 10);
+    let second = write_at(&fx, 20);
+    let third = write_at(&fx, 30);
+    // The first result is the oldest created but the most recently accessed: last-access
+    // order is second(20), third(30), first(40).
     fx.set_time(40);
-    touch(&fx.store, a.id);
-    fx.set_time(40 + GRACE_SECS as i64 + 100);
+    touch(&fx.store, first.id);
+    fx.set_time(40 + GRACE_SECS_SIGNED + 100);
 
-    let d = write_at(&fx, 40 + GRACE_SECS as i64 + 100);
+    let fourth = write_at(&fx, 40 + GRACE_SECS_SIGNED + 100);
 
     assert!(
-        !registered(&fx, &b),
+        !registered(&fx, &second),
         "the least recently accessed goes first"
     );
-    assert!(registered(&fx, &a) && registered(&fx, &c) && registered(&fx, &d));
+    assert!(registered(&fx, &first) && registered(&fx, &third) && registered(&fx, &fourth));
 
-    let e = write_at(&fx, 40 + GRACE_SECS as i64 + 101);
+    let fifth = write_at(&fx, 40 + GRACE_SECS_SIGNED + 101);
 
     assert!(
-        !registered(&fx, &c),
+        !registered(&fx, &third),
         "then the next least recently accessed"
     );
-    assert!(registered(&fx, &a) && registered(&fx, &d) && registered(&fx, &e));
+    assert!(registered(&fx, &first) && registered(&fx, &fourth) && registered(&fx, &fifth));
     let stats = fx.store.stats();
     assert_eq!((stats.reclaimed_delivered, stats.reclaimed_idle), (0, 2));
 }
@@ -105,10 +105,10 @@ fn result_store_a_re_activated_result_is_protected_from_idle_reclaim() {
     let fx = fixture(unit * 2);
     let a = write_at(&fx, 10);
     let b = write_at(&fx, 20);
-    fx.set_time(20 + GRACE_SECS as i64 + 100);
+    fx.set_time(20 + GRACE_SECS_SIGNED + 100);
     touch(&fx.store, a.id);
 
-    let c = write_at(&fx, 20 + GRACE_SECS as i64 + 100);
+    let c = write_at(&fx, 20 + GRACE_SECS_SIGNED + 100);
 
     assert!(
         !registered(&fx, &b),
@@ -199,7 +199,7 @@ fn result_store_stats_report_budget_classes_and_bytes() {
     let delivered = write_at(&fx, 10);
     read_all(&fx.store, delivered.id);
     write_at(&fx, 20);
-    fx.set_time(20 + GRACE_SECS as i64 + 5);
+    fx.set_time(20 + GRACE_SECS_SIGNED + 5);
     write_rows(&fx.store, ROWS, PAYLOAD).expect("write");
 
     let stats = fx.store.stats();

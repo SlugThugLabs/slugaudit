@@ -180,26 +180,27 @@ pub(crate) fn ensure_project_row(
 /// one failure never produces two warn lines.
 pub(crate) fn map_publish_error(
     root: &Path,
-    error: publish::PublishError,
+    error: &publish::PublishError,
     warn_message: &str,
 ) -> ErrorData {
     // Category, real path and the error's `Display` (the cause) are logged
     // so the failure can be diagnosed from the log alone.
-    let (error_kind, path) = publish_log::failure_fields(&error);
-    match path {
-        Some(path) => tracing::debug!(
+    let (error_kind, path) = publish_log::failure_fields(error);
+    if let Some(path) = path {
+        tracing::debug!(
             root = %root.display(),
             error_kind,
             path = %path.display(),
             error = %error,
             "{warn_message}"
-        ),
-        None => tracing::debug!(
+        );
+    } else {
+        tracing::debug!(
             root = %root.display(),
             error_kind,
             error = %error,
             "{warn_message}"
-        ),
+        );
     }
     // The two publish failures a caller would do something different about.
     // A spent budget is permanent on a repo too big for the limit, so its
@@ -250,7 +251,7 @@ pub(crate) fn publish_from_scratch(
     ensure_project_row(&mut connection, root.as_path())?;
     let report =
         publish(&mut connection, root.as_path(), parse::PACK_VERSION, sink).map_err(|error| {
-            map_publish_error(root.as_path(), error, "republishing after corruption")
+            map_publish_error(root.as_path(), &error, "republishing after corruption")
         })?;
     drop(connection);
     Ok(SyncedProject {

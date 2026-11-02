@@ -35,7 +35,7 @@ impl Exception {
 
     /// A dated human approval, the only kind that may authorize the
     /// narrowly bounded 301–350 band.
-    pub(super) fn human(date: &str, reason: String) -> Self {
+    pub(super) fn human(date: &str, reason: &str) -> Self {
         Self {
             reason: format!("{HUMAN_APPROVED_PREFIX}{date}] {reason}"),
             approver: Approver::Human,
@@ -67,7 +67,7 @@ pub(super) fn reason(source: &str) -> Option<Exception> {
             if !valid_date(date) {
                 continue;
             }
-            return Some(Exception::human(date, parse_reason(rest)?));
+            return Some(Exception::human(date, &parse_reason(rest)?));
         }
     }
     None
