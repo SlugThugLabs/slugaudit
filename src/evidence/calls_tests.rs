@@ -1,10 +1,37 @@
+use crate::evidence::{Extraction, WalkInput};
 use crate::model::LineIndex;
+use crate::util::Deadline;
 use slugaudit_test_check::{Check, TestResult};
 
+/// Parses `source` (unbounded) and runs the Rust call walker over it within
+/// `deadline`.
+fn walk_rust(source: &str, deadline: Option<&Deadline>) -> TestResult<Extraction> {
+    let tree = crate::evidence::parse_tree("rust", source, None)
+        .map_err(|failure| format!("{failure:?}"))
+        .check("parse the Rust source")?;
+    let lines = LineIndex::new(source);
+    let input = WalkInput {
+        source,
+        lines: &lines,
+        deadline,
+    };
+    super::extract_rust(&tree, &input).check("extract Rust calls")
+}
+
 fn extract_rust(source: &str) -> TestResult<Vec<crate::model::EvidenceItem>> {
-    Ok(super::extract_rust(source, &LineIndex::new(source), None)
-        .check("extract Rust calls")?
-        .items)
+    Ok(walk_rust(source, None)?.items)
+}
+
+/// The `caller` of every call named `callee`, in source order.
+fn callers_of<'a>(
+    calls: &'a [crate::model::EvidenceItem],
+    callee: &str,
+) -> Vec<&'a serde_json::Value> {
+    calls
+        .iter()
+        .filter(|item| item.payload["callee_name"] == callee)
+        .map(|item| &item.payload["caller"])
+        .collect()
 }
 use crate::model::EvidenceKind;
 
@@ -194,14 +221,64 @@ fn nested_macros_do_not_duplicate_inner_method_calls() -> TestResult {
 #[test]
 fn a_call_walk_under_a_spent_deadline_is_timed_out_not_truncated() -> TestResult {
     let source = "fn run() { helper(); }\n";
-    let spent = crate::util::Deadline::after(std::time::Duration::ZERO);
+    let spent = Deadline::after(std::time::Duration::ZERO);
 
-    let extraction = super::extract_rust(source, &LineIndex::new(source), Some(&spent))
-        .check("extract Rust calls")?;
+    let extraction = walk_rust(source, Some(&spent))?;
 
     assert!(extraction.items.is_empty());
     assert!(extraction.timed_out);
     assert!(!extraction.truncated);
+    Ok(())
+}
+
+/// A call inside a closure reports no caller, inside a macro argument as
+/// outside one: the closure, not the function around it, encloses the call.
+#[test]
+fn a_call_in_a_closure_has_no_caller_inside_and_outside_a_macro() -> TestResult {
+    let source = "fn run(v: Vec<u8>) {\n    \
+                  v.iter().for_each(|x| plain(x));\n    \
+                  println!(\"{:?}\", v.iter().map(|x| wrapped(x)));\n    \
+                  direct();\n    \
+                  println!(\"{}\", in_macro());\n}\n";
+
+    let calls = extract_rust(source)?;
+
+    let null = serde_json::Value::Null;
+    let run = serde_json::Value::from("run");
+    assert_eq!(callers_of(&calls, "plain"), [&null], "{calls:?}");
+    assert_eq!(callers_of(&calls, "wrapped"), [&null], "{calls:?}");
+    assert_eq!(callers_of(&calls, "direct"), [&run], "{calls:?}");
+    assert_eq!(callers_of(&calls, "in_macro"), [&run], "{calls:?}");
+    assert_eq!(callers_of(&calls, "for_each"), [&run], "{calls:?}");
+    assert_eq!(callers_of(&calls, "map"), [&run], "{calls:?}");
+    Ok(())
+}
+
+/// A call reports the innermost named function around it, and a call after
+/// a nested function reports the outer one again.
+#[test]
+fn a_call_reports_the_innermost_enclosing_function() -> TestResult {
+    let source = "fn outer() {\n    \
+                  fn inner() { deep(); }\n    \
+                  shallow();\n}\n\
+                  impl T { fn method(&self) { in_method(); } }\n\
+                  const C: u8 = top();\n";
+
+    let calls = extract_rust(source)?;
+
+    assert_eq!(
+        callers_of(&calls, "deep"),
+        [&serde_json::Value::from("inner")]
+    );
+    assert_eq!(
+        callers_of(&calls, "shallow"),
+        [&serde_json::Value::from("outer")]
+    );
+    assert_eq!(
+        callers_of(&calls, "in_method"),
+        [&serde_json::Value::from("method")]
+    );
+    assert_eq!(callers_of(&calls, "top"), [&serde_json::Value::Null]);
     Ok(())
 }
 
@@ -222,15 +299,15 @@ fn a_macro_body_re_parse_under_a_spent_deadline_is_timed_out() -> TestResult {
         crate::evidence::push_children(&mut pending, &node, |child| child);
     }
     let macro_node = macro_node.check("the fixture has a macro")?;
-    let spent = crate::util::Deadline::after(std::time::Duration::ZERO);
-    let input = super::Input {
+    let spent = Deadline::after(std::time::Duration::ZERO);
+    let input = WalkInput {
         source,
         lines: &lines,
         deadline: Some(&spent),
     };
 
-    let recovered =
-        super::macro_calls::extract(&macro_node, &input).check("recover the macro's calls")?;
+    let recovered = super::macro_calls::extract(&macro_node, &input, Some("run"))
+        .check("recover the macro's calls")?;
 
     assert!(recovered.timed_out);
     assert!(!recovered.capped);

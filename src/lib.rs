@@ -21,14 +21,11 @@
 // it goes through `cli::out` / `cli::err`, which write and flush through
 // `std::io::Write` and return the failure instead of panicking.
 #![deny(clippy::print_stdout)]
-// Production code must not panic on an error value. `unwrap` and `expect`
-// are denied outside `cfg(test)`, where a panic is exactly the harness's
-// failure signal and the conventional idiom. `expect` is included rather
-// than exempted because the two differ only in whether the panic carries a
-// reason: allowing `expect` while banning `unwrap` would push callers to
-// the less informative form. Nothing in this crate needs either - fallible
-// work returns `Result`, and the only genuinely fatal conditions (failed
-// process startup) report the error and choose an exit code.
+// Production code must not panic on an error value. The workspace lints
+// (`Cargo.toml`) deny `unwrap` and `expect` for every target, tests included.
+// Fallible work returns `Result`, and the only genuinely fatal conditions
+// (failed process startup) report the error and choose an exit code. Indexing
+// is denied here outside tests.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 pub mod cli;

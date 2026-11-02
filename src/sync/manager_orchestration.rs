@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=the sync recovery workflow: ensure_current plus the open, verify and publish steps that each discard and rebuild a bad database, with their error shaping
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=the sync recovery workflow: ensure_current plus the open, verify and publish steps that each discard and rebuild a bad database, with their error shaping
 //! Project synchronization orchestration for [`super::SourceSyncManager`].
 //!
 //! This module owns the `ensure_current` workflow: resolving the project,
@@ -202,7 +202,7 @@ impl SourceSyncManager {
                 sink.emit(ProgressEvent::Completed {
                     phase: "ensuring_current",
                 });
-                Err(map_publish_error(root.as_path(), &error, "publish failed"))
+                Err(map_publish_error(root.as_path(), &error, "sync"))
             }
         }
     }
@@ -329,13 +329,13 @@ pub(crate) fn map_activation_error(error: &project::ActivationError) -> ErrorDat
 
 /// The tool error for process limits that were never installed and whose
 /// `SLUGAUDIT_*` environment is invalid (a library embedder; the shipped
-/// binary validates before serving). Logged once here, with the source error.
+/// binary validates before serving). Not logged here: the error is returned
+/// to the tool call, which logs it once (`server_runner::log_completion`),
+/// and a poisoned lock was already logged where it was detected.
 pub(crate) fn map_process_limits_error(error: &crate::model::EnvConfigError) -> ErrorData {
     if let crate::model::EnvConfigError::WarningLedger(poisoned) = error {
-        tracing::error!(%poisoned, "process limits could not be derived");
         return poisoned.clone().into();
     }
-    tracing::error!(%error, "process limits environment is invalid");
     ErrorData::internal_error(
         format!("the SLUGAUDIT_* environment is invalid: {error}; fix it and restart the server"),
         None,

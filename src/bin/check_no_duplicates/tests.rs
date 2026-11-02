@@ -37,6 +37,72 @@ fn same_line_fn_name_with_pub() {
 }
 
 #[test]
+fn same_line_fn_name_skips_visibility_and_qualifiers() {
+    for (after_attr, expected) in [
+        (" pub async fn a()", "a"),
+        (" pub(crate) fn b()", "b"),
+        (" pub(in crate::x) fn c()", "c"),
+        (" const fn d()", "d"),
+        (" unsafe fn e()", "e"),
+        (" pub const unsafe fn f()", "f"),
+        (" async unsafe fn g()", "g"),
+    ] {
+        assert_eq!(
+            same_line_fn_name(after_attr),
+            Some(expected),
+            "{after_attr}"
+        );
+    }
+}
+
+#[test]
+fn same_line_fn_name_rejects_what_is_not_a_fn_item() {
+    for after_attr in [
+        " fnord()",
+        " pubfn x()",
+        " struct S;",
+        " fn (x)",
+        " pub(crate",
+        "",
+    ] {
+        assert_eq!(same_line_fn_name(after_attr), None, "{after_attr:?}");
+    }
+}
+
+#[test]
+fn a_name_defined_twice_in_one_file_is_one_file() -> TestResult {
+    let tmp = tempfile::tempdir().check("temp dir creates")?;
+    let p = tmp.path().join("a_tests.rs");
+    std::fs::write(
+        &p,
+        "#[test]\nfn dup() {}\nmod m {\n    #[test]\n    fn dup() {}\n}\n",
+    )
+    .check("fixture file writes")?;
+    let mut failures = Vec::new();
+
+    let map = test_names_by_file(&[p], &mut failures);
+
+    assert!(failures.is_empty(), "{failures:?}");
+    assert_eq!(map.get("dup").map(BTreeSet::len), Some(1), "{map:?}");
+    Ok(())
+}
+
+#[test]
+fn a_qualified_test_fn_defined_in_two_files_is_found_in_both() -> TestResult {
+    let tmp = tempfile::tempdir().check("temp dir creates")?;
+    let a = tmp.path().join("a_tests.rs");
+    let b = tmp.path().join("b_tests.rs");
+    std::fs::write(&a, "#[test]\npub(crate) fn shared() {}\n").check("fixture a writes")?;
+    std::fs::write(&b, "#[test]\nconst fn shared() {}\n").check("fixture b writes")?;
+    let mut failures = Vec::new();
+
+    let map = test_names_by_file(&[a, b], &mut failures);
+
+    assert_eq!(map.get("shared").map(BTreeSet::len), Some(2), "{map:?}");
+    Ok(())
+}
+
+#[test]
 fn block_line_skips_comments_and_attrs() -> TestResult {
     // Build a synthetic file by running test_names_by_file against
     // a tiny tempdir.
@@ -84,7 +150,7 @@ fn an_unreadable_directory_is_a_failure_not_a_skip() -> TestResult {
     let mut out = Vec::new();
     let mut failures = Vec::new();
 
-    walk_rs(&not_a_dir, &mut out, None, &mut failures);
+    walk_rs(&not_a_dir, &mut out, &mut failures);
 
     assert!(out.is_empty());
     assert!(

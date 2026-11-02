@@ -13,7 +13,7 @@ use super::sample::{self, Sample, to_file_record};
 use crate::model::{ResourceLimits, SourceIdentity};
 use crate::util::Deadline;
 use rusqlite::Connection;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 pub(super) struct Diff {
@@ -31,25 +31,38 @@ pub(super) struct Diff {
 /// feeds edge resolution. A file whose path has no UTF-8 representation is
 /// left out of both — it has no usable key, and it is exactly the gap the
 /// warn line exists to make visible.
+///
+/// A `not_utf8` skip keeps the Pass 1 content hash from `identities` as its
+/// identity rather than a stat identity, so an edit that keeps the size and
+/// mtime is still seen.
+///
+/// # Errors
+///
+/// [`PublishError::ChangedDuringSample`] when a skipped file was deleted
+/// since the walk (see `sample::skipped_record`).
 pub(super) fn collect_skipped(
     root: &Path,
     files: &[discovery::SkippedFile],
     identities: Option<&[SourceIdentity]>,
     discovered_paths: &mut HashSet<String>,
     records: &mut BTreeMap<String, SkippedRecord>,
-) {
+) -> Result<(), PublishError> {
+    let identity_by_path: HashMap<&str, &SourceIdentity> = identities
+        .into_iter()
+        .flatten()
+        .map(|id| (id.relative_path.as_str(), id))
+        .collect();
     for file in files {
         let Some(relative) = discovery::representable_relative_path(root, &file.absolute_path)
         else {
             warn_skipped(file);
             continue;
         };
-        let mut record = sample::skipped_record(&relative, &file.absolute_path, file.code);
+        let mut record = sample::skipped_record(&relative, &file.absolute_path, file.code)?;
         if file.code == super::revision_skipped::SKIP_REASON_NOT_UTF8
-            && let Some(identities) = identities
-            && let Some(id) = identities.iter().find(|id| id.relative_path == relative)
+            && let Some(id) = identity_by_path.get(relative.as_str())
         {
-            record.identity = id.clone();
+            record.identity = (*id).clone();
         }
         // A failed stat is already warned about, with the path, the requested
         // reason and the source error, inside `skipped_record`; a second line
@@ -60,6 +73,7 @@ pub(super) fn collect_skipped(
         discovered_paths.insert(relative.clone());
         records.insert(relative, record);
     }
+    Ok(())
 }
 
 fn warn_skipped(file: &discovery::SkippedFile) {

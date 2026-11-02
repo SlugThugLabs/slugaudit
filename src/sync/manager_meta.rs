@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=the project-metadata row, the revision read and the publish error mapping form one cohesive helper set
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=the project-metadata row, the revision read and the publish error mapping form one cohesive helper set
 //! Project-metadata helpers used by `SourceSyncManager`.
 //!
 //! Kept apart from `manager.rs` so the sync orchestrator's hot path is
@@ -19,36 +19,38 @@ use rmcp::ErrorData;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
-/// Errors from verifying a project's metadata row.
 /// Reads the revision id the database holds after a sync. Every field is
 /// present or the call errors with a named reason — a successful sync that
-/// cannot name its revision is a bug an operator must be able to see.
+/// cannot name its revision is a bug an operator must be able to see. The
+/// error names the database, and is logged once with it by
+/// `server_runner::log_completion`.
 pub(crate) fn revision_after_sync(
     connection: &Connection,
     database_path: &Path,
 ) -> Result<String, ErrorData> {
     current_revision_id(connection)
         .map_err(|error| {
-            tracing::warn!(
-                path = %database_path.display(),
-                error = %error,
-                "failed to read the current revision",
-            );
-            ErrorData::internal_error(format!("reading the current revision: {error}"), None)
+            ErrorData::internal_error(
+                format!(
+                    "reading the current revision of {}: {error}",
+                    database_path.display()
+                ),
+                None,
+            )
         })?
         .ok_or_else(|| {
-            tracing::warn!(
-                path = %database_path.display(),
-                "no current revision found after sync",
-            );
             ErrorData::internal_error(
-                "no current revision found after sync — this is unexpected; \
-                 try disabling and re-enabling the project",
+                format!(
+                    "no current revision found after sync in {} — this is unexpected; \
+                     try disabling and re-enabling the project",
+                    database_path.display()
+                ),
                 None,
             )
         })
 }
 
+/// Errors from verifying a project's metadata row.
 #[derive(Debug)]
 pub(crate) enum ProjectMetaError {
     /// The database at this path was built by a newer/incompatible
@@ -175,34 +177,15 @@ pub(crate) fn ensure_project_row(
 /// Used by every `ensure_current` branch that calls `publish` so a
 /// wire-shape change lands in one place rather than three.
 ///
-/// The terminal warn for a failed publish is emitted once by
-/// `publish_log::log_outcome`, which every `publish` caller reaches; this
-/// site adds the manager operation and project id at debug level only, so
-/// one failure never produces two warn lines.
+/// Nothing is logged here: the message carries the cause, the manager
+/// `operation`, the project root, the failure category and the file it names
+/// ([`publish_log::failure_context`]), and `server_runner::log_completion`
+/// logs that message once when the tool call returns it.
 pub(crate) fn map_publish_error(
     root: &Path,
     error: &publish::PublishError,
-    warn_message: &str,
+    operation: &str,
 ) -> ErrorData {
-    // Category, real path and the error's `Display` (the cause) are logged
-    // so the failure can be diagnosed from the log alone.
-    let (error_kind, path) = publish_log::failure_fields(error);
-    if let Some(path) = path {
-        tracing::debug!(
-            root = %root.display(),
-            error_kind,
-            path = %path.display(),
-            error = %error,
-            "{warn_message}"
-        );
-    } else {
-        tracing::debug!(
-            root = %root.display(),
-            error_kind,
-            error = %error,
-            "{warn_message}"
-        );
-    }
     // The two publish failures a caller would do something different about.
     // A spent budget is permanent on a repo too big for the limit, so its
     // remedy names the knob rather than advising the retry that fails
@@ -216,7 +199,13 @@ pub(crate) fn map_publish_error(
     } else {
         None
     };
-    ErrorData::internal_error(format!("publishing a new revision: {error}"), data)
+    ErrorData::internal_error(
+        format!(
+            "publishing a new revision: {error} ({operation}; {})",
+            publish_log::failure_context(root, error)
+        ),
+        data,
+    )
 }
 
 /// Rebuilds a project's database from scratch after the previous one was
@@ -231,16 +220,11 @@ pub(crate) fn publish_from_scratch(
         // Only `project_control on` creates `.planning/slugaudit`. If it is
         // gone (`off` ran, or the user deleted it) the file cannot be
         // created and the directory must stay gone: report that, not a bare
-        // I/O error.
+        // I/O error. The error is returned to the tool call, which logs it
+        // once (`server_runner::log_completion`).
         if matches!(error, store::StoreError::Create(_))
             && database_path.parent().is_some_and(|dir| !dir.is_dir())
         {
-            tracing::warn!(
-                operation = "rebuild_project_database",
-                path = %database_path.display(),
-                error = %error,
-                "the activation directory disappeared during the call; not recreating it",
-            );
             return ErrorData::invalid_params(
                 "the project was turned off during this call: .planning/slugaudit no longer \
                  exists. Call project_control with action \"on\" to enable it again",

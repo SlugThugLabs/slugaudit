@@ -11,20 +11,19 @@
 //!
 //! This module walks the parse tree with generic node-kind patterns that
 //! are consistent across tree-sitter grammars — the same mechanism as the
-//! variable-binding walker in `normalize` — and emits `Import` evidence for
+//! variable-binding walker in `bindings` — and emits `Import` evidence for
 //! any node whose kind denotes a whole import statement. It runs only when
 //! the pack produced zero imports for a file, so pack-covered languages
-//! never double-report and never pay an extra parse.
+//! never double-report; it reads the tree the binding walker already parsed.
 //!
 //! Node kinds are matched by *name* rather than per-language query; the
 //! resulting `source` text is the raw statement sliced from the original
 //! source, exactly like the pack's own `ImportInfo.source`.
 
+use super::{Extraction, WalkInput};
 use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin};
 use serde_json::json;
 use tree_sitter_language_pack::Node;
-#[cfg(test)]
-use tree_sitter_language_pack::get_parser;
 
 /// Node kinds that denote a whole import statement. These names are shared
 /// across tree-sitter grammars — `import_declaration` in swift and scala,
@@ -65,37 +64,8 @@ fn is_import_statement_kind(kind: &str) -> bool {
     )
 }
 
-/// Runs the generic import walker. Returns empty when the language has no
-/// parser or the source doesn't parse — callers treat that as \\"no imports
-/// found\\", not an error, matching `extract_bindings`'s contract.
-///
-/// Production code uses [`super::normalize::extract_extra_walkers`] (which
-/// shares a tree with the binding walker); this standalone wrapper exists
-/// for tests that want to assert the walker output for a single language
-/// without going through the full evidence pipeline, so it is compiled
-/// only under `cfg(test)` — production never links it.
-#[cfg(test)]
-pub(super) fn extract_generic_imports(
-    language: &str,
-    source: &str,
-) -> slugaudit_test_check::TestResult<Vec<EvidenceItem>> {
-    use slugaudit_test_check::Check;
-    let Ok(mut parser) = get_parser(language) else {
-        return Ok(Vec::new());
-    };
-    let Some(tree) = parser.parse(source) else {
-        return Ok(Vec::new());
-    };
-    let mut items = Vec::new();
-    let mut counter = 0usize;
-    let lines = crate::model::LineIndex::new(source);
-    walk_imports(&tree.root_node(), source, &lines, &mut items, &mut counter)
-        .check("walk the imports")?;
-    Ok(items)
-}
-
 /// Walk emitting one `Import` evidence item per import-shaped
-/// node, slicing the raw statement text from `source` via byte range.
+/// node, slicing the raw statement text from the source via byte range.
 /// Child nodes of a matched statement are still visited (a `using` block
 /// may contain nested directives), but only whole-statement kinds emit.
 ///
@@ -109,38 +79,42 @@ pub(super) fn extract_generic_imports(
 ///
 /// `pub(super)` so `normalize.rs::extract_extra_walkers` can run this
 /// walker on the same already-parsed tree it uses for the
-/// variable-binding walker — saving a second parse of the same source.
+/// variable-binding walker — saving another parse of the same source.
 ///
 /// The walk is a loop over an explicit heap stack, never recursion (see
 /// [`super::push_children`]): each entry carries whether it is *suppressed*
 /// — an import-shaped node directly under another import-shaped node, which
 /// is walked past without emitting.
 ///
-/// Returns whether the walk was cut short; a position past `u32::MAX` is an
-/// error that fails the file's extraction.
+/// Pushes its items onto `out.items`. Sets `out.truncated` when the walk was
+/// cut short by the depth bound or an unsliceable statement, and
+/// `out.timed_out` (stopping the walk) when the deadline ran out; a position
+/// past `u32::MAX` is an error that fails the file's extraction.
 pub(super) fn walk_imports(
     root: &Node,
-    source: &str,
-    lines: &crate::model::LineIndex<'_>,
-    items: &mut Vec<EvidenceItem>,
+    input: &WalkInput<'_>,
+    out: &mut Extraction,
     counter: &mut usize,
-) -> Result<bool, crate::model::PositionOverflow> {
-    let mut capped = false;
+) -> Result<(), crate::model::PositionOverflow> {
     let mut pending = vec![(root.clone(), 0, false)];
     while let Some((node, depth, suppressed)) = pending.pop() {
+        if super::deadline_spent(input.deadline) {
+            out.timed_out = true;
+            break;
+        }
         if depth >= crate::evidence::MAX_WALK_DEPTH {
-            capped = true;
+            out.truncated = true;
             continue;
         }
         let is_import = is_import_statement_kind(&node.kind());
         if is_import && !suppressed {
             // Trim: some grammars (e.g. c/cpp `preproc_include`) include the
             // trailing newline in the statement node's byte range.
-            match super::node_text(source, node.start_byte(), node.end_byte()) {
-                Ok(text) => push_import(text.trim(), &node, lines, items, counter)?,
+            match super::node_text(input.source, node.start_byte(), node.end_byte()) {
+                Ok(text) => push_import(text.trim(), &node, input.lines, &mut out.items, counter)?,
                 Err(error) => {
                     tracing::warn!(%error, "import statement skipped; extraction is partial");
-                    capped = true;
+                    out.truncated = true;
                 }
             }
         }
@@ -154,7 +128,7 @@ pub(super) fn walk_imports(
             (child, depth + 1, nested)
         });
     }
-    Ok(capped)
+    Ok(())
 }
 
 fn push_import(

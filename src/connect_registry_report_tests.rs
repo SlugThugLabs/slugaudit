@@ -4,7 +4,7 @@
 //! invariants; wired from `connect_agents.rs` the same way.
 
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 
 #[test]
 fn registry_entries_cite_a_reference_and_a_docs_page() {
@@ -129,17 +129,21 @@ fn success_and_failure_reports_always_name_their_source() {
 }
 
 #[test]
-fn a_malformed_client_config_is_not_registered_and_says_why() -> TestResult {
+fn a_malformed_client_config_is_an_error_that_keeps_the_json_cause() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
     let config = directory.path().join("mcp.json");
     std::fs::write(&config, "{ not json").check("write config")?;
 
-    let (registered, logs) = crate::store::test_capture::capture_warns(|| {
-        crate::connect_exec::has_slugaudit(&config, &["mcpServers"])
-    });
+    let error = crate::connect_exec::has_slugaudit(&config, &["mcpServers"])
+        .check_err("a malformed config cannot be judged")?;
 
-    assert!(!registered);
-    assert!(logs.contains("not valid JSON"), "{logs}");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(
+        error
+            .get_ref()
+            .is_some_and(<dyn std::error::Error + Send + Sync + 'static>::is::<serde_json::Error>),
+        "the JSON error is kept as the source: {error:?}"
+    );
     Ok(())
 }
 
@@ -152,9 +156,9 @@ fn a_well_formed_client_config_with_the_entry_is_registered_silently() -> TestRe
     let (registered, logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("control-line-probe-has-slugaudit");
         crate::connect_exec::has_slugaudit(&config, &["mcpServers"])
-    });
+    })?;
 
-    assert!(registered);
+    assert!(registered.check("probe config")?);
     assert!(logs.contains("control-line-probe-has-slugaudit"));
     assert!(!logs.contains("not valid JSON"), "{logs}");
     Ok(())
@@ -189,9 +193,12 @@ fn non_json_client_configs_are_detected_without_a_format_warning() -> TestResult
         let (connected, logs) = crate::store::test_capture::capture_warns(|| {
             tracing::warn!("control-line-probe-non-json");
             agent.config_has_slugaudit(home.path())
-        });
+        })?;
 
-        assert!(connected, "{id}: the entry must be detected");
+        assert!(
+            connected.check("probe config")?,
+            "{id}: the entry must be detected"
+        );
         assert!(logs.contains("control-line-probe-non-json"), "{id}: {logs}");
         assert!(!logs.contains("not valid JSON"), "{id}: {logs}");
     }
@@ -199,23 +206,36 @@ fn non_json_client_configs_are_detected_without_a_format_warning() -> TestResult
 }
 
 #[test]
-fn a_malformed_json_config_for_a_json_client_is_not_connected_and_warns() -> TestResult {
+fn a_malformed_json_config_for_a_json_client_is_a_probe_failure_not_connected() -> TestResult {
     let home = tempfile::tempdir().check("temp dir")?;
     let cursor = find_agent("cursor").check("cursor is registered")?;
     let config = cursor.config.resolve(home.path()).check("config path")?;
     std::fs::create_dir_all(config.parent().check("config parent")?).check("mkdir")?;
     std::fs::write(&config, "{ not json").check("write config")?;
 
-    let (connected, logs) =
-        crate::store::test_capture::capture_warns(|| cursor.config_has_slugaudit(home.path()));
+    let (result, logs) =
+        crate::store::test_capture::capture_warns(|| cursor.is_connected(Some(home.path())))?;
 
-    assert!(!connected);
-    assert!(logs.contains("not valid JSON"), "{logs}");
+    let failure = result.check_err("a malformed config cannot be judged")?;
+    assert_eq!(failure.agent, "cursor");
+    assert_eq!(failure.check, "connected");
+    assert_eq!(failure.path, config);
+    assert_eq!(failure.source.kind(), std::io::ErrorKind::InvalidData);
+    assert!(
+        failure
+            .to_string()
+            .starts_with("could not tell whether cursor is connected: "),
+        "{failure}"
+    );
+    assert!(
+        !logs.contains("could not"),
+        "the failure is returned, not logged: {logs}"
+    );
     Ok(())
 }
 
 #[test]
-fn an_unreadable_goose_config_is_not_connected_and_says_why() -> TestResult {
+fn an_unreadable_goose_config_is_a_probe_failure_that_says_why() -> TestResult {
     let home = tempfile::tempdir().check("temp dir")?;
     let goose = find_agent("goose").check("goose is registered")?;
     let config = goose
@@ -226,11 +246,15 @@ fn an_unreadable_goose_config_is_not_connected_and_says_why() -> TestResult {
     let over_cap = usize::try_from(crate::util::MAX_FOREIGN_TEXT_BYTES).check("cap fits")? + 1;
     std::fs::write(&config, vec![b' '; over_cap]).check("write oversized config")?;
 
-    let (connected, logs) =
-        crate::store::test_capture::capture_warns(|| goose.config_has_slugaudit(home.path()));
+    let failure = goose
+        .is_connected(Some(home.path()))
+        .check_err("an oversized config cannot be judged")?;
 
-    assert!(!connected);
-    assert!(logs.contains("could not read client config"), "{logs}");
+    assert_eq!(failure.path, config);
+    assert!(
+        failure.source.to_string().contains("-byte cap"),
+        "{failure}"
+    );
     Ok(())
 }
 

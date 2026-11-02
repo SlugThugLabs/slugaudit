@@ -1,7 +1,8 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=one per-file sampling pipeline: the bounded read, the skip and UTF-8 classification, and folding that sample's analysis into its FileRecord
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=one per-file sampling pipeline: the bounded read, the skip and UTF-8 classification, and folding that sample's analysis into its FileRecord
 use super::analyze::analyze;
-use super::discovery::{DiscoveredFile, FileKind};
+use super::discovery::{DiscoveredFile, FileKind, is_vanished};
 use super::hash;
+use super::publish::PublishError;
 use super::revision::FileRecord;
 use super::revision_skipped::{SKIP_REASON_STAT_FAILED, SkippedRecord};
 use crate::model::{
@@ -14,10 +15,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
 
-// The evidence-capping loop lives beside the evidence writes in
-// `revision_files`; re-exported here so `to_file_record` and its tests use
-// this module's path.
-pub(crate) use super::revision_files::apply_evidence_limits;
+// The evidence-capping loop lives in `evidence_limits`; re-exported here so
+// `to_file_record` and its tests use this module's path.
+pub(crate) use super::evidence_limits::apply_evidence_limits;
 
 // The parallel batch loop lives in `sample_batch`, which keeps this file
 // within its source-size budget. Re-exported here so importers resolve
@@ -25,8 +25,8 @@ pub(crate) use super::revision_files::apply_evidence_limits;
 pub(super) use super::sample_batch::sample_all_with_deadline;
 
 #[derive(Debug, Error)]
-/// Per-file sampling failures. `TooLarge` skips that file with a reported
-/// reason; read/hash failures abort the publish.
+/// Per-file sampling failures. `TooLarge` and `NotUtf8` skip that file with
+/// a reported reason; a read failure aborts the publish attempt.
 pub enum SampleError {
     #[error("failed to read {path}: {source}")]
     Read {
@@ -138,23 +138,35 @@ pub(super) fn sample_file(
 /// The existence row for a file discovery or sampling deliberately did not
 /// index. Never reads the file: the identity is stat-derived
 /// (`hash::stat_identity`) precisely so that skipping keeps its no-read
-/// cost. A failed stat (the file vanished, was never readable, or is a
-/// broken symlink) records an unknown size (`None`, stored as NULL, never a
-/// fake 0), no mtime, and the distinct [`SKIP_REASON_STAT_FAILED`] reason
-/// instead of `reason`, rather than failing the publish; the failure is
-/// logged once here.
-#[must_use]
+/// cost. A stat that fails because the file is gone follows the one rule
+/// for a read after the walk (`PublishError::read_after_walk`): the tree
+/// changed, and the attempt is retried. Any other failed stat (permissions,
+/// a path component that is no longer a directory) records an unknown size
+/// (`None`, stored as NULL, never a fake 0), no mtime, and the distinct
+/// [`SKIP_REASON_STAT_FAILED`] reason instead of `reason`, rather than
+/// failing the publish; that failure is logged once here.
+///
+/// # Errors
+///
+/// [`PublishError::ChangedDuringSample`] when the file no longer exists.
 pub(super) fn skipped_record(
     relative_path: &str,
     absolute_path: &Path,
     reason: &str,
-) -> SkippedRecord {
+) -> Result<SkippedRecord, PublishError> {
     let (byte_len, modified_unix_seconds, reason) = match std::fs::metadata(absolute_path) {
         Ok(metadata) => (
             Some(metadata.len()),
             util::mtime_unix_seconds(&metadata),
             reason,
         ),
+        Err(error) if is_vanished(&error) => {
+            return Err(PublishError::read_after_walk(
+                relative_path,
+                absolute_path.to_path_buf(),
+                error,
+            ));
+        }
         Err(error) => {
             tracing::warn!(
                 path = %absolute_path.display(),
@@ -165,13 +177,13 @@ pub(super) fn skipped_record(
             (None, None, SKIP_REASON_STAT_FAILED)
         }
     };
-    SkippedRecord {
+    Ok(SkippedRecord {
         relative_path: relative_path.to_owned(),
         reason: reason.to_owned(),
         identity: hash::stat_identity(relative_path, byte_len, modified_unix_seconds),
         byte_len,
         modified_unix_seconds,
-    }
+    })
 }
 
 /// Runs pack analysis on a sampled file and folds the result into a

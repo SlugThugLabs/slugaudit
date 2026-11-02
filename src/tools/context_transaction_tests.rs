@@ -148,11 +148,7 @@ fn verified_read_reports_a_failed_transaction_start_with_an_active_transaction()
     assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
     assert_eq!(
         error.message,
-        format!(
-            "starting a read transaction: {cause}. This is often transient (a concurrent sync, \
-             publish, or disable) — retry the call. If it keeps happening, the project may need \
-             to be disabled and re-enabled."
-        )
+        format!("starting a read transaction: {cause}")
     );
     connection
         .execute_batch("ROLLBACK")

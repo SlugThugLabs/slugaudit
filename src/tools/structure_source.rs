@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=every index read structure makes (single file, size-checked window, continuation counts) shares one filter and one error mapping
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=every index read structure makes (single file, size-checked window, continuation counts) shares one filter and one error mapping
 use super::context::internal_error;
 use super::structure::StructureRequest;
 use crate::error_codes::{self, ErrorCode};
@@ -110,6 +110,17 @@ impl SourceWindow {
     }
 }
 
+/// The GLOB a caller's `pattern` stands for: a pattern containing no `*` or
+/// `?` is a substring match. `leads` compiles its `pattern` with the same
+/// rule. Always bound as a parameter, never spliced into SQL.
+pub(super) fn pattern_to_glob(pattern: &str) -> String {
+    if pattern.contains(['*', '?']) {
+        pattern.to_owned()
+    } else {
+        format!("*{pattern}*")
+    }
+}
+
 /// The `WHERE` clause and positional parameters selecting indexed files of
 /// `language`, optionally filtered by `pattern` and strictly after a path.
 fn file_filter(
@@ -120,11 +131,7 @@ fn file_filter(
     let mut sql = "language = ?1 AND file_kind = 'indexed' AND content IS NOT NULL".to_owned();
     let mut params = vec![language.to_owned()];
     if let Some(pattern) = pattern {
-        params.push(if pattern.contains(['*', '?']) {
-            pattern.to_owned()
-        } else {
-            format!("*{pattern}*")
-        });
+        params.push(pattern_to_glob(pattern));
         sql.push_str(" AND path GLOB ?");
         sql.push_str(&params.len().to_string());
     }
@@ -134,14 +141,6 @@ fn file_filter(
         sql.push_str(&params.len().to_string());
     }
     (sql, params)
-}
-
-/// A database failure on the multi-file read is operational, never a bad
-/// request. Each call site names the operation it was doing so the caller
-/// gets the same recovery hint as every other tool ([`internal_error`])
-/// and the underlying cause survives.
-fn internal(context: &str, error: rusqlite::Error) -> ErrorData {
-    internal_error(context, error)
 }
 
 /// The memory bounds of one multi-file window.
@@ -174,13 +173,13 @@ pub(super) fn fetch_sources_for_language(
         .prepare(&format!(
             "SELECT path, octet_length(content) FROM files WHERE {filter} ORDER BY path ASC"
         ))
-        .map_err(|error| internal("preparing the indexed-file scan", error))?;
+        .map_err(|error| internal_error("preparing the indexed-file scan", error))?;
     let mut content_stmt = connection
         .prepare("SELECT content FROM files WHERE path = ?1")
-        .map_err(|error| internal("preparing the indexed-file read", error))?;
+        .map_err(|error| internal_error("preparing the indexed-file read", error))?;
     let mut rows = stmt
         .query(rusqlite::params_from_iter(params.iter()))
-        .map_err(|error| internal("starting the indexed-file scan", error))?;
+        .map_err(|error| internal_error("starting the indexed-file scan", error))?;
     let mut files = Vec::new();
     let mut total_bytes: u64 = 0;
     let mut files_over_parse_limit = 0usize;
@@ -188,14 +187,14 @@ pub(super) fn fetch_sources_for_language(
     let mut window_full = false;
     while let Some(row) = rows
         .next()
-        .map_err(|error| internal("reading indexed files", error))?
+        .map_err(|error| internal_error("reading indexed files", error))?
     {
         let path: String = row
             .get(0)
-            .map_err(|error| internal("reading an indexed file path", error))?;
+            .map_err(|error| internal_error("reading an indexed file path", error))?;
         let size: u64 = row
             .get(1)
-            .map_err(|error| internal("reading an indexed file's size", error))?;
+            .map_err(|error| internal_error("reading an indexed file's size", error))?;
         if size > per_file_limit {
             files_over_parse_limit += 1;
             last_examined = Some(path);
@@ -207,7 +206,7 @@ pub(super) fn fetch_sources_for_language(
         }
         let content: String = content_stmt
             .query_row([&path], |row| row.get(0))
-            .map_err(|error| internal("reading an indexed file's content", error))?;
+            .map_err(|error| internal_error("reading an indexed file's content", error))?;
         total_bytes = total_bytes.saturating_add(content.len() as u64);
         last_examined = Some(path.clone());
         files.push((path, content));
@@ -224,7 +223,7 @@ pub(super) fn fetch_sources_for_language(
                 rusqlite::params_from_iter(rest_params.iter()),
                 |row| Ok((row.get::<_, usize>(0)?, row.get::<_, u64>(1)?)),
             )
-            .map_err(|error| internal("counting files past the scan window", error))?;
+            .map_err(|error| internal_error("counting files past the scan window", error))?;
     }
     Ok(SourceWindow {
         files,
@@ -290,7 +289,7 @@ fn ensure_indexed_language(
             [PROSE_LANGUAGE, language],
             |row| row.get(0),
         )
-        .map_err(|error| internal("checking the requested language is indexed", error))?;
+        .map_err(|error| internal_error("checking the requested language is indexed", error))?;
     if present {
         return Ok(());
     }
@@ -298,11 +297,11 @@ fn ensure_indexed_language(
         .prepare(&format!(
             "SELECT DISTINCT language FROM files WHERE {scannable} ORDER BY language"
         ))
-        .map_err(|error| internal("preparing the indexed-language list", error))?;
+        .map_err(|error| internal_error("preparing the indexed-language list", error))?;
     let indexed = statement
         .query_map([PROSE_LANGUAGE], |row| row.get::<_, String>(0))
         .and_then(Iterator::collect::<rusqlite::Result<Vec<String>>>)
-        .map_err(|error| internal("listing the indexed languages", error))?;
+        .map_err(|error| internal_error("listing the indexed languages", error))?;
     let listed = if indexed.is_empty() {
         "none (no parsed source files are indexed)".to_owned()
     } else {

@@ -28,7 +28,7 @@ pub(super) fn strip_trailing_glob(rest: &str) -> &str {
 /// `main.rs`) when `dir` is a crate's `src`. The crate-root forms matter
 /// because `use super::*;` in a top-level module (`src/foo.rs`) refers to
 /// the crate root itself, which has no `src.rs`/`src/mod.rs`.
-fn resolve_rust_module_file(
+pub(super) fn resolve_rust_module_file(
     dir: &str,
     known_paths: &HashSet<&str>,
     forced_confidence: Option<&'static str>,

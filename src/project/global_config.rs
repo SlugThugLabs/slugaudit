@@ -7,7 +7,7 @@
 
 use crate::model::{
     AuditProfile, EnvConfigError, EnvOverrides, MemoryDetectError, ResourceLimits,
-    SQLITE_MAX_VALUE_BYTES, env_overrides, limits_for_profile,
+    clamp_sqlite_value, env_overrides, limits_for_profile,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -179,7 +179,7 @@ impl GlobalConfig {
 
     /// Overrides fields in `limits` with the limit keys this config sets.
     /// The `profile` key is not applied here: it only chooses the base
-    /// limits, which [`effective_limits`] does before calling this.
+    /// limits, which `resolve_limits` does before calling this.
     ///
     /// # Errors
     ///
@@ -192,15 +192,7 @@ impl GlobalConfig {
         if let Some(file_bytes) =
             ResourceLimits::config_nonzero("config max_file_bytes", self.max_file_bytes)?
         {
-            let capped = file_bytes.min(SQLITE_MAX_VALUE_BYTES);
-            if capped != file_bytes {
-                tracing::warn!(
-                    requested = file_bytes,
-                    cap = SQLITE_MAX_VALUE_BYTES,
-                    "config max_file_bytes exceeds SQLite's maximum storable value; clamping",
-                );
-            }
-            limits.max_file_bytes = capped;
+            limits.max_file_bytes = clamp_sqlite_value("config max_file_bytes", file_bytes)?;
         }
         if let Some(parse_bytes) =
             ResourceLimits::config_nonzero("config max_parse_bytes", self.max_parse_bytes)?
@@ -290,10 +282,11 @@ pub(crate) fn resolve_limits(
     env: &EnvOverrides,
     session_profile: Option<AuditProfile>,
 ) -> Result<ResourceLimits, ProjectLimitsError> {
-    let base = match session_profile.or(env.profile).or(global.profile) {
-        Some(profile) => limits_for_profile(profile)?,
-        None => limits_for_profile(AuditProfile::default())?,
+    let profile = match session_profile.or(env.profile).or(global.profile) {
+        Some(profile) => profile,
+        None => AuditProfile::Adaptive,
     };
+    let base = limits_for_profile(profile)?;
     let mut limits = global.apply_limit_keys(base)?;
     env.apply(&mut limits, global.max_result_store_bytes.is_some())?;
     Ok(limits)

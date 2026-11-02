@@ -1,8 +1,8 @@
 //! Production Rust code-line limit checker.
 #![forbid(unsafe_code)]
-#![allow(clippy::print_stdout)]
-// Same production panic ban as the library root; see `lib.rs` for why
-// `expect` is denied alongside `unwrap`.
+// Panicking indexing is denied outside tests, as in the library root
+// (`lib.rs`); `unwrap` and `expect` are denied for every target in
+// `Cargo.toml`.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 //!
@@ -10,7 +10,7 @@
 //! containing Rust tokens *outside* comments, strings, char literals,
 //! and raw-string literals per file under `src/`. Production files at
 //! 0–199 lines auto-pass; 200–300 requires a `slugaudit-line-exception:`
-//! justification comment with `approved-by=slugthug; reason=...`; 301–350
+//! justification comment with `approved-by=slugthuglabs; reason=...`; 301–350
 //! requires a dated human approval (`approved-by=human-user`); above 350 is a
 //! hard failure. Test files (`*_tests.rs`, `tests.rs`) enumerate one
 //! named behavior per `#[test]` — repetition that cannot be DRY'd without
@@ -26,6 +26,10 @@ mod approval;
 mod counter;
 #[path = "../gate_common/args.rs"]
 mod gate_args;
+#[path = "../gate_common/out.rs"]
+mod gate_out;
+#[path = "../gate_common/test_file.rs"]
+mod gate_test_file;
 mod scanner;
 
 #[cfg(test)]
@@ -34,17 +38,6 @@ mod tests;
 
 use std::path::Path;
 use std::process::ExitCode;
-
-/// A file is a test file when its name follows this repo's test-module
-/// convention (`query_tests.rs`, `manager_tests.rs`, …) or is the
-/// `tests.rs` shorthand used by the checker's own test module. Test
-/// modules are `#[path]`-included siblings, so the name is a reliable
-/// classifier.
-fn is_test_file(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with("_tests.rs") || name == "tests.rs")
-}
 
 /// What checking one file produced: a line to print, or a failure to
 /// collect for the summary.
@@ -70,7 +63,11 @@ fn check_file(project_root: &Path, path: &Path) -> FileOutcome {
         Err(err) => return FileOutcome::Failure(format!("{rel}: read error: {err}")),
     };
     let n = counter::code_lines(&source);
-    match counter::verdict(n, approval::reason(&source), is_test_file(path)) {
+    match counter::verdict(
+        n,
+        approval::reason(&source),
+        gate_test_file::is_test_file(path),
+    ) {
         counter::Verdict::Pass => {
             FileOutcome::Line(format!("source-limit: {rel}: {n} code lines; pass"))
         }
@@ -87,11 +84,14 @@ fn check_file(project_root: &Path, path: &Path) -> FileOutcome {
     }
 }
 
+const PREFIX: &str = "source-limit";
+
 fn main() -> ExitCode {
     let project_root = match gate_args::parse(
-        "source-limit",
+        PREFIX,
         "Checks production Rust code-line limits under src/.",
         &mut [],
+        None,
     ) {
         Ok(root) => root,
         Err(code) => return code,
@@ -101,40 +101,49 @@ fn main() -> ExitCode {
     // Fail closed: a root with nothing to measure is a mistyped `--root`
     // or a wrong working directory, never a project that passes.
     if !src_root.is_dir() {
-        eprintln!("source-limit: {} is not a directory", src_root.display());
+        eprintln!("{PREFIX}: {} is not a directory", src_root.display());
         return ExitCode::from(2);
     }
 
     let files = match counter::walk_rs_files(&src_root) {
         Ok(f) => f,
         Err(err) => {
-            eprintln!("source-limit: cannot scan {}: {err}", src_root.display());
+            eprintln!("{PREFIX}: cannot scan {}: {err}", src_root.display());
             return ExitCode::from(1);
         }
     };
     if files.is_empty() {
         eprintln!(
-            "source-limit: no production Rust files found under {}",
+            "{PREFIX}: no production Rust files found under {}",
             src_root.display()
         );
         return ExitCode::from(2);
     }
 
+    match print_verdict(&project_root, &files) {
+        Ok(code) => code,
+        Err(error) => gate_out::failed(PREFIX, &error),
+    }
+}
+
+/// Prints one line per passing file and the verdict; the exit code is 1 when
+/// any file fails.
+fn print_verdict(project_root: &Path, files: &[std::path::PathBuf]) -> std::io::Result<ExitCode> {
     let mut failures: Vec<String> = Vec::new();
-    for path in &files {
-        match check_file(&project_root, path) {
-            FileOutcome::Line(line) => println!("{line}"),
+    for path in files {
+        match check_file(project_root, path) {
+            FileOutcome::Line(line) => gate_out::line(line)?,
             FileOutcome::Failure(failure) => failures.push(failure),
         }
     }
 
     if !failures.is_empty() {
-        println!("source-limit: FAIL");
+        gate_out::line(format_args!("{PREFIX}: FAIL"))?;
         for failure in &failures {
-            println!("  {failure}");
+            gate_out::line(format_args!("  {failure}"))?;
         }
-        return ExitCode::from(1);
+        return Ok(ExitCode::from(1));
     }
-    println!("source-limit: PASS");
-    ExitCode::SUCCESS
+    gate_out::line(format_args!("{PREFIX}: PASS"))?;
+    Ok(ExitCode::SUCCESS)
 }

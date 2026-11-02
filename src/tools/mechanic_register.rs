@@ -108,16 +108,30 @@ pub(super) fn remove(
             None,
         ));
     }
-    manager.session_mechanics().with_entries(|entries| {
-        let Some(position) = entries.iter().position(|entry| entry.id == id) else {
-            return Err(ErrorData::invalid_params(
-                format!("no registered mechanic has id `{id}`"),
-                error_codes::payload(ErrorCode::UnknownMechanic),
-            ));
-        };
-        entries.remove(position);
-        Ok(())
+    let unknown = || {
+        ErrorData::invalid_params(
+            format!("no registered mechanic has id `{id}`"),
+            error_codes::payload(ErrorCode::UnknownMechanic),
+        )
+    };
+    let session = manager.session_mechanics();
+    session.with_entries(|entries| {
+        entries
+            .iter()
+            .any(|entry| entry.id == id)
+            .then_some(())
+            .ok_or_else(unknown)
     })??;
+    // The cache goes first: if clearing it fails, the call fails with the
+    // entry still registered, so "failed" never describes a removed entry.
     manager.mechanic_scan_cache().remove_id(&id)?;
+    session.with_entries(|entries| {
+        let position = entries
+            .iter()
+            .position(|entry| entry.id == id)
+            .ok_or_else(unknown)?;
+        entries.remove(position);
+        Ok::<(), ErrorData>(())
+    })??;
     Ok((id, MechanicSource::Session))
 }

@@ -1,11 +1,14 @@
-//! The startup error for a set-but-invalid environment variable.
+//! The error for a set-but-invalid environment variable, or for limit
+//! state that cannot be read (undetectable memory, a poisoned warning ledger).
 
 use super::system_ram::MemoryDetectError;
 
 /// A `SLUGAUDIT_*` or `RUST_LOG` variable the operator set that cannot be
 /// honored. Startup exits non-zero on it instead of running with other
 /// limits than the operator asked for. No variant carries the variable's
-/// value, which may be sensitive: only its name and what is valid.
+/// value, which may be sensitive: only its name and what is valid. The
+/// `MemoryUndetectable` and `WarningLedger` variants are not about one
+/// variable: they report limit state that cannot be derived.
 #[derive(Debug, thiserror::Error)]
 pub enum EnvConfigError {
     /// The variable is set but its value is not valid Unicode.

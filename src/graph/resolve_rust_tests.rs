@@ -202,3 +202,45 @@ fn rust_an_import_with_no_candidate_file_at_all_is_unresolved() {
     let result = RustResolver.resolve(&refer("super::whatever"), "src/lonely.rs", &known);
     assert_eq!(result.kind, ResolutionKind::Unresolved);
 }
+
+#[test]
+fn rust_crate_item_defined_in_the_crate_root_resolves_to_lib_rs() {
+    let known = paths(&["src/lib.rs", "src/other.rs"]);
+    let result = RustResolver.resolve(&refer("crate::Item"), "src/other.rs", &known);
+    assert_eq!(result.kind, ResolutionKind::Resolved);
+    assert_eq!(result.to_relative_path.as_deref(), Some("src/lib.rs"));
+    assert_eq!(result.confidence, Some("Low"));
+}
+
+#[test]
+fn rust_crate_item_defined_in_main_rs_resolves_to_main_rs() {
+    let known = paths(&["src/main.rs", "src/other.rs"]);
+    let result = RustResolver.resolve(&refer("crate::Item"), "src/other.rs", &known);
+    assert_eq!(result.kind, ResolutionKind::Resolved);
+    assert_eq!(result.to_relative_path.as_deref(), Some("src/main.rs"));
+}
+
+#[test]
+fn rust_2018_path_starting_with_a_local_module_resolves_to_its_file() {
+    let known = paths(&["src/main.rs", "src/cli.rs"]);
+    let result = RustResolver.resolve(&refer("cli::Args"), "src/main.rs", &known);
+    assert_eq!(result.kind, ResolutionKind::Resolved);
+    assert_eq!(result.to_relative_path.as_deref(), Some("src/cli.rs"));
+    assert_eq!(result.confidence, Some("Low"));
+}
+
+#[test]
+fn rust_2018_local_module_of_a_non_root_file_resolves_under_its_module_dir() {
+    let known = paths(&["src/a.rs", "src/a/inner.rs"]);
+    let result = RustResolver.resolve(&refer("inner::Thing"), "src/a.rs", &known);
+    assert_eq!(result.to_relative_path.as_deref(), Some("src/a/inner.rs"));
+}
+
+#[test]
+fn rust_pub_in_path_visibility_is_stripped_from_a_use_item() {
+    let reference = RustResolver.extract_reference("pub(in crate::a) use crate::b::C;");
+    assert_eq!(reference.map(|r| r.text), Some("crate::b::C".to_owned()));
+    let plain = RustResolver.extract_reference("pub use crate::b;");
+    assert_eq!(plain.map(|r| r.text), Some("crate::b".to_owned()));
+    assert!(RustResolver.extract_reference("pubfn use x;").is_none());
+}

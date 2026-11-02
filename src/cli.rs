@@ -18,9 +18,9 @@ pub use usage::{Topic, topic_usage, usage};
 #[cfg(test)]
 use crate::util::Style;
 #[cfg(test)]
-pub(crate) use usage::USAGE;
-#[cfg(test)]
 use usage::render_usage;
+#[cfg(test)]
+pub(crate) use usage::usage_text;
 
 /// The subcommand selected by the user from CLI arguments.
 #[derive(Debug, PartialEq, Eq)]

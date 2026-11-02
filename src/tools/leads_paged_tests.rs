@@ -418,3 +418,33 @@ fn paged_leads_continuation_keeps_the_limit_of_page_one() -> TestResult {
     assert_eq!(smaller.page.returned, 2, "the request's own limit wins");
     Ok(())
 }
+
+/// A continuation's explicit `page_bytes` is clamped to the ceiling page one
+/// ran under (stored with the result), not to the limits of the call that
+/// serves it, and the cut reports `ceiling`.
+#[test]
+fn paged_leads_continuation_clamps_page_bytes_to_the_ceiling_of_page_one() -> TestResult {
+    const CEILING: usize = 300;
+    let project = unwrap_fixture(4, 6)?; // 24 rows
+    let manager = crate::sync::SourceSyncManager::default();
+    let Json(first) = leads_with_limits(
+        &Parameters(request(project.path(), Some("unwrap_calls"))),
+        &ResourceLimits {
+            max_query_response_bytes: CEILING,
+            ..ResourceLimits::default()
+        },
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .check("page one under a small ceiling")?;
+    assert_eq!(first.page.page_bytes, CEILING);
+    let mut asked = continuation(&first)?;
+    asked.page_bytes = Some(1_000_000);
+
+    // The serving call's own ceiling is far above the 1 MB asked for.
+    let second = run_on(&manager, asked)?;
+
+    assert_eq!(second.page.page_bytes, CEILING);
+    assert_eq!(second.page.limited_by, PageLimit::Ceiling);
+    Ok(())
+}

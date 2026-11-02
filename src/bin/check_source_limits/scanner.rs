@@ -105,11 +105,15 @@ impl ScanCursor {
     }
 
     /// `"…"` strings and `'…'` chars: literal bytes are code, `\` escapes
-    /// the next byte, and `close` returns to normal scanning.
+    /// the next byte (an escaped newline, a string continuation, still ends
+    /// its physical line), and `close` returns to normal scanning.
     fn step_quoted(&mut self, bytes: &[u8], byte: u8, close: u8) {
         self.has_code = true;
-        if byte == b'\\' && self.index + 1 < bytes.len() {
-            self.index += 2;
+        if byte == b'\\'
+            && let Some(&escaped) = bytes.get(self.index + 1)
+        {
+            self.index += 1;
+            self.advance_byte(escaped);
         } else if byte == close {
             self.enter(State::Normal, 1);
         } else {

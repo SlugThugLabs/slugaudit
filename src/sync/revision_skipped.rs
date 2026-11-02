@@ -24,21 +24,26 @@ pub(super) const SKIP_REASON_NOT_UTF8: &str = "not_utf8";
 /// `files.skip_reason` for a file discovery could not read (the sniff/stat
 /// failed), so its content was never sampled.
 pub(super) const SKIP_REASON_UNREADABLE: &str = "unreadable";
-/// `files.skip_reason` for a skipped file whose `stat` failed (deleted or
-/// renamed mid-sync, permissions changed, broken symlink), so its size is
-/// unknown: `files.byte_len` is NULL, never a fake 0.
+/// `files.skip_reason` for a skipped file whose `stat` failed for a reason
+/// other than the file being gone (permissions changed, a path component
+/// that is no longer a directory), so its size is unknown: `files.byte_len`
+/// is NULL, never a fake 0. A file deleted mid-sync is not recorded: the
+/// publish attempt is retried instead.
 pub(super) const SKIP_REASON_STAT_FAILED: &str = "stat_failed";
 
 /// One discovered-but-not-indexed file's existence row: enough to say the
-/// file is in the project, why it was not indexed, and a stat-derived
-/// identity to detect the *cheap* changes (size, mtime) without a read.
+/// file is in the project, why it was not indexed, and an identity to
+/// detect when it changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SkippedRecord {
     pub(super) relative_path: String,
-    /// A [`SKIP_REASON_OVERSIZE`]/[`SKIP_REASON_UNREADABLE`]/
-    /// [`SKIP_REASON_STAT_FAILED`] code.
+    /// A [`SKIP_REASON_OVERSIZE`]/[`SKIP_REASON_NOT_UTF8`]/
+    /// [`SKIP_REASON_UNREADABLE`]/[`SKIP_REASON_STAT_FAILED`] code.
     pub(super) reason: String,
-    /// `hash::stat_identity` — never a content hash.
+    /// For a [`SKIP_REASON_NOT_UTF8`] file, the Pass 1 content hash: the
+    /// file was read in full, so its real hash is known. For every other
+    /// reason, `hash::stat_identity` (size and mtime, no read), which sees
+    /// only the cheap changes.
     pub(super) identity: SourceIdentity,
     /// `None` when the stat failed: stored as NULL (unknown), not 0.
     pub(super) byte_len: Option<u64>,

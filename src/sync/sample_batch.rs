@@ -1,11 +1,11 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=the parallel sampling loop with per-file skip classification and first-error reporting
-//! Parallel batch sampling for a full publish.
+//! Pass 2 of a full sync: sample the changed files on the shared worker
+//! pool ([`super::file_pool`]).
 //!
-//! `sample_all_with_deadline` is the bounded worker-pool loop that feeds
-//! `super::sample::to_file_record`. It is kept apart from `sample.rs` so the
-//! per-file API (read/hash/classify, evidence capping) and the batch loop
-//! each stay under the source-size cap. The loop is a sampling concern,
-//! not an orchestration one; `publish_attempt` calls it directly.
+//! `sample_all_with_deadline` feeds `super::sample::to_file_record`. It is
+//! kept apart from `sample.rs`, which owns sampling one file
+//! (read/hash/classify, evidence capping); this module owns the pass over
+//! many files: per-file skips, the import ceiling and progress events.
+//! `publish_attempt` calls it directly.
 //!
 //! Files that individually exceed `limits.max_file_bytes` are **skipped
 //! per-file** rather than failing the publish: such a file cannot be
@@ -13,20 +13,33 @@
 //! whole project unqueryable is worse than reporting it. The skip reason
 //! is returned (sorted by path for deterministic report ordering) so the
 //! caller can surface it in the publish report, mirroring how discovery
-//! skips unreadable files. Only the project-wide total-byte ceiling and
-//! hard errors remain fatal.
+//! skips unreadable files. A file that is not valid UTF-8 is skipped the
+//! same way. Only the project-wide total-byte ceiling and hard errors
+//! remain fatal.
 
 use super::discovery::{DiscoveredFile, SkippedFile};
+use super::file_pool::{self, Pass};
 use super::publish::PublishError;
 use super::revision_skipped::{SKIP_REASON_NOT_UTF8, SKIP_REASON_OVERSIZE};
 use super::sample::{Sample, SampleError, sample_file};
 use crate::model::ResourceLimits;
 use crate::progress::{ProgressEvent, ProgressSink};
-use crate::util::{Deadline, lock};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::thread;
-use std::time::Duration;
+use crate::util::Deadline;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// The sampling pass, as its log lines and time-budget error name it.
+const SAMPLE_PASS: Pass = Pass {
+    operation: "sample_batch",
+    activity: "processing",
+};
+
+/// One file's Pass 2 outcome.
+enum Sampled {
+    /// The file's content and identity.
+    Sample(Sample),
+    /// The file cannot be indexed and becomes a skipped row.
+    Skipped(SkippedFile),
+}
 
 /// Samples every discovered file, accumulating the total byte count and
 /// failing closed if the project-wide import ceiling is exceeded — or if
@@ -35,31 +48,24 @@ use std::time::Duration;
 /// [`PublishError::TimeBudgetExceeded`] instead of stalling the publish
 /// forever. The deadline is created by the caller so the whole operation
 /// shares one budget across sampling, diffing, revalidation, and retries.
-/// Kept here (next to `sample_file`) rather than in `publish` — it's a
-/// sampling concern, not an orchestration one. Per-file oversize skips
-/// are documented at the module level.
+/// Per-file oversize and non-UTF-8 skips are documented at the module level.
 ///
-/// Parallelized across a bounded worker pool (`min(N,
-/// available_parallelism)`): a 60 s sync deadline compounded with fully
-/// serialized sampling would make a 60 k-file first import the single most
-/// likely production failure mode. The atomic
-/// counter/dispatcher preserves the original index in `samples[idx]`,
-/// so downstream consumers (`manifest::compare`, `aggregate_manifest_hash`,
-/// `build_upserts_and_deletions`) see the discovered file order —
-/// `aggregate_manifest_hash` sorts internally too, so
-/// the manifest hash stays deterministic. Per-file `Sampling` events
-/// arrive at the sink in worker-completion order rather than file-index
-/// order; the receiving sink (`McpProgressSink` / `NoopProgressSink`)
-/// already tolerates out-of-order updates because file sampling is
-/// intrinsically parallel and the `i/N` ratio is what consumers display.
+/// Runs on the shared bounded worker pool ([`file_pool::run`]): a 60 s sync
+/// deadline compounded with fully serialized sampling would make a 60 k-file
+/// first import the single most likely production failure mode. The pool
+/// returns samples in discovered order, so downstream consumers
+/// (`manifest::compare`, `aggregate_manifest_hash`,
+/// `build_upserts_and_deletions`) see the discovered file order. Per-file
+/// `Sampling` events arrive at the sink in worker-completion order rather
+/// than file-index order; the receiving sink (`McpProgressSink` /
+/// `NoopProgressSink`) already tolerates out-of-order updates because file
+/// sampling is intrinsically parallel and the `i/N` ratio is what consumers
+/// display.
 ///
-/// The byte-cap check uses `fetch_update` so the limit is enforced
-/// across concurrent workers: a worker that would push the total above
-/// `max_total_import_bytes` fails the CAS, signals the others via
-/// `error_flag`, and returns. The first worker to fail sets the error
-/// slot; later workers see the flag and exit without touching the
-/// slot, so the user sees the first concrete failure rather than
-/// whichever race-loser happened to win.
+/// The byte-cap check uses `fetch_update` so the limit is enforced across
+/// concurrent workers: a worker that would push the total above
+/// `max_total_import_bytes` fails the run with
+/// [`PublishError::ImportTooLarge`].
 pub(super) fn sample_all_with_deadline(
     discovered: &[DiscoveredFile],
     limits: &ResourceLimits,
@@ -67,313 +73,87 @@ pub(super) fn sample_all_with_deadline(
     deadline: &Deadline,
 ) -> Result<(Vec<Sample>, Vec<SkippedFile>), PublishError> {
     let total = discovered.len();
-    if total == 0 {
-        return Ok((Vec::new(), Vec::new()));
-    }
-    // Bounded worker pool. Capping at `total` avoids spawning more
-    // threads than files for the common small-input case; capping at
-    // `available_parallelism` (capped at 8 to match the run_blocking
-    // semaphore's permit cap, so we don't outnumber other concurrent
-    // tool-call concurrency points) avoids oversubscribing.
-    let parallelism = thread::available_parallelism().map_or_else(
-        |error| {
-            tracing::warn!(
-                error = %error,
-                "could not read available parallelism; sampling on one worker, \
-                 so a large first import runs slower and may reach the sync deadline",
-            );
-            1
-        },
-        std::num::NonZero::get,
-    );
-    let worker_count = total.min(parallelism.min(8));
-
-    let (tx, rx) = std::sync::mpsc::channel::<(usize, Outcome)>();
-    let batch = Batch {
-        discovered,
-        limits,
-        deadline,
-        total,
-        next_index: AtomicUsize::new(0),
-        total_bytes: AtomicU64::new(0),
-        error_flag: AtomicBool::new(false),
-        error_slot: Mutex::new(None),
-    };
-
-    // Shared state is passed by `&` — legal inside `thread::scope`,
-    // which guarantees every spawned thread is joined before the scope
-    // closure returns, so all references stay valid for the workers'
-    // lifetimes. This avoids wrapping each shared state piece in `Arc`
-    // solely to please the borrow checker across multiple `scope.spawn`
-    // calls in the loop.
-    thread::scope(|scope| {
-        for _ in 0..worker_count {
-            let tx = tx.clone();
-            let batch = &batch;
-            scope.spawn(move || batch.run_worker(&tx, sink));
-        }
-        // All senders live in worker closures; drop our `tx` clone once
-        // the scope above closes so the receiver disconnects and
-        // `recv` returns `Err` — terminating the drain cleanly.
-        drop(tx);
-    });
-
-    batch.collect(&rx)
-}
-
-/// A per-file sampling skip: the human-readable cause for the report and the
-/// stable `files.skip_reason` code the row is stored with.
-#[derive(Debug)]
-pub(super) struct SkipReason {
-    /// Human-readable cause, for `PublishReport::skipped`.
-    pub(super) message: String,
-    /// Stable stored code (`oversize`, `not_utf8`).
-    pub(super) code: &'static str,
-}
-
-/// What a worker sends the drain for one file: the sample, or the reason the
-/// file was skipped. Every other sampling error aborts through `error_slot`
-/// and never reaches the channel, so the drain has no error arm to ignore.
-type Outcome = Result<Sample, SkipReason>;
-
-/// Shared state for one parallel sampling run, with the worker loop and
-/// the result drain as methods so each stays small; `sample_all_with_deadline`
-/// owns the pool setup and nothing else.
-struct Batch<'a> {
-    discovered: &'a [DiscoveredFile],
-    limits: &'a ResourceLimits,
-    deadline: &'a Deadline,
-    total: usize,
-    next_index: AtomicUsize,
-    total_bytes: AtomicU64,
-    error_flag: AtomicBool,
-    error_slot: Mutex<Option<PublishError>>,
-}
-
-/// The skip-reason code for a sampling failure that skips just that file, or
-/// `None` when the failure is fatal to the whole run.
-fn skip_code(error: &SampleError) -> Option<&'static str> {
-    match error {
-        SampleError::TooLarge { .. } => Some(SKIP_REASON_OVERSIZE),
-        SampleError::NotUtf8 { .. } => Some(SKIP_REASON_NOT_UTF8),
-        SampleError::Read { .. } => None,
-    }
-}
-
-/// The error for a spent time budget while `relative_path` was next in line.
-/// Shared by batch sampling and revalidation so both name the file and report
-/// the elapsed time the same way.
-pub(super) fn time_budget_error(relative_path: &str, elapsed: Duration) -> PublishError {
-    PublishError::TimeBudgetExceeded {
-        path: format!(" while processing {relative_path}"),
-        elapsed_ms: elapsed.as_millis(),
-    }
-}
-
-impl Batch<'_> {
-    /// One worker's loop: claim indices, sample, do byte-cap bookkeeping,
-    /// and send results in arrival order. Exits on the shared error flag,
-    /// an exhausted deadline, claimed-index overflow, or a dropped
-    /// receiver.
-    fn run_worker(&self, tx: &std::sync::mpsc::Sender<(usize, Outcome)>, sink: &dyn ProgressSink) {
-        loop {
-            if self.error_flag.load(Ordering::Acquire) {
-                return;
-            }
-            let idx = self.next_index.fetch_add(1, Ordering::AcqRel);
-            if idx >= self.total {
-                return;
-            }
-            let Some(file) = self.discovered.get(idx) else {
-                self.abort(self.index_out_of_range(idx));
-                return;
-            };
-            // The deadline is checked after claiming the index so the
-            // budget-exceeded error can name the file that was next in
-            // line: the deadline is still checked once per file, with a
-            // nameable victim.
-            if let Some(elapsed) = self.deadline.exceeded() {
-                self.abort(time_budget_error(&file.relative_path, elapsed));
-                return;
-            }
-            match sample_file(file, self.limits) {
-                Ok(sample) => {
-                    if !self.claim_bytes(sample.byte_len) {
-                        return;
-                    }
-                    self.emit_sampling(sink, idx);
-                    // Send AFTER any cap/limit bookkeeping so a post-cap
-                    // sample never lands in the result vector.
-                    if !self.deliver(tx, idx, Ok(sample)) {
-                        return;
-                    }
-                }
-                // Per-file skip (import ceiling, or bytes that are not
-                // UTF-8): this file cannot be indexed at all. Skip it like
-                // discovery skips an unreadable file — record the reason
-                // through the channel, keep every other file going.
-                Err(error) => {
-                    if let Some(code) = skip_code(&error) {
-                        self.emit_sampling(sink, idx);
-                        let skip = SkipReason {
-                            message: error.to_string(),
-                            code,
-                        };
-                        if !self.deliver(tx, idx, Err(skip)) {
-                            return;
-                        }
-                    } else {
-                        self.abort(PublishError::Sample(error));
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Adds `byte_len` to the running import total. `fetch_update` is the
-    /// only correct primitive: a plain load/store would race across
-    /// workers and let two threads each push past the cap before either
-    /// notices. Returns false (having recorded `ImportTooLarge` and set
-    /// the flag) when the add would exceed `max_total_import_bytes`.
-    fn claim_bytes(&self, byte_len: u64) -> bool {
-        let claimed = self
-            .total_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |prev| {
-                let next = prev.saturating_add(byte_len);
-                (next <= self.limits.max_total_import_bytes).then_some(next)
-            });
-        if let Err(total_before) = claimed {
-            // `Err` carries the total this claim was refused against.
-            self.abort(PublishError::ImportTooLarge {
-                total: total_before.saturating_add(byte_len),
-                limit: self.limits.max_total_import_bytes,
-            });
-        }
-        claimed.is_ok()
-    }
-
-    /// Sends one outcome to the drain. The receiver outlives the worker
-    /// scope, so a failed send is a broken invariant, not a normal exit:
-    /// the outcome would be lost and the result would silently miss a file.
-    /// It aborts the run with the cause instead; returns `false` then so the
-    /// worker stops.
-    fn deliver(
-        &self,
-        tx: &std::sync::mpsc::Sender<(usize, Outcome)>,
-        idx: usize,
-        outcome: Outcome,
-    ) -> bool {
-        let Some(file) = self.discovered.get(idx) else {
-            self.abort(self.index_out_of_range(idx));
-            return false;
-        };
-        match tx.send((idx, outcome)) {
-            Ok(()) => true,
-            Err(error) => {
-                self.abort(PublishError::SamplingResultLost {
-                    path: file.relative_path.clone(),
-                    reason: error.to_string(),
-                });
-                false
-            }
-        }
-    }
-
-    /// The typed failure for an index that is not a position in the
-    /// discovered set. Checked at every entry point into the batch state so
-    /// a bad index can never panic the process.
-    fn index_out_of_range(&self, index: usize) -> PublishError {
-        PublishError::SamplingIndexOutOfRange {
-            index,
-            total: self.discovered.len(),
-        }
-    }
-
-    /// Signals other workers and records the first error callers see.
-    fn abort(&self, error: PublishError) {
-        self.error_flag.store(true, Ordering::Release);
-        record_error(&self.error_slot, error);
-    }
-
-    fn emit_sampling(&self, sink: &dyn ProgressSink, idx: usize) {
+    let total_bytes = AtomicU64::new(0);
+    let outcomes = file_pool::run(discovered, deadline, SAMPLE_PASS, |idx, file| {
+        let outcome = sample_one(file, limits, &total_bytes)?;
         sink.emit(ProgressEvent::Sampling {
             phase: "publishing",
             current: idx + 1,
-            total: self.total,
+            total,
         });
-    }
-
-    /// Drains in arrival order; the slot-by-index assignment re-establishes
-    /// the original `discovered` ordering for downstream consumers
-    /// regardless of which worker finished which file first.
-    fn collect(
-        &self,
-        rx: &std::sync::mpsc::Receiver<(usize, Outcome)>,
-    ) -> Result<(Vec<Sample>, Vec<SkippedFile>), PublishError> {
-        let mut samples: Vec<Option<Sample>> = (0..self.total).map(|_| None).collect();
-        let mut skipped: Vec<SkippedFile> = Vec::new();
-        while let Ok((idx, result)) = rx.recv() {
-            // The index arrives over a channel from a worker, so treat it as
-            // unverified input: an out-of-range one is a contract violation
-            // that must fail the call, never be skipped or clamped.
-            let Some(slot) = samples.get_mut(idx) else {
-                return Err(self.index_out_of_range(idx));
-            };
-            match result {
-                Ok(sample) => *slot = Some(sample),
-                Err(skip) => {
-                    let Some(file) = self.discovered.get(idx) else {
-                        return Err(self.index_out_of_range(idx));
-                    };
-                    skipped.push(SkippedFile {
-                        absolute_path: file.absolute_path.clone(),
-                        reason: skip.message,
-                        code: skip.code,
-                    });
-                }
-            }
+        Ok(outcome)
+    })?;
+    let mut samples = Vec::with_capacity(outcomes.len());
+    let mut skipped = Vec::new();
+    for outcome in outcomes {
+        match outcome {
+            Sampled::Sample(sample) => samples.push(sample),
+            Sampled::Skipped(skip) => skipped.push(skip),
         }
-        if let Some(err) = lock(&self.error_slot, "sample_batch_error_slot")?.take() {
-            return Err(err);
-        }
-        // A skipped (oversized) file leaves its slot empty; when no error
-        // was recorded, every other slot is populated — a worker either
-        // sends a sample, sends a skip, or records an error (which
-        // returned above). `flatten` drops the skip slots and preserves
-        // discovered order.
-        let samples = samples.into_iter().flatten().collect();
-        // Deterministic report ordering, mirroring `discovery`'s sort of
-        // its own skipped files (worker completion order is racy by design).
-        skipped.sort_by(|a, b| a.absolute_path.cmp(&b.absolute_path));
-        Ok((samples, skipped))
     }
+    // Deterministic report ordering, mirroring `discovery`'s sort of its own
+    // skipped files.
+    skipped.sort_by(|a, b| a.absolute_path.cmp(&b.absolute_path));
+    Ok((samples, skipped))
 }
 
-/// Records the first error from a parallel sampling run. Concurrent
-/// workers race to call this; only the first winner's error reaches
-/// callers because subsequent callers short-circuit on
-/// `Option::is_some()`. A poisoned slot cannot hold the error: it is logged
-/// here, and the batch still fails because `collect` locks the same slot and
-/// returns the poisoned-lock error.
+/// Samples one file and claims its bytes against the import ceiling. A file
+/// over the per-file ceiling or not valid UTF-8 cannot be indexed at all: it
+/// is skipped like discovery skips an unreadable file, and every other file
+/// keeps going.
 ///
-/// A later worker's distinct failure is still logged once at `warn` — with
-/// a static operation, the error's category, the real path and the error's
-/// `Display` — so it is not silently discarded just because the first
-/// failure wins the return value.
-fn record_error(slot: &Mutex<Option<PublishError>>, error: PublishError) {
-    let mut guard = match lock(slot, "sample_batch_error_slot") {
-        Ok(guard) => guard,
-        Err(poisoned) => {
-            error.warn_unrecorded(&poisoned);
-            return;
+/// # Errors
+///
+/// [`PublishError::ImportTooLarge`] when the file's bytes would push the
+/// run past the import ceiling, [`PublishError::ChangedDuringSample`] for a
+/// file deleted since the walk, and the read error for any other read
+/// failure.
+fn sample_one(
+    file: &DiscoveredFile,
+    limits: &ResourceLimits,
+    total_bytes: &AtomicU64,
+) -> Result<Sampled, PublishError> {
+    let (error, code) = match sample_file(file, limits) {
+        Ok(sample) => {
+            claim_bytes(total_bytes, sample.byte_len, limits.max_total_import_bytes)?;
+            return Ok(Sampled::Sample(sample));
         }
+        Err(SampleError::Read { path, source }) => {
+            return Err(PublishError::read_after_walk(
+                &file.relative_path,
+                path,
+                source,
+            ));
+        }
+        Err(error @ SampleError::TooLarge { .. }) => (error, SKIP_REASON_OVERSIZE),
+        Err(error @ SampleError::NotUtf8 { .. }) => (error, SKIP_REASON_NOT_UTF8),
     };
-    if guard.is_none() {
-        *guard = Some(error);
-        return;
+    Ok(Sampled::Skipped(SkippedFile {
+        absolute_path: file.absolute_path.clone(),
+        reason: error.to_string(),
+        code,
+    }))
+}
+
+/// Adds `byte_len` to the running import total. `fetch_update` is the only
+/// correct primitive: a plain load/store would race across workers and let
+/// two threads each push past the cap before either notices.
+///
+/// # Errors
+///
+/// [`PublishError::ImportTooLarge`] when the add would exceed `limit`.
+fn claim_bytes(total_bytes: &AtomicU64, byte_len: u64, limit: u64) -> Result<(), PublishError> {
+    match total_bytes.fetch_update(Ordering::AcqRel, Ordering::Acquire, |prev| {
+        let next = prev.saturating_add(byte_len);
+        (next <= limit).then_some(next)
+    }) {
+        Ok(_) => Ok(()),
+        // `Err` carries the total this claim was refused against.
+        Err(total_before) => Err(PublishError::ImportTooLarge {
+            total: total_before.saturating_add(byte_len),
+            limit,
+        }),
     }
-    error.warn_sampling_superseded();
 }
 
 #[cfg(test)]

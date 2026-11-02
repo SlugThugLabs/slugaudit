@@ -2,6 +2,7 @@
 
 use super::cursor::{Cursor, ResultId};
 use super::error::{ResultStoreError, UnsupportedPlatform};
+use super::limits::ResultStoreLimits;
 use super::owner::{self, SweepOutcome};
 use super::registry::{Entry, Refused, Registry, ResultMeta};
 use super::stats::StoreStats;
@@ -14,25 +15,6 @@ use uuid::Uuid;
 
 /// Seconds since the Unix epoch, injectable so tests control time.
 pub type Clock = Arc<dyn Fn() -> Result<i64, crate::util::ClockError> + Send + Sync>;
-
-/// The two limits the store obeys.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ResultStoreLimits {
-    /// Total bytes of admitted results (`max_result_store_bytes`).
-    pub max_bytes: u64,
-    /// Seconds an unfinished result stays protected after its last page
-    /// (`result_active_grace_secs`).
-    pub active_grace_secs: u64,
-}
-
-impl From<&crate::model::ResourceLimits> for ResultStoreLimits {
-    fn from(limits: &crate::model::ResourceLimits) -> Self {
-        Self {
-            max_bytes: limits.max_result_store_bytes,
-            active_grace_secs: limits.result_active_grace_secs,
-        }
-    }
-}
 
 /// Immutable paged results, one private SQLite file each. See the module docs.
 pub struct ResultStore {
@@ -111,18 +93,15 @@ impl ResultStore {
         self.limits
     }
 
-    /// The store clock's Unix seconds; an unusable clock is `Unavailable`.
+    /// The store clock's Unix seconds; an unusable clock is `Clock`.
     pub(super) fn now(&self) -> Result<i64, ResultStoreError> {
-        (self.clock)()
-            .map_err(|error| ResultStoreError::unavailable("the system clock is unusable", error))
+        (self.clock)().map_err(ResultStoreError::clock)
     }
 
-    /// The registry, locked. A poisoned registry is an `Unavailable` error
-    /// (logged once, by its constructor): the store cannot serve results.
+    /// The registry, locked. A poisoned registry is a `Lock` error (logged
+    /// once, by `util::lock`): the store cannot serve results.
     fn registry(&self) -> Result<std::sync::MutexGuard<'_, Registry>, ResultStoreError> {
-        lock(&self.registry, "result_registry").map_err(|error| {
-            ResultStoreError::unavailable("the result registry is poisoned", error)
-        })
+        Ok(lock(&self.registry, "result_registry")?)
     }
 
     /// Parses `token` and checks it was issued by this process.
@@ -137,11 +116,15 @@ impl ResultStore {
         }
     }
 
-    /// Logs and counts an unknown cursor and returns the error to report:
-    /// `Unknown`, or the registry's own error when it is poisoned.
+    /// Counts an unknown cursor and returns the error to report: `Unknown`
+    /// (logged here), or the registry's own error when it is poisoned (already
+    /// logged where it was detected).
     pub(super) fn unknown_cursor(&self) -> ResultStoreError {
-        tracing::info!("cursor refused: unknown");
-        self.refuse_foreign_tool()
+        let error = self.refuse_foreign_tool();
+        if matches!(error, ResultStoreError::Unknown) {
+            tracing::info!("cursor refused: unknown");
+        }
+        error
     }
 
     /// Counts a cursor refused because it belongs to another tool and returns
@@ -257,11 +240,15 @@ impl ResultStore {
     ///
     /// # Errors
     ///
-    /// `Unavailable` when the registry is poisoned.
+    /// `Lock` when the registry is poisoned, `Clock` when the clock is
+    /// unusable.
     pub fn stats(&self) -> Result<StoreStats, ResultStoreError> {
+        // Read before the registry is locked: a clock failure logs, and
+        // nothing is logged under the guard.
+        let now = self.now()?;
         Ok(self.registry()?.snapshot(
             self.limits.max_bytes,
-            self.now()?,
+            now,
             self.limits.active_grace_secs,
             &self.sweep,
         ))
@@ -280,3 +267,7 @@ impl Drop for ResultStore {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "store_tests.rs"]
+mod tests;

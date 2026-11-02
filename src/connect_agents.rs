@@ -141,6 +141,7 @@ impl AgentDef {
     fn config_path_exists(&self, path: &Path) -> Result<bool, ProbeFailure> {
         path.try_exists().map_err(|source| ProbeFailure {
             agent: self.id,
+            check: "installed",
             path: path.to_path_buf(),
             source,
         })
@@ -151,28 +152,40 @@ impl AgentDef {
     /// Config files only: no client CLI is ever spawned to ask. A client with
     /// no known config file (`ConfigPath::Unverified`: agy, amp, q) is always
     /// reported as not detected.
-    #[must_use]
-    pub fn is_connected(&self, home: Option<&Path>) -> bool {
-        home.is_some_and(|home| self.config_has_slugaudit(home))
+    ///
+    /// # Errors
+    ///
+    /// A config that cannot be examined (unreadable, oversized, not a regular
+    /// file, or malformed JSON for a JSON client) is returned as a
+    /// [`ProbeFailure`] with its source, never read as "not connected".
+    pub fn is_connected(&self, home: Option<&Path>) -> Result<bool, ProbeFailure> {
+        home.map_or(Ok(false), |home| self.config_has_slugaudit(home))
     }
 
-    fn config_has_slugaudit(&self, home: &Path) -> bool {
+    fn config_has_slugaudit(&self, home: &Path) -> Result<bool, ProbeFailure> {
         let Some(path) = self.config.resolve(home) else {
-            return false;
+            return Ok(false);
         };
-        if matches!(
+        let result = if matches!(
             self.shape,
             ConfigShape::GooseExtensions | ConfigShape::Unknown
         ) {
             // Goose reads YAML; hermes (YAML), codex and grok (TOML) have no
             // JSON shape at all. Only a textual scan is safe for these (it
             // also catches the JSON-as-YAML we write and a hand-written block
-            // entry), and a non-JSON file is expected here, so no parse and
-            // no format warning.
-            return crate::connect::config_file::readable_config_or_warn(&path)
-                .is_some_and(|c| c.contains("slugaudit"));
-        }
-        crate::connect_exec::has_slugaudit(&path, self.shape.sections())
+            // entry), and a non-JSON file is expected here, so it is not
+            // parsed.
+            crate::connect::config_file::readable_config(&path)
+                .map(|text| text.is_some_and(|text| text.contains("slugaudit")))
+        } else {
+            crate::connect_exec::has_slugaudit(&path, self.shape.sections())
+        };
+        result.map_err(|source| ProbeFailure {
+            agent: self.id,
+            check: "connected",
+            path,
+            source,
+        })
     }
 }
 
@@ -221,12 +234,14 @@ pub fn find_agent(name: &str) -> Option<AgentDef> {
         .find(|a| a.id == n || a.display_name.eq_ignore_ascii_case(n))
 }
 
-/// A client whose install could not be determined: the config path that could
-/// not be examined, and why.
+/// A client whose install or connection state could not be determined: the
+/// config path that could not be examined, and why.
 #[derive(Debug)]
 pub struct ProbeFailure {
     /// The registry identifier of the client being probed.
     pub agent: &'static str,
+    /// What was being checked: `"installed"` or `"connected"`.
+    pub check: &'static str,
     /// The path that could not be examined.
     pub path: std::path::PathBuf,
     /// The underlying I/O failure.
@@ -237,8 +252,9 @@ impl std::fmt::Display for ProbeFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "could not tell whether {} is installed: {}: {}",
+            "could not tell whether {} is {}: {}: {}",
             self.agent,
+            self.check,
             self.path.display(),
             self.source
         )
@@ -261,8 +277,8 @@ pub struct Detection {
 }
 
 /// Returns all agents in [`AGENTS`] that appear to be installed on the machine.
-/// An agent whose config path cannot be examined is left out of `agents`,
-/// logged once, and returned in `failures` so the caller can show it.
+/// An agent whose config path cannot be examined is left out of `agents` and
+/// returned in `failures`; the caller reports each failure once.
 #[must_use]
 pub fn detected_agents(home: Option<&Path>) -> Detection {
     let mut agents = Vec::new();
@@ -271,15 +287,7 @@ pub fn detected_agents(home: Option<&Path>) -> Detection {
         match agent.is_installed(home) {
             Ok(true) => agents.push(*agent),
             Ok(false) => {}
-            Err(failure) => {
-                tracing::warn!(
-                    agent = failure.agent,
-                    path = %crate::util::redacted_path(&failure.path),
-                    error = %failure.source,
-                    "could not examine a client config path; leaving the client out of detection",
-                );
-                failures.push(failure);
-            }
+            Err(failure) => failures.push(failure),
         }
     }
     Detection { agents, failures }

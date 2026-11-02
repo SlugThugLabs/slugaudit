@@ -35,45 +35,42 @@ fn regular_config(path: &Path) -> std::io::Result<bool> {
     ))
 }
 
-/// Reads a client config for detection: `None` for an absent file or one that
-/// is not a regular file, with the latter logged once. A FIFO must never be
-/// opened by a probe.
-pub(crate) fn readable_config_or_warn(path: &Path) -> Option<String> {
-    match regular_config(path) {
-        Ok(true) => crate::probe::read_config_or_warn(path),
-        Ok(false) => None,
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "could not inspect client config; treating it as not registered",
-            );
-            None
-        }
+/// Reads a client config for detection: `Ok(None)` for an absent file, the
+/// text for a readable one.
+///
+/// # Errors
+///
+/// A path that is not a regular file (a FIFO must never be opened by a probe),
+/// or a file that cannot be read, is not UTF-8, or exceeds the size cap, is
+/// returned with its cause, never read as "absent".
+pub(crate) fn readable_config(path: &Path) -> std::io::Result<Option<String>> {
+    if !regular_config(path)? {
+        return Ok(None);
+    }
+    match crate::util::read_file_capped(path, crate::util::MAX_FOREIGN_TEXT_BYTES) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
 /// True when the JSON config at `path` carries a `slugaudit` entry under any
-/// of `sections`.
-pub fn has_slugaudit(path: &Path, keys: &[&str]) -> bool {
-    // Advisory probe: an oversized, unreadable or malformed config reads as
-    // "not registered", logged with the cause by `readable_config_or_warn` /
-    // below; the write path bounds the same file again and fails explicitly.
-    let Some(contents) = readable_config_or_warn(path) else {
-        return false;
+/// of `keys`; an absent file has none.
+///
+/// # Errors
+///
+/// An unreadable, oversized, non-regular or malformed config is returned with
+/// its cause (a malformed one as `InvalidData` wrapping the JSON error). The
+/// write path bounds the same file again and fails explicitly.
+pub fn has_slugaudit(path: &Path, keys: &[&str]) -> std::io::Result<bool> {
+    let Some(contents) = readable_config(path)? else {
+        return Ok(false);
     };
-    match serde_json::from_str::<serde_json::Value>(&contents) {
-        Ok(value) => keys
-            .iter()
-            .any(|k| value.get(*k).and_then(|s| s.get("slugaudit")).is_some()),
-        Err(error) => {
-            tracing::warn!(
-                path = %path.display(),
-                error = %error,
-                "client config is not valid JSON; treating it as not registered",
-            );
-            false
-        }
-    }
+    let value: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    Ok(keys
+        .iter()
+        .any(|k| value.get(*k).and_then(|s| s.get("slugaudit")).is_some()))
 }
 
 /// Writes the `slugaudit` entry in the shape the client reads: exactly one key

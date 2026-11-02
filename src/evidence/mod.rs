@@ -30,11 +30,53 @@ mod sql;
 /// bounded recursion: JSON value extraction, 512 levels, 1646 KiB debug /
 /// 455 KiB release (~3.2 / ~0.9 KiB per level). The smallest stack production
 /// extracts on is 2 MiB (tokio's blocking pool and `std::thread` defaults —
-/// `server_runner.rs` `spawn_blocking`, `sync/sample_batch.rs`
+/// `server_runner.rs` `spawn_blocking`, `sync/file_pool.rs`
 /// `thread::scope`). Recursing walkers would need ~2.2 KiB debug frames per
 /// level, and macro re-entry would multiply 64 macro levels by 512 tree
 /// levels.
 pub(super) const MAX_WALK_DEPTH: u32 = 512;
+
+/// Iterates a node's named children in source order through one
+/// [`tree_sitter_language_pack::TreeCursor`], so a node with N children costs
+/// O(N). Indexed access (`named_child(i)`) is not used: tree-sitter walks the
+/// sibling list from the start on every call, which makes iterating a wide
+/// node (a million-element array literal) quadratic.
+pub(super) fn named_children(node: &tree_sitter_language_pack::Node) -> NamedChildren {
+    NamedChildren {
+        cursor: node.walk(),
+        started: false,
+    }
+}
+
+/// The iterator [`named_children`] returns. The cursor is rooted at the
+/// parent node, so once the last sibling is passed it cannot move further and
+/// every later `next` stays `None`.
+pub(super) struct NamedChildren {
+    cursor: tree_sitter_language_pack::TreeCursor,
+    started: bool,
+}
+
+impl Iterator for NamedChildren {
+    type Item = tree_sitter_language_pack::Node;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let moved = if self.started {
+                self.cursor.goto_next_sibling()
+            } else {
+                self.started = true;
+                self.cursor.goto_first_child()
+            };
+            if !moved {
+                return None;
+            }
+            let child = self.cursor.node();
+            if child.is_named() {
+                return Some(child);
+            }
+        }
+    }
+}
 
 /// Pushes one `entry` per named child of `node` onto a walker's explicit
 /// stack, in reverse, so popping visits the children in source order — the
@@ -48,39 +90,65 @@ pub(super) fn push_children<T>(
     entry: impl Fn(tree_sitter_language_pack::Node) -> T,
 ) {
     let first = pending.len();
-    pending.extend(
-        (0..=u32::MAX)
-            .take(node.named_child_count())
-            .filter_map(|index| node.named_child(index))
-            .map(entry),
-    );
+    pending.extend(named_children(node).map(entry));
     if let Some(added) = pending.get_mut(first..) {
         added.reverse();
     }
 }
 
-/// The one constructor for `NormalizerUnavailable`: keeps the real
-/// `SpanError` in the reason instead of a static string, and warns, because a
-/// span that fails validation means a walker computed offsets wrong — a
-/// defect, not a property of the file. Only the context and the error kind are
-/// logged, never source text or a path.
+/// Whether `deadline` has less than a millisecond left (`None`: unbounded,
+/// never spent): the rule [`parse_tree`] applies before and after a parse.
+/// Every walker loop checks it once per node and, when it holds, stops and
+/// sets [`Extraction::timed_out`], so a file whose walk outlasts its budget
+/// is recorded with the `parse_timeout` reason, like a parse cut at the
+/// deadline.
+pub(super) fn deadline_spent(deadline: Option<&crate::util::Deadline>) -> bool {
+    deadline.is_some_and(|deadline| deadline.remaining_millis().is_none())
+}
+
+/// What stays fixed across one file's tree walks: the source the nodes slice,
+/// its line index, and the file's deadline (`None`: unbounded), which bounds
+/// every parse and every walker loop of the file as one budget.
+pub(super) struct WalkInput<'a> {
+    pub(super) source: &'a str,
+    pub(super) lines: &'a crate::model::LineIndex<'a>,
+    pub(super) deadline: Option<&'a crate::util::Deadline>,
+}
+
+/// The one constructor for `NormalizerUnavailable`. It warns with the real
+/// `SpanError`, because a span that fails validation means a walker computed
+/// offsets wrong — a defect, not a property of the file. Only the context and
+/// the error kind are logged, never source text or a path.
 pub(super) fn span_unavailable(
     context: &'static str,
     error: &crate::model::SpanError,
 ) -> crate::model::SpanAvailability {
     tracing::warn!(context, %error, "evidence span failed local range validation");
-    crate::model::SpanAvailability::NormalizerUnavailable {
-        reason: format!("{context} span failed local range validation: {error}"),
+    crate::model::SpanAvailability::NormalizerUnavailable
+}
+
+/// The one place an evidence span is built and validated: `Span::new` over
+/// the byte range and the two positions, with a failure reported through
+/// [`span_unavailable`] under `context`. Producers differ only in where the
+/// positions come from — [`range_span`] takes rows from a parse tree (tree
+/// nodes and the pack's spans), the macro re-parse in `calls/macro_calls.rs`
+/// looks them up in the line index because its tree's rows belong to the
+/// synthetic text.
+pub(super) fn checked_span(
+    (start_byte, end_byte): (usize, usize),
+    start: crate::model::Position,
+    end: crate::model::Position,
+    context: &'static str,
+) -> crate::model::SpanAvailability {
+    match crate::model::Span::new(start_byte as u64, end_byte as u64, start, end) {
+        Ok(span) => crate::model::SpanAvailability::Present(span),
+        Err(error) => span_unavailable(context, &error),
     }
 }
 
-/// The one constructor for a tree-sitter node's
-/// [`crate::model::SpanAvailability`]: derives the byte range and the
-/// start/end positions, validates the range, and reports a failure through
-/// [`span_unavailable`] under `context`. Every walker that emits a node span
-/// (`normalize`, `generic_imports`, `calls`) shares it, so byte, row, and
-/// column behavior cannot drift between them. A row or column past
-/// `u32::MAX` is an error that fails the file's extraction.
+/// A tree-sitter node's [`crate::model::SpanAvailability`], through
+/// [`range_span`]. A row or column past `u32::MAX` is an error that fails
+/// the file's extraction.
 pub(super) fn node_span(
     node: &tree_sitter_language_pack::Node,
     lines: &crate::model::LineIndex<'_>,
@@ -94,36 +162,37 @@ pub(super) fn node_span(
     )
 }
 
-/// [`node_span`] from a node's raw `(start, end)` bytes and rows, for a
-/// producer holding a `tree_sitter::Node` rather than the pack's wrapper (the
-/// call queries in `calls/query_calls.rs`).
+/// A span from raw `(start, end)` bytes and parse-tree rows, with columns
+/// counted by the line index, through [`checked_span`]. Shared by
+/// [`node_span`], the call queries in `calls/query_calls.rs` (which hold a
+/// `tree_sitter::Node` rather than the pack's wrapper), and the pack's own
+/// spans (`normalize::convert_span`), so row and column behavior cannot
+/// drift between them. A row or column past `u32::MAX` is an error that
+/// fails the file's extraction.
 pub(super) fn range_span(
-    (start_byte, end_byte): (usize, usize),
+    bytes: (usize, usize),
     (start_row, end_row): (usize, usize),
     lines: &crate::model::LineIndex<'_>,
     context: &'static str,
 ) -> Result<crate::model::SpanAvailability, crate::model::PositionOverflow> {
     let start = crate::model::Position {
         line: crate::model::position_u32(start_row)?,
-        column: lines.column(start_byte)?,
+        column: lines.column(bytes.0)?,
     };
     let end = crate::model::Position {
         line: crate::model::position_u32(end_row)?,
-        column: lines.column(end_byte)?,
+        column: lines.column(bytes.1)?,
     };
-    Ok(
-        match crate::model::Span::new(start_byte as u64, end_byte as u64, start, end) {
-            Ok(span) => crate::model::SpanAvailability::Present(span),
-            Err(error) => span_unavailable(context, &error),
-        },
-    )
+    Ok(checked_span(bytes, start, end, context))
 }
 
 /// A node byte range that does not slice the source: it is out of bounds or
 /// lands inside a UTF-8 code point. A well-formed parse never produces one,
 /// so seeing it means a grammar or scanner defect; callers report the
-/// extraction as truncated instead of panicking.
-#[derive(Debug, thiserror::Error)]
+/// extraction as truncated instead of panicking. `Copy` so the Rust call
+/// walker can hand one enclosing function's failed name to every call under
+/// it.
+#[derive(Debug, Clone, Copy, thiserror::Error)]
 #[error("node byte range {start}..{end} does not slice the source text")]
 pub(super) struct TextRangeError {
     start: usize,
@@ -167,9 +236,10 @@ pub(crate) struct Extraction {
     /// A walk bound was hit, a node range did not slice the source, or a
     /// walker's parse failed with time left: report `Partial`.
     pub(crate) truncated: bool,
-    /// A re-parse after the pack's `process()` was cut at the deadline, so
-    /// the walker that needed it saw nothing: `items` holds what was
-    /// extracted before, and the file is recorded with `parse_timeout`.
+    /// The deadline ran out after the pack's `process()`: a walker re-parse
+    /// was cut, so that walker saw nothing, or a walker loop stopped part
+    /// way (see [`deadline_spent`]). `items` holds what was extracted before,
+    /// and the file is recorded with `parse_timeout`.
     pub(crate) timed_out: bool,
 }
 
@@ -231,7 +301,7 @@ pub(super) fn parse_tree(
     if let Some(tree) = parser.parse(source) {
         return Ok(tree);
     }
-    if deadline.is_some_and(|deadline| deadline.remaining_millis().is_none()) {
+    if deadline_spent(deadline) {
         // The pack logs the cancellation itself.
         return Err(NoTree::TimedOut);
     }

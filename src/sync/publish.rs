@@ -33,7 +33,7 @@ pub(super) use rusqlite::Connection;
 pub enum PublishError {
     /// The discovery walk failed before any sampling or writing began.
     #[error(transparent)]
-    Discovery(#[from] discovery::DiscoveryError),
+    Discovery(discovery::DiscoveryError),
     /// Sampling a discovered file failed.
     #[error(transparent)]
     Sample(#[from] sample::SampleError),
@@ -63,11 +63,11 @@ pub enum PublishError {
         /// The configured per-import byte ceiling.
         limit: u64,
     },
-    /// A file's on-disk content changed between being sampled and the
-    /// publish transaction that would have written it as current. Caught by
-    /// `revalidate_unchanged_since_sample` immediately before the write;
-    /// the caller retries with an entirely fresh sample rather than
-    /// publishing a revision built from stale bytes. When this error
+    /// The project tree changed while this attempt was reading it: a file's
+    /// content changed between being sampled and the publish transaction
+    /// that would have written it as current, or a file the walk listed was
+    /// deleted before it was read. `publish_cas` retries with a fresh walk
+    /// and sample rather than publishing a revision built from stale state. When this error
     /// reaches the caller (after CAS retries are exhausted), the caller
     /// should retry the whole tool call.
     #[error("{path} changed on disk after being sampled; retry the call")]
@@ -142,78 +142,40 @@ impl PublishError {
         }
     }
 
-    /// Static category for a log line about this failure. Never the error's
-    /// `Display`: several variants embed a path or file content in it.
-    #[must_use]
-    pub(crate) const fn category(&self) -> &'static str {
-        match self {
-            PublishError::Discovery(_) => "discovery",
-            PublishError::Sample(_) => "sample",
-            PublishError::Limits(_) => "project_limits",
-            PublishError::Lock(_) => "lock_poisoned",
-            PublishError::Revision(_) => "revision",
-            PublishError::Database(_) => "database",
-            PublishError::ImportTooLarge { .. } => "import_too_large",
-            PublishError::ChangedDuringSample { .. } => "changed_during_sample",
-            PublishError::SamplingResultLost { .. } => "sampling_result_lost",
-            PublishError::SamplingIndexOutOfRange { .. } => "sampling_index_out_of_range",
-            PublishError::InvalidParserPackVersion(_) => "invalid_parser_pack_version",
-            PublishError::TimeBudgetExceeded { .. } => "time_budget_exceeded",
+    /// The one rule for a read of a file the walk listed that then fails:
+    /// `NotFound` means the file was deleted or renamed away since the walk
+    /// ([`discovery::is_vanished`]), so the tree changed and the attempt
+    /// fails with the retryable [`PublishError::ChangedDuringSample`];
+    /// `publish_cas` re-walks. Any other error is not a concurrent edit and
+    /// a retry cannot fix it, so it fails as the read error on `path`.
+    pub(super) fn read_after_walk(
+        relative_path: &str,
+        path: std::path::PathBuf,
+        source: std::io::Error,
+    ) -> PublishError {
+        if discovery::is_vanished(&source) {
+            PublishError::ChangedDuringSample {
+                path: relative_path.to_owned(),
+            }
+        } else {
+            PublishError::Sample(sample::SampleError::Read { path, source })
         }
     }
+}
 
-    /// Logs that this failure lost the parallel sampling pool's first-error
-    /// race. The category, the real path (when the variant names one) and
-    /// the error's `Display` are emitted.
-    pub(super) fn warn_sampling_superseded(&self) {
-        tracing::warn!(
-            operation = "sample_batch",
-            category = self.category(),
-            path = ?self.path_for_log(),
-            error = %self,
-            "a later sampling failure was discarded after the first error was recorded",
-        );
-    }
-
-    /// Logs this worker failure when the batch's error slot is poisoned and
-    /// cannot hold it. The batch still fails: its collector locks the same
-    /// slot and returns the poisoned-lock error.
-    pub(super) fn warn_unrecorded(&self, poisoned: &crate::util::LockPoisoned) {
-        tracing::warn!(
-            operation = "sample_batch",
-            category = self.category(),
-            path = ?self.path_for_log(),
-            error = %self,
-            slot_error = %poisoned,
-            "a sampling failure could not be recorded; the batch fails with the poisoned slot",
-        );
-    }
-
-    /// The path this failure carries, if it carries one, for log lines.
-    /// [`PublishError::TimeBudgetExceeded::path`] is a pre-formatted note,
-    /// not a path, so it is not exposed here.
-    fn path_for_log(&self) -> Option<String> {
-        match self {
-            PublishError::ChangedDuringSample { path }
-            | PublishError::SamplingResultLost { path, .. }
-            | PublishError::Revision(revision::RevisionError::InvalidParserRun { path, .. }) => {
-                Some(path.clone())
+/// A file the walk listed and that vanished before discovery could read it
+/// follows the same rule as `PublishError::read_after_walk`: the tree
+/// changed, so it becomes the retryable `ChangedDuringSample`. Every other
+/// discovery failure is carried as is.
+impl From<discovery::DiscoveryError> for PublishError {
+    fn from(error: discovery::DiscoveryError) -> Self {
+        match error {
+            discovery::DiscoveryError::Vanished { relative_path } => {
+                PublishError::ChangedDuringSample {
+                    path: relative_path,
+                }
             }
-            PublishError::Sample(
-                sample::SampleError::Read { path, .. } | sample::SampleError::TooLarge { path, .. },
-            )
-            | PublishError::Discovery(
-                discovery::DiscoveryError::Read { path, .. }
-                | discovery::DiscoveryError::NotRelative(path)
-                | discovery::DiscoveryError::NonUtf8Path(path)
-                | discovery::DiscoveryError::IgnoreRules {
-                    path: Some(path), ..
-                },
-            ) => Some(path.display().to_string()),
-            PublishError::Discovery(discovery::DiscoveryError::Walk(error)) => {
-                crate::ignore_rules::ignore_error_path(error).map(|path| path.display().to_string())
-            }
-            _ => None,
+            other => PublishError::Discovery(other),
         }
     }
 }

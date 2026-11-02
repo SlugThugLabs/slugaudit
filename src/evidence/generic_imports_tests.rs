@@ -1,6 +1,33 @@
 use super::*;
-use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, SpanAvailability};
-use slugaudit_test_check::TestResult;
+use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, LineIndex, SpanAvailability};
+use slugaudit_test_check::{Check, CheckErr, TestResult};
+
+/// Runs only the generic import walker over `source` parsed as `language`,
+/// without the rest of the evidence pipeline. A parser that cannot be built,
+/// a parse with no tree, or a walk cut short is an error, so a test can never
+/// pass on an empty result the walker did not actually produce.
+fn extract_generic_imports(language: &str, source: &str) -> TestResult<Vec<EvidenceItem>> {
+    let tree = crate::evidence::parse_tree(language, source, None)
+        .map_err(|failure| format!("{failure:?}"))
+        .check("parse the source")?;
+    let lines = LineIndex::new(source);
+    let input = WalkInput {
+        source,
+        lines: &lines,
+        deadline: None,
+    };
+    let mut out = Extraction::default();
+    let mut counter = 0usize;
+    walk_imports(&tree.root_node(), &input, &mut out, &mut counter).check("walk the imports")?;
+    if out.truncated || out.timed_out {
+        return Err(format!(
+            "walk cut short: truncated={} timed_out={}",
+            out.truncated, out.timed_out
+        ))
+        .check("walk the whole tree");
+    }
+    Ok(out.items)
+}
 
 fn import_sources(items: &[EvidenceItem]) -> Vec<&str> {
     items
@@ -124,9 +151,13 @@ fn php_namespace_use_is_captured() -> TestResult {
     Ok(())
 }
 
+/// The pipeline reports an unknown language's walker parse as a truncated,
+/// empty extraction (`normalize_tests`); this helper must fail instead, so no
+/// test here passes on items it never walked.
 #[test]
-fn unknown_language_returns_nothing_without_error() -> TestResult {
-    assert!(extract_generic_imports("not-a-real-language", "import x\n")?.is_empty());
+fn an_unknown_language_fails_the_helper_instead_of_passing_empty() -> TestResult {
+    extract_generic_imports("not-a-real-language", "import x\n")
+        .check_err("an unparseable language is an error")?;
     Ok(())
 }
 

@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=Recombined project_control tool request/response contract and execution handlers into cohesive module.
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=Recombined project_control tool request/response contract and execution handlers into cohesive module.
 //! Project enable/disable control. Exposed as an MCP tool so the calling
 //! AI can drive activation: `project_control` with `action = "on"` / `"off"`.
 //!
@@ -126,7 +126,7 @@ pub struct ImportReport {
     pub revision_id: String,
 }
 
-const MAX_PATH_BYTES: usize = 32 * 1024;
+use super::MAX_PATH_BYTES;
 const MAX_PROFILE_BYTES: usize = 64;
 
 /// Renders an activation outcome as the response's machine-readable field.
@@ -163,7 +163,7 @@ fn err(msg: impl Into<String>) -> ErrorData {
 ///
 /// # Errors
 ///
-/// `invalid_params` when the path exceeds 32768 bytes, the profile exceeds 64
+/// `invalid_params` when the path exceeds `MAX_PATH_BYTES`, the profile exceeds 64
 /// bytes or is unknown, or the path cannot be resolved to a directory. An
 /// internal error when the project database cannot be opened, when enabling
 /// or disabling the project fails, or when the initial import fails.
@@ -179,7 +179,10 @@ pub fn project_control(
         None => ".".to_string(),
     };
     if crate::util::exceeds_input_bytes(&path_str, MAX_PATH_BYTES) {
-        return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
+        return Err(ErrorData::invalid_params(
+            format!("path exceeds {MAX_PATH_BYTES} bytes"),
+            None,
+        ));
     }
     if inner
         .profile
@@ -210,7 +213,7 @@ pub fn project_control(
 
     match inner.action {
         ProjectControlAction::On => enable(&root, profile, sink, manager),
-        ProjectControlAction::Off => disable(&root, manager),
+        ProjectControlAction::Off => disable(&root),
     }
 }
 
@@ -284,7 +287,12 @@ fn enable(
         Err(e) => return Err(err(format!("database: {e}"))),
     };
     let report = sync::publish(&mut connection, root.as_path(), parse::PACK_VERSION, sink)
-        .map_err(|e| err(format!("import: {e}")))?;
+        .map_err(|e| {
+            err(format!(
+                "import: {e} ({})",
+                sync::publish_failure_context(root.as_path(), &e)
+            ))
+        })?;
     Ok(Json(ProjectControlResponse {
         status: "enabled".into(),
         path: root.as_path().to_string_lossy().to_string(),
@@ -315,10 +323,7 @@ fn recover_corrupt_database(path: &std::path::Path) -> Result<rusqlite::Connecti
 /// `off` never touches `.gitignore` — removing a rule can unhide paths
 /// SlugAudit knows nothing about, and only `on` has a reason to add one.
 /// Every response from here therefore omits the `gitignore` field.
-fn disable(
-    root: &ProjectRoot,
-    _manager: Option<&sync::SourceSyncManager>,
-) -> Result<Json<ProjectControlResponse>, ErrorData> {
+fn disable(root: &ProjectRoot) -> Result<Json<ProjectControlResponse>, ErrorData> {
     let report = project::disable(root).map_err(|e| err(format!("disable: {e}")))?;
     // Nothing removed means there was no activation directory: already off.
     let status = if report.removed.is_empty() {

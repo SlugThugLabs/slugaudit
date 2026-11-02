@@ -156,19 +156,42 @@ fn sweep(dir: &Path, own: Uuid) -> SweepOutcome {
     }
     for (session, path) in &dbs {
         let has_lock = locks.iter().any(|(owner, _)| owner == session);
-        if *session != own && !has_lock && !lock_exists(dir, *session) {
-            outcome.remove(path, "remove an orphaned result file");
+        if *session != own && !has_lock {
+            sweep_orphan(path, lock_exists(dir, *session), &mut outcome);
         }
     }
     outcome
 }
 
 /// Re-checks the filesystem before deleting a lock-less session's file: a
-/// live process creates its lock before its first `.db`.
-fn lock_exists(dir: &Path, session: Uuid) -> bool {
-    dir.join(format!("{}.lock", session.hyphenated()))
-        .symlink_metadata()
-        .is_ok()
+/// live process creates its lock before its first `.db`. Only `NotFound`
+/// means absent; any other error leaves the answer unknown and is returned.
+fn lock_exists(dir: &Path, session: Uuid) -> io::Result<bool> {
+    lock_presence(
+        dir.join(format!("{}.lock", session.hyphenated()))
+            .symlink_metadata(),
+    )
+}
+
+/// Removes a lock-less session's file when its lock is known to be absent. A
+/// failed lock check leaves the file in place and is recorded: a live
+/// session's file must not be deleted on a guess.
+fn sweep_orphan(path: &Path, lock_present: io::Result<bool>, outcome: &mut SweepOutcome) {
+    match lock_present {
+        Ok(false) => outcome.remove(path, "remove an orphaned result file"),
+        Ok(true) => {}
+        Err(error) => outcome.failed("check for a lock before removing a result file", &error),
+    }
+}
+
+/// Maps a lock file's metadata lookup to present, absent (`NotFound`) or the
+/// error.
+fn lock_presence(metadata: io::Result<std::fs::Metadata>) -> io::Result<bool> {
+    match metadata {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 /// Removes a dead owner's files, or skips a live owner.
@@ -202,3 +225,7 @@ fn sweep_owner(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "owner_tests.rs"]
+mod tests;

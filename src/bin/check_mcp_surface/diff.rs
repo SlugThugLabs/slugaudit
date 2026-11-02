@@ -36,31 +36,9 @@ fn walk(committed: &Value, live: &Value, path: &str, found: &mut Vec<String>) {
             }
         }
         (Value::Array(committed), Value::Array(live)) => {
-            if !named(committed) || !named(live) {
-                if committed.len() != live.len() {
-                    found.push(format!(
-                        "{path}: snapshot has {} entries, live has {}",
-                        committed.len(),
-                        live.len()
-                    ));
-                }
-                for (index, (value, other)) in committed.iter().zip(live.iter()).enumerate() {
-                    walk(value, other, &format!("{path}[{index}]"), found);
-                }
-                return;
-            }
-            for entry in committed {
-                let Some(name) = name_of(entry) else { continue };
-                match live.iter().find(|other| name_of(other) == Some(name)) {
-                    Some(other) => walk(entry, other, &format!("{path}[{name}]"), found),
-                    None => report_one_sided(found, &format!("{path}[{name}]"), Side::Snapshot),
-                }
-            }
-            for entry in live {
-                let Some(name) = name_of(entry) else { continue };
-                if !committed.iter().any(|other| name_of(other) == Some(name)) {
-                    report_one_sided(found, &format!("{path}[{name}]"), Side::Live);
-                }
+            match (named_entries(committed), named_entries(live)) {
+                (Some(committed), Some(live)) => walk_named(&committed, &live, path, found),
+                _ => walk_positional(committed, live, path, found),
             }
         }
         _ if committed != live => found.push(format!(
@@ -69,6 +47,41 @@ fn walk(committed: &Value, live: &Value, path: &str, found: &mut Vec<String>) {
             summarize(live)
         )),
         _ => {}
+    }
+}
+
+/// Two arrays that are not name-keyed, compared entry by entry.
+fn walk_positional(committed: &[Value], live: &[Value], path: &str, found: &mut Vec<String>) {
+    if committed.len() != live.len() {
+        found.push(format!(
+            "{path}: snapshot has {} entries, live has {}",
+            committed.len(),
+            live.len()
+        ));
+    }
+    for (index, (value, other)) in committed.iter().zip(live.iter()).enumerate() {
+        walk(value, other, &format!("{path}[{index}]"), found);
+    }
+}
+
+/// Two name-keyed arrays, matched by name so order is not drift. A name that
+/// repeats within one array matches its first entry on the other side.
+fn walk_named(
+    committed: &[(&str, &Value)],
+    live: &[(&str, &Value)],
+    path: &str,
+    found: &mut Vec<String>,
+) {
+    for (name, entry) in committed {
+        match live.iter().find(|(other, _)| other == name) {
+            Some((_, other)) => walk(entry, other, &format!("{path}[{name}]"), found),
+            None => report_one_sided(found, &format!("{path}[{name}]"), Side::Snapshot),
+        }
+    }
+    for (name, _) in live {
+        if !committed.iter().any(|(other, _)| other == name) {
+            report_one_sided(found, &format!("{path}[{name}]"), Side::Live);
+        }
     }
 }
 
@@ -89,10 +102,17 @@ fn report_one_sided(found: &mut Vec<String>, label: &str, only_on: Side) {
     });
 }
 
-/// True when the array is non-empty and every entry is an object with a
-/// string `name` — the shape the tool and resource lists use.
-fn named(entries: &[Value]) -> bool {
-    !entries.is_empty() && entries.iter().all(|entry| name_of(entry).is_some())
+/// Each entry with its `name`, when the array is non-empty and every entry is
+/// an object with a string `name` — the shape the tool and resource lists
+/// use. `None` for any other array.
+fn named_entries(entries: &[Value]) -> Option<Vec<(&str, &Value)>> {
+    if entries.is_empty() {
+        return None;
+    }
+    entries
+        .iter()
+        .map(|entry| name_of(entry).map(|name| (name, entry)))
+        .collect()
 }
 
 /// `a.b`, or just `b` at the root so the first reported path has no leading

@@ -66,6 +66,31 @@ fn a_comparison_or_binding_pattern_is_not_a_producer() {
 }
 
 #[test]
+fn a_path_qualified_comparison_is_not_a_producer() {
+    for source in [
+        "if x.kind == model::EvidenceKind::Alpha { }",
+        "if x.kind != crate::model::Thing::Alpha { }",
+        "assert!(kind == a::b::Thing::Alpha);",
+        "if kind >= ::Thing::Alpha { }",
+    ] {
+        assert!(
+            scan::producer_variants(source, "Thing").is_empty()
+                && scan::producer_variants(source, "EvidenceKind").is_empty(),
+            "a comparison is not a construction: {source}"
+        );
+    }
+}
+
+#[test]
+fn a_path_qualified_value_is_a_producer() {
+    let source = "let item = Item { kind: crate::model::Thing::Alpha };\nrun.x = a::Thing::Beta;";
+    assert_eq!(
+        scan::producer_variants(source, "Thing"),
+        vec!["Alpha".to_owned(), "Beta".to_owned()]
+    );
+}
+
+#[test]
 fn a_value_in_a_block_tail_is_a_producer() {
     let source = "let kind = if flag {\n    Thing::Alpha\n} else {\n    Thing::Beta\n};";
     let mut produced = scan::producer_variants(source, "Thing");
@@ -83,6 +108,34 @@ fn production_code_drops_an_inline_test_module() {
         !code.contains("Thing::Alpha"),
         "a cfg(test) fixture must not count as a producer: {code}"
     );
+}
+
+#[test]
+fn production_code_drops_items_gated_on_test_inside_all() {
+    let source = "#[cfg(all(test, unix))]\nfn fixture() -> Thing { Thing::Alpha }\nfn real() {}\n";
+    let code = scan::production_code(source);
+    assert!(code.contains("fn real"));
+    assert!(
+        !code.contains("Thing::Alpha"),
+        "a cfg(all(test, ..)) fixture must not count as a producer: {code}"
+    );
+}
+
+#[test]
+fn production_code_keeps_items_that_exist_outside_test_builds() {
+    for attribute in [
+        "#[cfg(not(test))]",
+        "#[cfg(any(target_os = \"macos\", test))]",
+        "#[cfg(feature = \"test\")]",
+        "#[cfg(unix)]",
+    ] {
+        let source = format!("{attribute}\nfn kept() -> Thing {{ Thing::Alpha }}\n");
+        let code = scan::production_code(&source);
+        assert!(
+            code.contains("Thing::Alpha"),
+            "{attribute} was stripped: {code}"
+        );
+    }
 }
 
 #[test]

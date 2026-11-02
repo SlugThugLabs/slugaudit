@@ -1,189 +1,74 @@
-//! Parallel streaming-hash worker pool for file discovery.
+//! Pass 1 of a full sync: stream-hash every discovered file on the shared
+//! worker pool ([`super::file_pool`]).
 //!
-//! Hashes discovered files on disk in fixed 64 KB chunks ([`hash_file`]) to produce
+//! Hashes files on disk in fixed 64 KB chunks ([`hash_file`]) to produce
 //! [`SourceIdentity`] without holding entire file texts in memory.
 
 use super::discovery::{DiscoveredFile, SkippedFile};
+use super::file_pool::{self, Pass};
 use super::hash::{HashError, hash_file};
 use super::publish::PublishError;
 use super::revision_skipped::SKIP_REASON_OVERSIZE;
-use super::sample::SampleError;
 use crate::model::SourceIdentity;
 use crate::util::Deadline;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Mutex, mpsc};
-use std::thread;
 
-enum HashOutcome {
-    Ok(SourceIdentity),
+/// The hashing pass, as its log lines and time-budget error name it.
+const HASH_PASS: Pass = Pass {
+    operation: "hash_batch",
+    activity: "hashing",
+};
+
+/// One file's Pass 1 outcome.
+enum Hashed {
+    /// The file's content identity.
+    Identity(SourceIdentity),
+    /// The file is over the per-file ceiling and becomes a skipped row.
     Skipped(SkippedFile),
 }
 
-struct HashBatch<'a> {
-    discovered: &'a [DiscoveredFile],
-    max_file_bytes: u64,
-    deadline: &'a Deadline,
-    total: usize,
-    next_index: AtomicUsize,
-    error_flag: AtomicBool,
-    error_slot: Mutex<Option<PublishError>>,
-}
-
-impl HashBatch<'_> {
-    fn abort(&self, error: PublishError) {
-        if self.error_flag.swap(true, Ordering::SeqCst) {
-            error.warn_sampling_superseded();
-        } else {
-            match crate::util::lock(&self.error_slot, "hash_batch::abort") {
-                Ok(mut guard) => *guard = Some(error),
-                // The batch still fails: `collect` locks the same slot and
-                // returns the poisoned-lock error.
-                Err(poisoned) => error.warn_unrecorded(&poisoned),
-            }
-        }
-    }
-
-    /// The typed failure for an index that is not a position in the
-    /// discovered set, so a bad index can never panic the process.
-    fn index_out_of_range(&self, index: usize) -> PublishError {
-        PublishError::SamplingIndexOutOfRange {
-            index,
-            total: self.discovered.len(),
-        }
-    }
-
-    fn send_outcome(
-        &self,
-        tx: &mpsc::Sender<(usize, HashOutcome)>,
-        idx: usize,
-        outcome: HashOutcome,
-    ) -> bool {
-        let Some(file) = self.discovered.get(idx) else {
-            self.abort(self.index_out_of_range(idx));
-            return false;
-        };
-        match tx.send((idx, outcome)) {
-            Ok(()) => true,
-            Err(error) => {
-                self.abort(PublishError::SamplingResultLost {
-                    path: file.relative_path.clone(),
-                    reason: error.to_string(),
-                });
-                false
-            }
-        }
-    }
-
-    fn run_worker(&self, tx: &mpsc::Sender<(usize, HashOutcome)>) {
-        while !self.error_flag.load(Ordering::Relaxed) {
-            let idx = self.next_index.fetch_add(1, Ordering::Relaxed);
-            if idx >= self.total {
-                break;
-            }
-            let Some(file) = self.discovered.get(idx) else {
-                self.abort(self.index_out_of_range(idx));
-                return;
-            };
-            if let Some(elapsed) = self.deadline.exceeded() {
-                self.abort(PublishError::TimeBudgetExceeded {
-                    path: format!(" while hashing {}", file.relative_path),
-                    elapsed_ms: elapsed.as_millis(),
-                });
-                return;
-            }
-            match hash_file(
-                &file.relative_path,
-                &file.absolute_path,
-                self.max_file_bytes,
-            ) {
-                Ok(identity) => {
-                    if !self.send_outcome(tx, idx, HashOutcome::Ok(identity)) {
-                        return;
-                    }
-                }
-                Err(HashError::TooLarge {
-                    path,
-                    observed,
-                    limit,
-                }) => {
-                    let skip = SkippedFile {
-                        absolute_path: path,
-                        reason: format!(
-                            "{} exceeds the {}-byte per-file ceiling (observed {} bytes)",
-                            file.relative_path, limit, observed
-                        ),
-                        code: SKIP_REASON_OVERSIZE,
-                    };
-                    if !self.send_outcome(tx, idx, HashOutcome::Skipped(skip)) {
-                        return;
-                    }
-                }
-                Err(HashError::Read { path, source }) => {
-                    self.abort(PublishError::Sample(SampleError::Read { path, source }));
-                    return;
-                }
-            }
-        }
-    }
-
-    fn collect(
-        self,
-        rx: &mpsc::Receiver<(usize, HashOutcome)>,
-    ) -> Result<(Vec<SourceIdentity>, Vec<SkippedFile>), PublishError> {
-        let mut results = Vec::with_capacity(self.total);
-        while let Ok((idx, outcome)) = rx.recv() {
-            results.push((idx, outcome));
-        }
-        let error = crate::util::lock(&self.error_slot, "hash_batch::collect")?.take();
-        if let Some(error) = error {
-            return Err(error);
-        }
-        results.sort_by_key(|&(idx, _)| idx);
-        let mut identities = Vec::with_capacity(results.len());
-        let mut skips = Vec::new();
-        for (_, outcome) in results {
-            match outcome {
-                HashOutcome::Ok(identity) => identities.push(identity),
-                HashOutcome::Skipped(skip) => skips.push(skip),
-            }
-        }
-        Ok((identities, skips))
-    }
-}
-
+/// Hashes every discovered file, in discovered order. A file over
+/// `max_file_bytes` is skipped with an `oversize` reason instead of failing
+/// the pass.
+///
+/// # Errors
+///
+/// [`PublishError::ChangedDuringSample`] for a file deleted since the walk,
+/// the read error for any other unreadable file, or a pool failure (see
+/// [`file_pool::run`]).
 pub(super) fn hash_all_with_deadline(
     discovered: &[DiscoveredFile],
     max_file_bytes: u64,
     deadline: &Deadline,
 ) -> Result<(Vec<SourceIdentity>, Vec<SkippedFile>), PublishError> {
-    let total = discovered.len();
-    if total == 0 {
-        return Ok((Vec::new(), Vec::new()));
-    }
-    let parallelism = thread::available_parallelism().map_or(1, std::num::NonZero::get);
-    let worker_count = total.min(parallelism.min(8));
-
-    let (tx, rx) = mpsc::channel();
-    let batch = HashBatch {
-        discovered,
-        max_file_bytes,
-        deadline,
-        total,
-        next_index: AtomicUsize::new(0),
-        error_flag: AtomicBool::new(false),
-        error_slot: Mutex::new(None),
-    };
-
-    thread::scope(|scope| {
-        for _ in 0..worker_count {
-            let tx = tx.clone();
-            let batch = &batch;
-            scope.spawn(move || batch.run_worker(&tx));
+    let outcomes = file_pool::run(discovered, deadline, HASH_PASS, |_, file| {
+        hash_one(file, max_file_bytes)
+    })?;
+    let mut identities = Vec::with_capacity(outcomes.len());
+    let mut skips = Vec::new();
+    for outcome in outcomes {
+        match outcome {
+            Hashed::Identity(identity) => identities.push(identity),
+            Hashed::Skipped(skip) => skips.push(skip),
         }
-        drop(tx);
-    });
+    }
+    Ok((identities, skips))
+}
 
-    batch.collect(&rx)
+/// Hashes one file: its identity, an oversize skip, or the failure.
+fn hash_one(file: &DiscoveredFile, max_file_bytes: u64) -> Result<Hashed, PublishError> {
+    match hash_file(&file.relative_path, &file.absolute_path, max_file_bytes) {
+        Ok(identity) => Ok(Hashed::Identity(identity)),
+        Err(error @ HashError::TooLarge { .. }) => Ok(Hashed::Skipped(SkippedFile {
+            absolute_path: file.absolute_path.clone(),
+            reason: error.to_string(),
+            code: SKIP_REASON_OVERSIZE,
+        })),
+        Err(HashError::Read { path, source }) => Err(PublishError::read_after_walk(
+            &file.relative_path,
+            path,
+            source,
+        )),
+    }
 }
 
 #[cfg(test)]

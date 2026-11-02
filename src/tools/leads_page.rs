@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=one leads result: the producer that fills the store from one read transaction and the page assembly that serves it share one envelope and one cut rule
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=one leads result: the producer that fills the store from one read transaction and the page assembly that serves it share one envelope and one cut rule
 //! Assembling one `leads` response: the producer that streams the rows and the
 //! counts out of one verified read transaction into the result store, and the
 //! page assembly that serves any page of a stored result.
@@ -61,11 +61,14 @@ pub(super) struct Scope<'a> {
 #[derive(Clone, Copy)]
 pub(super) struct Cut {
     pub(super) limit: Option<usize>,
-    /// The byte budget this call resolved to, and whether it is the ceiling.
+    /// The byte budget a new request resolved to; a continuation uses the
+    /// budget stored with the result (or its own `requested_bytes`) instead.
     pub(super) size: PageSize,
-    /// Whether the request asked for a budget. A continuation that did not
-    /// uses the one page one used, and `size` is then unused.
-    pub(super) explicit_bytes: bool,
+    /// The `page_bytes` the request asked for, as asked. A continuation
+    /// clamps it to the ceiling stored with the result.
+    pub(super) requested_bytes: Option<usize>,
+    /// The hard ceiling the project resolved to, stored with a new result.
+    pub(super) ceiling: usize,
 }
 
 /// What the page cut learns while the reader offers rows to it.
@@ -92,7 +95,8 @@ pub(super) fn page(
 ) -> Result<LeadsResponse, ErrorData> {
     let mut cutting = Cutting::default();
     let mut spec = PageSpec::typed::<StoredLead>(TOOL, cut.size.bytes);
-    spec.requested_page_bytes = cut.explicit_bytes.then_some(cut.size.bytes);
+    spec.requested_page_bytes = cut.requested_bytes;
+    spec.ceiling = cut.ceiling;
     let served = paginate::<Extras, _, _>(
         manager,
         &spec,
@@ -115,7 +119,7 @@ pub(super) fn page(
     if let Some(error) = cutting.failure.take() {
         return Err(error);
     }
-    respond(served, &cutting, cut)
+    respond(served, &cutting)
 }
 
 /// What limited a page. A complete page has no limit; a page the caller's
@@ -129,14 +133,10 @@ fn limited_by(complete: bool, stopped_by: Option<PageLimit>, size: PageSize) -> 
     }
 }
 
-/// Builds the response from the served page and what the cut measured. A
-/// request that asked for a byte budget cuts at its own; a continuation that
-/// did not cuts at the one stored with the result.
-fn respond(
-    served: Served<Extras>,
-    cutting: &Cutting,
-    cut: Cut,
-) -> Result<LeadsResponse, ErrorData> {
+/// Builds the response from the served page and what the cut measured. The
+/// page was cut at `page.page_bytes`, which is the ceiling exactly when
+/// `served.at_ceiling` says so.
+fn respond(served: Served<Extras>, cutting: &Cutting) -> Result<LeadsResponse, ErrorData> {
     let rows: Vec<StoredLead> = decode_rows(&served.rows)?;
     let extras = served.meta;
     let mut page = served.page;
@@ -144,11 +144,7 @@ fn respond(
     page.bytes_used = bytes_used;
     let size = PageSize {
         bytes: page.page_bytes,
-        at_ceiling: if cut.explicit_bytes {
-            cut.size.at_ceiling
-        } else {
-            extras.at_ceiling
-        },
+        at_ceiling: served.at_ceiling,
     };
     page.limited_by = limited_by(page.complete, cutting.stopped_by, size);
     let oversized_row = bytes_used > page.page_bytes;
@@ -239,7 +235,7 @@ fn produce(
         scope.deadline,
         &cache,
     )?;
-    let mut counts = leads_custom::counts(scope.catalog, &scanned, &found.tallies, &read);
+    let mut counts = leads_custom::counts(scope.catalog, &scanned, &found.tallies, &read)?;
     counts.extend(count_all(tx, scope.pattern, &read)?);
     let notices = notices_for(scope, &counts);
     let files_not_parsed = leads_query::files_not_parsed(tx, scope.pattern)?;
@@ -263,7 +259,6 @@ fn produce(
             files_not_parsed,
             files_total: to_i64(feed.files())?,
             compact: scope.mode == LeadMode::Compact,
-            at_ceiling: cut.size.at_ceiling,
             limit: cut.limit,
         },
     })

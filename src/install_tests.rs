@@ -9,13 +9,18 @@ use crate::util::TEST_ENV_LOCK;
 use slugaudit_test_check::{Check, CheckErr, TestResult};
 use std::path::PathBuf;
 
+/// `run_install` with the PATH question declined, so no test reads a terminal.
+fn run_install_declined() -> Result<(), InstallError> {
+    run_install_with(|_| false)
+}
+
 fn install_to(temp_dir: &tempfile::TempDir) -> TestResult<PathBuf> {
     let _guard = TEST_ENV_LOCK.lock().check("env lock")?;
     temp_env::with_var(
         "SLUGTHUG_HOME",
         Some(temp_dir.path().as_os_str()),
         || -> TestResult {
-            run_install().check("install succeeds")?;
+            run_install_declined().check("install succeeds")?;
             Ok(())
         },
     )?;
@@ -243,6 +248,39 @@ fn slugthug_home_is_none_without_either_var() -> TestResult {
 }
 
 #[test]
+fn empty_home_variables_count_as_unset() -> TestResult {
+    let _guard = TEST_ENV_LOCK.lock().check("env lock")?;
+    let empty = std::ffi::OsStr::new("");
+    temp_env::with_vars(
+        [
+            ("SLUGTHUG_HOME", Some(empty)),
+            ("SLUGTHUG_CONFIG_HOME", Some(empty)),
+            ("HOME", Some(empty)),
+        ],
+        || {
+            assert_eq!(slugthug_home(), None);
+            assert_eq!(slugaudit_dir(), None);
+            assert_eq!(config_home(), None);
+        },
+    );
+    temp_env::with_vars(
+        [
+            ("SLUGTHUG_HOME", Some(empty)),
+            ("SLUGTHUG_CONFIG_HOME", Some(empty)),
+            ("HOME", Some(std::ffi::OsStr::new("/somewhere/else"))),
+        ],
+        || {
+            assert_eq!(
+                slugthug_home(),
+                Some(PathBuf::from("/somewhere/else/.slugthug"))
+            );
+            assert_eq!(config_home(), Some(PathBuf::from("/somewhere/else")));
+        },
+    );
+    Ok(())
+}
+
+#[test]
 fn run_install_copies_the_running_binary_to_a_stable_path() -> TestResult {
     let temp = tempfile::tempdir().check("temp dir")?;
     let target = install_to(&temp)?;
@@ -286,7 +324,7 @@ fn installed_binary_is_executable() -> TestResult {
 fn an_install_without_any_home_variable_reports_no_home() -> TestResult {
     let _guard = TEST_ENV_LOCK.lock().check("env lock")?;
 
-    let result = temp_env::with_vars_unset(["SLUGTHUG_HOME", "HOME"], run_install);
+    let result = temp_env::with_vars_unset(["SLUGTHUG_HOME", "HOME"], run_install_declined);
 
     assert!(
         matches!(result, Err(InstallError::NoHome)),
@@ -303,7 +341,11 @@ fn an_install_home_that_is_a_file_reports_the_directory_it_could_not_create() ->
     std::fs::write(&home, b"a file where the home should be").check("plant file")?;
     let _guard = TEST_ENV_LOCK.lock().check("env lock")?;
 
-    let result = temp_env::with_var("SLUGTHUG_HOME", Some(home.as_os_str()), run_install);
+    let result = temp_env::with_var(
+        "SLUGTHUG_HOME",
+        Some(home.as_os_str()),
+        run_install_declined,
+    );
 
     let Err(InstallError::Mkdir { path, .. }) = result else {
         return Err(format!("expected Mkdir, got {result:?}")).check("unexpected outcome");
@@ -328,7 +370,7 @@ fn an_install_target_that_is_a_directory_reports_the_failed_step_and_cleans_up()
     let result = temp_env::with_var(
         "SLUGTHUG_HOME",
         Some(directory.path().as_os_str()),
-        run_install,
+        run_install_declined,
     );
 
     let Err(InstallError::Place(error)) = result else {
@@ -411,7 +453,11 @@ fn an_install_that_cannot_stage_the_binary_reports_the_copy_step() -> TestResult
     std::fs::create_dir_all(&home).check("create the deep home")?;
     let _guard = TEST_ENV_LOCK.lock().check("env lock")?;
 
-    let result = temp_env::with_var("SLUGTHUG_HOME", Some(home.as_os_str()), run_install);
+    let result = temp_env::with_var(
+        "SLUGTHUG_HOME",
+        Some(home.as_os_str()),
+        run_install_declined,
+    );
 
     let Err(InstallError::Copy { path, .. }) = result else {
         return Err(format!("expected Copy, got {result:?}")).check("unexpected outcome");
@@ -467,7 +513,7 @@ fn an_uncanonicalizable_path_entry_is_compared_as_written_and_logged() -> TestRe
         temp_env::with_var("PATH", Some(broken_entry.as_os_str()), || {
             on_path(temp.path())
         })
-    });
+    })?;
 
     assert!(
         !found.check("the install directory resolves")?,

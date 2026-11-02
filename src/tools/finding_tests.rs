@@ -1,5 +1,6 @@
 use super::*;
 use crate::sync;
+use crate::tools::MAX_PATH_BYTES;
 use crate::tools::test_support::activated_project;
 use rmcp::handler::server::wrapper::Parameters;
 use rusqlite::Connection;

@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=the report section queries and the assembly that joins them into one response, read in one fixed order
 //! The per-section queries that fill a `report` snapshot, and the assembly
 //! that joins them. Kept apart from `report.rs` so the request/response schema
 //! (the MCP `outputSchema`) stays separate from the SQL that counts truth.
@@ -40,18 +41,25 @@ struct GraphSections {
     credential_pattern_file_count: i64,
 }
 
-/// Assembles the report from per-section queries — the ordering plus the
-/// completion log, nothing else. The query order is fixed so
-/// the first failing statement is always the same.
-pub(super) fn build_report(
+/// What the project index alone says, before the session findings and the
+/// mechanics catalog are added by [`ReportSections::into_response`].
+pub(super) struct ReportSections {
+    scope: ScopeSections,
+    graph: GraphSections,
+}
+
+/// Reads every section from the index: the ordering plus the completion
+/// log, nothing else. The query order is fixed so the first failing
+/// statement is always the same.
+pub(super) fn read_sections(
     connection: &Transaction<'_>,
-    revision_id: String,
-) -> Result<ReportResponse, rusqlite::Error> {
+    revision_id: &str,
+) -> Result<ReportSections, rusqlite::Error> {
     let scope = read_scope_sections(connection)?;
     let graph = read_graph_sections(connection)?;
 
-    // Counts and the revision id only — never row content — attached to
-    // whatever span `run_blocking` (src/server.rs) currently has entered.
+    // Counts and the revision id only, never row content, attached to
+    // whatever span `run_blocking` (src/server_runner.rs) currently has entered.
     tracing::info!(
         target: "slugaudit_mcp_rust::tools::report",
         revision_id,
@@ -60,35 +68,47 @@ pub(super) fn build_report(
         diagnostic_count = graph.diagnostic_count,
         "report built"
     );
-    Ok(ReportResponse {
-        database_discard: None,
-        revision_id,
-        file_count: scope.file_count,
-        completeness: scope.completeness,
-        notices: untested_language_notices(
-            scope
-                .languages
-                .iter()
-                .map(|count| (count.language.as_str(), Some(count.file_count))),
-        ),
-        languages: scope.languages,
-        evidence_counts: scope.evidence_counts,
-        parser_failure_count: scope.parser_failure_count,
-        parser_failure_files: scope.parser_failure_files,
-        parser_failure_files_total: scope.parser_failure_count,
-        // Filled by `report::report` from the session findings database; this
-        // function reads the project index only.
-        open_finding_count: 0,
-        import_resolution: graph.import_resolution,
-        dependency_edges: graph.dependency_edges,
-        diagnostic_count: graph.diagnostic_count,
-        unsupported_language_unresolved_count: graph.unsupported_language_unresolved_count,
-        credential_pattern_file_count: graph.credential_pattern_file_count,
-        // Filled by `report::report`, which owns the server's session state
-        // and the project config; this function reads the index only.
-        mechanics: ReportMechanics::default(),
-        mechanics_invalid: 0,
-    })
+    Ok(ReportSections { scope, graph })
+}
+
+impl ReportSections {
+    /// The response, built once from the index sections and the parts only
+    /// `report::report` can supply: the session findings count, the rebuild
+    /// notice and the mechanics section.
+    pub(super) fn into_response(
+        self,
+        revision_id: String,
+        open_finding_count: i64,
+        database_discard: Option<crate::sync::DatabaseDiscard>,
+        mechanics: ReportMechanics,
+    ) -> ReportResponse {
+        let Self { scope, graph } = self;
+        ReportResponse {
+            database_discard,
+            revision_id,
+            file_count: scope.file_count,
+            completeness: scope.completeness,
+            notices: untested_language_notices(
+                scope
+                    .languages
+                    .iter()
+                    .map(|count| (count.language.as_str(), Some(count.file_count))),
+            ),
+            languages: scope.languages,
+            evidence_counts: scope.evidence_counts,
+            parser_failure_count: scope.parser_failure_count,
+            parser_failure_files: scope.parser_failure_files,
+            parser_failure_files_total: scope.parser_failure_count,
+            open_finding_count,
+            import_resolution: graph.import_resolution,
+            dependency_edges: graph.dependency_edges,
+            diagnostic_count: graph.diagnostic_count,
+            unsupported_language_unresolved_count: graph.unsupported_language_unresolved_count,
+            credential_pattern_file_count: graph.credential_pattern_file_count,
+            mechanics_invalid: mechanics.invalid.len(),
+            mechanics,
+        }
+    }
 }
 
 /// The tree-wide counts: files, completeness, languages, evidence kinds and
@@ -143,8 +163,8 @@ fn read_graph_sections(connection: &Transaction<'_>) -> Result<GraphSections, ru
     )?;
     // Credential-pattern files are indexed like any other file (see the
     // field doc); `lower(path)` keeps the match robust to case, and the
-    // shared predicate lives in `tools::mod` so `leads` and `report` can
-    // never disagree about the pattern list.
+    // shared predicate lives in `tools::sql_predicates` so `leads` and
+    // `report` can never disagree about the pattern list.
     let credential_pattern_file_count = scalar_count(
         connection,
         &format!("SELECT count(*) FROM files WHERE {CREDENTIAL_PATH_PREDICATE}"),
@@ -189,16 +209,14 @@ fn grouped_evidence_counts(
 ) -> Result<Vec<EvidenceKindCount>, rusqlite::Error> {
     let mut evidence_statement =
         connection.prepare("SELECT kind, count(*) FROM evidence GROUP BY kind ORDER BY kind")?;
-    let evidence_counts = evidence_statement
+    evidence_statement
         .query_map([], |row| {
             Ok(EvidenceKindCount {
                 kind: row.get(0)?,
                 count: row.get(1)?,
             })
         })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(evidence_statement);
-    Ok(evidence_counts)
+        .collect()
 }
 
 /// Failures include load/availability problems *and* parses that ran and
@@ -238,9 +256,7 @@ fn parser_failures(
     Ok((total, files))
 }
 
-/// Import resolution breakdown — the key asymmetry signal. A project
-/// where most imports are External or Unresolved has a disconnected
-/// import graph; dependency traversal won't help much there.
+/// Import edges counted by `resolution_kind`.
 fn grouped_import_resolution(
     connection: &Transaction<'_>,
 ) -> Result<Vec<ImportResolutionCount>, rusqlite::Error> {

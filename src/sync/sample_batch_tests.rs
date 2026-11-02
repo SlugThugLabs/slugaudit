@@ -1,219 +1,151 @@
-//! Tests for the parallel sampling pool's worker plumbing.
+//! Tests for the Pass 2 sampling pass.
 
 use super::*;
+use crate::sync::discovery::FileKind;
 use crate::sync::test_support::write;
 use slugaudit_test_check::{Check, CheckErr, TestResult};
 
-fn one_file_batch<'a>(
-    discovered: &'a [crate::sync::discovery::DiscoveredFile],
-    limits: &'a ResourceLimits,
-    deadline: &'a Deadline,
-    total: usize,
-) -> Batch<'a> {
-    Batch {
-        discovered,
-        limits,
-        deadline,
-        total,
-        next_index: AtomicUsize::new(0),
-        total_bytes: AtomicU64::new(0),
-        error_flag: AtomicBool::new(false),
-        error_slot: Mutex::new(None),
+fn indexed(project: &std::path::Path, relative_path: &str) -> DiscoveredFile {
+    DiscoveredFile {
+        relative_path: relative_path.to_owned(),
+        absolute_path: project.join(relative_path),
+        kind: FileKind::Indexed,
     }
 }
 
+fn generous() -> Deadline {
+    Deadline::after(std::time::Duration::from_mins(1))
+}
+
 #[test]
-fn a_result_that_cannot_be_delivered_aborts_the_run_with_the_file_named() -> TestResult {
+fn a_file_deleted_since_the_walk_is_a_change_the_sample_pass_reports() -> TestResult {
     let project = tempfile::tempdir().check("project dir")?;
-    write(project.path(), "lib.rs", b"fn a() {}\n")?;
-    let (discovered, _skipped) =
-        crate::sync::discovery::discover(project.path()).check("discover")?;
-    let limits = ResourceLimits::default();
-    let deadline = Deadline::after(std::time::Duration::from_mins(1));
-    let batch = one_file_batch(&discovered, &limits, &deadline, discovered.len());
-    let (tx, rx) = std::sync::mpsc::channel::<(usize, Outcome)>();
-    drop(rx);
+    write(project.path(), "keep.rs", b"fn keep() {}\n")?;
+    let discovered = [
+        indexed(project.path(), "gone.rs"),
+        indexed(project.path(), "keep.rs"),
+    ];
 
-    let delivered = batch.deliver(
-        &tx,
-        0,
-        Err(SkipReason {
-            message: "skipped".to_owned(),
-            code: "unreadable",
-        }),
-    );
+    let error = sample_all_with_deadline(
+        &discovered,
+        &ResourceLimits::default(),
+        &crate::progress::NoopProgressSink,
+        &generous(),
+    )
+    .check_err("a vanished file must fail the pass")?;
 
-    assert!(!delivered, "a closed channel must stop the worker");
-    let recorded = lock(&batch.error_slot, "sample_batch_error_slot")
-        .check("lock the error slot")?
-        .take();
     assert!(
-        matches!(&recorded, Some(PublishError::SamplingResultLost { path, .. }) if path == "lib.rs"),
-        "expected SamplingResultLost naming lib.rs, got {recorded:?}"
+        matches!(&error, PublishError::ChangedDuringSample { path } if path == "gone.rs"),
+        "got {error:?}"
     );
     Ok(())
 }
 
 #[test]
-fn a_delivery_at_the_end_of_the_discovered_set_fails_with_the_index_error() -> TestResult {
+fn a_file_the_sample_pass_cannot_read_fails_with_its_read_error() -> TestResult {
     let project = tempfile::tempdir().check("project dir")?;
-    write(project.path(), "lib.rs", b"fn a() {}\n")?;
-    let (discovered, _skipped) =
-        crate::sync::discovery::discover(project.path()).check("discover")?;
-    let limits = ResourceLimits::default();
-    let deadline = Deadline::after(std::time::Duration::from_mins(1));
-    let batch = one_file_batch(&discovered, &limits, &deadline, discovered.len());
-    let (tx, _rx) = std::sync::mpsc::channel::<(usize, Outcome)>();
+    std::fs::create_dir(project.path().join("dir.rs")).check("create a directory")?;
+    let discovered = [indexed(project.path(), "dir.rs")];
 
-    let delivered = batch.deliver(
-        &tx,
-        discovered.len(),
-        Err(SkipReason {
-            message: "skipped".to_owned(),
-            code: "unreadable",
-        }),
-    );
+    let error = sample_all_with_deadline(
+        &discovered,
+        &ResourceLimits::default(),
+        &crate::progress::NoopProgressSink,
+        &generous(),
+    )
+    .check_err("a directory cannot be sampled")?;
 
-    assert!(!delivered, "an out-of-range index must stop the worker");
-    let recorded = lock(&batch.error_slot, "sample_batch_error_slot")
-        .check("lock the error slot")?
-        .take();
     assert!(
-        matches!(
-            &recorded,
-            Some(PublishError::SamplingIndexOutOfRange { index, total })
-                if *index == discovered.len() && *total == discovered.len()
-        ),
-        "expected SamplingIndexOutOfRange, got {recorded:?}"
+        matches!(&error, PublishError::Sample(SampleError::Read { path, .. })
+            if *path == project.path().join("dir.rs")),
+        "got {error:?}"
     );
     Ok(())
 }
 
 #[test]
-fn a_channel_result_with_an_out_of_range_index_fails_the_run() -> TestResult {
+fn per_file_skips_are_returned_sorted_with_their_codes() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "b-not-utf8.rs", &[0xff, 0xfe, b'a'])?;
+    write(project.path(), "a-big.rs", &[b'x'; 64])?;
+    write(project.path(), "c-ok.rs", b"fn ok() {}\n")?;
+    let discovered = [
+        indexed(project.path(), "b-not-utf8.rs"),
+        indexed(project.path(), "a-big.rs"),
+        indexed(project.path(), "c-ok.rs"),
+    ];
+    let limits = ResourceLimits {
+        max_file_bytes: 32,
+        ..ResourceLimits::default()
+    };
+
+    let (samples, skipped) = sample_all_with_deadline(
+        &discovered,
+        &limits,
+        &crate::progress::NoopProgressSink,
+        &generous(),
+    )
+    .check("sample")?;
+
+    let sampled_paths: Vec<&str> = samples.iter().map(|s| s.relative_path.as_str()).collect();
+    assert_eq!(sampled_paths, ["c-ok.rs"]);
+    let codes: Vec<(std::path::PathBuf, &str)> = skipped
+        .iter()
+        .map(|skip| (skip.absolute_path.clone(), skip.code))
+        .collect();
+    assert_eq!(
+        codes,
+        [
+            (project.path().join("a-big.rs"), SKIP_REASON_OVERSIZE),
+            (project.path().join("b-not-utf8.rs"), SKIP_REASON_NOT_UTF8),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn an_expired_deadline_names_the_file_being_processed() -> TestResult {
     let project = tempfile::tempdir().check("project dir")?;
     write(project.path(), "lib.rs", b"fn a() {}\n")?;
-    let (discovered, _skipped) =
-        crate::sync::discovery::discover(project.path()).check("discover")?;
-    let limits = ResourceLimits::default();
-    let deadline = Deadline::after(std::time::Duration::from_mins(1));
-    let batch = one_file_batch(&discovered, &limits, &deadline, discovered.len());
-    let (tx, rx) = std::sync::mpsc::channel::<(usize, Outcome)>();
-    tx.send((
-        discovered.len(),
-        Err(SkipReason {
-            message: "skipped".to_owned(),
-            code: "unreadable",
-        }),
-    ))
-    .check("send the out-of-range result")?;
-    drop(tx);
+    let discovered = [indexed(project.path(), "lib.rs")];
 
-    let error = batch
-        .collect(&rx)
-        .check_err("an out-of-range channel index must fail the run")?;
+    let error = sample_all_with_deadline(
+        &discovered,
+        &ResourceLimits::default(),
+        &crate::progress::NoopProgressSink,
+        &Deadline::after(std::time::Duration::ZERO),
+    )
+    .check_err("the deadline must trip")?;
+
+    assert!(
+        matches!(&error, PublishError::TimeBudgetExceeded { path, .. } if path == " while processing lib.rs"),
+        "got {error:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn claim_bytes_accepts_up_to_the_limit_and_refuses_past_it() -> TestResult {
+    let total = AtomicU64::new(0);
+
+    claim_bytes(&total, 6, 10).check("under the limit")?;
+    claim_bytes(&total, 4, 10).check("exactly at the limit")?;
+    let error = claim_bytes(&total, 1, 10).check_err("one byte past the limit")?;
 
     assert!(
         matches!(
             error,
-            PublishError::SamplingIndexOutOfRange { index, total }
-                if index == discovered.len() && total == discovered.len()
-        ),
-        "expected SamplingIndexOutOfRange, got {error:?}"
-    );
-    Ok(())
-}
-
-#[test]
-fn honest_log_a_later_distinct_sampling_error_is_logged_with_its_path_and_cause() -> TestResult {
-    const SUPERSEDED_PATH: &str = "superseded-second-error-probe.rs";
-
-    let (returned, logs) = crate::store::test_capture::capture_warns(|| {
-        tracing::warn!("control-line-superseded-error-probe");
-        let slot = Mutex::new(None::<PublishError>);
-        record_error(
-            &slot,
             PublishError::ImportTooLarge {
-                total: 10,
-                limit: 9,
-            },
-        );
-        record_error(
-            &slot,
-            PublishError::ChangedDuringSample {
-                path: SUPERSEDED_PATH.to_owned(),
-            },
-        );
-        lock(&slot, "sample_batch_error_slot").map(|mut slot| slot.take())
-    });
-    let returned = returned.check("lock the error slot")?;
-
-    assert!(
-        matches!(returned, Some(PublishError::ImportTooLarge { .. })),
-        "the first error must stay the returned one: {returned:?}"
+                total: 11,
+                limit: 10
+            }
+        ),
+        "got {error:?}"
     );
-    assert!(
-        logs.contains("control-line-superseded-error-probe"),
-        "the capture must be live: {logs}"
-    );
-    let logged: Vec<&str> = logs
-        .lines()
-        .filter(|line| line.contains(SUPERSEDED_PATH))
-        .collect();
     assert_eq!(
-        logged.len(),
-        1,
-        "the later error must be logged exactly once: {logs}"
+        total.load(Ordering::Acquire),
+        10,
+        "a refused claim adds nothing"
     );
-    assert!(
-        logged[0].contains("category=\"changed_during_sample\""),
-        "the log must carry the static category: {}",
-        logged[0]
-    );
-    assert!(
-        logged[0].contains(&format!("path=Some(\"{SUPERSEDED_PATH}\")")),
-        "the real path must be logged: {}",
-        logged[0]
-    );
-    assert!(
-        logged[0].contains("error=") && logged[0].contains("changed on disk after being sampled"),
-        "the error Display must be logged: {}",
-        logged[0]
-    );
-    Ok(())
-}
-
-#[test]
-fn skip_code_maps_each_per_file_failure_to_its_reason_and_leaves_read_errors_fatal() {
-    let too_large = SampleError::TooLarge {
-        path: "a".into(),
-        observed: 2,
-        limit: 1,
-    };
-    let not_utf8 = SampleError::NotUtf8 { path: "b".into() };
-    let read = SampleError::Read {
-        path: "c".into(),
-        source: std::io::Error::other("boom"),
-    };
-
-    assert_eq!(skip_code(&too_large), Some(SKIP_REASON_OVERSIZE));
-    assert_eq!(skip_code(&not_utf8), Some(SKIP_REASON_NOT_UTF8));
-    assert_eq!(skip_code(&read), None);
-}
-
-#[test]
-fn the_time_budget_error_names_the_file_and_the_elapsed_milliseconds() -> TestResult {
-    let error = time_budget_error("src/lib.rs", Duration::from_millis(1500));
-
-    match error {
-        PublishError::TimeBudgetExceeded { path, elapsed_ms } => {
-            assert_eq!(path, " while processing src/lib.rs");
-            assert_eq!(elapsed_ms, 1500);
-        }
-        other => {
-            return Err(format!("expected TimeBudgetExceeded, got {other:?}"))
-                .check("unexpected outcome");
-        }
-    }
     Ok(())
 }

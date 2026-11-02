@@ -34,9 +34,6 @@ pub fn run_menu() -> Result<bool, Box<dyn std::error::Error>> {
                 }
             }
             MenuChoice::Exit => return Ok(false),
-            // `next_choice` re-prompts until the answer is valid, so this is
-            // never reached; redrawing the banner would be the wrong fallback.
-            MenuChoice::Invalid => continue,
         }
         cli::out(format_args!("\n"))?;
     }
@@ -53,8 +50,7 @@ fn next_choice(
     out: &mut impl std::io::Write,
 ) -> std::io::Result<MenuChoice> {
     loop {
-        let choice = menu_choice(read()?.as_deref());
-        if choice != MenuChoice::Invalid {
+        if let Some(choice) = menu_choice(read()?.as_deref()) {
             return Ok(choice);
         }
         cli::write_to(out, format_args!("{INVALID_CHOICE}"))?;
@@ -70,23 +66,23 @@ enum MenuChoice {
     OtherClient,
     Serve,
     Exit,
-    Invalid,
 }
 
-/// Maps a menu line to its choice. End of input (`None`) exits, so a closed
-/// stdin can never spin the menu loop.
-fn menu_choice(line: Option<&str>) -> MenuChoice {
+/// Maps a menu line to its choice, or `None` for an answer that is not on the
+/// list. End of input (`None` line) exits, so a closed stdin can never spin the
+/// menu loop.
+fn menu_choice(line: Option<&str>) -> Option<MenuChoice> {
     let Some(line) = line else {
-        return MenuChoice::Exit;
+        return Some(MenuChoice::Exit);
     };
     match line.trim().parse::<usize>() {
-        Ok(1) => MenuChoice::Install,
-        Ok(2) => MenuChoice::Connect,
-        Ok(3) => MenuChoice::Disconnect,
-        Ok(4) => MenuChoice::OtherClient,
-        Ok(5) => MenuChoice::Serve,
-        Ok(6) => MenuChoice::Exit,
-        _ => MenuChoice::Invalid,
+        Ok(1) => Some(MenuChoice::Install),
+        Ok(2) => Some(MenuChoice::Connect),
+        Ok(3) => Some(MenuChoice::Disconnect),
+        Ok(4) => Some(MenuChoice::OtherClient),
+        Ok(5) => Some(MenuChoice::Serve),
+        Ok(6) => Some(MenuChoice::Exit),
+        _ => None,
     }
 }
 
@@ -136,10 +132,15 @@ fn other_client_step() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
     };
-    Ok(cli::out(format_args!(
-        "{}",
-        other_agent_instructions(&binary)
-    ))?)
+    match other_agent_instructions(&binary, install::slugaudit_dir().as_deref()) {
+        Ok(text) => Ok(cli::out(format_args!("{text}"))?),
+        Err(error) => {
+            cli::err(format_args!(
+                "could not print the config snippet: {error}\n"
+            ))?;
+            Ok(())
+        }
+    }
 }
 
 fn confirm_serve() -> Result<bool, Box<dyn std::error::Error>> {

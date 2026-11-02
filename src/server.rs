@@ -1,12 +1,14 @@
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=the MCP server handler: its instructions, server info, resource serving and the shared tool dispatch rmcp calls into
 //! MCP server surface: the tool contracts and their registration.
 //!
 //! This file declares *what* the tools are and *how* they're registered
 //! with rmcp. The `#[tool]` handlers themselves — their schemas,
 //! descriptions, and annotations — live in `handlers`. The *execution
-//! mechanics* — semaphore-bounded blocking-pool dispatch, per-call tracing,
-//! and MCP progress notifications — live in `crate::server_runner`, so the
-//! tool list stays a readable, declarative registry instead of one file
-//! mixing schemas with worker-pool plumbing.
+//! mechanics* — semaphore-bounded blocking-pool dispatch and per-call
+//! tracing — live in `crate::server_runner`, and the MCP progress
+//! notifications in `crate::server_progress`, so the tool list stays a
+//! readable, declarative registry instead of one file mixing schemas with
+//! worker-pool plumbing.
 
 mod handlers;
 

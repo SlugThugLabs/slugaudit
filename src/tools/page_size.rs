@@ -35,6 +35,23 @@ impl PageSize {
     }
 }
 
+/// Refuses a `page_bytes` of `0`: a zero-byte page is not a page, and treating
+/// it as something else would be a silent substitution. A continuation, which
+/// reads no limits, calls this alone.
+///
+/// # Errors
+///
+/// Returns `invalid_params` when `requested` is `Some(0)`.
+pub(super) fn refuse_zero(requested: Option<usize>) -> Result<(), ErrorData> {
+    if requested == Some(0) {
+        return Err(ErrorData::invalid_params(
+            "page_bytes must be at least 1; omit it for the default page size",
+            None,
+        ));
+    }
+    Ok(())
+}
+
 /// Resolves the effective page size.
 ///
 /// # Errors
@@ -45,12 +62,7 @@ pub(super) fn resolve(
     requested: Option<usize>,
     limits: &ResourceLimits,
 ) -> Result<PageSize, ErrorData> {
-    if requested == Some(0) {
-        return Err(ErrorData::invalid_params(
-            "page_bytes must be at least 1; omit it for the default page size",
-            None,
-        ));
-    }
+    refuse_zero(requested)?;
     // The default page size is resolved once here, at the request boundary.
     let wanted = match requested {
         Some(bytes) => bytes,

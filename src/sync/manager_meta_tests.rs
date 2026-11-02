@@ -271,12 +271,12 @@ fn a_failed_database_recreation_surfaces_the_open_error() -> TestResult {
     Ok(())
 }
 
-/// One failed manager-path publish must emit exactly one warn line. The
-/// publish log emits "publish failed" and `map_publish_error` must not log
-/// the same failure again; both sites use the same message, so a duplicate
-/// is counted whichever site emits it.
+/// One failed manager-path publish is logged once, by
+/// `server_runner::log_completion` when the tool call returns it: neither
+/// `publish` nor `map_publish_error` logs it at warn first. The returned
+/// message carries the context those sites used to log.
 #[test]
-fn a_failed_manager_publish_emits_exactly_one_warn_line() -> TestResult {
+fn a_failed_manager_publish_is_returned_with_its_context_and_not_logged_first() -> TestResult {
     let project = tempfile::tempdir().check("project dir")?;
     std::fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").check("write source")?;
     let db_dir = tempfile::tempdir().check("db dir")?;
@@ -297,8 +297,8 @@ fn a_failed_manager_publish_emits_exactly_one_warn_line() -> TestResult {
             crate::parse::PACK_VERSION,
             &NoopProgressSink,
         )
-        .map_err(|error| map_publish_error(project.path(), &error, "publish failed"))
-    });
+        .map_err(|error| map_publish_error(project.path(), &error, "sync"))
+    })?;
 
     assert!(
         logs.contains("once-probe-capture-control"),
@@ -306,10 +306,30 @@ fn a_failed_manager_publish_emits_exactly_one_warn_line() -> TestResult {
     );
     let warnings = logs
         .lines()
-        .filter(|line| line.contains("publish failed"))
+        .filter(|line| line.contains("WARN") && !line.contains("once-probe-capture-control"))
         .count();
-    assert_eq!(warnings, 1, "one failed publish, one warn line: {logs}");
-    assert!(result.is_err(), "the trigger must fail the publish");
+    assert_eq!(
+        warnings, 0,
+        "a returned failure is not logged first: {logs}"
+    );
+    let error = result.err().check("the trigger must fail the publish")?;
+    assert!(
+        error.message.contains("injected publish failure"),
+        "the cause is kept: {}",
+        error.message
+    );
+    assert!(
+        error
+            .message
+            .contains(&format!("root: {}", project.path().display())),
+        "the root is named: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains("error_kind: "),
+        "the category is named: {}",
+        error.message
+    );
     Ok(())
 }
 

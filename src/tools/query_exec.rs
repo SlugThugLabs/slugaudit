@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=Everything one query statement runs under (engine value and SQL length limits, VM-step and wall-clock budgets) together with the materialisation and paging that run inside them.
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=Everything one query statement runs under (engine value and SQL length limits, VM-step and wall-clock budgets) together with the materialisation and paging that run inside them.
 //! Executing one `query` statement: the VM-step and wall-clock budgets, the
 //! materialisation of its rows into the result store, and the byte-budgeted
 //! page served from the stored copy.
@@ -23,7 +23,7 @@ use crate::sync::SourceSyncManager;
 use rmcp::ErrorData;
 use rusqlite::Transaction;
 use rusqlite::limits::Limit;
-use serde::{Deserialize, Serialize};
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
@@ -92,6 +92,10 @@ pub(super) fn deadline_after(budget: Duration) -> Option<Instant> {
     Instant::now().checked_add(budget)
 }
 
+/// SQLite VM steps between two calls of the progress handler; the step budget
+/// advances by this much per call.
+const PROGRESS_INTERVAL: i32 = 1000;
+
 /// Installs the VM-step and wall-clock progress handler and returns the cell
 /// that records which budget fired. Each call starts a fresh budget.
 fn install_budget(tx: &Transaction<'_>, limits: &ResourceLimits) -> Arc<AtomicU8> {
@@ -105,9 +109,9 @@ fn install_budget(tx: &Transaction<'_>, limits: &ResourceLimits) -> Arc<AtomicU8
     let max_steps = limits.max_query_vm_steps;
     let deadline = deadline_after(limits.max_query_wall_clock);
     tx.progress_handler(
-        1000,
+        PROGRESS_INTERVAL,
         Some(move || {
-            steps = steps.saturating_add(1000);
+            steps = steps.saturating_add(PROGRESS_INTERVAL.unsigned_abs());
             if steps > max_steps {
                 handler_reason.store(ABORT_STEP_BUDGET, Ordering::Relaxed);
                 return true;
@@ -143,14 +147,13 @@ fn wrapped_sql(body: &str) -> String {
 /// Either way the page is cut at `page.bytes` serialized JSON bytes, the
 /// oversized first row clipped.
 ///
-/// `size` is the budget of a new request. `explicit_bytes` says the request
-/// itself asked for it (already clamped to the ceiling): a continuation
-/// without one uses the budget page one used, so the page size does not
-/// change when the caller leaves it out.
+/// `size` is the budget of a new request. `requested_bytes` is the
+/// `page_bytes` the request carried, as asked: a continuation clamps it to the
+/// ceiling stored with the result, and without one uses the budget page one
+/// used, so the page size does not change when the caller leaves it out.
 ///
 /// Returns the page, its shared block and whether the budget that applied was
-/// the ceiling (the request's when it asked, else page one's, stored with the
-/// result).
+/// the ceiling.
 ///
 /// A budget that runs out fails the whole call: no rows are served and no
 /// result is stored.
@@ -160,7 +163,7 @@ pub(super) fn run_query(
     trimmed: &str,
     limits: &ResourceLimits,
     size: PageSize,
-    explicit_bytes: bool,
+    requested_bytes: Option<usize>,
 ) -> Result<(Collected, Page, bool), ErrorData> {
     let mut builder = PageBuilder::new();
     // The columns come from the prepared statement inside `produce`.
@@ -168,7 +171,8 @@ pub(super) fn run_query(
         tool: "query",
         columns: Vec::new(),
         page_bytes: size.bytes,
-        requested_page_bytes: explicit_bytes.then_some(size.bytes),
+        requested_page_bytes: requested_bytes,
+        ceiling: limits.max_query_response_bytes,
     };
     let served = paginate(
         manager,
@@ -178,9 +182,7 @@ pub(super) fn run_query(
             stream_rows(tx, trimmed, limits, rows)?;
             Ok(Produced {
                 completeness: Completeness::Complete,
-                extra: QueryExtra {
-                    at_ceiling: size.at_ceiling,
-                },
+                extra: (),
             })
         },
         |ctx| {
@@ -190,19 +192,11 @@ pub(super) fn run_query(
             |row: &StoredRow| builder.accept(row)
         },
     )?;
-    let at_ceiling = if explicit_bytes {
-        size.at_ceiling
-    } else {
-        served.meta.at_ceiling
-    };
-    Ok((builder.finish(served.rows.len())?, served.page, at_ceiling))
-}
-
-/// What a `query` result stores with it: whether page one's budget was the
-/// ceiling, so a continuation reports the same `limited_by` without limits.
-#[derive(Serialize, Deserialize)]
-pub(super) struct QueryExtra {
-    at_ceiling: bool,
+    Ok((
+        builder.finish(served.rows.len())?,
+        served.page,
+        served.at_ceiling,
+    ))
 }
 
 /// Runs the wrapped `SELECT` inside the verified read transaction and pushes

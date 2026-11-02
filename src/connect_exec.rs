@@ -87,7 +87,7 @@ fn connect_without_cli(
 ) -> Result<(), ConnectError> {
     match (agent.file_fallback, agent.cli) {
         (true, Some(cli)) if guidance::config_writable(agent) => {
-            let note = guidance::fallback_note(agent, home, cli, "not found on PATH");
+            let note = guidance::fallback_note(agent, home, cli, "was not found on PATH");
             write_and_report(agent, binary, home, Some(&note))
         }
         (_, Some(cli)) => Err(guidance::cli_absent(
@@ -120,7 +120,12 @@ fn run_installed_cli(
         }
         Err(cli_err) if agent.file_fallback && guidance::config_writable(agent) => {
             // The safer route: leave the CLI alone and merge the config file.
-            let note = guidance::fallback_note(agent, home, cli, "rejected `mcp add`");
+            let note = guidance::fallback_note(
+                agent,
+                home,
+                cli,
+                &format!("rejected `mcp add` ({cli_err})"),
+            );
             match write_agent_config(agent, binary, home, Some(&note)) {
                 Ok(()) => Ok(()),
                 Err(file_err) => {

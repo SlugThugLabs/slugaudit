@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 pub struct SystemMemoryInfo {
     /// Total physical memory in bytes.
     pub total_bytes: u64,
-    /// Memory available to this process for import budgets, in bytes.
+    /// Memory available to this process for import budgets, in bytes. Read
+    /// from `MemAvailable` on Linux; on macOS, where no such figure is read,
+    /// it is half of the total (an estimate).
     pub available_bytes: u64,
 }
 
@@ -25,8 +27,9 @@ pub struct MemoryDetectError {
 ///
 /// Tries `/proc/meminfo` (Linux) and `sysctl hw.memsize` (macOS) in turn.
 /// When neither yields a value this fails closed with every cause: the
-/// Adaptive profile is never sized off a guessed machine, and the caller
-/// (startup, `health`) reports the memory as undetected. The `/proc` parse
+/// Adaptive profile is never sized off a machine that was not measured, and
+/// the caller (startup, `health`) reports the memory as undetected. The one
+/// estimate is the macOS available figure (half of the measured total). The `/proc` parse
 /// is used rather than `sysconf`/`statfs` because the crate has no `libc`
 /// dependency.
 ///
@@ -111,10 +114,7 @@ fn parse_proc_meminfo(content: &str) -> Result<SystemMemoryInfo, String> {
         }
     }
     let total_bytes = kb_to_bytes(total_kb.ok_or("no MemTotal line")?)?;
-    let available_bytes = match avail_kb {
-        Some(kb) => kb_to_bytes(kb)?,
-        None => total_bytes / 2,
-    };
+    let available_bytes = kb_to_bytes(avail_kb.ok_or("no MemAvailable line")?)?;
     Ok(SystemMemoryInfo {
         total_bytes,
         available_bytes,
@@ -151,11 +151,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_proc_meminfo_handles_missing_memavailable() -> TestResult {
+    fn parse_proc_meminfo_refuses_a_missing_memavailable() -> TestResult {
         let sample = "MemTotal:       16384000 kB\nMemFree:         8192000 kB\n";
-        let info = parse_proc_meminfo(sample).check("parse succeeds")?;
-        assert_eq!(info.total_bytes, 16_384_000 * 1024);
-        assert_eq!(info.available_bytes, 8_192_000 * 1024);
+        let error = parse_proc_meminfo(sample).check_err("no MemAvailable line")?;
+        assert_eq!(error, "no MemAvailable line");
         Ok(())
     }
 

@@ -5,15 +5,20 @@ use thiserror::Error;
 
 mod path;
 
-/// The shared home directory for slug-branded products.
-pub fn slugthug_home() -> Option<PathBuf> {
-    std::env::var_os("SLUGTHUG_HOME")
+/// The value of environment variable `name`, treating an empty value as unset:
+/// an empty path would resolve against the current directory.
+fn non_empty_var(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|home| home.join(".slugthug"))
-        })
+}
+
+/// The shared home directory for slug-branded products. An empty
+/// `SLUGTHUG_HOME` or `HOME` counts as unset.
+#[must_use]
+pub fn slugthug_home() -> Option<PathBuf> {
+    non_empty_var("SLUGTHUG_HOME")
+        .or_else(|| non_empty_var("HOME").map(|home| home.join(".slugthug")))
 }
 
 /// The dedicated directory for SlugAudit (`~/.slugthug/slugaudit`).
@@ -33,10 +38,10 @@ pub fn slugaudit_dir() -> Option<PathBuf> {
 ///
 /// `SLUGTHUG_CONFIG_HOME` overrides the base for tests and for setups where the
 /// agents run under a different home than the process that runs `connect`.
+/// An empty variable counts as unset.
+#[must_use]
 pub fn config_home() -> Option<PathBuf> {
-    std::env::var_os("SLUGTHUG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+    non_empty_var("SLUGTHUG_CONFIG_HOME").or_else(|| non_empty_var("HOME"))
 }
 
 #[derive(Debug, Error)]
@@ -78,6 +83,13 @@ pub enum InstallError {
     /// The system clock could not be read to name the staged binary.
     #[error("could not read the system clock to name the staged binary: {0}")]
     Clock(std::time::SystemTimeError),
+    /// The install directory is not valid UTF-8, so a `PATH` line naming it
+    /// exactly cannot be written.
+    #[error("the install directory {path} is not valid UTF-8, so it cannot be added to PATH")]
+    BinDirNotUnicode {
+        /// The directory, lossily displayed.
+        path: String,
+    },
     /// `$SHELL` is set but not valid UTF-8, so no shell config can be chosen.
     #[error("$SHELL is not valid UTF-8, so the shell config to edit cannot be chosen")]
     ShellNotUnicode,
@@ -190,6 +202,12 @@ fn elapsed_since_epoch(now: std::time::SystemTime) -> Result<std::time::Duration
 /// copied or placed, or when writing the progress text fails. A failure to
 /// edit the shell config is reported on stderr and is not an error.
 pub fn run_install() -> Result<(), InstallError> {
+    run_install_with(crate::prompt::confirm)
+}
+
+/// [`run_install`] with the PATH question's asker injected: `confirm` receives
+/// the question and returns whether it was accepted.
+fn run_install_with(confirm: impl FnOnce(&str) -> bool) -> Result<(), InstallError> {
     let source = running_binary_path(running_binary())?;
     let bin_dir = slugaudit_dir().ok_or(InstallError::NoHome)?;
     let target = bin_dir.join("slugaudit");
@@ -217,9 +235,7 @@ pub fn run_install() -> Result<(), InstallError> {
     // it, so offer to add the dir rather than forcing the user to type an
     // export by hand. No-op when stdin isn't a terminal or already on PATH.
     let already_on_path = on_path(&bin_dir)?;
-    if !already_on_path
-        && crate::prompt::confirm(&format!("Add {} to your PATH? [y/N] ", bin_dir.display()))
-    {
+    if !already_on_path && confirm(&format!("Add {} to your PATH? [y/N] ", bin_dir.display())) {
         match path::add_to_path(&bin_dir) {
             Ok(()) => {}
             Err(error) => {

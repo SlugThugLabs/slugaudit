@@ -19,6 +19,7 @@ pub struct EvidenceLimits {
     pub max_payload_bytes_per_file: usize,
 }
 
+#[cfg(test)]
 impl Default for EvidenceLimits {
     fn default() -> Self {
         Self {
@@ -46,13 +47,16 @@ pub(crate) const SQLITE_MAX_VALUE_BYTES: u64 = 1_000_000_000;
 /// environment variable (see [`process_limits`]). When no override is
 /// present, the compile-time default is used. The pattern is
 /// `SLUGAUDIT_<FIELD>` where `<FIELD>` is the `snake_case` name of the field —
-/// e.g. `SLUGAUDIT_MAX_FILE_BYTES=134217728` doubles the per-file size cap.
+/// e.g. `SLUGAUDIT_MAX_FILE_BYTES=134217728` sets the per-file size cap to
+/// 128 MiB.
 /// Duration fields accept a number of seconds (whole seconds only).
 /// Only explicitly-set variables override; defaults are never altered. A
 /// variable that is set but cannot be read or parsed stops startup with an
-/// error naming the variable. Single-value overrides are
-/// clamped to `SQLITE_MAX_VALUE_BYTES` with a warning, because SQLite
-/// cannot store a larger value. A `0` for any of these variables is an
+/// error naming the variable. The `max_file_bytes` and
+/// `max_query_value_bytes` overrides (and the global config's
+/// `max_file_bytes`) are clamped to `SQLITE_MAX_VALUE_BYTES` with a warning
+/// logged once per configured value, because SQLite cannot store a larger
+/// value. A `0` for any of these variables is an
 /// error naming the variable and stops startup: no limit here means "off" at
 /// zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,21 +242,18 @@ impl ResourceLimits {
     /// Adaptive profile on a host whose memory cannot be detected.
     pub(super) fn from_env() -> Result<Self, EnvConfigError> {
         let env = EnvOverrides::read()?;
-        let mut limits = match env.profile {
-            Some(profile) => base_limits(profile, detect_system_memory)?,
-            // No `SLUGAUDIT_PROFILE`: the default profile (Adaptive).
-            None => base_limits(
-                super::profile::AuditProfile::default(),
-                detect_system_memory,
-            )?,
+        // No `SLUGAUDIT_PROFILE`: the default profile (Adaptive).
+        let profile = match env.profile {
+            Some(profile) => profile,
+            None => super::profile::AuditProfile::Adaptive,
         };
+        let mut limits = base_limits(profile, detect_system_memory)?;
         env.apply(&mut limits, false)?;
         Ok(limits)
     }
 }
 
-/// The baseline the overrides are applied to: the chosen profile, or
-/// Adaptive when none is set. Adaptive needs the host memory, so when that
+/// The baseline the overrides are applied to: the chosen profile. Adaptive needs the host memory, so when that
 /// cannot be detected the operator must choose a profile explicitly.
 pub(super) fn base_limits(
     profile: super::profile::AuditProfile,

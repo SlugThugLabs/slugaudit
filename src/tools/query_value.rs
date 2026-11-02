@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=One responsibility: turning SQLite rows into the response rows (value caps, JSON conversion, store cells) and cutting them into a byte-budgeted page; the page builder and the conversions it uses must stay together.
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=One responsibility: turning SQLite rows into the response rows (value caps, JSON conversion, store cells) and cutting them into a byte-budgeted page; the page builder and the conversions it uses must stay together.
 //! Reads one SQLite row and converts it to JSON, enforcing the per-value byte
 //! cap before a TEXT/BLOB value is JSON-cloned or hex-expanded. Kept separate
 //! from `query` itself so that module stays focused on orchestrating
@@ -60,8 +60,13 @@ impl PageBuilder {
         }
     }
 
-    /// Sets the result's column names, before the first row is offered.
+    /// Sets the result's column names, before the first row is offered. They
+    /// are checked for duplicates here, once, so no row is checked again; a
+    /// repeat is kept as the failure [`PageBuilder::finish`] returns.
     pub(super) fn set_names(&mut self, names: Vec<String>) {
+        if let Err(error) = ensure_unique_column_names(&names) {
+            self.failure = Some(error);
+        }
         self.names = names;
     }
 
@@ -129,14 +134,17 @@ impl PageBuilder {
         if row_serialized_lower_bound(&values) > self.page_bytes {
             return Ok(Take::No);
         }
-        let (json, bytes) = json_row(&self.names, &values)?;
+        // Read before `values` is consumed by the conversion.
+        let non_finite = non_finite_cells(&self.names, &values, row_index);
+        let object = object_of(&self.names, values);
+        let bytes = util::serialized_len(&object)
+            .map_err(|error| internal_error("measuring query row size", error))?;
         if self.used.saturating_add(bytes) > self.page_bytes {
             return Ok(Take::No);
         }
         self.used = self.used.saturating_add(bytes);
-        self.non_finite
-            .extend(non_finite_cells(&self.names, &values, row_index));
-        self.rows.push(json);
+        self.non_finite.extend(non_finite);
+        self.rows.push(object);
         Ok(Take::Yes)
     }
 
@@ -215,9 +223,10 @@ fn is_marked_nan(row: &StoredRow, index: usize) -> bool {
         .any(|(column, mark)| *column == index && *mark == NonFinite::NaN)
 }
 
-/// One REAL cell whose value JSON cannot carry (an infinity; SQLite turns NaN
-/// into NULL itself). JSON has no such number, so the cell is `null` in `rows`;
-/// this entry says it was not SQL NULL and what it really was.
+/// One REAL cell whose value JSON cannot carry (an infinity or a NaN). JSON
+/// has no such number, so the cell is `null` in `rows`; this entry says it was
+/// not SQL NULL and what it really was. A NaN is stored as NULL with a mark,
+/// and the mark restores it here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct NonFiniteCell {
     /// Zero-based index of the row in the whole result.
@@ -334,6 +343,20 @@ pub(super) fn row_to_json(
         object.insert(name.clone(), sql_value_to_json(value));
     }
     Ok(serde_json::Value::Object(object))
+}
+
+/// One row as a JSON object, moving each TEXT value instead of cloning it.
+/// The column names must already be known to be unique.
+fn object_of(column_names: &[String], values: Vec<SqlValue>) -> serde_json::Value {
+    let mut object = serde_json::Map::with_capacity(column_names.len());
+    for (name, value) in column_names.iter().zip(values) {
+        let json = match value {
+            SqlValue::Text(text) => serde_json::Value::String(text),
+            other => sql_value_to_json(&other),
+        };
+        object.insert(name.clone(), json);
+    }
+    serde_json::Value::Object(object)
 }
 
 /// A non-finite REAL becomes `null`; [`non_finite_cells`] reports it.

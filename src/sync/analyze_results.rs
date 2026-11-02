@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=One responsibility: the ParseResult a file's analysis ends in and one constructor per outcome (without content, content-only, withheld, timeout, cool-down, succeeded, load-failed, parse-failed), each setting availability, outcome and completeness together so the combination stays valid.
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=One responsibility: the ParseResult a file's analysis ends in and one constructor per outcome (without content, content-only, withheld, timeout, cool-down, succeeded, load-failed, parse-failed), each setting availability, outcome and completeness together so the combination stays valid.
 //! The outcomes `analyze` can end in. Each constructor sets availability,
 //! outcome and completeness together (see `ParserRun::validate`).
 use crate::evidence::{ExtractError, Extraction};
@@ -206,23 +206,18 @@ pub(super) fn succeeded_result(
                     // the file is recorded as `Failed` with the cause rather
                     // than with a wrong count.
                     tracing::warn!(
+                        operation = "parser_extract",
                         path = %relative_path,
+                        language = %language,
+                        error_kind = DIAGNOSTIC_COUNT_OVERFLOW,
                         diagnostic_count,
                         error = %error,
                         "diagnostic count exceeds u32; recording Failed",
                     );
-                    return ParseResult {
-                        language: Some(language),
-                        language_detected: true,
-                        run: ParserRun {
-                            availability: ParserAvailability::Available,
-                            outcome: ParseOutcome::Failed {
-                                reason: format!("diagnostic count exceeds u32: {error}"),
-                            },
-                            completeness: ExtractionCompleteness::ContentOnly,
-                        },
-                        evidence: Vec::new(),
-                    };
+                    return failed_result(
+                        language,
+                        format!("{DIAGNOSTIC_COUNT_OVERFLOW}: {diagnostic_count} diagnostics"),
+                    );
                 }
             },
         }
@@ -289,27 +284,44 @@ pub(super) fn parse_failed_result(
     language: String,
     error: &ExtractError,
 ) -> ParseResult {
-    let error_kind = match error {
-        ExtractError::Pack(pack) => pack_error_kind(pack),
-        ExtractError::Position(_) => "position_overflow",
-    };
     tracing::debug!(
         operation = "parser_extract",
         path = %relative_path,
         language = %language,
-        error_kind,
+        error_kind = extract_error_kind(error),
         "parser ran but extraction failed; recording Failed",
     );
+    failed_result(language, error.to_string())
+}
+
+/// The stable `error_kind` (and `Failed` reason prefix) for a diagnostic
+/// count that does not fit the stored `u32`.
+const DIAGNOSTIC_COUNT_OVERFLOW: &str = "diagnostic_count_overflow";
+
+/// The stable log category for an extraction failure.
+fn extract_error_kind(error: &ExtractError) -> &'static str {
+    match error {
+        ExtractError::Pack(pack) => pack_error_kind(pack),
+        ExtractError::Position(_) => "position_overflow",
+    }
+}
+
+/// The one shape of a parser that loaded and ran but whose result cannot be
+/// stored: availability stays `Available`, the outcome carries `reason`,
+/// and only the text is indexed.
+fn failed_result(language: String, reason: String) -> ParseResult {
     ParseResult {
         language: Some(language),
         language_detected: true,
         run: ParserRun {
             availability: ParserAvailability::Available,
-            outcome: ParseOutcome::Failed {
-                reason: error.to_string(),
-            },
+            outcome: ParseOutcome::Failed { reason },
             completeness: ExtractionCompleteness::ContentOnly,
         },
         evidence: Vec::new(),
     }
 }
+
+#[cfg(test)]
+#[path = "analyze_results_tests.rs"]
+mod tests;

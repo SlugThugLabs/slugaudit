@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=one registered-mechanic scan: the budgeted parse and the budgeted capture cursor share one deadline and one file stream
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=one registered-mechanic scan: the budgeted parse and the budgeted capture cursor share one deadline and one file stream
 //! Running registered mechanics: each entry's compiled Tree-sitter query over
 //! the stored content of the indexed files of its language, under one
 //! wall-clock budget per call.
@@ -66,7 +66,8 @@ impl Tally {
     }
 }
 
-/// Where a scan the budget stopped got to.
+/// Where a scan the budget stopped got to. The scan runs one language after
+/// another, so `resume_after_file` belongs to the language it stopped in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Stop {
     /// The last file fully scanned in the language that was running; hits of

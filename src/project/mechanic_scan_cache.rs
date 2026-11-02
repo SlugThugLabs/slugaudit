@@ -69,7 +69,7 @@ pub struct ScanKey {
     pub language: String,
     /// The entry's query source.
     pub query: String,
-    /// Where the entry came from (always `session`: only session entries are scanned and cached).
+    /// Where the entry came from: `session` for a registered mechanic, `builtin` for a shipped one.
     pub source: &'static str,
 }
 

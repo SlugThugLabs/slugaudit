@@ -14,6 +14,7 @@ mod system_ram;
 pub use env_error::EnvConfigError;
 pub(crate) use env_overrides::{EnvOverrides, env_overrides};
 pub use evidence::{EvidenceItem, EvidenceKind, SpanAvailability};
+pub(crate) use limit_overrides::clamp_sqlite_value;
 pub(crate) use limits::SQLITE_MAX_VALUE_BYTES;
 pub use limits::{EvidenceLimits, ResourceLimits, init_process_limits, process_limits};
 pub use parser::{

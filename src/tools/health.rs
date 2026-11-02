@@ -1,14 +1,16 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=the health contract: request and response shapes and the read-only database snapshot share one file
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=the health contract: request and response shapes and the read-only database snapshot share one file
 //! `health` MCP tool — what state is this in, and what should the caller do
 //! next.
 //!
 //! Answers without writing through to the database or running a sync, so a
 //! caller can ask at any point — including when nothing else seems to work.
-//! Every failure mode degrades to an absent field rather than an error,
-//! because a diagnostic tool that fails when there is nothing to diagnose is
-//! useless. A `path` that is not an enabled project is one of those: the
-//! answer is `phase: "disabled"` plus a `remedy` naming the call that
-//! enables it, never an error.
+//! A database that cannot be read degrades to an absent field plus the read
+//! error's text in `detail.database_read_error`, because a diagnostic tool
+//! that fails when there is nothing to diagnose is useless. A `path` that is
+//! not an enabled project is one of those: the answer is `phase: "disabled"`
+//! plus a `remedy` naming the call that enables it, never an error. The
+//! errors are a `path` that cannot be resolved or is too long, and, with
+//! `verbose`, a poisoned server lock (the process must be restarted).
 //!
 //! Every other state-bearing tool hashes the source before answering;
 //! `health` is the exception. It reports what the database holds, not what
@@ -22,7 +24,7 @@ use rmcp::handler::server::wrapper::{Json, Parameters};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-const MAX_PATH_BYTES: usize = 32 * 1024;
+use super::MAX_PATH_BYTES;
 
 use super::ToolCounters;
 use super::health_phase::{compute_global_only_state, compute_project_state};
@@ -85,6 +87,10 @@ pub struct HealthDetail {
     /// True when the database exists but could not be read; `database` is
     /// then null and `phase` is `unknown`.
     pub database_read_failed: bool,
+    /// Why the database could not be read: the failing step and its error.
+    /// Present exactly when `database_read_failed` is true; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_read_error: Option<String>,
     /// Server process counters since start.
     #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub server: ServerCounters,
@@ -183,15 +189,18 @@ pub(crate) struct DatabaseState {
 pub(crate) enum DatabaseRead {
     /// No database file: the project has never been synced.
     NeverSynced,
-    /// The database exists but could not be inspected, opened, or queried.
-    Unreadable,
+    /// The database exists but could not be inspected, opened, or queried;
+    /// carries the failing step and its error.
+    Unreadable(String),
     /// The database was opened and every field was read.
     Read(DatabaseState),
 }
 
 /// Reads the database state read-only, degrading gracefully when the
 /// database doesn't exist yet (project enabled but never synced) or can't
-/// be read.
+/// be read. A read failure is logged here and returned in
+/// [`DatabaseRead::Unreadable`] so the response carries it; it is not an
+/// error of the call.
 pub(crate) fn read_database(database_path: &std::path::Path) -> DatabaseRead {
     match database_path.try_exists() {
         Ok(true) => {}
@@ -202,7 +211,9 @@ pub(crate) fn read_database(database_path: &std::path::Path) -> DatabaseRead {
                 error = %error,
                 "health: failed to inspect the project database path; reporting empty database fields",
             );
-            return DatabaseRead::Unreadable;
+            return DatabaseRead::Unreadable(format!(
+                "inspecting the project database path: {error}"
+            ));
         }
     }
     let mut connection = match store::open_existing(database_path) {
@@ -213,7 +224,9 @@ pub(crate) fn read_database(database_path: &std::path::Path) -> DatabaseRead {
                 error = %error,
                 "health: failed to open the project database read-only; reporting empty database fields",
             );
-            return DatabaseRead::Unreadable;
+            return DatabaseRead::Unreadable(format!(
+                "opening the project database read-only: {error}"
+            ));
         }
     };
     match query_database_state(&mut connection) {
@@ -224,7 +237,7 @@ pub(crate) fn read_database(database_path: &std::path::Path) -> DatabaseRead {
                 error = %error,
                 "health: failed to read the project database; reporting empty database fields",
             );
-            DatabaseRead::Unreadable
+            DatabaseRead::Unreadable(format!("reading the project database: {error}"))
         }
     }
 }
@@ -310,10 +323,12 @@ pub enum HealthPhase {
 ///
 /// # Errors
 ///
-/// Returns an error only if `request.path` was provided and cannot be
-/// resolved at all. Every other state — database missing or locked, query
-/// failed, no current revision, and *no project enabled for that path* — is
-/// surfaced as a field so the caller still gets an actionable response. The
+/// Returns an error if `request.path` is too long or was provided and cannot
+/// be resolved at all, or, with `verbose`, if a server lock (the mechanic
+/// scan cache, the result store) was poisoned. Every other state — database
+/// missing or unreadable (the cause is in `detail.database_read_error`), no
+/// current revision, and *no project enabled for that path* — is surfaced as
+/// a field so the caller still gets an actionable response. The
 /// not-enabled case is a successful answer with `phase: disabled` and a
 /// `remedy`, because it is the state a cold caller is most likely to be in
 /// and the one thing `health` must be able to report.
@@ -328,7 +343,7 @@ pub fn health(
         .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_PATH_BYTES))
     {
         return Err(rmcp::ErrorData::invalid_params(
-            "path exceeds 32768 bytes",
+            format!("path exceeds {MAX_PATH_BYTES} bytes"),
             None,
         ));
     }
@@ -347,7 +362,8 @@ pub fn health(
                 parser_pack_version: database.parser_pack_version.clone(),
                 skipped_file_count: database.skipped_file_count,
             }),
-            database_read_failed: fields.database_read_failed,
+            database_read_failed: fields.database_read_error.is_some(),
+            database_read_error: fields.database_read_error,
             server: server_counters(manager),
             system_memory,
             system_memory_error,

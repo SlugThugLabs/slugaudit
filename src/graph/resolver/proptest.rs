@@ -105,13 +105,10 @@ proptest! {
 
         let resolver = GenericResolver::python();
         let extracted = resolver.extract_reference(&raw);
-        prop_assert!(
-            extracted.is_some(),
-            "extract_reference unexpectedly returned None for raw={:?}",
-            raw
-        );
         let Some(reference) = extracted else {
-            return Err(TestCaseError::fail("extract_reference returned None"));
+            return Err(TestCaseError::fail(format!(
+                "extract_reference unexpectedly returned None for raw={raw:?}"
+            )));
         };
         // Equality on `&str` (via `as_str()`) so the macro doesn't move
         // `reference.text` or `expected_module` into its debug-format.

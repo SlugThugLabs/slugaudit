@@ -58,9 +58,9 @@ fn next_call_id() -> u64 {
 /// counters cannot be reset and concurrent calls bump them too, so they
 /// are logged as deltas rather than as this call's exclusive share.
 /// Never logs `work`'s actual arguments or return value — only the tool
-/// name, timing/outcome, and on failure the static error class and
-/// machine-readable code, so SQL text, file content, finding text, and an
-/// error message that embeds a path never reach the log. `work` itself may
+/// name, timing/outcome, and on failure the error class, the
+/// machine-readable code and the error message (see `log_completion`), so
+/// SQL text, file content and finding text never reach the log. `work` itself may
 /// add its own fields to the current span (e.g. revision id, row/edge
 /// counts) by calling
 /// `tracing::Span::current()` from inside `tools::*` — the span is entered
@@ -74,8 +74,8 @@ fn next_call_id() -> u64 {
 /// (whether it succeeded or failed). This lets the MCP consumer distinguish
 /// a call that is queued behind the semaphore bound from one that is
 /// actively running, rather than appearing frozen. The notifications are
-/// best-effort: send failures are silently ignored so a broken progress
-/// channel can never turn a successful tool call into an error.
+/// best-effort: a send failure is logged, never returned, so a broken
+/// progress channel can never turn a successful tool call into an error.
 pub(crate) async fn run_blocking<T: Send + 'static>(
     semaphore: Arc<Semaphore>,
     tool_name: &'static str,

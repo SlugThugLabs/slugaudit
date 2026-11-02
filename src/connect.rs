@@ -2,11 +2,16 @@
 
 pub(crate) mod config_atomic;
 pub(crate) mod config_file;
+mod interactive;
 pub(crate) mod registry_types;
+
+#[cfg(test)]
+use interactive::{answer_from, parse_choice, write_prompt};
+pub use interactive::{run_connect_interactive, run_disconnect_interactive};
 
 use crate::cli;
 use crate::cli::ConnectError;
-use crate::connect_agents::{AgentDef, detected_agents, find_agent};
+use crate::connect_agents::{AgentDef, find_agent};
 use crate::connect_exec::{DisconnectOutcome, connect_agent, disconnect_agent};
 use crate::install::{config_home, running_binary, slugaudit_dir};
 use std::path::{Path, PathBuf};
@@ -24,7 +29,8 @@ pub fn run_connect(agent_name: Option<&str>) -> Result<(), ConnectError> {
         Some(name) => {
             let agent =
                 find_agent(name).ok_or_else(|| ConnectError::UnknownAgent(name.to_string()))?;
-            connect_one(agent)
+            let connected = connection_state(&agent, config_home().as_deref())?;
+            connect_one(agent, connected)
         }
         None => run_connect_interactive(),
     }
@@ -64,18 +70,6 @@ pub(crate) fn prefer_slugthug_binary(current: &Path) -> Result<PathBuf, std::io:
     Ok(current.to_path_buf())
 }
 
-/// The answer to an interactive prompt; end of input is an error, not an
-/// empty answer.
-fn read_answer() -> Result<String, ConnectError> {
-    answer_from(crate::prompt::read_prompt_line()?)
-}
-
-/// Maps a prompt read onto its answer, keeping end of input distinct from an
-/// empty line so a closed stdin never reads as an invalid choice.
-fn answer_from(line: Option<String>) -> Result<String, ConnectError> {
-    line.ok_or(ConnectError::EndOfInput)
-}
-
 /// Maps the running-binary lookup onto the connect error, keeping the I/O
 /// cause. Split from [`connect_one`] so the failure arm is testable without
 /// faking the process that owns the executable path.
@@ -83,21 +77,26 @@ fn binary_path(result: Result<PathBuf, std::io::Error>) -> Result<PathBuf, Conne
     result.map_err(ConnectError::BinaryPath)
 }
 
-/// Writes an interactive prompt to `out` and flushes it, keeping a closed
-/// stdout as the typed I/O error. `out` is a parameter so a failing writer can
-/// drive the error arm without a test-only production branch.
-fn write_prompt(
-    out: &mut impl std::io::Write,
-    text: std::fmt::Arguments<'_>,
-) -> Result<(), ConnectError> {
-    cli::write_to(out, text).map_err(ConnectError::Io)
+/// Whether `agent` already has SlugAudit registered. A config that cannot be
+/// examined is reported on stderr as a note and counts as not connected: the
+/// answer only picks the wording of the next prompt, and the registration
+/// itself fails with its own error if the config is unusable.
+fn connection_state(agent: &AgentDef, home: Option<&Path>) -> Result<bool, ConnectError> {
+    match agent.is_connected(home) {
+        Ok(connected) => Ok(connected),
+        Err(failure) => {
+            cli::err(format_args!("Note: {failure}\n"))?;
+            Ok(false)
+        }
+    }
 }
 
-fn connect_one(agent: AgentDef) -> Result<(), ConnectError> {
+/// Registers with `agent`; `already_connected` only chooses the progress line.
+fn connect_one(agent: AgentDef, already_connected: bool) -> Result<(), ConnectError> {
     let binary = binary_path(running_binary())?;
     let binary = prefer_slugthug_binary(&binary)?;
     let home = config_home();
-    if agent.is_connected(home.as_deref()) {
+    if already_connected {
         cli::out(format_args!(
             "SlugAudit is already registered with {}. Updating connection...\n",
             agent.display_name
@@ -127,138 +126,6 @@ fn disconnect_one(agent: AgentDef) -> Result<(), ConnectError> {
         DisconnectOutcome::NothingToDo => cli::out(format_args!("Nothing to disconnect.\n"))?,
     }
     Ok(())
-}
-
-/// Runs the interactive terminal prompt to choose and connect a detected agent.
-///
-/// # Errors
-///
-/// Fails when writing to the terminal fails, when input ends before an answer
-/// or the answer is not a valid choice, or when registering the chosen agent
-/// fails.
-pub fn run_connect_interactive() -> Result<(), ConnectError> {
-    let home = config_home();
-    let crate::connect_agents::Detection {
-        agents: detected,
-        failures,
-    } = detected_agents(home.as_deref());
-    for failure in &failures {
-        cli::err(format_args!("Note: {failure}\n"))?;
-    }
-    if detected.is_empty() {
-        cli::out(format_args!(
-            "No supported AI agents or editors were detected on this machine.\n"
-        ))?;
-        cli::out(format_args!(
-            "Install an agent (e.g. agy, claude, gemini, cursor) or use manual setup.\n"
-        ))?;
-        return Ok(());
-    }
-    cli::out(format_args!(
-        "Connect SlugAudit to an AI agent or editor:\n\n"
-    ))?;
-    print_detected_agents(&detected, home.as_deref())?;
-    cli::out(format_args!("\n"))?;
-    write_prompt(
-        &mut std::io::stdout(),
-        format_args!("Choose an agent [1-{}]: ", detected.len()),
-    )?;
-
-    let choice = read_answer()?;
-    let index = parse_choice(&choice, detected.len())?;
-    let agent = detected
-        .get(index)
-        .copied()
-        .ok_or(ConnectError::InvalidChoice)?;
-    if !confirm_reconnect(agent, home.as_deref())? {
-        return Ok(());
-    }
-    connect_one(agent)
-}
-
-/// Asks whether to update an already-connected agent; returns `false` when the
-/// user declines, after printing the skip line.
-fn confirm_reconnect(agent: AgentDef, home: Option<&Path>) -> Result<bool, ConnectError> {
-    if !agent.is_connected(home) {
-        return Ok(true);
-    }
-    write_prompt(
-        &mut std::io::stdout(),
-        format_args!(
-            "{} is already connected. Re-connect / update path? [y/N]: ",
-            agent.display_name
-        ),
-    )?;
-    let confirm = read_answer()?;
-    if crate::prompt::is_yes(&confirm) {
-        return Ok(true);
-    }
-    cli::out(format_args!("Skipped.\n"))?;
-    Ok(false)
-}
-
-/// Prints the numbered list of detected agents with their connection status.
-fn print_detected_agents(detected: &[AgentDef], home: Option<&Path>) -> Result<(), ConnectError> {
-    for (i, agent) in detected.iter().enumerate() {
-        let status = if agent.is_connected(home) {
-            " [Connected ✅]"
-        } else {
-            ""
-        };
-        cli::out(format_args!(
-            "  {}) {:<24}{}\n",
-            i + 1,
-            agent.display_name,
-            status
-        ))?;
-    }
-    Ok(())
-}
-
-/// Runs the interactive terminal prompt to choose and disconnect an active agent connection.
-///
-/// # Errors
-///
-/// Fails when writing to the terminal fails, when input ends before an answer
-/// or the answer is not a valid choice, or when removing the chosen agent's
-/// registration fails.
-pub fn run_disconnect_interactive() -> Result<(), ConnectError> {
-    let home = config_home();
-    let connected: Vec<_> = crate::connect_agents::AGENTS
-        .iter()
-        .copied()
-        .filter(|a| a.is_connected(home.as_deref()))
-        .collect();
-    if connected.is_empty() {
-        cli::out(format_args!("No active SlugAudit connections found.\n"))?;
-        return Ok(());
-    }
-    cli::out(format_args!("Connected AI agents and editors:\n\n"))?;
-    for (i, agent) in connected.iter().enumerate() {
-        cli::out(format_args!("  {}) {}\n", i + 1, agent.display_name))?;
-    }
-    cli::out(format_args!("\n"))?;
-    write_prompt(
-        &mut std::io::stdout(),
-        format_args!("Choose an agent to disconnect [1-{}]: ", connected.len()),
-    )?;
-
-    let choice = read_answer()?;
-    let index = parse_choice(&choice, connected.len())?;
-    let agent = connected
-        .get(index)
-        .copied()
-        .ok_or(ConnectError::InvalidChoice)?;
-    disconnect_one(agent)
-}
-
-/// The zero-based index of a 1-based menu answer among `count` options, or
-/// `InvalidChoice` for anything that is not one of the listed numbers.
-fn parse_choice(answer: &str, count: usize) -> Result<usize, ConnectError> {
-    match answer.trim().parse::<usize>() {
-        Ok(choice) if (1..=count).contains(&choice) => Ok(choice - 1),
-        _ => Err(ConnectError::InvalidChoice),
-    }
 }
 
 #[cfg(test)]

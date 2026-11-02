@@ -48,7 +48,7 @@ fn a_stale_project_root_discard_warn_logs_real_path() -> TestResult {
     let (synced, logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("capture liveness control for verify_project_database");
         sync_project(&manager, &project)
-    });
+    })?;
     synced?;
 
     assert!(
@@ -92,7 +92,7 @@ fn a_database_open_failure_warn_logs_real_path() -> TestResult {
             &project.path().to_string_lossy(),
             &crate::progress::NoopProgressSink,
         )
-    });
+    })?;
 
     assert!(result.is_err(), "the open failure must surface");
     assert!(
@@ -115,13 +115,13 @@ fn a_database_open_failure_warn_logs_real_path() -> TestResult {
 /// An `OpenCorrupt` recovery record: the real database path and the source
 /// error text reach the WARN.
 #[test]
-fn an_open_corrupt_recovery_warn_logs_real_path_and_source_error() {
+fn an_open_corrupt_recovery_warn_logs_real_path_and_source_error() -> TestResult {
     use crate::sync::recovery_log::{DatabaseRecovery, log_database_recovery};
     let database = std::path::Path::new("/home/private-user/secret-repo/project.db");
     let error = crate::store::StoreError::Symlink;
     let ((), logs) = crate::store::test_capture::capture_warns(|| {
         log_database_recovery(database, &DatabaseRecovery::OpenCorrupt { error: &error });
-    });
+    })?;
 
     let records = sync_failure_records(&logs, "open_project_database");
     assert_eq!(records.len(), 1, "one recovery is one record:\n{logs}");
@@ -138,12 +138,13 @@ fn an_open_corrupt_recovery_warn_logs_real_path_and_source_error() {
         !records[0].contains("database_id="),
         "the redacted database id is gone:\n{logs}"
     );
+    Ok(())
 }
 
 /// An `IncompatibleVersion` recovery record carries the real database path,
 /// and both versions.
 #[test]
-fn an_incompatible_version_recovery_warn_logs_real_path_and_versions() {
+fn an_incompatible_version_recovery_warn_logs_real_path_and_versions() -> TestResult {
     use crate::sync::recovery_log::{DatabaseRecovery, log_database_recovery};
     let database = std::path::Path::new("/home/private-user/secret-repo/project.db");
     let ((), logs) = crate::store::test_capture::capture_warns(|| {
@@ -154,7 +155,7 @@ fn an_incompatible_version_recovery_warn_logs_real_path_and_versions() {
                 schema_version: 9,
             },
         );
-    });
+    })?;
 
     let records = sync_failure_records(&logs, "verify_project_database");
     assert_eq!(records.len(), 1, "one recovery is one record:\n{logs}");
@@ -172,18 +173,19 @@ fn an_incompatible_version_recovery_warn_logs_real_path_and_versions() {
         !records[0].contains("database_id="),
         "the redacted database id is gone:\n{logs}"
     );
+    Ok(())
 }
 
 /// The open-failure (non-discarding) record also carries the source error.
 #[test]
-fn an_open_failed_recovery_warn_logs_the_source_error() {
+fn an_open_failed_recovery_warn_logs_the_source_error() -> TestResult {
     use crate::sync::recovery_log::{DatabaseRecovery, log_database_recovery};
     let database = std::path::Path::new("/home/private-user/secret-repo/project.db");
     let error = crate::store::StoreError::Symlink;
 
     let ((), logs) = crate::store::test_capture::capture_warns(|| {
         log_database_recovery(database, &DatabaseRecovery::OpenFailed { error: &error });
-    });
+    })?;
 
     let records = sync_failure_records(&logs, "open_project_database");
     assert_eq!(records.len(), 1, "one failure is one record:\n{logs}");
@@ -191,26 +193,70 @@ fn an_open_failed_recovery_warn_logs_the_source_error() {
         records[0].contains(&format!("error={error}")),
         "the record must carry the source error:\n{logs}"
     );
+    Ok(())
 }
 
-/// A database with no revision row makes `revision_after_sync` WARN with the
-/// real database path (and return the internal error).
+/// A database with no revision row makes `revision_after_sync` return an
+/// internal error naming the real database path, and log nothing itself:
+/// `server_runner::log_completion` logs the returned message once.
 #[test]
-fn a_missing_revision_warn_logs_the_real_database_path() -> TestResult {
+fn a_missing_revision_error_names_the_real_database_path() -> TestResult {
     let directory = tempfile::tempdir().check("db dir")?;
     let database = directory.path().join("project.db");
     let connection = crate::store::open_read_write(&database).check("open db")?;
 
     let (result, logs) = crate::store::test_capture::capture_warns(|| {
         crate::sync::manager_meta::revision_after_sync(&connection, &database)
-    });
+    })?;
 
-    assert!(result.is_err(), "no revision must surface as an error");
+    let error = result.err().check("no revision must surface as an error")?;
+    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
     assert!(
-        logs.contains("no current revision found after sync")
-            && logs.contains(&format!("path={}", database.display()))
-            && !logs.contains("database_id="),
-        "the WARN must carry the real database path:\n{logs}"
+        error.message.starts_with(&format!(
+            "no current revision found after sync in {}",
+            database.display()
+        )),
+        "the error must carry the real database path: {}",
+        error.message
+    );
+    assert!(
+        logs.is_empty(),
+        "a returned failure is not logged first:\n{logs}"
+    );
+    Ok(())
+}
+
+/// A failed revision read makes `revision_after_sync` return an internal
+/// error naming the real database path and the SQLite cause, and log
+/// nothing itself.
+#[test]
+fn a_failed_revision_read_error_names_the_database_path_and_cause() -> TestResult {
+    let directory = tempfile::tempdir().check("db dir")?;
+    let database = directory.path().join("project.db");
+    let connection = crate::store::open_read_write(&database).check("open db")?;
+    connection
+        .execute_batch("DROP TABLE revisions")
+        .check("drop the revisions table")?;
+
+    let (result, logs) = crate::store::test_capture::capture_warns(|| {
+        crate::sync::manager_meta::revision_after_sync(&connection, &database)
+    })?;
+
+    let error = result
+        .err()
+        .check("a failed read must surface as an error")?;
+    assert!(
+        error.message.starts_with(&format!(
+            "reading the current revision of {}: ",
+            database.display()
+        )),
+        "{}",
+        error.message
+    );
+    assert!(error.message.contains("revisions"), "{}", error.message);
+    assert!(
+        logs.is_empty(),
+        "a returned failure is not logged first:\n{logs}"
     );
     Ok(())
 }

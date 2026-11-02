@@ -15,8 +15,10 @@
 
 use super::reference::ImportReference;
 use super::resolve::parent_dir;
-use super::resolver::{LanguageResolver, Resolution, external, pick};
-use super::rust_paths::{first_resolved, resolve_rust_from_base, strip_trailing_glob};
+use super::resolver::{LanguageResolver, Resolution, ResolutionKind, external, pick};
+use super::rust_paths::{
+    first_resolved, resolve_rust_from_base, resolve_rust_module_file, strip_trailing_glob,
+};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -37,12 +39,7 @@ impl LanguageResolver for RustResolver {
     }
 
     fn extract_reference(&self, raw: &str) -> Option<ImportReference> {
-        let without_visibility = raw
-            .trim()
-            .trim_start_matches("pub(crate) ")
-            .trim_start_matches("pub(super) ")
-            .trim_start_matches("pub(self) ")
-            .trim_start_matches("pub ");
+        let without_visibility = strip_visibility(raw.trim());
         let rest = without_visibility.strip_prefix("use ")?;
         let end = rest.find([';', '{', ' ']).map_or(rest.len(), |index| index);
         let path = rest[..end].trim_end_matches("::");
@@ -62,6 +59,24 @@ impl LanguageResolver for RustResolver {
         known_paths: &HashSet<&str>,
     ) -> Resolution {
         resolve(reference, importing_relative_path, known_paths)
+    }
+}
+
+/// Strips a leading `pub`, `pub(crate)`, `pub(super)`, `pub(self)` or
+/// `pub(in path)` visibility qualifier.
+fn strip_visibility(text: &str) -> &str {
+    let Some(after_pub) = text.strip_prefix("pub") else {
+        return text;
+    };
+    if let Some(rest) = after_pub.strip_prefix(' ') {
+        return rest.trim_start();
+    }
+    match after_pub
+        .strip_prefix('(')
+        .and_then(|inner| inner.split_once(')'))
+    {
+        Some((_, rest)) => rest.trim_start(),
+        None => text,
     }
 }
 
@@ -116,8 +131,9 @@ fn crate_src_dir(importing_relative_path: &str, known_paths: &HashSet<&str>) -> 
     }
 }
 
-/// Only `crate::`/`super::`/`self::` paths are project-internal; anything
-/// else (`std::`, a third-party crate name) is external.
+/// `crate::`/`super::`/`self::` paths and paths starting with a module of the
+/// importing file are project-internal; anything else (`std::`, a
+/// third-party crate name) is external.
 ///
 /// `crate::` is anchored at the owning crate's `src` (workspace-aware, see
 /// [`crate_src_dir`]). `super::`/`self::` are resolved against the real
@@ -149,7 +165,13 @@ fn resolve(
                 known_paths,
             );
         }
-        return resolve_rust_from_base(rest, &base, known_paths, None);
+        let resolved = resolve_rust_from_base(rest, &base, known_paths, None);
+        if resolved.kind == ResolutionKind::Resolved {
+            return resolved;
+        }
+        // `use crate::Item;` names an item defined in the crate root file
+        // itself, not a module file.
+        return resolve_rust_module_file(&base, known_paths, Some("Low"));
     }
 
     if text == "self" || text.starts_with("self::") {
@@ -184,6 +206,18 @@ fn resolve(
         return first_resolved(rest, &[strict, legacy], known_paths);
     }
 
+    // Rust 2018: a path may start with a module declared in the importing
+    // file (`mod cli; use cli::Args;`), whose file lives under the file's own
+    // module directory. Anything that matches no such file is external.
+    let local = resolve_rust_from_base(
+        text,
+        &rust_module_dir(importing_relative_path),
+        known_paths,
+        Some("Low"),
+    );
+    if local.kind == ResolutionKind::Resolved {
+        return local;
+    }
     external()
 }
 

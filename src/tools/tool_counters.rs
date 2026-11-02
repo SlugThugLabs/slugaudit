@@ -28,18 +28,15 @@ static TOOL_CALL_ERROR_COUNT: AtomicU64 = AtomicU64::new(0);
 /// `health` tool so operators can see a simple moving-average trend
 /// without pulling in a metrics backend.
 ///
-/// Saturating on overflow at the conversion boundary; using
-/// `u128`-based math under the hood avoids spurious overflow on
-/// long-running servers.
+/// Added with a wrapping `fetch_add` on a `u64`: the sum wraps only after
+/// about 584 million years of accumulated tool time.
 static TOOL_CALL_TOTAL_MS: AtomicU64 = AtomicU64::new(0);
 
 /// Snapshot of process-wide tool-call counters for the `health` tool.
 ///
-/// Saturates each value to its underlying atomic so a `Relaxed` load on
-/// a 32-bit architecture produces a consistent 64-bit value; on a
-/// 64-bit architecture this is atomic. The fields are returned as
-/// `u64` because every value is bounded only by `u64::MAX` over the
-/// lifetime of the process.
+/// Each value is one `Relaxed` load of its `AtomicU64`; the three loads are
+/// not one atomic snapshot of each other. The fields are `u64` because every
+/// value is bounded only by `u64::MAX` over the lifetime of the process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolCounters {
     /// Tool calls served since process start, successful and errored alike.

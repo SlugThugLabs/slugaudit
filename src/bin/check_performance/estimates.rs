@@ -5,16 +5,29 @@
 //! and loads (or rejects) `.planning/archive/perf_baseline.json` for comparison.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 
-const CRITERION_DIR: &str = "target/criterion";
+/// Where criterion writes its output for a `cargo bench` run from `root`:
+/// `criterion/` under cargo's target directory, which is `target_dir` (the
+/// `CARGO_TARGET_DIR` setting, relative to `root` when relative) or
+/// `root/target`.
+pub(crate) fn criterion_dir(root: &Path, target_dir: Option<&OsStr>) -> PathBuf {
+    match target_dir {
+        Some(dir) => root.join(dir).join("criterion"),
+        None => root.join("target").join("criterion"),
+    }
+}
 
-pub(crate) fn collect_new_benches() -> std::io::Result<BTreeMap<String, u64>> {
-    let dir = Path::new(CRITERION_DIR);
+/// The medians of the benches that just ran, read from `dir`.
+pub(crate) fn collect_new_benches(dir: &Path) -> std::io::Result<BTreeMap<String, u64>> {
     if !dir.is_dir() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            format!("{CRITERION_DIR} directory does not exist after cargo bench"),
+            format!(
+                "{} directory does not exist after cargo bench",
+                dir.display()
+            ),
         ));
     }
     collect_benches_in(dir)

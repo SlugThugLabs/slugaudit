@@ -470,6 +470,7 @@ fn paginate_raw_rows_round_trip_without_a_typed_layout() -> TestResult {
         columns: vec!["a".to_owned(), "b".to_owned()],
         page_bytes: 10,
         requested_page_bytes: None,
+        ceiling: usize::MAX,
     };
 
     let served: Served<Totals> = paginate(

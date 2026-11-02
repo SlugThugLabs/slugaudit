@@ -357,7 +357,7 @@ fn an_add_failure_printed_only_to_stdout_is_not_reported_as_silent() -> TestResu
 /// A closed pipe while relaying the client's output must not replace the
 /// failure that produced it.
 #[test]
-fn a_failed_failure_output_print_keeps_the_source_error() {
+fn a_failed_failure_output_print_keeps_the_source_error() -> TestResult {
     let source = ConnectError::AddFailed {
         cli: "claude".into(),
         status: "exit status: 1".into(),
@@ -366,7 +366,7 @@ fn a_failed_failure_output_print_keeps_the_source_error() {
 
     let (kept, logs) = crate::store::test_capture::capture_warns(|| {
         crate::connect_guidance::keep_source_error(source, print_failure)
-    });
+    })?;
 
     assert!(
         kept.to_string().contains("see the output above"),
@@ -376,6 +376,7 @@ fn a_failed_failure_output_print_keeps_the_source_error() {
         logs.contains("could not print the failure output"),
         "the lost output must be logged: {logs}"
     );
+    Ok(())
 }
 
 /// The CLI remove route never needs a home, so a missing home must not suppress
@@ -443,7 +444,7 @@ fn a_directory_sync_failure_after_the_rename_is_logged_and_kept() -> TestResult 
         write_atomic_with(&path, b"replacement", std::fs::File::sync_all, |_| {
             Err(std::io::Error::other("injected directory failure"))
         })
-    });
+    })?;
 
     result.check("the committed write must still be reported as successful")?;
     assert_eq!(

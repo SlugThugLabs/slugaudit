@@ -9,7 +9,7 @@
 //! the `ensure_current` orchestration). [`ProgressSink`] is the
 //! abstraction that lets the sync layer emit those events into
 //! something the surrounding transport can render. The MCP-aware
-//! implementation lives in `crate::server_runner` and translates each
+//! implementation lives in `crate::server_progress` and translates each
 //! [`ProgressEvent`] into a `notify_progress` call; tests and the
 //! CLI path use [`NoopProgressSink`].
 //!

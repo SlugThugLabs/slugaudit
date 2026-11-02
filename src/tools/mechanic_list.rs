@@ -22,7 +22,7 @@ use crate::tools::{
 };
 use rmcp::ErrorData;
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
+use std::cell::{Cell as FlagCell, RefCell};
 
 const TOOL: &str = "mechanic";
 
@@ -30,9 +30,6 @@ const TOOL: &str = "mechanic";
 #[derive(Serialize, Deserialize)]
 struct ListExtra {
     invalid: Vec<InvalidMechanic>,
-    /// Whether page one's budget was the ceiling; a continuation without
-    /// `page_bytes` reports the same `limited_by`.
-    at_ceiling: bool,
 }
 
 impl MechanicSource {
@@ -115,33 +112,39 @@ pub(super) fn list(
     manager: &SourceSyncManager,
 ) -> Result<MechanicResponse, ErrorData> {
     let which = page_request(request.cursor.as_deref(), request.path.as_deref(), sink)?;
-    let (limits, size) = match &which {
+    // Only a new request names a project, so only it reads limits. A
+    // continuation uses the budget and the ceiling stored with the result;
+    // an explicit `page_bytes` is clamped to that ceiling.
+    let mut spec = PageSpec::typed::<MechanicListing>(TOOL, 0);
+    spec.requested_page_bytes = request.page_bytes;
+    let fresh = match &which {
         PageRequest::Fresh { path, .. } => {
             let root = crate::tools::project_root(path)?;
             let limits = crate::tools::limits_for_root(&root)?;
-            let size = page_size::resolve(request.page_bytes, &limits)?;
-            (limits, Some(size))
+            spec.page_bytes = page_size::resolve(request.page_bytes, &limits)?.bytes;
+            spec.ceiling = limits.max_query_response_bytes;
+            Some(limits)
         }
-        // The stored budget serves a continuation; the process limits only
-        // clamp an explicit `page_bytes`, as no project is named.
         PageRequest::Cursor(_) => {
-            let limits = crate::tools::process_limits_for_tool()?;
-            let size = request
-                .page_bytes
-                .map(|bytes| page_size::resolve(Some(bytes), &limits))
-                .transpose()?;
-            (limits, size)
+            page_size::refuse_zero(request.page_bytes)?;
+            None
         }
     };
-    let mut spec = PageSpec::typed::<MechanicListing>(TOOL, size.map_or(0, |size| size.bytes));
-    spec.requested_page_bytes = size.map(|size| size.bytes);
     let failure = RefCell::new(None);
+    // The bytes of the rows the page took, measured as they were offered.
+    let used = FlagCell::new(0usize);
     let served: Served<ListExtra> = paginate(
         manager,
         &spec,
         which,
         |_tx, rows| {
-            let catalog = mechanic_catalog::load(manager.session_mechanics(), &limits)?;
+            let Some(limits) = fresh.as_ref() else {
+                return Err(internal_error(
+                    "serving a mechanic list continuation",
+                    "a continuation produces no rows",
+                ));
+            };
+            let catalog = mechanic_catalog::load(manager.session_mechanics(), limits)?;
             for listing in catalog.listings() {
                 rows.push(&listing)?;
             }
@@ -149,21 +152,19 @@ pub(super) fn list(
                 completeness: Completeness::Complete,
                 extra: ListExtra {
                     invalid: catalog.invalid,
-                    at_ceiling: size.is_some_and(|size| size.at_ceiling),
                 },
             })
         },
         |ctx| {
             let budget = ctx.page_bytes;
-            let mut used = 0usize;
-            let failure = &failure;
+            let (used, failure) = (&used, &failure);
             move |row: &StoredRow| match MechanicListing::from_values(&row.cells)
                 .map_err(|error| internal_error("reading a stored mechanic listing", error))
                 .and_then(|listing| json_len(&listing))
             {
                 // The first row of a page is offered too and taken regardless.
-                Ok(len) if used == 0 || used.saturating_add(len) <= budget => {
-                    used = used.saturating_add(len);
+                Ok(len) if used.get() == 0 || used.get().saturating_add(len) <= budget => {
+                    used.set(used.get().saturating_add(len));
                     Take::Yes
                 }
                 Ok(_) => Take::No,
@@ -177,22 +178,16 @@ pub(super) fn list(
     if let Some(error) = failure.into_inner() {
         return Err(error);
     }
-    respond(served, size)
+    respond(served, used.get())
 }
 
-fn respond(
-    served: Served<ListExtra>,
-    requested: Option<page_size::PageSize>,
-) -> Result<MechanicResponse, ErrorData> {
+fn respond(served: Served<ListExtra>, bytes_used: usize) -> Result<MechanicResponse, ErrorData> {
     let mechanics = decode_rows::<MechanicListing>(&served.rows)?;
-    let bytes_used = mechanics.iter().try_fold(0usize, |sum, listing| {
-        json_len(listing).map(|len| sum.saturating_add(len))
-    })?;
     let mut page = served.page;
     page.bytes_used = bytes_used;
     page.limited_by = if page.complete {
         PageLimit::None
-    } else if requested.map_or(served.meta.at_ceiling, |size| size.at_ceiling) {
+    } else if served.at_ceiling {
         PageLimit::Ceiling
     } else {
         PageLimit::PageBytes

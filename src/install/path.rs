@@ -49,11 +49,10 @@ fn append_durably(path: &Path, text: &str) -> Result<(), std::io::Error> {
 }
 
 /// Returns the shell config file to edit and the exact `PATH` line to
-/// append for the current `$SHELL`. Pure so it can be unit-tested.
+/// append for the current `$SHELL`. Reads `$HOME` and `$SHELL`; a `bin_dir`
+/// that is not valid UTF-8 is refused, since the line cannot name it exactly.
 fn path_config(bin_dir: &Path) -> Result<(PathBuf, String), InstallError> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or(InstallError::NoHome)?;
+    let home = super::non_empty_var("HOME").ok_or(InstallError::NoHome)?;
     // An unset, non-UTF-8 or unrecognized $SHELL is refused rather than
     // guessed to be bash: editing the wrong rc file is worse than asking.
     let shell = match std::env::var("SHELL") {
@@ -64,7 +63,12 @@ fn path_config(bin_dir: &Path) -> Result<(PathBuf, String), InstallError> {
     // No file name (an unset or empty $SHELL) matches no shell and is
     // refused below.
     let name = Path::new(&shell).file_name().and_then(|s| s.to_str());
-    let directory = bin_dir.display().to_string();
+    let directory = bin_dir
+        .to_str()
+        .ok_or_else(|| InstallError::BinDirNotUnicode {
+            path: bin_dir.display().to_string(),
+        })?
+        .to_owned();
     match name {
         Some("fish") => Ok((
             home.join(".config/fish/config.fish"),

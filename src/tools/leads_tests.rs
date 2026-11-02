@@ -400,6 +400,31 @@ fn comment_marker_detail_is_clipped_at_the_char_limit() -> TestResult {
     Ok(())
 }
 
+/// A marker counts only as a whole, upper-case word: lower-case text and a
+/// marker inside a longer word ("whack", "shackle", "maxxxed") do not.
+#[test]
+fn comment_markers_match_whole_upper_case_words_only() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    activate(project.path())?;
+    fs::write(
+        project.path().join("miss.rs"),
+        "// whack the shackle\n// todo: lower case\n// maxxxed out\n// HACKS and TODOS\nfn a() {}\n",
+    )
+    .check("write non-matching comments")?;
+    fs::write(
+        project.path().join("hit.rs"),
+        "// HACK\n// x FIXME(bob)\n// see XXX.\n// TODO: end\nfn b() {}\n",
+    )
+    .check("write matching comments")?;
+
+    let response = run(request(project.path(), Some("comment_markers")))?;
+    let rows = full_rows(&response)?;
+
+    assert_eq!(rows.len(), 4, "{rows:?}");
+    assert!(rows.iter().all(|row| row.file == "hit.rs"), "{rows:?}");
+    Ok(())
+}
+
 #[test]
 fn clip_detail_flags_only_past_the_char_limit() {
     let row = |chars: usize| LeadRow {

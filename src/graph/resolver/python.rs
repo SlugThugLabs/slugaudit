@@ -12,7 +12,7 @@
 use std::collections::HashSet;
 
 use super::generic::GenericResolverConfig;
-use super::path_helpers::{candidate_paths, starts_with_python_dot_prefix};
+use super::path_helpers::{candidate_paths, starts_with_python_dot_prefix, strip_keyword};
 use super::types::{Resolution, ResolutionKind, unresolved};
 use crate::graph::reference::ImportReference;
 
@@ -125,13 +125,4 @@ pub(crate) fn extract_python_reference(trimmed: &str) -> Option<ImportReference>
         return None;
     }
     None
-}
-
-fn strip_keyword<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
-    let after = text.strip_prefix(keyword)?;
-    after
-        .chars()
-        .next()
-        .is_some_and(char::is_whitespace)
-        .then_some(after)
 }

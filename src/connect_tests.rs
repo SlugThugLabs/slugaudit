@@ -24,10 +24,10 @@ fn json_agent_connect_and_disconnect_modifies_config() -> TestResult {
         let agent = find_agent("cursor").check("cursor agent")?;
         let binary = Path::new("/bin/slugaudit");
 
-        assert!(!agent.is_connected(Some(home)));
+        assert!(!agent.is_connected(Some(home)).check("probe config")?);
 
         connect_agent(&agent, binary, Some(home)).check("connect cursor")?;
-        assert!(agent.is_connected(Some(home)));
+        assert!(agent.is_connected(Some(home)).check("probe config")?);
 
         let cfg_path = home.join(".cursor/mcp.json");
         let content = fs::read_to_string(&cfg_path).check("read config")?;
@@ -36,7 +36,7 @@ fn json_agent_connect_and_disconnect_modifies_config() -> TestResult {
 
         let outcome = disconnect_agent(&agent, Some(home)).check("disconnect cursor")?;
         assert_eq!(outcome, DisconnectOutcome::Disconnected);
-        assert!(!agent.is_connected(Some(home)));
+        assert!(!agent.is_connected(Some(home)).check("probe config")?);
         let after = fs::read_to_string(&cfg_path).check("read config after")?;
         assert!(!after.contains("/bin/slugaudit"));
         Ok(())
@@ -52,10 +52,10 @@ fn zed_agent_connect_and_disconnect_modifies_settings() -> TestResult {
         let agent = find_agent("zed").check("zed agent")?;
         let binary = Path::new("/bin/slugaudit");
 
-        assert!(!agent.is_connected(Some(home)));
+        assert!(!agent.is_connected(Some(home)).check("probe config")?);
 
         connect_agent(&agent, binary, Some(home)).check("connect zed")?;
-        assert!(agent.is_connected(Some(home)));
+        assert!(agent.is_connected(Some(home)).check("probe config")?);
 
         let cfg_path = home.join(".config/zed/settings.json");
         let content = fs::read_to_string(&cfg_path).check("read zed settings")?;
@@ -63,7 +63,7 @@ fn zed_agent_connect_and_disconnect_modifies_settings() -> TestResult {
         assert!(content.contains("slugaudit"));
 
         disconnect_agent(&agent, Some(home)).check("disconnect zed")?;
-        assert!(!agent.is_connected(Some(home)));
+        assert!(!agent.is_connected(Some(home)).check("probe config")?);
         Ok(())
     })?;
     Ok(())
@@ -312,10 +312,10 @@ fn connect_writes_the_config_file_for_interactive_only_clients() -> TestResult {
         let content = fs::read_to_string(home.join(".omp/agent/mcp.json")).check("omp config")?;
         assert!(content.contains("slugaudit"));
         assert!(content.contains("/bin/slugaudit"));
-        assert!(agent.is_connected(Some(home)));
+        assert!(agent.is_connected(Some(home)).check("probe config")?);
 
         disconnect_agent(&agent, Some(home)).check("disconnect omp")?;
-        assert!(!agent.is_connected(Some(home)));
+        assert!(!agent.is_connected(Some(home)).check("probe config")?);
         Ok(())
     })?;
     Ok(())
@@ -428,7 +428,7 @@ fn connect_falls_back_to_the_config_file_when_the_executable_is_absent_or_fails(
             "the documented file path must be used when the CLI is absent"
         );
         disconnect_agent(&agent, Some(home)).check("disconnect pi")?;
-        assert!(!agent.is_connected(Some(home)));
+        assert!(!agent.is_connected(Some(home)).check("probe config")?);
         Ok(())
     })?;
 

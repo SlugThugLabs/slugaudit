@@ -290,3 +290,33 @@ fn a_non_utf8_shell_variable_is_refused_instead_of_choosing_bashrc() -> TestResu
     )?;
     Ok(())
 }
+
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_bin_dir_is_refused_instead_of_writing_a_lossy_path_line() -> TestResult {
+    use std::os::unix::ffi::OsStrExt as _;
+    let _guard = TEST_ENV_LOCK.lock().check("env lock")?;
+    let temp = tempfile::tempdir().check("temp dir")?;
+    let bin_dir = Path::new(std::ffi::OsStr::from_bytes(b"/x/\xff/slugaudit"));
+
+    temp_env::with_vars(
+        [
+            ("HOME", Some(temp.path().as_os_str())),
+            ("SHELL", Some(std::ffi::OsStr::new("/bin/bash"))),
+        ],
+        || -> TestResult {
+            let error = path_config(bin_dir).check_err("non-UTF-8 bin dir fails")?;
+
+            assert!(
+                matches!(error, InstallError::BinDirNotUnicode { .. }),
+                "{error}"
+            );
+            Ok(())
+        },
+    )?;
+    assert!(
+        !temp.path().join(".bashrc").exists(),
+        "no shell config may be written"
+    );
+    Ok(())
+}

@@ -196,11 +196,13 @@ pub fn failure_lines(
     reason.split('\n').map(str::to_owned).collect()
 }
 
-/// Explains a CLI→file fallback so the user knows which route was taken.
+/// Explains a CLI→file fallback so the user knows which route was taken. `why`
+/// is the full clause that follows the client's name, for example
+/// `was not found on PATH` or ``rejected `mcp add` (exited with 1)``.
 #[must_use]
 pub fn fallback_note(agent: &AgentDef, home: Option<&Path>, cli: &str, why: &str) -> String {
     format!(
-        "`{cli}` was {why}, so slugaudit wrote {} instead.",
+        "`{cli}` {why}, so slugaudit wrote {} instead.",
         target(agent, home)
     )
 }

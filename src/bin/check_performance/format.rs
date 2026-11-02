@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use crate::compare::{Comparison, Row, seconds};
+use crate::gate_out;
 
 pub(crate) fn fmt_ns(ns: u64) -> String {
     if ns >= 1_000_000_000 {
@@ -42,20 +43,27 @@ const TABLE_HEADER: [&str; 4] = ["bench", "baseline", "measured", "ratio"];
 
 /// Prints the full comparison: header, one line per bench, then every
 /// warning and failure. Nothing gated is left unprinted.
-pub(crate) fn print_report(comparison: &Comparison, threshold_pct: f64, baseline_path: &Path) {
+pub(crate) fn print_report(
+    comparison: &Comparison,
+    threshold_pct: f64,
+    baseline_path: &Path,
+) -> std::io::Result<()> {
     let [bench, baseline, measured, ratio] = TABLE_HEADER;
-    println!(
+    gate_out::line(format_args!(
         "perf regression check (threshold {threshold_pct:.0}%, baseline: {})",
         baseline_path.display()
-    );
-    println!("{bench:<32} {baseline:>12} {measured:>12} {ratio:>7}  verdict");
+    ))?;
+    gate_out::line(format_args!(
+        "{bench:<32} {baseline:>12} {measured:>12} {ratio:>7}  verdict"
+    ))?;
     for row in &comparison.rows {
-        println!("{}", table_line(row));
+        gate_out::line(table_line(row))?;
     }
     for warning in &comparison.warnings {
-        println!("WARN: {warning}");
+        gate_out::line(format_args!("WARN: {warning}"))?;
     }
     for failure in &comparison.failures {
-        println!("FAIL: {failure}");
+        gate_out::line(format_args!("FAIL: {failure}"))?;
     }
+    Ok(())
 }

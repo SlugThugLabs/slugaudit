@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=Recombined filesystem discovery walk and entry collection into cohesive module.
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=Recombined filesystem discovery walk and entry collection into cohesive module.
 use crate::ignore_rules::{indexable_walker, is_excluded_path};
 use crate::model::ResourceLimits;
 use crate::util::Deadline;
@@ -88,6 +88,14 @@ pub enum DiscoveryError {
     /// the stored path unusable for round-tripping back to disk.
     #[error("discovered path {0} is not valid UTF-8")]
     NonUtf8Path(PathBuf),
+    /// A file the walk listed was gone by the time discovery read it: the
+    /// tree changed during the walk. A publish turns this into its
+    /// retryable `ChangedDuringSample`, so the next attempt walks again.
+    #[error("{relative_path} was deleted during the walk")]
+    Vanished {
+        /// Project-relative path of the file, as the walk listed it.
+        relative_path: String,
+    },
     /// The walk exceeded its wall-clock deadline.
     #[error("discovery exceeded its wall-clock time budget after {elapsed_ms} ms")]
     TimeBudgetExceeded {
@@ -107,6 +115,14 @@ impl DiscoveryError {
             _ => None,
         }
     }
+}
+
+/// Whether a read of a file the walk listed failed because the file is no
+/// longer there (deleted, or renamed away). This is the one test every sync
+/// read uses to tell "the tree changed, walk again" from a real read error.
+#[must_use]
+pub(super) fn is_vanished(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::NotFound
 }
 
 fn is_excluded(relative: &Path) -> bool {
@@ -138,37 +154,51 @@ pub(super) fn collect_walk_entry(
         });
     }
     if entry.file_type().is_some_and(|kind| kind.is_file()) {
-        collect_file_entry(root, entry.path(), discovered, skipped);
+        collect_file_entry(root, entry.path(), discovered, skipped)?;
     }
     Ok(())
 }
 
+/// Classifies one listed file into `discovered` or `skipped`.
+///
+/// # Errors
+///
+/// [`DiscoveryError::Vanished`] when the file is gone before its sniff
+/// read: the tree changed during the walk, and no skip entry describes a
+/// file that no longer exists.
 fn collect_file_entry(
     root: &Path,
     entry_path: &Path,
     discovered: &mut Vec<DiscoveredFile>,
     skipped: &mut Vec<SkippedFile>,
-) {
+) -> Result<(), DiscoveryError> {
     let absolute_path = entry_path.to_path_buf();
     let relative_path = match strip_project_prefix(root, &absolute_path) {
         Ok(relative_path) => relative_path,
         Err(skipped_file) => {
             skipped.push(skipped_file);
-            return;
+            return Ok(());
         }
     };
     if is_excluded(relative_path) {
-        return;
+        return Ok(());
     }
     let kind = match sniff_kind(&absolute_path) {
         Ok(kind) => kind,
+        Err(DiscoveryError::Read { source, .. }) if is_vanished(&source) => {
+            // A non-UTF-8 name is shown lossily: the path only names the
+            // file in the error message, it is never stored.
+            return Err(DiscoveryError::Vanished {
+                relative_path: relative_path.to_string_lossy().replace('\\', "/"),
+            });
+        }
         Err(error) => {
             skipped.push(SkippedFile {
                 reason: error.to_string(),
                 absolute_path,
                 code: super::revision_skipped::SKIP_REASON_UNREADABLE,
             });
-            return;
+            return Ok(());
         }
     };
     match relative_path.to_str() {
@@ -183,6 +213,7 @@ fn collect_file_entry(
             code: super::revision_skipped::SKIP_REASON_UNREADABLE,
         }),
     }
+    Ok(())
 }
 
 /// The project-relative path of a file the walk skipped, when that path can
@@ -271,10 +302,11 @@ pub(crate) fn sniff_kind(path: &Path) -> Result<FileKind, DiscoveryError> {
 ///
 /// # Errors
 ///
-/// Returns an error if the walk cannot list a directory (or the root), or
-/// cannot apply an ignore file. A partial walked set is not a file set — a
-/// publish would read the missing paths as deleted — so discovery fails
-/// closed instead.
+/// Returns an error if the walk cannot list a directory (or the root),
+/// cannot apply an ignore file, or lists a file that is deleted before it
+/// is read ([`DiscoveryError::Vanished`]). A partial walked set is not a
+/// file set — a publish would read the missing paths as deleted — so
+/// discovery fails closed instead.
 pub fn discover(root: &Path) -> Result<(Vec<DiscoveredFile>, Vec<SkippedFile>), DiscoveryError> {
     discover_with_deadline(
         root,

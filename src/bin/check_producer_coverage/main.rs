@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
-#![allow(clippy::print_stdout)]
-// Same production panic ban as the library root; see `lib.rs` for why
-// `expect` is denied alongside `unwrap`.
+// Panicking indexing is denied outside tests, as in the library root
+// (`lib.rs`); `unwrap` and `expect` are denied for every target in
+// `Cargo.toml`.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 //! Producer-coverage gate.
@@ -35,7 +35,12 @@
 
 #[path = "../gate_common/args.rs"]
 mod gate_args;
+#[path = "../gate_common/out.rs"]
+mod gate_out;
+#[path = "../gate_common/test_file.rs"]
+mod gate_test_file;
 mod scan;
+mod test_cfg;
 
 #[cfg(test)]
 #[path = "tests.rs"]
@@ -71,12 +76,15 @@ pub(crate) struct EnumReport {
     pub(crate) uncovered: Vec<String>,
 }
 
+const PREFIX: &str = "producer-coverage";
+
 fn main() -> ExitCode {
     let root = match gate_args::parse(
-        "producer-coverage",
+        PREFIX,
         "Checks that every evidence kind and extraction-completeness variant has a \
                      producer in src/.",
         &mut [],
+        None,
     ) {
         Ok(root) => root,
         Err(code) => return code,
@@ -85,17 +93,25 @@ fn main() -> ExitCode {
     let reports = match check(&root) {
         Ok(reports) => reports,
         Err(error) => {
-            eprintln!("producer-coverage: {error}");
+            eprintln!("{PREFIX}: {error}");
             return ExitCode::from(2);
         }
     };
+    match print_verdict(&reports) {
+        Ok(code) => code,
+        Err(error) => gate_out::failed(PREFIX, &error),
+    }
+}
 
+/// Prints each enum's coverage and the verdict; the exit code is 1 when any
+/// variant has no producer.
+fn print_verdict(reports: &[EnumReport]) -> std::io::Result<ExitCode> {
     let mut failures: Vec<String> = Vec::new();
-    for report in &reports {
-        println!(
-            "producer-coverage: {}: {}/{} variants produced",
+    for report in reports {
+        gate_out::line(format_args!(
+            "{PREFIX}: {}: {}/{} variants produced",
             report.name, report.covered, report.declared
-        );
+        ))?;
         for variant in &report.uncovered {
             failures.push(format!(
                 "{}::{variant} has no producer in src/",
@@ -104,14 +120,14 @@ fn main() -> ExitCode {
         }
     }
     if !failures.is_empty() {
-        println!("producer-coverage: FAIL");
+        gate_out::line(format_args!("{PREFIX}: FAIL"))?;
         for failure in &failures {
-            println!("  {failure}");
+            gate_out::line(format_args!("  {failure}"))?;
         }
-        return ExitCode::from(1);
+        return Ok(ExitCode::from(1));
     }
-    println!("producer-coverage: PASS");
-    ExitCode::SUCCESS
+    gate_out::line(format_args!("{PREFIX}: PASS"))?;
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Computes one [`EnumReport`] per gated enum.

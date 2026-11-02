@@ -186,7 +186,7 @@ fn a_symlinked_db_open_emits_a_warning_for_auditing() -> TestResult {
     let link_path = directory.path().join("project.db");
     std::os::unix::fs::symlink(&real_target, &link_path).check("create symlink")?;
 
-    let (result, logs) = capture_warns(|| open_read_write(&link_path));
+    let (result, logs) = capture_warns(|| open_read_write(&link_path))?;
     assert!(matches!(result, Err(StoreError::Symlink)));
     assert!(
         logs.contains("symlink"),
@@ -214,7 +214,7 @@ fn a_local_filesystem_open_does_not_emit_any_rejection_warnings() -> TestResult 
         // because the capture went blind.
         tracing::warn!("capture liveness control");
         open_read_write(&path)
-    });
+    })?;
     assert!(result.is_ok(), "sanity: the open itself must succeed");
     assert!(
         logs.contains("capture liveness control"),

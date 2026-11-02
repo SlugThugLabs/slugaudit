@@ -90,7 +90,8 @@ fn a_writer_whose_rename_fails_removes_the_temp_file() -> TestResult {
     fs::create_dir(&destination).check("directory in the destination's place")?;
     fs::write(destination.join("keep"), b"x").check("write a marker")?;
 
-    let result = write_gitignore_atomically(&destination, b"", b".planning/slugaudit/\n");
+    let result =
+        write_gitignore_atomically(&destination, b"", b".planning/slugaudit/\n", sync_directory);
 
     assert!(
         result.is_err(),
@@ -326,8 +327,13 @@ fn gitignore_write_syncs_the_parent_and_lands_the_content() -> TestResult {
     let dir = tempfile::tempdir().check("temp dir")?;
     let destination = dir.path().join(".gitignore");
 
-    write_gitignore_atomically(&destination, b"a\n", b".planning/slugaudit/\n")
-        .check("write and sync the directory")?;
+    write_gitignore_atomically(
+        &destination,
+        b"a\n",
+        b".planning/slugaudit/\n",
+        sync_directory,
+    )
+    .check("write and sync the directory")?;
 
     assert_eq!(
         fs::read(&destination).check("read back")?,
@@ -335,4 +341,52 @@ fn gitignore_write_syncs_the_parent_and_lands_the_content() -> TestResult {
     );
     assert_eq!(temp_leftovers(dir.path())?, 0);
     Ok(())
+}
+
+#[test]
+fn a_failed_directory_sync_after_the_rename_still_reports_a_written_file() -> TestResult {
+    let dir = tempfile::tempdir().check("temp dir")?;
+    let destination = dir.path().join(".gitignore");
+
+    let (result, logs) = crate::store::test_capture::capture_warns(|| {
+        write_gitignore_atomically(&destination, b"a\n", b".planning/slugaudit/\n", |_| {
+            Err(std::io::Error::other("injected fsync failure"))
+        })
+    })?;
+
+    result.check("the rename happened, so the write succeeded")?;
+    assert_eq!(
+        fs::read(&destination).check("read back")?,
+        b"a\n.planning/slugaudit/\n"
+    );
+    assert!(logs.contains("injected fsync failure"), "{logs}");
+    assert_eq!(temp_leftovers(dir.path())?, 0);
+    Ok(())
+}
+
+#[test]
+fn a_negation_after_the_ignore_leaves_the_directory_unignored() {
+    assert!(!ignores_activation_dir(
+        b".planning/slugaudit/\n!.planning/slugaudit/\n"
+    ));
+    assert!(!ignores_activation_dir(
+        b"/.planning/slugaudit\n!/.planning/slugaudit\n"
+    ));
+}
+
+#[test]
+fn an_ignore_after_the_negation_wins_again() {
+    assert!(ignores_activation_dir(
+        b"!.planning/slugaudit/\n.planning/slugaudit/\n"
+    ));
+    assert!(ignores_activation_dir(
+        b".planning/slugaudit/\n!.planning/slugaudit/\n.planning/slugaudit\n"
+    ));
+}
+
+#[test]
+fn a_negation_alone_or_a_comment_ignores_nothing() {
+    assert!(!ignores_activation_dir(b"!.planning/slugaudit/\n"));
+    assert!(!ignores_activation_dir(b"# .planning/slugaudit/\n"));
+    assert!(ignores_activation_dir(b".planning/slugaudit/\n# note\n"));
 }

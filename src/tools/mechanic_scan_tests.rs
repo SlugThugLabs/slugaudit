@@ -10,7 +10,7 @@ use super::*;
 use crate::progress::NoopProgressSink;
 use crate::tools::LeadMode;
 use crate::tools::page::{Completeness, PageLimit};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 
 /// The catalogue and limits for a call whose registered-mechanic budget is
 /// already spent: any registered entry it scans fails it.
@@ -428,7 +428,7 @@ fn a_second_project_on_one_manager_does_not_hit_the_first_projects_entry() -> Te
 }
 
 #[test]
-fn a_pass_over_many_entries_retains_at_most_the_budget_in_total() {
+fn a_pass_over_many_entries_retains_at_most_the_budget_in_total() -> TestResult {
     use crate::tools::mechanic_scan_cached::Pass;
     let row = crate::project::CachedRow {
         file: "a.py".to_owned(),
@@ -440,7 +440,7 @@ fn a_pass_over_many_entries_retains_at_most_the_budget_in_total() {
 
     for _ in 0..3 {
         for entry in 0..4 {
-            pass.offer(entry, row.clone());
+            pass.offer(entry, row.clone()).check("offer a row")?;
             assert!(
                 pass.retained_bytes() <= size * 5,
                 "retained {} past the shared budget",
@@ -450,6 +450,38 @@ fn a_pass_over_many_entries_retains_at_most_the_budget_in_total() {
     }
 
     assert!(pass.retained_bytes() <= size * 5);
+    Ok(())
+}
+
+/// A selected index that names no slot is an internal error, never a silently
+/// dropped row or count.
+#[test]
+fn an_entry_index_out_of_range_fails_the_pass_and_the_counts() -> TestResult {
+    use crate::tools::mechanic_scan_cached::Pass;
+    let row = crate::project::CachedRow {
+        file: "a.py".to_owned(),
+        line: 1,
+        text: "x".to_owned(),
+    };
+    let mut pass = Pass::new(1024, 2);
+
+    let offered = pass.offer(2, row).check_err("index 2 of 2 entries")?;
+    let counted = crate::tools::leads_custom::counts(
+        &mechanic_catalog::Catalog {
+            custom: Vec::new(),
+            invalid: Vec::new(),
+        },
+        &[0],
+        &[],
+        &crate::tools::leads_covers::LanguagesRead::empty(),
+    )
+    .check_err("index 0 of an empty catalogue")?;
+
+    for error in [offered, counted] {
+        assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+        assert!(error.message.contains("out of range"), "{}", error.message);
+    }
+    Ok(())
 }
 
 #[test]

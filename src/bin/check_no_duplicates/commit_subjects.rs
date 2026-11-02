@@ -70,6 +70,13 @@ fn commit_range(
     failures: &mut Vec<String>,
 ) -> Option<String> {
     match base {
+        Ok(base) if base.trim().is_empty() => {
+            failures.push(
+                "SLUGAUDIT_CHECK_COMMITS_BASE is set but empty; cannot choose the commit range"
+                    .to_owned(),
+            );
+            return None;
+        }
         Ok(base) => return Some(format!("{base}..HEAD")),
         Err(VarError::NotUnicode(raw)) => {
             failures.push(format!(
@@ -130,6 +137,22 @@ mod tests {
 
         assert_eq!(range.as_deref(), Some("abc..HEAD"));
         assert!(failures.is_empty());
+    }
+
+    #[test]
+    fn an_empty_or_blank_base_fails_instead_of_checking_no_commits() {
+        for base in ["", "  ", "\t\n"] {
+            let mut failures = Vec::new();
+
+            let range = commit_range(Ok(base.to_owned()), Path::new("."), &mut failures);
+
+            assert_eq!(range, None, "base {base:?}");
+            assert_eq!(
+                failures,
+                ["SLUGAUDIT_CHECK_COMMITS_BASE is set but empty; cannot choose the commit range"],
+                "base {base:?}"
+            );
+        }
     }
 
     #[test]

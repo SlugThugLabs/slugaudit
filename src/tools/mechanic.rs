@@ -18,7 +18,7 @@ use rmcp::handler::server::wrapper::{Json, Parameters};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-const MAX_PATH_BYTES: usize = 32 * 1024;
+use super::MAX_PATH_BYTES;
 /// Generous byte cap on every free-form field before the precise rules
 /// (`mechanic_catalog`) run, so an oversized value is never copied or echoed.
 const MAX_FIELD_BYTES: usize = 64 * 1024;
@@ -134,8 +134,7 @@ pub struct MechanicRequest {
 pub struct MechanicResponse {
     /// The action that ran.
     pub action: MechanicAction,
-    /// `add`/`remove`: the id the action applied to; `null` for a `remove`
-    /// by `index` whose entry had no string id.
+    /// `add`/`remove`: the id the action applied to; `null` for `list`.
     pub id: Option<String>,
     /// `add`/`remove`: where that entry lives (or lived).
     pub source: Option<MechanicSource>,
@@ -228,7 +227,10 @@ fn validate(request: &MechanicRequest) -> Result<(), ErrorData> {
         .as_deref()
         .is_some_and(|path| crate::util::exceeds_input_bytes(path, MAX_PATH_BYTES))
     {
-        return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
+        return Err(ErrorData::invalid_params(
+            format!("path exceeds {MAX_PATH_BYTES} bytes"),
+            None,
+        ));
     }
     for (name, value) in [
         ("id", &request.id),

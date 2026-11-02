@@ -336,7 +336,7 @@ fn a_configured_max_parse_bytes_above_max_file_bytes_is_clamped_and_reported() -
         ..Default::default()
     };
 
-    let (applied, logs) = capture_warns(|| config.apply_limit_keys(ResourceLimits::default()));
+    let (applied, logs) = capture_warns(|| config.apply_limit_keys(ResourceLimits::default()))?;
     let applied = applied.check("apply the config")?;
 
     assert_eq!(applied.max_parse_bytes, 10_000);

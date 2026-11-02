@@ -109,8 +109,11 @@ pub(super) fn check_case<R: Serialize, S: Serialize>(
         "fixture {} is missing; run generate.sh",
         file.display()
     ))?;
-    let mut expected: Value = serde_json::from_str(&text).check("fixture is JSON")?;
-    let mut expected = expected["response"].take();
+    let mut fixture: Value = serde_json::from_str(&text).check("fixture is JSON")?;
+    let mut expected = fixture
+        .get_mut("response")
+        .check("fixture has a `response`")?
+        .take();
     mask_paging(&mut expected);
     mask_paging(&mut response);
     assert_eq!(response, expected, "golden case {name} drifted");

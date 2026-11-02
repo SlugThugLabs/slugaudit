@@ -1,11 +1,11 @@
 //! Unit tests for `check_performance`.
 
-use super::args::{Command, Options, parse};
+use super::args::{Options, options};
 use super::compare::{Verdict, compare};
 use super::estimates;
 use super::estimates::{BaselineEntry, load_baseline};
 use super::format::{fmt_ns, table_line};
-use super::record::baseline_json;
+use super::record::{baseline_json, unmeasured};
 use slugaudit_test_check::{Check, CheckErr, TestResult};
 
 #[test]
@@ -283,42 +283,94 @@ fn re_recording_keeps_each_hand_set_budget() {
     let measured = medians(&[("sync/first", 5), ("search/a", 7)]);
     let previous = baseline_of(&[("sync/first", 1, Some(99))]);
 
-    let json = baseline_json(&measured, &previous, 20.0, "m");
+    let json = baseline_json(&measured, &previous);
 
     assert_eq!(json["benches"]["sync/first"]["budget_ns"], 99);
     assert_eq!(json["benches"]["sync/first"]["median_ns"], 5);
     assert!(json["benches"]["search/a"]["budget_ns"].is_null());
-    assert_eq!(json["machine"], "m");
+}
+
+#[test]
+fn the_recorded_document_holds_only_what_the_gate_reads() -> TestResult {
+    let json = baseline_json(&medians(&[("search/a", 7)]), &baseline_of(&[]));
+
+    let object = json.as_object().check("the baseline is a JSON object")?;
+
+    assert_eq!(object.keys().collect::<Vec<_>>(), ["benches"]);
+    Ok(())
+}
+
+#[test]
+fn a_baselined_bench_the_run_did_not_measure_is_reported_for_a_record() {
+    let measured = medians(&[("search/a", 7)]);
+    let previous = baseline_of(&[
+        ("search/a", 1, None),
+        ("sync/first", 1, Some(99)),
+        ("parsing/old", 1, None),
+    ]);
+
+    assert_eq!(
+        unmeasured(&measured, &previous),
+        ["parsing/old", "sync/first"]
+    );
+    assert!(unmeasured(&measured, &baseline_of(&[("search/a", 1, None)])).is_empty());
+}
+
+#[test]
+fn criterion_output_follows_the_cargo_target_dir() {
+    let root = std::path::Path::new("/proj");
+
+    assert_eq!(
+        estimates::criterion_dir(root, None),
+        std::path::Path::new("/proj/target/criterion")
+    );
+    assert_eq!(
+        estimates::criterion_dir(root, Some(std::ffi::OsStr::new("/shared/target"))),
+        std::path::Path::new("/shared/target/criterion")
+    );
+    assert_eq!(
+        estimates::criterion_dir(root, Some(std::ffi::OsStr::new("out"))),
+        std::path::Path::new("/proj/out/criterion")
+    );
 }
 
 #[test]
 fn the_cli_rejects_a_non_finite_or_negative_threshold() {
     for raw in ["NaN", "inf", "-1"] {
-        let result = parse([raw.to_string()]);
+        let result = options(false, &[raw.to_string()]);
 
         assert!(result.is_err(), "threshold {raw} must be rejected");
     }
 }
 
 #[test]
-fn the_cli_parses_record_threshold_and_help() -> TestResult {
-    let args = |list: &[&str]| parse(list.iter().map(|s| (*s).to_string()));
-
-    let run = args(&["--record", "35"]).check("valid args parse")?;
-    let help = args(&["--help"]).check("help parses")?;
-    let bad = args(&["fast"]);
+fn the_cli_builds_options_from_the_record_switch_and_threshold() -> TestResult {
+    let run = options(true, &["35".to_string()]).check("valid args parse")?;
+    let defaults = options(false, &[]).check("no args parse")?;
+    let bad = options(false, &["fast".to_string()]);
+    let two = options(false, &["1".to_string(), "2".to_string()]);
 
     assert_eq!(
         run,
-        Command::Run(Options {
+        Options {
             record: true,
             threshold_pct: 35.0
-        })
+        }
     );
-    assert_eq!(help, Command::Help);
+    assert_eq!(
+        defaults,
+        Options {
+            record: false,
+            threshold_pct: 20.0
+        }
+    );
     assert!(
         bad.check_err("non-number is a usage error")?
             .contains("\"fast\"")
+    );
+    assert!(
+        two.check_err("two thresholds are a usage error")?
+            .contains("at most one threshold")
     );
     Ok(())
 }

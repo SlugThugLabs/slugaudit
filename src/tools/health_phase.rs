@@ -17,47 +17,45 @@ pub(super) struct ProjectHealthFields {
     pub(super) phase: HealthPhase,
     pub(super) remedy: Option<String>,
     pub(super) database: Option<DatabaseState>,
-    /// True when the database exists but could not be read. `database` is
-    /// then `None` and the phase never claims the index is empty.
-    pub(super) database_read_failed: bool,
+    /// Why the database exists but could not be read. `database` is then
+    /// `None` and the phase never claims the index is empty.
+    pub(super) database_read_error: Option<String>,
 }
 
 /// Computes every per-project field of the health response without
 /// publishing: it resolves the project root and reads the database
 /// read-only if it exists.
 pub(super) fn compute_project_state(path: &str) -> Result<ProjectHealthFields, ErrorData> {
-    let Some((_root, database_path)) = resolve_active_project(path)? else {
+    let Some(database_path) = resolve_active_project(path)? else {
         return Ok(inactive_fields(HealthPhase::Disabled));
     };
 
-    let (database, revision_id, database_read_failed) = match read_database(&database_path) {
+    let (database, revision_id, database_read_error) = match read_database(&database_path) {
         DatabaseRead::Read(state) => {
             let revision_id = state.revision_id.clone();
-            (Some(state), revision_id, false)
+            (Some(state), revision_id, None)
         }
-        DatabaseRead::NeverSynced => (None, None, false),
-        DatabaseRead::Unreadable => (None, None, true),
+        DatabaseRead::NeverSynced => (None, None, None),
+        DatabaseRead::Unreadable(error) => (None, None, Some(error)),
     };
 
     Ok(ProjectHealthFields {
-        phase: project_phase(revision_id.as_deref(), database_read_failed),
+        phase: project_phase(revision_id.as_deref(), database_read_error.is_some()),
         remedy: None,
         database,
-        database_read_failed,
+        database_read_error,
     })
 }
 
-/// Resolves the project root and its database path. `Ok(None)` means the
+/// Resolves the project's database path. `Ok(None)` means the
 /// path has no activation directory: `health` reports that state instead of
 /// failing on it, because "this path is not an enabled project, here is the
 /// call that enables it" must be an answer. Any *other* resolution failure
 /// (an unreadable parent, a symlinked activation component) stays an error:
 /// enabling the project would not fix it.
-fn resolve_active_project(
-    path: &str,
-) -> Result<Option<(crate::project::ProjectRoot, std::path::PathBuf)>, ErrorData> {
+fn resolve_active_project(path: &str) -> Result<Option<std::path::PathBuf>, ErrorData> {
     match crate::project::resolve_project(std::path::Path::new(path)) {
-        Ok(resolved) => Ok(Some(resolved)),
+        Ok((_root, database_path)) => Ok(Some(database_path)),
         Err(crate::project::ActivationError::NotActive) => Ok(None),
         Err(error) => Err(ErrorData::invalid_params(error.to_string(), None)),
     }
@@ -90,7 +88,7 @@ fn inactive_fields(phase: HealthPhase) -> ProjectHealthFields {
         phase,
         remedy: Some(ErrorCode::ProjectNotEnabled.remedy().to_owned()),
         database: None,
-        database_read_failed: false,
+        database_read_error: None,
     }
 }
 

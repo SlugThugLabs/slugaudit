@@ -96,6 +96,33 @@ fn lock_on_a_poisoned_mutex_is_an_error_naming_the_mutex() -> TestResult {
     Ok(())
 }
 
+/// The poisoning is logged where it is detected: one error event per failed
+/// `lock`, naming the mutex, and none for a healthy mutex.
+#[test]
+fn lock_logs_a_poisoned_mutex_once_per_detection_and_a_healthy_one_never() -> TestResult {
+    let healthy: Mutex<u8> = Mutex::new(1);
+    let poisoned: Mutex<u8> = Mutex::new(2);
+    poison(&poisoned);
+
+    let (outcome, logs) = crate::store::test_capture::capture_at_level(
+        || {
+            let first = lock(&healthy, "util_tests_healthy").map(|guard| *guard);
+            let second = lock(&poisoned, "util_tests_logged").map(|guard| *guard);
+            (first, second)
+        },
+        tracing::Level::INFO,
+    )?;
+
+    assert_eq!(outcome.0.check("the healthy mutex locks")?, 1);
+    outcome.1.check_err("the poisoned mutex fails")?;
+    let events: Vec<&str> = logs.lines().collect();
+    assert_eq!(events.len(), 1, "{logs}");
+    assert!(events[0].contains("ERROR"), "{logs}");
+    assert!(events[0].contains("util_tests_logged"), "{logs}");
+    assert!(events[0].contains("mutex poisoned by a panic in an earlier holder"));
+    Ok(())
+}
+
 /// `lock` on a healthy, unpoisoned mutex must behave exactly like
 /// `Mutex::lock()` — same guard, same data, same lifecycle.
 #[test]

@@ -18,7 +18,7 @@ fn each_listed_number_selects_its_step_and_end_of_input_exits() {
     ];
 
     for (line, expected) in cases {
-        assert_eq!(menu_choice(line), expected, "line {line:?}");
+        assert_eq!(menu_choice(line), Some(expected), "line {line:?}");
     }
 }
 
@@ -60,7 +60,7 @@ fn an_unlisted_or_non_numeric_menu_answer_is_invalid() {
     let answers = ["0", "7", "", "install", "-1"];
 
     for answer in answers {
-        assert_eq!(menu_choice(Some(answer)), MenuChoice::Invalid, "{answer:?}");
+        assert_eq!(menu_choice(Some(answer)), None, "{answer:?}");
     }
 }
 
@@ -87,16 +87,61 @@ fn section_label_extracts_the_rule_label_and_nothing_else() {
 }
 
 #[test]
-fn other_agent_instructions_name_the_server_and_command() {
-    let text = other_agent_instructions(Path::new("/opt/slugaudit"));
-    assert!(text.contains("slugaudit"));
-    assert!(text.contains("/opt/slugaudit"));
-    assert!(text.contains("\"command\""));
-    assert!(text.contains("args"));
+fn other_agent_instructions_name_the_server_and_command() -> TestResult {
+    let text =
+        other_agent_instructions(Path::new("/opt/slugaudit"), None).check("instructions render")?;
+    assert!(text.contains("  Command:      /opt/slugaudit\n"), "{text}");
+    assert!(text.contains("\"command\": \"/opt/slugaudit\""), "{text}");
+    assert!(text.contains("\"args\": []"), "{text}");
+    Ok(())
 }
 
 #[test]
-fn other_agent_instructions_mention_the_stable_install_path() {
-    let text = other_agent_instructions(Path::new("slugaudit"));
-    assert!(text.contains(".slugthug/slugaudit/slugaudit"));
+fn other_agent_instructions_print_the_resolved_install_location() -> TestResult {
+    let text = other_agent_instructions(
+        Path::new("slugaudit"),
+        Some(Path::new("/custom/home/slugaudit")),
+    )
+    .check("instructions render")?;
+    assert!(
+        text.ends_with("Stable command path after install: /custom/home/slugaudit/slugaudit\n"),
+        "{text}"
+    );
+    assert!(!text.contains(".slugthug"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn other_agent_instructions_snippet_is_valid_json_for_awkward_paths() -> TestResult {
+    let binary = r#"C:\Program Files\Slug "Audit"\slugaudit.exe"#;
+    let text = other_agent_instructions(Path::new(binary), None).check("instructions render")?;
+    let start = text.find('{').check("snippet start")?;
+    let end = text.rfind('}').check("snippet end")?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text[start..=end]).check("snippet parses")?;
+    assert_eq!(
+        value["mcpServers"]["slugaudit"]["command"].as_str(),
+        Some(binary)
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn other_agent_instructions_refuse_a_non_utf8_binary_path() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let binary = Path::new(std::ffi::OsStr::from_bytes(b"/opt/\xff/slugaudit"));
+    let result = other_agent_instructions(binary, None);
+    assert!(
+        matches!(result, Err(crate::cli::ConnectError::BinaryPath(_))),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn colored_menu_ends_on_the_prompt_without_a_trailing_newline() {
+    let colored = render_menu(&Style::colored());
+    assert!(!colored.ends_with('\n'), "{colored:?}");
+    assert!(colored.contains("Choose an option [1-6]: "));
+    assert_eq!(colored.lines().count(), MENU.lines().count());
 }

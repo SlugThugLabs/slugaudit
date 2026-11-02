@@ -36,7 +36,8 @@ mod tests {
             .check("Cargo.toml must pin tree-sitter-language-pack exactly as `=x.y.z`")?;
         let version = pin
             .strip_prefix(PIN_PREFIX)
-            .and_then(|rest| rest.split('"').next())
+            .and_then(|rest| rest.split_once('"'))
+            .map(|(version, _after)| version)
             .check("the tree-sitter-language-pack pin must close its quoted version")?;
 
         assert_eq!(

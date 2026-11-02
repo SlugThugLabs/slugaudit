@@ -387,7 +387,7 @@ fn a_sampling_skip_logs_the_real_path_and_the_static_reason_kind() -> TestResult
             &crate::progress::NoopProgressSink,
             &limits,
         )
-    });
+    })?;
 
     result.check("an oversized file is skipped, not fatal")?;
     let raw = huge.to_string_lossy();
@@ -402,55 +402,79 @@ fn a_sampling_skip_logs_the_real_path_and_the_static_reason_kind() -> TestResult
     Ok(())
 }
 
-/// A failed publish logs its category, the real path and the error's
-/// `Display`, so the OS cause (`gone`) and the file are in the log.
+/// A failed publish is returned, not logged where it fails: the tool error's
+/// message carries its category, the root, the real path and the error's
+/// `Display` (the OS cause `gone`), so `server_runner::log_completion`'s one
+/// line diagnoses it. Nothing is logged at warn before that.
 #[test]
-fn honest_log_a_failed_publish_logs_the_real_path_and_io_cause() {
+fn honest_log_a_failed_publish_error_carries_the_real_path_and_io_cause() -> TestResult {
     let root = std::path::Path::new("/tmp/once-probe-project");
-    let absolute = std::path::Path::new("/home/private-user/secret-repo/src/lib.rs");
-    let result: Result<PublishReport, PublishError> =
-        Err(PublishError::Sample(sample::SampleError::Read {
-            path: absolute.to_path_buf(),
-            source: std::io::Error::new(std::io::ErrorKind::NotFound, "gone"),
-        }));
+    let error = PublishError::Sample(sample::SampleError::Read {
+        path: std::path::PathBuf::from("/home/private-user/secret-repo/src/lib.rs"),
+        source: std::io::Error::new(std::io::ErrorKind::NotFound, "gone"),
+    });
 
-    let ((), logs) = capture_warns(|| crate::sync::publish_log::log_outcome(root, &result, 0));
+    let (mapped, logs) =
+        capture_warns(|| crate::sync::manager_meta::map_publish_error(root, &error, "sync"))?;
 
-    assert!(logs.contains("publish failed"), "got: {logs}");
-    assert!(logs.contains("error_kind=\"sample_read\""), "got: {logs}");
+    let message = mapped.message.as_ref();
     assert!(
-        logs.contains("path=/home/private-user/secret-repo/src/lib.rs"),
-        "the real path must identify the file: {logs}"
+        message.starts_with("publishing a new revision: "),
+        "{message}"
+    );
+    assert!(message.contains("error_kind: sample_read"), "{message}");
+    assert!(
+        message.contains("path: /home/private-user/secret-repo/src/lib.rs"),
+        "the real path must identify the file: {message}"
     );
     assert!(
-        logs.contains("gone"),
-        "the underlying io cause must be logged: {logs}"
+        message.contains("root: /tmp/once-probe-project"),
+        "{message}"
     );
-    assert_eq!(
-        logs.matches("publish failed").count(),
-        1,
-        "one failure is one record: {logs}"
+    assert!(
+        message.contains("(sync; "),
+        "the operation is named: {message}"
     );
+    assert!(
+        message.contains("gone"),
+        "the underlying io cause must be kept: {message}"
+    );
+    assert!(
+        logs.is_empty(),
+        "a returned failure is logged once, by log_completion: {logs}"
+    );
+    Ok(())
 }
 
-/// A SQLite failure has no path; its message is the only diagnosis.
+/// A SQLite failure has no path; its message is the only diagnosis, and the
+/// returned error carries it with the root and category.
 #[test]
-fn honest_log_a_failed_publish_logs_the_sqlite_cause() {
+fn honest_log_a_failed_publish_error_carries_the_sqlite_cause() -> TestResult {
     let root = std::path::Path::new("/tmp/once-probe-project");
-    let result: Result<PublishReport, PublishError> =
-        Err(PublishError::Database(rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
-            Some("SENTINEL_SQLITE_CAUSE".to_owned()),
-        )));
+    let error = PublishError::Database(rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+        Some("SENTINEL_SQLITE_CAUSE".to_owned()),
+    ));
 
-    let ((), logs) = capture_warns(|| crate::sync::publish_log::log_outcome(root, &result, 0));
+    let (mapped, logs) =
+        capture_warns(|| crate::sync::manager_meta::map_publish_error(root, &error, "sync"))?;
 
-    assert!(logs.contains("error_kind=\"database\""), "got: {logs}");
+    let message = mapped.message.as_ref();
+    assert!(message.contains("error_kind: database"), "{message}");
     assert!(
-        logs.contains("SENTINEL_SQLITE_CAUSE"),
-        "the SQLite message must be logged: {logs}"
+        message.contains("SENTINEL_SQLITE_CAUSE"),
+        "the SQLite message must be kept: {message}"
     );
-    assert!(logs.contains("root=/tmp/once-probe-project"), "got: {logs}");
+    assert!(
+        message.contains("root: /tmp/once-probe-project"),
+        "{message}"
+    );
+    assert!(!message.contains("path: "), "no path to name: {message}");
+    assert!(
+        logs.is_empty(),
+        "nothing is logged before the return: {logs}"
+    );
+    Ok(())
 }
 
 /// Skip collection lives beside the diff that consumes it; these tests
@@ -460,7 +484,7 @@ mod publish_attempt_skip_logging {
     use crate::sync::discovery;
     use crate::sync::publish_diff::collect_skipped;
     use crate::sync::revision_skipped::SKIP_REASON_STAT_FAILED;
-    use slugaudit_test_check::{Check, TestResult};
+    use slugaudit_test_check::{Check, CheckErr, TestResult};
     use std::collections::{BTreeMap, HashSet};
 
     fn skipped(path: std::path::PathBuf, code: &'static str) -> discovery::SkippedFile {
@@ -474,21 +498,51 @@ mod publish_attempt_skip_logging {
     #[test]
     fn a_stat_failed_skip_logs_exactly_one_warn_line() -> TestResult {
         let root = tempfile::tempdir().check("tempdir")?;
-        let files = [skipped(root.path().join("vanished.rs"), "unreadable")];
+        // A regular file used as a directory: the stat fails with ENOTDIR,
+        // not NotFound, so the skip is recorded rather than retried.
+        std::fs::write(root.path().join("plain.rs"), b"fn plain() {}\n").check("write file")?;
+        let files = [skipped(
+            root.path().join("plain.rs").join("inner.rs"),
+            "unreadable",
+        )];
         let mut paths = HashSet::new();
         let mut records = BTreeMap::new();
 
-        let ((), logs) = capture_warns(|| {
-            collect_skipped(root.path(), &files, None, &mut paths, &mut records);
-        });
+        let (result, logs) =
+            capture_warns(|| collect_skipped(root.path(), &files, None, &mut paths, &mut records))?;
+        result.check("collect the skip")?;
 
         let lines = logs
             .lines()
             .filter(|line| line.contains("stat failed for a skipped file"))
             .count();
         assert_eq!(lines, 1, "one warn per stat-failed skip: {logs}");
-        assert_eq!(records["vanished.rs"].reason, SKIP_REASON_STAT_FAILED);
-        assert_eq!(records["vanished.rs"].byte_len, None);
+        let record = records
+            .get("plain.rs/inner.rs")
+            .check("the skip has a record")?;
+        assert_eq!(record.reason, SKIP_REASON_STAT_FAILED);
+        assert_eq!(record.byte_len, None);
+        Ok(())
+    }
+
+    #[test]
+    fn a_skip_deleted_since_the_walk_fails_the_attempt_as_a_tree_change() -> TestResult {
+        let root = tempfile::tempdir().check("tempdir")?;
+        let files = [skipped(root.path().join("vanished.rs"), "unreadable")];
+        let mut paths = HashSet::new();
+        let mut records = BTreeMap::new();
+
+        let error = collect_skipped(root.path(), &files, None, &mut paths, &mut records)
+            .check_err("a vanished skip must not be recorded")?;
+
+        assert!(
+            matches!(
+                &error,
+                crate::sync::PublishError::ChangedDuringSample { path } if path == "vanished.rs"
+            ),
+            "got {error:?}"
+        );
+        assert!(records.is_empty());
         Ok(())
     }
 
@@ -501,9 +555,9 @@ mod publish_attempt_skip_logging {
         let mut paths = HashSet::new();
         let mut records = BTreeMap::new();
 
-        let ((), logs) = capture_warns(|| {
-            collect_skipped(root.path(), &files, None, &mut paths, &mut records);
-        });
+        let (result, logs) =
+            capture_warns(|| collect_skipped(root.path(), &files, None, &mut paths, &mut records))?;
+        result.check("collect the skip")?;
 
         let lines = logs
             .lines()

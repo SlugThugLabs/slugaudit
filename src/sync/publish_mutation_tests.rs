@@ -76,14 +76,17 @@ fn sample_all_rejects_strictly_over_the_byte_limit_not_at_or_under_it() -> TestR
 /// exact retry count `publish()` gives up after — not just "it eventually
 /// gives up" — which is what actually distinguishes an off-by-one retry
 /// bound from the correct one (both look identical for the first N-1
-/// races; only the exact Nth matters).
+/// races; only the exact Nth matters). Every armed hook's handle is pushed
+/// to `handles` so the test can check each racer that fired succeeded.
 fn arm_permanent_racer(
     root: std::path::PathBuf,
     db_path: std::path::PathBuf,
     attempts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    handles: &std::sync::Arc<std::sync::Mutex<Vec<race_hook::HookHandle>>>,
 ) -> TestResult {
     let hook_root = root.clone();
-    race_hook::set(&hook_root, move || {
+    let hook_handles = std::sync::Arc::clone(handles);
+    let handle = race_hook::set(&hook_root, race_hook::RacePoint::BeforeCommit, move || {
         let count = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         write(&root, &format!("racer-{count}.rs"), b"fn racer() {}\n")?;
         let mut racer = open_read_write(&db_path).check("open racer db")?;
@@ -94,8 +97,12 @@ fn arm_permanent_racer(
             &crate::progress::NoopProgressSink,
         )
         .check("racer publish")?;
-        arm_permanent_racer(root, db_path, attempts)
-    })
+        arm_permanent_racer(root, db_path, attempts, &hook_handles)
+    })?;
+    crate::util::lock(handles, "racer hook handles")
+        .check("lock the racer hook handles")?
+        .push(handle);
+    Ok(())
 }
 
 #[test]
@@ -116,10 +123,12 @@ fn retry_gives_up_after_exactly_max_cas_retries_and_never_hangs() -> TestResult 
     }
 
     let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let handles = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     arm_permanent_racer(
         project.path().to_path_buf(),
         db_path.clone(),
         std::sync::Arc::clone(&attempts),
+        &handles,
     )?;
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -158,6 +167,15 @@ fn retry_gives_up_after_exactly_max_cas_retries_and_never_hangs() -> TestResult 
         ),
         "must give up with a StaleBaseline error after exhausting retries, got {result:?}"
     );
+    let handles = std::mem::take(
+        &mut *crate::util::lock(&handles, "racer hook handles").check("lock the handles")?,
+    );
+    // Every attempt fired one racer, and each racer re-armed the next; the
+    // last one armed never fires because publish() gave up.
+    assert_eq!(handles.len(), MAX_CAS_RETRIES + 2);
+    for handle in handles.iter().take(MAX_CAS_RETRIES + 1) {
+        handle.outcome()?;
+    }
     Ok(())
 }
 
@@ -468,99 +486,58 @@ fn publish_error_corruption_classification_matches_sqlite_corruption() {
 }
 
 #[test]
-fn publish_error_budget_elapsed_and_categories_and_logging_paths() {
+fn publish_error_budget_elapsed() {
     let budget_pub = PublishError::TimeBudgetExceeded {
         path: " a.rs".into(),
         elapsed_ms: 42,
     };
-    assert_eq!(budget_pub.budget_elapsed_ms(), Some(42));
-    assert_eq!(budget_pub.category(), "time_budget_exceeded");
-    assert_eq!(budget_pub.path_for_log(), None);
-
     let budget_disc =
         PublishError::Discovery(discovery::DiscoveryError::TimeBudgetExceeded { elapsed_ms: 84 });
-    assert_eq!(budget_disc.budget_elapsed_ms(), Some(84));
-    assert_eq!(budget_disc.category(), "discovery");
-
     let changed = PublishError::ChangedDuringSample {
         path: "changed.rs".into(),
     };
+    assert_eq!(budget_pub.budget_elapsed_ms(), Some(42));
+    assert_eq!(budget_disc.budget_elapsed_ms(), Some(84));
     assert_eq!(changed.budget_elapsed_ms(), None);
-    assert_eq!(changed.category(), "changed_during_sample");
-    assert_eq!(changed.path_for_log(), Some("changed.rs".into()));
+}
 
-    let lost = PublishError::SamplingResultLost {
-        path: "lost.rs".into(),
-        reason: "channel closed".into(),
-    };
-    assert_eq!(lost.category(), "sampling_result_lost");
-    assert_eq!(lost.path_for_log(), Some("lost.rs".into()));
-
-    let invalid_run = PublishError::Revision(RevisionError::InvalidParserRun {
-        path: "run.rs".into(),
-        reason: "err",
+#[test]
+fn a_file_that_vanished_during_discovery_becomes_the_retryable_tree_change() {
+    let error = PublishError::from(discovery::DiscoveryError::Vanished {
+        relative_path: "gone.rs".into(),
     });
-    assert_eq!(invalid_run.category(), "revision");
-    assert_eq!(invalid_run.path_for_log(), Some("run.rs".into()));
 
-    let sample_err = PublishError::Sample(sample::SampleError::Read {
-        path: std::path::PathBuf::from("sample.rs"),
-        source: std::io::Error::other("test"),
-    });
-    assert_eq!(sample_err.category(), "sample");
-    assert_eq!(sample_err.path_for_log(), Some("sample.rs".into()));
+    assert!(
+        matches!(&error, PublishError::ChangedDuringSample { path } if path == "gone.rs"),
+        "got {error:?}"
+    );
+    assert!(is_retryable(&error));
+}
 
-    let disc_not_rel = PublishError::Discovery(discovery::DiscoveryError::NotRelative(
-        std::path::PathBuf::from("rel.rs"),
-    ));
-    assert_eq!(disc_not_rel.path_for_log(), Some("rel.rs".into()));
+#[test]
+fn a_read_after_the_walk_is_a_tree_change_only_when_the_file_is_gone() {
+    let gone = PublishError::read_after_walk(
+        "gone.rs",
+        std::path::PathBuf::from("/p/gone.rs"),
+        std::io::Error::from(std::io::ErrorKind::NotFound),
+    );
+    let denied = PublishError::read_after_walk(
+        "denied.rs",
+        std::path::PathBuf::from("/p/denied.rs"),
+        std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+    );
 
-    let disc_ignore_path = PublishError::Discovery(discovery::DiscoveryError::IgnoreRules {
-        kind: "git",
-        path: Some(std::path::PathBuf::from("ignore.rs")),
-    });
-    assert_eq!(disc_ignore_path.path_for_log(), Some("ignore.rs".into()));
-
-    let disc_ignore_none = PublishError::Discovery(discovery::DiscoveryError::IgnoreRules {
-        kind: "git",
-        path: None,
-    });
-    assert_eq!(disc_ignore_none.path_for_log(), None);
-
-    let limits_err = PublishError::Limits(crate::project::ProjectLimitsError::Config(
-        crate::project::ConfigError::Io {
-            path: std::path::PathBuf::from("config.json"),
-            source: std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
-        },
-    ));
-    assert_eq!(limits_err.category(), "project_limits");
-
-    let db_err = PublishError::Database(rusqlite::Error::QueryReturnedNoRows);
-    assert_eq!(db_err.category(), "database");
-
-    let import_err = PublishError::ImportTooLarge {
-        total: 10,
-        limit: 5,
-    };
-    assert_eq!(import_err.category(), "import_too_large");
-
-    let index_oob = PublishError::SamplingIndexOutOfRange { index: 2, total: 1 };
-    assert_eq!(index_oob.category(), "sampling_index_out_of_range");
-
-    let pack_err = PublishError::InvalidParserPackVersion("v0".into());
-    assert_eq!(pack_err.category(), "invalid_parser_pack_version");
-
-    let walk_err =
-        PublishError::Discovery(discovery::DiscoveryError::Walk(ignore::Error::WithPath {
-            path: std::path::PathBuf::from("walk.rs"),
-            err: Box::new(ignore::Error::from(std::io::Error::other("test"))),
-        }));
-    assert_eq!(walk_err.path_for_log(), Some("walk.rs".into()));
-
-    let ((), logs) = crate::store::test_capture::capture_warns(|| {
-        sample_err.warn_sampling_superseded();
-    });
-    assert!(logs.contains("a later sampling failure was discarded"));
+    assert!(
+        matches!(&gone, PublishError::ChangedDuringSample { path } if path == "gone.rs"),
+        "got {gone:?}"
+    );
+    assert!(
+        matches!(&denied, PublishError::Sample(sample::SampleError::Read { path, source })
+            if *path == std::path::Path::new("/p/denied.rs")
+                && source.kind() == std::io::ErrorKind::PermissionDenied),
+        "got {denied:?}"
+    );
+    assert!(!is_retryable(&denied));
 }
 
 #[test]

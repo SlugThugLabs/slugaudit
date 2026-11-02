@@ -1,7 +1,7 @@
 //! Parser for source-limit exception comments.
 
 const NEEDLE: &str = "slugaudit-line-exception:";
-const AGENT: &str = "approved-by=slugthug;";
+const AGENT: &str = "approved-by=slugthuglabs;";
 const HUMAN: &str = "approved-by=human-user;";
 /// Start of the operator-facing reason produced for a human approval.
 /// Display only: the line-limit policy keys on [`Approver`], never on this
@@ -58,16 +58,28 @@ pub(super) fn reason(source: &str) -> Option<Exception> {
             continue;
         };
         let text = line[start + NEEDLE.len()..].trim_start();
+        // A malformed annotation grants nothing; the scan goes on to the next
+        // annotation.
         if let Some(rest) = text.strip_prefix(AGENT) {
-            return Some(Exception::agent(parse_reason(rest)?));
+            let Some(reason) = parse_reason(rest) else {
+                continue;
+            };
+            return Some(Exception::agent(reason));
         }
         if let Some(rest) = text.strip_prefix(HUMAN) {
-            let (date, rest) = rest.trim_start().split_once(';')?;
-            let date = date.strip_prefix("date=")?.trim();
+            let Some((date, rest)) = rest.trim_start().split_once(';') else {
+                continue;
+            };
+            let Some(date) = date.strip_prefix("date=").map(str::trim) else {
+                continue;
+            };
             if !valid_date(date) {
                 continue;
             }
-            return Some(Exception::human(date, &parse_reason(rest)?));
+            let Some(reason) = parse_reason(rest) else {
+                continue;
+            };
+            return Some(Exception::human(date, &reason));
         }
     }
     None

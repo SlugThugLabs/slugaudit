@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=one query execution: the budgeted parse and the budgeted capture cursor share one deadline and one Run state
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=one query execution: the budgeted parse and the budgeted capture cursor share one deadline and one Run state
 //! Executing a compiled structure query: parsing each file, running the
 //! capture cursor under the match cap and the wall-clock budget, and mapping
 //! captured nodes back to source coordinates. The parse runs under the same

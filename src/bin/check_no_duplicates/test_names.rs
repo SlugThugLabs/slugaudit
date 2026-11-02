@@ -1,6 +1,6 @@
 //! `#[test]` function names defined in more than one file under `src/` or `tests/`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Read a directory, recording an unreadable directory or entry as a gate
@@ -30,7 +30,7 @@ pub(super) fn collect_test_files(root: &Path, failures: &mut Vec<String>) -> Vec
     let mut out = Vec::new();
     let src = root.join("src");
     if src.is_dir() {
-        walk_rs(&src, &mut out, /* skip_substr= */ None, failures);
+        walk_rs(&src, &mut out, failures);
     }
     // Integration tests under tests/*.rs (not tests/fixtures/...).
     let tests = root.join("tests");
@@ -46,37 +46,25 @@ pub(super) fn collect_test_files(root: &Path, failures: &mut Vec<String>) -> Vec
     out
 }
 
-fn walk_rs(
-    dir: &Path,
-    out: &mut Vec<PathBuf>,
-    skip_substr: Option<&str>,
-    failures: &mut Vec<String>,
-) {
+fn walk_rs(dir: &Path, out: &mut Vec<PathBuf>, failures: &mut Vec<String>) {
     for entry in read_dir_entries(dir, failures) {
         let path = entry.path();
         if path.is_dir() {
-            // ignore_rules.rs and ignore_rules_tests.rs etc. we keep;
-            // there's no per-test file we need to single out by name.
-            // Caller-supplied skip-substr is honored if any. A directory
-            // without a UTF-8 name cannot match a substring and is walked.
-            if let Some(skip) = skip_substr
-                && let Some(name) = path.file_name().and_then(|s| s.to_str())
-                && name.contains(skip)
-            {
-                continue;
-            }
-            walk_rs(&path, out, skip_substr, failures);
+            walk_rs(&path, out, failures);
         } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
             out.push(path);
         }
     }
 }
 
+/// Every `#[test]` function name with the set of files defining it. A name
+/// defined twice in one file is still one file: the gate is about names
+/// shared across files.
 pub(super) fn test_names_by_file(
     paths: &[PathBuf],
     failures: &mut Vec<String>,
-) -> HashMap<String, Vec<PathBuf>> {
-    let mut names: HashMap<String, Vec<PathBuf>> = HashMap::new();
+) -> BTreeMap<String, BTreeSet<PathBuf>> {
+    let mut names: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     for path in paths {
         let source = match std::fs::read_to_string(path) {
             Ok(source) => source,
@@ -100,7 +88,7 @@ pub(super) fn test_names_by_file(
                 names
                     .entry(name.to_string())
                     .or_default()
-                    .push(path.clone());
+                    .insert(path.clone());
                 continue;
             }
             // Block form: subsequent lines may include blank lines,
@@ -116,7 +104,7 @@ pub(super) fn test_names_by_file(
                     names
                         .entry(name.to_string())
                         .or_default()
-                        .push(path.clone());
+                        .insert(path.clone());
                 }
                 break;
             }
@@ -157,14 +145,25 @@ fn is_path_seg_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
+/// The name of the `fn` that `after_attr` starts, skipping a visibility
+/// (`pub`, `pub(crate)`, `pub(in path)`) and the `const` / `async` / `unsafe`
+/// qualifiers in any order.
 fn same_line_fn_name(after_attr: &str) -> Option<&str> {
-    let trimmed = after_attr.trim_start();
-    let name = if let Some(after) = trimmed.strip_prefix("pub") {
-        after.trim_start().strip_prefix("fn")?.trim_start()
-    } else if let Some(after) = trimmed.strip_prefix("async") {
-        after.trim_start().strip_prefix("fn")?.trim_start()
-    } else {
-        trimmed.strip_prefix("fn")?.trim_start()
+    let mut rest = after_attr.trim_start();
+    if let Some(after_pub) = strip_word(rest, "pub") {
+        rest = after_pub.trim_start();
+        if let Some(restriction) = rest.strip_prefix('(') {
+            rest = restriction.split_once(')')?.1.trim_start();
+        }
+    }
+    let name = loop {
+        if let Some(after_fn) = strip_word(rest, "fn") {
+            break after_fn.trim_start();
+        }
+        let qualified = ["const", "async", "unsafe"]
+            .iter()
+            .find_map(|qualifier| strip_word(rest, qualifier))?;
+        rest = qualified.trim_start();
     };
     let end = match name.find(|c: char| !is_path_seg_char(c)) {
         Some(index) => index,
@@ -174,6 +173,17 @@ fn same_line_fn_name(after_attr: &str) -> Option<&str> {
         return None;
     }
     Some(&name[..end])
+}
+
+/// `text` after the leading keyword `word`, when `word` is a whole word
+/// (`fnord` does not start with the keyword `fn`).
+fn strip_word<'a>(text: &'a str, word: &str) -> Option<&'a str> {
+    let after = text.strip_prefix(word)?;
+    after
+        .chars()
+        .next()
+        .is_none_or(|next| !is_path_seg_char(next))
+        .then_some(after)
 }
 
 fn block_line_fn_name(line: &str) -> Option<&str> {

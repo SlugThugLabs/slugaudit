@@ -11,10 +11,9 @@ pub enum SpanAvailability {
     /// The language pack supplied no span for the item.
     PackOmitted,
     /// A span was computed by a walker but failed local range validation.
-    NormalizerUnavailable {
-        /// The validation failure that made the span unavailable.
-        reason: String,
-    },
+    /// The validation failure is logged where it is detected
+    /// (`evidence::span_unavailable`).
+    NormalizerUnavailable,
     /// The item is derived from other evidence and has no source span of its own.
     DerivedEvidence,
 }

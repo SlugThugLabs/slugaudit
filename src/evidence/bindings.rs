@@ -12,8 +12,7 @@ use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, LineIndex, Positi
 use serde_json::json;
 use tree_sitter_language_pack::SymbolKind;
 
-use super::TextRangeError;
-use super::{node_span, node_text};
+use super::{Extraction, TextRangeError, WalkInput, named_children, node_span, node_text};
 
 /// Node-type patterns that indicate an individual binding. These names are
 /// shared across tree-sitter language grammars — `let_declaration` in Rust,
@@ -57,65 +56,77 @@ fn is_field_declaration(kind: &str) -> bool {
 }
 
 /// Pre-order walk over an explicit heap stack (never recursion — see
-/// [`crate::evidence::push_children`]) emitting one symbol per named binding
-/// or field. Children are visited regardless of a match — a function body
-/// contains let bindings, a struct body contains field declarations, etc.
-/// Returns whether the walk was cut short; a position past `u32::MAX` is an
-/// error that fails the file's extraction.
+/// [`crate::evidence::push_children`]) pushing onto `out.items` one symbol
+/// per named binding or field. Children are visited regardless of a match —
+/// a function body contains let bindings, a struct body contains field
+/// declarations, etc. Sets `out.truncated` when the walk was cut short by the
+/// depth bound or an unsliceable name, and `out.timed_out` (stopping the
+/// walk) when the deadline ran out; a position past `u32::MAX` is an error
+/// that fails the file's extraction.
 pub(super) fn walk_bindings(
     root: &tree_sitter_language_pack::Node,
-    source: &str,
-    lines: &LineIndex<'_>,
-    items: &mut Vec<EvidenceItem>,
+    input: &WalkInput<'_>,
+    out: &mut Extraction,
     counter: &mut usize,
-) -> Result<bool, PositionOverflow> {
-    let mut capped = false;
+) -> Result<(), PositionOverflow> {
     let mut pending = vec![(root.clone(), 0)];
     while let Some((node, depth)) = pending.pop() {
+        if super::deadline_spent(input.deadline) {
+            out.timed_out = true;
+            break;
+        }
         if depth >= crate::evidence::MAX_WALK_DEPTH {
-            capped = true;
+            out.truncated = true;
             continue;
         }
-        match identifier_name(&node, source) {
-            Ok(Some(name)) => push_binding(&node, &name, lines, items, counter)?,
-            Ok(None) => {}
-            Err(error) => {
-                tracing::warn!(%error, "binding name skipped; extraction is partial");
-                capped = true;
+        if let Some(binding) = binding_kind(&node.kind()) {
+            match identifier_name(&node, input.source) {
+                Ok(Some(name)) => {
+                    let item = binding_item(&node, binding, &name, *counter, input.lines)?;
+                    *counter += 1;
+                    out.items.push(item);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "binding name skipped; extraction is partial");
+                    out.truncated = true;
+                }
             }
         }
         super::push_children(&mut pending, &node, |child| (child, depth + 1));
     }
-    Ok(capped)
+    Ok(())
 }
 
-/// Emits the symbol row for `node` when its kind is a field or a variable
-/// binding; any other named node is not a binding and emits nothing.
-fn push_binding(
-    node: &tree_sitter_language_pack::Node,
-    name: &str,
-    lines: &LineIndex<'_>,
-    items: &mut Vec<EvidenceItem>,
-    counter: &mut usize,
-) -> Result<(), PositionOverflow> {
-    let kind = node.kind();
-    let (sym_kind, origin_kind) = if is_field_declaration(&kind) {
-        (SymbolKind::Other("Field".to_owned()), "field")
-    } else if is_variable_binding(&kind) {
+/// The symbol kind and key prefix of a node `kind` that is a field or a
+/// variable binding, or `None` for any other named node.
+fn binding_kind(kind: &str) -> Option<(SymbolKind, &'static str)> {
+    if is_field_declaration(kind) {
+        Some((SymbolKind::Other("Field".to_owned()), "field"))
+    } else if is_variable_binding(kind) {
         if kind.starts_with("const") {
-            (SymbolKind::Constant, "variable")
+            Some((SymbolKind::Constant, "variable"))
         } else {
-            (SymbolKind::Variable, "variable")
+            Some((SymbolKind::Variable, "variable"))
         }
     } else {
-        return Ok(());
-    };
-    let key = format!("{origin_kind}:{counter}");
-    *counter += 1;
-    items.push(EvidenceItem {
-        key,
+        None
+    }
+}
+
+/// The symbol row for a binding `node` named `name`, keyed
+/// `{prefix}:{index}`.
+fn binding_item(
+    node: &tree_sitter_language_pack::Node,
+    (sym_kind, prefix): (SymbolKind, &'static str),
+    name: &str,
+    index: usize,
+    lines: &LineIndex<'_>,
+) -> Result<EvidenceItem, PositionOverflow> {
+    Ok(EvidenceItem {
+        key: format!("{prefix}:{index}"),
         kind: EvidenceKind::Symbol,
-        origin: EvidenceOrigin::PackSymbol,
+        origin: EvidenceOrigin::GenericWalker,
         span: node_span(node, lines, "binding")?,
         payload: json!({
             "name": name,
@@ -123,16 +134,16 @@ fn push_binding(
             "type_annotation": null,
             "doc": null,
         }),
-    });
-    Ok(())
+    })
 }
 
 /// Returns the text of the first identifier-flavored named child of `node`,
 /// if any. This is the binding name for every node type this extractor
 /// targets. Different grammars spell the name node differently — Rust
-/// struct fields use `field_identifier`, type aliases use `type_identifier`,
-/// and most everything else uses plain `identifier` — so we match any of
-/// them rather than hard-coding one. The pack exposes no `utf8_text`
+/// struct fields use `field_identifier`, swift/kotlin `simple_identifier`,
+/// and most everything else plain `identifier` — so we match every kind
+/// [`is_identifier_kind`] lists rather than hard-coding one (type-name kinds
+/// are deliberately not among them). The pack exposes no `utf8_text`
 /// helper, so the text is sliced directly from `source` using the child's
 /// byte range.
 ///
@@ -202,17 +213,4 @@ fn is_identifier_kind(kind: &str) -> bool {
             | "property_identifier"
             | "simple_identifier"
     )
-}
-
-/// Iterator helper over a node's named children. The pack only exposes
-/// `named_child(index)` + `named_child_count()`, so we build the iteration
-/// ourselves rather than depending on an iterator method that doesn't
-/// exist.
-fn named_children(
-    node: &tree_sitter_language_pack::Node,
-) -> impl Iterator<Item = tree_sitter_language_pack::Node> {
-    // tree-sitter counts children in a `u32`, so `0..=u32::MAX` covers every index.
-    (0..=u32::MAX)
-        .take(node.named_child_count())
-        .filter_map(move |i| node.named_child(i))
 }

@@ -84,7 +84,8 @@ fn a_stat_failure_for_the_installed_binary_is_an_io_error() -> TestResult {
             ("SLUGTHUG_CONFIG_HOME", Some(config_home.as_os_str())),
         ],
         || -> TestResult {
-            let error = connect_one(cursor).check_err("the installed-path stat must fail")?;
+            let error =
+                connect_one(cursor, false).check_err("the installed-path stat must fail")?;
 
             assert!(
                 matches!(error, ConnectError::Io(_)),

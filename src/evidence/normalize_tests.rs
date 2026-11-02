@@ -159,8 +159,9 @@ fn every_item_carries_a_span_or_an_explicit_missing_reason() -> TestResult {
     for item in &items {
         match &item.span {
             SpanAvailability::Present(span) => assert!(span.end_byte >= span.start_byte),
-            SpanAvailability::NormalizerUnavailable { reason } => assert!(!reason.is_empty()),
-            SpanAvailability::PackOmitted | SpanAvailability::DerivedEvidence => {}
+            SpanAvailability::NormalizerUnavailable
+            | SpanAvailability::PackOmitted
+            | SpanAvailability::DerivedEvidence => {}
         }
     }
     Ok(())
@@ -218,7 +219,7 @@ fn rust_parameters_surface_as_variable_symbols() -> TestResult {
         .filter(|item| {
             item.kind == EvidenceKind::Symbol
                 && item.payload["kind"].as_str() == Some("Variable")
-                && item.origin == EvidenceOrigin::PackSymbol
+                && item.origin == EvidenceOrigin::GenericWalker
         })
         .map(|item| item.payload["name"].as_str().check("name is a string"))
         .collect::<TestResult<_>>()?;
@@ -291,7 +292,7 @@ fn python_assignments_surface_as_variable_symbols() -> TestResult {
     let names: Vec<&str> = items
         .iter()
         .filter(|item| {
-            item.kind == EvidenceKind::Symbol && item.origin == EvidenceOrigin::PackSymbol
+            item.kind == EvidenceKind::Symbol && item.origin == EvidenceOrigin::GenericWalker
         })
         .map(|item| item.payload["name"].as_str().check("name is a string"))
         .collect::<TestResult<_>>()?;
@@ -336,7 +337,9 @@ fn binding_extraction_gracefully_degrades_for_an_unsupported_language() -> TestR
     let items = extract_items("rust", source)?;
     let binding_count = items
         .iter()
-        .filter(|item| item.origin == EvidenceOrigin::PackSymbol)
+        .filter(|item| {
+            item.kind == EvidenceKind::Symbol && item.origin == EvidenceOrigin::GenericWalker
+        })
         .count();
     assert_eq!(binding_count, 0, "no bindings to extract here");
     Ok(())
@@ -345,10 +348,14 @@ fn binding_extraction_gracefully_degrades_for_an_unsupported_language() -> TestR
 #[test]
 fn a_walker_parser_failure_marks_the_extraction_truncated() -> TestResult {
     let lines = LineIndex::new("x");
+    let input = WalkInput {
+        source: "x",
+        lines: &lines,
+        deadline: None,
+    };
 
-    let extraction =
-        extract_extra_walkers("no-such-language-for-walker-test", "x", &lines, true, None)
-            .check("run the walkers")?;
+    let extraction = extract_extra_walkers("no-such-language-for-walker-test", &input, true)
+        .check("run the walkers")?;
 
     assert!(extraction.items.is_empty());
     assert!(!extraction.timed_out, "no deadline, so no timeout");
@@ -356,6 +363,102 @@ fn a_walker_parser_failure_marks_the_extraction_truncated() -> TestResult {
         extraction.truncated,
         "a failed parser setup must not read as a complete extraction"
     );
+    Ok(())
+}
+
+/// Elements in each wide node of [`wide_node_source`]: wide enough that
+/// iterating a node's children by index (`named_child(i)` restarts from the
+/// first sibling each time) or climbing `parent()` per call (tree-sitter
+/// descends from the root through the same sibling list) costs ~450 million
+/// sibling steps per wide node and walker, while a linear walk of the ~360 KB
+/// file takes well under a second.
+const WIDE_NODE_ELEMENTS: usize = 30_000;
+
+/// One function holding an array literal and a `vec!` macro, each with
+/// `WIDE_NODE_ELEMENTS` calls: one wide node for the tree walkers and one
+/// for the macro re-parse.
+fn wide_node_source() -> String {
+    let elements = "f(1), ".repeat(WIDE_NODE_ELEMENTS);
+    format!("fn run() {{\n    let a = [{elements}];\n    let b = vec![{elements}];\n}}\n")
+}
+
+/// The binding, import and Rust call walkers must be linear in a node's
+/// width. The deadline turns a regression into a failed assertion instead of
+/// a hang: a quadratic walk outlasts it and comes back timed out.
+#[test]
+fn a_wide_rust_node_is_walked_in_linear_time() -> TestResult {
+    let source = wide_node_source();
+    let lines = LineIndex::new(&source);
+    let deadline = Deadline::after(std::time::Duration::from_secs(10));
+    let input = WalkInput {
+        source: &source,
+        lines: &lines,
+        deadline: Some(&deadline),
+    };
+    let started = std::time::Instant::now();
+
+    let extraction = extract_extra_walkers("rust", &input, true).check("run the walkers")?;
+
+    let elapsed = started.elapsed();
+    assert!(
+        !extraction.timed_out,
+        "the walk timed out after {elapsed:?}"
+    );
+    assert!(!extraction.truncated);
+    let calls: Vec<&EvidenceItem> = extraction
+        .items
+        .iter()
+        .filter(|item| item.kind == EvidenceKind::Call)
+        .collect();
+    // Every `f(1)` in both nodes, plus the `vec!` invocation itself.
+    assert_eq!(calls.len(), 2 * WIDE_NODE_ELEMENTS + 1);
+    assert!(calls.iter().all(|item| item.payload["caller"] == "run"));
+    let bindings: Vec<&serde_json::Value> = extraction
+        .items
+        .iter()
+        .filter(|item| item.kind == EvidenceKind::Symbol)
+        .map(|item| &item.payload["name"])
+        .collect();
+    assert_eq!(bindings, ["a", "b"]);
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "walking {WIDE_NODE_ELEMENTS}-wide nodes took {elapsed:?}"
+    );
+    Ok(())
+}
+
+/// A walker loop checks the deadline: once it has run out the walk stops,
+/// keeps nothing it did not reach, and reports the file timed out (recorded
+/// as `parse_timeout`), not truncated.
+#[test]
+fn a_walk_past_its_deadline_is_timed_out_not_truncated() -> TestResult {
+    let source = "fn run() { let a = helper(); }\n";
+    let lines = LineIndex::new(source);
+    let tree = crate::evidence::parse_tree("rust", source, None)
+        .map_err(|failure| format!("{failure:?}"))
+        .check("parse the source")?;
+    let spent = Deadline::after(std::time::Duration::ZERO);
+    let input = WalkInput {
+        source,
+        lines: &lines,
+        deadline: Some(&spent),
+    };
+    let mut out = Extraction::default();
+    let mut counter = 0usize;
+
+    crate::evidence::bindings::walk_bindings(&tree.root_node(), &input, &mut out, &mut counter)
+        .check("walk the bindings")?;
+    crate::evidence::generic_imports::walk_imports(
+        &tree.root_node(),
+        &input,
+        &mut out,
+        &mut counter,
+    )
+    .check("walk the imports")?;
+
+    assert!(out.items.is_empty(), "{:?}", out.items);
+    assert!(out.timed_out);
+    assert!(!out.truncated);
     Ok(())
 }
 

@@ -68,7 +68,7 @@ fn query_logging_never_emits_sql_text() -> TestResult {
             )
         },
         Level::DEBUG,
-    );
+    )?;
     result.check("query succeeds")?;
     assert_capture_is_live(&logs);
     assert!(
@@ -101,7 +101,7 @@ fn finding_logging_never_emits_finding_content() -> TestResult {
             )
         },
         Level::DEBUG,
-    );
+    )?;
     result.check("finding records")?;
     assert_capture_is_live(&logs);
     assert!(
@@ -133,7 +133,7 @@ fn sync_and_report_logging_never_emits_source_content() -> TestResult {
             )
         },
         Level::DEBUG,
-    );
+    )?;
     result.check("report builds")?;
     assert_capture_is_live(&logs);
     assert!(

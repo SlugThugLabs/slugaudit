@@ -17,6 +17,15 @@ pub(crate) const ASSET_ARCH: &str = "x86_64";
 /// curl flags that refuse any non-HTTPS URL, including a redirect target.
 pub(crate) const HTTPS_ONLY: [&str; 4] = ["--proto", "=https", "--proto-redir", "=https"];
 
+/// Wall-clock limit, in seconds, for fetching release metadata.
+const METADATA_MAX_TIME_SECS: u64 = 30;
+/// Largest release-metadata body curl accepts, in bytes.
+const METADATA_MAX_BYTES: u64 = 10_000_000;
+/// Wall-clock limit, in seconds, for downloading a release asset.
+const DOWNLOAD_MAX_TIME_SECS: u64 = 300;
+/// Largest asset download curl accepts, in bytes.
+const DOWNLOAD_MAX_BYTES: u64 = 150_000_000;
+
 const GITHUB_API: &str = "https://api.github.com";
 const GITHUB_DL: &str = "https://github.com";
 
@@ -80,14 +89,25 @@ pub(crate) fn fetch_latest_release() -> Result<LatestRelease, UpdateError> {
     LatestRelease::from_json(&json)
 }
 
+/// A `curl -fsSL` command bounded to `max_time_secs` and `max_bytes`, HTTPS
+/// only, for `url`. `-f` fails on HTTP errors (404 etc.), `-sS` keeps errors
+/// visible but suppresses the progress meter.
+fn curl_command(url: &str, max_time_secs: u64, max_bytes: u64) -> std::process::Command {
+    let mut command = std::process::Command::new("curl");
+    command
+        .arg("-fsSL")
+        .args(["--max-time", &max_time_secs.to_string()])
+        .args(["--max-filesize", &max_bytes.to_string()])
+        .args(HTTPS_ONLY)
+        .arg(url);
+    command
+}
+
 /// Runs a single `curl -fsSL <url>` and returns stdout. `-f` fails on HTTP
 /// errors (404 etc.), `-sS` keeps errors visible but suppresses the progress
 /// meter so the download body or error text is clean to read.
 fn curl_get(url: &str) -> Result<String, UpdateError> {
-    let output = std::process::Command::new("curl")
-        .args(["-fsSL", "--max-time", "30", "--max-filesize", "10000000"])
-        .args(HTTPS_ONLY)
-        .arg(url)
+    let output = curl_command(url, METADATA_MAX_TIME_SECS, METADATA_MAX_BYTES)
         .output()
         .map_err(|error| UpdateError::ToolSpawn {
             tool: "curl",
@@ -109,10 +129,7 @@ pub(crate) fn download(url: &str, dest: &Path, action: &'static str) -> Result<(
         path: dest.to_path_buf(),
         source: Box::new(cause),
     };
-    let output = std::process::Command::new("curl")
-        .args(["-fsSL", "--max-time", "300", "--max-filesize", "150000000"])
-        .args(HTTPS_ONLY)
-        .arg(url)
+    let output = curl_command(url, DOWNLOAD_MAX_TIME_SECS, DOWNLOAD_MAX_BYTES)
         .arg("-o")
         .arg(dest)
         .output()

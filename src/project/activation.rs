@@ -56,22 +56,27 @@ pub fn activation_dir(root: &ProjectRoot) -> PathBuf {
     root.as_path().join(PLANNING_DIR).join(ACTIVATION_DIR)
 }
 
-/// True when `path` is a symlink. A path that does not exist (or sits under a
-/// non-directory) is not a symlink; any other `lstat` failure is returned, so
-/// the symlink guard fails closed instead of being skipped.
-fn is_symlink(path: &Path) -> std::io::Result<bool> {
+/// `lstat` of `path`, with "absent" (it does not exist, or sits under a
+/// non-directory) as `None`. Any other failure is returned, so a guard built
+/// on it fails closed instead of reading the failure as "absent".
+fn lstat_or_absent(path: &Path) -> std::io::Result<Option<std::fs::Metadata>> {
     match path.symlink_metadata() {
-        Ok(metadata) => Ok(metadata.file_type().is_symlink()),
+        Ok(metadata) => Ok(Some(metadata)),
         Err(error)
             if matches!(
                 error.kind(),
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
             ) =>
         {
-            Ok(false)
+            Ok(None)
         }
         Err(error) => Err(error),
     }
+}
+
+/// True when `path` is a symlink; a path that does not exist is not one.
+fn is_symlink(path: &Path) -> std::io::Result<bool> {
+    Ok(lstat_or_absent(path)?.is_some_and(|metadata| metadata.file_type().is_symlink()))
 }
 
 /// The one "is this project on?" predicate: the project is on iff
@@ -80,18 +85,7 @@ fn is_symlink(path: &Path) -> std::io::Result<bool> {
 /// scratch that the next tool call rebuilds. Any `lstat` failure other than
 /// "absent" is returned rather than read as "off".
 fn is_active_at(activation: &Path) -> std::io::Result<bool> {
-    match activation.symlink_metadata() {
-        Ok(metadata) => Ok(metadata.file_type().is_dir()),
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ) =>
-        {
-            Ok(false)
-        }
-        Err(error) => Err(error),
-    }
+    Ok(lstat_or_absent(activation)?.is_some_and(|metadata| metadata.file_type().is_dir()))
 }
 
 /// Returns the activation directory under `canonical_root`, refusing a

@@ -98,7 +98,7 @@ fn a_fifo_config_is_not_opened_by_connection_detection() -> TestResult {
     let cursor_home = home.clone();
     let goose_home = home.clone();
 
-    let (cursor_connected, goose_connected) = temp_env::with_var(
+    let (cursor_result, goose_result) = temp_env::with_var(
         "PATH",
         Some(empty.path().as_os_str()),
         || -> TestResult<_> {
@@ -109,8 +109,16 @@ fn a_fifo_config_is_not_opened_by_connection_detection() -> TestResult {
         },
     )?;
 
-    assert!(!cursor_connected, "a FIFO must not read as connected");
-    assert!(!goose_connected, "a FIFO must not read as connected");
+    for (id, result) in [("cursor", cursor_result), ("goose", goose_result)] {
+        let failure = result.check_err("a FIFO config cannot be examined")?;
+        assert_eq!(failure.agent, id);
+        assert_eq!(failure.check, "connected");
+        assert_eq!(failure.source.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            failure.source.to_string().contains("not a regular file"),
+            "{failure}"
+        );
+    }
     for fifo in [&cursor_fifo, &goose_fifo] {
         assert!(
             fifo.symlink_metadata()
@@ -120,12 +128,7 @@ fn a_fifo_config_is_not_opened_by_connection_detection() -> TestResult {
             "the FIFO is left untouched"
         );
     }
-    let (readable, logs) =
-        crate::store::test_capture::capture_warns(|| readable_config_or_warn(&cursor_fifo));
-    assert_eq!(readable, None, "a non-regular config has no contents");
-    assert!(
-        logs.contains("could not inspect client config"),
-        "the refusal must be logged once: {logs}"
-    );
+    let error = readable_config(&cursor_fifo).check_err("a FIFO is refused, not read")?;
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     Ok(())
 }

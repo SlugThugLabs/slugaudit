@@ -12,7 +12,7 @@ use super::leads_page::{Feed, Scope};
 use super::leads_query::{MAX_DETAIL_CHARS, clip_detail, compile_pattern};
 use super::mechanic_catalog::Catalog;
 use super::mechanic_scan::{self, ScanEnd, Tally, budget_error};
-use super::mechanic_scan_cached::Scanned;
+use super::mechanic_scan_cached::{Scanned, index_out_of_range};
 use rmcp::ErrorData;
 use rusqlite::Transaction;
 
@@ -21,22 +21,35 @@ use rusqlite::Transaction;
 /// scanned is not listed: an empty tally is not a count of zero. When the
 /// scan was stopped (`page.completeness` says so) a count covers only the
 /// files read before the stop.
+///
+/// # Errors
+///
+/// An internal error when a scanned index names no entry or tally: the call
+/// fails rather than report fewer counts.
 pub(super) fn counts(
     catalog: &Catalog,
     scanned: &[usize],
     tallies: &[Tally],
     read: &LanguagesRead,
-) -> Vec<MechanicCount> {
+) -> Result<Vec<MechanicCount>, ErrorData> {
     scanned
         .iter()
-        .filter_map(|index| Some((catalog.custom.get(*index)?, tallies.get(*index)?)))
-        .map(|(registered, tally)| MechanicCount {
-            mechanic: registered.entry.id.clone(),
-            source: registered.source,
-            note: Some(registered.entry.note.clone()),
-            count: tally.count,
-            files: tally.files,
-            covers: read.covers_language(&registered.entry.language),
+        .map(|&index| {
+            let registered = catalog
+                .custom
+                .get(index)
+                .ok_or_else(|| index_out_of_range("custom", index, catalog.custom.len()))?;
+            let tally = tallies
+                .get(index)
+                .ok_or_else(|| index_out_of_range("tallies", index, tallies.len()))?;
+            Ok(MechanicCount {
+                mechanic: registered.entry.id.clone(),
+                source: registered.source,
+                note: Some(registered.entry.note.clone()),
+                count: tally.count,
+                files: tally.files,
+                covers: read.covers_language(&registered.entry.language),
+            })
         })
         .collect()
 }

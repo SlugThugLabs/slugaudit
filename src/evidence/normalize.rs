@@ -1,7 +1,5 @@
-use super::{ExtractError, Extraction};
-use crate::model::{
-    EvidenceItem, LineIndex, Position, PositionOverflow, Span, SpanAvailability, position_u32,
-};
+use super::{ExtractError, Extraction, WalkInput};
+use crate::model::{EvidenceItem, LineIndex, PositionOverflow, SpanAvailability};
 use crate::util::Deadline;
 use tree_sitter_language_pack::{
     DiagnosticSeverity, Error as PackError, ProcessConfig, ProcessResult, Span as PackSpan, process,
@@ -97,24 +95,29 @@ pub(crate) fn extract_within(
     // languages; when it found nothing, fall back to our generic import
     // walker so languages like kotlin/swift/csharp/dart still get
     // dependency edges. Gated on `imports.is_empty()` so pack-covered
-    // languages never double-report and never pay an extra parse.
+    // languages never double-report.
     //
-    // Both walkers share a single parse via `extract_extra_walkers`, because
-    // both want the same `Tree`. The pack's `process` parse is unavoidable —
-    // `tree-sitter-language-pack` exposes no `process_with_tree(source, tree)`
-    // overload — so a file costs the pack's parse plus one shared walker parse.
+    // The binding, import, and Rust call walkers share one parse via
+    // `extract_extra_walkers`, because all want the same `Tree`. The pack's
+    // `process` parse is unavoidable — `tree-sitter-language-pack` exposes
+    // no `process_with_tree(source, tree)` overload — so a Rust file costs
+    // the pack's parse plus one shared walker parse. A language read by a
+    // call query costs one more: the query runs on a raw `tree_sitter::Tree`,
+    // which the pack's wrapper does not expose.
     let mut extraction = Extraction {
         items,
         ..Extraction::default()
     };
+    let input = WalkInput {
+        source,
+        lines: &lines,
+        deadline,
+    };
     extraction.absorb(extract_extra_walkers(
         language,
-        source,
-        &lines,
+        &input,
         result.imports.is_empty(),
-        deadline,
     )?);
-    extraction.absorb(super::calls::extract(language, source, &lines, deadline)?);
 
     Ok(extraction)
 }
@@ -163,61 +166,48 @@ fn process_on_fresh_thread(
     })
 }
 
-/// Parses `source` once and runs both the variable-binding walker and
-/// (when `pack_imports_was_empty`) the generic import walker on the
-/// same `Tree`. The result is truncated when a walker stopped early at
-/// [`crate::evidence::MAX_WALK_DEPTH`], a node range did not slice the
-/// source, or `language` has no parser or the source did not parse (then no
-/// items at all); it is timed out when that parse hit `deadline`. A
-/// truncated extraction that a caller cannot tell apart from a complete one
-/// would claim completeness it does not have.
+/// Parses the source once and runs, on that one `Tree`, the
+/// variable-binding walker, the generic import walker (when
+/// `pack_imports_was_empty`), and the Rust call walker (Rust only); a
+/// language read by a call query then runs its query (see
+/// [`super::calls::extract`]). The result is truncated when a walker stopped
+/// early at [`crate::evidence::MAX_WALK_DEPTH`], a node range did not slice
+/// the source, or `language` has no parser or the source did not parse (then
+/// no items at all); it is timed out when that parse or a walker loop hit
+/// the deadline. A truncated extraction that a caller cannot tell apart from
+/// a complete one would claim completeness it does not have.
 fn extract_extra_walkers(
     language: &str,
-    source: &str,
-    lines: &LineIndex<'_>,
+    input: &WalkInput<'_>,
     pack_imports_was_empty: bool,
-    deadline: Option<&Deadline>,
 ) -> Result<Extraction, PositionOverflow> {
-    let tree = match super::parse_tree(language, source, deadline) {
+    let tree = match super::parse_tree(language, input.source, input.deadline) {
         Ok(tree) => tree,
         Err(why) => return Ok(Extraction::without_tree(why)),
     };
     let root = tree.root_node();
 
-    let mut items = Vec::new();
+    let mut out = Extraction::default();
     let mut counter = 0usize;
-    let mut capped =
-        super::bindings::walk_bindings(&root, source, lines, &mut items, &mut counter)?;
+    super::bindings::walk_bindings(&root, input, &mut out, &mut counter)?;
     if pack_imports_was_empty {
-        capped |=
-            super::generic_imports::walk_imports(&root, source, lines, &mut items, &mut counter)?;
+        super::generic_imports::walk_imports(&root, input, &mut out, &mut counter)?;
     }
-    Ok(Extraction {
-        items,
-        truncated: capped,
-        timed_out: false,
-    })
+    out.absorb(super::calls::extract(language, &tree, input)?);
+    Ok(out)
 }
 
-/// A pack span in our coordinates. A line or column past `u32::MAX` is an
-/// error that fails the file's extraction.
+/// A pack span in our coordinates, through [`super::range_span`]. A line or
+/// column past `u32::MAX` is an error that fails the file's extraction.
 pub(super) fn convert_span(
     span: &PackSpan,
     lines: &LineIndex<'_>,
 ) -> Result<SpanAvailability, PositionOverflow> {
-    let start = Position {
-        line: position_u32(span.start_line)?,
-        column: lines.column(span.start_byte)?,
-    };
-    let end = Position {
-        line: position_u32(span.end_line)?,
-        column: lines.column(span.end_byte)?,
-    };
-    Ok(
-        match Span::new(span.start_byte as u64, span.end_byte as u64, start, end) {
-            Ok(converted) => SpanAvailability::Present(converted),
-            Err(error) => super::span_unavailable("pack", &error),
-        },
+    super::range_span(
+        (span.start_byte, span.end_byte),
+        (span.start_line, span.end_line),
+        lines,
+        "pack",
     )
 }
 

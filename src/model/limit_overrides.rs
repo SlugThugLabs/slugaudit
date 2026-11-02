@@ -10,6 +10,7 @@
 //! already reported; a setting whose value changes is a new cause and warns
 //! again.
 
+use super::limits::SQLITE_MAX_VALUE_BYTES;
 use super::{EnvConfigError, ResourceLimits};
 use crate::util::{LockPoisoned, lock};
 use std::collections::BTreeSet;
@@ -53,6 +54,31 @@ pub(super) fn fresh_ledger() -> Result<(), LockPoisoned> {
 /// ledger is an error: whether the warning is due is unknown.
 fn first_report(setting: &'static str, value: u64) -> Result<bool, LockPoisoned> {
     with_ledger(|reported| reported.insert((setting, value)))
+}
+
+/// Clamps one single-value limit to what the bundled SQLite can store.
+///
+/// A value above `SQLITE_MAX_VALUE_BYTES` is unusable: it would be rejected
+/// at insert or read. It is clamped, with a warning naming `setting` (an
+/// environment variable or a `config.json` key) logged once per configured
+/// value, rather than letting a per-file skip turn into a failed publish.
+///
+/// # Errors
+///
+/// Returns [`LockPoisoned`] when the warning ledger was poisoned.
+pub(crate) fn clamp_sqlite_value(setting: &'static str, value: u64) -> Result<u64, LockPoisoned> {
+    if value <= SQLITE_MAX_VALUE_BYTES {
+        return Ok(value);
+    }
+    if first_report(setting, value)? {
+        tracing::warn!(
+            setting,
+            requested = value,
+            cap = SQLITE_MAX_VALUE_BYTES,
+            "limit exceeds SQLite's maximum storable value; clamping",
+        );
+    }
+    Ok(SQLITE_MAX_VALUE_BYTES)
 }
 
 /// Passes `value` through unless it is zero. Zero is meaningless for the

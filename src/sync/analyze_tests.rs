@@ -131,7 +131,7 @@ fn load_failure_classification_is_disjoint_from_parse_failure() {
 /// `Display` (which embeds the absolute grammar-library path) must never be
 /// formatted into the record.
 #[test]
-fn a_parser_load_failure_logs_the_relative_path_not_the_library_path() {
+fn a_parser_load_failure_logs_the_relative_path_not_the_library_path() -> TestResult {
     let relative = "src/private-name.rs";
     let raw_library_path =
         "/home/private-user/.cache/tree-sitter-language-pack/libtree-sitter-rust.so";
@@ -139,7 +139,7 @@ fn a_parser_load_failure_logs_the_relative_path_not_the_library_path() {
     let ((), logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("capture liveness control for parser_load");
         load_failed_result(relative, "rust".to_owned(), &error);
-    });
+    })?;
 
     assert!(
         logs.contains("capture liveness control for parser_load"),
@@ -162,6 +162,7 @@ fn a_parser_load_failure_logs_the_relative_path_not_the_library_path() {
         !logs.contains(raw_library_path) && !logs.contains("private-user"),
         "the pack's absolute library path must not be logged: {logs}"
     );
+    Ok(())
 }
 
 #[test]

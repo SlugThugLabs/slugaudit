@@ -221,7 +221,7 @@
             "type": "object",
             "properties": {
               "returned": {
-                "description": "Items in this page: rows (`leads`, `query`), matches (`structure`),\nor findings (`finding_read`).",
+                "description": "Items in this page: rows (`leads`, `query`), matches (`structure`),\nfindings (`finding_read`) or mechanics (`mechanic list`).",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
@@ -318,7 +318,7 @@
                         "$ref": "#/$defs/PageLimit"
                       },
                       "resume_after_file": {
-                        "description": "The last file fully scanned; the new request resumes after it.",
+                        "description": "The last file fully scanned; the new request resumes after it. For\na `leads` scan of registered mechanics, which scans one language\nafter another, it is the last file of the language the deadline\nstopped in: earlier languages were finished, later ones not started.",
                         "type": [
                           "string",
                           "null"
@@ -571,6 +571,13 @@
                 "description": "True when the database exists but could not be read; `database` is\nthen null and `phase` is `unknown`.",
                 "type": "boolean"
               },
+              "database_read_error": {
+                "description": "Why the database could not be read: the failing step and its error.\nPresent exactly when `database_read_failed` is true; absent otherwise.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "server": {
                 "description": "Server process counters since start.",
                 "type": "object",
@@ -741,7 +748,7 @@
             "type": "object",
             "properties": {
               "returned": {
-                "description": "Items in this page: rows (`leads`, `query`), matches (`structure`),\nor findings (`finding_read`).",
+                "description": "Items in this page: rows (`leads`, `query`), matches (`structure`),\nfindings (`finding_read`) or mechanics (`mechanic list`).",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
@@ -838,7 +845,7 @@
                         "$ref": "#/$defs/PageLimit"
                       },
                       "resume_after_file": {
-                        "description": "The last file fully scanned; the new request resumes after it.",
+                        "description": "The last file fully scanned; the new request resumes after it. For\na `leads` scan of registered mechanics, which scans one language\nafter another, it is the last file of the language the deadline\nstopped in: earlier languages were finished, later ones not started.",
                         "type": [
                           "string",
                           "null"
@@ -1446,7 +1453,7 @@
             "type": "object",
             "properties": {
               "returned": {
-                "description": "Items in this page: rows (`leads`, `query`), matches (`structure`),\nor findings (`finding_read`).",
+                "description": "Items in this page: rows (`leads`, `query`), matches (`structure`),\nfindings (`finding_read`) or mechanics (`mechanic list`).",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
@@ -1543,7 +1550,7 @@
                         "$ref": "#/$defs/PageLimit"
                       },
                       "resume_after_file": {
-                        "description": "The last file fully scanned; the new request resumes after it.",
+                        "description": "The last file fully scanned; the new request resumes after it. For\na `leads` scan of registered mechanics, which scans one language\nafter another, it is the last file of the language the deadline\nstopped in: earlier languages were finished, later ones not started.",
                         "type": [
                           "string",
                           "null"
@@ -1779,7 +1786,7 @@
             "$ref": "#/$defs/MechanicAction"
           },
           "id": {
-            "description": "`add`/`remove`: the id the action applied to; `null` for a `remove`\nby `index` whose entry had no string id.",
+            "description": "`add`/`remove`: the id the action applied to; `null` for `list`.",
             "type": [
               "string",
               "null"
@@ -2082,7 +2089,7 @@
             "default": null
           },
           "sql": {
-            "description": "Read-only SQL against the project's own database — arbitrary joins,\nCTEs, and window functions are fine. Only SELECT is accepted: the\nstatement is wrapped in a subquery, so writes and other statement\nforms (PRAGMA, EXPLAIN, VACUUM, ...) are rejected by the wrapper.\nThere is no keyword blocklist or table allowlist: the statement is\nwrapped as a subquery, and a kind the wrapper cannot express\n(PRAGMA, ATTACH, a write, DDL) is refused before it runs. The\nschema-introspection table functions (`pragma_table_info`,\n`pragma_table_xinfo`, `pragma_table_list`, `pragma_index_list`,\n`pragma_index_info`, `pragma_index_xinfo`, `pragma_foreign_key_list`)\nare ordinary SELECTs and work.\nRequired unless `cursor` is given; ignored with a `cursor`.",
+            "description": "Read-only SQL against the project's own database — arbitrary joins,\nCTEs, and window functions are fine. Exactly one SELECT or WITH\nstatement is accepted. A PRAGMA is refused before anything is\nprepared, wherever it sits in the input. The statement is then wrapped\nas a subquery, which refuses every other kind (a write, EXPLAIN,\nVACUUM, ATTACH, DDL). There is no keyword blocklist or table\nallowlist. The schema-introspection table functions\n(`pragma_table_info`, `pragma_table_xinfo`, `pragma_table_list`,\n`pragma_index_list`, `pragma_index_info`, `pragma_index_xinfo`,\n`pragma_foreign_key_list`) are ordinary SELECTs and work.\nRequired unless `cursor` is given; ignored with a `cursor`.",
             "type": "string",
             "default": ""
           },
@@ -2115,7 +2122,7 @@
             "type": "object",
             "properties": {
               "returned": {
-                "description": "Items in this page: rows (`leads`, `query`), matches (`structure`),\nor findings (`finding_read`).",
+                "description": "Items in this page: rows (`leads`, `query`), matches (`structure`),\nfindings (`finding_read`) or mechanics (`mechanic list`).",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
@@ -2212,7 +2219,7 @@
                         "$ref": "#/$defs/PageLimit"
                       },
                       "resume_after_file": {
-                        "description": "The last file fully scanned; the new request resumes after it.",
+                        "description": "The last file fully scanned; the new request resumes after it. For\na `leads` scan of registered mechanics, which scans one language\nafter another, it is the last file of the language the deadline\nstopped in: earlier languages were finished, later ones not started.",
                         "type": [
                           "string",
                           "null"
@@ -2355,7 +2362,7 @@
             ]
           },
           "NonFiniteCell": {
-            "description": "One REAL cell whose value JSON cannot carry (an infinity; SQLite turns NaN\ninto NULL itself). JSON has no such number, so the cell is `null` in `rows`;\nthis entry says it was not SQL NULL and what it really was.",
+            "description": "One REAL cell whose value JSON cannot carry (an infinity or a NaN). JSON\nhas no such number, so the cell is `null` in `rows`; this entry says it was\nnot SQL NULL and what it really was. A NaN is stored as NULL with a mark,\nand the mark restores it here.",
             "type": "object",
             "properties": {
               "row": {
@@ -2581,7 +2588,7 @@
             "type": "object",
             "properties": {
               "reason": {
-                "description": "A short stable code from `files.skip_reason`: `oversize` (over the\nper-file import ceiling), `not_utf8` (the bytes are not valid UTF-8),\n`unreadable` (the read failed) or `stat_failed` (the stat failed, so\n`files.byte_len` is NULL: size unknown, not 0). Empty when a skipped row carries no recorded reason.",
+                "description": "A short stable code from `files.skip_reason`: `oversize` (over the\nper-file import ceiling), `not_utf8` (the bytes are not valid UTF-8),\n`unreadable` (the read failed) or `stat_failed` (the stat failed, so\n`files.byte_len` is NULL: size unknown, not 0). Every skipped row\ncarries one; a skipped row without a reason fails the report.",
                 "type": "string"
               },
               "count": {
@@ -2654,7 +2661,7 @@
             ]
           },
           "ParserFailureFile": {
-            "description": "A file whose parse failed or was not attempted, with enough detail for\nan AI to decide whether the failure is worth investigating or just\nnoise (e.g. a `.claude_output.txt` scratch file that should have been\nexcluded, vs. a real source file with a genuine syntax error).",
+            "description": "A file whose parse failed or was not attempted, with the recorded\noutcome, reason, completeness and parser availability.",
             "type": "object",
             "properties": {
               "path": {
@@ -2687,7 +2694,7 @@
             ]
           },
           "ImportResolutionCount": {
-            "description": "How many import edges fell into each resolution bucket. A project with\nmostly `External` and `Unresolved` edges and very few `Resolved` ones\nhas an import graph the evidence can't connect — useful context for an\nAI deciding how much to trust dependency traversal for this project.",
+            "description": "How many import edges fell into each resolution bucket. `Resolved` edges\nland on a project file; `External` and `Unresolved` edges carry no target.",
             "type": "object",
             "properties": {
               "kind": {
@@ -2928,7 +2935,7 @@
             "format": "int64"
           },
           "parser_failure_files": {
-            "description": "Up to `MAX_PARSER_FAILURE_FILES` files with parse failures, so the\nAI can see whether failures are concentrated in scratch/temp files\n(noise) or in real source files (worth investigating).",
+            "description": "Up to `MAX_PARSER_FAILURE_FILES` files with parse failures, ordered\nby path.",
             "type": "array",
             "items": {
               "$ref": "#/$defs/ParserFailureFile"
@@ -2945,14 +2952,14 @@
             "format": "int64"
           },
           "import_resolution": {
-            "description": "How many import edges are Resolved vs Unresolved vs External — a\nkey asymmetry signal. A project with mostly External/Unresolved\nimports has a disconnected import graph that dependency traversal\ncan't help with.",
+            "description": "How many import edges are Resolved, Unresolved and External.",
             "type": "array",
             "items": {
               "$ref": "#/$defs/ImportResolutionCount"
             }
           },
           "dependency_edges": {
-            "description": "The same graph counted in both directions: how many edges leave a\nfile, how many land on one, and how many files are on each end.\nPure arithmetic over `dependency_edges` — no ranking, no severity,\nand no claim about which file matters. Per-file counts and traversal\nare the `blast_radius_outbound.sql`, `blast_radius_inbound.sql` and\n`blast_radius_closure.sql` recipes under `slugaudit://queries/`.",
+            "description": "The same graph counted in both directions: how many edges leave a\nfile, how many land on one, and how many files are on each end.\nPure arithmetic over `dependency_edges`. Per-file counts and traversal\nare the `blast_radius_outbound.sql`, `blast_radius_inbound.sql` and\n`blast_radius_closure.sql` recipes under `slugaudit://queries/`.",
             "$ref": "#/$defs/DependencyEdgeTotals"
           },
           "diagnostic_count": {
@@ -2961,12 +2968,12 @@
             "format": "int64"
           },
           "unsupported_language_unresolved_count": {
-            "description": "Of the `Unresolved` count in `import_resolution`, how many come from\nimport syntax the resolver couldn't parse at all — `extract_reference`\nreturned `None` on the raw text (e.g. Go's `import \"fmt\"`), as\nopposed to an import whose syntax was parsed but matched no project\nfile (e.g. a stdlib module like `kotlin.math.max`). SlugAudit\nrecords both as `Unresolved` edges since it can't tell them apart\nat resolution time, but they mean very different things: a high\ncount here means \"this project's import syntax isn't modeled yet,\"\nnot \"this project's imports are broken.\"",
+            "description": "Of the `Unresolved` count in `import_resolution`, how many come from\nimport syntax the resolver couldn't parse at all — `extract_reference`\nreturned `None` on the raw text (e.g. Go's `import \"fmt\"`), as\nopposed to an import whose syntax was parsed but matched no project\nfile (e.g. a stdlib module like `kotlin.math.max`). Both are stored as\n`Unresolved` edges; this count is the first kind\n(`dependency_edges.syntax_unmodeled = 1`).",
             "type": "integer",
             "format": "int64"
           },
           "credential_pattern_file_count": {
-            "description": "How many rows in `files` match common credential-file patterns\n(`.env`, `*.pem`, `*.key`, `id_rsa*`, etc. — the same list the\nSQL below matches, and the same list `leads`' `credential_files`\nrows use). SlugAudit records these paths like any other file —\nincluding when the file was skipped and no content was retained —\nso this count makes the AI aware it is handling credential-*looking*\npaths even when it cannot read them.",
+            "description": "How many rows in `files` match common credential-file patterns\n(`.env`, `*.pem`, `*.key`, `id_rsa*`, etc. — the same list the\nSQL below matches, and the same list `leads`' `credential_files`\nrows use). These paths are recorded like any other file, including\nwhen the file was skipped and no content was retained. The count is\na path match, not a statement about the file's content.",
             "type": "integer",
             "format": "int64"
           },
@@ -3075,7 +3082,7 @@
             "type": "object",
             "properties": {
               "returned": {
-                "description": "Items in this page: rows (`leads`, `query`), matches (`structure`),\nor findings (`finding_read`).",
+                "description": "Items in this page: rows (`leads`, `query`), matches (`structure`),\nfindings (`finding_read`) or mechanics (`mechanic list`).",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
@@ -3172,7 +3179,7 @@
                         "$ref": "#/$defs/PageLimit"
                       },
                       "resume_after_file": {
-                        "description": "The last file fully scanned; the new request resumes after it.",
+                        "description": "The last file fully scanned; the new request resumes after it. For\na `leads` scan of registered mechanics, which scans one language\nafter another, it is the last file of the language the deadline\nstopped in: earlier languages were finished, later ones not started.",
                         "type": [
                           "string",
                           "null"

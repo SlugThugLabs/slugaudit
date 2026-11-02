@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=the built-in mechanic catalogue: the declarative table, its per-family SQL fragments and the lookup of a requested id in it
 //! The `leads` mechanic catalogue: what each mechanic looks for, which family
 //! of index rows it reads, and which languages it covers.
 //!
@@ -146,11 +147,18 @@ pub(super) const MECHANICS: &[Mechanic] = &[
         id: "comment_markers",
         family: Family::Evidence,
         reads: Reads::ParsedFiles,
+        // Case-sensitive whole-word match: the comment text is padded with a
+        // space on each side so a marker at either end has a non-word
+        // neighbour, and GLOB (unlike LIKE) is case-sensitive.
         predicate: "e.kind = 'Comment' AND (\
-                    json_extract(e.payload, '$.text') LIKE '%TODO%' \
-                    OR json_extract(e.payload, '$.text') LIKE '%FIXME%' \
-                    OR json_extract(e.payload, '$.text') LIKE '%HACK%' \
-                    OR json_extract(e.payload, '$.text') LIKE '%XXX%')",
+                    (' ' || json_extract(e.payload, '$.text') || ' ') \
+                        GLOB '*[^A-Za-z0-9_]TODO[^A-Za-z0-9_]*' \
+                    OR (' ' || json_extract(e.payload, '$.text') || ' ') \
+                        GLOB '*[^A-Za-z0-9_]FIXME[^A-Za-z0-9_]*' \
+                    OR (' ' || json_extract(e.payload, '$.text') || ' ') \
+                        GLOB '*[^A-Za-z0-9_]HACK[^A-Za-z0-9_]*' \
+                    OR (' ' || json_extract(e.payload, '$.text') || ' ') \
+                        GLOB '*[^A-Za-z0-9_]XXX[^A-Za-z0-9_]*')",
         detail: "json_extract(e.payload, '$.text')",
     },
     Mechanic {

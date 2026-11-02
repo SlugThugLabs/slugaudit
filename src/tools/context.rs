@@ -24,7 +24,7 @@ pub(crate) fn with_verified_read<T>(
     verify_revision_matches(&tx, &synced.revision_id)?;
     let result = f(&tx)?;
     tx.commit()
-        .map_err(|error| internal_error("committing the read transaction", error))?;
+        .map_err(|error| operation_error("committing the read transaction", error))?;
     Ok(result)
 }
 
@@ -37,15 +37,15 @@ pub(super) fn start_read_transaction(
 ) -> Result<Transaction<'_>, ErrorData> {
     connection
         .transaction_with_behavior(TransactionBehavior::Deferred)
-        .map_err(|error| internal_error("starting a read transaction", error))
+        .map_err(|error| operation_error("starting a read transaction", error))
 }
 
 /// Wraps a low-level store/rusqlite error with which operation failed and
-/// a generic recovery hint, instead of surfacing the bare `Display` text
-/// alone — that names no operation and gives the caller no next step.
-/// Mirrors `tools::query::describe_error`, which does the same kind of
-/// translation for query-specific errors; this is the equivalent for the
-/// sync/revision-verification errors that flow through every tool call.
+/// a retry hint, instead of surfacing the bare `Display` text alone — that
+/// names no operation and gives the caller no next step. The hint says the
+/// failure is often transient, so use this only where a concurrent sync,
+/// publish or disable can cause the failure; use [`operation_error`]
+/// otherwise.
 pub(super) fn internal_error(context: &str, error: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(
         format!(
@@ -55,6 +55,13 @@ pub(super) fn internal_error(context: &str, error: impl std::fmt::Display) -> Er
         ),
         None,
     )
+}
+
+/// Wraps a low-level error with the operation that failed and no retry
+/// advice, for failures a concurrent sync, publish or disable does not
+/// cause.
+pub(super) fn operation_error(context: &str, error: impl std::fmt::Display) -> ErrorData {
+    ErrorData::internal_error(format!("{context}: {error}"), None)
 }
 
 /// Resolves the active project from `path`, ensures it's synchronized

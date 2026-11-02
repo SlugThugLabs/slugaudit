@@ -512,16 +512,40 @@ fn parallel_sampling_emits_one_progress_event_per_file() -> TestResult {
     Ok(())
 }
 
+/// A path whose stat fails with something other than `NotFound`: a regular
+/// file used as a directory component (`ENOTDIR`).
+fn unstatable_path(dir: &std::path::Path) -> TestResult<std::path::PathBuf> {
+    let plain = dir.join("plain.rs");
+    std::fs::write(&plain, b"fn plain() {}\n").check("write the plain file")?;
+    Ok(plain.join("inner.rs"))
+}
+
 #[test]
 fn a_failed_stat_records_an_unknown_size_and_the_stat_failed_reason() -> TestResult {
     let dir = tempfile::tempdir().check("tempdir")?;
-    let vanished = dir.path().join("vanished.rs");
+    let unstatable = unstatable_path(dir.path())?;
 
-    let record = skipped_record("vanished.rs", &vanished, "oversize");
+    let record = skipped_record("plain.rs/inner.rs", &unstatable, "oversize")
+        .check("a stat failure other than NotFound is recorded, not fatal")?;
 
     assert_eq!(record.byte_len, None, "an unknown size is not 0");
     assert_eq!(record.modified_unix_seconds, None);
     assert_eq!(record.reason, "stat_failed");
+    Ok(())
+}
+
+#[test]
+fn a_skipped_file_deleted_since_the_walk_is_a_change_to_the_tree() -> TestResult {
+    let dir = tempfile::tempdir().check("tempdir")?;
+    let vanished = dir.path().join("vanished.rs");
+
+    let error = skipped_record("vanished.rs", &vanished, "oversize")
+        .check_err("a vanished skipped file must not be recorded")?;
+
+    assert!(
+        matches!(&error, PublishError::ChangedDuringSample { path } if path == "vanished.rs"),
+        "got {error:?}"
+    );
     Ok(())
 }
 
@@ -531,11 +555,12 @@ fn a_real_empty_skipped_file_records_zero_bytes_and_keeps_its_reason() -> TestRe
     let empty = dir.path().join("empty.rs");
     std::fs::write(&empty, b"").check("write empty file")?;
 
-    let record = skipped_record("empty.rs", &empty, "unreadable");
+    let record = skipped_record("empty.rs", &empty, "unreadable").check("record empty file")?;
 
     assert_eq!(record.byte_len, Some(0));
     assert_eq!(record.reason, "unreadable");
-    let unknown = skipped_record("empty.rs", &dir.path().join("gone.rs"), "unreadable");
+    let unknown = skipped_record("empty.rs", &unstatable_path(dir.path())?, "unreadable")
+        .check("record unstatable file")?;
     assert_ne!(
         record.identity.content_hash, unknown.identity.content_hash,
         "empty and unknown-size files must not share an identity"
@@ -552,7 +577,8 @@ fn a_skipped_record_for_a_statable_file_does_not_warn() -> TestResult {
     let (record, logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("control-line-probe-skipped-record");
         skipped_record("present-skip-probe.bin", &present, "oversize")
-    });
+    })?;
+    let record = record.check("record a statable file")?;
 
     assert_eq!(record.byte_len, Some(5));
     assert!(

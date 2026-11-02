@@ -51,9 +51,8 @@ fn python_dotted_module_with_from_substring_is_not_dropped() -> TestResult {
 #[test]
 fn dotted_module_with_from_substring_resolves_to_real_file() -> TestResult {
     // End-to-end through the catch-all (non-Python) generic resolver
-    // where `bare_names_are_external = false` (well, it is true by
-    // default; we use a custom config so the dotted path goes through
-    // module-path resolution rather than the bare-name shortcut).
+    // with `bare_names_are_external = false`, so the dotted path goes
+    // through module-path resolution rather than the bare-name shortcut.
     // The point is: not dropped. Resolves via module-path extension
     // lookup against `known_paths`.
     let resolver = GenericResolver::new(GenericResolverConfig {

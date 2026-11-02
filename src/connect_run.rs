@@ -43,17 +43,29 @@ fn capture(stream: impl Read + Send + 'static) -> Captured {
     receiver
 }
 
-fn collect(cli: &str, receiver: &Captured) -> Result<Vec<u8>, ConnectError> {
-    receiver
-        .recv()
-        .map_err(|error| ConnectError::AgentCommand {
+/// Takes the captured stream, waiting no later than `deadline`. A reader that
+/// is still blocked then is holding a pipe the child handed to a background
+/// process, so the stream is abandoned and the run times out.
+fn collect(
+    cli: &str,
+    receiver: &Captured,
+    deadline: Instant,
+    timeout: Duration,
+) -> Result<Vec<u8>, ConnectError> {
+    let command_error = |inner| ConnectError::AgentCommand {
+        cli: cli.to_string(),
+        inner,
+    };
+    match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(read) => read.map_err(command_error),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(ConnectError::AgentTimeout {
             cli: cli.to_string(),
-            inner: std::io::Error::other(error),
-        })?
-        .map_err(|inner| ConnectError::AgentCommand {
-            cli: cli.to_string(),
-            inner,
-        })
+            timeout_secs: timeout.as_secs_f32(),
+        }),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(command_error(std::io::Error::other(
+            "the client output reader stopped without a result",
+        ))),
+    }
 }
 
 /// Runs `cli args...` with stdin closed and both output streams captured,
@@ -63,7 +75,9 @@ fn collect(cli: &str, receiver: &Captured) -> Result<Vec<u8>, ConnectError> {
 ///
 /// `AgentCommand` when the client cannot be spawned, waited on or read;
 /// `AgentTimeout` when it outlives `timeout` (the child is killed and reaped
-/// first, and the timeout is logged once).
+/// first) or when its output streams stay open past `timeout` after it
+/// exited, as when it left a background process holding them. The error is
+/// returned, not logged, so the caller reports it once.
 pub fn run_bounded(cli: &str, args: &[String], timeout: Duration) -> Result<Output, ConnectError> {
     let command_error = |inner| ConnectError::AgentCommand {
         cli: cli.to_string(),
@@ -93,7 +107,7 @@ pub fn run_bounded(cli: &str, args: &[String], timeout: Duration) -> Result<Outp
         }
     };
     let read = |receiver: Option<Captured>| match receiver {
-        Some(receiver) => collect(cli, &receiver),
+        Some(receiver) => collect(cli, &receiver, deadline, timeout),
         None => Ok(Vec::new()),
     };
     Ok(Output {
@@ -105,11 +119,6 @@ pub fn run_bounded(cli: &str, args: &[String], timeout: Duration) -> Result<Outp
 
 /// Kills and reaps a child that outlived its deadline and builds the error.
 fn stop_timed_out(cli: &str, child: &mut std::process::Child, timeout: Duration) -> ConnectError {
-    tracing::error!(
-        cli,
-        timeout_secs = timeout.as_secs_f32(),
-        "client CLI timed out and was killed"
-    );
     kill_and_reap(cli, child);
     ConnectError::AgentTimeout {
         cli: cli.to_string(),
@@ -174,6 +183,28 @@ mod tests {
             !std::path::Path::new("/proc").join(pid.trim()).exists(),
             "child {} must be gone",
             pid.trim()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_background_process_holding_the_output_pipe_times_out_instead_of_hanging() -> TestResult {
+        let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+        let dir = tempfile::tempdir().check("dir")?;
+        // The client exits at once but leaves `sleep` holding its stdout.
+        let cli = script(dir.path(), "/bin/sleep 20 &\nexit 0")?;
+
+        let started = Instant::now();
+        let result = run_bounded(&cli, &[], Duration::from_millis(400));
+
+        let Err(ConnectError::AgentTimeout { cli: named, .. }) = result else {
+            return Err(format!("expected AgentTimeout, got {result:?}"))
+                .check("unexpected outcome");
+        };
+        assert_eq!(named, cli);
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "must not wait for the sleeper"
         );
         Ok(())
     }

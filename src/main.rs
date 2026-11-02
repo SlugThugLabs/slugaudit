@@ -51,12 +51,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match run_command(command) {
         CommandOutcome::Serve => {}
         CommandOutcome::Done => return Ok(()),
-        CommandOutcome::Reported(error) | CommandOutcome::Propagated(error)
-            if cli::is_broken_pipe(error.as_ref()) =>
-        {
+        CommandOutcome::Reported(error) if cli::is_broken_pipe(error.as_ref()) => {
             return Ok(());
         }
-        CommandOutcome::Reported(error) | CommandOutcome::Propagated(error) => {
+        CommandOutcome::Reported(error) => {
             cli::err(format_args!("Error: {error}\n"))?;
             std::process::exit(1);
         }
@@ -147,9 +145,6 @@ enum CommandOutcome {
     /// The command failed with a human-reportable error: print
     /// `Error: {0}` and exit 1, unless the cause is a closed stdout.
     Reported(Box<dyn std::error::Error>),
-    /// The `menu` path failed with a boxed error; propagate out of `main`
-    /// as `run_menu()?` would.
-    Propagated(Box<dyn std::error::Error>),
 }
 
 /// Runs one parsed command and reports how `main` should terminate. The
@@ -171,7 +166,7 @@ fn run_command(command: Command) -> CommandOutcome {
         Command::Menu => match menu::run_menu() {
             Ok(true) => CommandOutcome::Serve,
             Ok(false) => CommandOutcome::Done,
-            Err(error) => CommandOutcome::Propagated(error),
+            Err(error) => CommandOutcome::Reported(error),
         },
         Command::Serve => CommandOutcome::Serve,
     }
@@ -209,8 +204,9 @@ const LOG_FORMAT_EXPECTED: &str = "`json` or `text`";
 /// default ([`DEFAULT_LOG_FILTER`], plain text) silently. A set `RUST_LOG`
 /// that is invalid or not UTF-8 is an error naming the variable (never its
 /// value, which the filter parser's message may quote), so the server does
-/// not run with a different filter than the operator asked for. A non-UTF-8
-/// `SLUGAUDIT_LOG_FORMAT` is the same kind of error.
+/// not run with a different filter than the operator asked for. A
+/// `SLUGAUDIT_LOG_FORMAT` that is not `json` or `text` (any case), or is not
+/// UTF-8, is the same kind of error.
 fn log_settings(
     rust_log: Result<String, std::env::VarError>,
     format: Result<String, std::env::VarError>,
@@ -231,7 +227,16 @@ fn log_settings(
         }
     };
     let json = match format {
-        Ok(value) => value.eq_ignore_ascii_case("json"),
+        Ok(value) if value.eq_ignore_ascii_case("json") => true,
+        Ok(value) if value.eq_ignore_ascii_case("text") => false,
+        // A typo must not silently select the other format; the value is not
+        // echoed, as with `RUST_LOG`.
+        Ok(_) => {
+            return Err(EnvConfigError::Invalid {
+                variable: "SLUGAUDIT_LOG_FORMAT".to_owned(),
+                expected: LOG_FORMAT_EXPECTED.to_owned(),
+            });
+        }
         Err(std::env::VarError::NotPresent) => false,
         // As above: never interpolate the value-carrying `VarError` Display.
         Err(std::env::VarError::NotUnicode(_)) => {
@@ -247,12 +252,12 @@ fn log_settings(
 /// Installs the process-wide stderr tracing subscriber, before any command is
 /// dispatched, so CLI warnings are not dropped. Logs go to stderr
 /// only — stdout is the JSON-RPC transport. `SLUGAUDIT_LOG_FORMAT=json`
-/// switches the formatter to JSON; anything else stays the plain writer
+/// switches the formatter to JSON; unset or `text` is the plain writer
 /// with ANSI off (stderr may be a captured file, not a terminal).
 ///
 /// # Errors
 ///
-/// Returns [`EnvConfigError`] for a set-but-invalid `RUST_LOG` or a non-UTF-8
+/// Returns [`EnvConfigError`] for a set-but-invalid `RUST_LOG` or
 /// `SLUGAUDIT_LOG_FORMAT`.
 fn init_logging() -> Result<(), EnvConfigError> {
     let settings = log_settings(

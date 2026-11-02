@@ -38,18 +38,15 @@ pub fn to_row(item: &EvidenceItem) -> EvidenceRow {
     let mut span_availability = span_availability_text(&item.span);
     let (start_byte, end_byte, start_line, start_column, end_line, end_column) =
         if let SpanAvailability::Present(span) = &item.span {
-            if let (Ok(start_byte), Ok(end_byte), Some(start_line), Some(end_line)) = (
-                i64::try_from(span.start_byte),
-                i64::try_from(span.end_byte),
-                one_based_line(span.start.line),
-                one_based_line(span.end.line),
-            ) {
+            if let (Ok(start_byte), Ok(end_byte)) =
+                (i64::try_from(span.start_byte), i64::try_from(span.end_byte))
+            {
                 (
                     Some(start_byte),
                     Some(end_byte),
-                    Some(start_line),
+                    Some(one_based_line(span.start.line)),
                     Some(i64::from(span.start.column)),
-                    Some(end_line),
+                    Some(one_based_line(span.end.line)),
                     Some(i64::from(span.end.column)),
                 )
             } else {
@@ -80,9 +77,9 @@ pub fn to_row(item: &EvidenceItem) -> EvidenceRow {
 
 /// The single zero-based to one-based line conversion on the write path:
 /// `model::span` lines are zero-based, the `evidence` table stores them
-/// one-based and inclusive. `None` when the increment would overflow.
-fn one_based_line(zero_based: u32) -> Option<i64> {
-    i64::from(zero_based).checked_add(1)
+/// one-based and inclusive. Cannot overflow: a `u32` plus one fits an `i64`.
+fn one_based_line(zero_based: u32) -> i64 {
+    i64::from(zero_based) + 1
 }
 
 fn kind_text(kind: &EvidenceKind) -> &'static str {
@@ -114,7 +111,7 @@ fn span_availability_text(span: &SpanAvailability) -> &'static str {
     match span {
         SpanAvailability::Present(_) => "Present",
         SpanAvailability::PackOmitted => "PackOmitted",
-        SpanAvailability::NormalizerUnavailable { .. } => "NormalizerUnavailable",
+        SpanAvailability::NormalizerUnavailable => "NormalizerUnavailable",
         SpanAvailability::DerivedEvidence => "DerivedEvidence",
     }
 }

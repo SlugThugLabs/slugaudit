@@ -66,11 +66,9 @@ pub(crate) fn candidate_paths(
         for ext in &config.extensions {
             candidates.push(format!("{path}/{index}.{ext}"));
         }
-        // Index file without an extension matches e.g. `index.mjs` on
-        // some platforms and keeps the resolver from over-fitting on a
-        // specific `__init__.py` style. Stripping an extension here is
-        // purely an FS exercise — a project that has `pkg/index` will
-        // match, those that don't will fall through to other candidates.
+        // Extensionless index file: matches only a project path that is
+        // literally `pkg/index` (an exact lookup; `pkg/index.mjs` is covered
+        // by the extension candidates above).
         candidates.push(format!("{path}/{index}"));
     }
 
@@ -96,6 +94,18 @@ pub(crate) fn resolve_relative_path(
     candidate_paths(&path, config, known_paths)
 }
 
+/// Strips `keyword` from the start of `text` when it is followed by
+/// whitespace, returning the text after the keyword. `import_x` and
+/// `importx` do not match `import`.
+pub(crate) fn strip_keyword<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
+    let after = text.strip_prefix(keyword)?;
+    after
+        .chars()
+        .next()
+        .is_some_and(char::is_whitespace)
+        .then_some(after)
+}
+
 /// Whether a text looks like a Python-style relative import: starts
 /// with `.` but not with `./` or `../` (those are JS-style filesystem
 /// paths). Used by the generic `extract_reference` and the
@@ -106,11 +116,9 @@ pub(crate) fn starts_with_python_dot_prefix(text: &str) -> bool {
 
 /// External-or-unresolved fallback for ambiguous inputs.
 ///
-/// Reads `bare_names_are_external` from `config` so a resolver that
-/// treats bare names as project-local (Python relative imports) ends
-/// up unresolved, while one that treats bare names as packages
-/// (JS/TS) ends up external. Called from the generic resolver's
-/// catch-all arm when no candidate path resolves.
+/// Reads `bare_names_are_external` from `config`: a bare name (no
+/// separator) is external when it is set and unresolved when it is not.
+/// Called from the generic resolver for references without a separator.
 pub(crate) fn external_or_unresolved(config: &GenericResolverConfig) -> Resolution {
     if config.bare_names_are_external {
         external()

@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=the leads tool contract: request/response schema types (the MCP outputSchema) plus the one entry point and its registered-mechanic seam
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=the leads tool contract: request/response schema types (the MCP outputSchema) plus the one entry point and its registered-mechanic seam
 //! `leads` — unranked mechanical observations about an indexed project.
 //!
 //! This tool surfaces facts the index already holds — call sites by callee
@@ -42,11 +42,11 @@ use rmcp::handler::server::wrapper::{Json, Parameters};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::MAX_PATH_BYTES;
 #[cfg(test)]
 pub(super) use super::leads_query::{MAX_DETAIL_CHARS, clip_detail};
-const MAX_PATH_BYTES: usize = 32 * 1024;
 const MAX_FILTER_BYTES: usize = 8 * 1024;
-const MAX_CURSOR_BYTES: usize = 1024;
+use super::MAX_CURSOR_BYTES;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 /// Which mechanical counts to run, optional pattern narrowing, the page to
@@ -56,10 +56,12 @@ pub struct LeadsRequest {
     /// to read. Must be a path inside an enabled project. Required unless
     /// `cursor` is given. A registered mechanic whose scan the call deadline
     /// stopped reports it in `page.completeness` (`partial`, with
-    /// `resume_after_file`, the last file scanned); resuming means a new call,
-    /// which scans again from the start: narrow `pattern` to what was not
-    /// scanned, or raise `max_structure_execution_time`. No request parameter
-    /// resumes a scan.
+    /// `resume_after_file`, the last file fully scanned in the language the
+    /// deadline stopped in: registered mechanics scan one language after
+    /// another, so earlier languages finished and later ones did not start);
+    /// resuming means a new call, which scans again from the start: narrow
+    /// `pattern` to what was not scanned, or raise
+    /// `max_structure_execution_time`. No request parameter resumes a scan.
     #[schemars(
         description = "Any path inside the active project, used to select the database; required unless `cursor` is given"
     )]
@@ -310,22 +312,26 @@ pub fn leads(
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<LeadsResponse>, ErrorData> {
     request.0.legacy_paging.refuse()?;
+    validate_leads_request(&request.0)?;
     let limits = match (&request.0.cursor, &request.0.path) {
-        // A continuation names no project: the process limits apply.
+        // A continuation names no project and reads no limit: its page budget
+        // and the ceiling it is clamped to are those stored with the result.
+        // The process limits only fill the argument.
         (Some(_), _) => super::process_limits_for_tool()?,
         (None, Some(path)) => super::resolve_limits(path)?,
         (None, None) => return Err(missing_path()),
     };
-    leads_with_limits(request, &limits, sink, manager)
+    serve(request, &limits, sink, manager)
 }
 
 fn missing_path() -> ErrorData {
     ErrorData::invalid_params("path is required when no cursor is given", None)
 }
 
-/// Test-only seam: production code always goes through [`leads`] with the
-/// process/project limits; tests inject a tighter `max_query_response_bytes`
-/// to exercise the byte budget without generating 32 MiB of rows.
+/// Test-only seam: tests inject a tighter `max_query_response_bytes` to
+/// exercise the byte budget without generating 32 MiB of rows. It runs the
+/// entry checks of [`leads`] and then the same [`serve`].
+#[cfg(test)]
 fn leads_with_limits(
     request: &Parameters<LeadsRequest>,
     limits: &ResourceLimits,
@@ -334,6 +340,17 @@ fn leads_with_limits(
 ) -> Result<Json<LeadsResponse>, ErrorData> {
     request.0.legacy_paging.refuse()?;
     validate_leads_request(&request.0)?;
+    serve(request, limits, sink, manager)
+}
+
+/// Builds the catalogue the request sees (none for a continuation) and serves
+/// the page, once the request has passed the entry checks.
+fn serve(
+    request: &Parameters<LeadsRequest>,
+    limits: &ResourceLimits,
+    sink: &dyn ProgressSink,
+    manager: &sync::SourceSyncManager,
+) -> Result<Json<LeadsResponse>, ErrorData> {
     let catalog = match (&request.0.cursor, &request.0.path) {
         (Some(_), _) => Catalog {
             custom: Vec::new(),
@@ -355,13 +372,12 @@ pub(super) fn leads_with_catalog(
     sink: &dyn ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<LeadsResponse, ErrorData> {
-    request.legacy_paging.refuse()?;
-    validate_leads_request(request)?;
     let size = super::page_size::resolve(request.page_bytes, limits)?;
     let cut = Cut {
         limit: request.limit.map(|rows| rows.max(1)),
         size,
-        explicit_bytes: request.page_bytes.is_some(),
+        requested_bytes: request.page_bytes,
+        ceiling: limits.max_query_response_bytes,
     };
     let paging = page_request(request.cursor.as_deref(), request.path.as_deref(), sink)?;
     let scope = match paging {
@@ -397,7 +413,10 @@ fn validate_leads_request(request: &LeadsRequest) -> Result<(), ErrorData> {
         .as_deref()
         .is_some_and(|path| crate::util::exceeds_input_bytes(path, MAX_PATH_BYTES))
     {
-        return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
+        return Err(ErrorData::invalid_params(
+            format!("path exceeds {MAX_PATH_BYTES} bytes"),
+            None,
+        ));
     }
     for (name, value) in [
         ("mechanic", request.mechanic.as_deref()),
@@ -405,7 +424,7 @@ fn validate_leads_request(request: &LeadsRequest) -> Result<(), ErrorData> {
     ] {
         if value.is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_FILTER_BYTES)) {
             return Err(ErrorData::invalid_params(
-                format!("{name} exceeds 8192 bytes"),
+                format!("{name} exceeds {MAX_FILTER_BYTES} bytes"),
                 None,
             ));
         }
@@ -415,7 +434,10 @@ fn validate_leads_request(request: &LeadsRequest) -> Result<(), ErrorData> {
         .as_deref()
         .is_some_and(|value| crate::util::exceeds_input_bytes(value, MAX_CURSOR_BYTES))
     {
-        return Err(ErrorData::invalid_params("cursor exceeds 1024 bytes", None));
+        return Err(ErrorData::invalid_params(
+            format!("cursor exceeds {MAX_CURSOR_BYTES} bytes"),
+            None,
+        ));
     }
     Ok(())
 }

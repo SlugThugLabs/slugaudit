@@ -1,7 +1,8 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=one stored layout: the row type, its decode and the page cut that reads it must change together
-//! The stored layout of a `structure` result: one row per match with its
-//! serialized size, the tool-level extras returned on every page, and the
-//! page cut applied while a stored page is read.
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=one stored layout: the row type, its decode and the page cut that reads it must change together
+//! The stored layout of a `structure` result: one row per match, the
+//! tool-level extras returned on every page, and the page cut applied while a
+//! stored page is read. The cut decodes each offered row and measures its
+//! serialized size then; the size is not stored.
 
 use crate::error_codes::store_error;
 use crate::store::{Cell, Materialize, ResultStoreError, StoredRow, Take};
@@ -142,24 +143,8 @@ impl Materialize for StoredMatch {
 /// so a continuation never re-derives it from the process limits.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub(in crate::tools) struct CutFacts {
-    /// Whether page one's budget was the ceiling.
-    pub(in crate::tools) at_ceiling: bool,
     /// The match cap (`max_structure_matches`) page one ran under.
     pub(in crate::tools) max_matches: usize,
-}
-
-impl CutFacts {
-    /// These facts, with the ceiling flag of the budget the request itself
-    /// asked for (`Some`) in place of the stored one.
-    pub(in crate::tools) fn judged(self, asked_at_ceiling: Option<bool>) -> Self {
-        Self {
-            at_ceiling: match asked_at_ceiling {
-                Some(asked) => asked,
-                None => self.at_ceiling,
-            },
-            ..self
-        }
-    }
 }
 
 /// The tool-level facts stored with a result and returned unchanged on every
@@ -193,11 +178,11 @@ pub(in crate::tools) struct PageCut {
 impl PageCut {
     /// A cut for the effective budget `page_bytes`; a budget flagged
     /// `at_ceiling` reports `ceiling` when it cuts.
-    pub(in crate::tools) fn new(page_bytes: usize, facts: CutFacts) -> Self {
+    pub(in crate::tools) fn new(page_bytes: usize, at_ceiling: bool, facts: CutFacts) -> Self {
         let max_matches = facts.max_matches;
         Self {
             page_bytes,
-            byte_cut: if facts.at_ceiling {
+            byte_cut: if at_ceiling {
                 PageLimit::Ceiling
             } else {
                 PageLimit::PageBytes

@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=one paging entry: request/spec types, the producer's row sink, fresh materialisation and continuation share the cursor, budget and stored-extras contract
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=one paging entry: request/spec types, the producer's row sink, fresh materialisation and continuation share the cursor, budget and stored-extras contract
 //! The one paging entry every paged tool calls.
 //!
 //! A call without a cursor is a new request: it syncs, streams the tool's rows
@@ -51,10 +51,15 @@ pub struct PageSpec {
     /// page. For a new request it is also stored with the result, as the
     /// budget its continuations default to.
     pub page_bytes: usize,
-    /// The `page_bytes` a continuation's request carried (already clamped to
-    /// the ceiling by the tool), if any: a continuation uses it, else the
-    /// budget stored with the result.
+    /// The `page_bytes` a continuation's request carried, if any, exactly as
+    /// asked: a continuation clamps it to the ceiling stored with the result
+    /// and uses it, else it uses the budget stored with the result.
     pub requested_page_bytes: Option<usize>,
+    /// The hard ceiling (`max_query_response_bytes`) the project resolved to
+    /// for a new request. It is stored with the result, so a continuation
+    /// clamps its `page_bytes` to the same ceiling and judges `at_ceiling`
+    /// against it. Ignored on a continuation.
+    pub ceiling: usize,
 }
 
 impl PageSpec {
@@ -66,6 +71,7 @@ impl PageSpec {
             columns: R::columns().iter().map(|name| (*name).to_owned()).collect(),
             page_bytes,
             requested_page_bytes: None,
+            ceiling: usize::MAX,
         }
     }
 }
@@ -157,6 +163,9 @@ pub struct Served<E> {
     pub meta: E,
     /// The column names stored with the result.
     pub columns: Vec<String>,
+    /// Whether the effective budget (`page.page_bytes`) is the ceiling, so a
+    /// page it cuts reports `limited_by: ceiling`.
+    pub at_ceiling: bool,
 }
 
 /// Completeness and extras as stored in the result's metadata.
@@ -166,6 +175,9 @@ struct Stored<E> {
     extra: E,
     /// The effective page budget of the request that made the result.
     page_bytes: usize,
+    /// The ceiling that request resolved to; every continuation's budget is
+    /// clamped to it.
+    ceiling: usize,
 }
 
 /// What the page cut may know about the result it cuts, identical on a new
@@ -176,6 +188,8 @@ pub struct PageContext<'a, E> {
     /// clamped to the ceiling by the tool) or the one the result's first page
     /// used. Also echoed in `page.page_bytes`.
     pub page_bytes: usize,
+    /// Whether `page_bytes` is the ceiling the result was made under.
+    pub at_ceiling: bool,
     /// The column names stored with the result.
     pub columns: &'a [String],
     /// The tool-level extras the producer reported, as stored.
@@ -259,6 +273,7 @@ where
                 completeness: produced.completeness,
                 extra: produced.extra,
                 page_bytes: spec.page_bytes,
+                ceiling: spec.ceiling,
             };
             let encoded = serde_json::to_value(&stored)
                 .map_err(|error| internal_error("encoding the result extras", error))?;
@@ -309,7 +324,8 @@ where
     let mut stored: Stored<E> = serde_json::from_value(meta.completeness.clone())
         .map_err(|error| internal_error("decoding the stored result extras", error))?;
     if let Some(requested) = spec.requested_page_bytes {
-        stored.page_bytes = requested;
+        // Clamped to the ceiling page one ran under, not to a re-derived one.
+        stored.page_bytes = requested.min(stored.ceiling);
     }
     serve(
         &store,
@@ -335,8 +351,11 @@ where
     A: FnMut(&StoredRow) -> Take,
 {
     let page_bytes = stored.page_bytes;
+    // The budget is the ceiling exactly when clamping reached it.
+    let at_ceiling = page_bytes >= stored.ceiling;
     let accept = accept_for(&PageContext {
         page_bytes,
+        at_ceiling,
         columns: &meta.columns,
         extra: &stored.extra,
     });
@@ -365,6 +384,7 @@ where
         page,
         meta: stored.extra,
         columns: read.meta.columns.clone(),
+        at_ceiling,
     })
 }
 

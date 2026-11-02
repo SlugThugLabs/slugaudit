@@ -361,11 +361,10 @@ fn connect_writes_a_client_config_owner_only_under_a_permissive_umask() -> TestR
     Ok(())
 }
 
-/// A warning raised by a CLI command must reach the subscriber installed
-/// before dispatch; `connect` probes the client config and logs why an
-/// unparsable one is treated as unregistered.
+/// A malformed client config fails the connect: the probe cannot tell
+/// whether the client is connected and names the JSON cause.
 #[test]
-fn connect_logs_a_client_config_parse_warning_to_stderr() -> TestResult {
+fn connect_fails_a_malformed_client_config_and_names_the_json_cause() -> TestResult {
     let temp = tempfile::tempdir().check("temp dir")?;
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
@@ -390,8 +389,12 @@ fn connect_logs_a_client_config_parse_warning_to_stderr() -> TestResult {
         "a malformed config must fail the connect"
     );
     assert!(
-        stderr.contains("client config is not valid JSON"),
-        "the warning must reach stderr: {stderr}"
+        stderr.contains("could not tell whether cursor is connected"),
+        "the probe must report that it could not tell: {stderr}"
+    );
+    assert!(
+        stderr.contains("contains invalid JSON"),
+        "the error must name the JSON cause: {stderr}"
     );
     Ok(())
 }

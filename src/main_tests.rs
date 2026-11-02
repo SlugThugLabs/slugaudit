@@ -137,3 +137,31 @@ fn honest_log_default_filter_keeps_our_info_and_drops_rmcp_info() -> TestResult 
     assert!(out.contains("dep-warn-marker"), "{out}");
     Ok(())
 }
+
+#[test]
+fn fail_closed_a_mistyped_log_format_is_an_error_not_silently_text() -> TestResult {
+    let result = log_settings(
+        Err(std::env::VarError::NotPresent),
+        Ok("jsno-MARKER".to_owned()),
+    );
+
+    let error = result
+        .err()
+        .check("an unknown SLUGAUDIT_LOG_FORMAT must fail startup")?;
+    let message = error.to_string();
+    assert!(
+        message.starts_with("SLUGAUDIT_LOG_FORMAT is set but is not valid; expected"),
+        "{message}"
+    );
+    assert!(!message.contains("MARKER"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn the_text_log_format_is_accepted_in_any_case() -> TestResult {
+    let settings = log_settings(Err(std::env::VarError::NotPresent), Ok("Text".to_owned()))
+        .check("valid settings")?;
+
+    assert!(!settings.json);
+    Ok(())
+}

@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=the stored finding_read result: its row layout, the streaming session read that fills it and the byte cut that reads it back share one row shape and one serialized-size measure
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=the stored finding_read result: its row layout, the streaming session read that fills it and the byte cut that reads it back share one row shape and one serialized-size measure
 //! The stored shape of a `finding_read` result: the row layout kept in the
 //! result store, the streaming read of the session's findings that fills it,
 //! the byte cut that sizes a page, and the clip of an oversized first row.
@@ -10,19 +10,10 @@ use crate::tools::context::internal_error;
 use crate::tools::finding_store::{HashLookup, findings_path_of};
 use crate::tools::paginate::RowSink;
 use rmcp::ErrorData;
-use serde::{Deserialize, Serialize};
 
 /// A finding as stored in the result.
 pub(super) struct StoredFinding {
     pub(super) entry: FindingReadEntry,
-}
-
-/// What is stored with the result and returned on every page: whether the
-/// budget of the first page was the ceiling, so a continuation reports the
-/// same `limited_by` without reading any limits.
-#[derive(Serialize, Deserialize)]
-pub(super) struct FindingExtra {
-    pub(super) at_ceiling: bool,
 }
 
 impl Materialize for StoredFinding {

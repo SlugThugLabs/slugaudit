@@ -103,7 +103,7 @@ pub fn ensure_gitignore(root: &ProjectRoot) -> GitignoreOutcome {
     };
     let entry = format!("{ACTIVATION_RELATIVE_DIR}/");
     let addition = format!("{separator}{entry}{newline}");
-    match write_gitignore_atomically(&path, &existing, addition.as_bytes()) {
+    match write_gitignore_atomically(&path, &existing, addition.as_bytes(), sync_directory) {
         Ok(()) => GitignoreOutcome::Added(path),
         Err(error) => GitignoreOutcome::NotWritten {
             path,
@@ -155,10 +155,16 @@ static GITIGNORE_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic
 /// surfaced by `sync_all` — leaves the original untouched. The temp file is
 /// removed on failure; a cleanup failure is logged and never replaces the
 /// write error that is already being reported.
+///
+/// After the rename the rule IS in the file, so `sync_dir` (which commits the
+/// rename) failing is logged, not returned: reporting
+/// [`GitignoreOutcome::NotWritten`] for a file that was written would be
+/// false. The cost is that the rename may not survive a crash.
 fn write_gitignore_atomically(
     path: &Path,
     existing: &[u8],
     addition: &[u8],
+    sync_dir: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     // No canonicalisation: the rename replaces the path itself, never a
     // link target (symlinks were refused before the read).
@@ -201,7 +207,15 @@ fn write_gitignore_atomically(
         return Err(error);
     }
     // Commit the rename itself, as the project config writer does.
-    sync_directory(directory)
+    if let Err(error) = sync_dir(directory) {
+        tracing::warn!(
+            target: "slugaudit::project",
+            path = %directory.display(),
+            %error,
+            "the rule was written but syncing its directory failed; the rename may not survive a crash"
+        );
+    }
+    Ok(())
 }
 
 /// Commits the rename: on Unix a directory is opened and `fsync`ed like a
@@ -234,31 +248,40 @@ fn remove_abandoned_temp(temp: &Path) {
     }
 }
 
-/// True when `contents` already holds a rule that ignores the activation
-/// directory.
+/// True when the last rule that names the activation directory ignores it.
 ///
-/// The rule recognised is exact-path, not glob: a line counts when, with
-/// trailing whitespace removed (git ignores it unless escaped), one leading
-/// `/` removed (at the project root it anchors to the same directory) and
-/// trailing `/`s removed, it equals `.planning/slugaudit`. So
+/// The rule recognised is exact-path, not glob: a line names the directory
+/// when, with trailing whitespace removed (git ignores it unless escaped), one
+/// leading `/` removed (at the project root it anchors to the same directory)
+/// and trailing `/`s removed, it equals `.planning/slugaudit`. So
 /// `.planning/slugaudit/`, `.planning/slugaudit`, `/.planning/slugaudit/` and
-/// `/.planning/slugaudit` are all present. `#` comments and `!` negations are
-/// not rules that ignore anything. Broader patterns (`.planning/`,
-/// `**/slugaudit/`, a matching rule in a parent directory) are not
-/// recognised; the duplicate rule that results is harmless, since gitignore
-/// permits repeats and resolves them last-match-wins.
+/// `/.planning/slugaudit` all name it. A `!` before such a line is a negation
+/// that un-ignores it. Git resolves rules last-match-wins, so a negation after
+/// the ignore leaves the directory unignored (the rule is appended again), and
+/// an ignore after a negation wins again. `#` comments name nothing. Broader
+/// patterns (`.planning/`, `**/slugaudit/`, a matching rule in a parent
+/// directory) are not recognised; the duplicate rule that results is
+/// harmless, since gitignore permits repeats.
 fn ignores_activation_dir(contents: &[u8]) -> bool {
-    String::from_utf8_lossy(contents).lines().any(|line| {
+    let mut ignored = false;
+    for line in String::from_utf8_lossy(contents).lines() {
         let rule = line.trim_end();
-        if rule.starts_with('#') || rule.starts_with('!') {
-            return false;
+        if rule.starts_with('#') {
+            continue;
         }
-        let anchored = match rule.strip_prefix('/') {
-            Some(rest) => rest,
-            None => rule,
+        let (negated, pattern) = match rule.strip_prefix('!') {
+            Some(rest) => (true, rest),
+            None => (false, rule),
         };
-        anchored.trim_end_matches('/') == ACTIVATION_RELATIVE_DIR
-    })
+        let anchored = match pattern.strip_prefix('/') {
+            Some(rest) => rest,
+            None => pattern,
+        };
+        if anchored.trim_end_matches('/') == ACTIVATION_RELATIVE_DIR {
+            ignored = !negated;
+        }
+    }
+    ignored
 }
 
 #[cfg(test)]

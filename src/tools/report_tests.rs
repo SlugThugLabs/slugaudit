@@ -3,6 +3,16 @@ use rmcp::handler::server::wrapper::Parameters;
 use slugaudit_test_check::{Check, CheckErr, TestResult};
 use std::fs;
 
+/// The response for an index alone, with no session findings, no rebuild
+/// notice and no mechanics.
+pub(super) fn build_report(
+    connection: &rusqlite::Transaction<'_>,
+    revision_id: String,
+) -> Result<ReportResponse, rusqlite::Error> {
+    let sections = crate::tools::report_sections::read_sections(connection, &revision_id)?;
+    Ok(sections.into_response(revision_id, 0, None, ReportMechanics::default()))
+}
+
 fn activate(root: &std::path::Path) -> TestResult {
     crate::project::activate_for_test(root)
 }
@@ -368,9 +378,9 @@ fn report_maps_a_build_failure_to_an_internal_error() -> TestResult {
     assert!(
         error.message.starts_with("building the report:")
             && error.message.contains("language")
-            && error.message.contains("retry the call")
+            && !error.message.contains("retry the call")
             && error.data.is_none(),
-        "the operation, cause, retry hint and no caller-input code must survive: {}",
+        "the operation and cause must survive, with no retry hint and no caller-input code: {}",
         error.message
     );
     Ok(())

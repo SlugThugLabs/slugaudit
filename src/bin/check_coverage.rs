@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
-#![allow(clippy::print_stdout)]
-// Same production panic ban as the library root; see `lib.rs` for why
-// `expect` is denied alongside `unwrap`.
+// Panicking indexing is denied outside tests, as in the library root
+// (`lib.rs`); `unwrap` and `expect` are denied for every target in
+// `Cargo.toml`.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 //! Line coverage gate.
@@ -28,26 +28,50 @@
 //! llvm-cov` is invoked through `std::process::Command`; the JSON
 //! report is parsed with `serde_json` (already a dependency).
 
+#[path = "gate_common/args.rs"]
+mod gate_args;
+#[path = "gate_common/out.rs"]
+mod gate_out;
+
+use std::path::Path;
 use std::process::{Command, ExitCode};
 
+const PREFIX: &str = "coverage";
+
+/// The line-coverage floor, in percent, when no threshold argument is given.
+/// It tracks the measured line coverage. The gate's intent is "catch coverage
+/// regressions, not block on them", so it tracks measurement rather than an
+/// aspirational number. Use `cargo run --quiet --bin check_coverage --
+/// <threshold>` to override for a single run (e.g. CI flavor that wants a
+/// harder floor); record any raise with the change that makes it so the gate
+/// stays honest.
+const DEFAULT_THRESHOLD_PCT: f64 = 83.0;
+
 fn main() -> ExitCode {
-    let mut args = std::env::args_os()
-        .skip(1)
-        .map(|arg| arg.to_string_lossy().into_owned());
-    // Default threshold tracks the measured line coverage. The gate's intent
-    // is "catch coverage regressions, not block on them", so it tracks
-    // measurement rather than an aspirational number. Use `cargo run
-    // --quiet --bin check_coverage -- <threshold>` to override for a
-    // single run (e.g. CI flavor that wants a harder floor); record any
-    // raise with the change that makes it so the gate stays honest.
-    let threshold_str: String = match args.next() {
-        Some(arg) => arg,
-        None => "83".to_string(),
+    let mut positionals: Vec<String> = Vec::new();
+    let root = match gate_args::parse(
+        PREFIX,
+        &format!(
+            "Line coverage gate. Usage: check_coverage [--root <dir>] [threshold_percent] \
+             (default {DEFAULT_THRESHOLD_PCT})"
+        ),
+        &mut [],
+        Some(&mut positionals),
+    ) {
+        Ok(root) => root,
+        Err(code) => return code,
     };
-    let threshold = match parse_threshold(&threshold_str) {
-        Ok(n) => n,
-        Err(message) => {
-            eprintln!("{message}");
+    let threshold = match positionals.as_slice() {
+        [] => DEFAULT_THRESHOLD_PCT,
+        [raw] => match parse_threshold(raw) {
+            Ok(value) => value,
+            Err(message) => {
+                eprintln!("{message}");
+                return ExitCode::from(2);
+            }
+        },
+        _ => {
+            eprintln!("expected at most one threshold argument, got {positionals:?}");
             return ExitCode::from(2);
         }
     };
@@ -67,7 +91,7 @@ fn main() -> ExitCode {
 
     // Every exit from here on has run (or tried to run) cargo, so every
     // exit removes the report exactly once.
-    match measure(&report_path) {
+    match measure(&root, &report_path) {
         Err(message) => {
             eprintln!("{message}");
             cleanup_then(&report_path, ExitCode::from(1))
@@ -78,24 +102,41 @@ fn main() -> ExitCode {
                 cleanup_then(&report_path, ExitCode::from(1))
             }
             Ok((percent, passed)) => {
-                println!(
-                    "line coverage: {percent:.2}% ({covered} / {count} lines, gate {threshold}%)"
-                );
-                if passed {
-                    return cleanup_then(&report_path, ExitCode::SUCCESS);
-                }
-                println!("FAIL: line coverage {percent:.2}% is below the {threshold}% gate");
-                cleanup_then(&report_path, ExitCode::from(1))
+                let verdict = match print_verdict(percent, (covered, count), threshold, passed) {
+                    Ok(code) => code,
+                    Err(error) => gate_out::failed(PREFIX, &error),
+                };
+                cleanup_then(&report_path, verdict)
             }
         },
     }
 }
 
-/// Run `cargo llvm-cov`, read the JSON report it writes to `report_path`,
-/// and return the merged `(covered, count)` line totals. The error is the
-/// complete `FAIL: ...` message to print.
-fn measure(report_path: &std::path::Path) -> Result<(u64, u64), String> {
+/// Prints the measured line coverage and, below the threshold, the failure.
+fn print_verdict(
+    percent: f64,
+    (covered, count): (u64, u64),
+    threshold: f64,
+    passed: bool,
+) -> std::io::Result<ExitCode> {
+    gate_out::line(format_args!(
+        "line coverage: {percent:.2}% ({covered} / {count} lines, gate {threshold}%)"
+    ))?;
+    if passed {
+        return Ok(ExitCode::SUCCESS);
+    }
+    gate_out::line(format_args!(
+        "FAIL: line coverage {percent:.2}% is below the {threshold}% gate"
+    ))?;
+    Ok(ExitCode::from(1))
+}
+
+/// Run `cargo llvm-cov` in `root`, read the JSON report it writes to
+/// `report_path`, and return the merged `(covered, count)` line totals. The
+/// error is the complete `FAIL: ...` message to print.
+fn measure(root: &Path, report_path: &Path) -> Result<(u64, u64), String> {
     let status = Command::new("cargo")
+        .current_dir(root)
         .args([
             "llvm-cov",
             "--all-targets",
@@ -121,7 +162,6 @@ fn measure(report_path: &std::path::Path) -> Result<(u64, u64), String> {
     let cov: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|err| format!("FAIL: could not parse coverage JSON: {err}"))?;
     merge_line_totals(&cov)
-        .ok_or_else(|| "FAIL: coverage JSON missing data[*].totals.lines".to_string())
 }
 
 /// The line-coverage percent (0.0 when nothing was counted) and whether
@@ -158,7 +198,7 @@ fn parse_threshold(raw: &str) -> Result<f64, String> {
 }
 
 /// Remove the report file; an already-missing file is the expected state.
-fn remove_report(path: &std::path::Path) -> std::io::Result<()> {
+fn remove_report(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(path) {
         Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
         _ => Ok(()),
@@ -168,7 +208,7 @@ fn remove_report(path: &std::path::Path) -> std::io::Result<()> {
 /// Remove the report after the verdict is known. A cleanup failure fails
 /// the run (reported once) rather than being dropped; it never turns a
 /// failing verdict into a pass.
-fn cleanup_then(path: &std::path::Path, verdict: ExitCode) -> ExitCode {
+fn cleanup_then(path: &Path, verdict: ExitCode) -> ExitCode {
     match remove_report(path) {
         Ok(()) => verdict,
         Err(err) => {
@@ -178,19 +218,35 @@ fn cleanup_then(path: &std::path::Path, verdict: ExitCode) -> ExitCode {
     }
 }
 
-/// Merge every data entry: newer cargo-llvm-cov versions can emit one
-/// entry per test binary, and the gate must measure the true merged
-/// coverage, not whichever binary happens to be first.
-fn merge_line_totals(cov: &serde_json::Value) -> Option<(u64, u64)> {
-    let data = cov.get("data")?.as_array()?;
-    let mut covered: u64 = 0;
-    let mut count: u64 = 0;
-    for entry in data {
-        let lines = entry.get("totals")?.get("lines")?;
-        covered += lines.get("covered")?.as_u64()?;
-        count += lines.get("count")?.as_u64()?;
-    }
-    Some((covered, count))
+/// The `(covered, count)` line totals of the report's single merged data
+/// entry. `cargo llvm-cov --json` merges every test binary into one entry;
+/// summing several would count a file shared by two entries twice, so any
+/// other entry count is an error. The error is the complete `FAIL: ...`
+/// message to print.
+fn merge_line_totals(cov: &serde_json::Value) -> Result<(u64, u64), String> {
+    let missing = || "FAIL: coverage JSON missing data[*].totals.lines".to_string();
+    let data = cov
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(missing)?;
+    let [entry] = data.as_slice() else {
+        return Err(format!(
+            "FAIL: coverage JSON has {} data entries, expected one merged entry; summing \
+             them could count shared files twice",
+            data.len()
+        ));
+    };
+    let lines = entry
+        .get("totals")
+        .and_then(|totals| totals.get("lines"))
+        .ok_or_else(missing)?;
+    let total = |key: &str| {
+        lines
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(missing)
+    };
+    Ok((total("covered")?, total("count")?))
 }
 
 #[cfg(test)]

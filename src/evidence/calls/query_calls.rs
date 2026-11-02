@@ -10,6 +10,7 @@
 
 use super::call_queries::{CALL_QUERIES, CallQuery, MAX_CALLEE_DEPTH};
 use super::site::{CallSite, call_item};
+use crate::evidence::deadline_spent as spent;
 use crate::evidence::{Extraction, NoTree, NodeError, TextRangeError, node_text};
 use crate::model::{EvidenceOrigin, LineIndex, PositionOverflow};
 use crate::parse::budget::{Parsed, parse_within};
@@ -51,12 +52,6 @@ pub(super) fn extract(
         Err(why) => return Ok(Extraction::without_tree(why)),
     };
     run(entry, query, &tree, source, lines, deadline)
-}
-
-/// Whether `deadline` has less than a millisecond left: the same rule
-/// [`crate::evidence::parse_tree`] applies.
-fn spent(deadline: Option<&Deadline>) -> bool {
-    deadline.is_some_and(|deadline| deadline.remaining_millis().is_none())
 }
 
 /// Parses `source` with a parser of its own (dropped after, so a cancelled

@@ -115,7 +115,9 @@ impl ConfigShape {
     ///
     /// A binary path that is not valid UTF-8 is refused before any write: JSON
     /// cannot carry the raw bytes, and a lossy replacement-character path would
-    /// be registered as a command the client cannot launch.
+    /// be registered as a command the client cannot launch. A shape with no
+    /// [`write_section`](Self::write_section) has no JSON entry and is refused
+    /// with [`ConnectError::UnsupportedAgent`].
     pub fn entry(self, binary: &Path) -> Result<serde_json::Value, ConnectError> {
         let command = binary_text(binary)?;
         Ok(match self {
@@ -125,10 +127,12 @@ impl ConfigShape {
             ConfigShape::OpenCodeLocal => {
                 serde_json::json!({ "type": "local", "command": [command], "enabled": true })
             }
-            ConfigShape::GooseExtensions => {
-                serde_json::json!({ "type": "stdio", "cmd": command, "args": [] })
+            ConfigShape::GooseExtensions | ConfigShape::Unknown => {
+                return Err(ConnectError::UnsupportedAgent {
+                    agent: format!("a client with a {self:?} config"),
+                    reason: "its config has no JSON entry slugaudit can write".to_owned(),
+                });
             }
-            ConfigShape::Unknown => serde_json::Value::Null,
         })
     }
 }
@@ -165,7 +169,9 @@ pub enum ConfigPath {
 }
 
 impl ConfigPath {
-    /// Resolves the config file against `home` (the OS home directory).
+    /// Resolves the config file against `home` (the OS home directory). `None`
+    /// when no path is known: an unverified client, a platform without a
+    /// documented path, or a Windows path whose `%APPDATA%` is unset.
     #[must_use]
     pub fn resolve(&self, home: &Path) -> Option<PathBuf> {
         match self {
@@ -178,11 +184,11 @@ impl ConfigPath {
                 // A platform outside the three documented ones has no path we
                 // can act on: refuse and show the user the ones we know.
                 if cfg!(target_os = "macos") {
-                    Some(expand_os_tokens(macos, home))
+                    expand_os_tokens(macos, home)
                 } else if cfg!(target_os = "windows") {
-                    Some(expand_os_tokens(windows, home))
+                    expand_os_tokens(windows, home)
                 } else if cfg!(target_os = "linux") {
-                    Some(expand_os_tokens(linux, home))
+                    expand_os_tokens(linux, home)
                 } else {
                     None
                 }
@@ -213,14 +219,12 @@ impl ConfigPath {
 }
 
 /// Expands the `%APPDATA%/` token Windows clients document; every other path
-/// is already home-relative.
-fn expand_os_tokens(rel: &str, home: &Path) -> PathBuf {
+/// is already home-relative. `None` when the token is used but `APPDATA` is
+/// unset: the roaming directory is not guessed from `home`.
+fn expand_os_tokens(rel: &str, home: &Path) -> Option<PathBuf> {
     match rel.strip_prefix("%APPDATA%/") {
-        Some(rest) => match std::env::var_os("APPDATA") {
-            Some(appdata) => PathBuf::from(appdata).join(rest),
-            None => home.join("AppData/Roaming").join(rest),
-        },
-        None => home.join(rel),
+        Some(rest) => std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join(rest)),
+        None => Some(home.join(rel)),
     }
 }
 
@@ -263,4 +267,42 @@ pub enum Dialect {
     /// command is a plain positional: Gemini has no `--` separator rule, and
     /// passing one would make `--` the command.
     GeminiScope,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slugaudit_test_check::{Check, TestResult};
+
+    #[test]
+    fn the_appdata_token_expands_from_the_environment_and_is_never_guessed() -> TestResult {
+        let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+        let home = Path::new("/home/u");
+
+        let set = temp_env::with_var("APPDATA", Some("/roaming"), || {
+            expand_os_tokens("%APPDATA%/Claude/c.json", home)
+        });
+        let unset = temp_env::with_var_unset("APPDATA", || {
+            expand_os_tokens("%APPDATA%/Claude/c.json", home)
+        });
+
+        assert_eq!(set, Some(PathBuf::from("/roaming/Claude/c.json")));
+        assert_eq!(unset, None, "an unset APPDATA must not become home/AppData");
+        assert_eq!(
+            expand_os_tokens(".config/x.json", home),
+            Some(PathBuf::from("/home/u/.config/x.json"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn shapes_without_a_json_writer_have_no_entry() {
+        for shape in [ConfigShape::GooseExtensions, ConfigShape::Unknown] {
+            let result = shape.entry(Path::new("/bin/slugaudit"));
+            assert!(
+                matches!(result, Err(ConnectError::UnsupportedAgent { .. })),
+                "{shape:?}: {result:?}"
+            );
+        }
+    }
 }

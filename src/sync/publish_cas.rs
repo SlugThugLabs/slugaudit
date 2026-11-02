@@ -107,7 +107,9 @@ pub(crate) fn publish_with_limits(
             attempt += 1;
             continue;
         }
-        publish_log::log_outcome(root, &result, attempt);
+        if let Ok(report) = &result {
+            publish_log::log_completed(report, attempt);
+        }
         break result;
     };
     sink.emit(crate::progress::ProgressEvent::Completed {

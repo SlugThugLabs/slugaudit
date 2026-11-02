@@ -2,12 +2,12 @@
 //!
 //! The environment is read and validated once ([`env_overrides`]) and applied
 //! to the limits of every call, so a tool call never re-reads (or fails on)
-//! variables that were valid at startup, and one `SLUGAUDIT_MAX_FILE_BYTES`
-//! clamp warning is logged once instead of on every call.
+//! variables that were valid at startup. A SQLite clamp warning goes through
+//! the warning ledger, so it is logged once per configured value.
 
 use super::env_error::EnvConfigError;
-use super::limit_overrides::nonzero_override;
-use super::limits::{ResourceLimits, SQLITE_MAX_VALUE_BYTES};
+use super::limit_overrides::{clamp_sqlite_value, nonzero_override};
+use super::limits::ResourceLimits;
 use super::profile::{AuditProfile, profile_from_env, result_store_budget};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -65,7 +65,8 @@ impl EnvOverrides {
         Ok(Self {
             profile: profile_from_env()?,
             max_file_bytes: nonzero_override::<u64>("SLUGAUDIT_MAX_FILE_BYTES")?
-                .map(|bytes| clamp_sqlite_value("SLUGAUDIT_MAX_FILE_BYTES", bytes)),
+                .map(|bytes| clamp_sqlite_value("SLUGAUDIT_MAX_FILE_BYTES", bytes))
+                .transpose()?,
             max_parse_bytes: nonzero_override("SLUGAUDIT_MAX_PARSE_BYTES")?,
             max_parse_wall_clock_ms: nonzero_override("SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS")?,
             max_total_import_bytes: nonzero_override("SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES")?,
@@ -177,27 +178,8 @@ fn set<T>(target: &mut T, value: Option<T>) {
 /// then it fails closed.
 fn query_value_bytes(bytes: u64) -> Result<usize, EnvConfigError> {
     const NAME: &str = "SLUGAUDIT_MAX_QUERY_VALUE_BYTES";
-    usize::try_from(clamp_sqlite_value(NAME, bytes)).map_err(|error| EnvConfigError::Invalid {
+    usize::try_from(clamp_sqlite_value(NAME, bytes)?).map_err(|error| EnvConfigError::Invalid {
         variable: NAME.to_owned(),
         expected: format!("a value this platform can address ({error})"),
     })
-}
-
-/// Clamps one single-value limit to what the bundled SQLite can store.
-///
-/// An override above the cap is unusable: the value would be rejected at
-/// insert/read. Clamp it and say so rather than letting a per-file skip turn
-/// into a failed publish.
-fn clamp_sqlite_value(name: &str, value: u64) -> u64 {
-    if value > SQLITE_MAX_VALUE_BYTES {
-        tracing::warn!(
-            variable = name,
-            requested = value,
-            cap = SQLITE_MAX_VALUE_BYTES,
-            "limit exceeds SQLite's maximum storable value; clamping",
-        );
-        SQLITE_MAX_VALUE_BYTES
-    } else {
-        value
-    }
 }

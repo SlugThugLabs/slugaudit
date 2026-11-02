@@ -11,10 +11,14 @@ fn no_arguments_means_serve() -> TestResult {
 }
 
 #[test]
-fn usage_with_a_plain_style_is_byte_identical_to_the_usage_const() {
+fn usage_with_a_plain_style_is_byte_identical_to_the_usage_text() {
     let rendered = render_usage(&Style::plain());
 
-    assert_eq!(rendered, USAGE, "plain help must match USAGE exactly");
+    assert_eq!(
+        rendered,
+        usage_text(),
+        "plain help must match the usage text"
+    );
 }
 
 #[test]
@@ -220,11 +224,11 @@ fn version_parses_in_all_three_spellings() -> TestResult {
 #[test]
 fn help_names_the_installed_binary_connect_registers() {
     assert!(
-        USAGE.contains("Register the installed SlugAudit binary"),
+        usage_text().contains("Register the installed SlugAudit binary"),
         "connect prefers the installed binary, so the help must say so"
     );
     assert!(
-        !USAGE.contains("Register this binary"),
+        !usage_text().contains("Register this binary"),
         "the running binary is only used when no installed copy exists"
     );
 }
@@ -500,5 +504,35 @@ fn every_subcommand_has_its_own_usage_naming_that_subcommand() {
         assert!(text.starts_with("USAGE:\n"), "{text}");
         assert!(text.contains(needle), "{needle}: {text}");
         assert!(text.contains("-h, --help"), "{text}");
+    }
+}
+
+#[test]
+fn general_help_lists_serve_and_shares_every_description_with_the_subcommand_help() {
+    let general = usage_text();
+    assert!(
+        general.contains(
+            "    slugaudit serve                  Run the MCP server (stdio transport)\n"
+        ),
+        "{general}"
+    );
+    for topic in [
+        Topic::Serve,
+        Topic::Connect,
+        Topic::Disconnect,
+        Topic::Install,
+        Topic::Menu,
+        Topic::Update,
+    ] {
+        let own = topic_usage(topic);
+        let description = own
+            .lines()
+            .filter(|line| {
+                !line.is_empty() && !line.starts_with("USAGE:") && !line.starts_with(' ')
+            })
+            .filter(|line| *line != "OPTIONS:");
+        for line in description {
+            assert!(general.contains(line), "general help lacks {line:?}");
+        }
     }
 }

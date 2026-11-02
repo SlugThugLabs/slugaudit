@@ -3,10 +3,14 @@
 //! The store knows nothing of tools or the wire. The tool layer maps the
 //! kinds to wire codes: `Unavailable` -> `result_store_unavailable`, `Full` ->
 //! `result_store_full`, `TooLarge` -> `result_too_large`, `Expired` ->
-//! `result_expired`, `Unknown` -> `unknown_cursor`.
+//! `result_expired`, `Unknown` -> `unknown_cursor`. `Lock` and `Clock` keep
+//! the plain lock and clock errors, so they map as those do everywhere else:
+//! an internal error with no code, whose message says to restart the server
+//! or to fix the system clock.
 //!
-//! Each failure is logged once, in the constructor that decides it, so the
-//! layers above can propagate with `?` without logging again.
+//! Each failure is logged once, in the constructor that decides it (a
+//! poisoned lock, in `util::lock`), so the layers above can propagate with
+//! `?` without logging again.
 
 use std::error::Error;
 use std::io;
@@ -15,8 +19,10 @@ use std::io;
 #[derive(Debug, thiserror::Error)]
 pub enum ResultStoreError {
     /// The store cannot hold or serve results: an I/O or SQLite resource
-    /// failure (disk full, I/O error, cannot open), a pragma that did not
-    /// take, or a platform without unlink-while-open semantics.
+    /// failure (disk full, I/O error, cannot open, cannot create or unlink a
+    /// result file), a directory or owner lock that cannot be prepared or
+    /// taken, a pragma that did not take, a platform without
+    /// unlink-while-open semantics, or process limits that cannot be read.
     #[error("the result store is unavailable: {context}")]
     Unavailable {
         /// What the store was doing.
@@ -37,6 +43,14 @@ pub enum ResultStoreError {
     /// A valid cursor named a result that was reclaimed.
     #[error("the result was reclaimed and is no longer stored")]
     Expired,
+    /// A mutex of the store was poisoned by a panic in an earlier holder. The
+    /// process must be restarted.
+    #[error(transparent)]
+    Lock(#[from] crate::util::LockPoisoned),
+    /// The system clock cannot be stated in Unix seconds. The clock must be
+    /// fixed.
+    #[error(transparent)]
+    Clock(crate::util::ClockError),
     /// A malformed or foreign cursor, an ordinal past the end, or a result
     /// that is not complete.
     #[error("the cursor does not name a readable result of this process")]
@@ -107,6 +121,12 @@ impl ResultStoreError {
             context,
             source: Box::new(source),
         }
+    }
+
+    /// A clock failure, logged once here with its cause.
+    pub(super) fn clock(source: crate::util::ClockError) -> Self {
+        tracing::warn!(error = %source, "result store clock unusable");
+        Self::Clock(source)
     }
 
     /// Maps a SQLite failure: resource failures become `Unavailable`, the

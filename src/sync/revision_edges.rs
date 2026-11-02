@@ -7,13 +7,11 @@ use crate::model::EvidenceKind;
 use rusqlite::{OptionalExtension, Transaction, params};
 use std::collections::HashSet;
 
-/// Every path that will exist in the project once this transaction's
-/// deletions and upserts have all landed — the universe
-/// [`crate::graph::resolve_imports`] resolves against, so a same-revision
-/// addition resolves correctly.
-///
-/// `discovered_paths` are the project-relative paths the caller walked on
-/// disk. They are unioned with the `files` rows, never replaced by them.
+/// Every path a `files` row holds inside this transaction, once its
+/// deletions and upserts have landed. The caller unions it with the
+/// project-relative paths it walked on disk — never replaces them — to get
+/// the universe [`crate::graph::resolve_imports`] resolves against, so a
+/// same-revision addition resolves correctly.
 ///
 /// The `files` table also holds one existence row per
 /// discovered-but-skipped file (`file_kind = 'skipped'`), so the stored side
@@ -23,17 +21,10 @@ use std::collections::HashSet;
 /// exists — a file skipped in this very transaction, or one whose path has
 /// no representable key, must still resolve. Removing it would trade a
 /// correctness guarantee for nothing.
-pub(super) fn known_paths(
-    tx: &Transaction<'_>,
-    discovered_paths: &HashSet<String>,
-) -> Result<Vec<String>, rusqlite::Error> {
-    let mut paths: HashSet<String> = discovered_paths.clone();
+pub(super) fn stored_paths(tx: &Transaction<'_>) -> Result<HashSet<String>, rusqlite::Error> {
     let mut statement = tx.prepare("SELECT path FROM files")?;
     let stored = statement.query_map([], |row| row.get::<_, String>(0))?;
-    for path in stored {
-        paths.insert(path?);
-    }
-    Ok(paths.into_iter().collect())
+    stored.collect()
 }
 
 /// Re-resolves stored `Unresolved` edges after a revision changed the path

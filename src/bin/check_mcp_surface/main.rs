@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
-#![allow(clippy::print_stdout)]
-// Same production panic ban as the library root; see `lib.rs` for why
-// `expect` is denied alongside `unwrap`.
+// Panicking indexing is denied outside tests, as in the library root
+// (`lib.rs`); `unwrap` and `expect` are denied for every target in
+// `Cargo.toml`.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 //! MCP surface-snapshot gate.
@@ -26,6 +26,8 @@
 mod diff;
 #[path = "../gate_common/args.rs"]
 mod gate_args;
+#[path = "../gate_common/out.rs"]
+mod gate_out;
 mod surface;
 
 #[cfg(test)]
@@ -42,10 +44,12 @@ const SNAPSHOT_PATH: &str = ".planning/archive/mcp_surface.json";
 /// total count is always printed.
 const MAX_REPORTED_DIFFERENCES: usize = 40;
 
+const PREFIX: &str = "mcp-surface";
+
 fn main() -> std::process::ExitCode {
     let mut should_record = false;
     let root = match gate_args::parse(
-        "mcp-surface",
+        PREFIX,
         &format!(
             "Compares the live MCP surface (tools/list + resources/list) against the \
                      committed snapshot and fails on drift.\n\
@@ -53,6 +57,7 @@ fn main() -> std::process::ExitCode {
                      --record: rewrite {SNAPSHOT_PATH} from the live surface."
         ),
         &mut [("--record", &mut should_record)],
+        None,
     ) {
         Ok(root) => root,
         Err(code) => return code,
@@ -66,38 +71,48 @@ fn main() -> std::process::ExitCode {
         }
     };
     let path = root.join(SNAPSHOT_PATH);
-    if should_record {
+    let outcome = if should_record {
         write_snapshot(&path, &live)
     } else {
         compare_snapshot(&path, &live)
+    };
+    match outcome {
+        Ok(code) => code,
+        Err(error) => gate_out::failed(PREFIX, &error),
     }
 }
 
 /// Writes the live surface over the snapshot. Only reachable via `--record`.
-fn write_snapshot(path: &std::path::Path, live: &serde_json::Value) -> std::process::ExitCode {
+fn write_snapshot(
+    path: &std::path::Path,
+    live: &serde_json::Value,
+) -> std::io::Result<std::process::ExitCode> {
     let mut rendered = match serde_json::to_string_pretty(live) {
         Ok(rendered) => rendered,
         Err(error) => {
             eprintln!("mcp-surface: cannot render the snapshot: {error}");
-            return std::process::ExitCode::from(2);
+            return Ok(std::process::ExitCode::from(2));
         }
     };
     rendered.push('\n');
     if let Err(error) = std::fs::write(path, rendered) {
         eprintln!("mcp-surface: cannot write {}: {error}", path.display());
-        return std::process::ExitCode::from(2);
+        return Ok(std::process::ExitCode::from(2));
     }
-    println!(
+    gate_out::line(format_args!(
         "mcp-surface: recorded {} ({} tools, {} resources)",
         path.display(),
         surface::tool_count(live),
         surface::resource_count(live)
-    );
-    std::process::ExitCode::SUCCESS
+    ))?;
+    Ok(std::process::ExitCode::SUCCESS)
 }
 
 /// Compares the committed snapshot against the live surface.
-fn compare_snapshot(path: &std::path::Path, live: &serde_json::Value) -> std::process::ExitCode {
+fn compare_snapshot(
+    path: &std::path::Path,
+    live: &serde_json::Value,
+) -> std::io::Result<std::process::ExitCode> {
     let committed_text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) => {
@@ -106,36 +121,36 @@ fn compare_snapshot(path: &std::path::Path, live: &serde_json::Value) -> std::pr
                  --record` once the surface is what it should be",
                 path.display()
             );
-            return std::process::ExitCode::from(1);
+            return Ok(std::process::ExitCode::from(1));
         }
     };
     let committed: serde_json::Value = match serde_json::from_str(&committed_text) {
         Ok(committed) => committed,
         Err(error) => {
             eprintln!("mcp-surface: {} is not valid JSON: {error}", path.display());
-            return std::process::ExitCode::from(2);
+            return Ok(std::process::ExitCode::from(2));
         }
     };
 
     let differences = diff::differences(&committed, live);
     for difference in differences.iter().take(MAX_REPORTED_DIFFERENCES) {
-        println!("mcp-surface: {difference}");
+        gate_out::line(format_args!("mcp-surface: {difference}"))?;
     }
     if differences.len() > MAX_REPORTED_DIFFERENCES {
-        println!(
+        gate_out::line(format_args!(
             "mcp-surface: … and {} more differing paths",
             differences.len() - MAX_REPORTED_DIFFERENCES
-        );
+        ))?;
     }
     if differences.is_empty() {
-        println!("mcp-surface: PASS");
-        return std::process::ExitCode::SUCCESS;
+        gate_out::line(format_args!("mcp-surface: PASS"))?;
+        return Ok(std::process::ExitCode::SUCCESS);
     }
-    println!(
+    gate_out::line(format_args!(
         "mcp-surface: FAIL — {} differing path(s) against {}; if the change is deliberate, \
          re-run with --record",
         differences.len(),
         path.display()
-    );
-    std::process::ExitCode::from(1)
+    ))?;
+    Ok(std::process::ExitCode::from(1))
 }

@@ -11,7 +11,7 @@ use rmcp::handler::server::wrapper::{Json, Parameters};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-const MAX_PATH_BYTES: usize = 32 * 1024;
+use super::MAX_PATH_BYTES;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 /// Request to delete this session's findings for a project.

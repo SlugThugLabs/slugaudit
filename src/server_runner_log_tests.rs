@@ -78,11 +78,11 @@ fn completion_lines<'a>(logs: &'a str, tool: &str) -> Vec<&'a str> {
 /// The control assertion comes first on purpose: an absence-only check on a
 /// capture that went blind would pass while proving nothing.
 #[test]
-fn captured_text_carries_no_ansi_escapes() {
+fn captured_text_carries_no_ansi_escapes() -> TestResult {
     let ((), logs) = capture_at_level(
         || tracing::info!(tool = "probe_ansi_escapes", "tool call completed"),
         Level::INFO,
-    );
+    )?;
     assert!(
         logs.contains("tool=\"probe_ansi_escapes\""),
         "the field must be probeable as a plain substring, or every capture \
@@ -92,6 +92,7 @@ fn captured_text_carries_no_ansi_escapes() {
         !logs.contains('\u{1b}'),
         "an escape sequence anywhere defeats substring probes:\n{logs:?}"
     );
+    Ok(())
 }
 
 /// Two consecutive calls to the same tool must be distinguishable, and each
@@ -122,7 +123,7 @@ fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() 
             })
         },
         Level::INFO,
-    );
+    )?;
     calls?;
 
     let completions = completion_lines(&logs, TOOL);
@@ -194,7 +195,7 @@ fn a_failed_tool_call_logs_one_completion_line_marked_error() -> TestResult {
             })
         },
         Level::INFO,
-    );
+    )?;
     let error = result.check_err("the tool's error must propagate")?;
     assert_eq!(
         error.message, "bad request",
@@ -253,7 +254,7 @@ fn tool_call_logging_never_emits_the_calls_argument_or_result() -> TestResult {
             ))
         },
         Level::INFO,
-    );
+    )?;
     result.check("query succeeds")?;
 
     assert_eq!(
@@ -305,7 +306,7 @@ fn honest_log_a_failed_tool_call_logs_the_error_message_once() -> TestResult {
             ))
         },
         Level::INFO,
-    );
+    )?;
 
     let error = result
         .err()
@@ -383,7 +384,7 @@ fn a_failed_tool_call_logs_the_machine_readable_code_but_not_the_cursor_token() 
             ))
         },
         Level::INFO,
-    );
+    )?;
 
     let error = result
         .err()

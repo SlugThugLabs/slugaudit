@@ -203,7 +203,7 @@ fn a_max_parse_bytes_env_var_above_max_file_bytes_is_clamped_and_reported() -> T
         ],
         || {
             let (result, logs) =
-                crate::store::test_capture::capture_warns(ResourceLimits::from_env);
+                crate::store::test_capture::capture_warns(ResourceLimits::from_env)?;
             let limits = result.check("valid env")?;
 
             assert_eq!(limits.max_parse_bytes, 1_048_576);

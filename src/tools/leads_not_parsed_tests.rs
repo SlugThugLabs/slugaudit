@@ -202,3 +202,58 @@ fn a_file_that_outlives_its_parse_allowance_is_counted_and_the_sync_goes_on() ->
     }
     Ok(())
 }
+
+/// `PARSED_FILES` (what a mechanic reads) and `PARSER_FAILURE_PREDICATE`
+/// (what `files_not_parsed` counts) are written apart. Over every combination
+/// a parse can leave (an outcome other than `NotAttempted` needs an available
+/// parser), no file is in both, and every indexed, non-prose file whose parse
+/// ran is in exactly one.
+#[test]
+fn the_parsed_and_parser_failure_predicates_never_overlap_and_cover_every_parse() -> TestResult {
+    let connection = rusqlite::Connection::open_in_memory().check("in-memory database")?;
+    connection
+        .execute_batch(
+            "CREATE TABLE files (file_kind TEXT, language TEXT, parser_availability TEXT, \
+             parse_outcome TEXT)",
+        )
+        .check("create files")?;
+    for kind in ["indexed", "skipped"] {
+        for language in [None, Some("rust"), Some("prose")] {
+            for availability in ["Available", "Unavailable", "LoadFailed"] {
+                for outcome in ["NotAttempted", "Succeeded", "SyntaxErrors", "Failed"] {
+                    if outcome != "NotAttempted" && availability != "Available" {
+                        continue;
+                    }
+                    connection
+                        .execute(
+                            "INSERT INTO files VALUES (?1, ?2, ?3, ?4)",
+                            rusqlite::params![kind, language, availability, outcome],
+                        )
+                        .check("insert a files row")?;
+                }
+            }
+        }
+    }
+    let count = |predicate: &str| -> TestResult<i64> {
+        connection
+            .query_row(
+                &format!("SELECT count(*) FROM files WHERE {predicate}"),
+                [],
+                |row| row.get(0),
+            )
+            .check("count rows")
+    };
+    let parsed = super::super::leads_covers::PARSED_FILES;
+    let failed = crate::tools::PARSER_FAILURE_PREDICATE;
+
+    assert_eq!(count(&format!("({parsed}) AND ({failed})"))?, 0);
+    assert_eq!(
+        count(&format!(
+            "file_kind = 'indexed' AND language IS NOT 'prose' AND language IS NOT NULL \
+             AND parse_outcome != 'NotAttempted' AND NOT ({parsed}) AND NOT ({failed})"
+        ))?,
+        0,
+        "an attempted parse is either read by mechanics or counted as not parsed"
+    );
+    Ok(())
+}

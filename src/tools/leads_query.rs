@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=the compiled leads statements and the reads that execute them, including the files_not_parsed count that qualifies them, form one cohesive read layer
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=the compiled leads statements and the reads that execute them, including the files_not_parsed count that qualifies them, form one cohesive read layer
 //! The statements each `leads` family compiles to, and the reads that
 //! execute them.
 //!
@@ -34,18 +34,13 @@ pub(super) fn clip_detail(row: &mut LeadRow) {
     row.detail_clipped = true;
 }
 
-/// Compiles the caller's `pattern` exactly the way `structure` does — a
-/// GLOB over the project-relative path, with a pattern containing no `*` or
-/// `?` treated as a substring match. The result is always bound as a
-/// parameter, never spliced into SQL.
+/// Compiles the caller's `pattern` exactly the way `structure` does
+/// ([`super::structure_source::pattern_to_glob`]) — a GLOB over the
+/// project-relative path, with a pattern containing no `*` or `?` treated as
+/// a substring match. The result is always bound as a parameter, never
+/// spliced into SQL.
 pub(super) fn compile_pattern(pattern: Option<&str>) -> Option<String> {
-    pattern.map(|pattern| {
-        if pattern.contains(['*', '?']) {
-            pattern.to_owned()
-        } else {
-            format!("*{pattern}*")
-        }
-    })
+    pattern.map(super::structure_source::pattern_to_glob)
 }
 
 /// `SELECT count(*), count(DISTINCT <file>)` for a mechanic's family, under

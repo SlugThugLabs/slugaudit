@@ -17,7 +17,8 @@
 //! The store knows nothing of tools, MCP or wire codes. The tool layer maps
 //! its errors: `Unavailable` -> `result_store_unavailable`, `Full` ->
 //! `result_store_full`, `TooLarge` -> `result_too_large`, `Expired` ->
-//! `result_expired`, `Unknown` -> `unknown_cursor`. Supported on Unix; elsewhere
+//! `result_expired`, `Unknown` -> `unknown_cursor`; `Lock` and `Clock` keep the
+//! plain lock and clock errors. Supported on Unix; elsewhere
 //! `open` returns `Unavailable`.
 
 mod cell;
@@ -25,6 +26,7 @@ mod cursor;
 mod error;
 #[cfg(test)]
 mod fault;
+mod limits;
 mod owner;
 mod platform;
 mod reader;
@@ -56,9 +58,10 @@ mod paging_tests;
 pub use cell::{Cell, Materialize, NonFinite, StoredRow, Take};
 pub use cursor::{Cursor, ResultId};
 pub use error::ResultStoreError;
+pub use limits::ResultStoreLimits;
 pub use owner::SweepOutcome;
 pub use reader::PageRead;
 pub use registry::{ResultClass, ResultMeta};
 pub use stats::{ClassStats, StoreStats};
-pub use store::{Clock, ResultStore, ResultStoreLimits};
+pub use store::{Clock, ResultStore};
 pub use writer::{ResultHandle, ResultSpec, ResultWriter};

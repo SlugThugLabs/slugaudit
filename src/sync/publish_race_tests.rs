@@ -96,6 +96,89 @@ fn a_file_deleted_after_sampling_is_reported_as_changed_during_sample() -> TestR
     Ok(())
 }
 
+/// A file that is no longer valid UTF-8 changed since it was sampled as
+/// text: revalidation reports the retryable change, not a fatal sampling
+/// error whose message claims the file was recorded as skipped.
+#[test]
+fn a_file_that_stopped_being_utf8_after_sampling_is_reported_as_changed_during_sample() -> TestResult
+{
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "lib.rs", b"original\n")?;
+    let (discovered, _skipped) = discovery::discover(project.path()).check("discover")?;
+    let limits = ResourceLimits::default();
+    let sink = crate::progress::NoopProgressSink;
+    let deadline = crate::util::Deadline::after(std::time::Duration::from_mins(1));
+    let (samples, _skipped) =
+        sample_all_with_deadline(&discovered, &limits, &sink, &deadline).check("sample")?;
+    let (upserts, _deletions) = build_upserts_and_deletions(samples, &[], true, &limits, &deadline)
+        .check("build upserts")?;
+    // Invalid UTF-8 with no NUL byte, so the discovered kind stays text.
+    write(project.path(), "lib.rs", &[0xff, 0xfe, b'a', b'\n'])?;
+
+    let result = revalidate_unchanged_since_sample(&discovered, &upserts, &limits, &deadline);
+
+    assert!(
+        matches!(&result, Err(PublishError::ChangedDuringSample { path }) if path == "lib.rs"),
+        "a file that is no longer UTF-8 has changed, got {result:?}"
+    );
+    Ok(())
+}
+
+/// A file the walk listed and that is deleted before Pass 1 hashes it is a
+/// change to the tree: the attempt is retried with a fresh walk, and the
+/// committed revision does not contain the file. Without the rule the hash
+/// pass fails the whole call with a read error.
+#[test]
+fn a_file_deleted_between_discovery_and_hashing_is_retried_and_left_out_of_the_revision()
+-> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "keep.rs", b"fn keep() {}\n")?;
+    write(project.path(), "gone.rs", b"fn gone() {}\n")?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
+    let project_path = project.path().to_path_buf();
+    let hook = race_hook::set(
+        project.path(),
+        race_hook::RacePoint::AfterDiscovery,
+        move || {
+            std::fs::remove_file(project_path.join("gone.rs"))
+                .check("delete gone.rs after the walk listed it")
+        },
+    )?;
+
+    let (result, logs) = capture_at_level(
+        || {
+            publish(
+                &mut connection,
+                project.path(),
+                "1.0.0",
+                &crate::progress::NoopProgressSink,
+            )
+        },
+        tracing::Level::INFO,
+    )?;
+
+    let report = result.check("the publish converges after re-walking")?;
+    hook.outcome()?;
+    assert_eq!(stored_paths(&connection)?, vec!["keep.rs"]);
+    assert_eq!(report.added, 1, "only the file still on disk is added");
+    assert!(
+        report.skipped.is_empty(),
+        "a deleted file is not a skipped file: {:?}",
+        report.skipped
+    );
+    let retry_line = logs
+        .lines()
+        .find(|line| line.contains("publish retrying"))
+        .check("the deletion must be retried")?;
+    assert!(
+        retry_line.contains("error_kind=\"changed_during_sample\"")
+            && retry_line.contains("path=gone.rs"),
+        "got: {retry_line}"
+    );
+    Ok(())
+}
+
 #[test]
 fn an_unchanged_file_passes_revalidation() -> TestResult {
     let project = tempfile::tempdir().check("project dir")?;
@@ -122,12 +205,16 @@ fn a_file_changed_mid_sample_is_retried_and_the_final_revision_reflects_the_late
     let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
 
     let project_path = project.path().to_path_buf();
-    race_hook::set(project.path(), move || {
-        // Fires once, immediately after the first attempt finishes sampling
-        // "version one" but before it revalidates/writes — simulates a
-        // concurrent editor save landing in that exact window.
-        write(&project_path, "lib.rs", b"version two\n")
-    })?;
+    let hook = race_hook::set(
+        project.path(),
+        race_hook::RacePoint::BeforeCommit,
+        move || {
+            // Fires once, immediately after the first attempt finishes sampling
+            // "version one" but before it revalidates/writes — simulates a
+            // concurrent editor save landing in that exact window.
+            write(&project_path, "lib.rs", b"version two\n")
+        },
+    )?;
 
     let report = publish(
         &mut connection,
@@ -136,6 +223,7 @@ fn a_file_changed_mid_sample_is_retried_and_the_final_revision_reflects_the_late
         &crate::progress::NoopProgressSink,
     )
     .check("publish converges")?;
+    hook.outcome()?;
 
     let content: String = connection
         .query_row(
@@ -173,10 +261,14 @@ fn two_connections_publishing_concurrently_the_loser_retries_and_converges() -> 
 
     let (tx_pause, rx_pause) = std::sync::mpsc::channel::<()>();
     let (tx_resume, rx_resume) = std::sync::mpsc::channel::<()>();
-    race_hook::set(project.path(), move || {
-        tx_pause.send(()).check("signal pause")?;
-        rx_resume.recv().check("wait for resume")
-    })?;
+    let hook = race_hook::set(
+        project.path(),
+        race_hook::RacePoint::BeforeCommit,
+        move || {
+            tx_pause.send(()).check("signal pause")?;
+            rx_resume.recv().check("wait for resume")
+        },
+    )?;
 
     let project_path = project.path().to_path_buf();
     let db_path_a = db_path.clone();
@@ -211,6 +303,7 @@ fn two_connections_publishing_concurrently_the_loser_retries_and_converges() -> 
     // retry loop re-samples (this time seeing c.rs too) and converges.
     tx_resume.send(()).check("signal resume")?;
     let report_a = join_checked(handle, "thread A joins")??.check("A converges after retrying")?;
+    hook.outcome()?;
 
     assert_eq!(
         report_a.revision_id, report_b.revision_id,
@@ -246,10 +339,14 @@ fn a_noop_retry_after_losing_the_cas_race_converges_on_the_winners_revision() ->
 
     let (tx_pause, rx_pause) = std::sync::mpsc::channel::<()>();
     let (tx_resume, rx_resume) = std::sync::mpsc::channel::<()>();
-    race_hook::set(project.path(), move || {
-        tx_pause.send(()).check("signal pause")?;
-        rx_resume.recv().check("wait for resume")
-    })?;
+    let hook = race_hook::set(
+        project.path(),
+        race_hook::RacePoint::BeforeCommit,
+        move || {
+            tx_pause.send(()).check("signal pause")?;
+            rx_resume.recv().check("wait for resume")
+        },
+    )?;
 
     let project_path = project.path().to_path_buf();
     let db_path_a = db_path.clone();
@@ -279,6 +376,7 @@ fn a_noop_retry_after_losing_the_cas_race_converges_on_the_winners_revision() ->
 
     tx_resume.send(()).check("signal resume")?;
     let report_a = join_checked(handle, "thread A joins")??.check("A converges without error")?;
+    hook.outcome()?;
 
     assert_eq!(
         report_a.revision_id, report_b.revision_id,
@@ -297,9 +395,11 @@ fn a_retry_logs_the_changed_file_under_a_path_field() -> TestResult {
     let db_dir = tempfile::tempdir().check("db dir")?;
     let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
     let project_path = project.path().to_path_buf();
-    race_hook::set(project.path(), move || {
-        write(&project_path, "lib.rs", b"version two\n")
-    })?;
+    let hook = race_hook::set(
+        project.path(),
+        race_hook::RacePoint::BeforeCommit,
+        move || write(&project_path, "lib.rs", b"version two\n"),
+    )?;
 
     let (result, logs) = capture_at_level(
         || {
@@ -311,9 +411,10 @@ fn a_retry_logs_the_changed_file_under_a_path_field() -> TestResult {
             )
         },
         tracing::Level::INFO,
-    );
+    )?;
 
     result.check("the retry converges on the latest content")?;
+    hook.outcome()?;
     let retry_line = logs
         .lines()
         .find(|line| line.contains("publish retrying"))

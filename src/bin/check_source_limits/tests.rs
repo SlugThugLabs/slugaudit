@@ -67,6 +67,19 @@ fn raw_string_with_embedded_newline_counts_each_physical_line() {
 }
 
 #[test]
+fn a_string_continuation_ends_its_physical_line() {
+    // `\` before the newline continues the string onto the next line, but the
+    // two physical lines both hold tokens.
+    assert_eq!(code_lines("const S: &str = \"a\\\n    b\";\n"), 2);
+}
+
+#[test]
+fn an_escaped_newline_in_a_char_or_string_counts_each_line_once() {
+    assert_eq!(code_lines("let a = \"x\\\ny\\\nz\";\nlet b = 1;\n"), 4);
+    assert_eq!(code_lines("let a = \"x\\\n\";\n"), 2);
+}
+
+#[test]
 fn char_literal_counts() {
     assert_eq!(code_lines("let c = 'a';\n"), 1);
 }
@@ -107,7 +120,7 @@ fn code_after_block_comment_counts() {
 
 #[test]
 fn exception_reason_parsed() {
-    let src = "// slugaudit-line-exception: approved-by=slugthug; reason=foo bar\nfn x() {}\n";
+    let src = "// slugaudit-line-exception: approved-by=slugthuglabs; reason=foo bar\nfn x() {}\n";
     assert_eq!(
         exception_reason(src)
             .map(|exception| exception.reason)
@@ -125,6 +138,27 @@ fn exception_reason_absent_returns_none() {
 fn exception_wrong_approver_returns_none() {
     let src = "// slugaudit-line-exception: approved-by=human; reason=foo\nfn x() {}\n";
     assert_eq!(exception_reason(src), None);
+}
+
+#[test]
+fn a_malformed_annotation_does_not_end_the_scan() {
+    let valid = "// slugaudit-line-exception: approved-by=slugthuglabs; reason=later\n";
+    for malformed in [
+        "// slugaudit-line-exception: approved-by=slugthuglabs; reason=\n",
+        "// slugaudit-line-exception: approved-by=slugthuglabs; why=none\n",
+        "// slugaudit-line-exception: approved-by=human-user; date=2026-13x; reason=r\n",
+        "// slugaudit-line-exception: approved-by=human-user; no-date\n",
+        "// slugaudit-line-exception: approved-by=human-user; date=2026-11-02\n",
+        "// slugaudit-line-exception: approved-by=human-user date 2026-11-02\n",
+    ] {
+        let src = format!("{malformed}{valid}fn x() {{}}\n");
+
+        assert_eq!(
+            exception_reason(&src),
+            Some(Exception::agent("later".to_owned())),
+            "{malformed}"
+        );
+    }
 }
 
 #[test]
@@ -192,7 +226,7 @@ fn production_files_over_300_hard_fail_even_with_an_exception() {
 const HUMAN_ANNOTATION: &str =
     "// slugaudit-line-exception: approved-by=human-user; date=2026-10-18; reason=cohesive\n";
 const AGENT_ANNOTATION: &str =
-    "// slugaudit-line-exception: approved-by=slugthug; reason=cohesive\n";
+    "// slugaudit-line-exception: approved-by=slugthuglabs; reason=cohesive\n";
 
 #[test]
 fn a_dated_human_exception_passes_a_production_file_at_301_lines() -> TestResult {
@@ -237,7 +271,7 @@ fn an_agent_reason_imitating_the_human_display_prefix_fails_hard() -> TestResult
     // Admission must key on the parsed approver, not the *reason text*: an
     // agent could otherwise write the reserved display prefix itself and buy
     // the 301–350 band.
-    let annotation = "// slugaudit-line-exception: approved-by=slugthug; \
+    let annotation = "// slugaudit-line-exception: approved-by=slugthuglabs; \
                       reason=[human-approved 2026-10-19] pretend\n";
     let exception = exception_reason(annotation).check("agent annotation parses")?;
 

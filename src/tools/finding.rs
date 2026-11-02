@@ -1,8 +1,7 @@
 use super::context::{ensure_synced, with_verified_read};
-use super::finding_insert::{
-    fetch_file, insert_finding, validate_line_range, validate_text_fields,
-};
+use super::finding_insert::{fetch_file, insert_finding};
 use super::finding_store::with_findings_write;
+use super::finding_validate::{validate_line_range, validate_text_fields};
 use crate::sync;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -13,7 +12,6 @@ pub(super) const MAX_TITLE_CHARS: usize = 200;
 pub(super) const MAX_DESCRIPTION_CHARS: usize = 10_000;
 pub(super) const MAX_SEVERITY_CHARS: usize = 100;
 pub(super) const MAX_CATEGORY_CHARS: usize = 100;
-pub(super) const MAX_PATH_BYTES: usize = 32 * 1024;
 pub(super) const MAX_FILE_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Deserialize, JsonSchema)]

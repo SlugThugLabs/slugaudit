@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=the revision transaction: baseline check, deletions, upserts, edge resolution and the current-pointer swap
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=the revision transaction: baseline check, deletions, upserts, edge resolution and the current-pointer swap
 use super::manifest::{PATH_SET_SUBQUERY, paths_json_array};
 use super::revision_edges;
 use super::revision_files;
@@ -145,8 +145,12 @@ pub(super) fn publish_revision(
 
     apply_deletions(&tx, deletions)?;
     let upserted_ids = write_upserts_and_skipped(&tx, upserts, skipped, revision_db_id)?;
-    let known = revision_edges::known_paths(&tx, discovered_paths)?;
-    let known_ref: HashSet<&str> = known.iter().map(String::as_str).collect();
+    let stored = revision_edges::stored_paths(&tx)?;
+    let known_ref: HashSet<&str> = discovered_paths
+        .iter()
+        .chain(&stored)
+        .map(String::as_str)
+        .collect();
     resolve_edges(&tx, upserts, &upserted_ids, &known_ref)?;
     if re_resolve_unresolved {
         revision_edges::re_resolve_unresolved(&tx, &known_ref)?;
@@ -315,7 +319,7 @@ fn assert_baseline(
 
 /// Names a revision id for a stale-baseline error; `none` when there is no
 /// current revision.
-fn baseline_label(revision_id: Option<&str>) -> String {
+pub(super) fn baseline_label(revision_id: Option<&str>) -> String {
     match revision_id {
         Some(id) => id.to_owned(),
         None => "none".to_owned(),

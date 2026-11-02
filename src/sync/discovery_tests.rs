@@ -292,6 +292,61 @@ fn sniff_kind_reports_an_error_for_an_unreadable_path() -> TestResult {
     Ok(())
 }
 
+/// A file the walk listed and that is gone before the sniff read is a change
+/// to the tree, not an unreadable file: discovery fails with `Vanished`
+/// (which a publish retries) and records no skip for a file that no longer
+/// exists.
+#[test]
+fn a_listed_file_deleted_before_its_sniff_fails_discovery_as_vanished() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
+    let root = directory.path();
+    let mut discovered = Vec::new();
+    let mut skipped = Vec::new();
+
+    let error = collect_file_entry(
+        root,
+        &root.join("src").join("gone.rs"),
+        &mut discovered,
+        &mut skipped,
+    )
+    .check_err("a vanished file must fail discovery")?;
+
+    assert!(
+        matches!(&error, DiscoveryError::Vanished { relative_path } if relative_path == "src/gone.rs"),
+        "got {error:?}"
+    );
+    assert!(discovered.is_empty());
+    assert!(
+        skipped.is_empty(),
+        "no skip for a vanished file: {skipped:?}"
+    );
+    Ok(())
+}
+
+/// A listed file that exists but cannot be read stays a skip.
+#[cfg(unix)]
+#[test]
+fn a_listed_file_that_cannot_be_read_is_skipped_as_unreadable() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
+    let root = directory.path();
+    fs::create_dir(root.join("dir.rs")).check("create dir")?;
+    let mut discovered = Vec::new();
+    let mut skipped = Vec::new();
+
+    collect_file_entry(root, &root.join("dir.rs"), &mut discovered, &mut skipped)
+        .check("an unreadable file is a skip, not a failure")?;
+
+    assert!(discovered.is_empty());
+    let [skip] = skipped.as_slice() else {
+        return Err(format!("expected one skip, got {skipped:?}")).check("skips");
+    };
+    assert_eq!(
+        skip.code,
+        crate::sync::revision_skipped::SKIP_REASON_UNREADABLE
+    );
+    Ok(())
+}
+
 /// A root the walker cannot list yields one walk error and no entries.
 /// Discovery must fail closed: returning `Ok` with an empty file set would
 /// let the publish diff delete every stored row.

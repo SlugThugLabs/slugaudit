@@ -1,9 +1,9 @@
 //! `report` completeness envelope over hand-built `files` rows: parser-failure
 //! rows and totals, and the kind / reason / completeness grouping.
 
-use super::tests::{database_with_one_revision, insert_indexed_file};
+use super::tests::{build_report, database_with_one_revision, insert_indexed_file};
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 
 /// A text file that is fully indexed but has no parser must appear in the
 /// report as `ContentOnly` — its content is present and readable — rather
@@ -195,5 +195,35 @@ fn completeness_envelope_separates_kinds_reasons_and_completeness() -> TestResul
         response.parser_failure_count, 1,
         "a skipped file is never parsed, so it is not a parser failure"
     );
+    Ok(())
+}
+
+/// A skipped row with no `skip_reason` breaks the index invariant; the report
+/// fails naming the column instead of counting it under an invented label.
+#[test]
+fn a_skipped_row_without_a_skip_reason_fails_the_report_naming_the_column() -> TestResult {
+    let (_dir, mut connection) = database_with_one_revision()?;
+    connection
+        .execute(
+            "INSERT INTO files \
+             (path, file_kind, skip_reason, content, content_hash, hash_algorithm, byte_len, \
+              language_detected, parser_availability, parse_outcome, extraction_completeness, \
+              last_revision_id) \
+             VALUES ('huge.rs', 'skipped', NULL, NULL, 'stat', 'stat-identity', 100000, \
+                     0, 'Unavailable', 'NotAttempted', 'Unavailable', 1)",
+            [],
+        )
+        .check("insert skipped row without a reason")?;
+
+    let tx = connection.transaction().check("begin transaction")?;
+    let error = build_report(&tx, "r1".to_owned()).check_err("a NULL skip_reason must fail")?;
+
+    let rusqlite::Error::InvalidColumnType(_, column, _) = &error else {
+        return Err(format!(
+            "expected InvalidColumnType naming the column: {error:?}"
+        ))
+        .check("unexpected outcome");
+    };
+    assert_eq!(column, "skip_reason");
     Ok(())
 }

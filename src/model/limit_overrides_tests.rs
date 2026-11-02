@@ -22,7 +22,7 @@ fn apply_twice(config: &GlobalConfig) -> TestResult<(ResourceLimits, String)> {
             .check("second apply")?;
         assert_eq!(first, second);
         Ok(second)
-    });
+    })?;
     Ok((applied?, logs))
 }
 
@@ -229,7 +229,7 @@ fn apply_twice_over_lean(config: &GlobalConfig) -> TestResult<(ResourceLimits, S
         let second = config.apply_limit_keys(second_base).check("second apply")?;
         assert_eq!(first, second);
         Ok(second)
-    });
+    })?;
     Ok((applied?, logs))
 }
 
@@ -332,6 +332,79 @@ fn a_zero_config_result_active_grace_secs_is_refused_with_one_warning_and_keeps_
     assert_eq!(limits.result_active_grace_secs, 900);
     assert_eq!(
         lines_containing(&logs, "setting=\"config result_active_grace_secs\""),
+        1,
+        "{logs}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_value_above_sqlite_max_is_clamped_with_one_warning_per_configured_value() -> TestResult {
+    fresh_ledger().check("reset the ledger")?;
+
+    let (clamped, logs) = capture_warns(|| -> TestResult<[u64; 3]> {
+        Ok([
+            clamp_sqlite_value("clamp test setting", 2_000_000_000).check("first clamp")?,
+            clamp_sqlite_value("clamp test setting", 2_000_000_000).check("second clamp")?,
+            clamp_sqlite_value("clamp test setting", 3_000_000_000).check("new value")?,
+        ])
+    })?;
+
+    assert_eq!(clamped?, [SQLITE_MAX_VALUE_BYTES; 3]);
+    assert_eq!(
+        lines_containing(&logs, "setting=\"clamp test setting\""),
+        2,
+        "{logs}"
+    );
+    Ok(())
+}
+
+/// A poisoned ledger cannot say whether a warning is due, so the clamp fails
+/// instead of guessing.
+#[test]
+fn a_poisoned_ledger_fails_the_clamp_naming_the_ledger() -> TestResult {
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> TestResult {
+        REPORTED.with(|ledger| -> TestResult {
+            let _guard = ledger.lock().check("lock the ledger")?;
+            std::panic::resume_unwind(Box::new("simulated panic inside the critical section"))
+        })
+    }));
+    assert!(unwound.is_err(), "the holder must have unwound");
+
+    let error = clamp_sqlite_value("poison test setting", 2_000_000_000)
+        .check_err("a poisoned ledger is an error")?;
+
+    assert_eq!(
+        error.to_string(),
+        "mutex limit_override_warnings was poisoned by a panic in an earlier holder"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_value_within_sqlite_max_passes_through_without_a_warning() -> TestResult {
+    fresh_ledger().check("reset the ledger")?;
+
+    let (value, logs) = capture_warns(|| clamp_sqlite_value("within test setting", 1_000_000_000))?;
+
+    assert_eq!(value.check("clamp")?, 1_000_000_000);
+    assert_eq!(lines_containing(&logs, "within test setting"), 0, "{logs}");
+    Ok(())
+}
+
+#[test]
+fn a_config_max_file_bytes_above_sqlite_max_warns_once_across_calls() -> TestResult {
+    fresh_ledger().check("reset the ledger")?;
+    let config = GlobalConfig {
+        max_file_bytes: Some(2_000_000_000),
+        ..Default::default()
+    };
+
+    let (limits, logs) = apply_twice(&config)?;
+
+    assert_eq!(limits.max_file_bytes, SQLITE_MAX_VALUE_BYTES);
+    assert_eq!(
+        lines_containing(&logs, "setting=\"config max_file_bytes\""),
         1,
         "{logs}"
     );

@@ -27,39 +27,52 @@ pub(crate) fn is_yes(answer: &str) -> bool {
 /// never waits; a failure to ask or to read the answer is reported on stderr
 /// and declines.
 pub(crate) fn confirm(msg: &str) -> bool {
-    #[cfg(test)]
-    {
-        let _ = msg;
-        false
+    use std::io::IsTerminal as _;
+    let stdin = std::io::stdin();
+    if !stdin.is_terminal() {
+        return false;
     }
-    #[cfg(not(test))]
-    {
-        use std::io::IsTerminal as _;
-        if !std::io::stdin().is_terminal() {
-            return false;
-        }
-        match ask_yes_no(&mut std::io::stdout(), &mut std::io::stdin().lock(), msg) {
-            Ok(accepted) => accepted,
-            Err(error) => {
-                // The question failed, so the answer is "no"; a failure to
-                // report that is logged to stderr, which is the only channel
-                // left and cannot itself be escalated from here.
-                if let Err(write_error) =
-                    crate::cli::err(format_args!("could not read your answer: {error}\n"))
-                {
-                    tracing::warn!(
-                        error = %write_error,
-                        "could not report a prompt read failure on stderr",
-                    );
-                }
-                false
+    confirm_from(
+        &mut std::io::stdout(),
+        &mut stdin.lock(),
+        &mut std::io::stderr(),
+        msg,
+    )
+}
+
+/// Asks `msg` on `output`, reads the answer from `input` and reports whether
+/// it accepts. A failure to ask or read is written to `report` and declines.
+/// Split from [`confirm`] so the terminal-only path is testable with injected
+/// streams.
+fn confirm_from(
+    output: &mut impl std::io::Write,
+    input: &mut impl std::io::BufRead,
+    report: &mut impl std::io::Write,
+    msg: &str,
+) -> bool {
+    match ask_yes_no(output, input, msg) {
+        Ok(accepted) => accepted,
+        Err(error) => {
+            // The question failed, so the answer is "no"; a failure to
+            // report that is logged, since `report` is the only channel
+            // left and cannot itself be escalated from here.
+            if let Err(write_error) = crate::cli::write_to(
+                report,
+                format_args!("could not read your answer: {error}\n"),
+            ) {
+                tracing::warn!(
+                    error = %write_error,
+                    "could not report a prompt read failure on stderr",
+                );
             }
+            false
         }
     }
 }
 
-/// Writes `msg`, reads one line, and reports whether it accepts. Split from
-/// [`confirm`] so the failure paths are testable.
+/// Writes `msg`, reads one capped line, and reports whether it accepts. End
+/// of input declines. Split from [`confirm`] so the failure paths are
+/// testable.
 fn ask_yes_no(
     output: &mut impl std::io::Write,
     input: &mut impl std::io::BufRead,
@@ -67,9 +80,7 @@ fn ask_yes_no(
 ) -> std::io::Result<bool> {
     write!(output, "{msg}")?;
     output.flush()?;
-    let mut line = String::new();
-    input.read_line(&mut line)?;
-    Ok(is_yes(&line))
+    Ok(read_capped_line(input)?.is_some_and(|line| is_yes(&line)))
 }
 
 fn read_capped_line(input: &mut impl std::io::BufRead) -> std::io::Result<Option<String>> {
@@ -175,5 +186,56 @@ mod tests {
         assert!(yes);
         assert!(!no);
         Ok(())
+    }
+
+    #[test]
+    fn an_over_long_answer_is_bounded_and_end_of_input_declines() -> TestResult {
+        let mut output = Vec::new();
+        let long = format!("{}\n", "y".repeat(10_000));
+
+        let capped = ask_yes_no(
+            &mut output,
+            &mut std::io::Cursor::new(long.into_bytes()),
+            "q ",
+        )
+        .check("reads")?;
+        let end =
+            ask_yes_no(&mut output, &mut std::io::Cursor::new(Vec::new()), "q ").check("reads")?;
+
+        assert!(!capped, "256 y's are not 'y'");
+        assert!(!end, "end of input declines");
+        Ok(())
+    }
+
+    #[test]
+    fn confirm_from_accepts_a_yes_and_asks_the_question() {
+        let mut output = Vec::new();
+        let mut report = Vec::new();
+
+        let accepted = confirm_from(
+            &mut output,
+            &mut std::io::Cursor::new(b"yes\n"),
+            &mut report,
+            "Add? ",
+        );
+
+        assert!(accepted);
+        assert_eq!(output, b"Add? ");
+        assert!(report.is_empty());
+    }
+
+    #[test]
+    fn confirm_from_declines_and_reports_a_read_failure() {
+        let mut output = Vec::new();
+        let mut report = Vec::new();
+        let mut input = std::io::BufReader::new(FailingReader);
+
+        let accepted = confirm_from(&mut output, &mut input, &mut report, "Add? ");
+
+        assert!(!accepted);
+        assert_eq!(
+            String::from_utf8_lossy(&report),
+            "could not read your answer: stdin closed under us\n"
+        );
     }
 }

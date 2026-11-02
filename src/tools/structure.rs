@@ -16,7 +16,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use stored::{CutFacts, PageCut, StoredMatch};
 
-const MAX_PATH_BYTES: usize = 32 * 1024;
+use super::MAX_PATH_BYTES;
 const MAX_FILTER_BYTES: usize = 8 * 1024;
 
 use super::structure_source::MAX_MULTI_FILE_TOTAL_BYTES;
@@ -167,22 +167,26 @@ pub fn structure(
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<StructureResponse>, ErrorData> {
     let request_path = request.0.path.as_str();
+    // The checks that need no limits run first: resolving them walks the
+    // filesystem.
+    request.0.legacy_paging.refuse()?;
+    validate::entry(&request.0)?;
     // A continuation ignores `path`, so it has no project to read limits from;
-    // its page budget, ceiling flag and match cap come from the stored result;
-    // these limits only clamp an explicit `page_bytes`.
+    // its page budget, ceiling and match cap come from the stored result.
     let limits = if request.0.cursor.is_none() && !request_path.is_empty() {
         super::resolve_limits(request_path)?
     } else {
         super::process_limits_for_tool()?
     };
-    structure_with_limits(request, &limits, MAX_MULTI_FILE_TOTAL_BYTES, sink, manager)
+    serve(request, &limits, MAX_MULTI_FILE_TOTAL_BYTES, sink, manager)
 }
 
-/// Test-only seam: production code always goes through [`structure`] with
-/// `process_limits`; tests inject a tighter `max_structure_execution_time`
-/// to exercise the abort path without waiting out the production-sized
-/// budget, and a small `window_bytes` to cut the multi-file memory window
-/// without writing 64 MB.
+/// Test-only seam: tests inject a tighter `max_structure_execution_time` to
+/// exercise the abort path without waiting out the production-sized budget,
+/// and a small `window_bytes` to cut the multi-file memory window without
+/// writing 64 MB. It runs the entry checks of [`structure`] and then the same
+/// [`serve`].
+#[cfg(test)]
 fn structure_with_limits(
     request: &Parameters<StructureRequest>,
     limits: &ResourceLimits,
@@ -190,34 +194,42 @@ fn structure_with_limits(
     sink: &dyn crate::progress::ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<StructureResponse>, ErrorData> {
+    request.0.legacy_paging.refuse()?;
+    validate::entry(&request.0)?;
+    serve(request, limits, window_bytes, sink, manager)
+}
+
+/// Serves the page once the request has passed the entry checks.
+fn serve(
+    request: &Parameters<StructureRequest>,
+    limits: &ResourceLimits,
+    window_bytes: usize,
+    sink: &dyn crate::progress::ProgressSink,
+    manager: &sync::SourceSyncManager,
+) -> Result<Json<StructureResponse>, ErrorData> {
     let request = &request.0;
-    request.legacy_paging.refuse()?;
     let page = page_size::resolve(request.page_bytes, limits)?;
     let path = (!request.path.is_empty()).then_some(request.path.as_str());
     let page_request = page_request(request.cursor.as_deref(), path, sink)?;
-    match request.cursor.as_deref() {
-        Some(cursor) => validate_cursor(cursor)?,
-        None => validate_request(request, limits)?,
+    if request.cursor.is_none() {
+        validate::content(request, limits)?;
     }
     let mut spec = PageSpec::typed::<StoredMatch>("structure", page.bytes);
-    spec.requested_page_bytes = request.page_bytes.map(|_| page.bytes);
+    spec.requested_page_bytes = request.page_bytes;
+    spec.ceiling = limits.max_query_response_bytes;
     // What page one fixes about every page's cut is stored with the result;
     // a continuation reads it back and never the process limits.
     let facts = CutFacts {
-        at_ceiling: page.at_ceiling,
         max_matches: limits.max_structure_matches,
     };
-    // A budget the request itself asked for is judged against the ceiling it
-    // was clamped to; an inherited one against page one's.
-    let asked_at_ceiling = request.page_bytes.map(|_| page.at_ceiling);
-    let mut cut = PageCut::new(page.bytes, facts);
+    let mut cut = PageCut::new(page.bytes, page.at_ceiling, facts);
     let served = paginate(
         manager,
         &spec,
         page_request,
         |tx, rows| produce(tx, rows, request, limits, window_bytes, facts),
         |ctx| {
-            cut = PageCut::new(ctx.page_bytes, ctx.extra.cut.judged(asked_at_ceiling));
+            cut = PageCut::new(ctx.page_bytes, ctx.at_ceiling, ctx.extra.cut);
             |row: &StoredRow| cut.accept(row)
         },
     )?;
@@ -225,70 +237,8 @@ fn structure_with_limits(
     structure_response(served, &cut)
 }
 
-/// Bounds the cursor like every other string input.
-fn validate_cursor(cursor: &str) -> Result<(), ErrorData> {
-    if crate::util::exceeds_input_bytes(cursor, MAX_FILTER_BYTES) {
-        return Err(ErrorData::invalid_params(
-            format!("cursor exceeds {MAX_FILTER_BYTES} bytes"),
-            None,
-        ));
-    }
-    Ok(())
-}
-
-/// Rejects oversized or empty inputs before any sync or parse work.
-fn validate_request(request: &StructureRequest, limits: &ResourceLimits) -> Result<(), ErrorData> {
-    if crate::util::exceeds_input_bytes(&request.path, MAX_PATH_BYTES) {
-        return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
-    }
-    for (name, value, max_bytes) in [
-        ("file", request.file.as_deref(), MAX_FILTER_BYTES),
-        ("language", request.language.as_deref(), MAX_FILTER_BYTES),
-        ("pattern", request.pattern.as_deref(), MAX_FILTER_BYTES),
-        (
-            "start_after_file",
-            request.start_after_file.as_deref(),
-            MAX_PATH_BYTES,
-        ),
-    ] {
-        if value.is_some_and(|value| crate::util::exceeds_input_bytes(value, max_bytes)) {
-            return Err(ErrorData::invalid_params(
-                format!("{name} exceeds {max_bytes} bytes"),
-                None,
-            ));
-        }
-    }
-    if request
-        .language
-        .as_deref()
-        .is_some_and(crate::parse::is_prose_language_name)
-    {
-        return Err(super::structure_source::prose_not_parsed_error());
-    }
-    if request.query.trim().is_empty() {
-        return Err(ErrorData::invalid_params(
-            "structure query must not be empty",
-            None,
-        ));
-    }
-    if request.query.len() > limits.max_structure_query_bytes {
-        return Err(ErrorData::invalid_params(
-            format!(
-                "structure query is {} bytes; the limit is {} (max_structure_query_bytes)",
-                request.query.len(),
-                limits.max_structure_query_bytes
-            ),
-            None,
-        ));
-    }
-    if request.file.is_some() && request.start_after_file.is_some() {
-        return Err(ErrorData::invalid_params(
-            "start_after_file applies only to multi-file queries; omit it with `file`",
-            None,
-        ));
-    }
-    Ok(())
-}
+#[path = "structure_validate.rs"]
+mod validate;
 
 #[path = "structure_stored.rs"]
 pub(super) mod stored;

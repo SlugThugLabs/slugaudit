@@ -13,11 +13,11 @@ use slugaudit_test_check::{Check, CheckErr, TestResult};
 use std::time::Duration;
 
 /// The fixture every payload below attacks: one indexed `lib.rs`.
-fn project() -> TestResult<tempfile::TempDir> {
+pub(super) fn project() -> TestResult<tempfile::TempDir> {
     activated_project("lib.rs", b"pub fn a() {}\n")
 }
 
-fn ask(project: &tempfile::TempDir, sql: &str) -> Result<QueryResponse, ErrorData> {
+pub(super) fn ask(project: &tempfile::TempDir, sql: &str) -> Result<QueryResponse, ErrorData> {
     query(
         &Parameters(QueryRequest {
             path: Some(project.path().to_string_lossy().into_owned()),
@@ -35,7 +35,7 @@ fn ask(project: &tempfile::TempDir, sql: &str) -> Result<QueryResponse, ErrorDat
 /// Demands that `sql` be refused. The error names the false pass: an `Ok`
 /// here would mean a tool advertising read-only SQL executed the payload
 /// anyway.
-fn refused(project: &tempfile::TempDir, sql: &str, what: &str) -> TestResult<ErrorData> {
+pub(super) fn refused(project: &tempfile::TempDir, sql: &str, what: &str) -> TestResult<ErrorData> {
     match ask(project, sql) {
         Err(error) => Ok(error),
         Ok(response) => Err(format!(
@@ -394,7 +394,7 @@ fn assert_refused_as_not_a_select(error: &ErrorData, sql: &str) {
 
 /// A process-wide pragma as a second, freshly opened connection reads it
 /// (`None` when it has no value).
-fn fresh_pragma(pragma: &str) -> TestResult<Option<String>> {
+pub(super) fn fresh_pragma(pragma: &str) -> TestResult<Option<String>> {
     use rusqlite::OptionalExtension;
     Ok(rusqlite::Connection::open_in_memory()
         .check("a freshly opened connection")?

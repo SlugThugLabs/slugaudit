@@ -1,66 +1,169 @@
 //! The `--help` usage text and the styling that renders it.
 //!
-//! Lives apart from the parent module to keep `cli.rs` under the source-size
-//! gate. The parent re-exports the public [`usage`] entry point, and imports
-//! [`USAGE`] and [`render_usage`] for `cli_tests`.
+//! Every command is documented once, in a [`CommandDoc`]. The general help
+//! ([`usage_text`]) and each subcommand's own help ([`topic_usage`]) are both
+//! built from those entries, so they cannot drift apart. The parent re-exports
+//! the public [`usage`] entry point, and imports [`usage_text`] and
+//! [`render_usage`] for `cli_tests`.
 
 use crate::util::Style;
 
-/// The raw usage and help text printed for `--help`.
+/// One command's documentation: the single source for the general help and the
+/// subcommand's own help.
+struct CommandDoc {
+    /// The command word.
+    name: &'static str,
+    /// The invocation after `slugaudit `, as the general help lists it.
+    invocation: &'static str,
+    /// Further invocations after `slugaudit `, shown in the subcommand's own
+    /// help.
+    aliases: &'static [&'static str],
+    /// One line for the general help's `USAGE:` list.
+    summary: &'static str,
+    /// The description, one source line per output line, unindented.
+    detail: &'static str,
+}
+
+const SERVE: CommandDoc = CommandDoc {
+    name: "serve",
+    invocation: "serve",
+    aliases: &[],
+    summary: "Run the MCP server (stdio transport)",
+    detail: "Run the MCP server over stdio. This is also what `slugaudit` does with no\n\
+arguments, and the way your AI agent launches SlugAudit. It speaks JSON-RPC\n\
+over stdio and blocks until the host closes the pipe.",
+};
+
+const MENU: CommandDoc = CommandDoc {
+    name: "menu",
+    invocation: "menu",
+    aliases: &[],
+    summary: "Interactive setup menu (recommended entry point)",
+    detail: "Open the interactive setup menu: install the binary, connect to an AI agent,\n\
+get a config snippet for any other MCP client, or run the server for testing.\n\
+Recommended for first-time setup.",
+};
+
+const INSTALL: CommandDoc = CommandDoc {
+    name: "install",
+    invocation: "install",
+    aliases: &[],
+    summary: "Copy binary to ~/.slugthug/slugaudit/",
+    detail: "Copy the binary to ~/.slugthug/slugaudit/slugaudit so agents and MCP clients\n\
+can launch a stable path that survives rebuilds.",
+};
+
+const CONNECT: CommandDoc = CommandDoc {
+    name: "connect",
+    invocation: "connect [AGENT]",
+    aliases: &[],
+    summary: "Connect to an AI agent or editor",
+    detail: "Register the installed SlugAudit binary as the `slugaudit` MCP server in an\n\
+AI agent or editor (or this binary when no installed copy exists). With an\n\
+agent name (e.g. `agy`, `claude`, `gemini`, `cursor`) it connects directly;\n\
+without one it shows the detected installed agents.",
+};
+
+const DISCONNECT: CommandDoc = CommandDoc {
+    name: "disconnect",
+    invocation: "disconnect [AGENT]",
+    aliases: &["remove [AGENT]"],
+    summary: "Disconnect from an AI agent or editor",
+    detail: "Remove the SlugAudit registration from an AI agent or editor. Alias:\n\
+`remove`. With an agent name it disconnects directly; without one it lists\n\
+the connected agents to pick from.",
+};
+
+const UPDATE: CommandDoc = CommandDoc {
+    name: "update",
+    invocation: "update",
+    aliases: &[],
+    summary: "Fetch the latest release and replace this binary",
+    detail: "Check the latest GitHub release and, if newer than the running binary,\n\
+download it and atomically replace this binary in place. Uses curl; verifies\n\
+the sha256 checksum before touching the current executable.",
+};
+
+const VERSION: CommandDoc = CommandDoc {
+    name: "version",
+    invocation: "version",
+    aliases: &[],
+    summary: "Print version (also --version, -V, -v)",
+    detail: "Print the version. Also --version, -V, -v.",
+};
+
+const HELP: CommandDoc = CommandDoc {
+    name: "help",
+    invocation: "help",
+    aliases: &[],
+    summary: "Show this message (also --help, -h)",
+    detail: "Show this message. Also --help, -h.",
+};
+
+/// Every command, in the order the general help lists them.
+const COMMANDS: [&CommandDoc; 8] = [
+    &MENU,
+    &INSTALL,
+    &CONNECT,
+    &DISCONNECT,
+    &UPDATE,
+    &SERVE,
+    &VERSION,
+    &HELP,
+];
+
+/// The `EXAMPLES:` rows: invocation and what it does.
+const EXAMPLES: [(&str, &str); 7] = [
+    ("menu", "Set everything up interactively"),
+    ("install", "Install to ~/.slugthug/slugaudit/"),
+    ("connect agy", "Register with Antigravity"),
+    ("connect claude", "Register with Claude Code"),
+    ("disconnect claude", "Remove registration from Claude Code"),
+    ("update", "Update to the latest release"),
+    ("", "Run the server for your AI agent"),
+];
+
+/// Width of the invocation column in the general help.
+const INVOCATION_WIDTH: usize = 23;
+
+/// Width of the command-word column in the general help's `COMMANDS:` list.
+const NAME_WIDTH: usize = 14;
+
+/// The general usage and help text printed for `--help`, built from
+/// [`COMMANDS`].
 ///
 /// Crate-internal: [`usage`] is the public entry point, and nothing outside
 /// this module reads the unstyled text.
-pub(crate) const USAGE: &str = "\
-slugaudit — searchable, trustworthy codebase evidence over MCP
+pub(crate) fn usage_text() -> String {
+    let mut lines = vec![
+        "slugaudit — searchable, trustworthy codebase evidence over MCP".to_owned(),
+        String::new(),
+        "USAGE:".to_owned(),
+        row("", "Run the MCP server (stdio transport)"),
+    ];
+    lines.extend(COMMANDS.iter().map(|doc| row(doc.invocation, doc.summary)));
+    lines.push(String::new());
+    lines.push("COMMANDS:".to_owned());
+    for doc in COMMANDS {
+        for (index, line) in doc.detail.lines().enumerate() {
+            let name = if index == 0 { doc.name } else { "" };
+            lines.push(format!("    {name:<NAME_WIDTH$}{line}"));
+        }
+    }
+    lines.push(String::new());
+    lines.push("OPTIONS:".to_owned());
+    lines.push("    -h, --help      Show this message.".to_owned());
+    lines.push("    -V, --version   Print the version.".to_owned());
+    lines.push(String::new());
+    lines.push("EXAMPLES:".to_owned());
+    lines.extend(EXAMPLES.iter().map(|(command, what)| row(command, what)));
+    lines.join("\n") + "\n"
+}
 
-USAGE:
-    slugaudit                        Run the MCP server (stdio transport)
-    slugaudit menu                   Interactive setup menu (recommended entry point)
-    slugaudit install                Copy binary to ~/.slugthug/slugaudit/
-    slugaudit connect [AGENT]        Connect to an AI agent or editor
-    slugaudit disconnect [AGENT]     Disconnect from an AI agent or editor
-    slugaudit update                 Fetch the latest release and replace this binary
-    slugaudit version                Print version (also --version, -V, -v)
-    slugaudit help                   Show this message (also --help, -h)
-
-COMMANDS:
-    (no command)  Start the MCP server. This is the default and the way
-                  your AI agent launches SlugAudit; it speaks JSON-RPC
-                  over stdio and blocks until the host closes the pipe.
-    menu          Interactive setup: install the binary, connect to an AI
-                  agent, get a config snippet for any other MCP client,
-                  or run the server for testing. Recommended for first-time setup.
-    connect       Register the installed SlugAudit binary as the `slugaudit`
-                  MCP server in an AI agent or editor (or this binary when no
-                  installed copy exists). With an agent name (e.g. `agy`,
-                  `claude`, `gemini`, `cursor`) it connects directly; without
-                  one it shows detected installed agents.
-    disconnect    Remove SlugAudit registration from an AI agent or editor.
-                  Alias: `remove`. With an agent name it disconnects directly;
-                  without one it lists connected agents to pick from.
-    install       Copy the binary to ~/.slugthug/slugaudit/slugaudit so
-                  agents and MCP clients can launch a stable path that
-                  survives rebuilds.
-    update        Check the latest GitHub release and, if newer than the
-                  running binary, download it and atomically replace this
-                  binary in place. Uses curl; verifies the sha256 checksum
-                  before touching the current executable.
-    version       Print the version. Also --version, -V, -v.
-    help          Show this message. Also --help, -h.
-
-OPTIONS:
-    -h, --help      Show this message.
-    -V, --version   Print the version.
-
-EXAMPLES:
-    slugaudit menu                   Set everything up interactively
-    slugaudit install                Install to ~/.slugthug/slugaudit/
-    slugaudit connect agy            Register with Antigravity
-    slugaudit connect claude         Register with Claude Code
-    slugaudit disconnect claude      Remove registration from Claude Code
-    slugaudit update                 Update to the latest release
-    slugaudit                        Run the server for your AI agent
-";
+/// One `    slugaudit <invocation>  <text>` row.
+fn row(invocation: &str, text: &str) -> String {
+    format!("    slugaudit {invocation:<INVOCATION_WIDTH$}{text}")
+}
 
 /// Formats the usage text, applying ANSI terminal styling when stdout is a terminal.
 #[must_use]
@@ -68,15 +171,16 @@ pub fn usage() -> String {
     render_usage(&Style::stdout())
 }
 
-/// Renders [`USAGE`] with `style`. Split from [`usage`] so both branches can be
+/// Renders [`usage_text`] with `style`. Split from [`usage`] so both branches can be
 /// driven with a fixed style instead of whatever stdout happens to be.
 pub(super) fn render_usage(style: &Style) -> String {
     if !style.enabled() {
-        return USAGE.to_owned();
+        return usage_text();
     }
     let headings = ["USAGE:", "COMMANDS:", "OPTIONS:", "EXAMPLES:"];
-    let mut out = String::with_capacity(USAGE.len() + 64);
-    for (i, line) in USAGE.lines().enumerate() {
+    let text = usage_text();
+    let mut out = String::with_capacity(text.len() + 64);
+    for (i, line) in text.lines().enumerate() {
         let trimmed = line.trim_end();
         if i == 0 {
             out.push_str(&style.bold(trimmed));
@@ -121,89 +225,35 @@ impl Topic {
         }
     }
 
-    /// The usage text for this subcommand.
-    const fn text(self) -> &'static str {
+    /// The documentation entry for this subcommand.
+    const fn doc(self) -> &'static CommandDoc {
         match self {
-            Self::Serve => {
-                "\
-USAGE:
-    slugaudit serve
-
-Run the MCP server over stdio. This is also what `slugaudit` does with no
-arguments. It blocks until the host closes the pipe.
-
-OPTIONS:
-    -h, --help      Show this message.
-"
-            }
-            Self::Connect => {
-                "\
-USAGE:
-    slugaudit connect [AGENT]
-
-Register SlugAudit as the `slugaudit` MCP server in an AI agent or editor.
-With an agent name (e.g. `agy`, `claude`, `gemini`, `cursor`) it connects
-directly; without one it shows the detected installed agents.
-
-OPTIONS:
-    -h, --help      Show this message.
-"
-            }
-            Self::Disconnect => {
-                "\
-USAGE:
-    slugaudit disconnect [AGENT]
-    slugaudit remove [AGENT]
-
-Remove the SlugAudit registration from an AI agent or editor. With an agent
-name it disconnects directly; without one it lists connected agents.
-
-OPTIONS:
-    -h, --help      Show this message.
-"
-            }
-            Self::Install => {
-                "\
-USAGE:
-    slugaudit install
-
-Copy this binary to ~/.slugthug/slugaudit/slugaudit so agents can launch a
-stable path that survives rebuilds.
-
-OPTIONS:
-    -h, --help      Show this message.
-"
-            }
-            Self::Menu => {
-                "\
-USAGE:
-    slugaudit menu
-
-Open the interactive setup menu: install the binary, connect to an AI agent,
-get a config snippet for another MCP client, or run the server for testing.
-
-OPTIONS:
-    -h, --help      Show this message.
-"
-            }
-            Self::Update => {
-                "\
-USAGE:
-    slugaudit update
-
-Check the latest GitHub release and, if newer than the running binary,
-download it, verify its sha256 checksum, and replace this binary in place.
-
-OPTIONS:
-    -h, --help      Show this message.
-"
-            }
+            Self::Serve => &SERVE,
+            Self::Connect => &CONNECT,
+            Self::Disconnect => &DISCONNECT,
+            Self::Install => &INSTALL,
+            Self::Menu => &MENU,
+            Self::Update => &UPDATE,
         }
+    }
+
+    /// The usage text for this subcommand, built from its [`CommandDoc`].
+    fn text(self) -> String {
+        let doc = self.doc();
+        let invocations = std::iter::once(doc.invocation).chain(doc.aliases.iter().copied());
+        let mut lines = vec!["USAGE:".to_owned()];
+        lines.extend(invocations.map(|invocation| format!("    slugaudit {invocation}")));
+        lines.push(String::new());
+        lines.push(doc.detail.to_owned());
+        lines.push(String::new());
+        lines.push("OPTIONS:".to_owned());
+        lines.push("    -h, --help      Show this message.".to_owned());
+        lines.join("\n") + "\n"
     }
 }
 
 /// The usage text for one subcommand, printed for `<subcommand> --help`.
 #[must_use]
-pub fn topic_usage(topic: Topic) -> &'static str {
+pub fn topic_usage(topic: Topic) -> String {
     topic.text()
 }

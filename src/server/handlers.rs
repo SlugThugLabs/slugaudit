@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=the tool registry: one #[tool_router] impl whose titles, descriptions and annotations are the advertised MCP tool surface
 //! The `#[tool]` handler registry for [`SlugAuditServer`].
 //!
 //! Every handler is declarative: it names the tool and forwards its request
@@ -22,8 +23,12 @@ use std::sync::Arc;
 /// `schema_for_input` returns (the generated schema without its top-level
 /// `title` and `description`), built without that function's fallible
 /// root-type check, whose failure the `#[tool]` macro would turn into a
-/// panic. Every request type's root is an object; the test
-/// `every_input_schema_matches_rmcp_and_has_an_object_root` pins both facts.
+/// panic. This keeps one of rmcp's two panic paths out of this crate's macro
+/// expansion; `schema_for_type` keeps its own internal `expect`s, which only
+/// fire if schema generation or serialization of a fixed, derived type fails.
+/// Every request type's root is an object; the test
+/// `every_input_schema_matches_rmcp_and_has_an_object_root` pins that and
+/// that the result equals rmcp's checked schema, so rmcp drift is caught.
 fn input_schema<T: schemars::JsonSchema + std::any::Any>() -> Arc<rmcp::model::JsonObject> {
     let mut schema = rmcp::handler::server::common::schema_for_type::<T>()
         .as_ref()

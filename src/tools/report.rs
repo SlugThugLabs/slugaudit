@@ -1,10 +1,10 @@
-use super::context::{ensure_synced, internal_error, with_verified_read};
+use super::context::{ensure_synced, operation_error, with_verified_read};
 use super::finding_store::{count_current, findings_path_of};
 use super::mechanic::{InvalidMechanic, MechanicListing};
 use super::mechanic_catalog;
 #[cfg(test)]
 use super::report_sections::MAX_PARSER_FAILURE_FILES;
-use super::report_sections::build_report;
+use super::report_sections::read_sections;
 use crate::progress::ProgressSink;
 use crate::sync;
 use rmcp::ErrorData;
@@ -37,7 +37,8 @@ pub struct SkipReasonCount {
     /// A short stable code from `files.skip_reason`: `oversize` (over the
     /// per-file import ceiling), `not_utf8` (the bytes are not valid UTF-8),
     /// `unreadable` (the read failed) or `stat_failed` (the stat failed, so
-    /// `files.byte_len` is NULL: size unknown, not 0). Empty when a skipped row carries no recorded reason.
+    /// `files.byte_len` is NULL: size unknown, not 0). Every skipped row
+    /// carries one; a skipped row without a reason fails the report.
     pub reason: String,
     /// Number of skipped `files` rows with this `reason`.
     pub count: i64,
@@ -208,10 +209,8 @@ pub struct EvidenceKindCount {
     pub count: i64,
 }
 
-/// How many import edges fell into each resolution bucket. A project with
-/// mostly `External` and `Unresolved` edges and very few `Resolved` ones
-/// has an import graph the evidence can't connect — useful context for an
-/// AI deciding how much to trust dependency traversal for this project.
+/// How many import edges fell into each resolution bucket. `Resolved` edges
+/// land on a project file; `External` and `Unresolved` edges carry no target.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ImportResolutionCount {
     /// One of `Resolved`, `Unresolved`, or `External`.
@@ -219,10 +218,8 @@ pub struct ImportResolutionCount {
     pub count: i64,
 }
 
-/// A file whose parse failed or was not attempted, with enough detail for
-/// an AI to decide whether the failure is worth investigating or just
-/// noise (e.g. a `.claude_output.txt` scratch file that should have been
-/// excluded, vs. a real source file with a genuine syntax error).
+/// A file whose parse failed or was not attempted, with the recorded
+/// outcome, reason, completeness and parser availability.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ParserFailureFile {
     pub path: String,
@@ -245,7 +242,7 @@ pub struct ParserFailureFile {
     pub parser_availability: String,
 }
 
-const MAX_PATH_BYTES: usize = 32 * 1024;
+use super::MAX_PATH_BYTES;
 
 /// Automatic project snapshot: what evidence exists, not what's suspicious
 /// about it. No score, no risk leads, no safe/unsafe claim.
@@ -283,9 +280,8 @@ pub struct ReportResponse {
     /// Indexed files whose parser was unavailable or whose parse failed — the
     /// same predicate `parser_failure_files` lists, without the list cap.
     pub parser_failure_count: i64,
-    /// Up to `MAX_PARSER_FAILURE_FILES` files with parse failures, so the
-    /// AI can see whether failures are concentrated in scratch/temp files
-    /// (noise) or in real source files (worth investigating).
+    /// Up to `MAX_PARSER_FAILURE_FILES` files with parse failures, ordered
+    /// by path.
     pub parser_failure_files: Vec<ParserFailureFile>,
     /// Uncapped total of files matching the `parser_failure_files` predicate.
     /// Larger than the returned list's length means the list was truncated at
@@ -296,15 +292,11 @@ pub struct ReportResponse {
     /// Findings invalidated by a later content change are `stale` and are not
     /// counted.
     pub open_finding_count: i64,
-    /// How many import edges are Resolved vs Unresolved vs External — a
-    /// key asymmetry signal. A project with mostly External/Unresolved
-    /// imports has a disconnected import graph that dependency traversal
-    /// can't help with.
+    /// How many import edges are Resolved, Unresolved and External.
     pub import_resolution: Vec<ImportResolutionCount>,
     /// The same graph counted in both directions: how many edges leave a
     /// file, how many land on one, and how many files are on each end.
-    /// Pure arithmetic over `dependency_edges` — no ranking, no severity,
-    /// and no claim about which file matters. Per-file counts and traversal
+    /// Pure arithmetic over `dependency_edges`. Per-file counts and traversal
     /// are the `blast_radius_outbound.sql`, `blast_radius_inbound.sql` and
     /// `blast_radius_closure.sql` recipes under `slugaudit://queries/`.
     pub dependency_edges: DependencyEdgeTotals,
@@ -315,19 +307,16 @@ pub struct ReportResponse {
     /// import syntax the resolver couldn't parse at all — `extract_reference`
     /// returned `None` on the raw text (e.g. Go's `import "fmt"`), as
     /// opposed to an import whose syntax was parsed but matched no project
-    /// file (e.g. a stdlib module like `kotlin.math.max`). SlugAudit
-    /// records both as `Unresolved` edges since it can't tell them apart
-    /// at resolution time, but they mean very different things: a high
-    /// count here means "this project's import syntax isn't modeled yet,"
-    /// not "this project's imports are broken."
+    /// file (e.g. a stdlib module like `kotlin.math.max`). Both are stored as
+    /// `Unresolved` edges; this count is the first kind
+    /// (`dependency_edges.syntax_unmodeled = 1`).
     pub unsupported_language_unresolved_count: i64,
     /// How many rows in `files` match common credential-file patterns
     /// (`.env`, `*.pem`, `*.key`, `id_rsa*`, etc. — the same list the
     /// SQL below matches, and the same list `leads`' `credential_files`
-    /// rows use). SlugAudit records these paths like any other file —
-    /// including when the file was skipped and no content was retained —
-    /// so this count makes the AI aware it is handling credential-*looking*
-    /// paths even when it cannot read them.
+    /// rows use). These paths are recorded like any other file, including
+    /// when the file was skipped and no content was retained. The count is
+    /// a path match, not a statement about the file's content.
     pub credential_pattern_file_count: i64,
     /// Every mechanic `leads` counts — session entries, then the built-ins —
     /// with its source and the author's note,
@@ -368,23 +357,23 @@ pub fn report(
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<ReportResponse>, ErrorData> {
     if crate::util::exceeds_input_bytes(&request.0.path, MAX_PATH_BYTES) {
-        return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
+        return Err(ErrorData::invalid_params(
+            format!("path exceeds {MAX_PATH_BYTES} bytes"),
+            None,
+        ));
     }
     let synced = ensure_synced(&request.0.path, sink, manager)?;
     let revision_id = synced.revision_id.clone();
-    let discard = synced.discard.clone();
-    let mut response = with_verified_read(&synced, |tx| {
-        let mut response = build_report(tx, revision_id.clone())
-            .map_err(|error| internal_error("building the report", error))?;
-        response.open_finding_count = count_current(tx, &findings_path_of(tx)?)?;
-        Ok(response)
+    let (sections, open_finding_count) = with_verified_read(&synced, |tx| {
+        let sections = read_sections(tx, &revision_id)
+            .map_err(|error| operation_error("building the report", error))?;
+        let open_finding_count = count_current(tx, &findings_path_of(tx)?)?;
+        Ok((sections, open_finding_count))
     })?;
     let root = super::project_root(&request.0.path)?;
     let session = manager.session_mechanics();
     let catalog = mechanic_catalog::load(session, &super::limits_for_root(&root)?)?;
-    response.database_discard = discard;
-    response.mechanics_invalid = catalog.invalid.len();
-    response.mechanics = ReportMechanics {
+    let mut mechanics = ReportMechanics {
         note: None,
         entries: catalog.listings(),
         invalid: catalog.invalid,
@@ -392,8 +381,10 @@ pub fn report(
     // Claimed last, once nothing else can fail, so a failed first report
     // does not use up the note.
     if session.claim_report_note() {
-        response.mechanics.note = Some(MECHANICS_NOTE.to_owned());
+        mechanics.note = Some(MECHANICS_NOTE.to_owned());
     }
+    let response =
+        sections.into_response(revision_id, open_finding_count, synced.discard, mechanics);
     Ok(Json(response))
 }
 

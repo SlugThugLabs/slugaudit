@@ -52,11 +52,7 @@ pub(crate) fn mtime_unix_seconds(metadata: &std::fs::Metadata) -> Option<i64> {
 fn mtime_seconds_from(modified: std::io::Result<SystemTime>) -> Option<i64> {
     let seconds = modified
         .map_err(|error| error.to_string())
-        .and_then(|time| {
-            time.duration_since(UNIX_EPOCH)
-                .map_err(|error| error.to_string())
-        })
-        .and_then(|elapsed| i64::try_from(elapsed.as_secs()).map_err(|error| error.to_string()));
+        .and_then(|time| unix_seconds(time).map_err(|error| error.to_string()));
     match seconds {
         Ok(seconds) => Some(seconds),
         Err(error) => {
@@ -78,6 +74,7 @@ pub(crate) fn saturating_millis(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slugaudit_test_check::TestResult;
 
     fn before_epoch() -> SystemTime {
         UNIX_EPOCH - Duration::from_secs(5)
@@ -136,23 +133,25 @@ mod tests {
     }
 
     #[test]
-    fn a_pre_epoch_mtime_is_none_and_warns() {
+    fn a_pre_epoch_mtime_is_none_and_warns() -> TestResult {
         let (mtime, logs) =
-            crate::store::test_capture::capture_warns(|| mtime_seconds_from(Ok(before_epoch())));
+            crate::store::test_capture::capture_warns(|| mtime_seconds_from(Ok(before_epoch())))?;
 
         assert_eq!(mtime, None);
         assert!(logs.contains("mtime unusable"), "{logs}");
+        Ok(())
     }
 
     #[test]
-    fn an_unavailable_mtime_is_none_and_warns_with_the_cause() {
+    fn an_unavailable_mtime_is_none_and_warns_with_the_cause() -> TestResult {
         let unsupported = std::io::Error::new(std::io::ErrorKind::Unsupported, "no mtime here");
 
         let (mtime, logs) =
-            crate::store::test_capture::capture_warns(|| mtime_seconds_from(Err(unsupported)));
+            crate::store::test_capture::capture_warns(|| mtime_seconds_from(Err(unsupported)))?;
 
         assert_eq!(mtime, None);
         assert!(logs.contains("no mtime here"), "{logs}");
+        Ok(())
     }
 
     #[test]

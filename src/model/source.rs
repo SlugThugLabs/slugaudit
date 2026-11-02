@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+/// The `hash_algorithm` of a file whose content was hashed with BLAKE3.
+pub(crate) const CONTENT_HASH_ALGORITHM: &str = "blake3-v1";
+
 /// Identity and content integrity tracking for a single source file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceIdentity {
@@ -18,7 +21,7 @@ impl SourceIdentity {
         Self {
             relative_path,
             content_hash,
-            hash_algorithm: "blake3-v1".into(),
+            hash_algorithm: CONTENT_HASH_ALGORITHM.into(),
         }
     }
 }

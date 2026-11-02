@@ -377,17 +377,22 @@ fn database_corrupted_during_publish_is_automatically_rebuilt() -> TestResult {
     write_file(&project, "second.rs", b"pub fn second() {}\n")?;
 
     let db_path = synced.database_path.clone();
-    super::super::race_hook::set(project.path(), move || {
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&db_path)
-            .check("open db file")?;
-        file.set_len(512).check("truncate db")?;
-        file.sync_all().check("sync")
-    })?;
+    let hook = super::super::race_hook::set(
+        project.path(),
+        super::super::race_hook::RacePoint::BeforeCommit,
+        move || {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&db_path)
+                .check("open db file")?;
+            file.set_len(512).check("truncate db")?;
+            file.sync_all().check("sync")
+        },
+    )?;
 
     let synced_after = sync_project(&manager, &project)?;
+    hook.outcome()?;
     assert!(!synced_after.revision_id.is_empty());
     assert!(synced_after.discard.is_some());
     let discard = synced_after

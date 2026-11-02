@@ -69,9 +69,11 @@ pub(crate) struct GenericResolverConfig {
     /// E.g. `["./", "../"]` for JS/TS, `["."]` for Python (`from . import`).
     pub relative_prefixes: Vec<&'static str>,
 
-    /// Whether bare names (no prefix, no separator) are treated as
-    /// external (third-party packages) rather than project-relative.
-    /// True for JS/TS/Go, false for Python relative imports.
+    /// Whether bare names (no prefix, no separator) are extracted as
+    /// import references and resolved as external (third-party packages).
+    /// When false, a bare name is not extracted from a bare-package
+    /// statement and a bare reference resolves as unresolved. Every
+    /// built-in config sets it to true.
     pub bare_names_are_external: bool,
 }
 

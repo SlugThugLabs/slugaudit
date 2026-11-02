@@ -296,7 +296,7 @@ fn result_store_a_sweep_removal_failure_is_counted_and_keeps_the_first_error() -
 
     let ((), logs) = crate::store::test_capture::capture_warns(|| {
         outcome.remove(&not_a_file, "remove the zz-sweep-probe file");
-    });
+    })?;
 
     assert_eq!(outcome.errors, 1);
     assert!(

@@ -115,10 +115,21 @@ fn read_database_is_unreadable_when_the_database_cannot_be_opened() -> TestResul
     // on, not propagate: the whole `database` group goes absent and the
     // failure is logged. It is "unreadable", never "never synced": the file
     // is right there.
-    assert_eq!(
-        crate::tools::health::read_database(&db),
-        DatabaseRead::Unreadable,
-        "an unopenable database is absent, never a half-filled group"
+    let read = crate::tools::health::read_database(&db);
+    let DatabaseRead::Unreadable(error) = read else {
+        return Err(format!(
+            "an unopenable database is unreadable, never a half-filled group: {read:?}"
+        ))
+        .check("unexpected outcome");
+    };
+    assert!(
+        error.starts_with("reading the project database:")
+            || error.starts_with("opening the project database read-only:"),
+        "the failing step must be named: {error}"
+    );
+    assert!(
+        error.contains("not a database"),
+        "the source error must survive: {error}"
     );
     Ok(())
 }
@@ -153,7 +164,7 @@ fn health_database_warns_log_the_real_path_and_source_error() -> TestResult {
         tracing::warn!("capture liveness control for health_real_path");
         super::read_database(&inspect_path);
         super::read_database(&read_path);
-    });
+    })?;
 
     assert!(
         logs.contains("capture liveness control for health_real_path"),
@@ -224,7 +235,7 @@ fn project_state_populates_database_fields_for_an_active_project() -> TestResult
 
     assert_eq!(fields.phase, HealthPhase::SteadyState);
     assert_eq!(fields.remedy, None);
-    assert!(!fields.database_read_failed);
+    assert_eq!(fields.database_read_error, None);
     let database = fields.database.as_ref().check("database group")?;
     assert!(
         database.revision_id.is_some(),
@@ -432,6 +443,18 @@ fn an_unreadable_database_after_a_successful_sync_reports_unknown() -> TestResul
             .database_read_failed,
         "the response must carry that the database read failed"
     );
+    let error = response
+        .0
+        .detail
+        .as_ref()
+        .check("a verbose answer carries detail")?
+        .database_read_error
+        .as_deref()
+        .check("the response must carry why the database read failed")?;
+    assert!(
+        error.contains("not a database"),
+        "the source error must survive: {error}"
+    );
     assert_eq!(response.0.database, None);
     Ok(())
 }
@@ -519,6 +542,10 @@ fn health_with_verbose_adds_the_operator_detail_beside_the_default_fields() -> T
         ["parser_pack_version", "skipped_file_count"]
     );
     assert_eq!(detail["database_read_failed"], false);
+    assert!(
+        detail.get("database_read_error").is_none(),
+        "no read error key when the read succeeded: {detail}"
+    );
     assert!(
         detail["result_store"].is_null(),
         "no paged result was made yet"

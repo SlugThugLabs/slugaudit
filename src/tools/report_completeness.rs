@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=the report completeness block: every grouped and gap count it is built from, read in one transaction, and its end-to-end test
 //! The completeness block of `report`: what the index does *not* contain.
 //!
 //! A bare count cannot say whether a number is the whole truth, so each gap is
@@ -92,7 +93,7 @@ fn read_grouped_counts(connection: &Transaction<'_>) -> Result<GroupedCounts, ru
         )?,
         skipped_by_reason: grouped_counts(
             connection,
-            "SELECT COALESCE(skip_reason, ''), count(*) FROM files WHERE file_kind = 'skipped' \
+            "SELECT skip_reason, count(*) FROM files WHERE file_kind = 'skipped' \
              GROUP BY skip_reason ORDER BY skip_reason",
             |reason, count| SkipReasonCount { reason, count },
         )?,
@@ -128,10 +129,10 @@ fn read_gap_counts(connection: &Transaction<'_>) -> Result<(i64, i64), rusqlite:
 }
 
 /// Runs a `SELECT <value>, count(*) … GROUP BY <value>` and maps each row
-/// through `make`. The SQL must not yield a NULL group value: a skipped row
-/// with no recorded `skip_reason` is selected as the empty string
-/// (`COALESCE`) rather than dropped, so the counts always sum to the rows
-/// they group.
+/// through `make`. The SQL must not yield a NULL group value: a NULL
+/// (for example a skipped row with no `skip_reason`, which sync never
+/// writes) fails the read with `InvalidColumnType` naming column 0 instead
+/// of being counted under an invented label.
 fn grouped_counts<T>(
     connection: &Transaction<'_>,
     sql: &str,

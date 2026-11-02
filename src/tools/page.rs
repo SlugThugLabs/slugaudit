@@ -1,11 +1,11 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=the one paging contract: Page, PageLimit, Completeness and the legacy-paging refusal are one wire contract and must stay together
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=the one paging contract: Page, PageLimit, Completeness and the legacy-paging refusal are one wire contract and must stay together
 //! The one paging contract every paged tool returns: `leads` (and the
 //! `mechanic add` first count, which is a `leads` response), `query`,
-//! `structure` and `finding_read` each embed a [`Page`] as their `page`
-//! field, so a caller learns one set of names once.
+//! `structure`, `finding_read` and `mechanic list` each embed a [`Page`] as
+//! their `page` field, so a caller learns one set of names once.
 //!
 //! The struct is nested rather than flattened so the shared contract is one
-//! visible `$defs` entry in every output schema instead of eight properties
+//! visible `$defs` entry in every output schema instead of ten properties
 //! repeated (and free to drift) per tool. Tool-specific extras that carry
 //! real information (`query`'s `clipped_cells`, `leads`' `files_covered`,
 //! `structure`'s second cursor `next_start_after_file`) stay beside it on the
@@ -96,7 +96,10 @@ pub enum Completeness {
     Partial {
         /// The bound that stopped the scan (`scan_window` or `time_budget`).
         limited_by: PageLimit,
-        /// The last file fully scanned; the new request resumes after it.
+        /// The last file fully scanned; the new request resumes after it. For
+        /// a `leads` scan of registered mechanics, which scans one language
+        /// after another, it is the last file of the language the deadline
+        /// stopped in: earlier languages were finished, later ones not started.
         resume_after_file: Option<String>,
         /// Files scanned before the scan stopped.
         files_scanned: u64,
@@ -117,7 +120,7 @@ pub enum Completeness {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Page {
     /// Items in this page: rows (`leads`, `query`), matches (`structure`),
-    /// or findings (`finding_read`).
+    /// findings (`finding_read`) or mechanics (`mechanic list`).
     pub returned: usize,
     /// Items the whole request selects, ignoring the page cut;
     /// never an estimate. Always present; null when the tool cannot count it

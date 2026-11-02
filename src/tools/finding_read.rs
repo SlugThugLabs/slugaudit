@@ -23,11 +23,11 @@ use crate::store::StoredRow;
 use crate::sync;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rows::{FindingExtra, PageCut, StoredFinding, clip_description, produce, serialized_len};
+use rows::{PageCut, StoredFinding, clip_description, produce, serialized_len};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-const MAX_PATH_BYTES: usize = 32 * 1024;
+use super::MAX_PATH_BYTES;
 const MAX_FILE_BYTES: usize = 8 * 1024;
 const TOOL: &str = "finding_read";
 
@@ -122,16 +122,17 @@ pub fn finding_read(
     validate_read_request(request)?;
     let page_request = page_request(request.cursor.as_deref(), request.path.as_deref(), sink)?;
     // Only a new request names a project, so only it reads limits; a
-    // continuation uses the budget and ceiling flag stored with the result.
-    let size = match &page_request {
-        PageRequest::Fresh { path, .. } => Some(page_size::resolve(None, &resolve_limits(path)?)?),
-        PageRequest::Cursor(_) => None,
-    };
-    let spec = PageSpec::typed::<StoredFinding>(TOOL, size.map_or(0, |size| size.bytes));
+    // continuation uses the budget and ceiling stored with the result.
+    let mut spec = PageSpec::typed::<StoredFinding>(TOOL, 0);
+    if let PageRequest::Fresh { path, .. } = &page_request {
+        let limits = resolve_limits(path)?;
+        spec.page_bytes = page_size::resolve(None, &limits)?.bytes;
+        spec.ceiling = limits.max_query_response_bytes;
+    }
     let file_filter = request.file.as_deref();
 
     let mut cut = PageCut::new(0);
-    let served = paginate::<FindingExtra, _, _>(
+    let served = paginate::<(), _, _>(
         manager,
         &spec,
         page_request,
@@ -139,9 +140,7 @@ pub fn finding_read(
             produce(tx, file_filter, rows)?;
             Ok(Produced {
                 completeness: super::page::Completeness::Complete,
-                extra: FindingExtra {
-                    at_ceiling: size.is_some_and(|size| size.at_ceiling),
-                },
+                extra: (),
             })
         },
         |ctx| {
@@ -156,7 +155,7 @@ pub fn finding_read(
 /// Builds the response from the served page: decodes the findings, clips the
 /// first one when it alone exceeds the page budget, measures the bytes used,
 /// and names what limited the page.
-fn respond(served: Served<FindingExtra>) -> Result<Json<FindingReadResponse>, ErrorData> {
+fn respond(served: Served<()>) -> Result<Json<FindingReadResponse>, ErrorData> {
     let budget = served.page.page_bytes;
     let mut findings: Vec<FindingReadEntry> = decode_rows::<StoredFinding>(&served.rows)?
         .into_iter()
@@ -178,7 +177,7 @@ fn respond(served: Served<FindingExtra>) -> Result<Json<FindingReadResponse>, Er
     } else {
         PageSize {
             bytes: budget,
-            at_ceiling: served.meta.at_ceiling,
+            at_ceiling: served.at_ceiling,
         }
         .byte_cut()
     };

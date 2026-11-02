@@ -1,5 +1,7 @@
 //! ANSI rendering and formatting helpers for the interactive setup menu.
 
+use crate::cli::ConnectError;
+use crate::connect::registry_types::binary_text;
 use crate::util::Style;
 use std::path::Path;
 
@@ -15,7 +17,7 @@ pub(crate) const MENU: &str = "  ____  _             _             _ _ _
 
   ── Setup ───────────────────────────────────
 
-  1) Install the binary  (~/.slugthug/slugaudit)
+  1) Install the binary
      A stable path for agents and MCP clients to launch.
 
   2) Connect to an AI agent
@@ -45,7 +47,8 @@ pub(crate) fn render_menu(style: &Style) -> String {
         return MENU.to_owned();
     }
     let mut out = String::with_capacity(MENU.len() + 96);
-    for line in MENU.lines() {
+    let line_count = MENU.lines().count();
+    for (index, line) in MENU.lines().enumerate() {
         let trimmed = line.trim();
         if let Some(label) = section_label(trimmed) {
             // `label` is a substring of `line`, so both splits succeed; a line
@@ -74,7 +77,10 @@ pub(crate) fn render_menu(style: &Style) -> String {
         } else {
             out.push_str(line);
         }
-        out.push('\n');
+        // The last line is the prompt: the cursor stays on it, as in the plain menu.
+        if index + 1 < line_count {
+            out.push('\n');
+        }
     }
     out
 }
@@ -88,19 +94,38 @@ pub(crate) fn section_label(trimmed: &str) -> Option<&str> {
     Some(label)
 }
 
-pub(crate) fn other_agent_instructions(binary: &Path) -> String {
-    format!(
+/// The instructions and JSON config snippet for an MCP client that `connect`
+/// does not know. `install_dir` is the SlugAudit install directory, when one
+/// can be resolved; the stable command path is printed under it.
+///
+/// # Errors
+///
+/// A binary path that is not valid UTF-8 is refused, since it cannot be
+/// written into a client's JSON config; a JSON encoding failure is returned.
+pub(crate) fn other_agent_instructions(
+    binary: &Path,
+    install_dir: Option<&Path>,
+) -> Result<String, ConnectError> {
+    let command = binary_text(binary)?;
+    let snippet = serde_json::to_string_pretty(&serde_json::json!({
+        "mcpServers": { "slugaudit": { "command": command, "args": [] } }
+    }))?;
+    let stable = match install_dir {
+        Some(dir) => format!("{}\n", dir.join("slugaudit").display()),
+        None => "(unavailable: neither SLUGTHUG_HOME nor HOME is set)\n".to_owned(),
+    };
+    Ok(format!(
         concat!(
             "SlugAudit is a standard stdio MCP server, so any MCP client can add it:\n\n",
             "  Server name:  slugaudit\n",
-            "  Command:      {binary}\n",
+            "  Command:      {command}\n",
             "  Arguments:    (none - `serve` is the default)\n\n",
             "Config entry for `.mcp.json` or equivalent:\n\n",
-            "{{\n  \"mcpServers\": {{\n    \"slugaudit\": {{\n",
-            "      \"command\": \"{binary}\",\n",
-            "      \"args\": []\n    }}\n  }}\n}}\n\n",
-            "Stable command path after install: ~/.slugthug/slugaudit/slugaudit\n",
+            "{snippet}\n\n",
+            "Stable command path after install: {stable}",
         ),
-        binary = binary.display()
-    )
+        command = command,
+        snippet = snippet,
+        stable = stable,
+    ))
 }

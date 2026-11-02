@@ -6,7 +6,6 @@ use crate::store::{Cell, Materialize, ResultStoreError};
 use crate::tools::context::{RowSink, internal_error};
 use crate::tools::leads::{CompactLeadRow, LeadRow, MechanicCount};
 use crate::tools::mechanic::MechanicSource;
-use crate::util::serialized_len;
 use rmcp::ErrorData;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -50,18 +49,10 @@ impl StoredLead {
             detail_clipped: self.detail_clipped,
         }
     }
-
-    /// Serialized JSON bytes of this row as the response carries it.
-    pub(super) fn response_bytes(&self) -> Result<usize, ErrorData> {
-        let row = self.clone();
-        if row.is_compact() {
-            serialized_len(&row.into_compact())
-        } else {
-            serialized_len(&row.into_full())
-        }
-        .map_err(|error| internal_error("measuring a leads row", error))
-    }
 }
+
+#[path = "leads_row_size.rs"]
+mod row_size;
 
 const COLUMNS: &[&str] = &[
     "mechanic",
@@ -143,9 +134,6 @@ pub(super) struct Extras {
     pub(super) files_total: i64,
     /// Whether the rows are compact triples.
     pub(super) compact: bool,
-    /// Whether the page budget of page one was the ceiling, so a page that
-    /// the stored budget cuts reports `ceiling`.
-    pub(super) at_ceiling: bool,
     /// The row `limit` page one was asked for; a continuation without a
     /// `limit` of its own keeps it.
     pub(super) limit: Option<usize>,

@@ -10,11 +10,12 @@ use rmcp::{Peer, RoleServer};
 use std::sync::Arc;
 
 /// Sends one MCP `/notifications/progress` notification when the caller
-/// requested progress, and nothing otherwise. Best-effort: send failures
-/// are silently ignored so a broken progress channel can never turn a
-/// successful tool call into an error. Shared by `run_blocking`'s three
-/// lifecycle notifications and [`McpProgressSink`], so the notification
-/// shape and the silent-drop contract live in one place.
+/// requested progress, and nothing otherwise. Best-effort: a send failure is
+/// logged as a warning, never returned, so a broken progress channel can
+/// never turn a successful tool call into an error. Shared by
+/// `run_blocking`'s three lifecycle notifications and [`McpProgressSink`], so
+/// the notification shape and the logged-never-returned contract live in one
+/// place.
 pub(crate) async fn notify_progress(
     progress: Option<&(Peer<RoleServer>, ProgressToken)>,
     fraction: f64,
@@ -116,9 +117,9 @@ impl McpProgressSink {
         // Per-event spawn is intentional: the future body is tiny (just
         // `notify_progress(...).await`), the throttled volume is small, and
         // avoiding a channel means the drain logic doesn't need its own
-        // observable state. Errors here are silently dropped, matching
-        // `run_blocking`'s "broken progress channel can never turn a
-        // successful tool call into an error" stance.
+        // observable state. A send failure is logged by `notify_progress`
+        // and never returned, matching `run_blocking`'s "broken progress
+        // channel can never turn a successful tool call into an error" stance.
         self.runtime.spawn(async move {
             notify_progress(Some(&(peer, token)), fraction, message).await;
         });

@@ -10,7 +10,7 @@
 
 use super::generic::GenericResolverConfig;
 use super::js::extract_js_reference;
-use super::path_helpers::extract_quoted_string;
+use super::path_helpers::{extract_quoted_string, strip_keyword};
 use super::python::extract_python_reference;
 use crate::graph::reference::ImportReference;
 
@@ -75,15 +75,6 @@ pub(super) fn extract_reference(
     }
 
     extract_bare_package(config, trimmed)
-}
-
-fn strip_keyword<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
-    let after = text.strip_prefix(keyword)?;
-    after
-        .chars()
-        .next()
-        .is_some_and(char::is_whitespace)
-        .then_some(after)
 }
 
 fn extract_quoted_import(trimmed: &str) -> Option<ImportReference> {

@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=the closed set of wire error codes: the enum, its wire strings, remedies, payload builders and the one store-error mapping must stay in one table so a code cannot drift from its remedy
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=the closed set of wire error codes: the enum, its wire strings, remedies, payload builders and the one store-error mapping must stay in one table so a code cannot drift from its remedy
 //! Stable, machine-readable failure codes.
 //!
 //! rmcp's `ErrorData` carries a free-form `data` value beside its human
@@ -233,7 +233,9 @@ pub fn budget_payload(elapsed_ms: Option<u128>) -> Option<Value> {
 /// from the error's own `Display`, which holds only static contexts and the
 /// active-result count, never a path, SQL or row content. Failures that are
 /// neither a caller mistake nor an unusable store (`Invalid`, `Io`, `Sqlite`,
-/// `Json`, `Corrupt`) are internal errors with no code.
+/// `Json`, `Corrupt`) are internal errors with no code. `Lock` and `Clock`
+/// map as the plain lock and clock errors do: an internal error with no code
+/// whose message says to restart the server or to fix the system clock.
 #[must_use]
 pub fn store_error(error: &crate::store::ResultStoreError) -> rmcp::ErrorData {
     use crate::store::ResultStoreError as E;
@@ -248,6 +250,8 @@ pub fn store_error(error: &crate::store::ResultStoreError) -> rmcp::ErrorData {
         E::TooLarge => invalid(ErrorCode::ResultTooLarge),
         E::Expired => invalid(ErrorCode::ResultExpired),
         E::Unknown => invalid(ErrorCode::UnknownCursor),
+        E::Lock(poisoned) => rmcp::ErrorData::from(poisoned.clone()),
+        E::Clock(clock) => rmcp::ErrorData::from(clock.clone()),
         E::Invalid { .. }
         | E::Io { .. }
         | E::Sqlite { .. }
@@ -279,6 +283,26 @@ mod tests {
             assert!(seen.insert(text), "{text} is not unique");
             assert!(!code.remedy().is_empty(), "{text} has no remedy");
         }
+    }
+
+    /// The remedy quotes both profile budgets in seconds; they must be the
+    /// budgets the profiles actually carry.
+    #[test]
+    fn the_budget_remedy_quotes_the_profile_budgets() -> TestResult {
+        use crate::model::{AuditProfile, limits_for_profile};
+        let remedy = ErrorCode::SyncBudgetExhausted.remedy();
+        for (profile, name) in [(AuditProfile::Audit, "audit"), (AuditProfile::Lean, "lean")] {
+            let secs = limits_for_profile(profile)
+                .check("fixed profiles need no memory detection")?
+                .max_sync_wall_clock
+                .as_secs();
+            assert!(
+                remedy.contains(&format!("{name} profile ({secs} s)"))
+                    || remedy.contains(&format!("={name} ({secs} s)")),
+                "the remedy must quote {secs} s for {name}: {remedy}"
+            );
+        }
+        Ok(())
     }
 
     /// The budget case is the one that must not read as "retry": its

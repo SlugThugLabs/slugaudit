@@ -29,7 +29,7 @@ fn on_action_corrupt_database_discard_warn_logs_the_real_path() -> TestResult {
             &crate::progress::NoopProgressSink,
             None,
         )
-    });
+    })?;
 
     let response = result.check("the corrupt database must be discarded and rebuilt")?;
     assert_eq!(response.0.status, "enabled");

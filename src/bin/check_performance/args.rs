@@ -1,13 +1,7 @@
-//! Command-line parsing for the performance gate.
+//! Gate options for the performance gate, built from what the shared
+//! argument contract (`gate_common/args.rs`) collected.
 
 use crate::DEFAULT_THRESHOLD_PCT;
-
-/// What one invocation asked for.
-#[derive(Debug, PartialEq)]
-pub(crate) enum Command {
-    Help,
-    Run(Options),
-}
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct Options {
@@ -17,32 +11,36 @@ pub(crate) struct Options {
     pub(crate) threshold_pct: f64,
 }
 
-/// Parses `[--record] [--help] [threshold_percent]`; an `Err` is a usage
-/// error the caller reports with exit code 2.
-pub(crate) fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
-    let mut options = Options {
-        record: false,
-        threshold_pct: DEFAULT_THRESHOLD_PCT,
-    };
-    for arg in args {
-        match arg.as_str() {
-            "--record" => options.record = true,
-            "--help" => return Ok(Command::Help),
-            other => {
-                let value = other
-                    .parse::<f64>()
-                    .map_err(|err| format!("threshold {other:?} is not a number: {err}"))?;
-                // NaN makes every regression comparison false, so the gate
-                // would pass at any slowdown; infinity and negatives are
-                // equally meaningless as a regression allowance.
-                if !value.is_finite() || value < 0.0 {
-                    return Err(format!(
-                        "threshold {other:?} must be a finite, non-negative percentage"
-                    ));
-                }
-                options.threshold_pct = value;
-            }
+/// Builds the options from the `--record` switch and the positional
+/// arguments (`[threshold_percent]`); an `Err` is a usage error the caller
+/// reports with exit code 2.
+pub(crate) fn options(record: bool, positionals: &[String]) -> Result<Options, String> {
+    let threshold_pct = match positionals {
+        [] => DEFAULT_THRESHOLD_PCT,
+        [raw] => parse_threshold(raw)?,
+        _ => {
+            return Err(format!(
+                "expected at most one threshold, got {positionals:?}"
+            ));
         }
+    };
+    Ok(Options {
+        record,
+        threshold_pct,
+    })
+}
+
+fn parse_threshold(raw: &str) -> Result<f64, String> {
+    let value = raw
+        .parse::<f64>()
+        .map_err(|err| format!("threshold {raw:?} is not a number: {err}"))?;
+    // NaN makes every regression comparison false, so the gate
+    // would pass at any slowdown; infinity and negatives are
+    // equally meaningless as a regression allowance.
+    if !value.is_finite() || value < 0.0 {
+        return Err(format!(
+            "threshold {raw:?} must be a finite, non-negative percentage"
+        ));
     }
-    Ok(Command::Run(options))
+    Ok(value)
 }

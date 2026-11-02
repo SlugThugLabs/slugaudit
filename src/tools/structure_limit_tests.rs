@@ -354,6 +354,19 @@ fn an_oversized_start_after_file_is_refused_with_its_cap() -> TestResult {
 }
 
 #[test]
+fn a_cursor_over_the_shared_cursor_cap_is_refused_with_that_cap() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
+    let mut request = single_file_request(&project);
+    request.cursor = Some("c".repeat(crate::tools::MAX_CURSOR_BYTES + 1));
+
+    let error = refusal(request)?;
+
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(error.message.as_ref(), "cursor exceeds 1024 bytes");
+    Ok(())
+}
+
+#[test]
 fn an_oversized_file_filter_is_refused_by_name() -> TestResult {
     let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let mut request = single_file_request(&project);
@@ -427,7 +440,7 @@ fn a_capture_without_a_name_is_logged_and_flagged_as_failed_extraction() -> Test
             None,
             false,
         )
-    });
+    })?;
     let found = found.check("map the capture")?;
 
     assert!(found.extraction_failed);
@@ -451,7 +464,7 @@ fn text_that_is_not_valid_utf8_keeps_its_cause_in_the_log() -> TestResult {
             Some("name"),
             false,
         )
-    });
+    })?;
     let found = found.check("map the capture")?;
 
     assert!(found.extraction_failed);

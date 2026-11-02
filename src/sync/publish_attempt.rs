@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=one publish attempt: two-pass streaming discovery, hash, diff, selective sample, and atomic commit
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=one publish attempt: two-pass streaming discovery, hash, diff, selective sample, and atomic commit
 //! A single publish attempt: discover, stream-hash, diff, sample changed files, and commit
 //! one revision. The retry/CAS loop lives in `publish_cas` — this module is
 //! pure orchestration of one attempt, with no retry logic of its own.
@@ -9,7 +9,7 @@ use super::manifest::{ChangeStatus, FileChange};
 use super::publish::{PublishError, PublishReport};
 use super::publish_diff::{self, build_upserts_and_deletions};
 use super::publish_sample::{check_samples_match_pass1, files_to_sample};
-use super::race_hook;
+use super::race_hook::{self, RacePoint};
 use super::revalidate::revalidate_unchanged_since_sample;
 use super::revision;
 use super::revision_skipped::SkippedRecord;
@@ -41,6 +41,7 @@ fn hash_and_diff(
     deadline: &Deadline,
 ) -> Result<DiffState, PublishError> {
     let (discovered, discovery_skips) = discovery::discover_with_deadline(root, deadline)?;
+    race_hook::fire(root, RacePoint::AfterDiscovery);
     let unrepresentable = discovery::unrepresentable_paths(root, &discovery_skips);
     let mut discovered_paths: HashSet<String> = discovered
         .iter()
@@ -53,7 +54,7 @@ fn hash_and_diff(
         None,
         &mut discovered_paths,
         &mut skipped_records,
-    );
+    )?;
 
     let (identities, hashing_skips) =
         hash_batch::hash_all_with_deadline(&discovered, limits.max_file_bytes, deadline)?;
@@ -63,7 +64,7 @@ fn hash_and_diff(
         None,
         &mut discovered_paths,
         &mut skipped_records,
-    );
+    )?;
     let skipped_records_vec: Vec<SkippedRecord> = skipped_records.values().cloned().collect();
     let mut skipped = discovery_skips;
     skipped.extend(hashing_skips);
@@ -143,17 +144,14 @@ fn unchanged_report(
     unchanged: usize,
     skipped: Vec<discovery::SkippedFile>,
 ) -> Result<PublishReport, PublishError> {
-    race_hook::fire(root);
+    race_hook::fire(root, RacePoint::BeforeCommit);
     let current_now = current_revision(connection)?;
     let current_id_now = current_now.as_ref().map(|r| r.revision_id.as_str());
     if current_id_now != Some(baseline.revision_id.as_str()) {
         return Err(PublishError::Revision(
             revision::RevisionError::StaleBaseline {
                 expected: baseline.revision_id.clone(),
-                found: match current_id_now {
-                    Some(id) => id.to_owned(),
-                    None => String::new(),
-                },
+                found: revision::baseline_label(current_id_now),
             },
         ));
     }
@@ -221,11 +219,11 @@ pub(super) fn try_publish(
         Some(&state.identities),
         &mut discovered_paths,
         &mut skipped_records,
-    );
+    )?;
     let mut skipped = state.skipped;
     skipped.extend(sampling_skips);
     let skipped_records: Vec<SkippedRecord> = skipped_records.into_values().collect();
-    race_hook::fire(root);
+    race_hook::fire(root, RacePoint::BeforeCommit);
 
     let inputs = CommitInputs {
         discovered: &state.discovered,

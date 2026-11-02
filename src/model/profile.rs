@@ -14,7 +14,7 @@ use std::time::Duration;
 pub enum AuditProfile {
     /// Everyday coding assistant mode: fast, responsive, conservative budgets.
     Lean,
-    /// Deep security audit and due-diligence mode: large file limits, uncapped AST blocks, generous time budgets.
+    /// Deep security audit and due-diligence mode: large file limits, up to 200,000 evidence items per file, generous time budgets.
     Audit,
     /// Adaptive mode: automatically scales limits based on host physical RAM and available memory.
     #[default]

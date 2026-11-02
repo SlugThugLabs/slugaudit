@@ -29,13 +29,22 @@ fn is_connected_never_spawns_a_client_cli() -> TestResult {
     }
     let home = tempfile::tempdir().check("home")?;
 
-    let connected: Vec<&str> = temp_env::with_var("PATH", Some(bin.path().as_os_str()), || {
-        AGENTS
-            .iter()
-            .filter(|agent| agent.is_connected(Some(home.path())))
-            .map(|agent| agent.id)
-            .collect()
-    });
+    let connected: Vec<&str> = temp_env::with_var(
+        "PATH",
+        Some(bin.path().as_os_str()),
+        || -> TestResult<Vec<&str>> {
+            let mut ids = Vec::new();
+            for agent in AGENTS {
+                if agent
+                    .is_connected(Some(home.path()))
+                    .check("probe config")?
+                {
+                    ids.push(agent.id);
+                }
+            }
+            Ok(ids)
+        },
+    )?;
 
     assert!(connected.is_empty(), "no config exists: {connected:?}");
     assert!(
@@ -52,7 +61,12 @@ fn a_client_without_a_config_path_is_not_detected_as_connected() -> TestResult {
     let home = tempfile::tempdir().check("home")?;
     for id in ["agy", "amp", "q"] {
         let agent = find_agent(id).check("agent")?;
-        assert!(!agent.is_connected(Some(home.path())), "{id}");
+        assert!(
+            !agent
+                .is_connected(Some(home.path()))
+                .check("probe config")?,
+            "{id}"
+        );
     }
     Ok(())
 }

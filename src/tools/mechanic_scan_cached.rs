@@ -45,6 +45,8 @@ pub(super) struct Scanned {
     pub(super) tallies: Vec<Tally>,
     /// Indexed like `custom`: the entry's rows when they are held by the
     /// cache (or were just cached), `None` when not scanned or too large.
+    /// When the pass was stopped, the rows of an entry it scanned are the
+    /// partial rows read before the stop; they are not cached.
     pub(super) rows: Vec<Option<Rows>>,
     /// Set when the call deadline stopped the pass: the tallies and rows of
     /// the entries it scanned cover only the files read before the stop.
@@ -108,12 +110,18 @@ impl Pass {
     }
 
     /// Offers one row of entry `index` for retention.
-    pub(super) fn offer(&mut self, index: usize, row: CachedRow) {
-        let Some(keep) = self.entries.get_mut(index) else {
-            return;
-        };
+    ///
+    /// # Errors
+    ///
+    /// An internal error when `index` names no entry of the pass.
+    pub(super) fn offer(&mut self, index: usize, row: CachedRow) -> Result<(), ErrorData> {
+        let entries = self.entries.len();
+        let keep = self
+            .entries
+            .get_mut(index)
+            .ok_or_else(|| index_out_of_range("pass entries", index, entries))?;
         if keep.overflowed {
-            return;
+            return Ok(());
         }
         let size = row.estimated_bytes();
         if self.bytes.saturating_add(size) > self.budget {
@@ -126,6 +134,7 @@ impl Pass {
             keep.bytes = keep.bytes.saturating_add(size);
             keep.rows.push(row);
         }
+        Ok(())
     }
 
     /// Estimated bytes of the rows retained right now, over all entries
@@ -149,14 +158,8 @@ impl Pass {
 
 /// The internal error for a selected entry index that names no slot of
 /// `collection` (length `len`): an invariant violation, logged once here and
-/// failing the call.
-fn index_out_of_range(collection: &str, index: usize, len: usize) -> ErrorData {
-    tracing::error!(
-        index,
-        len,
-        collection,
-        "a selected mechanic index is out of range"
-    );
+/// failing the call. The tool call's completion logs it.
+pub(super) fn index_out_of_range(collection: &str, index: usize, len: usize) -> ErrorData {
     super::context::internal_error(
         "counting mechanics",
         format!("entry index {index} is out of range for {collection} of length {len}"),
@@ -224,8 +227,7 @@ pub(super) fn tally_cached(
                 line: hit.line,
                 text: hit.text.chars().take(MAX_DETAIL_CHARS + 1).collect(),
             },
-        );
-        Ok(())
+        )
     })?;
     let stopped = match end {
         ScanEnd::Finished => false,

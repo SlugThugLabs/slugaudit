@@ -99,6 +99,49 @@ impl<T> Check<T> for Option<T> {
     }
 }
 
+/// [`Check`] for a real [`std::error::Error`]: the cause carries the whole
+/// `source()` chain, not only the top error's `Display`.
+///
+/// `check` accepts any `Display` error (a `String` included), which cannot
+/// reach `source()`. A step whose error type implements `Error` uses this to
+/// see the root cause.
+pub trait CheckSources<T> {
+    /// Returns the value, or a [`TestError`] whose cause is the error's text
+    /// followed by `: caused by: <source>` for each source in the chain that
+    /// the text does not already contain.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`TestError`] when the receiver is `Err`.
+    fn check_sources(self, what: &str) -> TestResult<T>;
+}
+
+impl<T, E: std::error::Error> CheckSources<T> for Result<T, E> {
+    #[track_caller]
+    fn check_sources(self, what: &str) -> TestResult<T> {
+        let location = Location::caller();
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(TestError::new(location, what, cause_with_sources(&error))),
+        }
+    }
+}
+
+/// The error's `Display` text plus each distinct `source()` text below it.
+fn cause_with_sources(error: &dyn std::error::Error) -> String {
+    let mut cause = error.to_string();
+    let mut next = error.source();
+    while let Some(source) = next {
+        let text = source.to_string();
+        if !cause.contains(&text) {
+            cause.push_str(": caused by: ");
+            cause.push_str(&text);
+        }
+        next = source.source();
+    }
+    cause
+}
+
 /// Converts an expected failure into a value: the replacement for
 /// `unwrap_err` and `expect_err`.
 pub trait CheckErr<T, E> {

@@ -27,28 +27,42 @@ fn removing_a_missing_report_succeeds_and_an_unremovable_one_fails() -> TestResu
 }
 
 #[test]
-fn merges_lines_across_data_entries() -> TestResult {
+fn more_than_one_data_entry_is_refused_instead_of_summed() -> TestResult {
     let cov = json!({
         "data": [
             {"totals": {"lines": {"covered": 100, "count": 200}}},
             {"totals": {"lines": {"covered": 50, "count": 100}}},
         ]
     });
-    let (covered, count) = merge_line_totals(&cov).check("merge")?;
-    assert_eq!((covered, count), (150, 300));
+
+    let message = merge_line_totals(&cov).check_err("two entries")?;
+
+    assert!(
+        message.starts_with("FAIL: coverage JSON has 2 data entries, expected one merged entry"),
+        "{message}"
+    );
     Ok(())
 }
 
 #[test]
-fn returns_none_when_data_missing() {
-    let cov = json!({"totals": {"lines": {"covered": 1, "count": 2}}});
-    assert_eq!(merge_line_totals(&cov), None);
+fn an_empty_data_array_is_refused() -> TestResult {
+    let message = merge_line_totals(&json!({"data": []})).check_err("no entries")?;
+
+    assert!(message.contains("has 0 data entries"), "{message}");
+    Ok(())
 }
 
 #[test]
-fn returns_none_when_totals_missing() {
-    let cov = json!({"data": [{"files": []}]});
-    assert_eq!(merge_line_totals(&cov), None);
+fn a_report_missing_data_or_totals_names_the_missing_path() {
+    let missing = "FAIL: coverage JSON missing data[*].totals.lines";
+    for cov in [
+        json!({"totals": {"lines": {"covered": 1, "count": 2}}}),
+        json!({"data": [{"files": []}]}),
+        json!({"data": [{"totals": {"lines": {"covered": 1}}}]}),
+        json!({"data": [{"totals": {"lines": {"covered": "1", "count": 2}}}]}),
+    ] {
+        assert_eq!(merge_line_totals(&cov), Err(missing.to_string()), "{cov}");
+    }
 }
 
 #[test]
@@ -81,5 +95,13 @@ fn gate_rejects_a_total_too_large_for_an_exact_percentage() -> TestResult {
 #[test]
 fn single_entry_passes_through() {
     let cov = json!({"data": [{"totals": {"lines": {"covered": 7, "count": 10}}}]});
-    assert_eq!(merge_line_totals(&cov), Some((7, 10)));
+    assert_eq!(merge_line_totals(&cov), Ok((7, 10)));
+}
+
+#[test]
+fn the_default_threshold_is_a_valid_gate() {
+    assert_eq!(
+        parse_threshold(&DEFAULT_THRESHOLD_PCT.to_string()),
+        Ok(83.0)
+    );
 }

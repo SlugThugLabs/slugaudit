@@ -71,17 +71,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_path_that_does_not_exist() -> TestResult {
-        let directory = tempfile::tempdir().check("temp dir")?;
-        let missing = directory.path().join("does-not-exist");
-        assert!(matches!(
-            ProjectRoot::resolve(&missing),
-            Err(RootError::Unresolvable(_))
-        ));
-        Ok(())
-    }
-
-    #[test]
     fn an_unresolvable_root_keeps_the_io_error_kind() -> TestResult {
         let directory = tempfile::tempdir().check("temp dir")?;
         let missing = directory.path().join("does-not-exist");

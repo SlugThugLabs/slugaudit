@@ -7,6 +7,7 @@
 //! Shared by `connection::tests` and the other store and sync tests. `#[cfg(test)]`-only so
 //! nothing in this file is reachable from production code paths.
 
+use slugaudit_test_check::{Check, TestResult};
 use std::io;
 use std::sync::{Arc, LazyLock, Mutex};
 use tracing::Level;
@@ -83,7 +84,13 @@ static PERMISSIVE_BACKSTOP: LazyLock<Dispatch> = LazyLock::new(|| {
 /// sequential tests cannot leak captures — provided the process-global
 /// filter state described on [`PERMISSIVE_BACKSTOP`] stays permissive, which
 /// is why that runs first.
-pub(crate) fn capture_at_level<F, R>(f: F, min_level: Level) -> (R, String)
+///
+/// # Errors
+///
+/// Fails when the capture buffer is poisoned (a log write panicked): the
+/// captured text is then unknown, so a test asserting that a line is absent
+/// must fail rather than pass on an empty or substituted log.
+pub(crate) fn capture_at_level<F, R>(f: F, min_level: Level) -> TestResult<(R, String)>
 where
     F: FnOnce() -> R,
 {
@@ -106,19 +113,20 @@ where
         .with_ansi(false)
         .finish();
     let result = tracing::subscriber::with_default(subscriber, f);
-    // A poisoned buffer means a log write panicked; the captured text is then
-    // the lock error, which no test's expected log line matches.
-    let logs = match crate::util::lock(&buf.0, "test capture buffer") {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
-        Err(error) => error.to_string(),
-    };
-    (result, logs)
+    let logs = crate::util::lock(&buf.0, "test capture buffer")
+        .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+        .check("read the captured log buffer")?;
+    Ok((result, logs))
 }
 
 /// Convenience: capture only `WARN` and above. This is what every rejection-
 /// audit test currently needs; reach for `capture_at_level(..., INFO)` if a
 /// future regression test wants to assert that an `info!` site fired.
-pub(crate) fn capture_warns<F, R>(f: F) -> (R, String)
+///
+/// # Errors
+///
+/// As [`capture_at_level`]: fails when the capture buffer is poisoned.
+pub(crate) fn capture_warns<F, R>(f: F) -> TestResult<(R, String)>
 where
     F: FnOnce() -> R,
 {

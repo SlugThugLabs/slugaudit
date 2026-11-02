@@ -25,7 +25,7 @@ fn discard_surface_schema_mismatch_reports_the_cause_and_logs_once() -> TestResu
             .check("foreign schema version")?;
     }
 
-    let (synced, logs) = capture_warns(|| sync_project(&manager, &project));
+    let (synced, logs) = capture_warns(|| sync_project(&manager, &project))?;
     let synced = synced?;
 
     let notice = synced.discard.check("the rebuild is reported")?;
@@ -45,7 +45,7 @@ fn discard_surface_corrupt_database_reports_the_cause() -> TestResult {
     let (manager, project) = synced_project()?;
     std::fs::write(database(&project), b"this is not a sqlite database").check("corrupt db")?;
 
-    let (synced, logs) = capture_warns(|| sync_project(&manager, &project));
+    let (synced, logs) = capture_warns(|| sync_project(&manager, &project))?;
     let synced = synced?;
 
     let notice = synced.discard.check("the rebuild is reported")?;
@@ -72,7 +72,7 @@ fn discard_surface_stale_root_reports_the_cause() -> TestResult {
             .check("point the database at another root")?;
     }
 
-    let (synced, _logs) = capture_warns(|| sync_project(&manager, &project));
+    let (synced, _logs) = capture_warns(|| sync_project(&manager, &project))?;
     let synced = synced?;
 
     let notice = synced.discard.check("the rebuild is reported")?;
@@ -88,7 +88,7 @@ fn discard_surface_stale_root_reports_the_cause() -> TestResult {
 fn discard_surface_normal_sync_reports_nothing() -> TestResult {
     let (manager, project) = synced_project()?;
 
-    let (synced, logs) = capture_warns(|| sync_project(&manager, &project));
+    let (synced, logs) = capture_warns(|| sync_project(&manager, &project))?;
     let synced = synced?;
 
     assert_eq!(synced.discard, None);

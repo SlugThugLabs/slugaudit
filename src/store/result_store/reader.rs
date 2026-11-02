@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=One responsibility: reading a page of a stored result and decoding its rows.
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=One responsibility: reading a page of a stored result and decoding its rows.
 //! Reading a page of a stored result. The reader holds no position: the same
 //! `from_ord` always returns the same rows.
 
@@ -36,8 +36,9 @@ impl ResultStore {
     /// # Errors
     ///
     /// `Expired` when the result was reclaimed, `Unknown` when `from_ord` is
-    /// past the row count or the result is not complete, `Unavailable` or
-    /// `Sqlite` for read failures.
+    /// past the row count or the result is not complete, `Lock` when the
+    /// registry or the result's connection is poisoned, `Clock` when the clock
+    /// is unusable, `Unavailable` or `Sqlite` for read failures.
     pub fn read_page(
         &self,
         id: ResultId,
@@ -49,10 +50,7 @@ impl ResultStore {
             return Err(self.unknown_cursor());
         }
         let (rows, next_ord) = {
-            let conn =
-                crate::util::lock(&entry.conn, "result_entry_connection").map_err(|error| {
-                    ResultStoreError::unavailable("the result's connection is poisoned", error)
-                })?;
+            let conn = crate::util::lock(&entry.conn, "result_entry_connection")?;
             if !is_complete(&conn)? {
                 return Err(self.unknown_cursor());
             }

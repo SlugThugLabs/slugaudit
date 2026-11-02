@@ -1,61 +1,54 @@
-//! Structured tracing for one `publish()` attempt's terminal outcome —
-//! kept apart so `publish.rs`'s own retry-loop control flow stays readable.
+//! Structured tracing for a completed `publish()`, and the fields that
+//! describe a failed one — kept apart so `publish.rs`'s own retry-loop
+//! control flow stays readable.
 use super::discovery::DiscoveryError;
 use super::publish::{PublishError, PublishReport};
 use super::revision::RevisionError;
 use super::sample::SampleError;
 use std::path::Path;
 
-/// Logs the terminal outcome of one `publish()` attempt. This is the single
-/// warn site for a failed publish: every caller (the manager paths and
-/// `project_control::enable`) reaches it, so one failure is never logged
-/// twice.
-pub(super) fn log_outcome(
-    root: &Path,
-    result: &Result<PublishReport, PublishError>,
-    retries: usize,
-) {
-    match result {
-        Ok(report) => tracing::info!(
-            revision_id = report.revision_id,
-            added = report.added,
-            modified = report.modified,
-            deleted = report.deleted,
-            unchanged = report.unchanged,
-            retries,
-            "publish completed"
+/// Logs a completed `publish()`. A failed publish is not logged here: it is
+/// returned, and each caller either returns it to the tool call with
+/// [`failure_context`] in the message (logged once by
+/// `server_runner::log_completion`) or recovers from it and logs the recovery
+/// (`recovery_log`).
+pub(super) fn log_completed(report: &PublishReport, retries: usize) {
+    tracing::info!(
+        revision_id = report.revision_id,
+        added = report.added,
+        modified = report.modified,
+        deleted = report.deleted,
+        unchanged = report.unchanged,
+        retries,
+        "publish completed"
+    );
+}
+
+/// The context a failed publish's tool error carries beyond the error's own
+/// `Display`: the project root, the static failure category and, when the
+/// variant names one, the file. `server_runner::log_completion` logs the
+/// tool error's message, so this is what makes the failure diagnosable from
+/// that one log line.
+pub(crate) fn failure_context(root: &Path, error: &PublishError) -> String {
+    let (error_kind, path) = failure_fields(error);
+    match path {
+        Some(path) => format!(
+            "root: {}; error_kind: {error_kind}; path: {}",
+            root.display(),
+            path.display()
         ),
-        Err(error) => {
-            let (error_kind, path) = failure_fields(error);
-            if let Some(path) = path {
-                tracing::warn!(
-                    root = %root.display(),
-                    operation = "publish",
-                    retries,
-                    error_kind,
-                    path = %path.display(),
-                    error = %error,
-                    "publish failed"
-                );
-            } else {
-                tracing::warn!(
-                    root = %root.display(),
-                    operation = "publish",
-                    retries,
-                    error_kind,
-                    error = %error,
-                    "publish failed"
-                );
-            }
-        }
+        None => format!("root: {}; error_kind: {error_kind}", root.display()),
     }
 }
 
 /// The static failure category for a publish error, plus the path the
 /// variant carries when it has one.
 ///
-/// Log sites emit these alongside the error's `Display` so a failure can be
-/// filtered by category and by the file it names.
+/// The single mapping from a publish failure to its log fields: every site
+/// that names a publish failure (a retry, a superseded or unrecorded worker
+/// failure, the returned tool error's [`failure_context`]) uses these
+/// alongside the error's `Display`, so a failure can be filtered by category
+/// and by the file it names.
 pub(super) fn failure_fields(error: &PublishError) -> (&'static str, Option<&Path>) {
     match error {
         PublishError::Discovery(error) => discovery_failure_fields(error),
@@ -87,6 +80,9 @@ fn discovery_failure_fields(error: &DiscoveryError) -> (&'static str, Option<&Pa
         DiscoveryError::Read { path, .. } => ("discovery_read", Some(path)),
         DiscoveryError::NotRelative(path) => ("discovery_not_relative", Some(path)),
         DiscoveryError::NonUtf8Path(path) => ("discovery_non_utf8_path", Some(path)),
+        DiscoveryError::Vanished { relative_path } => {
+            ("discovery_vanished", Some(Path::new(relative_path)))
+        }
         DiscoveryError::TimeBudgetExceeded { .. } => ("discovery_time_budget_exceeded", None),
     }
 }
@@ -111,16 +107,5 @@ fn revision_failure_fields(error: &RevisionError) -> (&'static str, Option<&Path
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_sampling_index_error_maps_to_its_static_category_without_a_path() {
-        let error = PublishError::SamplingIndexOutOfRange { index: 7, total: 3 };
-
-        let (error_kind, path) = failure_fields(&error);
-
-        assert_eq!(error_kind, "sampling_index_out_of_range");
-        assert_eq!(path, None);
-    }
-}
+#[path = "publish_log_tests.rs"]
+mod tests;

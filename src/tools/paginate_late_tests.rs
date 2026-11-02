@@ -11,6 +11,7 @@ fn late_spec(tool: &'static str) -> PageSpec {
         columns: Vec::new(),
         page_bytes: 1000,
         requested_page_bytes: None,
+        ceiling: usize::MAX,
     }
 }
 
@@ -233,10 +234,22 @@ fn budgeted_page_one(
     path: &str,
     budget: usize,
 ) -> TestResult<Served<Totals>> {
+    budgeted_page_one_under(manager, path, budget, usize::MAX)
+}
+
+fn budgeted_page_one_under(
+    manager: &SourceSyncManager,
+    path: &str,
+    budget: usize,
+    ceiling: usize,
+) -> TestResult<Served<Totals>> {
     let seen = std::cell::Cell::new(0);
     let served = paginate(
         manager,
-        &budget_spec(budget, None),
+        &PageSpec {
+            ceiling,
+            ..budget_spec(budget, None)
+        },
         PageRequest::Fresh {
             path,
             sink: &NoopProgressSink,
@@ -314,22 +327,20 @@ fn paginate_continuation_with_an_explicit_page_bytes_uses_and_echoes_it() -> Tes
     Ok(())
 }
 
+/// The ceiling page one ran under is stored with the result: a continuation
+/// clamps an over-large `page_bytes` to it, and reports being at it, whatever
+/// any other limits say.
 #[test]
-fn paginate_continuation_page_bytes_above_the_ceiling_is_clamped_by_the_tool_resolution()
--> TestResult {
+fn paginate_continuation_page_bytes_above_the_stored_ceiling_is_clamped_to_it() -> TestResult {
     let (_project, path) = project()?;
     let manager = manager(ROOMY);
-    let first = budgeted_page_one(&manager, &path, 2048)?;
-    let limits = crate::model::ResourceLimits {
-        max_query_response_bytes: 4096,
-        ..crate::model::ResourceLimits::default()
-    };
-    let size = crate::tools::page_size::resolve(Some(1 << 20), &limits).check("clamps")?;
+    let first = budgeted_page_one_under(&manager, &path, 2048, 4096)?;
+    assert!(!first.at_ceiling, "2048 is below the ceiling 4096");
     let seen = std::cell::Cell::new(0);
 
     let second: Served<Totals> = paginate(
         &manager,
-        &budget_spec(77, Some(size.bytes)),
+        &budget_spec(77, Some(1 << 20)),
         PageRequest::Cursor(&cursor_of(&first)?),
         |_, _| {
             Err(ErrorData::internal_error(
@@ -342,6 +353,7 @@ fn paginate_continuation_page_bytes_above_the_ceiling_is_clamped_by_the_tool_res
     .check("page two")?;
 
     assert_eq!((seen.get(), second.page.page_bytes), (4096, 4096));
+    assert!(second.at_ceiling, "the clamped budget is the ceiling");
     Ok(())
 }
 

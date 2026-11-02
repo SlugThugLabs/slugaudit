@@ -1,6 +1,6 @@
 //! Producing this run's criterion measurements.
 
-use crate::CRITERION_DIR;
+use std::path::Path;
 
 /// The gated benches and the reduced-sample criterion settings that keep a
 /// run fast enough to repeat before and after a change.
@@ -22,22 +22,25 @@ const BENCH_ARGS: &[&str] = &[
     "3",
 ];
 
-/// Clears stale criterion output, then runs the gated benches.
+/// Clears stale criterion output in `criterion_dir`, then runs the gated
+/// benches from `root`.
 ///
 /// Never trust the previous run's numbers: a failed cleanup must stop the
 /// run, because a leftover `new/estimates.json` would otherwise be harvested
 /// as this run's measurement.
-pub(crate) fn run_fresh() -> Result<(), String> {
-    match std::fs::remove_dir_all(CRITERION_DIR) {
+pub(crate) fn run_fresh(root: &Path, criterion_dir: &Path) -> Result<(), String> {
+    match std::fs::remove_dir_all(criterion_dir) {
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => {
             return Err(format!(
-                "could not clear stale criterion output {CRITERION_DIR}: {err}"
+                "could not clear stale criterion output {}: {err}",
+                criterion_dir.display()
             ));
         }
     }
     let status = std::process::Command::new("cargo")
+        .current_dir(root)
         .args(BENCH_ARGS)
         .status()
         .map_err(|err| format!("failed to invoke cargo bench: {err}"))?;

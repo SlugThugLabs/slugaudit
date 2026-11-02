@@ -49,8 +49,8 @@ pub struct ResultMeta {
 
 /// One registered result.
 pub(super) struct Entry {
-    // Recovering a poisoned lock is safe here: after registration the
-    // connection is only read, so a panic mid-read leaves no partial mutation.
+    // A poisoned connection lock is not recovered: a read of it returns
+    // `ResultStoreError::Lock`.
     pub(super) conn: Mutex<Connection>,
     pub(super) meta: Arc<ResultMeta>,
     pub(super) bytes: u64,

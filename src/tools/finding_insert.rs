@@ -1,5 +1,6 @@
-//! The `finding` write path: input validation, the indexed-file lookup, and
-//! the insert-or-refresh in this process's findings file. Kept apart from `finding.rs` so the
+//! The `finding` write path: the indexed-file lookup and the insert-or-refresh
+//! in this process's findings file. Input validation is in `finding_validate.rs`.
+//! Kept apart from `finding.rs` so the
 //! tool contract (request/response shapes) stays separate from the statements
 //! that store an agent-authored conclusion.
 //!
@@ -12,17 +13,14 @@
 //! only, so a conclusion is only ever merged into its own session's notebook.
 
 use super::context::internal_error;
-use super::finding::{
-    FindingRequest, FindingResponse, MAX_CATEGORY_CHARS, MAX_DESCRIPTION_CHARS, MAX_FILE_BYTES,
-    MAX_PATH_BYTES, MAX_SEVERITY_CHARS, MAX_TITLE_CHARS,
-};
+use super::finding::{FindingRequest, FindingResponse};
 use crate::error_codes::{self, ErrorCode};
 use crate::util;
 use rmcp::ErrorData;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 /// Stores one validated finding, already checked against the indexed file
-/// (`fetch_file`, `validate_line_range`), in the findings file and returns the
+/// (`fetch_file`, `finding_validate::validate_line_range`), in the findings file and returns the
 /// persisted row identity.
 ///
 /// # Errors
@@ -148,49 +146,6 @@ fn insert_new(
     Ok(tx.last_insert_rowid())
 }
 
-/// Bounds every caller-supplied text field before the index is touched.
-pub(super) fn validate_text_fields(request: &FindingRequest) -> Result<(), ErrorData> {
-    if util::exceeds_input_bytes(&request.path, MAX_PATH_BYTES) {
-        return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
-    }
-    if util::exceeds_input_bytes(&request.file, MAX_FILE_BYTES) {
-        return Err(ErrorData::invalid_params("file exceeds 8192 bytes", None));
-    }
-    check_field("title", &request.title, MAX_TITLE_CHARS)?;
-    check_field("description", &request.description, MAX_DESCRIPTION_CHARS)?;
-    check_field("severity", &request.severity, MAX_SEVERITY_CHARS)?;
-    check_field("category", &request.category, MAX_CATEGORY_CHARS)?;
-    if request.line_start == 0 || request.line_end == 0 {
-        return Err(ErrorData::invalid_params(
-            "line_start and line_end are one-based; zero is not a valid line",
-            None,
-        ));
-    }
-    if request.line_start > request.line_end {
-        return Err(ErrorData::invalid_params(
-            "line_start must not exceed line_end",
-            None,
-        ));
-    }
-    Ok(())
-}
-
-fn check_field(name: &str, value: &str, max_chars: usize) -> Result<(), ErrorData> {
-    if value.trim().is_empty() {
-        return Err(ErrorData::invalid_params(
-            format!("{name} must not be empty"),
-            None,
-        ));
-    }
-    if value.chars().count() > max_chars {
-        return Err(ErrorData::invalid_params(
-            format!("{name} exceeds {max_chars} characters"),
-            None,
-        ));
-    }
-    Ok(())
-}
-
 /// The indexed file's `(content_hash, content)`.
 ///
 /// Only "this file is not in the index" is the caller's input being invalid.
@@ -218,36 +173,4 @@ pub(super) fn fetch_file(tx: &Transaction<'_>, file: &str) -> Result<(String, St
         ErrorData::invalid_params(format!("{file} has no indexed source content"), payload)
     })?;
     Ok((source_hash, content))
-}
-
-pub(super) fn validate_line_range(
-    request: &FindingRequest,
-    content: &str,
-) -> Result<(), ErrorData> {
-    let line_count = u32::try_from(content.lines().count()).map_err(|error| {
-        ErrorData::invalid_params(
-            format!(
-                "{} has too many lines to attach a finding to: {error}",
-                request.file
-            ),
-            None,
-        )
-    })?;
-    // An empty file still has no addressable one-based lines.
-    if line_count == 0 {
-        return Err(ErrorData::invalid_params(
-            format!("{} has no lines to attach a finding to", request.file),
-            None,
-        ));
-    }
-    if request.line_end > line_count {
-        return Err(ErrorData::invalid_params(
-            format!(
-                "line_end {} exceeds {}'s length ({line_count} lines)",
-                request.line_end, request.file
-            ),
-            None,
-        ));
-    }
-    Ok(())
 }

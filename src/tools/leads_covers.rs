@@ -27,6 +27,15 @@ pub(super) struct LanguagesRead {
 }
 
 impl LanguagesRead {
+    /// A read that found no language.
+    #[cfg(test)]
+    pub(super) fn empty() -> Self {
+        Self {
+            parsed: Vec::new(),
+            paths: Vec::new(),
+        }
+    }
+
     /// The `covers` list for a mechanic that reads `reads`.
     pub(super) fn covers(&self, reads: Reads) -> Vec<String> {
         match reads {

@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=one materialisation: spec and handle types, begin, push with non-finite marking, batch checkpoint and finish (meta last, commit, admit) share one writer state and one abort rule
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=one materialisation: spec and handle types, begin, push with non-finite marking, batch checkpoint and finish (meta last, commit, admit) share one writer state and one abort rule
 //! Materialising one result: rows go into one private file inside ONE
 //! transaction; `meta` is written last; only after the commit is the result
 //! admitted and made resolvable. Any error drops the writer, closing the

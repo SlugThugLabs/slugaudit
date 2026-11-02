@@ -8,6 +8,9 @@
 use std::fs;
 use std::path::Path;
 
+use crate::gate_test_file::is_test_file;
+use crate::test_cfg::is_test_cfg;
+
 /// A production source file: its path relative to the project root, and its
 /// contents.
 pub(super) type Source = (String, String);
@@ -75,27 +78,13 @@ fn collect(
     Ok(())
 }
 
-/// Files the repo's test-module conventions declare: a sibling suite
-/// (`*_tests.rs`), the `tests.rs` shorthand, or a shared test fixture
-/// (`test_support.rs`, `proptest.rs`). Mirrors `check_source_limits`'s
-/// classifier, extended with the shared fixture names above.
-fn is_test_file(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-            name.ends_with("_tests.rs")
-                || name == "tests.rs"
-                || name == "test_support.rs"
-                || name == "proptest.rs"
-        })
-}
-
-/// Keeps only the production code: `#[cfg(test)]`-attributed items are
+/// Keeps only the production code: items that exist only under `test`
+/// (`#[cfg(test)]`, `#[cfg(all(test, unix))]`; see [`is_test_cfg`]) are
 /// removed so a test fixture cannot be counted as a producer, and `//` line
 /// comments are blanked so a variant's name in a doc comment or a trailing
 /// comment cannot be one either.
 ///
-/// Handles the two cfg shapes the repo uses: a single-line item
+/// Handles the two item shapes the repo uses: a single-line item
 /// (`#[cfg(test)] use …;`, `#[cfg(test)] mod tests;`) and an item with a
 /// braced body (an inline `mod tests { … }`, or a cfg-gated helper `fn`).
 /// Brace depth is counted on code only; a brace inside a test string literal
@@ -106,7 +95,7 @@ pub(super) fn production_code(source: &str) -> String {
     let mut kept = String::with_capacity(source.len());
     let mut lines = source.lines();
     while let Some(line) = lines.next() {
-        if !line.trim_start().starts_with("#[cfg(test)]") {
+        if !is_test_cfg(line) {
             kept.push_str(code_before_line_comment(line));
             kept.push('\n');
             continue;
@@ -188,12 +177,10 @@ pub(super) fn enum_variants(source: &str, name: &str) -> Option<Vec<String>> {
         // A variant is the leading identifier of its line; a payload
         // (`LoadFailed { … }`) or discriminant never changes which variant
         // the line declares.
-        // `split` always yields a first piece; the `None` arm cannot run and
-        // yields an empty head, which is not an identifier.
-        let head = match trimmed.split(['{', '(', '=', ',']).next() {
-            Some(piece) => piece.trim(),
-            None => "",
-        };
+        let head = trimmed
+            .split_once(['{', '(', '=', ','])
+            .map_or(trimmed, |(head, _)| head)
+            .trim();
         if is_identifier(head) {
             variants.push(head.to_owned());
         }
@@ -236,7 +223,7 @@ fn is_value_position(source: &str, start: usize, end: usize) -> bool {
     if source[end..].trim_start().starts_with("=>") {
         return false;
     }
-    let before = source[..start].trim_end();
+    let before = without_path_prefix(source[..start].trim_end());
     let Some(last) = before.chars().next_back() else {
         return false;
     };
@@ -250,6 +237,21 @@ fn is_value_position(source: &str, start: usize, end: usize) -> bool {
         }
         _ => false,
     }
+}
+
+/// `before` without the module path that qualifies the variant:
+/// `x == model::EvidenceKind::Call` is a comparison, so the `==` before the
+/// path decides, not the `::` that ends it. A lone `:` (a struct field) is
+/// left alone.
+fn without_path_prefix(mut before: &str) -> &str {
+    while let Some(path) = before.strip_suffix("::") {
+        before = path
+            .trim_end_matches(|character: char| {
+                character.is_ascii_alphanumeric() || character == '_'
+            })
+            .trim_end();
+    }
+    before
 }
 
 fn is_identifier(token: &str) -> bool {

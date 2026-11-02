@@ -341,3 +341,29 @@ fn update_fetch_failed_download_removes_the_partial_file() -> TestResult {
     assert!(!destination.exists(), "the partial file must be removed");
     Ok(())
 }
+
+#[test]
+fn both_curl_calls_share_one_bounded_https_only_argument_list() {
+    let command = curl_command("https://example.test/x", 30, 10_000_000);
+
+    let args: Vec<_> = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+
+    assert_eq!(
+        args,
+        [
+            "-fsSL",
+            "--max-time",
+            "30",
+            "--max-filesize",
+            "10000000",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "https://example.test/x",
+        ]
+    );
+}

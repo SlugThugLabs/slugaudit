@@ -92,7 +92,8 @@ impl From<LockPoisoned> for rmcp::ErrorData {
 /// Acquires a mutex guard. A mutex poisoned by a panicking holder is an
 /// error the operation returns: the data it guards may be half-updated, so
 /// it is never read. `mutex_name` is the static label the error carries, so
-/// the failure names which state was lost.
+/// the failure names which state was lost. The poisoning is logged here, once
+/// per detection; callers propagate the error without logging it again.
 ///
 /// # Errors
 ///
@@ -101,9 +102,13 @@ pub(crate) fn lock<'a, T>(
     mutex: &'a Mutex<T>,
     mutex_name: &'static str,
 ) -> Result<std::sync::MutexGuard<'a, T>, LockPoisoned> {
-    mutex
-        .lock()
-        .map_err(|_poisoned| LockPoisoned { mutex: mutex_name })
+    mutex.lock().map_err(|_poisoned| {
+        tracing::error!(
+            mutex = mutex_name,
+            "mutex poisoned by a panic in an earlier holder"
+        );
+        LockPoisoned { mutex: mutex_name }
+    })
 }
 
 /// Hex-encodes a byte slice as a lowercase hex string. Used by both the
