@@ -57,8 +57,11 @@ pub(super) struct ClippedRow {
 }
 
 /// A TEXT/BLOB cell of the row, measured.
-struct Variable {
-    index: usize,
+struct Variable<'a> {
+    /// Result column name of the cell.
+    name: &'a str,
+    /// The cell itself.
+    value: &'a SqlValue,
     /// Serialized JSON bytes of the value's content, without its quotes.
     cost: usize,
     /// Length in `substr` units.
@@ -91,9 +94,8 @@ pub(super) fn clip_row(
 
     let mut cells = Vec::new();
     for (variable, budget) in variables.iter().zip(granted) {
-        let name = &column_names[variable.index];
-        let Some((content, returned, kind, unit)) = clip_value(&values[variable.index], budget)
-        else {
+        let name = variable.name;
+        let Some((content, returned, kind, unit)) = clip_value(variable.value, budget) else {
             continue;
         };
         if returned < variable.units {
@@ -105,7 +107,7 @@ pub(super) fn clip_row(
                 variable.units,
             ));
         }
-        object.insert(name.clone(), serde_json::Value::String(content));
+        object.insert(name.to_owned(), serde_json::Value::String(content));
     }
     Ok(ClippedRow {
         row: serde_json::Value::Object(object),
@@ -117,14 +119,20 @@ pub(super) fn clip_row(
 /// measured variables those cells will be clipped from. Shares the duplicate
 /// column check with [`super::query_value::row_to_json`] so the clipped and
 /// unclipped paths cannot disagree on which results are representable.
-fn base_object(
-    column_names: &[String],
-    values: &[SqlValue],
-) -> Result<(serde_json::Map<String, serde_json::Value>, Vec<Variable>), ErrorData> {
+fn base_object<'a>(
+    column_names: &'a [String],
+    values: &'a [SqlValue],
+) -> Result<
+    (
+        serde_json::Map<String, serde_json::Value>,
+        Vec<Variable<'a>>,
+    ),
+    ErrorData,
+> {
     ensure_unique_column_names(column_names)?;
     let mut object = serde_json::Map::with_capacity(column_names.len());
     let mut variables = Vec::new();
-    for (index, (name, value)) in column_names.iter().zip(values).enumerate() {
+    for (name, value) in column_names.iter().zip(values) {
         let cell = match value {
             SqlValue::Text(text) => {
                 let (cost, chars) = text_size(text);
@@ -133,12 +141,18 @@ fn base_object(
                 } else {
                     chars
                 };
-                variables.push(Variable { index, cost, units });
+                variables.push(Variable {
+                    name,
+                    value,
+                    cost,
+                    units,
+                });
                 serde_json::Value::String(String::new())
             }
             SqlValue::Blob(bytes) => {
                 variables.push(Variable {
-                    index,
+                    name,
+                    value,
                     cost: bytes.len().saturating_mul(2),
                     units: bytes.len(),
                 });
@@ -153,17 +167,24 @@ fn base_object(
 
 /// Shares `room` among the variables as evenly as the smaller cells allow,
 /// smallest first, returning each variable's granted budget by index.
-fn share_room(variables: &[Variable], room: usize) -> Vec<usize> {
+fn share_room(variables: &[Variable<'_>], room: usize) -> Vec<usize> {
     let mut room = room;
-    let mut order: Vec<usize> = (0..variables.len()).collect();
-    order.sort_by_key(|position| variables[*position].cost);
-    let mut granted = vec![0; variables.len()];
-    for (rank, position) in order.iter().enumerate() {
-        let share = room / (order.len() - rank);
-        granted[*position] = variables[*position].cost.min(share);
-        room -= granted[*position];
+    let mut order: Vec<(usize, usize)> = variables
+        .iter()
+        .enumerate()
+        .map(|(position, variable)| (position, variable.cost))
+        .collect();
+    order.sort_by_key(|(_, cost)| *cost);
+    let count = order.len();
+    let mut grants = Vec::with_capacity(count);
+    for (rank, (position, cost)) in order.into_iter().enumerate() {
+        // `rank < count`, so the divisor is at least 1.
+        let grant = cost.min(room / (count - rank));
+        room -= grant;
+        grants.push((position, grant));
     }
-    granted
+    grants.sort_by_key(|(position, _)| *position);
+    grants.into_iter().map(|(_, grant)| grant).collect()
 }
 
 /// Cuts one TEXT/BLOB cell to `budget` units, returning the content, how
@@ -178,14 +199,16 @@ fn clip_value(
             if text.contains('\0') {
                 // SQLite's text functions stop at a NUL, so the rest is
                 // reachable only as bytes of the value cast to a blob.
-                Some((prefix.to_owned(), prefix.len(), "text", "bytes"))
+                let bytes = prefix.len();
+                Some((prefix, bytes, "text", "bytes"))
             } else {
-                Some((prefix.to_owned(), chars, "text", "characters"))
+                Some((prefix, chars, "text", "characters"))
             }
         }
         SqlValue::Blob(bytes) => {
-            let keep = (budget / 2).max(1).min(bytes.len());
-            Some((hex_encode(&bytes[..keep]), keep, "blob", "bytes"))
+            // A budget past the blob keeps the whole blob.
+            let kept = bytes.get(..(budget / 2).max(1)).unwrap_or(bytes);
+            Some((hex_encode(kept), kept.len(), "blob", "bytes"))
         }
         _ => None,
     }
@@ -240,18 +263,16 @@ fn text_size(text: &str) -> (usize, usize) {
 
 /// The longest prefix whose serialized content fits `budget` (at least one
 /// character), and its length in characters.
-fn text_prefix(text: &str, budget: usize) -> (&str, usize) {
+fn text_prefix(text: &str, budget: usize) -> (String, usize) {
     let mut used = 0;
     let mut chars = 0;
-    let mut end = 0;
-    for (position, character) in text.char_indices() {
+    for character in text.chars() {
         let next = used + json_char_len(character);
         if chars > 0 && next > budget {
             break;
         }
         used = next;
         chars += 1;
-        end = position + character.len_utf8();
     }
-    (&text[..end], chars)
+    (text.chars().take(chars).collect(), chars)
 }

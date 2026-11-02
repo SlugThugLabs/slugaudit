@@ -92,12 +92,19 @@ impl ScanKey {
 /// A snapshot of the cache for `health`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheStats {
+    /// Number of cached scans currently held.
     pub entries: usize,
+    /// Total bytes the held scans account for.
     pub bytes: usize,
+    /// Byte budget the cache evicts down to.
     pub budget: usize,
+    /// Scans evicted to stay within the budget since the cache was created.
     pub evictions: u64,
+    /// Scans not cached because a single scan exceeded the budget.
     pub skipped_too_large: u64,
+    /// Lookups answered from the cache.
     pub hits: u64,
+    /// Lookups that found no usable cached scan.
     pub misses: u64,
 }
 

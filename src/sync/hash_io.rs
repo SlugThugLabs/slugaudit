@@ -47,7 +47,19 @@ pub(crate) fn hash_reader(
                 limit: max_bytes,
             });
         }
-        hasher.update(&chunk[..read]);
+        let Some(filled) = chunk.get(..read) else {
+            return Err(HashError::Read {
+                path: absolute_path.to_path_buf(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "reader reported {read} bytes for a {}-byte buffer",
+                        chunk.len()
+                    ),
+                ),
+            });
+        };
+        hasher.update(filled);
     }
     Ok(SourceIdentity::new(
         relative_path.to_owned(),
@@ -182,5 +194,33 @@ mod tests {
         let dummy_path = std::path::Path::new("dummy.rs");
         let result = hash_reader(&mut reader, "dummy.rs", dummy_path, 1024);
         assert!(matches!(result, Err(HashError::Read { .. })));
+    }
+
+    /// A reader that claims to have filled more bytes than the buffer holds.
+    struct OverreportingReader;
+
+    impl Read for OverreportingReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            Ok(buf.len() + 1)
+        }
+    }
+
+    #[test]
+    fn hash_reader_rejects_a_read_count_past_the_buffer() {
+        let dummy_path = std::path::Path::new("dummy.rs");
+        let result = hash_reader(OverreportingReader, "dummy.rs", dummy_path, u64::MAX);
+        let Err(HashError::Read { path, source }) = result else {
+            panic!("an over-reported read must fail with HashError::Read");
+        };
+        assert_eq!(path, dummy_path);
+        assert_eq!(source.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            source.to_string(),
+            format!(
+                "reader reported {} bytes for a {}-byte buffer",
+                HASH_CHUNK_BYTES + 1,
+                HASH_CHUNK_BYTES
+            )
+        );
     }
 }

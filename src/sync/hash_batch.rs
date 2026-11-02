@@ -39,13 +39,25 @@ impl HashBatch<'_> {
         }
     }
 
+    /// The typed failure for an index that is not a position in the
+    /// discovered set, so a bad index can never panic the process.
+    fn index_out_of_range(&self, index: usize) -> PublishError {
+        PublishError::SamplingIndexOutOfRange {
+            index,
+            total: self.discovered.len(),
+        }
+    }
+
     fn send_outcome(
         &self,
         tx: &mpsc::Sender<(usize, HashOutcome)>,
         idx: usize,
         outcome: HashOutcome,
     ) -> bool {
-        let file = &self.discovered[idx];
+        let Some(file) = self.discovered.get(idx) else {
+            self.abort(self.index_out_of_range(idx));
+            return false;
+        };
         match tx.send((idx, outcome)) {
             Ok(()) => true,
             Err(error) => {
@@ -64,14 +76,17 @@ impl HashBatch<'_> {
             if idx >= self.total {
                 break;
             }
+            let Some(file) = self.discovered.get(idx) else {
+                self.abort(self.index_out_of_range(idx));
+                return;
+            };
             if let Some(elapsed) = self.deadline.exceeded() {
                 self.abort(PublishError::TimeBudgetExceeded {
-                    path: format!(" while hashing {}", self.discovered[idx].relative_path),
+                    path: format!(" while hashing {}", file.relative_path),
                     elapsed_ms: elapsed.as_millis(),
                 });
                 return;
             }
-            let file = &self.discovered[idx];
             match hash_file(
                 &file.relative_path,
                 &file.absolute_path,

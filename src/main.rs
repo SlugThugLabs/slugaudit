@@ -7,6 +7,7 @@
 //! formatter.
 
 #![forbid(unsafe_code)]
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 use rmcp::{ServiceExt, service::ServerInitializeError, transport::stdio};
 use slugaudit_mcp_rust::cli::{self, Command};

@@ -249,7 +249,7 @@ pub(crate) fn sniff_kind(path: &Path) -> Result<FileKind, DiscoveryError> {
             path: path.to_path_buf(),
             source,
         })?;
-    if buffer[..read].contains(&0) {
+    if buffer.iter().take(read).any(|byte| *byte == 0) {
         Ok(FileKind::Binary)
     } else {
         Ok(FileKind::Indexed)

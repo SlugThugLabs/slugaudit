@@ -64,17 +64,17 @@ pub(crate) fn pick(candidates: &[String], known_paths: &HashSet<&str>) -> Resolu
         .iter()
         .filter(|candidate| known_paths.contains(candidate.as_str()))
         .collect();
-    match matches.len() {
-        0 => unresolved(),
-        1 => Resolution {
+    match matches.as_slice() {
+        [] => unresolved(),
+        [only] => Resolution {
             kind: ResolutionKind::Resolved,
             confidence: Some("High"),
-            to_relative_path: Some(matches[0].clone()),
+            to_relative_path: Some((*only).clone()),
         },
-        _ => Resolution {
+        [first, _, ..] => Resolution {
             kind: ResolutionKind::Resolved,
             confidence: Some("Low"),
-            to_relative_path: Some(matches[0].clone()),
+            to_relative_path: Some((*first).clone()),
         },
     }
 }

@@ -3,6 +3,7 @@
 // Same production panic ban as the library root; see `lib.rs` for why
 // `expect` is denied alongside `unwrap`.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 //! Producer-coverage gate.
 //!

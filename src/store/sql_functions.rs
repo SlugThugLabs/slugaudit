@@ -130,7 +130,8 @@ fn count_lines(text: &str) -> usize {
 }
 
 fn next_newline(bytes: &[u8], from: usize) -> Option<usize> {
-    bytes[from..]
+    bytes
+        .get(from..)?
         .iter()
         .position(|byte| *byte == b'\n')
         .map(|offset| from + offset)

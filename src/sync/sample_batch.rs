@@ -184,18 +184,19 @@ impl Batch<'_> {
             if idx >= self.total {
                 return;
             }
+            let Some(file) = self.discovered.get(idx) else {
+                self.abort(self.index_out_of_range(idx));
+                return;
+            };
             // The deadline is checked after claiming the index so the
             // budget-exceeded error can name the file that was next in
             // line: the deadline is still checked once per file, with a
             // nameable victim.
             if let Some(elapsed) = self.deadline.exceeded() {
-                self.abort(time_budget_error(
-                    &self.discovered[idx].relative_path,
-                    elapsed,
-                ));
+                self.abort(time_budget_error(&file.relative_path, elapsed));
                 return;
             }
-            match sample_file(&self.discovered[idx], self.limits) {
+            match sample_file(file, self.limits) {
                 Ok(sample) => {
                     if !self.claim_bytes(sample.byte_len) {
                         return;

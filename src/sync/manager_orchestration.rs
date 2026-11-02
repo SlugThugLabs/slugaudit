@@ -61,12 +61,12 @@ impl SourceSyncManager {
         sink.emit(ProgressEvent::Started {
             phase: "ensuring_current",
         });
-        let (root, database_path) =
-            project::resolve_project(Path::new(path)).map_err(map_activation_error)?;
+        let (root, database_path) = project::resolve_project(Path::new(path))
+            .map_err(|error| map_activation_error(&error))?;
         // The first touch of a project in this process starts its session
         // findings fresh; every later call, and any rebuild of the project
         // database below, leaves the session findings file alone.
-        project::begin_process_session(&root).map_err(map_activation_error)?;
+        project::begin_process_session(&root).map_err(|error| map_activation_error(&error))?;
 
         let connection = match self.open_or_rebuild(&root, &database_path, start, sink)? {
             Ok(conn) => conn,
@@ -322,7 +322,7 @@ impl SourceSyncManager {
 /// `action: "on"` and the path argument). Any other resolution failure — an
 /// unresolvable path, a symlinked activation directory — keeps its plain
 /// message and no code, because `project_control` cannot fix it.
-pub(crate) fn map_activation_error(error: project::ActivationError) -> ErrorData {
+pub(crate) fn map_activation_error(error: &project::ActivationError) -> ErrorData {
     let data = if matches!(error, project::ActivationError::NotActive) {
         error_codes::payload(ErrorCode::ProjectNotEnabled)
     } else {
@@ -334,7 +334,7 @@ pub(crate) fn map_activation_error(error: project::ActivationError) -> ErrorData
 /// The tool error for process limits that were never installed and whose
 /// `SLUGAUDIT_*` environment is invalid (a library embedder; the shipped
 /// binary validates before serving). Logged once here, with the source error.
-pub(crate) fn map_process_limits_error(error: crate::model::EnvConfigError) -> ErrorData {
+pub(crate) fn map_process_limits_error(error: &crate::model::EnvConfigError) -> ErrorData {
     tracing::error!(%error, "process limits environment is invalid");
     ErrorData::internal_error(
         format!("the SLUGAUDIT_* environment is invalid: {error}; fix it and restart the server"),

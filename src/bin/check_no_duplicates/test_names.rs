@@ -106,11 +106,9 @@ pub(super) fn test_names_by_file(
             // comments, and further attributes before the fn item. Skip
             // those, but stop at the first line that resembles a fn
             // declaration.
-            let mut cursor = idx + 1;
-            while cursor < lines.len() {
-                let trimmed = lines[cursor].trim();
+            for following in lines.iter().skip(idx + 1) {
+                let trimmed = following.trim();
                 if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#[") {
-                    cursor += 1;
                     continue;
                 }
                 if let Some(name) = block_line_fn_name(trimmed) {

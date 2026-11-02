@@ -331,23 +331,19 @@ pub(super) fn describe_error(error: &rusqlite::Error, abort_reason: &Arc<AtomicU
 /// True when `sql`'s first token, after leading whitespace and comments, is
 /// the `PRAGMA` keyword (case-insensitive).
 fn first_keyword_is_pragma(sql: &str) -> bool {
-    let bytes = sql.as_bytes();
-    let mut index = 0;
+    let mut rest = sql;
     loop {
-        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
-            index += 1;
-        }
-        if bytes[index..].starts_with(b"--") {
-            index += 2;
-            while index < bytes.len() && bytes[index] != b'\n' {
-                index += 1;
-            }
+        rest = rest.trim_start_matches(|character: char| character.is_ascii_whitespace());
+        if let Some(comment) = rest.strip_prefix("--") {
+            // A line comment ends at the newline; without one it runs to the
+            // end of the statement, leaving no keyword.
+            rest = comment.split_once('\n').map_or("", |(_, after)| after);
             continue;
         }
-        if bytes[index..].starts_with(b"/*") {
-            match sql[index + 2..].find("*/") {
-                Some(offset) => {
-                    index += 2 + offset + 2;
+        if let Some(comment) = rest.strip_prefix("/*") {
+            match comment.split_once("*/") {
+                Some((_, after)) => {
+                    rest = after;
                     continue;
                 }
                 None => return false,
@@ -355,11 +351,9 @@ fn first_keyword_is_pragma(sql: &str) -> bool {
         }
         break;
     }
-    let start = index;
-    while index < bytes.len() && bytes[index].is_ascii_alphabetic() {
-        index += 1;
-    }
-    sql[start..index].eq_ignore_ascii_case("pragma")
+    rest.split(|character: char| !character.is_ascii_alphabetic())
+        .next()
+        .is_some_and(|keyword| keyword.eq_ignore_ascii_case("pragma"))
 }
 
 /// `sql_error` when SQLite itself failed to compile or run the statement;

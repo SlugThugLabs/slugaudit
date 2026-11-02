@@ -119,14 +119,11 @@ impl ConfigShape {
     pub fn entry(self, binary: &Path) -> Result<serde_json::Value, ConnectError> {
         let command = binary_text(binary)?;
         Ok(match self {
-            ConfigShape::McpServersCommandArgs => {
+            ConfigShape::McpServersCommandArgs | ConfigShape::ZedContextServer => {
                 serde_json::json!({ "command": command, "args": [] })
             }
             ConfigShape::OpenCodeLocal => {
                 serde_json::json!({ "type": "local", "command": [command], "enabled": true })
-            }
-            ConfigShape::ZedContextServer => {
-                serde_json::json!({ "command": command, "args": [] })
             }
             ConfigShape::GooseExtensions => {
                 serde_json::json!({ "type": "stdio", "cmd": command, "args": [] })

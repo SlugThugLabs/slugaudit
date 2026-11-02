@@ -79,11 +79,11 @@ fn parse_reason(text: &str) -> Option<String> {
 }
 
 fn valid_date(date: &str) -> bool {
-    date.len() == 10
-        && date.as_bytes()[4] == b'-'
-        && date.as_bytes()[7] == b'-'
-        && date
-            .bytes()
-            .enumerate()
-            .all(|(i, b)| matches!(i, 4 | 7) || b.is_ascii_digit())
+    matches!(
+        date.as_bytes(),
+        [y1, y2, y3, y4, b'-', m1, m2, b'-', d1, d2]
+            if [y1, y2, y3, y4, m1, m2, d1, d2]
+                .iter()
+                .all(|digit| digit.is_ascii_digit())
+    )
 }

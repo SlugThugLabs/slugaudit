@@ -39,13 +39,17 @@ pub(crate) struct ScanCursor {
 }
 
 pub(crate) fn scan_step(bytes: &[u8], source: &str, cursor: &mut ScanCursor) {
+    // Past the end there is nothing to scan; the caller's loop has ended.
+    let Some(&byte) = bytes.get(cursor.index) else {
+        return;
+    };
     match cursor.state {
-        State::LineComment => cursor.step_line_comment(bytes),
-        State::BlockComment => cursor.step_block_comment(bytes),
-        State::String => cursor.step_quoted(bytes, b'"'),
-        State::Char => cursor.step_quoted(bytes, b'\''),
-        State::RawString => cursor.step_raw_string(bytes),
-        State::Normal => cursor.step_normal(bytes, source),
+        State::LineComment => cursor.step_line_comment(byte),
+        State::BlockComment => cursor.step_block_comment(bytes, byte),
+        State::String => cursor.step_quoted(bytes, byte, b'"'),
+        State::Char => cursor.step_quoted(bytes, byte, b'\''),
+        State::RawString => cursor.step_raw_string(bytes, byte),
+        State::Normal => cursor.step_normal(bytes, source, byte),
     }
 }
 
@@ -77,15 +81,15 @@ impl ScanCursor {
         self.index += width;
     }
 
-    fn step_line_comment(&mut self, bytes: &[u8]) {
-        if bytes[self.index] == b'\n' {
+    fn step_line_comment(&mut self, byte: u8) {
+        if byte == b'\n' {
             self.finish_line();
             self.state = State::Normal;
         }
         self.index += 1;
     }
 
-    fn step_block_comment(&mut self, bytes: &[u8]) {
+    fn step_block_comment(&mut self, bytes: &[u8], byte: u8) {
         if self.at_pair(bytes, *b"/*") {
             self.block_depth += 1;
             self.index += 2;
@@ -96,15 +100,14 @@ impl ScanCursor {
             }
             self.index += 2;
         } else {
-            self.advance_byte(bytes[self.index]);
+            self.advance_byte(byte);
         }
     }
 
     /// `"…"` strings and `'…'` chars: literal bytes are code, `\` escapes
     /// the next byte, and `close` returns to normal scanning.
-    fn step_quoted(&mut self, bytes: &[u8], close: u8) {
+    fn step_quoted(&mut self, bytes: &[u8], byte: u8, close: u8) {
         self.has_code = true;
-        let byte = bytes[self.index];
         if byte == b'\\' && self.index + 1 < bytes.len() {
             self.index += 2;
         } else if byte == close {
@@ -114,9 +117,8 @@ impl ScanCursor {
         }
     }
 
-    fn step_raw_string(&mut self, bytes: &[u8]) {
+    fn step_raw_string(&mut self, bytes: &[u8], byte: u8) {
         self.has_code = true;
-        let byte = bytes[self.index];
         if byte == b'"' && self.closes_raw_string(bytes) {
             self.enter(State::Normal, self.raw_hashes + 1);
         } else {
@@ -127,12 +129,13 @@ impl ScanCursor {
     /// Whether the `"` at `index` is followed by the open raw string's
     /// full hash run.
     fn closes_raw_string(&self, bytes: &[u8]) -> bool {
-        self.index + self.raw_hashes < bytes.len()
-            && (1..=self.raw_hashes).all(|i| bytes[self.index + i] == b'#')
+        let run_start = self.index + 1;
+        bytes
+            .get(run_start..run_start + self.raw_hashes)
+            .is_some_and(|run| run.iter().all(|byte| *byte == b'#'))
     }
 
-    fn step_normal(&mut self, bytes: &[u8], source: &str) {
-        let byte = bytes[self.index];
+    fn step_normal(&mut self, bytes: &[u8], source: &str, byte: u8) {
         if self.at_pair(bytes, *b"//") {
             self.enter(State::LineComment, 2);
         } else if self.at_pair(bytes, *b"/*") {
@@ -165,25 +168,17 @@ impl ScanCursor {
 /// char or one char that isn't `'`, `\`, or newline, then closing `'`.
 fn is_char_literal_start(s: &str) -> bool {
     let bytes = s.as_bytes();
-    if bytes.len() < 3 || bytes[0] != b'\'' {
-        return false;
-    }
-    if bytes[1] == b'\\' {
-        return bytes.len() >= 4 && bytes[3] == b'\'';
-    }
-    if matches!(bytes[1], b'\'' | b'\\' | b'\n') {
-        return false;
-    }
-    bytes[2] == b'\''
+    matches!(bytes, [b'\'', b'\\', _, b'\'', ..])
+        || matches!(bytes, [b'\'', plain, b'\'', ..] if !matches!(plain, b'\'' | b'\\' | b'\n'))
 }
 
 /// `r(#+)?\"` — `r`, optional hash run, then opening quote. Returns the
 /// hash count (0 for `r"…"`, 5 for `r#####"…"`, etc.).
 fn is_raw_string_start(s: &str) -> Option<usize> {
-    let bytes = s.as_bytes();
-    if bytes.first() != Some(&b'r') {
+    let (&first, rest) = s.as_bytes().split_first()?;
+    if first != b'r' {
         return None;
     }
-    let n_hashes = bytes[1..].iter().take_while(|&&b| b == b'#').count();
-    (bytes.get(1 + n_hashes) == Some(&b'"')).then_some(n_hashes)
+    let n_hashes = rest.iter().take_while(|&&b| b == b'#').count();
+    (rest.get(n_hashes) == Some(&b'"')).then_some(n_hashes)
 }

@@ -77,8 +77,9 @@ const BLOCK_BYTES: usize = 256;
 #[derive(Debug)]
 pub struct LineIndex<'a> {
     source: &'a str,
-    /// Byte offset of the start of every line; always begins with 0.
-    line_starts: Vec<usize>,
+    /// Byte offset of the start of every line after the first (the first
+    /// line always starts at 0), in ascending order.
+    later_line_starts: Vec<usize>,
     /// `block_chars[i]` is the number of characters before byte
     /// `i * BLOCK_BYTES`. Empty when the source is pure ASCII, where a
     /// character count equals a byte count.
@@ -90,26 +91,24 @@ impl<'a> LineIndex<'a> {
     #[must_use]
     pub fn new(source: &'a str) -> Self {
         let bytes = source.as_bytes();
-        let mut line_starts = vec![0];
-        line_starts.extend(
-            bytes
-                .iter()
-                .enumerate()
-                .filter(|(_, byte)| **byte == b'\n')
-                .map(|(index, _)| index + 1),
-        );
+        let later_line_starts = bytes
+            .iter()
+            .enumerate()
+            .filter(|(_, byte)| **byte == b'\n')
+            .map(|(index, _)| index + 1)
+            .collect();
         let mut block_chars = Vec::new();
         if !source.is_ascii() {
             let mut total = 0usize;
             block_chars.push(0);
             for chunk in bytes.chunks(BLOCK_BYTES) {
-                total += count_chars(chunk);
+                total += count_chars(chunk.iter());
                 block_chars.push(total);
             }
         }
         Self {
             source,
-            line_starts,
+            later_line_starts,
             block_chars,
         }
     }
@@ -134,7 +133,7 @@ impl<'a> LineIndex<'a> {
     pub fn position(&self, byte_offset: usize) -> Position {
         let offset = self.floor_to_boundary(byte_offset);
         let line = self.line_index(offset);
-        let line_start = self.line_starts[line];
+        let line_start = self.line_start(line);
         Position {
             line: saturating_u32(line),
             column: saturating_u32(self.chars_before(offset) - self.chars_before(line_start)),
@@ -153,8 +152,19 @@ impl<'a> LineIndex<'a> {
     /// Index of the line containing `offset`: the number of `\n` bytes
     /// strictly before it.
     fn line_index(&self, offset: usize) -> usize {
-        // `line_starts[0] == 0 <= offset`, so the partition point is >= 1.
-        self.line_starts.partition_point(|start| *start <= offset) - 1
+        self.later_line_starts
+            .partition_point(|start| *start <= offset)
+    }
+
+    /// Byte offset of the start of line `line`. Line 0 has no entry in
+    /// `later_line_starts` and starts at 0.
+    fn line_start(&self, line: usize) -> usize {
+        self.later_line_starts
+            .iter()
+            .take(line)
+            .next_back()
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Characters in `source[..offset]`; `offset` must be a char boundary.
@@ -162,16 +172,28 @@ impl<'a> LineIndex<'a> {
         if self.block_chars.is_empty() {
             return offset;
         }
+        let bytes = self.source.as_bytes();
         let block = offset / BLOCK_BYTES;
-        let tail = &self.source.as_bytes()[block * BLOCK_BYTES..offset];
-        self.block_chars[block] + count_chars(tail)
+        let tail_start = block * BLOCK_BYTES;
+        match self.block_chars.get(block) {
+            Some(before) => {
+                let tail = bytes
+                    .iter()
+                    .skip(tail_start)
+                    .take(offset.saturating_sub(tail_start));
+                before + count_chars(tail)
+            }
+            // The table covers every block of the source, so this arm is not
+            // reached; counting from the start gives the same answer.
+            None => count_chars(bytes.iter().take(offset)),
+        }
     }
 }
 
 /// Characters starting in `bytes`: every byte that is not a UTF-8
 /// continuation byte.
-fn count_chars(bytes: &[u8]) -> usize {
-    bytes.iter().filter(|byte| (**byte & 0xC0) != 0x80).count()
+fn count_chars<'b>(bytes: impl Iterator<Item = &'b u8>) -> usize {
+    bytes.filter(|byte| (**byte & 0xC0) != 0x80).count()
 }
 
 /// Half-open range of source text spanning byte offsets and line/column positions.

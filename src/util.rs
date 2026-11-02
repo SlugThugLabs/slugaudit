@@ -111,15 +111,20 @@ pub(crate) fn lock_or_recover<'a, T>(
 /// Hex-encodes a byte slice as a lowercase hex string. Used by both the
 /// hashing layer and the query value converter.
 pub(crate) fn hex_encode(bytes: &[u8]) -> String {
-    const DIGITS: [char; 16] = [
-        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
-    ];
     let mut hex = String::with_capacity(bytes.len() * 2);
     for &byte in bytes {
-        hex.push(DIGITS[usize::from(byte >> 4)]);
-        hex.push(DIGITS[usize::from(byte & 0x0f)]);
+        hex.push(hex_digit(byte >> 4));
+        hex.push(hex_digit(byte & 0x0f));
     }
     hex
+}
+
+/// The lowercase hex digit of the low four bits of `nibble`.
+fn hex_digit(nibble: u8) -> char {
+    match nibble & 0x0f {
+        digit @ 0..=9 => char::from(b'0' + digit),
+        letter => char::from(b'a' + (letter - 10)),
+    }
 }
 
 /// The serialized JSON length of `value` in bytes, measured without

@@ -114,7 +114,15 @@ fn resolve_rust_path(
         return unresolved();
     }
     for take in (1..=parts.len()).rev() {
-        let Some(joined) = normalize_join(base_dir, &parts[..take].join("/")) else {
+        let Some(joined) = normalize_join(
+            base_dir,
+            &parts
+                .iter()
+                .take(take)
+                .copied()
+                .collect::<Vec<_>>()
+                .join("/"),
+        ) else {
             continue;
         };
         let candidates = vec![format!("{joined}.rs"), format!("{joined}/mod.rs")];

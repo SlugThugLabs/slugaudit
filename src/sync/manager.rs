@@ -56,7 +56,7 @@ pub(crate) fn session_findings_for(database_path: &Path) -> Result<PathBuf, Erro
     database_path
         .parent()
         .and_then(crate::project::session_findings_path)
-        .ok_or_else(|| map_activation_error(crate::project::ActivationError::NotActive))
+        .ok_or_else(|| map_activation_error(&crate::project::ActivationError::NotActive))
 }
 
 /// Owns the tool-facing per-server state and provides the sync entry point.

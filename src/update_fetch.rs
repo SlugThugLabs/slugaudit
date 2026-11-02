@@ -6,7 +6,7 @@
 use super::UpdateError;
 use std::path::Path;
 
-/// Default repo owner/name and the single published Linux x86_64 asset.
+/// Default repo owner/name and the single published Linux `x86_64` asset.
 const OWNER: &str = "SlugThugLabs";
 const REPO: &str = "slugaudit";
 pub(crate) const ASSET: &str = "slugaudit-x86_64-unknown-linux-gnu";

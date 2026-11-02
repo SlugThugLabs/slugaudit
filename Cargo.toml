@@ -87,6 +87,7 @@ unreachable_pub = "deny"
 trivial_casts = "deny"
 trivial_numeric_casts = "deny"
 elided_lifetimes_in_paths = "deny"
+missing_docs = "deny"
 
 [lints.clippy]
 print_stdout = "deny"
@@ -95,6 +96,7 @@ todo = "deny"
 unimplemented = "deny"
 exit = "deny"
 cargo = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
 multiple_crate_versions = "allow"
 
 # Criterion benchmarks. Each bench target is its own binary with

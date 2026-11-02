@@ -194,7 +194,7 @@ pub(super) fn resolve_limits(path: &str) -> Result<ResourceLimits, ErrorData> {
 pub(super) fn project_root(path: &str) -> Result<std::path::PathBuf, ErrorData> {
     crate::project::find_project_root(std::path::Path::new(path))
         .map(|root| root.as_path().to_path_buf())
-        .map_err(crate::sync::map_activation_error)
+        .map_err(|error| crate::sync::map_activation_error(&error))
 }
 
 /// The process-wide limits, or the tool error for an environment that is
@@ -203,7 +203,7 @@ pub(super) fn project_root(path: &str) -> Result<std::path::PathBuf, ErrorData> 
 pub(super) fn process_limits_for_tool() -> Result<ResourceLimits, ErrorData> {
     process_limits()
         .copied()
-        .map_err(crate::sync::map_process_limits_error)
+        .map_err(|error| crate::sync::map_process_limits_error(&error))
 }
 
 /// The limits for the project at `root`: defaults, the global file, the
@@ -212,7 +212,7 @@ pub(super) fn process_limits_for_tool() -> Result<ResourceLimits, ErrorData> {
 pub(super) fn limits_for_root(root: &std::path::Path) -> Result<ResourceLimits, ErrorData> {
     use crate::project::ProjectLimitsError;
     crate::project::effective_limits(root).map_err(|error| match error {
-        ProjectLimitsError::Env(error) => crate::sync::map_process_limits_error(error),
+        ProjectLimitsError::Env(error) => crate::sync::map_process_limits_error(&error),
         error => {
             tracing::error!(%error, "limits could not be derived");
             ErrorData::invalid_params(

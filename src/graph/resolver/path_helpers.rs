@@ -21,13 +21,13 @@ use super::types::{Resolution, external, pick, unresolved};
 /// closing quote) — that's the same "treat as unparseable" verdict
 /// callers apply to anything `extract_reference` returns `None` for.
 pub(crate) fn extract_quoted_string(text: &str) -> Option<String> {
-    let bytes = text.as_bytes();
-    let start = bytes
-        .iter()
-        .position(|byte| *byte == b'\'' || *byte == b'"')?;
-    let quote = bytes[start];
-    let end = bytes[start + 1..].iter().position(|byte| *byte == quote)? + start + 1;
-    Some(text[start + 1..end].to_owned())
+    let (open, quote) = text
+        .char_indices()
+        .find(|(_, character)| matches!(character, '\'' | '"'))?;
+    // Both quote characters are one byte, so `open + 1` is a char boundary.
+    let rest = text.get(open + 1..)?;
+    let end = rest.find(quote)?;
+    rest.get(..end).map(str::to_owned)
 }
 
 /// Translates a module path (`foo.bar.baz`) into the filesystem path

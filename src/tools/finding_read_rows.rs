@@ -251,14 +251,14 @@ pub(super) fn clip_description(
     let mut high = chars.len();
     while low < high {
         let mid = low + (high - low).div_ceil(2);
-        entry.description = chars[..mid].iter().collect();
+        entry.description = chars.iter().take(mid).collect();
         if serialized_len(entry)? <= budget {
             low = mid;
         } else {
             high = mid - 1;
         }
     }
-    entry.description = chars[..low].iter().collect();
+    entry.description = chars.iter().take(low).collect();
     if low == chars.len() || (low == 0 && serialized_len(entry)? > budget) {
         entry.description = original;
         entry.detail_clipped = false;

@@ -30,6 +30,7 @@
 // work returns `Result`, and the only genuinely fatal conditions (failed
 // process startup) report the error and choose an exit code.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 pub mod cli;
 pub(crate) mod clock;
