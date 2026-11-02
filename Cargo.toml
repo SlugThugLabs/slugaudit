@@ -73,6 +73,7 @@ which = "8"
 [dev-dependencies]
 criterion = "0.8"
 proptest = "1"
+slugaudit-test-check = { version = "0.0.0", path = "crates/test_check" }
 temp-env = "0.3.6"
 tempfile = "3"
 
@@ -81,7 +82,15 @@ strip = true
 lto = "thin"
 codegen-units = 1
 
-[lints.rust]
+[lints]
+workspace = true
+
+# Product package plus the dev-only test helper. `fuzz/` declares its own
+# `[workspace]` and is deliberately not a member.
+[workspace]
+members = [".", "crates/test_check"]
+
+[workspace.lints.rust]
 unsafe_code = "forbid"
 unreachable_pub = "deny"
 trivial_casts = "deny"
@@ -89,7 +98,7 @@ trivial_numeric_casts = "deny"
 elided_lifetimes_in_paths = "deny"
 missing_docs = "deny"
 
-[lints.clippy]
+[workspace.lints.clippy]
 print_stdout = "deny"
 clone_on_ref_ptr = "deny"
 todo = "deny"

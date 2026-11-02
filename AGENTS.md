@@ -76,5 +76,5 @@ history conflicts with the owner, the owner wins.
   no `.ok()`, no swallowed errors, no lint suppressions.
 - Before handing work back, run:
   `cargo fmt --all --check`,
-  `cargo clippy --all-targets -- -D warnings`,
-  `cargo test --all-targets`, and the `check_*` binaries in `src/bin/`.
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace --all-targets`, and the `check_*` binaries in `src/bin/`.

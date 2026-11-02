@@ -90,17 +90,17 @@ jobs:
         run: cargo run --quiet --bin check_mcp_surface --locked
 
       - name: Check compilation
-        run: cargo check --all-targets --all-features --locked
+        run: cargo check --workspace --all-targets --all-features --locked
 
       - name: Run Clippy
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       # Broken intra-doc links only surface in rustdoc, which neither check nor
       # clippy runs, so the docs build is its own gate.
       - name: Build API docs (warnings denied)
         env:
           RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --no-deps --locked
+        run: cargo doc --workspace --no-deps --locked
 
       # --lib --bins --tests excludes the criterion bench binaries
       # (harness = false) on purpose: `check_performance` is a LOCAL-ONLY gate
@@ -119,7 +119,7 @@ jobs:
       # exactly what running it locally gives you — see AGENTS.md and README.md
       # for the command.
       - name: Run tests
-        run: cargo test --lib --bins --tests --all-features --locked
+        run: cargo test --workspace --lib --bins --tests --all-features --locked
 
       # tests/stdio_protocol.rs spawns the compiled binary and speaks real
       # JSON-RPC/MCP over its stdio pipes — the only test in the suite that

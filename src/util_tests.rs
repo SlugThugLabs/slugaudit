@@ -9,6 +9,7 @@ use crate::util::{
     CappedReadError, Style, at_least_timestamp, exceeds_input_bytes, hex_encode, lock_or_recover,
     now_unix, read_file_capped_bytes,
 };
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 use std::sync::{Arc, Mutex};
 
 /// A panic inside a critical section poisons the underlying Mutex; the
@@ -18,23 +19,24 @@ use std::sync::{Arc, Mutex};
 /// enclosing process on the next lock attempt. This test reproduces
 /// exactly that sequence on a generic `Mutex<String>`.
 #[test]
-fn capped_byte_read_returns_a_file_exactly_at_the_cap() {
-    let directory = tempfile::tempdir().expect("temp dir");
+fn capped_byte_read_returns_a_file_exactly_at_the_cap() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
     let path = directory.path().join("at-cap.bin");
-    std::fs::write(&path, vec![b'x'; 1024]).expect("write fixture");
+    std::fs::write(&path, vec![b'x'; 1024]).check("write fixture")?;
 
-    let bytes = read_file_capped_bytes(&path, 1024).expect("at-cap file reads");
+    let bytes = read_file_capped_bytes(&path, 1024).check("at-cap file reads")?;
 
     assert_eq!(bytes.len(), 1024);
+    Ok(())
 }
 
 #[test]
-fn capped_byte_read_reports_an_oversized_file_without_reading_it_whole() {
-    let directory = tempfile::tempdir().expect("temp dir");
+fn capped_byte_read_reports_an_oversized_file_without_reading_it_whole() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
     let path = directory.path().join("over-cap.bin");
-    std::fs::write(&path, vec![b'x'; 1025]).expect("write fixture");
+    std::fs::write(&path, vec![b'x'; 1025]).check("write fixture")?;
 
-    let error = read_file_capped_bytes(&path, 1024).expect_err("over-cap file is refused");
+    let error = read_file_capped_bytes(&path, 1024).check_err("over-cap file is refused")?;
 
     match error {
         CappedReadError::TooLarge { limit, observed } => {
@@ -43,14 +45,15 @@ fn capped_byte_read_reports_an_oversized_file_without_reading_it_whole() {
         }
         other @ CappedReadError::Io(_) => panic!("expected TooLarge, got {other:?}"),
     }
+    Ok(())
 }
 
 #[test]
-fn capped_byte_read_keeps_not_found() {
-    let directory = tempfile::tempdir().expect("temp dir");
+fn capped_byte_read_keeps_not_found() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
     let path = directory.path().join("missing.bin");
 
-    let error = read_file_capped_bytes(&path, 1024).expect_err("missing file is an I/O error");
+    let error = read_file_capped_bytes(&path, 1024).check_err("missing file is an I/O error")?;
 
     match error {
         CappedReadError::Io(error) => {
@@ -58,14 +61,15 @@ fn capped_byte_read_keeps_not_found() {
         }
         other @ CappedReadError::TooLarge { .. } => panic!("expected Io, got {other:?}"),
     }
+    Ok(())
 }
 
 #[test]
 fn lock_or_recover_returns_inner_state_after_a_panic_in_a_critical_section() {
     let mutex: Mutex<String> = Mutex::new("uncorrupted".to_owned());
 
-    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _guard = mutex.lock().expect("unpoisoned at first");
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> TestResult {
+        let _guard = mutex.lock().check("lock the fresh mutex")?;
         panic!("simulated panic inside the critical section");
     }));
     assert!(panic_result.is_err(), "the panic must have happened");
@@ -107,7 +111,7 @@ fn lock_or_recover_on_a_healthy_mutex_returns_a_normal_guard() {
 /// panics — recovery is not sticky and doesn't silently swallow errors
 /// inside the recovered critical section. Use `lock_or_recover` inside
 /// the panicking closure itself so iter-2 can acquire the lock at all
-/// (std `lock().expect()` would fail-PoisonError on iter-2 because
+/// (a plain `Mutex::lock` would fail with `PoisonError` on iter-2 because
 /// iter-1 panicked while holding the guard). Three iterations prove the
 /// helper distinguishes "recover" from "skip the call".
 #[test]
@@ -138,8 +142,8 @@ fn lock_or_recover_recovers_multiple_sequential_poisons() {
 #[test]
 fn lock_or_recover_logs_the_mutex_label_it_was_given() {
     let mutex: Mutex<u32> = Mutex::new(7);
-    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _guard = mutex.lock().expect("unpoisoned at first");
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> TestResult {
+        let _guard = mutex.lock().check("lock the fresh mutex")?;
         panic!("simulated panic inside the labelled critical section");
     }));
     assert!(panic_result.is_err(), "the panic must have happened");
@@ -175,17 +179,17 @@ fn hex_encode_renders_lowercase_hex() {
 }
 
 #[test]
-fn hex_encode_matches_the_format_macro_for_every_byte_and_pseudo_random_inputs() {
+fn hex_encode_matches_the_format_macro_for_every_byte_and_pseudo_random_inputs() -> TestResult {
     use std::fmt::Write as _;
-    fn reference(bytes: &[u8]) -> String {
+    fn reference(bytes: &[u8]) -> TestResult<String> {
         let mut out = String::new();
         for byte in bytes {
-            write!(out, "{byte:02x}").expect("write to String");
+            write!(out, "{byte:02x}").check("write to String")?;
         }
-        out
+        Ok(out)
     }
     let every_byte: Vec<u8> = (0..=255).collect();
-    assert_eq!(hex_encode(&every_byte), reference(&every_byte));
+    assert_eq!(hex_encode(&every_byte), reference(&every_byte)?);
 
     let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
     for len in [0_usize, 1, 2, 3, 31, 32, 33, 1000] {
@@ -197,8 +201,9 @@ fn hex_encode_matches_the_format_macro_for_every_byte_and_pseudo_random_inputs()
                 state.to_le_bytes()[0]
             })
             .collect();
-        assert_eq!(hex_encode(&input), reference(&input), "len {len}");
+        assert_eq!(hex_encode(&input), reference(&input)?, "len {len}");
     }
+    Ok(())
 }
 
 #[test]
@@ -295,12 +300,12 @@ fn canonicalize_failure_falls_back_with_a_warning() {
 }
 
 #[test]
-fn canonicalize_of_an_existing_path_does_not_warn() {
-    let directory = tempfile::tempdir().expect("temp dir");
+fn canonicalize_of_an_existing_path_does_not_warn() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
     let canonical = directory
         .path()
         .canonicalize()
-        .expect("canonicalize tempdir");
+        .check("canonicalize tempdir")?;
 
     let (result, logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("control-line-probe-canonical");
@@ -316,39 +321,43 @@ fn canonicalize_of_an_existing_path_does_not_warn() {
         !logs.contains("could not canonicalize"),
         "existing paths must canonicalize silently:\n{logs}"
     );
+    Ok(())
 }
 
 #[test]
-fn a_capped_read_refuses_an_oversized_file() {
-    let directory = tempfile::tempdir().expect("temp dir");
+fn a_capped_read_refuses_an_oversized_file() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
     let big = directory.path().join("big.json");
-    std::fs::write(&big, vec![b'x'; 2048]).expect("write oversized file");
+    std::fs::write(&big, vec![b'x'; 2048]).check("write oversized file")?;
 
     let error =
-        crate::util::read_file_capped(&big, 1024).expect_err("an over-cap file must fail closed");
+        crate::util::read_file_capped(&big, 1024).check_err("an over-cap file must fail closed")?;
 
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     assert!(
         error.to_string().contains("over the 1024-byte cap"),
         "the message must name the cap that refused: {error}"
     );
+    Ok(())
 }
 
 #[test]
-fn a_capped_read_accepts_a_file_exactly_at_the_cap() {
-    let directory = tempfile::tempdir().expect("temp dir");
+fn a_capped_read_accepts_a_file_exactly_at_the_cap() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
     let at_cap = directory.path().join("ok.json");
-    std::fs::write(&at_cap, vec![b'y'; 1024]).expect("write at-cap file");
+    std::fs::write(&at_cap, vec![b'y'; 1024]).check("write at-cap file")?;
 
-    let text = crate::util::read_file_capped(&at_cap, 1024).expect("a file at the cap reads");
+    let text = crate::util::read_file_capped(&at_cap, 1024).check("a file at the cap reads")?;
 
     assert_eq!(text.len(), 1024, "the cap is inclusive");
+    Ok(())
 }
 
 #[test]
-fn serialized_len_measures_exact_json_bytes() {
+fn serialized_len_measures_exact_json_bytes() -> TestResult {
     let value = serde_json::json!({"key": "value"});
-    let len = crate::util::serialized_len(&value).expect("serialized_len must succeed");
-    let exact = serde_json::to_string(&value).expect("to_string").len();
+    let len = crate::util::serialized_len(&value).check("serialized_len must succeed")?;
+    let exact = serde_json::to_string(&value).check("to_string")?.len();
     assert_eq!(len, exact);
+    Ok(())
 }

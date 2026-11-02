@@ -1,0 +1,12 @@
+[package]
+name = "slugaudit-test-check"
+version = "0.0.0"
+edition = "2024"
+description = "Dev-only test helper for SlugAudit: turns a failed test step into a TestResult error that names the caller's file and line."
+# Never published; same license approach as the root crate.
+publish = false
+license-file = "../../LICENSE"
+
+# Lint table lives in the root manifest's `[workspace.lints]`.
+[lints]
+workspace = true

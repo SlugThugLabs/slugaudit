@@ -1695,6 +1695,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "slugaudit-test-check",
  "temp-env",
  "tempfile",
  "thiserror",
@@ -1706,6 +1707,10 @@ dependencies = [
  "uuid",
  "which",
 ]
+
+[[package]]
+name = "slugaudit-test-check"
+version = "0.0.0"
 
 [[package]]
 name = "smallvec"
